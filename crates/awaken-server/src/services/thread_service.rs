@@ -3,15 +3,40 @@
 use awaken_contract::contract::storage::{StorageError, ThreadStore};
 use awaken_contract::thread::Thread;
 
+/// Parameters for creating a thread.
+#[derive(Debug, Clone, Default)]
+pub struct CreateThreadOptions {
+    pub title: Option<String>,
+    pub resource_id: Option<String>,
+    pub parent_thread_id: Option<String>,
+}
+
 /// Create a new thread.
 pub async fn create_thread(
     store: &dyn ThreadStore,
     title: Option<String>,
 ) -> Result<Thread, StorageError> {
+    create_thread_with_options(
+        store,
+        CreateThreadOptions {
+            title,
+            ..CreateThreadOptions::default()
+        },
+    )
+    .await
+}
+
+/// Create a new thread with lineage metadata.
+pub async fn create_thread_with_options(
+    store: &dyn ThreadStore,
+    options: CreateThreadOptions,
+) -> Result<Thread, StorageError> {
     let mut thread = Thread::new();
-    if let Some(t) = title {
+    if let Some(t) = options.title {
         thread.metadata.title = Some(t);
     }
+    thread.resource_id = options.resource_id;
+    thread.parent_thread_id = options.parent_thread_id;
     thread.metadata.created_at = Some(now_ms());
     thread.metadata.updated_at = Some(now_ms());
     store.save_thread(&thread).await?;

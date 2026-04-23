@@ -37,7 +37,8 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use awaken_contract::contract::message::Message;
 use awaken_contract::contract::storage::{
-    RunPage, RunQuery, RunRecord, RunStore, StorageError, ThreadRunStore, ThreadStore,
+    MessagePage, MessageQuery, RunPage, RunQuery, RunRecord, RunStore, StorageError, ThreadPage,
+    ThreadQuery, ThreadRunStore, ThreadStore,
 };
 use awaken_contract::thread::{Thread, ThreadMetadata};
 
@@ -272,8 +273,21 @@ impl<T: ThreadRunStore + Send + Sync + 'static> ThreadStore for NatsBufferedThre
     async fn list_threads(&self, offset: usize, limit: usize) -> Result<Vec<String>, StorageError> {
         reader::list_threads(self, offset, limit).await
     }
+    async fn list_threads_query(&self, query: &ThreadQuery) -> Result<ThreadPage, StorageError> {
+        reader::list_threads_query(self, query).await
+    }
     async fn load_messages(&self, thread_id: &str) -> Result<Option<Vec<Message>>, StorageError> {
         reader::load_messages(self, thread_id).await
+    }
+    async fn list_message_records(
+        &self,
+        thread_id: &str,
+        query: &MessageQuery,
+    ) -> Result<MessagePage, StorageError> {
+        let Some(records) = self.load_message_records(thread_id).await? else {
+            return Ok(MessagePage::empty());
+        };
+        Ok(awaken_contract::contract::storage::paginate_message_records(records, query))
     }
     async fn save_messages(
         &self,

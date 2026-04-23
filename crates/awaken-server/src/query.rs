@@ -1,6 +1,9 @@
 //! Shared query-parameter types for paginated endpoints.
 
 use awaken_contract::contract::message::{Message, Visibility};
+use awaken_contract::contract::storage::{
+    MessageOrder, MessageQuery, MessageVisibilityFilter, ThreadQuery,
+};
 use serde::Deserialize;
 
 /// Default page size for list endpoints.
@@ -20,6 +23,18 @@ pub struct MessageQueryParams {
     /// Pass `visibility=all` to include internal messages; otherwise they are filtered out.
     #[serde(default)]
     pub visibility: Option<String>,
+    /// Return messages with sequence numbers greater than this value.
+    #[serde(default)]
+    pub after: Option<u64>,
+    /// Return messages with sequence numbers less than this value.
+    #[serde(default)]
+    pub before: Option<u64>,
+    /// Message order: `asc` or `desc`.
+    #[serde(default)]
+    pub order: Option<String>,
+    /// Producing run ID filter.
+    #[serde(default, alias = "runId")]
+    pub run_id: Option<String>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -63,16 +78,69 @@ impl MessageQueryParams {
             .is_some_and(|value| value.eq_ignore_ascii_case("all"))
     }
 
+    /// Return the storage visibility filter represented by the HTTP query.
+    pub fn visibility_filter(&self) -> MessageVisibilityFilter {
+        match self.visibility.as_deref().map(str::trim) {
+            Some(value) if value.eq_ignore_ascii_case("all") => MessageVisibilityFilter::Any,
+            Some(value) if value.eq_ignore_ascii_case("internal") => {
+                MessageVisibilityFilter::Internal
+            }
+            _ => MessageVisibilityFilter::External,
+        }
+    }
+
+    /// Return the requested message order.
+    pub fn message_order(&self) -> Result<MessageOrder, String> {
+        match self
+            .order
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            Some(value) if value.eq_ignore_ascii_case("asc") => Ok(MessageOrder::Asc),
+            Some(value) if value.eq_ignore_ascii_case("desc") => Ok(MessageOrder::Desc),
+            Some(_) => Err("order must be asc or desc".to_string()),
+            None => Ok(MessageOrder::Asc),
+        }
+    }
+
+    /// Build a storage-level message query.
+    pub fn storage_query(&self) -> Result<MessageQuery, String> {
+        Ok(MessageQuery {
+            offset: self.cursor_offset()?,
+            limit: self.clamped_limit(),
+            after: self.after,
+            before: self.before,
+            order: self.message_order()?,
+            visibility: self.visibility_filter(),
+            run_id: self.run_id.clone(),
+        })
+    }
+
     /// Filter messages according to the requested visibility mode.
     pub fn filter_messages(&self, messages: Vec<Message>) -> Vec<Message> {
-        if self.include_internal() {
-            messages
-        } else {
-            messages
-                .into_iter()
-                .filter(|message| message.visibility != Visibility::Internal)
-                .collect()
+        let visibility = self.visibility_filter();
+        let mut filtered: Vec<Message> = messages
+            .into_iter()
+            .filter(|message| match visibility {
+                MessageVisibilityFilter::Any => true,
+                MessageVisibilityFilter::External => message.visibility != Visibility::Internal,
+                MessageVisibilityFilter::Internal => message.visibility == Visibility::Internal,
+            })
+            .filter(|message| {
+                self.run_id.as_deref().is_none_or(|run_id| {
+                    message
+                        .metadata
+                        .as_ref()
+                        .and_then(|metadata| metadata.run_id.as_deref())
+                        == Some(run_id)
+                })
+            })
+            .collect();
+        if matches!(self.message_order(), Ok(MessageOrder::Desc)) {
+            filtered.reverse();
         }
+        filtered
     }
 
     /// Paginate the provided items using cursor/offset + limit semantics.
@@ -97,6 +165,53 @@ impl MessageQueryParams {
     }
 }
 
+/// Common pagination + lineage filters for thread list endpoints.
+#[derive(Debug, Deserialize)]
+pub struct ThreadQueryParams {
+    #[serde(default)]
+    pub offset: Option<usize>,
+    #[serde(default)]
+    pub cursor: Option<String>,
+    #[serde(default = "default_limit")]
+    pub limit: usize,
+    #[serde(default, alias = "resourceId")]
+    pub resource_id: Option<String>,
+    #[serde(default, alias = "parentThreadId")]
+    pub parent_thread_id: Option<String>,
+}
+
+impl ThreadQueryParams {
+    /// Return `limit` clamped to `1..=200`.
+    pub fn clamped_limit(&self) -> usize {
+        self.limit.clamp(1, 200)
+    }
+
+    /// Return the starting offset resolved from `cursor` or `offset`.
+    pub fn cursor_offset(&self) -> Result<usize, String> {
+        match self
+            .cursor
+            .as_deref()
+            .map(str::trim)
+            .filter(|cursor| !cursor.is_empty())
+        {
+            Some(cursor) => cursor
+                .parse::<usize>()
+                .map_err(|_| "cursor must be an unsigned integer offset".to_string()),
+            None => Ok(self.offset.unwrap_or(0)),
+        }
+    }
+
+    /// Build a storage-level thread query.
+    pub fn storage_query(&self) -> Result<ThreadQuery, String> {
+        Ok(ThreadQuery {
+            offset: self.cursor_offset()?,
+            limit: self.clamped_limit(),
+            resource_id: self.resource_id.clone(),
+            parent_thread_id: self.parent_thread_id.clone(),
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -108,6 +223,10 @@ mod tests {
         assert_eq!(params.cursor, None);
         assert_eq!(params.limit, 50);
         assert_eq!(params.visibility, None);
+        assert_eq!(params.after, None);
+        assert_eq!(params.before, None);
+        assert_eq!(params.order, None);
+        assert_eq!(params.run_id, None);
     }
 
     #[test]
@@ -173,6 +292,37 @@ mod tests {
     }
 
     #[test]
+    fn visibility_filter_defaults_to_external() {
+        let params: MessageQueryParams = serde_json::from_str("{}").unwrap();
+        assert_eq!(
+            params.visibility_filter(),
+            MessageVisibilityFilter::External
+        );
+
+        let all: MessageQueryParams = serde_json::from_str(r#"{"visibility":"all"}"#).unwrap();
+        assert_eq!(all.visibility_filter(), MessageVisibilityFilter::Any);
+
+        let internal: MessageQueryParams =
+            serde_json::from_str(r#"{"visibility":"internal"}"#).unwrap();
+        assert_eq!(
+            internal.visibility_filter(),
+            MessageVisibilityFilter::Internal
+        );
+    }
+
+    #[test]
+    fn message_order_parses_and_validates() {
+        let desc: MessageQueryParams = serde_json::from_str(r#"{"order":"desc"}"#).unwrap();
+        assert_eq!(desc.message_order().unwrap(), MessageOrder::Desc);
+
+        let invalid: MessageQueryParams = serde_json::from_str(r#"{"order":"sideways"}"#).unwrap();
+        assert_eq!(
+            invalid.message_order().unwrap_err(),
+            "order must be asc or desc"
+        );
+    }
+
+    #[test]
     fn filter_messages_hides_internal_by_default() {
         let params: MessageQueryParams = serde_json::from_str("{}").unwrap();
         let messages = vec![Message::user("visible"), Message::internal_system("hidden")];
@@ -192,6 +342,60 @@ mod tests {
 
         assert_eq!(filtered.len(), 2);
         assert_eq!(filtered[1].visibility, Visibility::Internal);
+    }
+
+    #[test]
+    fn filter_messages_applies_run_filter_and_desc_order() {
+        let params: MessageQueryParams =
+            serde_json::from_str(r#"{"runId":"run-1","order":"desc"}"#).unwrap();
+        let messages = vec![
+            Message::assistant("old").with_metadata(
+                awaken_contract::contract::message::MessageMetadata {
+                    run_id: Some("run-1".to_string()),
+                    step_index: Some(0),
+                },
+            ),
+            Message::assistant("other").with_metadata(
+                awaken_contract::contract::message::MessageMetadata {
+                    run_id: Some("run-2".to_string()),
+                    step_index: Some(0),
+                },
+            ),
+            Message::assistant("new").with_metadata(
+                awaken_contract::contract::message::MessageMetadata {
+                    run_id: Some("run-1".to_string()),
+                    step_index: Some(1),
+                },
+            ),
+        ];
+
+        let filtered = params.filter_messages(messages);
+        let texts: Vec<String> = filtered.into_iter().map(|message| message.text()).collect();
+
+        assert_eq!(texts, vec!["new", "old"]);
+    }
+
+    #[test]
+    fn storage_query_maps_filters() {
+        let params: MessageQueryParams = serde_json::from_str(
+            r#"{"cursor":"2","limit":3,"after":1,"before":9,"order":"desc","visibility":"all","runId":"run-1"}"#,
+        )
+        .unwrap();
+
+        let query = params.storage_query().unwrap();
+
+        assert_eq!(
+            query,
+            MessageQuery {
+                offset: 2,
+                limit: 3,
+                after: Some(1),
+                before: Some(9),
+                order: MessageOrder::Desc,
+                visibility: MessageVisibilityFilter::Any,
+                run_id: Some("run-1".to_string()),
+            }
+        );
     }
 
     #[test]
@@ -225,6 +429,26 @@ mod tests {
                 total: 3,
                 has_more: false,
                 next_cursor: None,
+            }
+        );
+    }
+
+    #[test]
+    fn thread_query_params_build_storage_query() {
+        let params: ThreadQueryParams = serde_json::from_str(
+            r#"{"cursor":"4","limit":20,"resourceId":"resource-a","parentThreadId":"parent-1"}"#,
+        )
+        .unwrap();
+
+        let query = params.storage_query().unwrap();
+
+        assert_eq!(
+            query,
+            ThreadQuery {
+                offset: 4,
+                limit: 20,
+                resource_id: Some("resource-a".to_string()),
+                parent_thread_id: Some("parent-1".to_string()),
             }
         );
     }

@@ -329,18 +329,16 @@ async fn thread_messages(
     Path(id): Path<String>,
     Query(params): Query<crate::query::MessageQueryParams>,
 ) -> Result<Json<Value>, ApiError> {
-    let messages = st
+    let query = params.storage_query().map_err(ApiError::BadRequest)?;
+    let page = st
         .store
-        .load_messages(&id)
+        .list_message_records(&id, &query)
         .await
-        .map_err(|e| ApiError::Internal(e.to_string()))?
-        .unwrap_or_default();
-    let messages = params.filter_messages(messages);
-    let page = params.paginate(messages).map_err(ApiError::BadRequest)?;
-
+        .map_err(|e| ApiError::Internal(e.to_string()))?;
     let encoded: Vec<Value> = page
-        .items
+        .records
         .into_iter()
+        .map(|record| record.message)
         .map(|m| {
             let role = match m.role {
                 awaken_contract::contract::message::Role::System => Role::System,

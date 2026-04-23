@@ -8,7 +8,8 @@ use awaken_contract::contract::config_store::{
 };
 use awaken_contract::contract::message::Message;
 use awaken_contract::contract::storage::{
-    RunPage, RunQuery, RunRecord, RunStore, StorageError, ThreadRunStore, ThreadStore,
+    MessagePage, MessageQuery, RunPage, RunQuery, RunRecord, RunStore, StorageError, ThreadPage,
+    ThreadQuery, ThreadRunStore, ThreadStore, paginate_message_records,
 };
 use awaken_contract::thread::Thread;
 use sqlx::postgres::{PgListener, PgRow};
@@ -275,6 +276,50 @@ impl ThreadStore for PostgresStore {
         Ok(rows.into_iter().map(|(id,)| id).collect())
     }
 
+    async fn list_threads_query(&self, query: &ThreadQuery) -> Result<ThreadPage, StorageError> {
+        self.ensure_schema().await?;
+        let count_sql = format!(
+            "SELECT COUNT(*)::BIGINT FROM {}
+             WHERE ($1::text IS NULL OR data ->> 'resource_id' = $1)
+               AND ($2::text IS NULL OR data ->> 'parent_thread_id' = $2)",
+            self.threads_table
+        );
+        let total: (i64,) = sqlx::query_as(&count_sql)
+            .bind(query.resource_id.as_deref())
+            .bind(query.parent_thread_id.as_deref())
+            .fetch_one(&self.pool)
+            .await
+            .map_err(|e| StorageError::Io(e.to_string()))?;
+
+        let sql = format!(
+            "SELECT id FROM {}
+             WHERE ($1::text IS NULL OR data ->> 'resource_id' = $1)
+               AND ($2::text IS NULL OR data ->> 'parent_thread_id' = $2)
+             ORDER BY updated_at DESC, id ASC
+             LIMIT $3 OFFSET $4",
+            self.threads_table
+        );
+        let rows: Vec<(String,)> = sqlx::query_as(&sql)
+            .bind(query.resource_id.as_deref())
+            .bind(query.parent_thread_id.as_deref())
+            .bind(query.limit as i64)
+            .bind(query.offset as i64)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|e| StorageError::Io(e.to_string()))?;
+        let total = total.0.max(0) as usize;
+        let items: Vec<String> = rows.into_iter().map(|(id,)| id).collect();
+        let next_offset = query.offset.min(total) + items.len();
+        Ok(ThreadPage {
+            items,
+            total,
+            has_more: next_offset < total,
+            next_cursor: (next_offset < total).then(|| next_offset.to_string()),
+            prev_cursor: (query.offset > 0)
+                .then(|| query.offset.saturating_sub(query.limit).to_string()),
+        })
+    }
+
     async fn load_messages(&self, thread_id: &str) -> Result<Option<Vec<Message>>, StorageError> {
         self.ensure_schema().await?;
         let sql = format!(
@@ -295,6 +340,28 @@ impl ThreadStore for PostgresStore {
             }
             None => Ok(None),
         }
+    }
+
+    async fn list_message_records(
+        &self,
+        thread_id: &str,
+        query: &MessageQuery,
+    ) -> Result<MessagePage, StorageError> {
+        let Some(messages) = self.load_messages(thread_id).await? else {
+            return Ok(MessagePage::empty());
+        };
+        let records = messages
+            .into_iter()
+            .enumerate()
+            .map(|(index, message)| {
+                awaken_contract::contract::message::MessageRecord::from_message(
+                    thread_id.to_owned(),
+                    index as u64 + 1,
+                    message,
+                )
+            })
+            .collect();
+        Ok(paginate_message_records(records, query))
     }
 
     async fn save_messages(

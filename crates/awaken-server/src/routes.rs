@@ -20,7 +20,7 @@ use crate::protocols::a2a::http::a2a_routes;
 use crate::protocols::ag_ui::http::ag_ui_routes;
 use crate::protocols::ai_sdk_v6::http::ai_sdk_routes;
 use crate::protocols::mcp::http::mcp_routes;
-use crate::query::{self, MessageQueryParams};
+use crate::query::{self, MessageQueryParams, ThreadQueryParams};
 use crate::services::run_control_service::{
     InputMode, InterruptMode, RunControlError, RunControlService,
 };
@@ -197,35 +197,38 @@ struct ListParams {
 #[tracing::instrument(skip(st))]
 async fn list_threads(
     State(st): State<AppState>,
-    Query(params): Query<ListParams>,
+    Query(params): Query<ThreadQueryParams>,
 ) -> Result<Json<Value>, ApiError> {
-    let offset = params.offset.unwrap_or(0);
-    let limit = params.limit.clamp(1, 200);
-    let ids = st
+    let query = params.storage_query().map_err(ApiError::BadRequest)?;
+    let page = st
         .store
-        .list_threads(offset, limit)
+        .list_threads_query(&query)
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?;
-    Ok(Json(
-        json!({ "items": ids, "offset": offset, "limit": limit }),
-    ))
+    Ok(Json(json!({
+        "items": page.items,
+        "offset": query.offset,
+        "limit": query.limit,
+        "total": page.total,
+        "has_more": page.has_more,
+        "next_cursor": page.next_cursor,
+    })))
 }
 
 #[tracing::instrument(skip(st))]
 async fn list_thread_summaries(
     State(st): State<AppState>,
-    Query(params): Query<ListParams>,
+    Query(params): Query<ThreadQueryParams>,
 ) -> Result<Json<Value>, ApiError> {
-    let offset = params.offset.unwrap_or(0);
-    let limit = params.limit.clamp(1, 200);
-    let ids = st
+    let query = params.storage_query().map_err(ApiError::BadRequest)?;
+    let page = st
         .store
-        .list_threads(offset, limit)
+        .list_threads_query(&query)
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?;
 
-    let mut items = Vec::with_capacity(ids.len());
-    for id in ids {
+    let mut items = Vec::with_capacity(page.items.len());
+    for id in page.items {
         let latest_run = st
             .store
             .latest_run(&id)
@@ -239,21 +242,32 @@ async fn list_thread_summaries(
         {
             items.push(json!({
                 "id": thread.id,
+                "resource_id": thread.resource_id,
+                "parent_thread_id": thread.parent_thread_id,
                 "title": thread.metadata.title,
                 "updated_at": thread.metadata.updated_at,
                 "agent_id": latest_run.map(|run| run.agent_id),
             }));
         }
     }
-    Ok(Json(
-        json!({ "items": items, "offset": offset, "limit": limit }),
-    ))
+    Ok(Json(json!({
+        "items": items,
+        "offset": query.offset,
+        "limit": query.limit,
+        "total": page.total,
+        "has_more": page.has_more,
+        "next_cursor": page.next_cursor,
+    })))
 }
 
 #[derive(Debug, Deserialize)]
 struct CreateThreadPayload {
     #[serde(default)]
     title: Option<String>,
+    #[serde(default, alias = "resourceId")]
+    resource_id: Option<String>,
+    #[serde(default, alias = "parentThreadId")]
+    parent_thread_id: Option<String>,
 }
 
 #[tracing::instrument(skip(st, payload))]
@@ -261,9 +275,16 @@ async fn create_thread(
     State(st): State<AppState>,
     Json(payload): Json<CreateThreadPayload>,
 ) -> Result<(StatusCode, Json<Value>), ApiError> {
-    let thread = crate::services::thread_service::create_thread(st.store.as_ref(), payload.title)
-        .await
-        .map_err(|e| ApiError::Internal(e.to_string()))?;
+    let thread = crate::services::thread_service::create_thread_with_options(
+        st.store.as_ref(),
+        crate::services::thread_service::CreateThreadOptions {
+            title: payload.title,
+            resource_id: payload.resource_id,
+            parent_thread_id: payload.parent_thread_id,
+        },
+    )
+    .await
+    .map_err(|e| ApiError::Internal(e.to_string()))?;
     let value = serde_json::to_value(&thread).map_err(|e| ApiError::Internal(e.to_string()))?;
     Ok((StatusCode::CREATED, Json(value)))
 }
@@ -307,6 +328,10 @@ async fn delete_thread(
 struct PatchThreadPayload {
     #[serde(default)]
     title: Option<String>,
+    #[serde(default, alias = "resourceId")]
+    resource_id: Option<String>,
+    #[serde(default, alias = "parentThreadId")]
+    parent_thread_id: Option<String>,
     #[serde(default)]
     custom: Option<std::collections::HashMap<String, Value>>,
 }
@@ -326,6 +351,12 @@ async fn patch_thread(
 
     if let Some(title) = payload.title {
         thread.metadata.title = Some(title);
+    }
+    if let Some(resource_id) = payload.resource_id {
+        thread.resource_id = Some(resource_id);
+    }
+    if let Some(parent_thread_id) = payload.parent_thread_id {
+        thread.parent_thread_id = Some(parent_thread_id);
     }
     if let Some(custom) = payload.custom {
         for (key, value) in custom {
@@ -377,16 +408,19 @@ async fn get_thread_messages(
         .map_err(|e| ApiError::Internal(e.to_string()))?
         .ok_or(ApiError::ThreadNotFound(id.clone()))?;
 
-    let messages = st
+    let query = params.storage_query().map_err(ApiError::BadRequest)?;
+    let page = st
         .store
-        .load_messages(&id)
+        .list_message_records(&id, &query)
         .await
-        .map_err(|e| ApiError::Internal(e.to_string()))?
-        .unwrap_or_default();
-    let messages = params.filter_messages(messages);
-    let page = params.paginate(messages).map_err(ApiError::BadRequest)?;
+        .map_err(|e| ApiError::Internal(e.to_string()))?;
+    let messages: Vec<Message> = page
+        .records
+        .into_iter()
+        .map(|record| record.message)
+        .collect();
 
-    let value = serde_json::to_value(&page.items).map_err(|e| ApiError::Internal(e.to_string()))?;
+    let value = serde_json::to_value(&messages).map_err(|e| ApiError::Internal(e.to_string()))?;
     Ok(Json(json!({
         "messages": value,
         "total": page.total,
@@ -527,10 +561,11 @@ async fn peek_mailbox(
     Path(id): Path<String>,
     Query(params): Query<ListParams>,
 ) -> Result<Json<Value>, ApiError> {
+    let offset = params.offset.unwrap_or(0);
     let limit = params.limit.clamp(1, 200);
     let dispatches = st
         .mailbox
-        .list_dispatches(&id, None, limit, 0)
+        .list_dispatches(&id, None, limit, offset)
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?;
 

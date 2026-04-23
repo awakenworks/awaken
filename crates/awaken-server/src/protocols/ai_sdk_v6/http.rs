@@ -432,13 +432,23 @@ async fn thread_messages(
     Path(id): Path<String>,
     Query(params): Query<crate::query::MessageQueryParams>,
 ) -> Result<Json<Value>, ApiError> {
-    let messages = st
+    let storage_query = params.storage_query().map_err(ApiError::BadRequest)?;
+    let mut records = st
         .store
-        .load_messages(&id)
+        .load_message_records(&id)
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?
         .unwrap_or_default();
-    let messages = params.filter_messages(messages);
+    records.retain(|record| storage_query.matches_record(record));
+    match storage_query.order {
+        awaken_contract::contract::storage::MessageOrder::Asc => {
+            records.sort_by_key(|record| record.seq);
+        }
+        awaken_contract::contract::storage::MessageOrder::Desc => {
+            records.sort_by(|a, b| b.seq.cmp(&a.seq));
+        }
+    }
+    let messages = records.into_iter().map(|record| record.message).collect();
     let encoded_messages = encode_history_messages(messages);
     let page = params
         .paginate(encoded_messages)

@@ -452,12 +452,53 @@ mod integration {
         (status, value)
     }
 
+    async fn patch_json(app: axum::Router, uri: &str, payload: Value) -> (StatusCode, Value) {
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("PATCH")
+                    .uri(uri)
+                    .header("content-type", "application/json")
+                    .body(axum::body::Body::from(payload.to_string()))
+                    .expect("request build"),
+            )
+            .await
+            .expect("app should handle request");
+        let status = resp.status();
+        let body = to_bytes(resp.into_body(), 1024 * 1024)
+            .await
+            .expect("body readable");
+        let text = String::from_utf8(body.to_vec()).expect("utf-8");
+        let value = if text.is_empty() {
+            json!(null)
+        } else {
+            serde_json::from_str(&text).unwrap_or(json!(text))
+        };
+        (status, value)
+    }
+
     /// Helper: create a thread in the store and return its ID.
     async fn seed_thread(store: &InMemoryStore, title: Option<&str>) -> String {
         let mut thread = Thread::new();
         if let Some(t) = title {
             thread.metadata.title = Some(t.to_string());
         }
+        store.save_thread(&thread).await.unwrap();
+        thread.id
+    }
+
+    async fn seed_thread_with_lineage(
+        store: &InMemoryStore,
+        title: Option<&str>,
+        resource_id: Option<&str>,
+        parent_thread_id: Option<&str>,
+    ) -> String {
+        let mut thread = Thread::new();
+        if let Some(t) = title {
+            thread.metadata.title = Some(t.to_string());
+        }
+        thread.resource_id = resource_id.map(str::to_string);
+        thread.parent_thread_id = parent_thread_id.map(str::to_string);
         store.save_thread(&thread).await.unwrap();
         thread.id
     }
@@ -548,9 +589,53 @@ mod integration {
     }
 
     #[tokio::test]
+    async fn list_threads_filters_by_resource_and_parent_thread() {
+        let test = make_test_app();
+        let matching = seed_thread_with_lineage(
+            &test.store,
+            Some("Match"),
+            Some("resource-a"),
+            Some("parent-1"),
+        )
+        .await;
+        seed_thread_with_lineage(
+            &test.store,
+            Some("Wrong Resource"),
+            Some("resource-b"),
+            Some("parent-1"),
+        )
+        .await;
+        seed_thread_with_lineage(
+            &test.store,
+            Some("Wrong Parent"),
+            Some("resource-a"),
+            Some("parent-2"),
+        )
+        .await;
+
+        let (status, body) = get_json(
+            test.router,
+            "/v1/threads?resourceId=resource-a&parentThreadId=parent-1",
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let items = body["items"].as_array().expect("items array");
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].as_str(), Some(matching.as_str()));
+        assert_eq!(body["total"].as_u64(), Some(1));
+        assert_eq!(body["has_more"].as_bool(), Some(false));
+    }
+
+    #[tokio::test]
     async fn list_thread_summaries_includes_latest_run_agent() {
         let test = make_test_app();
-        let thread_id = seed_thread(&test.store, Some("A2UI Thread")).await;
+        let thread_id = seed_thread_with_lineage(
+            &test.store,
+            Some("A2UI Thread"),
+            Some("resource-a"),
+            Some("parent-1"),
+        )
+        .await;
         seed_run(&test.store, "run-1", &thread_id, RunStatus::Done).await;
 
         let (status, body) = get_json(test.router, "/v1/threads/summaries").await;
@@ -559,6 +644,8 @@ mod integration {
         assert_eq!(items.len(), 1);
         assert_eq!(items[0]["id"].as_str(), Some(thread_id.as_str()));
         assert_eq!(items[0]["agent_id"].as_str(), Some("test-agent"));
+        assert_eq!(items[0]["resource_id"].as_str(), Some("resource-a"));
+        assert_eq!(items[0]["parent_thread_id"].as_str(), Some("parent-1"));
     }
 
     #[tokio::test]
@@ -586,6 +673,29 @@ mod integration {
         assert_eq!(status, StatusCode::CREATED);
         assert_eq!(body["metadata"]["title"].as_str(), Some("New Thread"));
         assert!(body["id"].as_str().is_some());
+    }
+
+    #[tokio::test]
+    async fn create_thread_via_post_accepts_lineage_fields() {
+        let test = make_test_app();
+        let (status, body) = post_json(
+            test.router.clone(),
+            "/v1/threads",
+            json!({
+                "title": "Lineage Thread",
+                "resourceId": "resource-a",
+                "parentThreadId": "parent-1"
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED);
+        assert_eq!(body["resource_id"].as_str(), Some("resource-a"));
+        assert_eq!(body["parent_thread_id"].as_str(), Some("parent-1"));
+
+        let thread_id = body["id"].as_str().expect("thread id");
+        let thread = test.store.load_thread(thread_id).await.unwrap().unwrap();
+        assert_eq!(thread.resource_id.as_deref(), Some("resource-a"));
+        assert_eq!(thread.parent_thread_id.as_deref(), Some("parent-1"));
     }
 
     #[tokio::test]
@@ -659,6 +769,63 @@ mod integration {
             body["error"].as_str(),
             Some("cursor must be an unsigned integer offset")
         );
+    }
+
+    #[tokio::test]
+    async fn get_thread_messages_supports_run_and_sequence_filters() {
+        let test = make_test_app();
+        let id = seed_thread(&test.store, None).await;
+        let run1 = awaken_contract::contract::message::MessageMetadata {
+            run_id: Some("run-1".to_string()),
+            step_index: Some(0),
+        };
+        let run2 = awaken_contract::contract::message::MessageMetadata {
+            run_id: Some("run-2".to_string()),
+            step_index: Some(0),
+        };
+        let messages = vec![
+            Message::user("input"),
+            Message::assistant("first").with_metadata(run1.clone()),
+            Message::internal_system("hidden").with_metadata(run1.clone()),
+            Message::assistant("other").with_metadata(run2),
+            Message::assistant("second").with_metadata(run1),
+        ];
+        test.store.save_messages(&id, &messages).await.unwrap();
+
+        let (status, body) = get_json(
+            test.router,
+            &format!("/v1/threads/{id}/messages?runId=run-1&after=1&order=desc"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let messages = body["messages"].as_array().expect("messages array");
+        assert_eq!(messages.len(), 2);
+        assert_eq!(messages[0]["content"][0]["text"].as_str(), Some("second"));
+        assert_eq!(messages[1]["content"][0]["text"].as_str(), Some("first"));
+        assert_eq!(body["total"].as_u64(), Some(2));
+    }
+
+    #[tokio::test]
+    async fn patch_thread_updates_lineage_fields() {
+        let test = make_test_app();
+        let id = seed_thread(&test.store, Some("Patch Target")).await;
+
+        let (status, body) = patch_json(
+            test.router,
+            &format!("/v1/threads/{id}"),
+            json!({
+                "resourceId": "resource-b",
+                "parentThreadId": "parent-9"
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["resource_id"].as_str(), Some("resource-b"));
+        assert_eq!(body["parent_thread_id"].as_str(), Some("parent-9"));
+
+        let thread = test.store.load_thread(&id).await.unwrap().unwrap();
+        assert_eq!(thread.resource_id.as_deref(), Some("resource-b"));
+        assert_eq!(thread.parent_thread_id.as_deref(), Some("parent-9"));
     }
 
     #[tokio::test]

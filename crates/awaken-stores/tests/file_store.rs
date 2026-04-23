@@ -5,8 +5,8 @@
 use awaken_contract::contract::lifecycle::{RunStatus, TerminationReason};
 use awaken_contract::contract::message::Message;
 use awaken_contract::contract::storage::{
-    MessageSeqRange, RunMessageInput, RunMessageOutput, RunQuery, RunStore, StorageError,
-    ThreadRunStore, ThreadStore,
+    MessageOrder, MessageQuery, MessageSeqRange, MessageVisibilityFilter, RunMessageInput,
+    RunMessageOutput, RunQuery, RunStore, StorageError, ThreadQuery, ThreadRunStore, ThreadStore,
 };
 use awaken_contract::thread::Thread;
 use awaken_stores::FileStore;
@@ -77,6 +77,41 @@ async fn list_threads_sorted_by_recent_activity() {
 }
 
 #[tokio::test]
+async fn list_threads_query_filters_lineage() {
+    let tmp = TempDir::new().unwrap();
+    let store = FileStore::new(tmp.path());
+    store
+        .save_thread(
+            &Thread::with_id("match")
+                .with_resource_id("resource-a")
+                .with_parent_thread_id("parent-1"),
+        )
+        .await
+        .unwrap();
+    store
+        .save_thread(
+            &Thread::with_id("other")
+                .with_resource_id("resource-b")
+                .with_parent_thread_id("parent-1"),
+        )
+        .await
+        .unwrap();
+
+    let page = store
+        .list_threads_query(&ThreadQuery {
+            offset: 0,
+            limit: 10,
+            resource_id: Some("resource-a".to_string()),
+            parent_thread_id: Some("parent-1".to_string()),
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(page.items, vec!["match"]);
+    assert_eq!(page.total, 1);
+}
+
+#[tokio::test]
 async fn overwrite_thread() {
     let tmp = TempDir::new().unwrap();
     let store = FileStore::new(tmp.path());
@@ -96,6 +131,57 @@ async fn invalid_thread_id_rejected() {
     let store = FileStore::new(tmp.path());
     let result = store.load_thread("../escape").await;
     assert!(result.is_err());
+}
+
+#[tokio::test]
+async fn list_message_records_query_filters_visibility_run_and_order() {
+    let tmp = TempDir::new().unwrap();
+    let store = FileStore::new(tmp.path());
+    let thread_id = "t-query";
+    store
+        .save_thread(&Thread::with_id(thread_id))
+        .await
+        .unwrap();
+    let metadata = awaken_contract::contract::message::MessageMetadata {
+        run_id: Some("run-1".to_string()),
+        step_index: Some(0),
+    };
+    store
+        .save_messages(
+            thread_id,
+            &[
+                Message::user("input"),
+                Message::assistant("first").with_metadata(metadata.clone()),
+                Message::internal_system("hidden").with_metadata(metadata.clone()),
+                Message::assistant("second").with_metadata(metadata),
+            ],
+        )
+        .await
+        .unwrap();
+
+    let page = store
+        .list_message_records(
+            thread_id,
+            &MessageQuery {
+                offset: 0,
+                limit: 10,
+                after: Some(1),
+                before: None,
+                order: MessageOrder::Desc,
+                visibility: MessageVisibilityFilter::External,
+                run_id: Some("run-1".to_string()),
+            },
+        )
+        .await
+        .unwrap();
+
+    let texts: Vec<String> = page
+        .records
+        .into_iter()
+        .map(|record| record.message.text())
+        .collect();
+    assert_eq!(texts, vec!["second", "first"]);
+    assert_eq!(page.total, 2);
 }
 
 #[tokio::test]

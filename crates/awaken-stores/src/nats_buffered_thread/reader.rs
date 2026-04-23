@@ -4,7 +4,8 @@ use std::collections::{HashMap, HashSet};
 
 use awaken_contract::contract::message::Message;
 use awaken_contract::contract::storage::{
-    RunPage, RunQuery, RunRecord, StorageError, ThreadRunStore,
+    RunPage, RunQuery, RunRecord, StorageError, ThreadPage, ThreadQuery, ThreadRunStore,
+    paginate_threads,
 };
 use awaken_contract::thread::Thread;
 
@@ -62,8 +63,8 @@ pub async fn list_threads<T: ThreadRunStore + Send + Sync + 'static>(
         ReadConsistency::ReadYourWrites => {}
     }
 
-    let all_inner_ids = store.inner.list_threads(0, usize::MAX).await?;
-    let mut ids: HashSet<String> = all_inner_ids.iter().cloned().collect();
+    let all_inner_ids = list_all_inner_thread_ids(store).await?;
+    let mut ids: HashSet<String> = all_inner_ids.into_iter().collect();
     ids.extend(hot_meta::pending_thread_ids(&store.kv_hot).await?);
 
     let mut threads = Vec::new();
@@ -83,6 +84,32 @@ pub async fn list_threads<T: ThreadRunStore + Send + Sync + 'static>(
         .take(limit)
         .map(|thread| thread.id)
         .collect())
+}
+
+pub async fn list_threads_query<T: ThreadRunStore + Send + Sync + 'static>(
+    store: &NatsBufferedThreadStore<T>,
+    query: &ThreadQuery,
+) -> Result<ThreadPage, StorageError> {
+    match store.config.read_consistency {
+        ReadConsistency::Eventual => return store.inner.list_threads_query(query).await,
+        ReadConsistency::Strong => {
+            store.force_flush_all_pending().await?;
+            return store.inner.list_threads_query(query).await;
+        }
+        ReadConsistency::ReadYourWrites => {}
+    }
+
+    let all_inner_ids = list_all_inner_thread_ids(store).await?;
+    let mut ids: HashSet<String> = all_inner_ids.into_iter().collect();
+    ids.extend(hot_meta::pending_thread_ids(&store.kv_hot).await?);
+
+    let mut threads = Vec::new();
+    for id in ids {
+        if let Some(thread) = load_thread(store, &id).await? {
+            threads.push(thread);
+        }
+    }
+    Ok(paginate_threads(threads, query))
 }
 
 pub async fn load_messages<T: ThreadRunStore + Send + Sync + 'static>(
@@ -110,6 +137,27 @@ pub async fn load_messages<T: ThreadRunStore + Send + Sync + 'static>(
     }
 
     store.inner.load_messages(thread_id).await
+}
+
+async fn list_all_inner_thread_ids<T: ThreadRunStore + Send + Sync + 'static>(
+    store: &NatsBufferedThreadStore<T>,
+) -> Result<Vec<String>, StorageError> {
+    const SCAN_LIMIT: usize = 200;
+    let mut offset = 0;
+    let mut all = Vec::new();
+    loop {
+        let page = store.inner.list_threads(offset, SCAN_LIMIT).await?;
+        if page.is_empty() {
+            break;
+        }
+        let count = page.len();
+        all.extend(page);
+        if count < SCAN_LIMIT {
+            break;
+        }
+        offset += count;
+    }
+    Ok(all)
 }
 
 pub async fn load_run<T: ThreadRunStore + Send + Sync + 'static>(

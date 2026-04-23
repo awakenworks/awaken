@@ -1,8 +1,11 @@
 #![allow(dead_code)]
 
 use awaken_contract::contract::lifecycle::RunStatus;
-use awaken_contract::contract::message::Message;
-use awaken_contract::contract::storage::{RunRecord, ThreadRunStore};
+use awaken_contract::contract::message::{Message, MessageMetadata};
+use awaken_contract::contract::storage::{
+    MessageOrder, MessageQuery, MessageVisibilityFilter, RunRecord, ThreadQuery, ThreadRunStore,
+};
+use awaken_contract::thread::Thread;
 
 pub fn make_run(run_id: &str, thread_id: &str, status: RunStatus) -> RunRecord {
     RunRecord {
@@ -107,6 +110,83 @@ pub async fn append_message_records_assigns_seq<S: ThreadRunStore>(store: &S) {
     assert_eq!(records.len(), 2);
     assert_eq!(records[0].seq, 1);
     assert_eq!(records[1].seq, 2);
+}
+
+pub async fn list_threads_query_filters_lineage<S: ThreadRunStore>(store: &S) {
+    let mut matching = Thread::with_id("t-filter-match")
+        .with_resource_id("resource-a")
+        .with_parent_thread_id("parent-1");
+    matching.metadata.updated_at = Some(300);
+    let mut wrong_resource = Thread::with_id("t-filter-resource")
+        .with_resource_id("resource-b")
+        .with_parent_thread_id("parent-1");
+    wrong_resource.metadata.updated_at = Some(200);
+    let mut wrong_parent = Thread::with_id("t-filter-parent")
+        .with_resource_id("resource-a")
+        .with_parent_thread_id("parent-2");
+    wrong_parent.metadata.updated_at = Some(100);
+
+    store.save_thread(&matching).await.unwrap();
+    store.save_thread(&wrong_resource).await.unwrap();
+    store.save_thread(&wrong_parent).await.unwrap();
+
+    let page = store
+        .list_threads_query(&ThreadQuery {
+            offset: 0,
+            limit: 10,
+            resource_id: Some("resource-a".to_string()),
+            parent_thread_id: Some("parent-1".to_string()),
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(page.items, vec!["t-filter-match"]);
+    assert_eq!(page.total, 1);
+    assert!(!page.has_more);
+}
+
+pub async fn list_message_records_query_filters_and_orders<S: ThreadRunStore>(store: &S) {
+    let thread_id = "t-message-query";
+    store
+        .save_thread(&Thread::with_id(thread_id))
+        .await
+        .unwrap();
+    let run_metadata = MessageMetadata {
+        run_id: Some("run-1".to_string()),
+        step_index: Some(0),
+    };
+    let messages = vec![
+        Message::user("input"),
+        Message::assistant("first").with_metadata(run_metadata.clone()),
+        Message::internal_system("hidden").with_metadata(run_metadata.clone()),
+        Message::assistant("second").with_metadata(run_metadata),
+    ];
+    store.save_messages(thread_id, &messages).await.unwrap();
+
+    let page = store
+        .list_message_records(
+            thread_id,
+            &MessageQuery {
+                offset: 0,
+                limit: 10,
+                after: Some(1),
+                before: None,
+                order: MessageOrder::Desc,
+                visibility: MessageVisibilityFilter::External,
+                run_id: Some("run-1".to_string()),
+            },
+        )
+        .await
+        .unwrap();
+
+    let texts: Vec<String> = page
+        .records
+        .iter()
+        .map(|record| record.message.text())
+        .collect();
+    assert_eq!(texts, vec!["second", "first"]);
+    assert_eq!(page.total, 2);
+    assert!(!page.has_more);
 }
 
 pub async fn load_run_returns_none_for_unknown<S: ThreadRunStore>(store: &S) {

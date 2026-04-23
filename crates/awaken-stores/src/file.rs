@@ -15,7 +15,8 @@ use awaken_contract::contract::config_store::ConfigStore;
 use awaken_contract::contract::message::Message;
 use awaken_contract::contract::profile_store::{ProfileEntry, ProfileOwner, ProfileStore};
 use awaken_contract::contract::storage::{
-    RunPage, RunQuery, RunRecord, RunStore, StorageError, ThreadRunStore, ThreadStore,
+    MessagePage, MessageQuery, RunPage, RunQuery, RunRecord, RunStore, StorageError, ThreadPage,
+    ThreadQuery, ThreadRunStore, ThreadStore, paginate_message_records, paginate_threads,
 };
 use awaken_contract::thread::Thread;
 use serde::{Deserialize, Serialize};
@@ -529,11 +530,7 @@ impl ThreadStore for FileStore {
 
     async fn list_threads(&self, offset: usize, limit: usize) -> Result<Vec<String>, StorageError> {
         let mut threads: Vec<Thread> = scan_json_dir(&self.threads_dir()).await?;
-        threads.sort_by(|a, b| {
-            let a_updated = a.metadata.updated_at.or(a.metadata.created_at).unwrap_or(0);
-            let b_updated = b.metadata.updated_at.or(b.metadata.created_at).unwrap_or(0);
-            b_updated.cmp(&a_updated).then_with(|| a.id.cmp(&b.id))
-        });
+        awaken_contract::contract::storage::sort_threads_by_recent_activity(&mut threads);
         Ok(threads
             .into_iter()
             .skip(offset)
@@ -542,10 +539,38 @@ impl ThreadStore for FileStore {
             .collect())
     }
 
+    async fn list_threads_query(&self, query: &ThreadQuery) -> Result<ThreadPage, StorageError> {
+        let threads: Vec<Thread> = scan_json_dir(&self.threads_dir()).await?;
+        Ok(paginate_threads(threads, query))
+    }
+
     async fn load_messages(&self, thread_id: &str) -> Result<Option<Vec<Message>>, StorageError> {
         validate_id(thread_id, "thread id")?;
         let path = self.messages_dir().join(format!("{thread_id}.json"));
         read_json(&path).await
+    }
+
+    async fn list_message_records(
+        &self,
+        thread_id: &str,
+        query: &MessageQuery,
+    ) -> Result<MessagePage, StorageError> {
+        validate_id(thread_id, "thread id")?;
+        let Some(messages) = self.load_messages(thread_id).await? else {
+            return Ok(MessagePage::empty());
+        };
+        let records = messages
+            .into_iter()
+            .enumerate()
+            .map(|(index, message)| {
+                awaken_contract::contract::message::MessageRecord::from_message(
+                    thread_id.to_owned(),
+                    index as u64 + 1,
+                    message,
+                )
+            })
+            .collect();
+        Ok(paginate_message_records(records, query))
     }
 
     async fn save_messages(

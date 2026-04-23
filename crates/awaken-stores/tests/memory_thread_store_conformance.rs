@@ -19,4 +19,6 @@ conformance_test!(latest_run_returns_most_recent);
 conformance_test!(checkpoint_overwrites_messages);
 conformance_test!(load_thread_reflects_checkpoint);
 conformance_test!(append_message_records_assigns_seq);
+conformance_test!(list_threads_query_filters_lineage);
+conformance_test!(list_message_records_query_filters_and_orders);
 conformance_test!(load_run_returns_none_for_unknown);

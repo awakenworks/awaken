@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use super::lifecycle::{RunStatus, TerminationReason};
-use super::message::{Message, MessageRecord};
+use super::message::{Message, MessageRecord, Visibility};
 use super::suspension::{ToolCallResume, ToolCallResumeMode};
 use super::tool::ToolDescriptor;
 use crate::state::PersistedState;
@@ -319,12 +319,27 @@ impl RunRecord {
 // ── query types ─────────────────────────────────────────────────────
 
 /// Pagination/filter query for listing messages.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MessageQuery {
     /// Number of items to skip.
     pub offset: usize,
     /// Maximum number of items to return.
     pub limit: usize,
+    /// Return records with sequence numbers greater than this value.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub after: Option<u64>,
+    /// Return records with sequence numbers less than this value.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub before: Option<u64>,
+    /// Sort order for message sequence numbers.
+    #[serde(default)]
+    pub order: MessageOrder,
+    /// Visibility filter applied before pagination.
+    #[serde(default)]
+    pub visibility: MessageVisibilityFilter,
+    /// Filter by producing run ID.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run_id: Option<String>,
 }
 
 impl Default for MessageQuery {
@@ -332,7 +347,231 @@ impl Default for MessageQuery {
         Self {
             offset: 0,
             limit: 50,
+            after: None,
+            before: None,
+            order: MessageOrder::Asc,
+            visibility: MessageVisibilityFilter::Any,
+            run_id: None,
         }
+    }
+}
+
+impl MessageQuery {
+    /// Return true when a record passes the query filters.
+    #[must_use]
+    pub fn matches_record(&self, record: &MessageRecord) -> bool {
+        if self.after.is_some_and(|after| record.seq <= after) {
+            return false;
+        }
+        if self.before.is_some_and(|before| record.seq >= before) {
+            return false;
+        }
+        if self
+            .run_id
+            .as_deref()
+            .is_some_and(|run_id| record.produced_by_run_id.as_deref() != Some(run_id))
+        {
+            return false;
+        }
+        match self.visibility {
+            MessageVisibilityFilter::Any => true,
+            MessageVisibilityFilter::External => record.message.visibility != Visibility::Internal,
+            MessageVisibilityFilter::Internal => record.message.visibility == Visibility::Internal,
+        }
+    }
+}
+
+/// Message sequence ordering.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MessageOrder {
+    /// Oldest message first.
+    #[default]
+    Asc,
+    /// Newest message first.
+    Desc,
+}
+
+/// Message visibility filter for storage queries.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MessageVisibilityFilter {
+    /// Include all stored messages.
+    #[default]
+    Any,
+    /// Include externally visible messages.
+    External,
+    /// Include internal-only messages.
+    Internal,
+}
+
+/// Paginated message record response.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MessagePage {
+    pub records: Vec<MessageRecord>,
+    pub total: usize,
+    pub has_more: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_cursor: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prev_cursor: Option<String>,
+}
+
+impl MessagePage {
+    /// Empty page for a missing thread or message log.
+    #[must_use]
+    pub fn empty() -> Self {
+        Self {
+            records: Vec::new(),
+            total: 0,
+            has_more: false,
+            next_cursor: None,
+            prev_cursor: None,
+        }
+    }
+}
+
+/// Pagination/filter query for listing threads.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ThreadQuery {
+    /// Number of items to skip after filtering.
+    pub offset: usize,
+    /// Maximum number of items to return.
+    pub limit: usize,
+    /// Filter by external resource grouping.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resource_id: Option<String>,
+    /// Filter by parent thread.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_thread_id: Option<String>,
+}
+
+impl Default for ThreadQuery {
+    fn default() -> Self {
+        Self {
+            offset: 0,
+            limit: 50,
+            resource_id: None,
+            parent_thread_id: None,
+        }
+    }
+}
+
+impl ThreadQuery {
+    /// Return true when the query carries any non-pagination filter.
+    #[must_use]
+    pub fn has_filters(&self) -> bool {
+        self.resource_id.is_some() || self.parent_thread_id.is_some()
+    }
+
+    /// Return true when a thread passes the query filters.
+    #[must_use]
+    pub fn matches_thread(&self, thread: &Thread) -> bool {
+        if self
+            .resource_id
+            .as_deref()
+            .is_some_and(|resource_id| thread.resource_id.as_deref() != Some(resource_id))
+        {
+            return false;
+        }
+        if self
+            .parent_thread_id
+            .as_deref()
+            .is_some_and(|parent_thread_id| {
+                thread.parent_thread_id.as_deref() != Some(parent_thread_id)
+            })
+        {
+            return false;
+        }
+        true
+    }
+}
+
+/// Paginated thread ID response.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ThreadPage {
+    pub items: Vec<String>,
+    pub total: usize,
+    pub has_more: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_cursor: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prev_cursor: Option<String>,
+}
+
+impl ThreadPage {
+    /// Empty thread page.
+    #[must_use]
+    pub fn empty() -> Self {
+        Self {
+            items: Vec::new(),
+            total: 0,
+            has_more: false,
+            next_cursor: None,
+            prev_cursor: None,
+        }
+    }
+}
+
+/// Sort threads by recent activity, then ID for deterministic ties.
+pub fn sort_threads_by_recent_activity(threads: &mut [Thread]) {
+    threads.sort_by(|a, b| {
+        let a_updated = a.metadata.updated_at.or(a.metadata.created_at).unwrap_or(0);
+        let b_updated = b.metadata.updated_at.or(b.metadata.created_at).unwrap_or(0);
+        b_updated.cmp(&a_updated).then_with(|| a.id.cmp(&b.id))
+    });
+}
+
+/// Apply thread filters and offset pagination to an in-memory thread set.
+#[must_use]
+pub fn paginate_threads(mut threads: Vec<Thread>, query: &ThreadQuery) -> ThreadPage {
+    sort_threads_by_recent_activity(&mut threads);
+    let filtered: Vec<Thread> = threads
+        .into_iter()
+        .filter(|thread| query.matches_thread(thread))
+        .collect();
+    let total = filtered.len();
+    let start = query.offset.min(total);
+    let items: Vec<String> = filtered
+        .into_iter()
+        .skip(start)
+        .take(query.limit)
+        .map(|thread| thread.id)
+        .collect();
+    let next_offset = start + items.len();
+    let has_more = next_offset < total;
+    ThreadPage {
+        items,
+        total,
+        has_more,
+        next_cursor: has_more.then(|| next_offset.to_string()),
+        prev_cursor: (start > 0).then(|| start.saturating_sub(query.limit).to_string()),
+    }
+}
+
+/// Apply message filters and offset pagination to an in-memory record set.
+#[must_use]
+pub fn paginate_message_records(
+    mut records: Vec<MessageRecord>,
+    query: &MessageQuery,
+) -> MessagePage {
+    records.retain(|record| query.matches_record(record));
+    match query.order {
+        MessageOrder::Asc => records.sort_by_key(|record| record.seq),
+        MessageOrder::Desc => records.sort_by(|a, b| b.seq.cmp(&a.seq)),
+    }
+    let total = records.len();
+    let start = query.offset.min(total);
+    let page_records: Vec<MessageRecord> =
+        records.into_iter().skip(start).take(query.limit).collect();
+    let next_offset = start + page_records.len();
+    let has_more = next_offset < total;
+    MessagePage {
+        records: page_records,
+        total,
+        has_more,
+        next_cursor: has_more.then(|| next_offset.to_string()),
+        prev_cursor: (start > 0).then(|| start.saturating_sub(query.limit).to_string()),
     }
 }
 
@@ -388,6 +627,32 @@ pub trait ThreadStore: Send + Sync {
     /// List thread IDs with pagination.
     async fn list_threads(&self, offset: usize, limit: usize) -> Result<Vec<String>, StorageError>;
 
+    /// List thread IDs with first-class filters and page metadata.
+    async fn list_threads_query(&self, query: &ThreadQuery) -> Result<ThreadPage, StorageError> {
+        const SCAN_LIMIT: usize = 200;
+
+        let mut offset = 0;
+        let mut threads = Vec::new();
+        loop {
+            let ids = self.list_threads(offset, SCAN_LIMIT).await?;
+            if ids.is_empty() {
+                break;
+            }
+            let count = ids.len();
+            for id in ids {
+                if let Some(thread) = self.load_thread(&id).await? {
+                    threads.push(thread);
+                }
+            }
+            if count < SCAN_LIMIT {
+                break;
+            }
+            offset += count;
+        }
+
+        Ok(paginate_threads(threads, query))
+    }
+
     /// Load all messages for a thread. Returns `None` if no messages exist.
     async fn load_messages(&self, thread_id: &str) -> Result<Option<Vec<Message>>, StorageError>;
 
@@ -408,6 +673,18 @@ pub trait ThreadStore: Send + Sync {
                 })
                 .collect(),
         ))
+    }
+
+    /// List thread-owned message records with filtering and page metadata.
+    async fn list_message_records(
+        &self,
+        thread_id: &str,
+        query: &MessageQuery,
+    ) -> Result<MessagePage, StorageError> {
+        let Some(records) = self.load_message_records(thread_id).await? else {
+            return Ok(MessagePage::empty());
+        };
+        Ok(paginate_message_records(records, query))
     }
 
     /// Append messages to a thread's durable log and return their records.
@@ -669,6 +946,49 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn thread_store_default_query_filters_lineage() {
+        let store = MockThreadStore::default();
+        store
+            .save_thread(
+                &Thread::with_id("match")
+                    .with_resource_id("resource-a")
+                    .with_parent_thread_id("parent-1"),
+            )
+            .await
+            .unwrap();
+        store
+            .save_thread(
+                &Thread::with_id("wrong-resource")
+                    .with_resource_id("resource-b")
+                    .with_parent_thread_id("parent-1"),
+            )
+            .await
+            .unwrap();
+        store
+            .save_thread(
+                &Thread::with_id("wrong-parent")
+                    .with_resource_id("resource-a")
+                    .with_parent_thread_id("parent-2"),
+            )
+            .await
+            .unwrap();
+
+        let page = store
+            .list_threads_query(&ThreadQuery {
+                offset: 0,
+                limit: 10,
+                resource_id: Some("resource-a".to_string()),
+                parent_thread_id: Some("parent-1".to_string()),
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(page.items, vec!["match"]);
+        assert_eq!(page.total, 1);
+        assert!(!page.has_more);
+    }
+
+    #[tokio::test]
     async fn thread_store_save_and_load_messages() {
         let store = MockThreadStore::default();
         let msgs = vec![
@@ -688,6 +1008,47 @@ mod tests {
         assert_eq!(records[0].seq, 1);
         assert_eq!(records[1].seq, 2);
         assert_eq!(records[1].produced_by_run_id.as_deref(), Some("run-1"));
+    }
+
+    #[tokio::test]
+    async fn thread_store_default_message_query_filters_and_orders() {
+        let store = MockThreadStore::default();
+        let metadata = crate::contract::message::MessageMetadata {
+            run_id: Some("run-1".to_string()),
+            step_index: Some(0),
+        };
+        let msgs = vec![
+            Message::user("input"),
+            Message::assistant("first").with_metadata(metadata.clone()),
+            Message::internal_system("hidden").with_metadata(metadata.clone()),
+            Message::assistant("second").with_metadata(metadata),
+        ];
+        store.save_messages("t-1", &msgs).await.unwrap();
+
+        let page = store
+            .list_message_records(
+                "t-1",
+                &MessageQuery {
+                    offset: 0,
+                    limit: 10,
+                    after: Some(1),
+                    before: None,
+                    order: MessageOrder::Desc,
+                    visibility: MessageVisibilityFilter::External,
+                    run_id: Some("run-1".to_string()),
+                },
+            )
+            .await
+            .unwrap();
+
+        let texts: Vec<String> = page
+            .records
+            .iter()
+            .map(|record| record.message.text())
+            .collect();
+        assert_eq!(texts, vec!["second", "first"]);
+        assert_eq!(page.total, 2);
+        assert!(!page.has_more);
     }
 
     #[tokio::test]

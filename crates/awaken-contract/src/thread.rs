@@ -32,6 +32,12 @@ pub struct ThreadMetadata {
 pub struct Thread {
     /// Unique thread identifier (UUID v7).
     pub id: String,
+    /// External resource or tenant grouping for this thread.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resource_id: Option<String>,
+    /// Parent thread for child or delegated conversations.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_thread_id: Option<String>,
     /// Thread metadata (timestamps, title, custom data).
     #[serde(default)]
     pub metadata: ThreadMetadata,
@@ -51,6 +57,8 @@ impl Thread {
     pub fn new() -> Self {
         Self {
             id: uuid::Uuid::now_v7().to_string(),
+            resource_id: None,
+            parent_thread_id: None,
             metadata: ThreadMetadata::default(),
             active_run_id: None,
             open_run_id: None,
@@ -62,6 +70,8 @@ impl Thread {
     pub fn with_id(id: impl Into<String>) -> Self {
         Self {
             id: id.into(),
+            resource_id: None,
+            parent_thread_id: None,
             metadata: ThreadMetadata::default(),
             active_run_id: None,
             open_run_id: None,
@@ -76,9 +86,29 @@ impl Thread {
         self
     }
 
+    /// Set the external resource grouping.
+    #[must_use]
+    pub fn with_resource_id(mut self, resource_id: impl Into<String>) -> Self {
+        self.resource_id = Some(resource_id.into());
+        self
+    }
+
+    /// Set the parent thread identifier.
+    #[must_use]
+    pub fn with_parent_thread_id(mut self, parent_thread_id: impl Into<String>) -> Self {
+        self.parent_thread_id = Some(parent_thread_id.into());
+        self
+    }
+
     /// Update the thread's run pointers from a durable run record.
     pub fn apply_run_projection(&mut self, run: &RunRecord) {
         self.latest_run_id = Some(run.run_id.clone());
+        if self.parent_thread_id.is_none() {
+            self.parent_thread_id = run
+                .request
+                .as_ref()
+                .and_then(|request| request.parent_thread_id.clone());
+        }
         match run.status {
             RunStatus::Created => {
                 self.active_run_id = None;
@@ -146,11 +176,15 @@ mod tests {
             .metadata
             .custom
             .insert("env".to_string(), json!("prod"));
+        thread.resource_id = Some("resource-1".to_string());
+        thread.parent_thread_id = Some("parent-1".to_string());
 
         let json_str = serde_json::to_string(&thread).unwrap();
         let restored: Thread = serde_json::from_str(&json_str).unwrap();
 
         assert_eq!(restored.id, "t-1");
+        assert_eq!(restored.resource_id.as_deref(), Some("resource-1"));
+        assert_eq!(restored.parent_thread_id.as_deref(), Some("parent-1"));
         assert_eq!(restored.metadata.title.as_deref(), Some("My Thread"));
         assert_eq!(restored.metadata.created_at, Some(1000));
         assert_eq!(restored.metadata.updated_at, Some(2000));
@@ -210,6 +244,16 @@ mod tests {
     }
 
     #[test]
+    fn thread_lineage_builders() {
+        let thread = Thread::with_id("t-1")
+            .with_resource_id("resource-1")
+            .with_parent_thread_id("parent-1");
+
+        assert_eq!(thread.resource_id.as_deref(), Some("resource-1"));
+        assert_eq!(thread.parent_thread_id.as_deref(), Some("parent-1"));
+    }
+
+    #[test]
     fn thread_metadata_custom_preserved_in_serde() {
         let mut thread = Thread::with_id("t-1");
         thread.metadata.custom.insert("key".to_string(), json!(42));
@@ -224,6 +268,8 @@ mod tests {
         let json_str = serde_json::to_string(&thread).unwrap();
         // Empty custom map should be omitted
         assert!(!json_str.contains("custom"));
+        assert!(!json_str.contains("resource_id"));
+        assert!(!json_str.contains("parent_thread_id"));
     }
 
     fn run_record(run_id: &str, status: RunStatus) -> RunRecord {
@@ -274,5 +320,33 @@ mod tests {
         assert!(thread.open_run_id.is_none());
         assert!(thread.active_run_id.is_none());
         assert_eq!(thread.latest_run_id.as_deref(), Some("run-1"));
+    }
+
+    #[test]
+    fn apply_run_projection_sets_parent_thread_id_when_missing() {
+        let mut thread = Thread::with_id("thread-1");
+        let mut run = run_record("run-1", RunStatus::Created);
+        run.request = Some(crate::contract::storage::RunRequestSnapshot {
+            parent_thread_id: Some("parent-thread".to_string()),
+            ..Default::default()
+        });
+
+        thread.apply_run_projection(&run);
+
+        assert_eq!(thread.parent_thread_id.as_deref(), Some("parent-thread"));
+    }
+
+    #[test]
+    fn apply_run_projection_preserves_existing_parent_thread_id() {
+        let mut thread = Thread::with_id("thread-1").with_parent_thread_id("existing-parent");
+        let mut run = run_record("run-1", RunStatus::Created);
+        run.request = Some(crate::contract::storage::RunRequestSnapshot {
+            parent_thread_id: Some("new-parent".to_string()),
+            ..Default::default()
+        });
+
+        thread.apply_run_projection(&run);
+
+        assert_eq!(thread.parent_thread_id.as_deref(), Some("existing-parent"));
     }
 }
