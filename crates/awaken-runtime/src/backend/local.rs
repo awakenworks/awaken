@@ -14,6 +14,47 @@ use super::{
     BackendRunStatus, ExecutionBackend, ExecutionBackendError,
 };
 
+#[cfg(feature = "background")]
+struct BackgroundControlResolver<'a> {
+    inner: &'a dyn crate::registry::ExecutionResolver,
+    context: Option<crate::extensions::background::BackgroundTaskExecutionContext>,
+}
+
+#[cfg(feature = "background")]
+impl<'a> BackgroundControlResolver<'a> {
+    fn new(
+        inner: &'a dyn crate::registry::ExecutionResolver,
+        context: Option<crate::extensions::background::BackgroundTaskExecutionContext>,
+    ) -> Self {
+        Self { inner, context }
+    }
+}
+
+#[cfg(feature = "background")]
+impl crate::registry::AgentResolver for BackgroundControlResolver<'_> {
+    fn resolve(&self, agent_id: &str) -> Result<ResolvedAgent, crate::RuntimeError> {
+        let mut resolved = self.inner.resolve(agent_id)?;
+        if let Some(context) = &self.context {
+            LocalBackend::ensure_background_cancel_tool(&mut resolved, context);
+        }
+        Ok(resolved)
+    }
+
+    fn agent_ids(&self) -> Vec<String> {
+        self.inner.agent_ids()
+    }
+}
+
+#[cfg(feature = "background")]
+impl crate::registry::ExecutionResolver for BackgroundControlResolver<'_> {
+    fn resolve_execution(
+        &self,
+        agent_id: &str,
+    ) -> Result<crate::registry::ResolvedExecution, crate::RuntimeError> {
+        self.inner.resolve_execution(agent_id)
+    }
+}
+
 /// Local runtime backend for executing the standard loop in-process.
 pub struct LocalBackend;
 
@@ -121,9 +162,9 @@ impl LocalBackend {
         match (request.policy.persistence, request.policy.continuation) {
             (BackendDelegatePersistence::Ephemeral, BackendDelegateContinuation::Disabled) => {}
         }
-        let resolved = request
-            .resolver
-            .resolve(request.agent_id)
+        #[cfg(feature = "background")]
+        let background_context = crate::extensions::background::current_background_task_context();
+        let resolved = crate::registry::AgentResolver::resolve(request.resolver, request.agent_id)
             .map_err(|error| {
                 ExecutionBackendError::AgentNotFound(format!(
                     "failed to resolve agent '{}': {error}",
@@ -174,6 +215,12 @@ impl LocalBackend {
                 .map_err(|error| ExecutionBackendError::ExecutionFailed(error.to_string()))?;
         }
 
+        #[cfg(feature = "background")]
+        let background_resolver =
+            BackgroundControlResolver::new(request.resolver, background_context.clone());
+        #[cfg(not(feature = "background"))]
+        let background_resolver = request.resolver;
+
         let sub_run_id = uuid::Uuid::now_v7().to_string();
         let mut run_identity = RunIdentity::new(
             sub_run_id.clone(),
@@ -188,7 +235,7 @@ impl LocalBackend {
         }
 
         let result = run_agent_loop(AgentLoopParams {
-            resolver: request.resolver,
+            resolver: &background_resolver,
             agent_id: request.agent_id,
             runtime: &phase_runtime,
             sink: request.sink,
@@ -222,6 +269,34 @@ impl LocalBackend {
             inbox: owner_inbox,
             state: None,
         })
+    }
+
+    #[cfg(feature = "background")]
+    fn ensure_background_cancel_tool(
+        resolved: &mut ResolvedAgent,
+        context: &crate::extensions::background::BackgroundTaskExecutionContext,
+    ) {
+        if resolved
+            .tools
+            .contains_key(crate::extensions::background::CANCEL_TASK_TOOL_ID)
+        {
+            return;
+        }
+
+        let tool: std::sync::Arc<dyn awaken_contract::contract::tool::Tool> = std::sync::Arc::new(
+            crate::extensions::background::CancelTaskTool::with_current_task(
+                context.manager.clone(),
+                context.task_id.clone(),
+            ),
+        );
+        resolved.tools.insert(
+            crate::extensions::background::CANCEL_TASK_TOOL_ID.into(),
+            tool.clone(),
+        );
+        resolved.env.tools.insert(
+            crate::extensions::background::CANCEL_TASK_TOOL_ID.into(),
+            tool,
+        );
     }
 
     pub(crate) fn bind_local_execution_env(
@@ -278,10 +353,18 @@ mod tests {
 
     use crate::backend::{
         BackendControl, BackendDelegatePolicy, BackendDelegateRunRequest, BackendParentContext,
+        BackendRunStatus,
+    };
+    #[cfg(feature = "background")]
+    use crate::extensions::background::{
+        BackgroundTaskManager, BackgroundTaskPlugin, TaskParentContext, TaskResult as BgTaskResult,
+        TaskStatus,
     };
     use crate::loop_runner::build_agent_env;
     use crate::plugins::{Plugin, PluginDescriptor};
     use crate::registry::{AgentResolver, ExecutionResolver, ResolvedExecution};
+    #[cfg(feature = "background")]
+    use crate::state::StateStore;
 
     struct ScriptedLlm {
         responses: Mutex<Vec<StreamResult>>,
@@ -345,6 +428,31 @@ mod tests {
             _ctx: &ToolCallContext,
         ) -> Result<ToolOutput, ToolError> {
             Ok(ToolResult::success_with_message("echo", args, "tool result should not win").into())
+        }
+    }
+
+    #[cfg(feature = "background")]
+    struct CustomCancelTool {
+        called: Arc<AtomicUsize>,
+    }
+
+    #[cfg(feature = "background")]
+    #[async_trait]
+    impl Tool for CustomCancelTool {
+        fn descriptor(&self) -> ToolDescriptor {
+            ToolDescriptor::new("cancel_task", "cancel_task", "custom cancel task tool")
+        }
+
+        async fn execute(
+            &self,
+            args: Value,
+            _ctx: &ToolCallContext,
+        ) -> Result<ToolOutput, ToolError> {
+            self.called.fetch_add(1, Ordering::SeqCst);
+            Ok(
+                ToolResult::success_with_message("cancel_task", args, "custom cancel handled")
+                    .into(),
+            )
         }
     }
 
@@ -471,5 +579,236 @@ mod tests {
         assert_eq!(result.response.as_deref(), Some("final child answer"));
         assert_eq!(result.output.text.as_deref(), Some("final child answer"));
         assert_eq!(result.steps, 2);
+    }
+
+    #[cfg(feature = "background")]
+    #[tokio::test]
+    async fn execute_delegate_in_background_task_can_self_cancel_and_cascade() {
+        let store = StateStore::new();
+        let manager = Arc::new(BackgroundTaskManager::new());
+        manager.set_store(store.clone());
+        let plugin: Arc<dyn Plugin> = Arc::new(BackgroundTaskPlugin::new(manager.clone()));
+        let env = crate::phase::ExecutionEnv::from_plugins(&[plugin], &Default::default())
+            .expect("background plugin env");
+        store
+            .register_keys(&env.key_registrations)
+            .expect("background keys should register");
+
+        let resolver = FixedResolver {
+            agent: ResolvedAgent::new(
+                "delegate",
+                "m",
+                "sys",
+                Arc::new(ScriptedLlm::new(vec![
+                    tool_call_response(
+                        "cancel self",
+                        "cancel_task",
+                        "call-1",
+                        json!({"target": {"relation": "self"}}),
+                    ),
+                    text_response("should not be reached after cancellation"),
+                ])),
+            ),
+            plugins: Vec::new(),
+        };
+
+        let child_task_id = Arc::new(tokio::sync::Mutex::new(None::<String>));
+        let child_task_id_seen = child_task_id.clone();
+        let resolver = Arc::new(resolver);
+        let task_id = manager
+            .spawn_agent_with_context(
+                "thread-1",
+                Some("worker"),
+                "worker agent",
+                TaskParentContext::default(),
+                {
+                    let manager = manager.clone();
+                    move |ctx| {
+                        let manager = manager.clone();
+                        let child_task_id_seen = child_task_id_seen.clone();
+                        let resolver = resolver.clone();
+                        async move {
+                            assert!(
+                                crate::extensions::background::current_background_task_context()
+                                    .is_some(),
+                                "background task context should be visible inside spawned task"
+                            );
+                            let child_id = manager
+                                .spawn(
+                                    "thread-1",
+                                    "child",
+                                    Some("leaf"),
+                                    "child task",
+                                    TaskParentContext {
+                                        task_id: Some(ctx.task_id.clone()),
+                                        ..TaskParentContext::default()
+                                    },
+                                    |child_ctx| async move {
+                                        child_ctx.cancelled().await;
+                                        BgTaskResult::Cancelled
+                                    },
+                                )
+                                .await
+                                .expect("child task should spawn");
+                            *child_task_id_seen.lock().await = Some(child_id);
+
+                            let result = LocalBackend::new()
+                                .execute_delegate(BackendDelegateRunRequest {
+                                    agent_id: "delegate",
+                                    messages: vec![Message::user("cancel yourself")],
+                                    new_messages: vec![Message::user("cancel yourself")],
+                                    sink: Arc::new(NullEventSink),
+                                    resolver: resolver.as_ref(),
+                                    parent: BackendParentContext {
+                                        parent_run_id: Some("parent-run".into()),
+                                        parent_thread_id: Some("parent-thread".into()),
+                                        parent_tool_call_id: Some("tool-1".into()),
+                                    },
+                                    control: BackendControl {
+                                        cancellation_token: Some(ctx.cancel_token.clone()),
+                                        decision_rx: None,
+                                    },
+                                    policy: BackendDelegatePolicy::default(),
+                                })
+                                .await
+                                .expect("delegate should run");
+
+                            match result.status {
+                                BackendRunStatus::Cancelled => BgTaskResult::Cancelled,
+                                other => BgTaskResult::Failed(format!(
+                                    "expected cancelled delegate status, got {other}; response={:?}; output={:?}",
+                                    result.response,
+                                    result.output
+                                )),
+                            }
+                        }
+                    }
+                },
+            )
+            .await
+            .expect("background sub-agent should spawn");
+
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+        let child_id = child_task_id
+            .lock()
+            .await
+            .clone()
+            .expect("child task id should be recorded");
+        let task_summary = manager
+            .get(&task_id)
+            .await
+            .expect("root task should still be queryable");
+        let child_summary = manager
+            .get(&child_id)
+            .await
+            .expect("child task should still be queryable");
+
+        assert_eq!(
+            task_summary.status,
+            TaskStatus::Cancelled,
+            "task={task_summary:?} child={child_summary:?}"
+        );
+        assert_eq!(
+            child_summary.status,
+            TaskStatus::Cancelled,
+            "task={task_summary:?} child={child_summary:?}"
+        );
+    }
+
+    #[cfg(feature = "background")]
+    #[tokio::test]
+    async fn execute_delegate_preserves_existing_cancel_task_tool_in_background_context() {
+        let store = StateStore::new();
+        let manager = Arc::new(BackgroundTaskManager::new());
+        manager.set_store(store.clone());
+        let plugin: Arc<dyn Plugin> = Arc::new(BackgroundTaskPlugin::new(manager.clone()));
+        let env = crate::phase::ExecutionEnv::from_plugins(&[plugin], &Default::default())
+            .expect("background plugin env");
+        store
+            .register_keys(&env.key_registrations)
+            .expect("background keys should register");
+
+        let cancel_calls = Arc::new(AtomicUsize::new(0));
+        let resolver = Arc::new(FixedResolver {
+            agent: ResolvedAgent::new(
+                "delegate",
+                "m",
+                "sys",
+                Arc::new(ScriptedLlm::new(vec![
+                    tool_call_response(
+                        "use custom cancel",
+                        "cancel_task",
+                        "call-1",
+                        json!({"target": {"relation": "self"}}),
+                    ),
+                    text_response("custom tool won"),
+                ])),
+            )
+            .with_tool(Arc::new(CustomCancelTool {
+                called: cancel_calls.clone(),
+            })),
+            plugins: Vec::new(),
+        });
+
+        let task_id = manager
+            .spawn_agent_with_context(
+                "thread-1",
+                Some("worker"),
+                "worker agent",
+                TaskParentContext::default(),
+                move |ctx| {
+                    let resolver = resolver.clone();
+                    async move {
+                        let result = LocalBackend::new()
+                            .execute_delegate(BackendDelegateRunRequest {
+                                agent_id: "delegate",
+                                messages: vec![Message::user("use custom cancel")],
+                                new_messages: vec![Message::user("use custom cancel")],
+                                sink: Arc::new(NullEventSink),
+                                resolver: resolver.as_ref(),
+                                parent: BackendParentContext {
+                                    parent_run_id: Some("parent-run".into()),
+                                    parent_thread_id: Some("parent-thread".into()),
+                                    parent_tool_call_id: Some("tool-1".into()),
+                                },
+                                control: BackendControl {
+                                    cancellation_token: Some(ctx.cancel_token),
+                                    decision_rx: None,
+                                },
+                                policy: BackendDelegatePolicy::default(),
+                            })
+                            .await
+                            .expect("delegate should run");
+
+                        match result.status {
+                            BackendRunStatus::Completed
+                                if result.response.as_deref() == Some("custom tool won") =>
+                            {
+                                BgTaskResult::Success(json!({
+                                    "response": result.response,
+                                    "steps": result.steps,
+                                }))
+                            }
+                            other => BgTaskResult::Failed(format!(
+                                "expected completed delegate status, got {other}; response={:?}; output={:?}",
+                                result.response,
+                                result.output
+                            )),
+                        }
+                    }
+                },
+            )
+            .await
+            .expect("background sub-agent should spawn");
+
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+        assert_eq!(cancel_calls.load(Ordering::SeqCst), 1);
+        let summary = manager
+            .get(&task_id)
+            .await
+            .expect("root task should be queryable");
+        assert_eq!(summary.status, TaskStatus::Completed, "task={summary:?}");
     }
 }
