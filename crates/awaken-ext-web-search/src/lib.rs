@@ -11,11 +11,15 @@
 //! use std::sync::Arc;
 //!
 //! // From API key
-//! let provider = SerpApiProvider::new("your-api-key", None);
+//! let provider = SerpApiProvider::new("your-api-key", None).unwrap();
 //! let tool = WebSearchTool::with_provider(Arc::new(provider));
 //!
 //! // Or using environment variable SERPAPI_KEY
-//! let provider = SerpApiProvider::new("", None);
+//! let provider = SerpApiProvider::new("", None).unwrap();
+//! let tool = WebSearchTool::with_provider(Arc::new(provider));
+//!
+//! // Or using convenience constructor
+//! let tool = WebSearchTool::new("", None).unwrap();
 //!
 //! let mut builder = AgentRuntimeBuilder::new();
 //! builder = builder.with_tool(WebSearchTool::TOOL_ID, Arc::new(tool));
@@ -52,7 +56,7 @@
 pub mod providers;
 pub mod tool;
 
-pub use tool::*;
+pub use tool::{CompositeMode, CompositeSearchProvider, SearchProvider, SearchResult, WebSearchTool};
 
 #[cfg(feature = "serpapi")]
 pub use providers::SerpApiProvider;

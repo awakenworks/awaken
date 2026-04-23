@@ -635,6 +635,7 @@ version = "0.2.1-dev"
 dependencies = [
  "async-trait",
  "awaken-contract",
+ "futures",
  "httpmock",
  "reqwest 0.13.2",
  "serde",

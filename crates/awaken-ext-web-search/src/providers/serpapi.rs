@@ -1,4 +1,5 @@
 //! SerpAPI search provider implementation
+//! SerpAPI search provider implementation
 
 use async_trait::async_trait;
 use awaken_contract::contract::tool::{ToolCallContext, ToolError};
@@ -21,16 +22,48 @@ pub struct SerpApiProvider {
 impl SerpApiProvider {
     const MAX_RETRIES: u32 = 2;
     const DEFAULT_BASE_URL: &'static str = "https://serpapi.com/search.json";
+    const RETRY_BASE_DELAY_MS: u64 = 100;
+
+    /// Check if an error is retryable
+    fn is_retryable_error(e: &reqwest::Error) -> bool {
+        e.is_timeout()
+            || e.status()
+                .map(|s| s.is_server_error() || s.as_u16() == 429)
+                .unwrap_or(false)
+    }
+
+    /// Get a sanitized error message without the URL to prevent API key leakage
+    fn sanitized_error(e: reqwest::Error) -> String {
+        e.without_url().to_string()
+    }
+
+    /// Get retry delay with exponential backoff
+    fn retry_delay(attempt: u32) -> std::time::Duration {
+        std::time::Duration::from_millis(Self::RETRY_BASE_DELAY_MS * (1 << attempt))
+    }
 
     /// Create a new SerpAPI provider with the given API key and optional base URL.
     ///
     /// If `api_key` is empty, it will fall back to reading from the
     /// `SERPAPI_KEY` environment variable.
-    pub fn new(api_key: impl Into<String>, base_url: Option<String>) -> Self {
+    /// Create a new SerpAPI provider with the given API key and optional base URL.
+    ///
+    /// If `api_key` is empty, it will fall back to reading from the
+    /// `SERPAPI_KEY` environment variable.
+    ///
+    /// Returns an error if the API key is empty after fallback.
+    pub fn new(api_key: impl Into<String>, base_url: Option<String>) -> Result<Self, ToolError> {
         let mut api_key = api_key.into();
         // Fallback to environment variable if empty
         if api_key.is_empty() {
             api_key = std::env::var("SERPAPI_KEY").unwrap_or_default();
+        }
+
+        // Validate API key locally before making requests
+        if api_key.is_empty() {
+            return Err(ToolError::InvalidArguments(
+                "SerpAPI API key is required. Provide it explicitly or set the SERPAPI_KEY environment variable.".into()
+            ));
         }
 
         let base_url = base_url.unwrap_or_else(|| Self::DEFAULT_BASE_URL.to_string());
@@ -41,11 +74,11 @@ impl SerpApiProvider {
             .build()
             .unwrap_or_default();
 
-        Self {
+        Ok(Self {
             api_key,
             base_url,
             client,
-        }
+        })
     }
 }
 
@@ -90,7 +123,7 @@ impl SearchProvider for SerpApiProvider {
 
         let request = self.client.get(endpoint);
 
-        // Retry logic for timeout errors
+        // Retry logic for timeout, 429, and 5xx errors with exponential backoff
         let mut _last_error = None;
         let mut response = None;
 
@@ -98,6 +131,16 @@ impl SearchProvider for SerpApiProvider {
             let request_clone = request
                 .try_clone()
                 .ok_or_else(|| ToolError::ExecutionFailed("failed to clone request".into()))?;
+
+            // Check for early cancellation before making the request
+            if ctx
+                .cancellation_token
+                .as_ref()
+                .map(|t| t.is_cancelled())
+                .unwrap_or(false)
+            {
+                return Err(ToolError::ExecutionFailed("search was cancelled".into()));
+            }
 
             let result = match ctx.cancellation_token {
                 Some(ref token) => {
@@ -113,18 +156,32 @@ impl SearchProvider for SerpApiProvider {
 
             match result {
                 Ok(resp) => {
-                    response = Some(resp);
-                    break;
+                    // Check for HTTP error status
+                    match resp.error_for_status_ref() {
+                        Ok(_) => {
+                            response = Some(resp);
+                            break;
+                        }
+                        Err(e) => {
+                            if attempt < Self::MAX_RETRIES && Self::is_retryable_error(&e) {
+                                _last_error = Some(e);
+                                tokio::time::sleep(Self::retry_delay(attempt)).await;
+                                continue;
+                            }
+                            return Err(ToolError::ExecutionFailed(Self::sanitized_error(e)));
+                        }
+                    }
                 }
                 Err(e) => {
-                    if attempt < Self::MAX_RETRIES && e.is_timeout() {
+                    if attempt < Self::MAX_RETRIES && Self::is_retryable_error(&e) {
                         _last_error = Some(e);
+                        tokio::time::sleep(Self::retry_delay(attempt)).await;
                         continue;
                     }
                     return Err(if e.is_timeout() {
                         ToolError::ExecutionFailed("web search timed out after 10s".into())
                     } else {
-                        ToolError::ExecutionFailed(e.to_string())
+                        ToolError::ExecutionFailed(Self::sanitized_error(e))
                     });
                 }
             }
@@ -132,14 +189,21 @@ impl SearchProvider for SerpApiProvider {
 
         let response = response.expect("at least one attempt should succeed");
 
-        let response = response
-            .error_for_status()
-            .map_err(|e: reqwest::Error| ToolError::ExecutionFailed(e.to_string()))?;
+        // Apply cancellation to body reading and JSON parsing
+        let payload = match ctx.cancellation_token {
+            Some(ref token) => {
+                tokio::select! {
+                    result = response.json() => result,
+                    _ = token.cancelled() => {
+                        return Err(ToolError::ExecutionFailed("search was cancelled during response parsing".into()));
+                    }
+                }
+            }
+            None => response.json().await,
+        }
+        .map_err(|e: reqwest::Error| ToolError::ExecutionFailed(Self::sanitized_error(e)))?;
 
-        let payload: SerpApiResponse = response
-            .json()
-            .await
-            .map_err(|e: reqwest::Error| ToolError::ExecutionFailed(e.to_string()))?;
+        let payload: SerpApiResponse = payload;
 
         if let Some(err) = payload.error {
             return Err(ToolError::ExecutionFailed(err));
@@ -159,6 +223,7 @@ impl SearchProvider for SerpApiProvider {
                 title,
                 url,
                 snippet: r.snippet.unwrap_or_default(),
+                provider: Some("serpapi".into()),
             });
         }
 
@@ -199,7 +264,7 @@ mod tests {
             })
             .await;
 
-        let provider = SerpApiProvider::new("k", Some(endpoint));
+        let provider = SerpApiProvider::new("k", Some(endpoint)).unwrap();
         let ctx = ToolCallContext::test_default();
         let results = provider.search("rust", 5, &ctx).await.unwrap();
 
@@ -219,7 +284,7 @@ mod tests {
         let mut ctx = ToolCallContext::test_default();
         ctx.cancellation_token = Some(token);
 
-        let provider = SerpApiProvider::new("k", None);
+        let provider = SerpApiProvider::new("k", None).unwrap();
         let err = provider
             .search("rust", 5, &ctx)
             .await

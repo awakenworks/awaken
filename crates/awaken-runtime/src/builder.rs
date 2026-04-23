@@ -6,6 +6,7 @@ use awaken_contract::StateError;
 use awaken_contract::contract::executor::LlmExecutor;
 use awaken_contract::contract::storage::ThreadRunStore;
 use awaken_contract::contract::tool::Tool;
+use awaken_contract::contract::tool::ToolError;
 use awaken_contract::registry_spec::AgentSpec;
 
 use crate::backend::ExecutionBackendFactory;
@@ -295,20 +296,24 @@ impl AgentRuntimeBuilder {
     /// # Example
     /// ```rust,ignore
     /// let runtime = AgentRuntimeBuilder::new()
-    ///     .with_web_search("your-api-key", None)
+    ///     .with_web_search("your-api-key", None)?
     ///     .build()?;
     /// ```
     ///
     /// Requires the `web-search` feature to be enabled.
     #[cfg(feature = "web-search")]
-    pub fn with_web_search(mut self, api_key: impl Into<String>, base_url: Option<String>) -> Self {
+    pub fn with_web_search(
+        mut self,
+        api_key: impl Into<String>,
+        base_url: Option<String>,
+    ) -> Result<Self, ToolError> {
         use crate::builtin_tools::WebSearchTool;
         use std::sync::Arc;
 
-        let tool = WebSearchTool::new(api_key, base_url);
+        let tool = WebSearchTool::new(api_key, base_url)?;
         let id = WebSearchTool::TOOL_ID.to_string();
         self = self.with_tool(id, Arc::new(tool));
-        self
+        Ok(self)
     }
 
     /// Build and initialize (async). Discovers remote agents after build.

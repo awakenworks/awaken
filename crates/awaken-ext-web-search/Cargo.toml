@@ -17,16 +17,18 @@ serde_json = { workspace = true }
 thiserror = { workspace = true }
 async-trait = { workspace = true }
 tokio = { workspace = true, features = ["io-util", "net", "process", "time"] }
-reqwest = { workspace = true }
+futures = { workspace = true }
+reqwest = { workspace = true, optional = true }
 
 [features]
-default = []
-serpapi = []
+default = ["serpapi"]
+serpapi = ["dep:reqwest"]
 
 [dev-dependencies]
 awaken-contract = { workspace = true }
 httpmock = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "io-util", "time"] }
+futures = { workspace = true }
 
 [lints]
 workspace = true
