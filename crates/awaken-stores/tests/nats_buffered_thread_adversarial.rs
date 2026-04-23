@@ -357,6 +357,429 @@ async fn out_of_order_wal_publish_does_not_rewind_projection_or_flushed_seq() {
 }
 
 #[tokio::test]
+async fn delete_recreate_preserves_seq_tombstone_and_ignores_stale_wal_redelivery() {
+    let fixture = NatsFixture::start().await;
+    let inner = Arc::new(InMemoryStore::new());
+    let mut config = unique_config(&fixture);
+    config.flush_interval = Duration::from_secs(60);
+    let store = NatsBufferedThreadStore::connect(Arc::clone(&inner), config)
+        .await
+        .expect("connect");
+
+    store
+        .checkpoint(
+            "t-recreate",
+            &[Message::user("old")],
+            &mk_run("run-old", "t-recreate", 1),
+        )
+        .await
+        .unwrap();
+    let old_js_seq = store
+        .__test_read_wal_js_seq("t-recreate", 1)
+        .await
+        .unwrap()
+        .expect("old generation js seq");
+    store
+        .__test_flush_committed_thread_seqs("t-recreate", &[1])
+        .await
+        .unwrap();
+    assert_eq!(
+        store.__test_read_flushed_seq("t-recreate").await.unwrap(),
+        1
+    );
+
+    store.delete_thread("t-recreate").await.unwrap();
+    assert_eq!(
+        store.__test_read_flushed_seq("t-recreate").await.unwrap(),
+        1,
+        "delete must preserve the monotonic sequence watermark"
+    );
+
+    store
+        .checkpoint(
+            "t-recreate",
+            &[Message::user("new")],
+            &mk_run("run-new", "t-recreate", 2),
+        )
+        .await
+        .unwrap();
+    let new_js_seq = store
+        .__test_read_wal_js_seq("t-recreate", 2)
+        .await
+        .unwrap()
+        .expect("recreated thread must reserve seq 2");
+    assert!(
+        store
+            .__test_read_wal_js_seq("t-recreate", 1)
+            .await
+            .unwrap()
+            .is_none(),
+        "delete must clear settled WAL state for the old generation"
+    );
+
+    store
+        .__test_process_wal_stream_seqs("t-recreate", &[old_js_seq])
+        .await
+        .unwrap();
+    assert_eq!(
+        store.__test_read_flushed_seq("t-recreate").await.unwrap(),
+        1,
+        "stale pre-delete WAL replay must not advance or overwrite the recreated thread"
+    );
+    assert!(
+        inner.load_thread("t-recreate").await.unwrap().is_none(),
+        "stale replay must not materialize the deleted generation back into the inner store"
+    );
+
+    store
+        .__test_process_wal_stream_seqs("t-recreate", &[new_js_seq])
+        .await
+        .unwrap();
+
+    let recreated = inner
+        .load_thread("t-recreate")
+        .await
+        .unwrap()
+        .expect("recreated thread persisted");
+    assert_eq!(recreated.latest_run_id.as_deref(), Some("run-new"));
+    let messages = inner.load_messages("t-recreate").await.unwrap().unwrap();
+    assert_eq!(messages[0].text(), "new");
+    assert_eq!(
+        store.__test_read_flushed_seq("t-recreate").await.unwrap(),
+        2
+    );
+
+    store.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn concurrent_flushers_serialize_thread_materialization_and_do_not_rewind_inner_state() {
+    let fixture = NatsFixture::start().await;
+    let inner = Arc::new(InMemoryStore::new());
+    let mut config = unique_config(&fixture);
+    config.flush_interval = Duration::from_secs(60);
+
+    let store_a = Arc::new(
+        NatsBufferedThreadStore::connect(Arc::clone(&inner), config.clone())
+            .await
+            .expect("connect A"),
+    );
+    let store_b = Arc::new(
+        NatsBufferedThreadStore::connect(Arc::clone(&inner), config)
+            .await
+            .expect("connect B"),
+    );
+
+    store_a
+        .checkpoint(
+            "t-flush-lock",
+            &[Message::user("old")],
+            &mk_run("run-old", "t-flush-lock", 1),
+        )
+        .await
+        .unwrap();
+    store_b
+        .checkpoint(
+            "t-flush-lock",
+            &[Message::user("new")],
+            &mk_run("run-new", "t-flush-lock", 2),
+        )
+        .await
+        .unwrap();
+
+    let reached = Arc::new(tokio::sync::Notify::new());
+    let release = Arc::new(tokio::sync::Notify::new());
+    let reached_wait = reached.notified();
+    store_a
+        .__test_pause_flusher_after_read_flushed_seq(
+            "t-flush-lock",
+            Arc::clone(&reached),
+            Arc::clone(&release),
+        )
+        .await;
+
+    let paused_flush = {
+        let store_a = Arc::clone(&store_a);
+        tokio::spawn(async move {
+            store_a
+                .__test_flush_committed_thread_seqs("t-flush-lock", &[1])
+                .await
+        })
+    };
+    reached_wait.await;
+
+    let competing_flush = {
+        let store_b = Arc::clone(&store_b);
+        tokio::spawn(async move {
+            store_b
+                .__test_flush_committed_thread_seqs("t-flush-lock", &[2])
+                .await
+        })
+    };
+
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert!(
+        !competing_flush.is_finished(),
+        "higher-seq flusher must wait for the per-thread flush claim"
+    );
+    assert_eq!(
+        store_a
+            .__test_read_flushed_seq("t-flush-lock")
+            .await
+            .unwrap(),
+        0,
+        "no flusher should advance flushed_seq while the lock holder is paused"
+    );
+    assert!(
+        inner.load_thread("t-flush-lock").await.unwrap().is_none(),
+        "paused lock holder must not partially materialize the thread"
+    );
+
+    release.notify_waiters();
+
+    paused_flush.await.unwrap().unwrap();
+    competing_flush.await.unwrap().unwrap();
+
+    assert_eq!(
+        store_b
+            .__test_read_flushed_seq("t-flush-lock")
+            .await
+            .unwrap(),
+        2,
+        "highest committed seq must win after serialized flush"
+    );
+    let thread = inner
+        .load_thread("t-flush-lock")
+        .await
+        .unwrap()
+        .expect("thread persisted");
+    assert_eq!(thread.latest_run_id.as_deref(), Some("run-new"));
+    let latest = inner
+        .latest_run("t-flush-lock")
+        .await
+        .unwrap()
+        .expect("latest run persisted");
+    assert_eq!(latest.run_id, "run-new");
+    let messages = inner
+        .load_messages("t-flush-lock")
+        .await
+        .unwrap()
+        .expect("messages persisted");
+    assert_eq!(messages[0].text(), "new");
+
+    store_a.shutdown().await.unwrap();
+    store_b.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn expired_flush_claim_before_materialize_does_not_rewind_inner_state() {
+    let fixture = NatsFixture::start().await;
+    let inner = Arc::new(InMemoryStore::new());
+    let mut config = unique_config(&fixture);
+    config.flush_interval = Duration::from_secs(60);
+
+    let store_a = Arc::new(
+        NatsBufferedThreadStore::connect(Arc::clone(&inner), config.clone())
+            .await
+            .expect("connect A"),
+    );
+    let store_b = Arc::new(
+        NatsBufferedThreadStore::connect(Arc::clone(&inner), config)
+            .await
+            .expect("connect B"),
+    );
+
+    store_a
+        .checkpoint(
+            "t-flush-expire",
+            &[Message::user("old")],
+            &mk_run("run-old", "t-flush-expire", 1),
+        )
+        .await
+        .unwrap();
+    store_b
+        .checkpoint(
+            "t-flush-expire",
+            &[Message::user("new")],
+            &mk_run("run-new", "t-flush-expire", 2),
+        )
+        .await
+        .unwrap();
+
+    store_a.__test_set_flush_claim_timing(150, None);
+
+    let reached = Arc::new(tokio::sync::Notify::new());
+    let release = Arc::new(tokio::sync::Notify::new());
+    let reached_wait = reached.notified();
+    store_a
+        .__test_pause_flusher_after_read_flushed_seq(
+            "t-flush-expire",
+            Arc::clone(&reached),
+            Arc::clone(&release),
+        )
+        .await;
+
+    let stale_flush = {
+        let store_a = Arc::clone(&store_a);
+        tokio::spawn(async move {
+            store_a
+                .__test_flush_committed_thread_seqs("t-flush-expire", &[1])
+                .await
+        })
+    };
+    reached_wait.await;
+    tokio::time::sleep(Duration::from_millis(250)).await;
+
+    store_b
+        .__test_flush_committed_thread_seqs("t-flush-expire", &[2])
+        .await
+        .unwrap();
+
+    release.notify_waiters();
+
+    let stale_flush = stale_flush.await.unwrap().unwrap_err();
+    assert!(
+        matches!(stale_flush, StorageError::Io(_)),
+        "expired flusher must fail before stale materialization: {stale_flush:?}"
+    );
+
+    let thread = inner
+        .load_thread("t-flush-expire")
+        .await
+        .unwrap()
+        .expect("thread persisted");
+    assert_eq!(thread.latest_run_id.as_deref(), Some("run-new"));
+    let messages = inner
+        .load_messages("t-flush-expire")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(messages[0].text(), "new");
+    assert_eq!(
+        store_b
+            .__test_read_flushed_seq("t-flush-expire")
+            .await
+            .unwrap(),
+        2
+    );
+
+    Arc::into_inner(store_a)
+        .expect("single owner for store_a shutdown")
+        .shutdown()
+        .await
+        .unwrap();
+    Arc::into_inner(store_b)
+        .expect("single owner for store_b shutdown")
+        .shutdown()
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn expired_flush_claim_after_claim_check_still_does_not_rewind_inner_state() {
+    let fixture = NatsFixture::start().await;
+    let inner = Arc::new(InMemoryStore::new());
+    let mut config = unique_config(&fixture);
+    config.flush_interval = Duration::from_secs(60);
+
+    let store_a = Arc::new(
+        NatsBufferedThreadStore::connect(Arc::clone(&inner), config.clone())
+            .await
+            .expect("connect A"),
+    );
+    let store_b = Arc::new(
+        NatsBufferedThreadStore::connect(Arc::clone(&inner), config)
+            .await
+            .expect("connect B"),
+    );
+
+    store_a
+        .checkpoint(
+            "t-flush-expire-after-check",
+            &[Message::user("old")],
+            &mk_run("run-old-after-check", "t-flush-expire-after-check", 1),
+        )
+        .await
+        .unwrap();
+    store_b
+        .checkpoint(
+            "t-flush-expire-after-check",
+            &[Message::user("new")],
+            &mk_run("run-new-after-check", "t-flush-expire-after-check", 2),
+        )
+        .await
+        .unwrap();
+
+    store_a.__test_set_flush_claim_timing(150, None);
+
+    let reached = Arc::new(tokio::sync::Notify::new());
+    let release = Arc::new(tokio::sync::Notify::new());
+    let reached_wait = reached.notified();
+    store_a
+        .__test_pause_flusher_after_claim_check(
+            "t-flush-expire-after-check",
+            Arc::clone(&reached),
+            Arc::clone(&release),
+        )
+        .await;
+
+    let stale_flush = {
+        let store_a = Arc::clone(&store_a);
+        tokio::spawn(async move {
+            store_a
+                .__test_flush_committed_thread_seqs("t-flush-expire-after-check", &[1])
+                .await
+        })
+    };
+    reached_wait.await;
+    tokio::time::sleep(Duration::from_millis(250)).await;
+
+    store_b
+        .__test_flush_committed_thread_seqs("t-flush-expire-after-check", &[2])
+        .await
+        .unwrap();
+
+    release.notify_waiters();
+
+    let stale_flush = stale_flush.await.unwrap().unwrap_err();
+    assert!(
+        matches!(stale_flush, StorageError::Io(_)),
+        "expired flusher must fail after claim-check stall: {stale_flush:?}"
+    );
+
+    let thread = inner
+        .load_thread("t-flush-expire-after-check")
+        .await
+        .unwrap()
+        .expect("thread persisted");
+    assert_eq!(thread.latest_run_id.as_deref(), Some("run-new-after-check"));
+    let messages = inner
+        .load_messages("t-flush-expire-after-check")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(messages[0].text(), "new");
+    assert_eq!(
+        store_b
+            .__test_read_flushed_seq("t-flush-expire-after-check")
+            .await
+            .unwrap(),
+        2
+    );
+
+    Arc::into_inner(store_a)
+        .expect("single owner for store_a shutdown")
+        .shutdown()
+        .await
+        .unwrap();
+    Arc::into_inner(store_b)
+        .expect("single owner for store_b shutdown")
+        .shutdown()
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
 async fn strong_load_run_uses_hot_cache_when_watermark_skips_stale_run_persist() {
     let fixture = NatsFixture::start().await;
     let inner = Arc::new(InMemoryStore::new());

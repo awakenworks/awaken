@@ -8,7 +8,9 @@
 //!   runs/<run_id>.json               — RunRecord
 //! ```
 
-use std::path::{Path, PathBuf};
+use std::collections::HashMap;
+use std::path::{Component, Path, PathBuf};
+use std::sync::{Arc, OnceLock, Weak};
 
 use async_trait::async_trait;
 use awaken_contract::contract::config_store::ConfigStore;
@@ -27,7 +29,7 @@ use tokio::sync::Mutex;
 /// File-system storage backend.
 pub struct FileStore {
     base_path: PathBuf,
-    hierarchy_lock: Mutex<()>,
+    hierarchy_lock: Arc<Mutex<()>>,
 }
 
 impl FileStore {
@@ -44,8 +46,8 @@ impl FileStore {
         }
         cleanup_orphan_checkpoint_backups_sync(&base_path);
         Self {
+            hierarchy_lock: shared_hierarchy_lock(&base_path),
             base_path,
-            hierarchy_lock: Mutex::new(()),
         }
     }
 
@@ -221,6 +223,66 @@ impl FileStore {
 
         Ok(())
     }
+}
+
+fn shared_hierarchy_lock(base_path: &Path) -> Arc<Mutex<()>> {
+    static LOCKS: OnceLock<std::sync::Mutex<HashMap<String, Weak<Mutex<()>>>>> = OnceLock::new();
+
+    let key = hierarchy_lock_key(base_path);
+    let locks = LOCKS.get_or_init(|| std::sync::Mutex::new(HashMap::new()));
+    let mut guard = locks
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    guard.retain(|_, lock| lock.strong_count() > 0);
+
+    if let Some(lock) = guard.get(&key).and_then(Weak::upgrade) {
+        return lock;
+    }
+
+    let lock = Arc::new(Mutex::new(()));
+    guard.insert(key, Arc::downgrade(&lock));
+    lock
+}
+
+fn hierarchy_lock_key(base_path: &Path) -> String {
+    let absolute = if base_path.is_absolute() {
+        base_path.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .unwrap_or_else(|_| PathBuf::from("."))
+            .join(base_path)
+    };
+
+    let (existing_ancestor, canonical_ancestor) = absolute
+        .ancestors()
+        .find_map(|ancestor| {
+            std::fs::canonicalize(ancestor)
+                .ok()
+                .map(|path| (ancestor, path))
+        })
+        .unwrap_or_else(|| (Path::new(""), PathBuf::new()));
+    let remainder = absolute
+        .strip_prefix(existing_ancestor)
+        .unwrap_or_else(|_| Path::new(""));
+
+    normalize_path_components(canonical_ancestor, remainder)
+        .to_string_lossy()
+        .into_owned()
+}
+
+fn normalize_path_components(mut base: PathBuf, suffix: &Path) -> PathBuf {
+    for component in suffix.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                base.pop();
+            }
+            Component::Normal(segment) => base.push(segment),
+            Component::RootDir => base.push(component.as_os_str()),
+            Component::Prefix(prefix) => base.push(prefix.as_os_str()),
+        }
+    }
+    base
 }
 
 // ── Filesystem helpers ──────────────────────────────────────────────
@@ -1334,6 +1396,48 @@ mod tests {
 
         let a = store.load_thread("a").await.unwrap().unwrap();
         let b = store.load_thread("b").await.unwrap().unwrap();
+        assert!(
+            !(a.parent_thread_id.as_deref() == Some("b")
+                && b.parent_thread_id.as_deref() == Some("a"))
+        );
+    }
+
+    #[tokio::test]
+    async fn file_store_instances_share_hierarchy_lock_for_same_path() {
+        let td = TempDir::new().unwrap();
+        let canonical_path = td.path().join("store");
+        let alias_anchor = td.path().join("alias");
+        std::fs::create_dir_all(&alias_anchor).unwrap();
+        let aliased_path = alias_anchor.join("..").join("store");
+        let left_store = Arc::new(FileStore::new(&canonical_path));
+        let right_store = Arc::new(FileStore::new(&aliased_path));
+        left_store.save_thread(&Thread::with_id("a")).await.unwrap();
+        left_store.save_thread(&Thread::with_id("b")).await.unwrap();
+
+        let barrier = Arc::new(Barrier::new(3));
+        let spawn_update =
+            |store: Arc<FileStore>, thread_id: &'static str, parent_thread_id: &'static str| {
+                let barrier = barrier.clone();
+                tokio::spawn(async move {
+                    barrier.wait().await;
+                    store
+                        .save_thread_validated(
+                            &Thread::with_id(thread_id).with_parent_thread_id(parent_thread_id),
+                        )
+                        .await
+                })
+            };
+
+        let left = spawn_update(left_store.clone(), "a", "b");
+        let right = spawn_update(right_store.clone(), "b", "a");
+        barrier.wait().await;
+
+        let left = left.await.unwrap();
+        let right = right.await.unwrap();
+        assert_ne!(left.is_ok(), right.is_ok());
+
+        let a = left_store.load_thread("a").await.unwrap().unwrap();
+        let b = right_store.load_thread("b").await.unwrap().unwrap();
         assert!(
             !(a.parent_thread_id.as_deref() == Some("b")
                 && b.parent_thread_id.as_deref() == Some("a"))
