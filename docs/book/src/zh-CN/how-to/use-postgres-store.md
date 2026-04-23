@@ -14,7 +14,7 @@
 
 ```toml
 [dependencies]
-awaken-stores = { version = "0.2", features = ["postgres"] }
+awaken-stores = { version = "0.4.0-dev", features = ["postgres"] }
 ```
 
 2. 创建连接池：

@@ -13,7 +13,7 @@
 
 ```toml
 [dependencies]
-awaken = { package = "awaken-agent", version = "0.2" }
+awaken = { version = "0.4.0-dev" }
 tokio = { version = "1", features = ["full"] }
 async-trait = "0.1"
 serde = { version = "1", features = ["derive"] }

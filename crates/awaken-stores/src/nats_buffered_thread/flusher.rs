@@ -271,22 +271,32 @@ fn order_runs_for_flush(runs_by_id: HashMap<String, (RunRecord, u64)>) -> Vec<(R
     ordered
 }
 
+struct FlushClaimContext<'a> {
+    kv_hot: &'a async_nats::jetstream::kv::Store,
+    test_hooks: &'a FlusherTestHooks,
+    thread_id: &'a str,
+    claim_token: &'a str,
+}
+
 /// Apply a per-thread batch to `inner` in seq-ascending order. Returns
 /// `true` on full success, `false` if any checkpoint errored (caller is
 /// responsible for nacking the WAL messages in that case).
 async fn apply_thread_batch_ordered<T: ThreadRunStore + Send + Sync>(
     inner: &T,
-    kv_hot: &async_nats::jetstream::kv::Store,
-    test_hooks: &FlusherTestHooks,
+    claim: Option<&FlushClaimContext<'_>>,
     thread_id: &str,
-    claim_token: Option<&str>,
     messages: &[Message],
     ordered_runs: &[(RunRecord, u64)],
 ) -> bool {
     for (run, _) in ordered_runs {
-        if let Some(claim_token) = claim_token
-            && let Err(error) =
-                ensure_flush_claim_current(kv_hot, test_hooks, thread_id, claim_token).await
+        if let Some(claim) = claim
+            && let Err(error) = ensure_flush_claim_current(
+                claim.kv_hot,
+                claim.test_hooks,
+                claim.thread_id,
+                claim.claim_token,
+            )
+            .await
         {
             tracing::warn!(
                 thread_id,
@@ -502,12 +512,16 @@ async fn flush_committed_entries<T: ThreadRunStore + Send + Sync>(
         let fresh_ok = if fresh_runs.is_empty() {
             true
         } else {
-            apply_thread_batch_ordered(
-                inner,
+            let claim = claim_token.map(|claim_token| FlushClaimContext {
                 kv_hot,
                 test_hooks,
                 thread_id,
                 claim_token,
+            });
+            apply_thread_batch_ordered(
+                inner,
+                claim.as_ref(),
+                thread_id,
                 &latest_messages,
                 &fresh_runs,
             )
@@ -935,7 +949,7 @@ mod tests {
         map.insert("run-old".into(), (older_run, 10));
 
         let ordered = order_runs_for_flush(map);
-        let ok = apply_thread_batch_ordered(&inner, "t", &[], &ordered).await;
+        let ok = apply_thread_batch_ordered(&inner, None, "t", &[], &ordered).await;
         assert!(ok);
 
         let thread = ThreadStore::load_thread(&inner as &InMemoryStore, "t")

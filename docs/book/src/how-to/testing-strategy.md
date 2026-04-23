@@ -459,13 +459,13 @@ Run live tests with:
 ```bash
 # OpenAI-compatible provider
 OPENAI_API_KEY=<your-key> LLM_MODEL=gpt-4o-mini \
-  cargo test -p awaken-agent --test readme_live_provider -- --ignored
+  cargo test -p awaken --test readme_live_provider -- --ignored
 
 # Custom endpoint (e.g. BigModel)
 LLM_BASE_URL=https://open.bigmodel.cn/api/paas/v4/ \
   LLM_API_KEY=<key> \
   LLM_MODEL=GLM-4.7-Flash \
-  cargo test -p awaken-agent --test readme_live_provider -- --ignored
+  cargo test -p awaken --test readme_live_provider -- --ignored
 ```
 
 See `examples/live_test.rs` and `examples/tool_call_live.rs` for complete working examples with console output.

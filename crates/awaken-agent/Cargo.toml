@@ -1,0 +1,33 @@
+[package]
+name = "awaken-agent"
+version.workspace = true
+readme = "../../README.md"
+documentation = "https://docs.rs/awaken-agent"
+edition.workspace = true
+description = "Compatibility umbrella crate re-exporting awaken"
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories = ["artificial-intelligence", "asynchronous"]
+
+[lib]
+name = "awaken"
+doctest = false
+
+[dependencies]
+awaken = { version = "0.4.0-dev", path = "../awaken", default-features = false }
+
+[features]
+default = ["full"]
+permission = ["awaken/permission"]
+observability = ["awaken/observability"]
+mcp = ["awaken/mcp"]
+skills = ["awaken/skills"]
+reminder = ["awaken/reminder"]
+server = ["awaken/server"]
+generative-ui = ["awaken/generative-ui"]
+full = ["awaken/full"]
+
+[lints]
+workspace = true

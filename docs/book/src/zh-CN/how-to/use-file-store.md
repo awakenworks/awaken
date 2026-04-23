@@ -12,7 +12,7 @@
 
 ```toml
 [dependencies]
-awaken-stores = { version = "0.2", features = ["file"] }
+awaken-stores = { version = "0.4.0-dev", features = ["file"] }
 ```
 
 如果使用 `awaken` 门面 crate，也建议直接加 `awaken-stores` 来启用 `file` feature。

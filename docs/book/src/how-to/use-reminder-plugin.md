@@ -9,7 +9,7 @@ Use this when you want the agent to receive automatic context messages after too
 
 ```toml
 [dependencies]
-awaken = { package = "awaken-agent", version = "0.2", features = ["reminder"] }
+awaken = { version = "0.4.0-dev", features = ["reminder"] }
 tokio = { version = "1", features = ["full"] }
 serde_json = "1"
 ```

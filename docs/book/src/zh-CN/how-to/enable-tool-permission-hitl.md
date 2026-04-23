@@ -9,7 +9,7 @@
 
 ```toml
 [dependencies]
-awaken = { package = "awaken-agent", version = "0.2", features = ["permission"] }
+awaken = { version = "0.4.0-dev", features = ["permission"] }
 tokio = { version = "1", features = ["full"] }
 serde_json = "1"
 ```

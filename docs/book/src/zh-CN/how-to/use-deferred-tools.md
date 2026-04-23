@@ -9,8 +9,8 @@
 
 ```toml
 [dependencies]
-awaken-ext-deferred-tools = { version = "0.2" }
-awaken = { package = "awaken-agent", version = "0.2" }
+awaken-ext-deferred-tools = { version = "0.4.0-dev" }
+awaken = { version = "0.4.0-dev" }
 tokio = { version = "1", features = ["full"] }
 serde_json = "1"
 ```

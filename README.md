@@ -2,11 +2,13 @@
 
 [English](./README.md) | [中文](./README.zh-CN.md)
 
-[![CI](https://github.com/AwakenWorks/awaken/actions/workflows/test.yml/badge.svg)](https://github.com/AwakenWorks/awaken/actions/workflows/test.yml) [![crates.io](https://img.shields.io/crates/v/awaken-agent.svg?label=crates.io)](https://crates.io/crates/awaken-agent) ![License](https://img.shields.io/badge/license-MIT%2FApache--2.0-blue) ![MSRV](https://img.shields.io/badge/MSRV-1.93-orange)
+[![CI](https://github.com/AwakenWorks/awaken/actions/workflows/test.yml/badge.svg)](https://github.com/AwakenWorks/awaken/actions/workflows/test.yml) [![crates.io awaken](https://img.shields.io/crates/v/awaken.svg?label=awaken)](https://crates.io/crates/awaken) [![crates.io awaken-agent](https://img.shields.io/crates/v/awaken-agent.svg?label=awaken-agent)](https://crates.io/crates/awaken-agent) ![License](https://img.shields.io/badge/license-MIT%2FApache--2.0-blue) ![MSRV](https://img.shields.io/badge/MSRV-1.93-orange)
 
 Production AI agent runtime for Rust — type-safe state, multi-protocol serving, plugin extensibility.
 
-Published on crates.io as `awaken-agent`; keep importing it in Rust as `awaken`.
+Published on crates.io as both `awaken` and `awaken-agent`. `awaken` is the
+primary umbrella package; `awaken-agent` is a compatibility package. Import in
+Rust as `awaken` either way.
 The workspace uses Rust 1.93.0 for development; the crate MSRV is 1.93.
 
 Docs: [GitHub Pages](https://awakenworks.github.io/awaken/) | [Chinese docs](https://awakenworks.github.io/awaken/zh-CN/)
@@ -42,7 +44,7 @@ toolchain when working from this repository, plus an LLM provider API key.
 
 ```toml
 [dependencies]
-awaken = { package = "awaken-agent", version = "0.2" }
+awaken = { version = "0.4.0-dev" }
 tokio = { version = "1.51.0", features = ["full"] }
 async-trait = "0.1.89"
 serde_json = "1.0.149"
@@ -120,13 +122,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 The quickstart path is covered without network access:
 
 ```bash
-cargo test -p awaken-agent --test readme_quickstart
+cargo test -p awaken --test readme_quickstart
 ```
 
 Live provider validation is opt-in so CI does not depend on external model services:
 
 ```bash
-OPENAI_API_KEY=<your-key> cargo test -p awaken-agent --test readme_live_provider -- --ignored
+OPENAI_API_KEY=<your-key> cargo test -p awaken --test readme_live_provider -- --ignored
 ```
 
 ## Serve over any protocol
@@ -295,7 +297,7 @@ awaken                   Facade crate with feature flags
 
 ```bash
 export OPENAI_API_KEY=<your-key>
-cargo run --package awaken-agent --example multi_turn
+cargo run --package awaken --example multi_turn
 
 cd examples/ai-sdk-starter && npm install && npm run dev
 

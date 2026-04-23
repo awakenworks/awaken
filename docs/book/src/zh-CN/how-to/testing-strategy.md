@@ -459,13 +459,13 @@ README quickstart 路径由 `crates/awaken/tests/readme_quickstart.rs` 提供无
 ```bash
 # OpenAI 兼容的提供商
 OPENAI_API_KEY=<your-key> LLM_MODEL=gpt-4o-mini \
-  cargo test -p awaken-agent --test readme_live_provider -- --ignored
+  cargo test -p awaken --test readme_live_provider -- --ignored
 
 # 自定义端点（例如 BigModel）
 LLM_BASE_URL=https://open.bigmodel.cn/api/paas/v4/ \
   LLM_API_KEY=<key> \
   LLM_MODEL=GLM-4.7-Flash \
-  cargo test -p awaken-agent --test readme_live_provider -- --ignored
+  cargo test -p awaken --test readme_live_provider -- --ignored
 ```
 
 完整的可运行示例（含控制台输出）请参见 `examples/live_test.rs` 和 `examples/tool_call_live.rs`。

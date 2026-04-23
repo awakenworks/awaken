@@ -2,11 +2,13 @@
 
 [English](./README.md) | [中文](./README.zh-CN.md)
 
-[![CI](https://github.com/AwakenWorks/awaken/actions/workflows/test.yml/badge.svg)](https://github.com/AwakenWorks/awaken/actions/workflows/test.yml) [![crates.io](https://img.shields.io/crates/v/awaken-agent.svg?label=crates.io)](https://crates.io/crates/awaken-agent) ![License](https://img.shields.io/badge/license-MIT%2FApache--2.0-blue) ![MSRV](https://img.shields.io/badge/MSRV-1.93-orange)
+[![CI](https://github.com/AwakenWorks/awaken/actions/workflows/test.yml/badge.svg)](https://github.com/AwakenWorks/awaken/actions/workflows/test.yml) [![crates.io awaken](https://img.shields.io/crates/v/awaken.svg?label=awaken)](https://crates.io/crates/awaken) [![crates.io awaken-agent](https://img.shields.io/crates/v/awaken-agent.svg?label=awaken-agent)](https://crates.io/crates/awaken-agent) ![License](https://img.shields.io/badge/license-MIT%2FApache--2.0-blue) ![MSRV](https://img.shields.io/badge/MSRV-1.93-orange)
 
 生产级 Rust AI Agent 运行时 — 类型安全状态、多协议服务、插件化扩展。
 
-在 crates.io 上发布名为 `awaken-agent`，Rust 代码中的导入仍然保持为 `awaken`。
+在 crates.io 上同时发布 `awaken` 和 `awaken-agent`。其中 `awaken`
+是主 umbrella package，`awaken-agent` 是兼容包；两者在 Rust 代码中都保持导入为
+`awaken`。
 仓库开发工具链由 Rust 1.93.0 固定，crate 的 MSRV 为 1.93。
 
 在线文档：[GitHub Pages（英文）](https://awakenworks.github.io/awaken/) | [GitHub Pages（中文）](https://awakenworks.github.io/awaken/zh-CN/)
@@ -40,7 +42,7 @@ Agent 选择工具、调用工具、读写状态，如此循环 — 全部由运
 
 ```toml
 [dependencies]
-awaken = { package = "awaken-agent", version = "0.2" }
+awaken = { version = "0.4.0-dev" }
 tokio = { version = "1.51.0", features = ["full"] }
 async-trait = "0.1.89"
 serde_json = "1.0.149"
@@ -127,13 +129,13 @@ cargo run
 快速开始路径已有无网络测试覆盖：
 
 ```bash
-cargo test -p awaken-agent --test readme_quickstart
+cargo test -p awaken --test readme_quickstart
 ```
 
 真实 provider 验证是显式 opt-in，不让默认 CI 依赖外部模型服务：
 
 ```bash
-OPENAI_API_KEY=<your-key> cargo test -p awaken-agent --test readme_live_provider -- --ignored
+OPENAI_API_KEY=<your-key> cargo test -p awaken --test readme_live_provider -- --ignored
 ```
 
 ## 通过任意协议提供服务
@@ -296,7 +298,7 @@ awaken                   门面 crate，管理 feature flags
 
 ```bash
 export OPENAI_API_KEY=<your-key>
-cargo run --package awaken-agent --example multi_turn
+cargo run --package awaken --example multi_turn
 
 # 全栈演示
 cd examples/ai-sdk-starter && npm install && npm run dev
