@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::cancellation::CancellationToken;
-use crate::inbox::InboxSender;
+use crate::inbox::{InboxReceiver, InboxSender};
 
 /// Unique identifier for a background task.
 pub type TaskId = String;
@@ -55,10 +55,16 @@ impl TaskResult {
 /// Optional parent execution context for background task lineage tracking.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TaskParentContext {
+    /// Parent background task ID when this task is spawned from another task.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task_id: Option<String>,
+    /// Parent run ID when this task is spawned from an agent run/tool call.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub run_id: Option<String>,
+    /// Parent tool call ID that created this task, when available.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub call_id: Option<String>,
+    /// Parent agent ID that created this task, when available.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_id: Option<String>,
 }
@@ -66,8 +72,27 @@ pub struct TaskParentContext {
 impl TaskParentContext {
     /// Returns `true` when no lineage fields are set.
     pub fn is_empty(&self) -> bool {
-        self.run_id.is_none() && self.call_id.is_none() && self.agent_id.is_none()
+        self.task_id.is_none()
+            && self.run_id.is_none()
+            && self.call_id.is_none()
+            && self.agent_id.is_none()
     }
+}
+
+/// Runtime context passed to sub-agent task closures.
+///
+/// Exposes the spawned task's stable `task_id` so nested agent execution can
+/// publish lineage metadata (for example, self-cancel and cascading child
+/// cancellation).
+pub struct AgentTaskContext {
+    /// Unique identifier of the spawned background task.
+    pub task_id: TaskId,
+    /// Shared cancellation token for the task.
+    pub cancel_token: CancellationToken,
+    /// Inbox sender used by nested children to deliver live events/messages.
+    pub inbox_sender: InboxSender,
+    /// Inbox receiver consumed by the task's inner agent loop.
+    pub inbox_receiver: InboxReceiver,
 }
 
 /// Context provided to every background task closure.

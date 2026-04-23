@@ -1225,6 +1225,17 @@ pub(super) async fn execute_step(ctx: &mut StepContext<'_>) -> Result<StepOutcom
         execute_tools_with_interception(ctx, &mut transcript, &stream_result.tool_calls).await?;
     transcript.commit_into(ctx.messages);
 
+    if ctx.cancellation_token.is_some_and(|t| t.is_cancelled()) {
+        commit_update::<RunLifecycle>(
+            store,
+            RunLifecycleUpdate::Done {
+                done_reason: "cancelled".into(),
+                updated_at: now_ms(),
+            },
+        )?;
+        return Ok(StepOutcome::Cancelled);
+    }
+
     if let Some(reason) = blocked_reason {
         commit_update::<RunLifecycle>(
             store,

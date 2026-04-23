@@ -9,6 +9,9 @@ use awaken_contract::contract::suspension::ToolCallOutcome;
 use awaken_contract::contract::tool::{Tool, ToolCallContext, ToolOutput, ToolResult};
 use awaken_contract::state::StateCommand;
 
+#[cfg(feature = "background")]
+use crate::extensions::background::{ToolLineageContext, scope_tool_lineage_context};
+
 /// Result of executing a single tool call.
 pub struct ToolExecutionResult {
     pub call: ToolCall,
@@ -216,10 +219,36 @@ pub(crate) async fn execute_single_tool(
         return ToolResult::error(&call.name, e.to_string()).into();
     }
 
-    match tool.execute(call.arguments.clone(), ctx).await {
+    match execute_tool_with_runtime_context(tool, call, ctx).await {
         Ok(output) => output,
         Err(e) => ToolResult::error(&call.name, e.to_string()).into(),
     }
+}
+
+#[cfg(feature = "background")]
+async fn execute_tool_with_runtime_context(
+    tool: &Arc<dyn Tool>,
+    call: &ToolCall,
+    ctx: &ToolCallContext,
+) -> Result<ToolOutput, awaken_contract::contract::tool::ToolError> {
+    scope_tool_lineage_context(
+        ToolLineageContext {
+            run_id: ctx.run_identity.run_id.clone(),
+            call_id: ctx.call_id.clone(),
+            agent_id: ctx.run_identity.agent_id.clone(),
+        },
+        tool.execute(call.arguments.clone(), ctx),
+    )
+    .await
+}
+
+#[cfg(not(feature = "background"))]
+async fn execute_tool_with_runtime_context(
+    tool: &Arc<dyn Tool>,
+    call: &ToolCall,
+    ctx: &ToolCallContext,
+) -> Result<ToolOutput, awaken_contract::contract::tool::ToolError> {
+    tool.execute(call.arguments.clone(), ctx).await
 }
 
 #[cfg(test)]
@@ -227,6 +256,19 @@ mod tests {
     use super::*;
     use awaken_contract::contract::tool::{ToolDescriptor, ToolError, ToolOutput};
     use serde_json::{Value, json};
+
+    #[cfg(feature = "background")]
+    use crate::extensions::background::{
+        BackgroundTaskManager, BackgroundTaskPlugin, TaskParentContext, TaskResult,
+    };
+    #[cfg(feature = "background")]
+    use crate::phase::ExecutionEnv;
+    #[cfg(feature = "background")]
+    use crate::plugins::Plugin;
+    #[cfg(feature = "background")]
+    use crate::state::StateStore;
+    #[cfg(feature = "background")]
+    use awaken_contract::contract::identity::{RunIdentity, RunOrigin};
 
     struct EchoTool;
 
@@ -973,5 +1015,93 @@ mod tests {
         let output = execute_single_tool(&tools, &call, &ctx).await;
         assert!(output.result.is_success());
         assert_eq!(output.result.tool_name, "echo");
+    }
+
+    #[cfg(feature = "background")]
+    struct SpawnBackgroundTaskTool {
+        manager: Arc<BackgroundTaskManager>,
+        spawned_task_id: Arc<std::sync::Mutex<Option<String>>>,
+    }
+
+    #[cfg(feature = "background")]
+    #[async_trait]
+    impl Tool for SpawnBackgroundTaskTool {
+        fn descriptor(&self) -> ToolDescriptor {
+            ToolDescriptor::new(
+                "spawn_background",
+                "spawn_background",
+                "Spawns a background task",
+            )
+        }
+
+        async fn execute(
+            &self,
+            _args: Value,
+            _ctx: &ToolCallContext,
+        ) -> Result<ToolOutput, ToolError> {
+            let task_id = self
+                .manager
+                .spawn(
+                    "thread-1",
+                    "background",
+                    None,
+                    "spawned from tool",
+                    TaskParentContext::default(),
+                    |_| async { TaskResult::Success(json!({"ok": true})) },
+                )
+                .await
+                .map_err(|error| ToolError::ExecutionFailed(error.to_string()))?;
+            *self.spawned_task_id.lock().unwrap() = Some(task_id.clone());
+            Ok(ToolResult::success("spawn_background", json!({"task_id": task_id})).into())
+        }
+    }
+
+    #[cfg(feature = "background")]
+    #[tokio::test]
+    async fn execute_single_tool_scopes_tool_lineage_for_background_spawns() {
+        let store = StateStore::new();
+        let manager = Arc::new(BackgroundTaskManager::new());
+        manager.set_store(store.clone());
+        let plugin: Arc<dyn Plugin> = Arc::new(BackgroundTaskPlugin::new(manager.clone()));
+        let env = ExecutionEnv::from_plugins(&[plugin], &Default::default()).unwrap();
+        store.register_keys(&env.key_registrations).unwrap();
+
+        let spawned_task_id = Arc::new(std::sync::Mutex::new(None::<String>));
+        let tools = tool_map(vec![Arc::new(SpawnBackgroundTaskTool {
+            manager: manager.clone(),
+            spawned_task_id: spawned_task_id.clone(),
+        }) as Arc<dyn Tool>]);
+        let executor = SequentialToolExecutor;
+        let calls = vec![ToolCall::new("call-77", "spawn_background", json!({}))];
+
+        let mut ctx = ToolCallContext::test_default();
+        ctx.run_identity = RunIdentity::new(
+            "thread-1".into(),
+            None,
+            "run-77".into(),
+            None,
+            "agent-77".into(),
+            RunOrigin::User,
+        );
+        ctx.cancellation_token = Some(crate::cancellation::CancellationToken::new());
+
+        let results = executor.execute(&tools, &calls, &ctx).await.unwrap();
+        assert_eq!(results.len(), 1);
+        assert!(results[0].result.is_success());
+
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        let task_id = spawned_task_id
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("spawned task id should be recorded");
+        let summary = manager
+            .get(&task_id)
+            .await
+            .expect("spawned background task should be queryable");
+        assert_eq!(summary.parent_context.run_id.as_deref(), Some("run-77"));
+        assert_eq!(summary.parent_context.call_id.as_deref(), Some("call-77"));
+        assert_eq!(summary.parent_context.agent_id.as_deref(), Some("agent-77"));
     }
 }

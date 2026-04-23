@@ -14,7 +14,12 @@ use super::state::{
     PersistedTaskMeta,
 };
 use super::types::{
-    TaskContext, TaskEvent, TaskId, TaskParentContext, TaskResult, TaskStatus, TaskSummary,
+    AgentTaskContext, TaskContext, TaskEvent, TaskId, TaskParentContext, TaskResult, TaskStatus,
+    TaskSummary,
+};
+use super::{
+    BackgroundTaskExecutionContext, current_background_task_context, current_tool_lineage_context,
+    scope_background_task_context,
 };
 
 /// Errors from [`BackgroundTaskManager::send_task_inbox_message`].
@@ -158,6 +163,31 @@ impl BackgroundTaskManager {
         format!("bg_{n}")
     }
 
+    fn merge_ambient_parent_context(
+        &self,
+        mut parent_context: TaskParentContext,
+    ) -> TaskParentContext {
+        if parent_context.task_id.is_none()
+            && let Some(context) = current_background_task_context()
+        {
+            parent_context.task_id = Some(context.task_id);
+        }
+
+        if let Some(context) = current_tool_lineage_context() {
+            if parent_context.run_id.is_none() {
+                parent_context.run_id = Some(context.run_id);
+            }
+            if parent_context.call_id.is_none() && !context.call_id.is_empty() {
+                parent_context.call_id = Some(context.call_id);
+            }
+            if parent_context.agent_id.is_none() && !context.agent_id.is_empty() {
+                parent_context.agent_id = Some(context.agent_id);
+            }
+        }
+
+        parent_context
+    }
+
     /// Commit a state update to the store (if available).
     fn commit_meta(&self, action: BackgroundTaskStateAction) {
         if let Some(store) = self.store() {
@@ -189,6 +219,7 @@ impl BackgroundTaskManager {
         F: FnOnce(TaskContext) -> Fut + Send + 'static,
         Fut: std::future::Future<Output = TaskResult> + Send + 'static,
     {
+        let parent_context = self.merge_ambient_parent_context(parent_context);
         if let Some(n) = name {
             self.validate_name(n, owner_thread_id)?;
         }
@@ -230,7 +261,14 @@ impl BackgroundTaskManager {
         let desc = description.to_string();
 
         let join_handle = tokio::spawn(async move {
-            let result = task_fn(ctx).await;
+            let result = scope_background_task_context(
+                BackgroundTaskExecutionContext {
+                    manager: manager.clone(),
+                    task_id: tid.clone(),
+                },
+                task_fn(ctx),
+            )
+            .await;
             let completed_at = now_ms();
 
             // Update metadata in the store
@@ -303,6 +341,37 @@ impl BackgroundTaskManager {
             return true;
         }
         false
+    }
+
+    /// Cancel a task and every known descendant task in the same manager.
+    ///
+    /// Descendants are discovered through `TaskParentContext.task_id`.
+    /// Returns the number of live tasks whose cancellation token was signalled.
+    pub async fn cancel_tree(&self, task_id: &str) -> usize {
+        let Some(task_ids) = self.task_tree_ids(task_id) else {
+            return 0;
+        };
+
+        let handles = self.handles.lock().await;
+        let store_snap = self
+            .store()
+            .and_then(|s| s.read::<BackgroundTaskStateKey>());
+        let mut count = 0;
+        for task_id in task_ids {
+            let Some(handle) = handles.get(&task_id) else {
+                continue;
+            };
+            let is_terminal = store_snap
+                .as_ref()
+                .and_then(|snap| snap.tasks.get(&task_id))
+                .map(|meta| meta.status.is_terminal())
+                .unwrap_or(false);
+            if !is_terminal {
+                handle.cancel_handle.cancel();
+                count += 1;
+            }
+        }
+        count
     }
 
     /// Cancel all running tasks for a given thread.
@@ -445,6 +514,27 @@ impl BackgroundTaskManager {
             + 'static,
         Fut: std::future::Future<Output = TaskResult> + Send + 'static,
     {
+        self.spawn_agent_with_context(owner_thread_id, name, description, parent_context, |ctx| {
+            task_fn(ctx.cancel_token, ctx.inbox_sender, ctx.inbox_receiver)
+        })
+        .await
+    }
+
+    /// Spawn a sub-agent as a background task while exposing the spawned task
+    /// ID to the closure for lineage-aware coordination.
+    pub async fn spawn_agent_with_context<F, Fut>(
+        self: &Arc<Self>,
+        owner_thread_id: &str,
+        name: Option<&str>,
+        description: &str,
+        parent_context: TaskParentContext,
+        task_fn: F,
+    ) -> Result<TaskId, SpawnError>
+    where
+        F: FnOnce(AgentTaskContext) -> Fut + Send + 'static,
+        Fut: std::future::Future<Output = TaskResult> + Send + 'static,
+    {
+        let parent_context = self.merge_ambient_parent_context(parent_context);
         if let Some(n) = name {
             self.validate_name(n, owner_thread_id)?;
         }
@@ -482,7 +572,19 @@ impl BackgroundTaskManager {
         let desc = description.to_string();
 
         let join_handle = tokio::spawn(async move {
-            let result = task_fn(cancel_token, child_inbox_tx, child_inbox_rx).await;
+            let result = scope_background_task_context(
+                BackgroundTaskExecutionContext {
+                    manager: manager.clone(),
+                    task_id: tid.clone(),
+                },
+                task_fn(AgentTaskContext {
+                    task_id: tid.clone(),
+                    cancel_token,
+                    inbox_sender: child_inbox_tx,
+                    inbox_receiver: child_inbox_rx,
+                }),
+            )
+            .await;
             let completed_at = now_ms();
 
             let (status, error, result_val) = match &result {
@@ -582,6 +684,97 @@ impl BackgroundTaskManager {
         } else {
             Err(SendError::InboxClosed)
         }
+    }
+
+    pub(crate) fn task_tree_ids(&self, task_id: &str) -> Option<Vec<TaskId>> {
+        let snapshot = self
+            .store()
+            .and_then(|store| store.read::<BackgroundTaskStateKey>())?;
+        if !snapshot.tasks.contains_key(task_id) {
+            return None;
+        }
+
+        let mut ordered = Vec::new();
+        let mut stack = vec![task_id.to_string()];
+        while let Some(current) = stack.pop() {
+            if ordered.iter().any(|seen| seen == &current) {
+                continue;
+            }
+            ordered.push(current.clone());
+            for meta in snapshot.tasks.values() {
+                if meta.parent_context.task_id.as_deref() == Some(current.as_str()) {
+                    stack.push(meta.task_id.clone());
+                }
+            }
+        }
+        Some(ordered)
+    }
+
+    pub(crate) fn resolve_live_child_task(
+        &self,
+        parent_task_id: &str,
+        name_or_task_id: &str,
+    ) -> Option<TaskId> {
+        let snapshot = self.store()?.read::<BackgroundTaskStateKey>()?;
+        for meta in snapshot.tasks.values() {
+            if meta.status.is_terminal() {
+                continue;
+            }
+            if meta.parent_context.task_id.as_deref() != Some(parent_task_id) {
+                continue;
+            }
+            if meta.task_id == name_or_task_id || meta.name.as_deref() == Some(name_or_task_id) {
+                return Some(meta.task_id.clone());
+            }
+        }
+        None
+    }
+
+    pub(crate) fn resolve_live_child_run(
+        &self,
+        parent_run_id: &str,
+        name_or_task_id: &str,
+    ) -> Option<TaskId> {
+        let snapshot = self.store()?.read::<BackgroundTaskStateKey>()?;
+        for meta in snapshot.tasks.values() {
+            if meta.status.is_terminal() {
+                continue;
+            }
+            if meta.parent_context.run_id.as_deref() != Some(parent_run_id)
+                || meta.parent_context.task_id.is_some()
+            {
+                continue;
+            }
+            if meta.task_id == name_or_task_id || meta.name.as_deref() == Some(name_or_task_id) {
+                return Some(meta.task_id.clone());
+            }
+        }
+        None
+    }
+
+    pub async fn cancel_descendants_for_run(&self, parent_run_id: &str) -> usize {
+        let root_task_ids = self
+            .store()
+            .and_then(|store| store.read::<BackgroundTaskStateKey>())
+            .map(|snapshot| {
+                snapshot
+                    .tasks
+                    .values()
+                    .filter(|meta| {
+                        !meta.status.is_terminal()
+                            && meta.parent_context.run_id.as_deref() == Some(parent_run_id)
+                            && meta.parent_context.task_id.is_none()
+                    })
+                    .map(|meta| meta.task_id.clone())
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+
+        let mut cancelled = 0usize;
+        for task_id in root_task_ids {
+            cancelled += self.cancel_tree(&task_id).await;
+        }
+        cancelled
     }
 
     #[cfg(test)]

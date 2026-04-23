@@ -1,12 +1,12 @@
-use std::sync::Arc;
-
 use awaken_contract::StateError;
 use awaken_contract::model::Phase;
 use awaken_contract::registry_spec::AgentSpec;
+use std::sync::Arc;
 
 use crate::plugins::{Plugin, PluginDescriptor, PluginRegistrar};
 use crate::state::{KeyScope, MutationBatch, StateKeyOptions, StateStore};
 
+use super::cancel_task_tool::{CANCEL_TASK_TOOL_ID, CancelTaskTool};
 use super::hook::BackgroundTaskSyncHook;
 use super::manager::BackgroundTaskManager;
 use super::state::{BackgroundTaskStateKey, BackgroundTaskViewKey};
@@ -60,6 +60,10 @@ impl Plugin for BackgroundTaskPlugin {
             scope: KeyScope::Thread,
             ..StateKeyOptions::default()
         })?;
+        registrar.register_tool(
+            CANCEL_TASK_TOOL_ID,
+            Arc::new(CancelTaskTool::new(self.manager.clone())),
+        )?;
 
         // Sync task metadata into persisted state at run boundaries.
         registrar.register_phase_hook(

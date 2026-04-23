@@ -197,6 +197,14 @@ fn plugin_registers_key() {
     assert!(registry.keys_by_name.contains_key("background_task_state"));
 }
 
+#[test]
+fn plugin_registers_cancel_task_tool() {
+    let manager = Arc::new(BackgroundTaskManager::new());
+    let plugin: Arc<dyn Plugin> = Arc::new(BackgroundTaskPlugin::new(manager));
+    let env = ExecutionEnv::from_plugins(&[plugin], &Default::default()).unwrap();
+    assert!(env.tools.contains_key("cancel_task"));
+}
+
 #[tokio::test]
 async fn run_start_restores_persisted_metadata_into_manager() {
     let store = StateStore::new();
