@@ -4,7 +4,7 @@ use awaken_contract::contract::lifecycle::RunStatus;
 use awaken_contract::contract::message::{Message, MessageMetadata};
 use awaken_contract::contract::storage::{
     ChildThreadDeleteStrategy, MessageOrder, MessageQuery, MessageVisibilityFilter, RunRecord,
-    RunRequestSnapshot, StorageError, ThreadQuery, ThreadRunStore,
+    RunRequestSnapshot, StorageError, ThreadParentFilter, ThreadQuery, ThreadRunStore,
 };
 use awaken_contract::thread::Thread;
 
@@ -136,12 +136,41 @@ pub async fn list_threads_query_filters_lineage<S: ThreadRunStore>(store: &S) {
             offset: 0,
             limit: 10,
             resource_id: Some("resource-a".to_string()),
-            parent_thread_id: Some("parent-1".to_string()),
+            parent_filter: ThreadParentFilter::Parent("parent-1".to_string()),
         })
         .await
         .unwrap();
 
     assert_eq!(page.items, vec!["t-filter-match"]);
+    assert_eq!(page.total, 1);
+    assert!(!page.has_more);
+}
+
+pub async fn list_threads_query_filters_root_threads<S: ThreadRunStore>(store: &S) {
+    let mut matching_root = Thread::with_id("t-root-match").with_resource_id("resource-a");
+    matching_root.metadata.updated_at = Some(300);
+    let mut matching_child = Thread::with_id("t-root-child")
+        .with_resource_id("resource-a")
+        .with_parent_thread_id("parent-1");
+    matching_child.metadata.updated_at = Some(200);
+    let mut wrong_resource_root = Thread::with_id("t-root-other").with_resource_id("resource-b");
+    wrong_resource_root.metadata.updated_at = Some(100);
+
+    store.save_thread(&matching_root).await.unwrap();
+    store.save_thread(&matching_child).await.unwrap();
+    store.save_thread(&wrong_resource_root).await.unwrap();
+
+    let page = store
+        .list_threads_query(&ThreadQuery {
+            offset: 0,
+            limit: 10,
+            resource_id: Some("resource-a".to_string()),
+            parent_filter: ThreadParentFilter::Root,
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(page.items, vec!["t-root-match"]);
     assert_eq!(page.total, 1);
     assert!(!page.has_more);
 }

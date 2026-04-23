@@ -20,8 +20,9 @@ use awaken_contract::contract::storage::{
     ChildThreadDeleteStrategy, MessagePage, MessageQuery, RunPage, RunQuery, RunRecord, RunStore,
     StorageError, ThreadPage, ThreadQuery, ThreadRunStore, ThreadStore,
     checkpoint_parent_thread_id, paginate_message_records, paginate_threads,
+    sort_threads_by_recent_activity,
 };
-use awaken_contract::thread::Thread;
+use awaken_contract::thread::{Thread, normalize_lineage_id};
 use serde::{Deserialize, Serialize};
 use tokio::io::AsyncWriteExt;
 use tokio::sync::Mutex;
@@ -860,6 +861,23 @@ impl ThreadStore for FileStore {
         let query = query.normalized();
         let threads: Vec<Thread> = scan_json_dir(&self.threads_dir()).await?;
         Ok(paginate_threads(threads, &query))
+    }
+
+    async fn list_child_threads(
+        &self,
+        parent_thread_id: &str,
+    ) -> Result<Vec<Thread>, StorageError> {
+        validate_id(parent_thread_id, "parent thread id")?;
+        let Some(parent_thread_id) = normalize_lineage_id(Some(parent_thread_id)) else {
+            return Ok(Vec::new());
+        };
+        let mut children: Vec<Thread> = scan_json_dir::<Thread>(&self.threads_dir())
+            .await?
+            .into_iter()
+            .filter(|thread| thread.parent_thread_id.as_deref() == Some(parent_thread_id.as_str()))
+            .collect();
+        sort_threads_by_recent_activity(&mut children);
+        Ok(children)
     }
 
     async fn load_messages(&self, thread_id: &str) -> Result<Option<Vec<Message>>, StorageError> {

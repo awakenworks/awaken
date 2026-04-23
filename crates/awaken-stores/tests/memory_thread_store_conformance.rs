@@ -20,6 +20,7 @@ conformance_test!(checkpoint_overwrites_messages);
 conformance_test!(load_thread_reflects_checkpoint);
 conformance_test!(append_message_records_assigns_seq);
 conformance_test!(list_threads_query_filters_lineage);
+conformance_test!(list_threads_query_filters_root_threads);
 conformance_test!(checkpoint_rejects_missing_parent_thread);
 conformance_test!(checkpoint_rejects_cycle_parent_assignment);
 conformance_test!(delete_thread_with_detach_preserves_children);

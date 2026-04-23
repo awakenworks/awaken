@@ -292,6 +292,7 @@ name = "awaken-contract"
 version = "0.2.2-dev"
 dependencies = [
  "async-trait",
+ "base64 0.22.1",
  "futures",
  "jsonschema",
  "parking_lot",

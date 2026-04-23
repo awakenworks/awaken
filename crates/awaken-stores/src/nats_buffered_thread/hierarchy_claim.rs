@@ -3,6 +3,7 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use async_nats::jetstream::kv::{CreateErrorKind, UpdateErrorKind};
 use bytes::Bytes;
 use serde::{Deserialize, Serialize};
 
@@ -155,6 +156,14 @@ fn decode_claim(bytes: &[u8]) -> Result<HierarchyClaim, StorageError> {
     serde_json::from_slice(bytes).map_err(|error| StorageError::Serialization(error.to_string()))
 }
 
+fn is_retryable_create_error(kind: CreateErrorKind) -> bool {
+    matches!(kind, CreateErrorKind::AlreadyExists)
+}
+
+fn is_retryable_update_error(kind: UpdateErrorKind) -> bool {
+    matches!(kind, UpdateErrorKind::WrongLastRevision)
+}
+
 pub(crate) async fn acquire(
     kv: &async_nats::jetstream::kv::Store,
     options: &ClaimOptions,
@@ -188,7 +197,7 @@ pub(crate) async fn acquire_for_key(
         if existing.lease_until >= now {
             if std::time::Instant::now() >= deadline {
                 return Err(StorageError::Io(format!(
-                    "hierarchy claim timeout after {attempts} attempts"
+                    "{claim_name} timeout after {attempts} attempts"
                 )));
             }
             tokio::time::sleep(backoff).await;
@@ -202,12 +211,28 @@ pub(crate) async fn acquire_for_key(
         };
         let claim_token = claim.claim_token.clone();
         let bytes = encode_claim(&claim)?;
-        let succeeded = if revision == 0 {
-            kv.create(key, bytes).await.is_ok()
+        let acquired = if revision == 0 {
+            match kv.create(key, bytes).await {
+                Ok(_) => true,
+                Err(error) if is_retryable_create_error(error.kind()) => false,
+                Err(error) => {
+                    return Err(StorageError::Io(format!(
+                        "{claim_name} create claim: {error}"
+                    )));
+                }
+            }
         } else {
-            kv.update(key, bytes, revision).await.is_ok()
+            match kv.update(key, bytes, revision).await {
+                Ok(_) => true,
+                Err(error) if is_retryable_update_error(error.kind()) => false,
+                Err(error) => {
+                    return Err(StorageError::Io(format!(
+                        "{claim_name} update claim: {error}"
+                    )));
+                }
+            }
         };
-        if succeeded {
+        if acquired {
             let renew_task = spawn_renew_task(
                 kv.clone(),
                 key.to_string(),
@@ -225,7 +250,7 @@ pub(crate) async fn acquire_for_key(
 
         if std::time::Instant::now() >= deadline {
             return Err(StorageError::Io(format!(
-                "hierarchy claim timeout after {attempts} attempts"
+                "{claim_name} timeout after {attempts} attempts"
             )));
         }
         tokio::time::sleep(backoff).await;
@@ -256,12 +281,15 @@ pub(crate) async fn release(
         }
         existing.lease_until = 0;
         let bytes = encode_claim(&existing)?;
-        if kv
-            .update(&claim.claim_key, bytes, entry.revision)
-            .await
-            .is_ok()
-        {
-            return Ok(());
+        match kv.update(&claim.claim_key, bytes, entry.revision).await {
+            Ok(_) => return Ok(()),
+            Err(error) if is_retryable_update_error(error.kind()) => {}
+            Err(error) => {
+                return Err(StorageError::Io(format!(
+                    "{} release update: {error}",
+                    claim.claim_name
+                )));
+            }
         }
     }
 
@@ -325,8 +353,14 @@ async fn renew(
         }
         existing.lease_until = now_millis().saturating_add(lease_ms);
         let bytes = encode_claim(&existing)?;
-        if kv.update(key, bytes, entry.revision).await.is_ok() {
-            return Ok(true);
+        match kv.update(key, bytes, entry.revision).await {
+            Ok(_) => return Ok(true),
+            Err(error) if is_retryable_update_error(error.kind()) => {}
+            Err(error) => {
+                return Err(StorageError::Io(format!(
+                    "{claim_name} renew update: {error}"
+                )));
+            }
         }
     }
 
@@ -340,4 +374,28 @@ fn now_millis() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|duration| duration.as_millis() as u64)
         .unwrap_or(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn claim_create_retryable_only_for_existing_key_conflicts() {
+        assert!(is_retryable_create_error(CreateErrorKind::AlreadyExists));
+        assert!(!is_retryable_create_error(CreateErrorKind::Publish));
+        assert!(!is_retryable_create_error(CreateErrorKind::Ack));
+        assert!(!is_retryable_create_error(CreateErrorKind::InvalidKey));
+        assert!(!is_retryable_create_error(CreateErrorKind::Other));
+    }
+
+    #[test]
+    fn claim_update_retryable_only_for_revision_conflicts() {
+        assert!(is_retryable_update_error(
+            UpdateErrorKind::WrongLastRevision
+        ));
+        assert!(!is_retryable_update_error(UpdateErrorKind::InvalidKey));
+        assert!(!is_retryable_update_error(UpdateErrorKind::TimedOut));
+        assert!(!is_retryable_update_error(UpdateErrorKind::Other));
+    }
 }

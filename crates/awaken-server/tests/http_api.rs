@@ -627,6 +627,44 @@ mod integration {
     }
 
     #[tokio::test]
+    async fn list_threads_filters_root_threads() {
+        let test = make_test_app();
+        let matching =
+            seed_thread_with_lineage(&test.store, Some("Root"), Some("resource-a"), None).await;
+        seed_thread_with_lineage(
+            &test.store,
+            Some("Child"),
+            Some("resource-a"),
+            Some("parent-1"),
+        )
+        .await;
+        seed_thread_with_lineage(&test.store, Some("Other Root"), Some("resource-b"), None).await;
+
+        let (status, body) =
+            get_json(test.router, "/v1/threads?resourceId=resource-a&root=true").await;
+        assert_eq!(status, StatusCode::OK);
+        let items = body["items"].as_array().expect("items array");
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].as_str(), Some(matching.as_str()));
+        assert_eq!(body["total"].as_u64(), Some(1));
+        assert_eq!(body["has_more"].as_bool(), Some(false));
+    }
+
+    #[tokio::test]
+    async fn list_threads_rejects_root_and_parent_combination() {
+        let test = make_test_app();
+
+        let (status, body) =
+            get_json(test.router, "/v1/threads?root=true&parentThreadId=parent-1").await;
+
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(
+            body["error"].as_str(),
+            Some("root=true cannot be combined with parentThreadId")
+        );
+    }
+
+    #[tokio::test]
     async fn list_thread_summaries_includes_latest_run_agent() {
         let test = make_test_app();
         let thread_id = seed_thread_with_lineage(
@@ -741,7 +779,7 @@ mod integration {
         test.store.save_messages(&id, &msgs).await.unwrap();
 
         let (status, body) = get_json(
-            test.router,
+            test.router.clone(),
             &format!("/v1/threads/{id}/messages?offset=3&limit=4"),
         )
         .await;
@@ -750,7 +788,19 @@ mod integration {
         assert_eq!(messages.len(), 4);
         assert_eq!(body["total"].as_u64(), Some(10));
         assert_eq!(body["has_more"].as_bool(), Some(true));
-        assert_eq!(body["next_cursor"].as_str(), Some("7"));
+        let next_cursor = body["next_cursor"].as_str().expect("next cursor");
+
+        let (status, body) = get_json(
+            test.router.clone(),
+            &format!("/v1/threads/{id}/messages?cursor={next_cursor}&limit=4"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let messages = body["messages"].as_array().expect("messages array");
+        assert_eq!(messages.len(), 3);
+        assert_eq!(messages[0]["content"][0]["text"].as_str(), Some("msg-7"));
+        assert_eq!(messages[2]["content"][0]["text"].as_str(), Some("msg-9"));
+        assert_eq!(body["has_more"].as_bool(), Some(false));
     }
 
     #[tokio::test]
@@ -761,7 +811,7 @@ mod integration {
         test.store.save_messages(&id, &msgs).await.unwrap();
 
         let (status, body) = get_json(
-            test.router,
+            test.router.clone(),
             &format!("/v1/threads/{id}/messages?cursor=2&limit=2"),
         )
         .await;
@@ -772,7 +822,18 @@ mod integration {
         assert_eq!(messages[1]["content"][0]["text"].as_str(), Some("msg-3"));
         assert_eq!(body["total"].as_u64(), Some(6));
         assert_eq!(body["has_more"].as_bool(), Some(true));
-        assert_eq!(body["next_cursor"].as_str(), Some("4"));
+        let next_cursor = body["next_cursor"].as_str().expect("next cursor");
+
+        let (status, body) = get_json(
+            test.router.clone(),
+            &format!("/v1/threads/{id}/messages?cursor={next_cursor}&limit=2"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let messages = body["messages"].as_array().expect("messages array");
+        assert_eq!(messages.len(), 2);
+        assert_eq!(messages[0]["content"][0]["text"].as_str(), Some("msg-4"));
+        assert_eq!(messages[1]["content"][0]["text"].as_str(), Some("msg-5"));
     }
 
     #[tokio::test]
@@ -788,7 +849,7 @@ mod integration {
         assert_eq!(status, StatusCode::BAD_REQUEST);
         assert_eq!(
             body["error"].as_str(),
-            Some("cursor must be an unsigned integer offset")
+            Some("cursor must be a valid pagination token")
         );
     }
 
@@ -1559,7 +1620,7 @@ mod integration {
         test.store.save_messages(&id, &msgs).await.unwrap();
 
         let (status, body) = get_json(
-            test.router,
+            test.router.clone(),
             &format!("/v1/ai-sdk/threads/{id}/messages?cursor=1&limit=2"),
         )
         .await;
@@ -1569,7 +1630,18 @@ mod integration {
         assert_eq!(messages[0]["parts"][0]["text"].as_str(), Some("msg-1"));
         assert_eq!(messages[1]["parts"][0]["text"].as_str(), Some("msg-2"));
         assert_eq!(body["has_more"].as_bool(), Some(true));
-        assert_eq!(body["next_cursor"].as_str(), Some("3"));
+        let next_cursor = body["next_cursor"].as_str().expect("next cursor");
+
+        let (status, body) = get_json(
+            test.router.clone(),
+            &format!("/v1/ai-sdk/threads/{id}/messages?cursor={next_cursor}&limit=2"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let messages = body["messages"].as_array().unwrap();
+        assert_eq!(messages.len(), 2);
+        assert_eq!(messages[0]["parts"][0]["text"].as_str(), Some("msg-3"));
+        assert_eq!(messages[1]["parts"][0]["text"].as_str(), Some("msg-4"));
     }
 
     #[tokio::test]
@@ -1609,7 +1681,7 @@ mod integration {
         test.store.save_messages(&id, &msgs).await.unwrap();
 
         let (status, body) = get_json(
-            test.router,
+            test.router.clone(),
             &format!("/v1/ag-ui/threads/{id}/messages?cursor=1&limit=2"),
         )
         .await;
@@ -1619,7 +1691,18 @@ mod integration {
         assert_eq!(messages[0]["content"][0]["text"].as_str(), Some("msg-1"));
         assert_eq!(messages[1]["content"][0]["text"].as_str(), Some("msg-2"));
         assert_eq!(body["has_more"].as_bool(), Some(true));
-        assert_eq!(body["next_cursor"].as_str(), Some("3"));
+        let next_cursor = body["next_cursor"].as_str().expect("next cursor");
+
+        let (status, body) = get_json(
+            test.router.clone(),
+            &format!("/v1/ag-ui/threads/{id}/messages?cursor={next_cursor}&limit=2"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let messages = body["messages"].as_array().unwrap();
+        assert_eq!(messages.len(), 2);
+        assert_eq!(messages[0]["content"][0]["text"].as_str(), Some("msg-3"));
+        assert_eq!(messages[1]["content"][0]["text"].as_str(), Some("msg-4"));
     }
 
     #[tokio::test]

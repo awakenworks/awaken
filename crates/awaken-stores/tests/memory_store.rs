@@ -6,7 +6,8 @@ use awaken_contract::contract::lifecycle::{RunStatus, TerminationReason};
 use awaken_contract::contract::message::Message;
 use awaken_contract::contract::storage::{
     MessageOrder, MessageQuery, MessageSeqRange, MessageVisibilityFilter, RunMessageInput,
-    RunMessageOutput, RunQuery, RunStore, StorageError, ThreadQuery, ThreadRunStore, ThreadStore,
+    RunMessageOutput, RunQuery, RunStore, StorageError, ThreadParentFilter, ThreadQuery,
+    ThreadRunStore, ThreadStore,
 };
 use awaken_contract::thread::Thread;
 use awaken_stores::InMemoryStore;
@@ -105,7 +106,7 @@ async fn list_threads_query_filters_lineage() {
             offset: 0,
             limit: 10,
             resource_id: Some("resource-a".to_string()),
-            parent_thread_id: Some("parent-1".to_string()),
+            parent_filter: ThreadParentFilter::Parent("parent-1".to_string()),
         })
         .await
         .unwrap();
