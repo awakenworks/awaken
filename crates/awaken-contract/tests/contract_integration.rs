@@ -172,6 +172,10 @@ fn tool_descriptor_serialization_roundtrip() {
 fn storage_error_variants_display_correctly() {
     let errors = vec![
         (
+            StorageError::Validation("bad lineage".into()),
+            "validation error: bad lineage",
+        ),
+        (
             StorageError::NotFound("thread-1".into()),
             "not found: thread-1",
         ),

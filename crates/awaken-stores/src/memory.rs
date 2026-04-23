@@ -8,9 +8,10 @@ use awaken_contract::contract::message::Message;
 use awaken_contract::contract::profile_store::{ProfileEntry, ProfileOwner, ProfileStore};
 use awaken_contract::contract::storage::{
     MessagePage, MessageQuery, RunPage, RunQuery, RunRecord, RunStore, StorageError, ThreadPage,
-    ThreadQuery, ThreadRunStore, ThreadStore, paginate_message_records, paginate_threads,
+    ThreadQuery, ThreadRunStore, ThreadStore, checkpoint_parent_thread_id,
+    paginate_message_records, paginate_threads,
 };
-use awaken_contract::thread::Thread;
+use awaken_contract::thread::{Thread, normalize_lineage_id};
 use serde_json::Value;
 use tokio::sync::RwLock;
 
@@ -37,6 +38,58 @@ impl InMemoryStore {
     }
 }
 
+fn validate_thread_hierarchy_map(
+    threads: &HashMap<String, Thread>,
+    thread_id: &str,
+    parent_thread_id: Option<&str>,
+) -> Result<(), StorageError> {
+    let Some(parent_thread_id) = normalize_lineage_id(parent_thread_id) else {
+        return Ok(());
+    };
+    if parent_thread_id == thread_id {
+        return Err(StorageError::Validation(format!(
+            "thread '{thread_id}' cannot parent itself"
+        )));
+    }
+
+    let root_parent_thread_id = parent_thread_id.clone();
+    let mut current_thread_id = parent_thread_id;
+    let mut visited = std::collections::HashSet::from([thread_id.to_owned()]);
+
+    loop {
+        if !visited.insert(current_thread_id.clone()) {
+            return Err(StorageError::Validation(format!(
+                "thread hierarchy cycle detected at '{current_thread_id}'"
+            )));
+        }
+
+        let Some(thread) = threads.get(&current_thread_id) else {
+            let message = if current_thread_id == root_parent_thread_id {
+                format!("parent thread not found: {root_parent_thread_id}")
+            } else {
+                format!("thread hierarchy references missing ancestor '{current_thread_id}'")
+            };
+            return Err(StorageError::Validation(message));
+        };
+
+        let Some(next_parent_thread_id) = normalize_lineage_id(thread.parent_thread_id.as_deref())
+        else {
+            return Ok(());
+        };
+        current_thread_id = next_parent_thread_id;
+    }
+}
+
+fn collect_child_ids(threads: &HashMap<String, Thread>, parent_thread_id: &str) -> Vec<String> {
+    let mut child_ids: Vec<String> = threads
+        .values()
+        .filter(|thread| thread.parent_thread_id.as_deref() == Some(parent_thread_id))
+        .map(|thread| thread.id.clone())
+        .collect();
+    child_ids.sort();
+    child_ids
+}
+
 // ── ThreadStore ─────────────────────────────────────────────────────
 
 #[async_trait]
@@ -47,8 +100,23 @@ impl ThreadStore for InMemoryStore {
     }
 
     async fn save_thread(&self, thread: &Thread) -> Result<(), StorageError> {
+        let mut normalized = thread.clone();
+        normalized.normalize_lineage();
         let mut guard = self.threads.write().await;
-        guard.insert(thread.id.clone(), thread.clone());
+        guard.insert(thread.id.clone(), normalized);
+        Ok(())
+    }
+
+    async fn save_thread_validated(&self, thread: &Thread) -> Result<(), StorageError> {
+        let mut normalized = thread.clone();
+        normalized.normalize_lineage();
+        let mut guard = self.threads.write().await;
+        validate_thread_hierarchy_map(
+            &guard,
+            &normalized.id,
+            normalized.parent_thread_id.as_deref(),
+        )?;
+        guard.insert(normalized.id.clone(), normalized);
         Ok(())
     }
 
@@ -57,6 +125,75 @@ impl ThreadStore for InMemoryStore {
         let mut messages = self.messages.write().await;
         threads.remove(thread_id);
         messages.remove(thread_id);
+        Ok(())
+    }
+
+    async fn delete_thread_with_strategy(
+        &self,
+        thread_id: &str,
+        strategy: awaken_contract::contract::storage::ChildThreadDeleteStrategy,
+    ) -> Result<(), StorageError> {
+        let mut threads = self.threads.write().await;
+        let mut messages = self.messages.write().await;
+        if !threads.contains_key(thread_id) {
+            return Err(StorageError::NotFound(thread_id.to_owned()));
+        }
+
+        match strategy {
+            awaken_contract::contract::storage::ChildThreadDeleteStrategy::Reject => {
+                if !collect_child_ids(&threads, thread_id).is_empty() {
+                    return Err(StorageError::Validation(format!(
+                        "thread '{thread_id}' has child threads; choose 'detach' or 'cascade'"
+                    )));
+                }
+                threads.remove(thread_id);
+                messages.remove(thread_id);
+            }
+            awaken_contract::contract::storage::ChildThreadDeleteStrategy::Detach => {
+                let updated_at = current_millis();
+                for child_id in collect_child_ids(&threads, thread_id) {
+                    if let Some(child) = threads.get_mut(&child_id) {
+                        child.parent_thread_id = None;
+                        child.normalize_lineage();
+                        child.metadata.updated_at = Some(updated_at);
+                    }
+                }
+                threads.remove(thread_id);
+                messages.remove(thread_id);
+            }
+            awaken_contract::contract::storage::ChildThreadDeleteStrategy::Cascade => {
+                let mut visited = std::collections::HashSet::new();
+                let mut stack = vec![(thread_id.to_owned(), false)];
+                let mut delete_order = Vec::new();
+
+                while let Some((current_thread_id, expanded)) = stack.pop() {
+                    if expanded {
+                        delete_order.push(current_thread_id);
+                        continue;
+                    }
+
+                    if !visited.insert(current_thread_id.clone()) {
+                        return Err(StorageError::Validation(format!(
+                            "thread hierarchy cycle detected while deleting '{thread_id}'"
+                        )));
+                    }
+
+                    stack.push((current_thread_id.clone(), true));
+                    for child_id in collect_child_ids(&threads, &current_thread_id)
+                        .into_iter()
+                        .rev()
+                    {
+                        stack.push((child_id, false));
+                    }
+                }
+
+                for id in delete_order {
+                    threads.remove(&id);
+                    messages.remove(&id);
+                }
+            }
+        }
+
         Ok(())
     }
 
@@ -203,15 +340,18 @@ impl ThreadRunStore for InMemoryStore {
     ) -> Result<(), StorageError> {
         let now = current_millis();
         let mut thread_guard = self.threads.write().await;
+        let existing_thread = thread_guard.get(thread_id).cloned();
+        validate_thread_hierarchy_map(
+            &thread_guard,
+            thread_id,
+            checkpoint_parent_thread_id(existing_thread.as_ref(), run),
+        )?;
         let mut msg_guard = self.messages.write().await;
         let mut run_guard = self.runs.write().await;
-        let mut thread = thread_guard
-            .get(thread_id)
-            .cloned()
-            .unwrap_or_else(|| Thread::with_id(thread_id));
-        thread.metadata.created_at.get_or_insert(now);
-        thread.metadata.updated_at = Some(now);
+        let mut thread = existing_thread.unwrap_or_else(|| Thread::with_id(thread_id));
+        thread.touch(now);
         thread.apply_run_projection(run);
+        thread.normalize_lineage();
         thread_guard.insert(thread_id.to_owned(), thread);
         msg_guard.insert(thread_id.to_owned(), messages.to_vec());
         run_guard.insert(run.run_id.clone(), run.clone());
@@ -335,6 +475,8 @@ mod tests {
         RunQuery, RunRecord, RunStore, ThreadRunStore, ThreadStore,
     };
     use awaken_contract::thread::Thread;
+    use std::sync::Arc;
+    use tokio::sync::Barrier;
 
     fn make_run(run_id: &str, thread_id: &str, status: RunStatus) -> RunRecord {
         RunRecord {
@@ -407,6 +549,45 @@ mod tests {
         }
         let page = store.list_threads(1, 2).await.unwrap();
         assert_eq!(page.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn save_thread_validated_serializes_concurrent_cycle_updates() {
+        let store = Arc::new(InMemoryStore::new());
+        store.save_thread(&Thread::with_id("a")).await.unwrap();
+        store.save_thread(&Thread::with_id("b")).await.unwrap();
+
+        let read_guard = store.threads.read().await;
+        let barrier = Arc::new(Barrier::new(3));
+        let spawn_update = |thread_id: &'static str, parent_thread_id: &'static str| {
+            let store = store.clone();
+            let barrier = barrier.clone();
+            tokio::spawn(async move {
+                barrier.wait().await;
+                store
+                    .save_thread_validated(
+                        &Thread::with_id(thread_id).with_parent_thread_id(parent_thread_id),
+                    )
+                    .await
+            })
+        };
+
+        let left = spawn_update("a", "b");
+        let right = spawn_update("b", "a");
+        barrier.wait().await;
+        tokio::task::yield_now().await;
+        drop(read_guard);
+
+        let left = left.await.unwrap();
+        let right = right.await.unwrap();
+        assert_ne!(left.is_ok(), right.is_ok());
+
+        let a = store.load_thread("a").await.unwrap().unwrap();
+        let b = store.load_thread("b").await.unwrap().unwrap();
+        assert!(
+            !(a.parent_thread_id.as_deref() == Some("b")
+                && b.parent_thread_id.as_deref() == Some("a"))
+        );
     }
 
     #[tokio::test]

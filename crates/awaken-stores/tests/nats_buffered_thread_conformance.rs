@@ -79,6 +79,46 @@ async fn nats_append_message_records_assigns_seq() {
 }
 
 #[tokio::test]
+async fn nats_checkpoint_rejects_missing_parent_thread() {
+    let fixture = NatsFixture::start().await;
+    let store = make_store(&fixture).await;
+    thread_store_conformance::checkpoint_rejects_missing_parent_thread(&store).await;
+    store.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn nats_checkpoint_rejects_cycle_parent_assignment() {
+    let fixture = NatsFixture::start().await;
+    let store = make_store(&fixture).await;
+    thread_store_conformance::checkpoint_rejects_cycle_parent_assignment(&store).await;
+    store.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn nats_delete_thread_with_detach_preserves_children() {
+    let fixture = NatsFixture::start().await;
+    let store = make_store(&fixture).await;
+    thread_store_conformance::delete_thread_with_detach_preserves_children(&store).await;
+    store.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn nats_delete_thread_with_reject_preserves_tree() {
+    let fixture = NatsFixture::start().await;
+    let store = make_store(&fixture).await;
+    thread_store_conformance::delete_thread_with_reject_preserves_tree(&store).await;
+    store.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn nats_delete_thread_with_cascade_removes_descendants() {
+    let fixture = NatsFixture::start().await;
+    let store = make_store(&fixture).await;
+    thread_store_conformance::delete_thread_with_cascade_removes_descendants(&store).await;
+    store.shutdown().await.unwrap();
+}
+
+#[tokio::test]
 async fn nats_load_run_returns_none_for_unknown() {
     let fixture = NatsFixture::start().await;
     let store = make_store(&fixture).await;

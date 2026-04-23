@@ -10,6 +10,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use awaken_contract::contract::message::Message;
+use awaken_contract::contract::storage::{ChildThreadDeleteStrategy, StorageError};
 
 use crate::app::AppState;
 use crate::config_routes::config_routes;
@@ -59,8 +60,26 @@ pub(crate) fn map_mailbox_error(error: MailboxError) -> ApiError {
             ApiError::Conflict(msg)
         }
         MailboxError::Validation(msg) => ApiError::BadRequest(msg),
+        MailboxError::Store(StorageError::Validation(msg)) => ApiError::BadRequest(msg),
+        MailboxError::Store(
+            err @ StorageError::AlreadyExists(_) | err @ StorageError::VersionConflict { .. },
+        ) => ApiError::Conflict(err.to_string()),
         MailboxError::Store(err) => ApiError::Internal(err.to_string()),
         MailboxError::Internal(msg) => ApiError::Internal(msg),
+    }
+}
+
+fn map_thread_storage_error(thread_id: Option<&str>, error: StorageError) -> ApiError {
+    match error {
+        StorageError::Validation(message) => ApiError::BadRequest(message),
+        err @ StorageError::AlreadyExists(_) | err @ StorageError::VersionConflict { .. } => {
+            ApiError::Conflict(err.to_string())
+        }
+        StorageError::NotFound(id) if thread_id == Some(id.as_str()) => {
+            ApiError::ThreadNotFound(id)
+        }
+        StorageError::NotFound(id) => ApiError::NotFound(format!("not found: {id}")),
+        err => ApiError::Internal(err.to_string()),
     }
 }
 
@@ -270,6 +289,52 @@ struct CreateThreadPayload {
     parent_thread_id: Option<String>,
 }
 
+#[derive(Debug, Deserialize)]
+struct DeleteThreadParams {
+    #[serde(
+        default = "default_child_thread_delete_strategy",
+        alias = "childStrategy"
+    )]
+    child_strategy: ChildThreadDeleteStrategy,
+}
+
+fn default_child_thread_delete_strategy() -> ChildThreadDeleteStrategy {
+    ChildThreadDeleteStrategy::Detach
+}
+
+#[derive(Debug, Clone, Default)]
+enum OptionalField<T> {
+    #[default]
+    Unset,
+    Null,
+    Value(T),
+}
+
+impl<T> OptionalField<T> {
+    fn into_optional_update(self) -> Option<Option<T>> {
+        match self {
+            Self::Unset => None,
+            Self::Null => Some(None),
+            Self::Value(value) => Some(Some(value)),
+        }
+    }
+}
+
+impl<'de, T> Deserialize<'de> for OptionalField<T>
+where
+    T: Deserialize<'de>,
+{
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        Option::<T>::deserialize(deserializer).map(|value| match value {
+            Some(value) => Self::Value(value),
+            None => Self::Null,
+        })
+    }
+}
+
 #[tracing::instrument(skip(st, payload))]
 async fn create_thread(
     State(st): State<AppState>,
@@ -284,7 +349,7 @@ async fn create_thread(
         },
     )
     .await
-    .map_err(|e| ApiError::Internal(e.to_string()))?;
+    .map_err(|error| map_thread_storage_error(None, error))?;
     let value = serde_json::to_value(&thread).map_err(|e| ApiError::Internal(e.to_string()))?;
     Ok((StatusCode::CREATED, Json(value)))
 }
@@ -308,18 +373,17 @@ async fn get_thread(
 async fn delete_thread(
     State(st): State<AppState>,
     Path(id): Path<String>,
+    Query(params): Query<DeleteThreadParams>,
 ) -> Result<StatusCode, ApiError> {
-    // Verify thread exists
-    st.store
-        .load_thread(&id)
-        .await
-        .map_err(|e| ApiError::Internal(e.to_string()))?
-        .ok_or(ApiError::ThreadNotFound(id.clone()))?;
-
-    st.store
-        .delete_thread(&id)
-        .await
-        .map_err(|e| ApiError::Internal(e.to_string()))?;
+    crate::services::thread_service::delete_thread(
+        st.store.as_ref(),
+        &id,
+        crate::services::thread_service::DeleteThreadOptions {
+            child_strategy: params.child_strategy,
+        },
+    )
+    .await
+    .map_err(|error| map_thread_storage_error(Some(id.as_str()), error))?;
 
     Ok(StatusCode::NO_CONTENT)
 }
@@ -329,9 +393,9 @@ struct PatchThreadPayload {
     #[serde(default)]
     title: Option<String>,
     #[serde(default, alias = "resourceId")]
-    resource_id: Option<String>,
+    resource_id: OptionalField<String>,
     #[serde(default, alias = "parentThreadId")]
-    parent_thread_id: Option<String>,
+    parent_thread_id: OptionalField<String>,
     #[serde(default)]
     custom: Option<std::collections::HashMap<String, Value>>,
 }
@@ -342,33 +406,18 @@ async fn patch_thread(
     Path(id): Path<String>,
     Json(payload): Json<PatchThreadPayload>,
 ) -> Result<Json<Value>, ApiError> {
-    let mut thread = st
-        .store
-        .load_thread(&id)
-        .await
-        .map_err(|e| ApiError::Internal(e.to_string()))?
-        .ok_or(ApiError::ThreadNotFound(id.clone()))?;
-
-    if let Some(title) = payload.title {
-        thread.metadata.title = Some(title);
-    }
-    if let Some(resource_id) = payload.resource_id {
-        thread.resource_id = Some(resource_id);
-    }
-    if let Some(parent_thread_id) = payload.parent_thread_id {
-        thread.parent_thread_id = Some(parent_thread_id);
-    }
-    if let Some(custom) = payload.custom {
-        for (key, value) in custom {
-            thread.metadata.custom.insert(key, value);
-        }
-    }
-    thread.metadata.updated_at = Some(awaken_contract::now_ms());
-
-    st.store
-        .save_thread(&thread)
-        .await
-        .map_err(|e| ApiError::Internal(e.to_string()))?;
+    let thread = crate::services::thread_service::update_thread(
+        st.store.as_ref(),
+        &id,
+        crate::services::thread_service::UpdateThreadOptions {
+            title: payload.title,
+            resource_id: payload.resource_id.into_optional_update(),
+            parent_thread_id: payload.parent_thread_id.into_optional_update(),
+            custom: payload.custom,
+        },
+    )
+    .await
+    .map_err(|error| map_thread_storage_error(Some(id.as_str()), error))?;
 
     let value = serde_json::to_value(thread).map_err(|e| ApiError::Internal(e.to_string()))?;
     Ok(Json(value))

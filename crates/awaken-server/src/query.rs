@@ -4,6 +4,7 @@ use awaken_contract::contract::message::{Message, Visibility};
 use awaken_contract::contract::storage::{
     MessageOrder, MessageQuery, MessageVisibilityFilter, ThreadQuery,
 };
+use awaken_contract::thread::normalize_lineage_id;
 use serde::Deserialize;
 
 /// Default page size for list endpoints.
@@ -206,8 +207,8 @@ impl ThreadQueryParams {
         Ok(ThreadQuery {
             offset: self.cursor_offset()?,
             limit: self.clamped_limit(),
-            resource_id: self.resource_id.clone(),
-            parent_thread_id: self.parent_thread_id.clone(),
+            resource_id: normalize_lineage_id(self.resource_id.as_deref()),
+            parent_thread_id: normalize_lineage_id(self.parent_thread_id.as_deref()),
         })
     }
 }
@@ -451,5 +452,17 @@ mod tests {
                 parent_thread_id: Some("parent-1".to_string()),
             }
         );
+    }
+
+    #[test]
+    fn thread_query_params_normalize_lineage_filters() {
+        let params: ThreadQueryParams =
+            serde_json::from_str(r#"{"resourceId":" resource-a ","parentThreadId":"   "}"#)
+                .unwrap();
+
+        let query = params.storage_query().unwrap();
+
+        assert_eq!(query.resource_id.as_deref(), Some("resource-a"));
+        assert_eq!(query.parent_thread_id, None);
     }
 }

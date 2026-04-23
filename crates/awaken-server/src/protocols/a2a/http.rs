@@ -23,7 +23,7 @@ use awaken_contract::contract::mailbox::{RunDispatch, RunDispatchStatus};
 use awaken_contract::contract::message::{
     Message as AwakenMessage, Role as AwakenRole, Visibility,
 };
-use awaken_contract::contract::storage::{RunQuery, RunRecord, WaitingReason};
+use awaken_contract::contract::storage::{RunQuery, RunRecord, StorageError, WaitingReason};
 use awaken_contract::thread::Thread;
 pub use awaken_protocol_a2a::{
     AgentCapabilities, AgentCard, AgentInterface, AgentProvider, AgentSkill, Artifact,
@@ -1563,12 +1563,7 @@ async fn record_task_binding(
     task_id: &str,
     start_message_id: &str,
 ) -> Result<(), A2aError> {
-    let existing = st
-        .store
-        .load_thread(thread_id)
-        .await
-        .map_err(|e| A2aError::Internal(e.to_string()))?;
-    let mut thread = existing.unwrap_or_else(|| Thread::with_id(thread_id));
+    let (exists, mut thread) = load_thread_metadata_projection(st, thread_id).await?;
     let mut bindings = thread
         .metadata
         .custom
@@ -1592,24 +1587,7 @@ async fn record_task_binding(
         TASK_BINDINGS_METADATA_KEY.to_string(),
         serde_json::to_value(bindings).map_err(|e| A2aError::Internal(e.to_string()))?,
     );
-
-    if st
-        .store
-        .load_thread(thread_id)
-        .await
-        .map_err(|e| A2aError::Internal(e.to_string()))?
-        .is_some()
-    {
-        st.store
-            .update_thread_metadata(thread_id, thread.metadata)
-            .await
-            .map_err(|e| A2aError::Internal(e.to_string()))?;
-    } else {
-        st.store
-            .save_thread(&thread)
-            .await
-            .map_err(|e| A2aError::Internal(e.to_string()))?;
-    }
+    persist_thread_metadata(st, thread_id, exists, thread).await?;
     Ok(())
 }
 
@@ -2262,14 +2240,8 @@ async fn save_push_notification_configs(
         return Err(A2aError::task_not_found(task_id.to_string()));
     };
     let thread_id = task.thread_id;
-    let existing = st
-        .store
-        .load_thread(&thread_id)
-        .await
-        .map_err(|e| A2aError::Internal(e.to_string()))?;
-
-    let thread = existing.unwrap_or_else(|| Thread::with_id(&thread_id));
-    save_thread_push_notification_configs(st, &thread_id, thread, task_id, configs).await
+    let (exists, thread) = load_thread_metadata_projection(st, &thread_id).await?;
+    save_thread_push_notification_configs(st, &thread_id, exists, thread, task_id, configs).await
 }
 
 async fn upsert_push_notification_config(
@@ -2294,12 +2266,7 @@ async fn upsert_push_notification_config_for_thread(
     tenant: Option<&str>,
     config: PushNotificationConfig,
 ) -> Result<(), A2aError> {
-    let existing = st
-        .store
-        .load_thread(thread_id)
-        .await
-        .map_err(|e| A2aError::Internal(e.to_string()))?;
-    let thread = existing.unwrap_or_else(|| Thread::with_id(thread_id));
+    let (exists, thread) = load_thread_metadata_projection(st, thread_id).await?;
     let mut configs = load_thread_push_notification_configs(&thread, task_id)?;
     if let Some(tenant) = tenant {
         configs.retain(|existing| existing.tenant.as_deref() == Some(tenant));
@@ -2309,7 +2276,7 @@ async fn upsert_push_notification_config_for_thread(
     } else {
         configs.push(config);
     }
-    save_thread_push_notification_configs(st, thread_id, thread, task_id, configs).await
+    save_thread_push_notification_configs(st, thread_id, exists, thread, task_id, configs).await
 }
 
 fn load_thread_push_notification_configs(
@@ -2330,6 +2297,7 @@ fn load_thread_push_notification_configs(
 async fn save_thread_push_notification_configs(
     st: &AppState,
     thread_id: &str,
+    exists: bool,
     mut thread: Thread,
     task_id: &str,
     configs: Vec<PushNotificationConfig>,
@@ -2353,26 +2321,69 @@ async fn save_thread_push_notification_configs(
             serde_json::to_value(stored).map_err(|e| A2aError::Internal(e.to_string()))?,
         );
     }
+    persist_thread_metadata(st, thread_id, exists, thread).await?;
 
-    if st
+    Ok(())
+}
+
+async fn load_thread_metadata_projection(
+    st: &AppState,
+    thread_id: &str,
+) -> Result<(bool, Thread), A2aError> {
+    let existing = st
         .store
         .load_thread(thread_id)
         .await
-        .map_err(|e| A2aError::Internal(e.to_string()))?
-        .is_some()
-    {
+        .map_err(|e| A2aError::Internal(e.to_string()))?;
+    Ok(materialize_thread_metadata_projection(
+        thread_id,
+        existing,
+        awaken_contract::now_ms(),
+    ))
+}
+
+fn materialize_thread_metadata_projection(
+    thread_id: &str,
+    existing: Option<Thread>,
+    now: u64,
+) -> (bool, Thread) {
+    let exists = existing.is_some();
+    let mut thread = existing.unwrap_or_else(|| Thread::with_id(thread_id));
+    thread.touch(now);
+    (exists, thread)
+}
+
+async fn persist_thread_metadata(
+    st: &AppState,
+    thread_id: &str,
+    exists: bool,
+    thread: Thread,
+) -> Result<(), A2aError> {
+    if exists {
         st.store
             .update_thread_metadata(thread_id, thread.metadata)
             .await
-            .map_err(|e| A2aError::Internal(e.to_string()))?;
+            .map_err(map_a2a_storage_error)?;
     } else {
         st.store
-            .save_thread(&thread)
+            .save_thread_validated(&thread)
             .await
-            .map_err(|e| A2aError::Internal(e.to_string()))?;
+            .map_err(map_a2a_storage_error)?;
     }
-
     Ok(())
+}
+
+fn map_a2a_storage_error(error: StorageError) -> A2aError {
+    match error {
+        StorageError::Validation(message) => A2aError::Validation {
+            message: "invalid A2A request".to_string(),
+            violations: vec![FieldViolation {
+                field: "thread".to_string(),
+                description: message,
+            }],
+        },
+        other => A2aError::Internal(other.to_string()),
+    }
 }
 
 fn spawn_push_notification_driver(
@@ -2946,6 +2957,44 @@ mod tests {
     #[test]
     fn a2a_routes_build_without_conflicts() {
         let _ = a2a_routes();
+    }
+
+    #[test]
+    fn materialize_thread_metadata_projection_initializes_new_threads() {
+        let (exists, thread) = materialize_thread_metadata_projection("thread-1", None, 1_234);
+
+        assert!(!exists);
+        assert_eq!(thread.id, "thread-1");
+        assert_eq!(thread.metadata.created_at, Some(1_234));
+        assert_eq!(thread.metadata.updated_at, Some(1_234));
+    }
+
+    #[test]
+    fn materialize_thread_metadata_projection_preserves_existing_creation_time() {
+        let mut existing = Thread::with_id("thread-1");
+        existing.metadata.created_at = Some(100);
+        existing.metadata.updated_at = Some(200);
+
+        let (exists, thread) =
+            materialize_thread_metadata_projection("thread-1", Some(existing), 1_234);
+
+        assert!(exists);
+        assert_eq!(thread.metadata.created_at, Some(100));
+        assert_eq!(thread.metadata.updated_at, Some(1_234));
+    }
+
+    #[test]
+    fn map_a2a_storage_error_translates_validation_failures() {
+        let error = map_a2a_storage_error(StorageError::Validation("bad thread".to_string()));
+
+        assert!(matches!(
+            error,
+            A2aError::Validation { message, violations }
+                if message == "invalid A2A request"
+                    && violations.len() == 1
+                    && violations[0].field == "thread"
+                    && violations[0].description == "bad thread"
+        ));
     }
 
     #[test]

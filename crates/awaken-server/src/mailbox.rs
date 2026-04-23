@@ -6194,6 +6194,10 @@ mod tests {
             "test-consumer".to_string(),
             MailboxConfig::default(),
         ));
+        thread_store
+            .save_thread(&Thread::with_id("thread-parent"))
+            .await
+            .unwrap();
 
         let mut request = RunRequest::new("thread-child", vec![Message::user("hi")])
             .with_agent_id("agent")

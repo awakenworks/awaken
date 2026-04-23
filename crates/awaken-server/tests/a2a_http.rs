@@ -628,6 +628,86 @@ async fn subscribe_stream_returns_updates_for_existing_task() {
 }
 
 #[tokio::test]
+async fn return_immediately_materializes_a2a_threads_with_timestamps() {
+    let (app, store) = build_test_fixture(
+        &["alpha"],
+        Arc::new(DelayedExecutor),
+        ServerConfig::default(),
+    );
+    let context_id = "thread-a2a-lazy";
+
+    let (status, body) = request_json(
+        &app,
+        "POST",
+        "/v1/a2a/message:send",
+        &[("content-type", "application/json")],
+        Some(json!({
+            "message": {
+                "taskId": "task-a2a-lazy-1",
+                "contextId": context_id,
+                "messageId": "msg-a2a-lazy-1",
+                "role": "ROLE_USER",
+                "parts": [{"text": "hello"}]
+            },
+            "configuration": {
+                "returnImmediately": true
+            }
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "unexpected body: {body}");
+
+    let first = store
+        .load_thread(context_id)
+        .await
+        .expect("load first thread")
+        .expect("first thread should exist");
+    let created_at = first
+        .metadata
+        .created_at
+        .expect("A2A metadata projection should initialize created_at");
+    let first_updated_at = first
+        .metadata
+        .updated_at
+        .expect("A2A metadata projection should initialize updated_at");
+    assert!(first.metadata.custom.contains_key("a2a.taskBindings"));
+
+    tokio::time::sleep(Duration::from_millis(20)).await;
+
+    let (status, body) = request_json(
+        &app,
+        "POST",
+        "/v1/a2a/message:send",
+        &[("content-type", "application/json")],
+        Some(json!({
+            "message": {
+                "taskId": "task-a2a-lazy-2",
+                "contextId": context_id,
+                "messageId": "msg-a2a-lazy-2",
+                "role": "ROLE_USER",
+                "parts": [{"text": "hello again"}]
+            },
+            "configuration": {
+                "returnImmediately": true
+            }
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "unexpected body: {body}");
+
+    let second = store
+        .load_thread(context_id)
+        .await
+        .expect("load second thread")
+        .expect("second thread should exist");
+    assert_eq!(second.metadata.created_at, Some(created_at));
+    assert!(
+        second.metadata.updated_at.unwrap_or_default() > first_updated_at,
+        "metadata-only A2A updates should refresh updated_at"
+    );
+}
+
+#[tokio::test]
 async fn push_notification_configs_roundtrip_and_inline_delivery_work() {
     use axum::{Json, Router, routing::post};
     use tokio::sync::oneshot;
