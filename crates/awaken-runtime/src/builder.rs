@@ -6,6 +6,7 @@ use awaken_contract::StateError;
 use awaken_contract::contract::executor::LlmExecutor;
 use awaken_contract::contract::storage::ThreadRunStore;
 use awaken_contract::contract::tool::Tool;
+use awaken_contract::contract::tool::ToolError;
 use awaken_contract::registry_spec::AgentSpec;
 
 #[cfg(feature = "a2a")]
@@ -285,6 +286,35 @@ impl AgentRuntimeBuilder {
         }
 
         Ok(runtime)
+    }
+
+    /// Register a built-in web search tool powered by SerpAPI-compatible API.
+    ///
+    /// # Arguments
+    /// * `api_key` - SerpAPI key. If empty, falls back to `SERPAPI_KEY` environment variable.
+    /// * `base_url` - Optional custom endpoint URL (defaults to `https://serpapi.com/search.json`).
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// let runtime = AgentRuntimeBuilder::new()
+    ///     .with_web_search("your-api-key", None)?
+    ///     .build()?;
+    /// ```
+    ///
+    /// Requires the `web-search` feature to be enabled.
+    #[cfg(feature = "web-search")]
+    pub fn with_web_search(
+        mut self,
+        api_key: impl Into<String>,
+        base_url: Option<String>,
+    ) -> Result<Self, ToolError> {
+        use crate::builtin_tools::WebSearchTool;
+        use std::sync::Arc;
+
+        let tool = WebSearchTool::new(api_key, base_url)?;
+        let id = WebSearchTool::TOOL_ID.to_string();
+        self = self.with_tool(id, Arc::new(tool));
+        Ok(self)
     }
 
     /// Build and initialize (async). Discovers remote agents after build.

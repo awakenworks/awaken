@@ -99,3 +99,6 @@ pub use awaken_server::app::{AppState, ServerConfig, ShutdownConfig, serve, serv
 pub use awaken_server::mailbox::{Mailbox, MailboxConfig};
 #[cfg(feature = "server")]
 pub use awaken_server::routes::build_router;
+
+#[cfg(feature = "web-search")]
+pub use crate::builtin_tools::WebSearchTool;

@@ -36,7 +36,8 @@ skills = ["dep:awaken-ext-skills"]
 reminder = ["dep:awaken-ext-reminder"]
 server = ["dep:awaken-server"]
 generative-ui = ["dep:awaken-ext-generative-ui"]
-full = ["permission", "observability", "mcp", "skills", "reminder", "server", "generative-ui"]
+web-search = ["awaken-runtime/web-search"]
+full = ["permission", "observability", "mcp", "skills", "reminder", "server", "generative-ui", "web-search"]
 
 [dev-dependencies]
 tokio = { workspace = true }

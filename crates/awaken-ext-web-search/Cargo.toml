@@ -1,0 +1,34 @@
+[package]
+name = "awaken-ext-web-search"
+version.workspace = true
+readme = "../../README.md"
+edition.workspace = true
+description = "Web search tool extension for Awaken AI Agent runtime"
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
+awaken-contract = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+async-trait = { workspace = true }
+tokio = { workspace = true, features = ["io-util", "net", "process", "time"] }
+futures = { workspace = true }
+reqwest = { workspace = true, optional = true }
+
+[features]
+default = ["serpapi"]
+serpapi = ["dep:reqwest"]
+
+[dev-dependencies]
+awaken-contract = { workspace = true }
+httpmock = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "io-util", "time"] }
+futures = { workspace = true }
+
+[lints]
+workspace = true
