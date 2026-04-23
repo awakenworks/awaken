@@ -3,7 +3,8 @@
 use awaken_contract::contract::lifecycle::RunStatus;
 use awaken_contract::contract::message::{Message, MessageMetadata};
 use awaken_contract::contract::storage::{
-    MessageOrder, MessageQuery, MessageVisibilityFilter, RunRecord, ThreadQuery, ThreadRunStore,
+    ChildThreadDeleteStrategy, MessageOrder, MessageQuery, MessageVisibilityFilter, RunRecord,
+    RunRequestSnapshot, StorageError, ThreadQuery, ThreadRunStore,
 };
 use awaken_contract::thread::Thread;
 
@@ -143,6 +144,125 @@ pub async fn list_threads_query_filters_lineage<S: ThreadRunStore>(store: &S) {
     assert_eq!(page.items, vec!["t-filter-match"]);
     assert_eq!(page.total, 1);
     assert!(!page.has_more);
+}
+
+pub async fn checkpoint_rejects_missing_parent_thread<S: ThreadRunStore>(store: &S) {
+    let run = RunRecord {
+        request: Some(RunRequestSnapshot {
+            parent_thread_id: Some("missing-parent".to_string()),
+            ..Default::default()
+        }),
+        ..make_run("r-missing-parent", "t-missing-parent", RunStatus::Created)
+    };
+
+    let error = store
+        .checkpoint("t-missing-parent", &[], &run)
+        .await
+        .expect_err("checkpoint should reject unknown parent thread");
+
+    assert!(
+        matches!(error, StorageError::Validation(message) if message == "parent thread not found: missing-parent")
+    );
+}
+
+pub async fn checkpoint_rejects_cycle_parent_assignment<S: ThreadRunStore>(store: &S) {
+    store.save_thread(&Thread::with_id("root")).await.unwrap();
+    store
+        .save_thread(&Thread::with_id("child").with_parent_thread_id("root"))
+        .await
+        .unwrap();
+
+    let run = RunRecord {
+        request: Some(RunRequestSnapshot {
+            parent_thread_id: Some("child".to_string()),
+            ..Default::default()
+        }),
+        ..make_run("r-cycle-parent", "root", RunStatus::Created)
+    };
+
+    let error = store
+        .checkpoint("root", &[], &run)
+        .await
+        .expect_err("checkpoint should reject cycles");
+
+    assert!(
+        matches!(error, StorageError::Validation(message) if message.contains("cycle detected"))
+    );
+}
+
+pub async fn delete_thread_with_detach_preserves_children<S: ThreadRunStore>(store: &S) {
+    store.save_thread(&Thread::with_id("root")).await.unwrap();
+    store
+        .save_thread(&Thread::with_id("child").with_parent_thread_id("root"))
+        .await
+        .unwrap();
+    store
+        .save_thread(&Thread::with_id("grandchild").with_parent_thread_id("child"))
+        .await
+        .unwrap();
+
+    store
+        .delete_thread_with_strategy("root", ChildThreadDeleteStrategy::Detach)
+        .await
+        .unwrap();
+
+    assert!(store.load_thread("root").await.unwrap().is_none());
+    assert_eq!(
+        store
+            .load_thread("child")
+            .await
+            .unwrap()
+            .and_then(|thread| thread.parent_thread_id),
+        None
+    );
+    assert_eq!(
+        store
+            .load_thread("grandchild")
+            .await
+            .unwrap()
+            .and_then(|thread| thread.parent_thread_id),
+        Some("child".to_string())
+    );
+}
+
+pub async fn delete_thread_with_reject_preserves_tree<S: ThreadRunStore>(store: &S) {
+    store.save_thread(&Thread::with_id("root")).await.unwrap();
+    store
+        .save_thread(&Thread::with_id("child").with_parent_thread_id("root"))
+        .await
+        .unwrap();
+
+    let error = store
+        .delete_thread_with_strategy("root", ChildThreadDeleteStrategy::Reject)
+        .await
+        .expect_err("reject strategy should fail");
+
+    assert!(
+        matches!(error, StorageError::Validation(message) if message.contains("child threads"))
+    );
+    assert!(store.load_thread("root").await.unwrap().is_some());
+    assert!(store.load_thread("child").await.unwrap().is_some());
+}
+
+pub async fn delete_thread_with_cascade_removes_descendants<S: ThreadRunStore>(store: &S) {
+    store.save_thread(&Thread::with_id("root")).await.unwrap();
+    store
+        .save_thread(&Thread::with_id("child").with_parent_thread_id("root"))
+        .await
+        .unwrap();
+    store
+        .save_thread(&Thread::with_id("grandchild").with_parent_thread_id("child"))
+        .await
+        .unwrap();
+
+    store
+        .delete_thread_with_strategy("root", ChildThreadDeleteStrategy::Cascade)
+        .await
+        .unwrap();
+
+    assert!(store.load_thread("root").await.unwrap().is_none());
+    assert!(store.load_thread("child").await.unwrap().is_none());
+    assert!(store.load_thread("grandchild").await.unwrap().is_none());
 }
 
 pub async fn list_message_records_query_filters_and_orders<S: ThreadRunStore>(store: &S) {

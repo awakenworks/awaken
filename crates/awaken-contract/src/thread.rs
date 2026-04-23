@@ -7,6 +7,21 @@ use crate::contract::storage::RunRecord;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+/// Normalize a lineage identifier by trimming whitespace and treating blanks as absent.
+#[must_use]
+pub fn normalize_lineage_id(value: Option<&str>) -> Option<String> {
+    value
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+}
+
+/// Normalize an owned lineage identifier by trimming whitespace and treating blanks as absent.
+#[must_use]
+pub fn normalize_lineage_id_owned(value: Option<String>) -> Option<String> {
+    normalize_lineage_id(value.as_deref())
+}
+
 /// Thread metadata.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ThreadMetadata {
@@ -89,25 +104,38 @@ impl Thread {
     /// Set the external resource grouping.
     #[must_use]
     pub fn with_resource_id(mut self, resource_id: impl Into<String>) -> Self {
-        self.resource_id = Some(resource_id.into());
+        self.resource_id = normalize_lineage_id_owned(Some(resource_id.into()));
         self
     }
 
     /// Set the parent thread identifier.
     #[must_use]
     pub fn with_parent_thread_id(mut self, parent_thread_id: impl Into<String>) -> Self {
-        self.parent_thread_id = Some(parent_thread_id.into());
+        self.parent_thread_id = normalize_lineage_id_owned(Some(parent_thread_id.into()));
         self
+    }
+
+    /// Normalize lineage identifiers in-place.
+    pub fn normalize_lineage(&mut self) {
+        self.resource_id = normalize_lineage_id_owned(self.resource_id.take());
+        self.parent_thread_id = normalize_lineage_id_owned(self.parent_thread_id.take());
+    }
+
+    /// Ensure timestamps are initialized and mark the thread as updated.
+    pub fn touch(&mut self, now: u64) {
+        self.metadata.created_at.get_or_insert(now);
+        self.metadata.updated_at = Some(now);
     }
 
     /// Update the thread's run pointers from a durable run record.
     pub fn apply_run_projection(&mut self, run: &RunRecord) {
         self.latest_run_id = Some(run.run_id.clone());
         if self.parent_thread_id.is_none() {
-            self.parent_thread_id = run
-                .request
-                .as_ref()
-                .and_then(|request| request.parent_thread_id.clone());
+            self.parent_thread_id = normalize_lineage_id(
+                run.request
+                    .as_ref()
+                    .and_then(|request| request.parent_thread_id.as_deref()),
+            );
         }
         match run.status {
             RunStatus::Created => {
@@ -254,6 +282,50 @@ mod tests {
     }
 
     #[test]
+    fn normalize_lineage_id_trims_and_drops_blank_values() {
+        assert_eq!(
+            normalize_lineage_id(Some(" parent-1 ")),
+            Some("parent-1".into())
+        );
+        assert_eq!(normalize_lineage_id(Some("   ")), None);
+        assert_eq!(normalize_lineage_id(None), None);
+    }
+
+    #[test]
+    fn normalize_lineage_updates_thread_fields() {
+        let mut thread = Thread::with_id("t-1");
+        thread.resource_id = Some(" resource-1 ".into());
+        thread.parent_thread_id = Some("   ".into());
+
+        thread.normalize_lineage();
+
+        assert_eq!(thread.resource_id.as_deref(), Some("resource-1"));
+        assert_eq!(thread.parent_thread_id, None);
+    }
+
+    #[test]
+    fn touch_initializes_created_and_updated_at() {
+        let mut thread = Thread::with_id("t-1");
+
+        thread.touch(1234);
+
+        assert_eq!(thread.metadata.created_at, Some(1234));
+        assert_eq!(thread.metadata.updated_at, Some(1234));
+    }
+
+    #[test]
+    fn touch_preserves_created_at_and_refreshes_updated_at() {
+        let mut thread = Thread::with_id("t-1");
+        thread.metadata.created_at = Some(1000);
+        thread.metadata.updated_at = Some(1500);
+
+        thread.touch(2000);
+
+        assert_eq!(thread.metadata.created_at, Some(1000));
+        assert_eq!(thread.metadata.updated_at, Some(2000));
+    }
+
+    #[test]
     fn thread_metadata_custom_preserved_in_serde() {
         let mut thread = Thread::with_id("t-1");
         thread.metadata.custom.insert("key".to_string(), json!(42));
@@ -327,7 +399,7 @@ mod tests {
         let mut thread = Thread::with_id("thread-1");
         let mut run = run_record("run-1", RunStatus::Created);
         run.request = Some(crate::contract::storage::RunRequestSnapshot {
-            parent_thread_id: Some("parent-thread".to_string()),
+            parent_thread_id: Some(" parent-thread ".to_string()),
             ..Default::default()
         });
 

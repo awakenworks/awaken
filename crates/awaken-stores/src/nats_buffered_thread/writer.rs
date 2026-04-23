@@ -1,7 +1,9 @@
 //! Checkpoint write path: KV latest_seq CAS + hot run cache + JetStream publish.
 
 use awaken_contract::contract::message::Message;
-use awaken_contract::contract::storage::{RunRecord, StorageError, ThreadRunStore};
+use awaken_contract::contract::storage::{
+    RunRecord, StorageError, ThreadRunStore, ThreadStore, checkpoint_parent_thread_id,
+};
 
 use super::{NatsBufferedThreadStore, entry, hot_meta, keys};
 
@@ -11,6 +13,14 @@ pub async fn checkpoint<T: ThreadRunStore + Send + Sync + 'static>(
     messages: &[Message],
     run: &RunRecord,
 ) -> Result<(), StorageError> {
+    let existing_thread = store.load_thread(thread_id).await?;
+    store
+        .validate_thread_hierarchy(
+            thread_id,
+            checkpoint_parent_thread_id(existing_thread.as_ref(), run),
+        )
+        .await?;
+
     let now = now_millis();
     // Reserve a unique seq but don't let readers observe it yet — that
     // only happens after the WAL publish lands. If publish fails we

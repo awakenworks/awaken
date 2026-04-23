@@ -1,7 +1,10 @@
 //! Thread CRUD operations.
 
-use awaken_contract::contract::storage::{StorageError, ThreadStore};
+use std::collections::HashMap;
+
+use awaken_contract::contract::storage::{ChildThreadDeleteStrategy, StorageError, ThreadStore};
 use awaken_contract::thread::Thread;
+use serde_json::Value;
 
 /// Parameters for creating a thread.
 #[derive(Debug, Clone, Default)]
@@ -9,6 +12,21 @@ pub struct CreateThreadOptions {
     pub title: Option<String>,
     pub resource_id: Option<String>,
     pub parent_thread_id: Option<String>,
+}
+
+/// Parameters for patching a thread.
+#[derive(Debug, Clone, Default)]
+pub struct UpdateThreadOptions {
+    pub title: Option<String>,
+    pub resource_id: Option<Option<String>>,
+    pub parent_thread_id: Option<Option<String>>,
+    pub custom: Option<HashMap<String, Value>>,
+}
+
+/// Parameters for deleting a thread.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct DeleteThreadOptions {
+    pub child_strategy: ChildThreadDeleteStrategy,
 }
 
 /// Create a new thread.
@@ -31,15 +49,16 @@ pub async fn create_thread_with_options(
     store: &dyn ThreadStore,
     options: CreateThreadOptions,
 ) -> Result<Thread, StorageError> {
+    let now = now_ms();
     let mut thread = Thread::new();
     if let Some(t) = options.title {
         thread.metadata.title = Some(t);
     }
     thread.resource_id = options.resource_id;
     thread.parent_thread_id = options.parent_thread_id;
-    thread.metadata.created_at = Some(now_ms());
-    thread.metadata.updated_at = Some(now_ms());
-    store.save_thread(&thread).await?;
+    thread.normalize_lineage();
+    thread.touch(now);
+    store.save_thread_validated(&thread).await?;
     Ok(thread)
 }
 
@@ -66,14 +85,57 @@ pub async fn update_thread_title(
     thread_id: &str,
     title: String,
 ) -> Result<Thread, StorageError> {
+    update_thread(
+        store,
+        thread_id,
+        UpdateThreadOptions {
+            title: Some(title),
+            ..UpdateThreadOptions::default()
+        },
+    )
+    .await
+}
+
+/// Update thread fields and validate hierarchy changes.
+pub async fn update_thread(
+    store: &dyn ThreadStore,
+    thread_id: &str,
+    options: UpdateThreadOptions,
+) -> Result<Thread, StorageError> {
     let mut thread = store
         .load_thread(thread_id)
         .await?
         .ok_or_else(|| StorageError::NotFound(thread_id.to_string()))?;
-    thread.metadata.title = Some(title);
-    thread.metadata.updated_at = Some(now_ms());
-    store.save_thread(&thread).await?;
+
+    if let Some(title) = options.title {
+        thread.metadata.title = Some(title);
+    }
+    if let Some(resource_id) = options.resource_id {
+        thread.resource_id = resource_id;
+    }
+    if let Some(parent_thread_id) = options.parent_thread_id {
+        thread.parent_thread_id = parent_thread_id;
+    }
+    thread.normalize_lineage();
+    if let Some(custom) = options.custom {
+        for (key, value) in custom {
+            thread.metadata.custom.insert(key, value);
+        }
+    }
+    thread.touch(now_ms());
+    store.save_thread_validated(&thread).await?;
     Ok(thread)
+}
+
+/// Delete a thread while managing its child threads.
+pub async fn delete_thread(
+    store: &dyn ThreadStore,
+    thread_id: &str,
+    options: DeleteThreadOptions,
+) -> Result<(), StorageError> {
+    store
+        .delete_thread_with_strategy(thread_id, options.child_strategy)
+        .await
 }
 
 use awaken_contract::now_ms;
@@ -229,5 +291,210 @@ mod tests {
         let store = MockThreadStore::default();
         let result = update_thread_title(&store, "missing", "Title".to_string()).await;
         assert!(matches!(result, Err(StorageError::NotFound(_))));
+    }
+
+    #[tokio::test]
+    async fn create_thread_rejects_missing_parent_thread() {
+        let store = MockThreadStore::default();
+
+        let error = create_thread_with_options(
+            &store,
+            CreateThreadOptions {
+                title: Some("Child".to_string()),
+                resource_id: None,
+                parent_thread_id: Some("missing-parent".to_string()),
+            },
+        )
+        .await
+        .expect_err("missing parent should fail");
+
+        assert!(
+            matches!(error, StorageError::Validation(message) if message == "parent thread not found: missing-parent")
+        );
+    }
+
+    #[tokio::test]
+    async fn create_thread_normalizes_lineage_fields() {
+        let store = MockThreadStore::default();
+        store.save_thread(&Thread::with_id("parent")).await.unwrap();
+
+        let thread = create_thread_with_options(
+            &store,
+            CreateThreadOptions {
+                title: Some("Child".to_string()),
+                resource_id: Some(" resource-a ".to_string()),
+                parent_thread_id: Some(" parent ".to_string()),
+            },
+        )
+        .await
+        .expect("create child");
+
+        assert_eq!(thread.resource_id.as_deref(), Some("resource-a"));
+        assert_eq!(thread.parent_thread_id.as_deref(), Some("parent"));
+    }
+
+    #[tokio::test]
+    async fn update_thread_supports_detaching_parent() {
+        let store = MockThreadStore::default();
+        store
+            .save_thread(&Thread::with_id("parent"))
+            .await
+            .expect("seed parent");
+        let created = create_thread_with_options(
+            &store,
+            CreateThreadOptions {
+                title: Some("Child".to_string()),
+                resource_id: Some("resource-a".to_string()),
+                parent_thread_id: Some("parent".to_string()),
+            },
+        )
+        .await
+        .expect("create child");
+
+        let updated = update_thread(
+            &store,
+            &created.id,
+            UpdateThreadOptions {
+                resource_id: Some(None),
+                parent_thread_id: Some(None),
+                ..UpdateThreadOptions::default()
+            },
+        )
+        .await
+        .expect("detach child");
+
+        assert_eq!(updated.resource_id, None);
+        assert_eq!(updated.parent_thread_id, None);
+    }
+
+    #[tokio::test]
+    async fn update_thread_normalizes_lineage_fields() {
+        let store = MockThreadStore::default();
+        let created = create_thread_with_options(
+            &store,
+            CreateThreadOptions {
+                title: Some("Child".to_string()),
+                resource_id: None,
+                parent_thread_id: None,
+            },
+        )
+        .await
+        .expect("create child");
+
+        let updated = update_thread(
+            &store,
+            &created.id,
+            UpdateThreadOptions {
+                resource_id: Some(Some(" resource-a ".to_string())),
+                parent_thread_id: Some(Some("   ".to_string())),
+                ..UpdateThreadOptions::default()
+            },
+        )
+        .await
+        .expect("normalize lineage");
+
+        assert_eq!(updated.resource_id.as_deref(), Some("resource-a"));
+        assert_eq!(updated.parent_thread_id, None);
+    }
+
+    #[tokio::test]
+    async fn update_thread_rejects_cycle() {
+        let store = MockThreadStore::default();
+        store.save_thread(&Thread::with_id("root")).await.unwrap();
+        store
+            .save_thread(&Thread::with_id("child").with_parent_thread_id("root"))
+            .await
+            .unwrap();
+
+        let error = update_thread(
+            &store,
+            "root",
+            UpdateThreadOptions {
+                parent_thread_id: Some(Some("child".to_string())),
+                ..UpdateThreadOptions::default()
+            },
+        )
+        .await
+        .expect_err("cycle should be rejected");
+
+        assert!(
+            matches!(error, StorageError::Validation(message) if message.contains("cycle detected"))
+        );
+    }
+
+    #[tokio::test]
+    async fn delete_thread_default_detaches_children() {
+        let store = MockThreadStore::default();
+        store.save_thread(&Thread::with_id("root")).await.unwrap();
+        store
+            .save_thread(&Thread::with_id("child").with_parent_thread_id("root"))
+            .await
+            .unwrap();
+
+        delete_thread(&store, "root", DeleteThreadOptions::default())
+            .await
+            .unwrap();
+
+        assert!(store.load_thread("root").await.unwrap().is_none());
+        assert_eq!(
+            store
+                .load_thread("child")
+                .await
+                .unwrap()
+                .and_then(|thread| thread.parent_thread_id),
+            None
+        );
+    }
+
+    #[tokio::test]
+    async fn delete_thread_supports_reject_strategy() {
+        let store = MockThreadStore::default();
+        store.save_thread(&Thread::with_id("root")).await.unwrap();
+        store
+            .save_thread(&Thread::with_id("child").with_parent_thread_id("root"))
+            .await
+            .unwrap();
+
+        let error = delete_thread(
+            &store,
+            "root",
+            DeleteThreadOptions {
+                child_strategy: ChildThreadDeleteStrategy::Reject,
+            },
+        )
+        .await
+        .expect_err("reject strategy should fail");
+
+        assert!(
+            matches!(error, StorageError::Validation(message) if message.contains("child threads"))
+        );
+    }
+
+    #[tokio::test]
+    async fn delete_thread_supports_cascade_strategy() {
+        let store = MockThreadStore::default();
+        store.save_thread(&Thread::with_id("root")).await.unwrap();
+        store
+            .save_thread(&Thread::with_id("child").with_parent_thread_id("root"))
+            .await
+            .unwrap();
+        store
+            .save_thread(&Thread::with_id("grandchild").with_parent_thread_id("child"))
+            .await
+            .unwrap();
+
+        delete_thread(
+            &store,
+            "root",
+            DeleteThreadOptions {
+                child_strategy: ChildThreadDeleteStrategy::Cascade,
+            },
+        )
+        .await
+        .unwrap();
+
+        assert!(store.load_thread("root").await.unwrap().is_none());
+        assert!(store.load_thread("child").await.unwrap().is_none());
+        assert!(store.load_thread("grandchild").await.unwrap().is_none());
     }
 }

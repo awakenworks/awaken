@@ -37,8 +37,8 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use awaken_contract::contract::message::Message;
 use awaken_contract::contract::storage::{
-    MessagePage, MessageQuery, RunPage, RunQuery, RunRecord, RunStore, StorageError, ThreadPage,
-    ThreadQuery, ThreadRunStore, ThreadStore,
+    ChildThreadDeleteStrategy, MessagePage, MessageQuery, RunPage, RunQuery, RunRecord, RunStore,
+    StorageError, ThreadPage, ThreadQuery, ThreadRunStore, ThreadStore,
 };
 use awaken_contract::thread::{Thread, ThreadMetadata};
 
@@ -257,6 +257,28 @@ impl<T: ThreadRunStore + Send + Sync + 'static> NatsBufferedThreadStore<T> {
             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         }
     }
+
+    async fn clear_hot_thread_state(&self, thread_id: &str) -> Result<(), StorageError> {
+        for key in [
+            keys::hot_meta_key(thread_id),
+            keys::flushed_seq_key(thread_id),
+        ] {
+            if self
+                .kv_hot
+                .entry(&key)
+                .await
+                .map_err(|error| StorageError::Io(format!("kv entry {key}: {error}")))?
+                .is_none()
+            {
+                continue;
+            }
+            self.kv_hot
+                .delete(&key)
+                .await
+                .map_err(|error| StorageError::Io(format!("kv delete {key}: {error}")))?;
+        }
+        Ok(())
+    }
 }
 
 #[async_trait]
@@ -265,10 +287,28 @@ impl<T: ThreadRunStore + Send + Sync + 'static> ThreadStore for NatsBufferedThre
         reader::load_thread(self, thread_id).await
     }
     async fn save_thread(&self, thread: &Thread) -> Result<(), StorageError> {
+        self.force_flush(&thread.id).await?;
         self.inner.save_thread(thread).await
     }
+    async fn save_thread_validated(&self, thread: &Thread) -> Result<(), StorageError> {
+        self.force_flush_all_pending().await?;
+        self.inner.save_thread_validated(thread).await
+    }
     async fn delete_thread(&self, thread_id: &str) -> Result<(), StorageError> {
-        self.inner.delete_thread(thread_id).await
+        self.force_flush(thread_id).await?;
+        self.inner.delete_thread(thread_id).await?;
+        self.clear_hot_thread_state(thread_id).await
+    }
+    async fn delete_thread_with_strategy(
+        &self,
+        thread_id: &str,
+        strategy: ChildThreadDeleteStrategy,
+    ) -> Result<(), StorageError> {
+        self.force_flush_all_pending().await?;
+        self.inner
+            .delete_thread_with_strategy(thread_id, strategy)
+            .await?;
+        self.clear_hot_thread_state(thread_id).await
     }
     async fn list_threads(&self, offset: usize, limit: usize) -> Result<Vec<String>, StorageError> {
         reader::list_threads(self, offset, limit).await
@@ -294,9 +334,11 @@ impl<T: ThreadRunStore + Send + Sync + 'static> ThreadStore for NatsBufferedThre
         thread_id: &str,
         messages: &[Message],
     ) -> Result<(), StorageError> {
+        self.force_flush(thread_id).await?;
         self.inner.save_messages(thread_id, messages).await
     }
     async fn delete_messages(&self, thread_id: &str) -> Result<(), StorageError> {
+        self.force_flush(thread_id).await?;
         self.inner.delete_messages(thread_id).await
     }
     async fn update_thread_metadata(
@@ -304,6 +346,7 @@ impl<T: ThreadRunStore + Send + Sync + 'static> ThreadStore for NatsBufferedThre
         id: &str,
         metadata: ThreadMetadata,
     ) -> Result<(), StorageError> {
+        self.force_flush(id).await?;
         self.inner.update_thread_metadata(id, metadata).await
     }
 }

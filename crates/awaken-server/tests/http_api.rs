@@ -615,7 +615,7 @@ mod integration {
 
         let (status, body) = get_json(
             test.router,
-            "/v1/threads?resourceId=resource-a&parentThreadId=parent-1",
+            "/v1/threads?resourceId=%20resource-a%20&parentThreadId=%20parent-1%20",
         )
         .await;
         assert_eq!(status, StatusCode::OK);
@@ -678,24 +678,45 @@ mod integration {
     #[tokio::test]
     async fn create_thread_via_post_accepts_lineage_fields() {
         let test = make_test_app();
+        let parent_id = seed_thread(&test.store, Some("Parent Thread")).await;
         let (status, body) = post_json(
             test.router.clone(),
             "/v1/threads",
             json!({
                 "title": "Lineage Thread",
-                "resourceId": "resource-a",
-                "parentThreadId": "parent-1"
+                "resourceId": " resource-a ",
+                "parentThreadId": format!(" {} ", parent_id)
             }),
         )
         .await;
         assert_eq!(status, StatusCode::CREATED);
         assert_eq!(body["resource_id"].as_str(), Some("resource-a"));
-        assert_eq!(body["parent_thread_id"].as_str(), Some("parent-1"));
+        assert_eq!(body["parent_thread_id"].as_str(), Some(parent_id.as_str()));
 
         let thread_id = body["id"].as_str().expect("thread id");
         let thread = test.store.load_thread(thread_id).await.unwrap().unwrap();
         assert_eq!(thread.resource_id.as_deref(), Some("resource-a"));
-        assert_eq!(thread.parent_thread_id.as_deref(), Some("parent-1"));
+        assert_eq!(thread.parent_thread_id.as_deref(), Some(parent_id.as_str()));
+    }
+
+    #[tokio::test]
+    async fn create_thread_via_post_rejects_missing_parent_thread() {
+        let test = make_test_app();
+        let (status, body) = post_json(
+            test.router,
+            "/v1/threads",
+            json!({
+                "title": "Broken Thread",
+                "parentThreadId": "missing-parent"
+            }),
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(
+            body["error"].as_str(),
+            Some("parent thread not found: missing-parent")
+        );
     }
 
     #[tokio::test]
@@ -809,23 +830,81 @@ mod integration {
     async fn patch_thread_updates_lineage_fields() {
         let test = make_test_app();
         let id = seed_thread(&test.store, Some("Patch Target")).await;
+        let parent_id = seed_thread(&test.store, Some("Patch Parent")).await;
 
         let (status, body) = patch_json(
-            test.router,
+            test.router.clone(),
             &format!("/v1/threads/{id}"),
             json!({
                 "resourceId": "resource-b",
-                "parentThreadId": "parent-9"
+                "parentThreadId": parent_id.as_str()
             }),
         )
         .await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body["resource_id"].as_str(), Some("resource-b"));
-        assert_eq!(body["parent_thread_id"].as_str(), Some("parent-9"));
+        assert_eq!(body["parent_thread_id"].as_str(), Some(parent_id.as_str()));
 
         let thread = test.store.load_thread(&id).await.unwrap().unwrap();
         assert_eq!(thread.resource_id.as_deref(), Some("resource-b"));
-        assert_eq!(thread.parent_thread_id.as_deref(), Some("parent-9"));
+        assert_eq!(thread.parent_thread_id.as_deref(), Some(parent_id.as_str()));
+    }
+
+    #[tokio::test]
+    async fn patch_thread_supports_clearing_lineage_fields() {
+        let test = make_test_app();
+        let parent_id = seed_thread(&test.store, Some("Detach Parent")).await;
+        let id = seed_thread_with_lineage(
+            &test.store,
+            Some("Detach Child"),
+            Some("resource-a"),
+            Some(parent_id.as_str()),
+        )
+        .await;
+
+        let (status, body) = patch_json(
+            test.router,
+            &format!("/v1/threads/{id}"),
+            json!({
+                "resourceId": null,
+                "parentThreadId": null
+            }),
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::OK);
+        assert!(body["resource_id"].is_null());
+        assert!(body["parent_thread_id"].is_null());
+
+        let thread = test.store.load_thread(&id).await.unwrap().unwrap();
+        assert_eq!(thread.resource_id, None);
+        assert_eq!(thread.parent_thread_id, None);
+    }
+
+    #[tokio::test]
+    async fn patch_thread_rejects_cycle() {
+        let test = make_test_app();
+        let root_id = seed_thread(&test.store, Some("Root")).await;
+        let child_id =
+            seed_thread_with_lineage(&test.store, Some("Child"), None, Some(root_id.as_str()))
+                .await;
+
+        let (status, body) = patch_json(
+            test.router,
+            &format!("/v1/threads/{root_id}"),
+            json!({
+                "parentThreadId": child_id.as_str()
+            }),
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(
+            body["error"]
+                .as_str()
+                .expect("error message")
+                .contains("cycle detected")
+        );
     }
 
     #[tokio::test]
@@ -838,6 +917,115 @@ mod integration {
         // Verify it's gone
         let (status2, _) = get_json(test.router, &format!("/v1/threads/{id}")).await;
         assert_eq!(status2, StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn delete_thread_defaults_to_detaching_direct_children() {
+        let test = make_test_app();
+        let parent_id = seed_thread(&test.store, Some("Delete Parent")).await;
+        let child_id = seed_thread_with_lineage(
+            &test.store,
+            Some("Delete Child"),
+            None,
+            Some(parent_id.as_str()),
+        )
+        .await;
+        let grandchild_id = seed_thread_with_lineage(
+            &test.store,
+            Some("Delete Grandchild"),
+            None,
+            Some(child_id.as_str()),
+        )
+        .await;
+
+        let (status, _body) =
+            delete_json(test.router.clone(), &format!("/v1/threads/{parent_id}")).await;
+        assert_eq!(status, StatusCode::NO_CONTENT);
+
+        assert!(test.store.load_thread(&parent_id).await.unwrap().is_none());
+        assert_eq!(
+            test.store
+                .load_thread(&child_id)
+                .await
+                .unwrap()
+                .unwrap()
+                .parent_thread_id,
+            None
+        );
+        assert_eq!(
+            test.store
+                .load_thread(&grandchild_id)
+                .await
+                .unwrap()
+                .unwrap()
+                .parent_thread_id
+                .as_deref(),
+            Some(child_id.as_str())
+        );
+    }
+
+    #[tokio::test]
+    async fn delete_thread_reject_strategy_returns_bad_request() {
+        let test = make_test_app();
+        let parent_id = seed_thread(&test.store, Some("Reject Parent")).await;
+        let _child_id = seed_thread_with_lineage(
+            &test.store,
+            Some("Reject Child"),
+            None,
+            Some(parent_id.as_str()),
+        )
+        .await;
+
+        let (status, body) = delete_json(
+            test.router.clone(),
+            &format!("/v1/threads/{parent_id}?childStrategy=reject"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(
+            body["error"]
+                .as_str()
+                .expect("error message")
+                .contains("child threads")
+        );
+        assert!(test.store.load_thread(&parent_id).await.unwrap().is_some());
+    }
+
+    #[tokio::test]
+    async fn delete_thread_cascade_strategy_removes_descendants() {
+        let test = make_test_app();
+        let parent_id = seed_thread(&test.store, Some("Cascade Parent")).await;
+        let child_id = seed_thread_with_lineage(
+            &test.store,
+            Some("Cascade Child"),
+            None,
+            Some(parent_id.as_str()),
+        )
+        .await;
+        let grandchild_id = seed_thread_with_lineage(
+            &test.store,
+            Some("Cascade Grandchild"),
+            None,
+            Some(child_id.as_str()),
+        )
+        .await;
+
+        let (status, _body) = delete_json(
+            test.router.clone(),
+            &format!("/v1/threads/{parent_id}?childStrategy=cascade"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NO_CONTENT);
+
+        assert!(test.store.load_thread(&parent_id).await.unwrap().is_none());
+        assert!(test.store.load_thread(&child_id).await.unwrap().is_none());
+        assert!(
+            test.store
+                .load_thread(&grandchild_id)
+                .await
+                .unwrap()
+                .is_none()
+        );
     }
 
     // ====================================================================

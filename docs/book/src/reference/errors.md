@@ -118,6 +118,7 @@ Errors returned by `ThreadStore`, `RunStore`, and `ThreadRunStore` operations.
 
 ```rust,no_run
 pub enum StorageError {
+    Validation(String),
     NotFound(String),
     AlreadyExists(String),
     VersionConflict { expected: u64, actual: u64 },

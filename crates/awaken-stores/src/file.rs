@@ -15,16 +15,19 @@ use awaken_contract::contract::config_store::ConfigStore;
 use awaken_contract::contract::message::Message;
 use awaken_contract::contract::profile_store::{ProfileEntry, ProfileOwner, ProfileStore};
 use awaken_contract::contract::storage::{
-    MessagePage, MessageQuery, RunPage, RunQuery, RunRecord, RunStore, StorageError, ThreadPage,
-    ThreadQuery, ThreadRunStore, ThreadStore, paginate_message_records, paginate_threads,
+    ChildThreadDeleteStrategy, MessagePage, MessageQuery, RunPage, RunQuery, RunRecord, RunStore,
+    StorageError, ThreadPage, ThreadQuery, ThreadRunStore, ThreadStore,
+    checkpoint_parent_thread_id, paginate_message_records, paginate_threads,
 };
 use awaken_contract::thread::Thread;
 use serde::{Deserialize, Serialize};
 use tokio::io::AsyncWriteExt;
+use tokio::sync::Mutex;
 
 /// File-system storage backend.
 pub struct FileStore {
     base_path: PathBuf,
+    hierarchy_lock: Mutex<()>,
 }
 
 impl FileStore {
@@ -40,7 +43,10 @@ impl FileStore {
             );
         }
         cleanup_orphan_checkpoint_backups_sync(&base_path);
-        Self { base_path }
+        Self {
+            base_path,
+            hierarchy_lock: Mutex::new(()),
+        }
     }
 
     fn threads_dir(&self) -> PathBuf {
@@ -59,8 +65,161 @@ impl FileStore {
         self.base_path.join("profiles")
     }
 
+    fn thread_path(&self, thread_id: &str) -> PathBuf {
+        self.threads_dir().join(format!("{thread_id}.json"))
+    }
+
+    fn messages_path(&self, thread_id: &str) -> PathBuf {
+        self.messages_dir().join(format!("{thread_id}.json"))
+    }
+
     fn config_dir(&self, namespace: &str) -> PathBuf {
         self.base_path.join("config").join(namespace)
+    }
+
+    async fn delete_thread_with_strategy_locked(
+        &self,
+        thread_id: &str,
+        strategy: ChildThreadDeleteStrategy,
+    ) -> Result<(), StorageError> {
+        if self.load_thread(thread_id).await?.is_none() {
+            return Err(StorageError::NotFound(thread_id.to_owned()));
+        }
+
+        let mut ops = Vec::new();
+        match strategy {
+            ChildThreadDeleteStrategy::Reject => {
+                let children = self.list_child_threads(thread_id).await?;
+                if !children.is_empty() {
+                    return Err(StorageError::Validation(format!(
+                        "thread '{thread_id}' has child threads; choose 'detach' or 'cascade'"
+                    )));
+                }
+            }
+            ChildThreadDeleteStrategy::Detach => {
+                let mut children = self.list_child_threads(thread_id).await?;
+                let updated_at = current_millis();
+                for child in &mut children {
+                    child.parent_thread_id = None;
+                    child.normalize_lineage();
+                    child.touch(updated_at);
+                    let payload = serde_json::to_string_pretty(child)
+                        .map_err(|e| StorageError::Serialization(e.to_string()))?;
+                    let staged = match stage_write(
+                        &self.threads_dir(),
+                        &format!("{}.json", child.id),
+                        &payload,
+                    )
+                    .await
+                    {
+                        Ok(staged) => staged,
+                        Err(error) => {
+                            cleanup_staged_file_ops(&ops).await;
+                            return Err(error);
+                        }
+                    };
+                    ops.push(StagedFileOp::Write(staged));
+                }
+            }
+            ChildThreadDeleteStrategy::Cascade => {
+                let mut visited = std::collections::HashSet::new();
+                let mut stack = vec![(thread_id.to_owned(), false)];
+                let mut delete_order = Vec::new();
+
+                while let Some((current_thread_id, expanded)) = stack.pop() {
+                    if expanded {
+                        delete_order.push(current_thread_id);
+                        continue;
+                    }
+
+                    if !visited.insert(current_thread_id.clone()) {
+                        return Err(StorageError::Validation(format!(
+                            "thread hierarchy cycle detected while deleting '{thread_id}'"
+                        )));
+                    }
+
+                    stack.push((current_thread_id.clone(), true));
+                    let mut children = self.list_child_threads(&current_thread_id).await?;
+                    children.sort_by(|left, right| left.id.cmp(&right.id));
+                    for child in children.into_iter().rev() {
+                        stack.push((child.id, false));
+                    }
+                }
+
+                for id in delete_order {
+                    ops.push(StagedFileOp::Delete(stage_delete(self.thread_path(&id))?));
+                    ops.push(StagedFileOp::Delete(stage_delete(self.messages_path(&id))?));
+                }
+            }
+        }
+
+        if !matches!(strategy, ChildThreadDeleteStrategy::Cascade) {
+            ops.push(StagedFileOp::Delete(stage_delete(
+                self.thread_path(thread_id),
+            )?));
+            ops.push(StagedFileOp::Delete(stage_delete(
+                self.messages_path(thread_id),
+            )?));
+        }
+
+        if let Err(error) = commit_staged_file_ops(&self.base_path, &ops).await {
+            cleanup_staged_file_ops(&ops).await;
+            return Err(error);
+        }
+
+        Ok(())
+    }
+
+    async fn checkpoint_locked(
+        &self,
+        thread_id: &str,
+        messages: &[Message],
+        run: &RunRecord,
+    ) -> Result<(), StorageError> {
+        let now = current_millis();
+        let mut thread = self
+            .load_thread(thread_id)
+            .await?
+            .unwrap_or_else(|| Thread::with_id(thread_id));
+        self.validate_thread_hierarchy(thread_id, checkpoint_parent_thread_id(Some(&thread), run))
+            .await?;
+        thread.touch(now);
+        thread.apply_run_projection(run);
+        thread.normalize_lineage();
+
+        let thread_payload = serde_json::to_string_pretty(&thread)
+            .map_err(|e| StorageError::Serialization(e.to_string()))?;
+        let msg_payload = serde_json::to_string_pretty(messages)
+            .map_err(|e| StorageError::Serialization(e.to_string()))?;
+        let run_payload = serde_json::to_string_pretty(run)
+            .map_err(|e| StorageError::Serialization(e.to_string()))?;
+
+        let thread_file = &format!("{thread_id}.json");
+        let run_file = &format!("{}.json", run.run_id);
+
+        let staged_thread = stage_write(&self.threads_dir(), thread_file, &thread_payload).await?;
+        let staged_msgs = match stage_write(&self.messages_dir(), thread_file, &msg_payload).await {
+            Ok(staged) => staged,
+            Err(error) => {
+                cleanup_staged_writes(&[staged_thread]).await;
+                return Err(error);
+            }
+        };
+        let staged_run = match stage_write(&self.runs_dir(), run_file, &run_payload).await {
+            Ok(staged) => staged,
+            Err(error) => {
+                cleanup_staged_writes(&[staged_thread, staged_msgs]).await;
+                return Err(error);
+            }
+        };
+
+        let writes = [staged_thread, staged_msgs, staged_run];
+        if let Err(error) = commit_staged_writes(&self.base_path, &writes).await {
+            cleanup_staged_writes(&writes).await;
+            return Err(error);
+        }
+
+        Ok(())
     }
 }
 
@@ -209,10 +368,24 @@ async fn dir_fsync(dir: &Path) -> Result<(), StorageError> {
 }
 
 /// A prepared (but not yet committed) temp file, ready to be renamed into place.
+#[derive(Debug, Clone)]
 struct StagedWrite {
     tmp_path: PathBuf,
     target: PathBuf,
     dir: PathBuf,
+}
+
+/// A prepared delete operation, ready to atomically remove a target file.
+#[derive(Debug, Clone)]
+struct StagedDelete {
+    target: PathBuf,
+    dir: PathBuf,
+}
+
+#[derive(Debug, Clone)]
+enum StagedFileOp {
+    Write(StagedWrite),
+    Delete(StagedDelete),
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -223,7 +396,8 @@ struct CheckpointJournal {
 #[derive(Debug, Serialize, Deserialize)]
 struct CheckpointJournalWrite {
     target: String,
-    tmp: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    tmp: Option<String>,
     backup: String,
     had_target: bool,
 }
@@ -279,7 +453,7 @@ fn recover_checkpoint_journal_sync(base_dir: &Path) -> Result<(), StorageError> 
 
     for write in journal.writes.iter().rev() {
         let target = join_rel(base_dir, &write.target);
-        let tmp = join_rel(base_dir, &write.tmp);
+        let tmp = write.tmp.as_deref().map(|tmp| join_rel(base_dir, tmp));
         let backup = join_rel(base_dir, &write.backup);
 
         if write.had_target && backup.exists() {
@@ -295,8 +469,10 @@ fn recover_checkpoint_journal_sync(base_dir: &Path) -> Result<(), StorageError> 
         } else if backup.exists() {
             std::fs::remove_file(&backup).map_err(|e| StorageError::Io(e.to_string()))?;
         }
-        if tmp.exists() {
-            std::fs::remove_file(&tmp).map_err(|e| StorageError::Io(e.to_string()))?;
+        if let Some(tmp) = tmp.as_ref()
+            && tmp.exists()
+        {
+            std::fs::remove_file(tmp).map_err(|e| StorageError::Io(e.to_string()))?;
         }
         if let Some(parent) = target.parent() {
             let _ = dir_fsync_sync(parent);
@@ -346,19 +522,27 @@ async fn stage_write(
         filename.trim_end_matches(".json"),
         uuid::Uuid::now_v7().simple()
     ));
-    let mut file = tokio::fs::File::create(&tmp_path)
-        .await
-        .map_err(|e| StorageError::Io(e.to_string()))?;
-    file.write_all(content.as_bytes())
-        .await
-        .map_err(|e| StorageError::Io(e.to_string()))?;
-    file.flush()
-        .await
-        .map_err(|e| StorageError::Io(e.to_string()))?;
-    file.sync_all()
-        .await
-        .map_err(|e| StorageError::Io(e.to_string()))?;
-    drop(file);
+    let write_result = async {
+        let mut file = tokio::fs::File::create(&tmp_path)
+            .await
+            .map_err(|e| StorageError::Io(e.to_string()))?;
+        file.write_all(content.as_bytes())
+            .await
+            .map_err(|e| StorageError::Io(e.to_string()))?;
+        file.flush()
+            .await
+            .map_err(|e| StorageError::Io(e.to_string()))?;
+        file.sync_all()
+            .await
+            .map_err(|e| StorageError::Io(e.to_string()))?;
+        drop(file);
+        Ok::<(), StorageError>(())
+    }
+    .await;
+    if let Err(error) = write_result {
+        let _ = tokio::fs::remove_file(&tmp_path).await;
+        return Err(error);
+    }
     Ok(StagedWrite {
         tmp_path,
         target,
@@ -366,8 +550,43 @@ async fn stage_write(
     })
 }
 
+fn stage_delete(target: PathBuf) -> Result<StagedDelete, StorageError> {
+    let dir = target
+        .parent()
+        .map(Path::to_path_buf)
+        .ok_or_else(|| StorageError::Io("delete target must have a parent directory".into()))?;
+    Ok(StagedDelete { target, dir })
+}
+
+fn staged_op_target(op: &StagedFileOp) -> &Path {
+    match op {
+        StagedFileOp::Write(write) => &write.target,
+        StagedFileOp::Delete(delete) => &delete.target,
+    }
+}
+
+fn staged_op_tmp(op: &StagedFileOp) -> Option<&Path> {
+    match op {
+        StagedFileOp::Write(write) => Some(&write.tmp_path),
+        StagedFileOp::Delete(_) => None,
+    }
+}
+
+fn staged_op_dir(op: &StagedFileOp) -> &Path {
+    match op {
+        StagedFileOp::Write(write) => &write.dir,
+        StagedFileOp::Delete(delete) => &delete.dir,
+    }
+}
+
 /// Rename all staged temp files into their targets and fsync each parent dir.
 async fn commit_staged_writes(base_dir: &Path, writes: &[StagedWrite]) -> Result<(), StorageError> {
+    let ops: Vec<StagedFileOp> = writes.iter().cloned().map(StagedFileOp::Write).collect();
+    commit_staged_file_ops(base_dir, &ops).await
+}
+
+/// Rename staged temp files and/or remove staged delete targets atomically.
+async fn commit_staged_file_ops(base_dir: &Path, ops: &[StagedFileOp]) -> Result<(), StorageError> {
     tokio::fs::create_dir_all(base_dir)
         .await
         .map_err(|e| StorageError::Io(e.to_string()))?;
@@ -375,14 +594,17 @@ async fn commit_staged_writes(base_dir: &Path, writes: &[StagedWrite]) -> Result
 
     let tx_id = uuid::Uuid::now_v7().simple().to_string();
     let marker = checkpoint_marker_path(base_dir);
-    let mut journal_writes = Vec::with_capacity(writes.len());
-    for write in writes {
-        let backup = checkpoint_backup_path(&write.target, &tx_id);
+    let mut journal_writes = Vec::with_capacity(ops.len());
+    for op in ops {
+        let target = staged_op_target(op);
+        let backup = checkpoint_backup_path(target, &tx_id);
         journal_writes.push(CheckpointJournalWrite {
-            target: rel_path(base_dir, &write.target)?,
-            tmp: rel_path(base_dir, &write.tmp_path)?,
+            target: rel_path(base_dir, target)?,
+            tmp: staged_op_tmp(op)
+                .map(|tmp| rel_path(base_dir, tmp))
+                .transpose()?,
             backup: rel_path(base_dir, &backup)?,
-            had_target: write.target.exists(),
+            had_target: target.exists(),
         });
     }
     let journal = CheckpointJournal {
@@ -398,17 +620,22 @@ async fn commit_staged_writes(base_dir: &Path, writes: &[StagedWrite]) -> Result
     let mut synced_dirs = std::collections::HashSet::new();
 
     let commit_result = async {
-        for (write, journal_write) in writes.iter().zip(journal.writes.iter()) {
+        for (op, journal_write) in ops.iter().zip(journal.writes.iter()) {
+            let target = staged_op_target(op);
             let backup = join_rel(base_dir, &journal_write.backup);
             if journal_write.had_target {
-                tokio::fs::rename(&write.target, &backup)
+                tokio::fs::rename(target, &backup)
                     .await
                     .map_err(|e| StorageError::Io(e.to_string()))?;
             }
-            tokio::fs::rename(&write.tmp_path, &write.target)
-                .await
-                .map_err(|e| StorageError::Io(e.to_string()))?;
-            synced_dirs.insert(write.dir.clone());
+            if let Some(tmp_path) = staged_op_tmp(op) {
+                tokio::fs::rename(tmp_path, target)
+                    .await
+                    .map_err(|e| StorageError::Io(e.to_string()))?;
+            }
+            if journal_write.had_target || staged_op_tmp(op).is_some() {
+                synced_dirs.insert(staged_op_dir(op).to_path_buf());
+            }
         }
 
         for dir in &synced_dirs {
@@ -443,8 +670,16 @@ async fn commit_staged_writes(base_dir: &Path, writes: &[StagedWrite]) -> Result
 
 /// Clean up staged temp files on error.
 async fn cleanup_staged_writes(writes: &[StagedWrite]) {
-    for w in writes {
-        let _ = tokio::fs::remove_file(&w.tmp_path).await;
+    let ops: Vec<StagedFileOp> = writes.iter().cloned().map(StagedFileOp::Write).collect();
+    cleanup_staged_file_ops(&ops).await;
+}
+
+/// Clean up staged file operations on error.
+async fn cleanup_staged_file_ops(ops: &[StagedFileOp]) {
+    for op in ops {
+        if let Some(tmp_path) = staged_op_tmp(op) {
+            let _ = tokio::fs::remove_file(tmp_path).await;
+        }
     }
 }
 
@@ -493,13 +728,14 @@ async fn scan_json_dir<T: serde::de::DeserializeOwned>(dir: &Path) -> Result<Vec
 impl ThreadStore for FileStore {
     async fn load_thread(&self, thread_id: &str) -> Result<Option<Thread>, StorageError> {
         validate_id(thread_id, "thread id")?;
-        let path = self.threads_dir().join(format!("{thread_id}.json"));
-        read_json(&path).await
+        read_json(&self.thread_path(thread_id)).await
     }
 
     async fn save_thread(&self, thread: &Thread) -> Result<(), StorageError> {
         validate_id(&thread.id, "thread id")?;
-        let payload = serde_json::to_string_pretty(thread)
+        let mut normalized = thread.clone();
+        normalized.normalize_lineage();
+        let payload = serde_json::to_string_pretty(&normalized)
             .map_err(|e| StorageError::Serialization(e.to_string()))?;
         atomic_write(
             &self.threads_dir(),
@@ -507,6 +743,14 @@ impl ThreadStore for FileStore {
             &payload,
         )
         .await
+    }
+
+    async fn save_thread_validated(&self, thread: &Thread) -> Result<(), StorageError> {
+        validate_id(&thread.id, "thread id")?;
+        let _guard = self.hierarchy_lock.lock().await;
+        self.validate_thread_hierarchy(&thread.id, thread.parent_thread_id.as_deref())
+            .await?;
+        self.save_thread(thread).await
     }
 
     async fn delete_thread(&self, thread_id: &str) -> Result<(), StorageError> {
@@ -528,6 +772,17 @@ impl ThreadStore for FileStore {
         Ok(())
     }
 
+    async fn delete_thread_with_strategy(
+        &self,
+        thread_id: &str,
+        strategy: ChildThreadDeleteStrategy,
+    ) -> Result<(), StorageError> {
+        validate_id(thread_id, "thread id")?;
+        let _guard = self.hierarchy_lock.lock().await;
+        self.delete_thread_with_strategy_locked(thread_id, strategy)
+            .await
+    }
+
     async fn list_threads(&self, offset: usize, limit: usize) -> Result<Vec<String>, StorageError> {
         let mut threads: Vec<Thread> = scan_json_dir(&self.threads_dir()).await?;
         awaken_contract::contract::storage::sort_threads_by_recent_activity(&mut threads);
@@ -540,8 +795,9 @@ impl ThreadStore for FileStore {
     }
 
     async fn list_threads_query(&self, query: &ThreadQuery) -> Result<ThreadPage, StorageError> {
+        let query = query.normalized();
         let threads: Vec<Thread> = scan_json_dir(&self.threads_dir()).await?;
-        Ok(paginate_threads(threads, query))
+        Ok(paginate_threads(threads, &query))
     }
 
     async fn load_messages(&self, thread_id: &str) -> Result<Option<Vec<Message>>, StorageError> {
@@ -853,54 +1109,8 @@ impl ThreadRunStore for FileStore {
     ) -> Result<(), StorageError> {
         validate_id(thread_id, "thread id")?;
         validate_id(&run.run_id, "run id")?;
-
-        let now = current_millis();
-        let mut thread = self
-            .load_thread(thread_id)
-            .await?
-            .unwrap_or_else(|| Thread::with_id(thread_id));
-        thread.metadata.created_at.get_or_insert(now);
-        thread.metadata.updated_at = Some(now);
-        thread.apply_run_projection(run);
-
-        // Serialize all payloads up-front so we fail before any I/O.
-        let thread_payload = serde_json::to_string_pretty(&thread)
-            .map_err(|e| StorageError::Serialization(e.to_string()))?;
-        let msg_payload = serde_json::to_string_pretty(messages)
-            .map_err(|e| StorageError::Serialization(e.to_string()))?;
-        let run_payload = serde_json::to_string_pretty(run)
-            .map_err(|e| StorageError::Serialization(e.to_string()))?;
-
-        // Stage all three writes (temp files fsynced but not yet renamed).
-        let thread_file = &format!("{thread_id}.json");
-        let run_file = &format!("{}.json", run.run_id);
-
-        let staged_thread = stage_write(&self.threads_dir(), thread_file, &thread_payload).await?;
-        let staged_msgs = match stage_write(&self.messages_dir(), thread_file, &msg_payload).await {
-            Ok(s) => s,
-            Err(e) => {
-                cleanup_staged_writes(&[staged_thread]).await;
-                return Err(e);
-            }
-        };
-        let staged_run = match stage_write(&self.runs_dir(), run_file, &run_payload).await {
-            Ok(s) => s,
-            Err(e) => {
-                cleanup_staged_writes(&[staged_thread, staged_msgs]).await;
-                return Err(e);
-            }
-        };
-
-        let writes = [staged_thread, staged_msgs, staged_run];
-
-        // Commit the three files through a rollback journal so restart never
-        // observes a split checkpoint.
-        if let Err(e) = commit_staged_writes(&self.base_path, &writes).await {
-            cleanup_staged_writes(&writes).await;
-            return Err(e);
-        }
-
-        Ok(())
+        let _guard = self.hierarchy_lock.lock().await;
+        self.checkpoint_locked(thread_id, messages, run).await
     }
 }
 
@@ -909,9 +1119,14 @@ mod tests {
     use super::*;
     use awaken_contract::contract::lifecycle::RunStatus;
     use awaken_contract::contract::message::Message;
-    use awaken_contract::contract::storage::{RunRecord, RunStore, ThreadRunStore, ThreadStore};
+    use awaken_contract::contract::storage::{
+        ChildThreadDeleteStrategy, RunRecord, RunStore, ThreadRunStore, ThreadStore,
+    };
     use awaken_contract::thread::Thread;
+    use std::sync::Arc;
     use tempfile::TempDir;
+    use tokio::sync::Barrier;
+    use tokio::time::{Duration, sleep};
 
     fn make_run(run_id: &str, thread_id: &str) -> RunRecord {
         RunRecord {
@@ -1061,10 +1276,68 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn file_store_save_thread_normalizes_lineage() {
+        let td = TempDir::new().unwrap();
+        let store = FileStore::new(td.path());
+        let mut thread = Thread::with_id("t-normalized");
+        thread.resource_id = Some(" resource-a ".to_string());
+        thread.parent_thread_id = Some(" parent-1 ".to_string());
+
+        store.save_thread(&thread).await.unwrap();
+
+        let loaded = store.load_thread("t-normalized").await.unwrap().unwrap();
+        assert_eq!(loaded.resource_id.as_deref(), Some("resource-a"));
+        assert_eq!(loaded.parent_thread_id.as_deref(), Some("parent-1"));
+    }
+
+    #[tokio::test]
     async fn file_store_thread_load_missing() {
         let td = TempDir::new().unwrap();
         let store = FileStore::new(td.path());
         assert!(store.load_thread("no-such").await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn file_store_save_thread_validated_serializes_concurrent_cycle_updates() {
+        let td = TempDir::new().unwrap();
+        let store = Arc::new(FileStore::new(td.path()));
+        store.save_thread(&Thread::with_id("a")).await.unwrap();
+        store.save_thread(&Thread::with_id("b")).await.unwrap();
+
+        let guard = store.hierarchy_lock.lock().await;
+        let barrier = Arc::new(Barrier::new(3));
+        let spawn_update = |thread_id: &'static str, parent_thread_id: &'static str| {
+            let store = store.clone();
+            let barrier = barrier.clone();
+            tokio::spawn(async move {
+                barrier.wait().await;
+                store
+                    .save_thread_validated(
+                        &Thread::with_id(thread_id).with_parent_thread_id(parent_thread_id),
+                    )
+                    .await
+            })
+        };
+
+        let left = spawn_update("a", "b");
+        let right = spawn_update("b", "a");
+        barrier.wait().await;
+        tokio::task::yield_now().await;
+        sleep(Duration::from_millis(20)).await;
+        assert!(!left.is_finished());
+        assert!(!right.is_finished());
+        drop(guard);
+
+        let left = left.await.unwrap();
+        let right = right.await.unwrap();
+        assert_ne!(left.is_ok(), right.is_ok());
+
+        let a = store.load_thread("a").await.unwrap().unwrap();
+        let b = store.load_thread("b").await.unwrap().unwrap();
+        assert!(
+            !(a.parent_thread_id.as_deref() == Some("b")
+                && b.parent_thread_id.as_deref() == Some("a"))
+        );
     }
 
     #[tokio::test]
@@ -1160,6 +1433,69 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn file_store_checkpoint_waits_for_hierarchy_lock() {
+        let td = TempDir::new().unwrap();
+        let store = Arc::new(FileStore::new(td.path()));
+        let guard = store.hierarchy_lock.lock().await;
+        let handle = {
+            let store = store.clone();
+            tokio::spawn(async move {
+                store
+                    .checkpoint(
+                        "t-locked",
+                        &[Message::user("cp")],
+                        &make_run("r-locked", "t-locked"),
+                    )
+                    .await
+            })
+        };
+
+        tokio::task::yield_now().await;
+        sleep(Duration::from_millis(20)).await;
+        assert!(!handle.is_finished());
+        drop(guard);
+
+        handle.await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    async fn file_store_delete_thread_with_strategy_waits_for_hierarchy_lock() {
+        let td = TempDir::new().unwrap();
+        let store = Arc::new(FileStore::new(td.path()));
+        store.save_thread(&Thread::with_id("root")).await.unwrap();
+        store
+            .save_thread(&Thread::with_id("child").with_parent_thread_id("root"))
+            .await
+            .unwrap();
+
+        let guard = store.hierarchy_lock.lock().await;
+        let handle = {
+            let store = store.clone();
+            tokio::spawn(async move {
+                store
+                    .delete_thread_with_strategy("root", ChildThreadDeleteStrategy::Detach)
+                    .await
+            })
+        };
+
+        tokio::task::yield_now().await;
+        sleep(Duration::from_millis(20)).await;
+        assert!(!handle.is_finished());
+        drop(guard);
+
+        handle.await.unwrap().unwrap();
+        assert!(store.load_thread("root").await.unwrap().is_none());
+        assert_eq!(
+            store
+                .load_thread("child")
+                .await
+                .unwrap()
+                .and_then(|thread| thread.parent_thread_id),
+            None
+        );
+    }
+
+    #[tokio::test]
     async fn file_store_new_rolls_back_incomplete_checkpoint_journal() {
         let td = TempDir::new().unwrap();
         let store = FileStore::new(td.path());
@@ -1195,7 +1531,7 @@ mod tests {
                     let backup = checkpoint_backup_path(&write.target, tx_id);
                     CheckpointJournalWrite {
                         target: rel_path(td.path(), &write.target).unwrap(),
-                        tmp: rel_path(td.path(), &write.tmp_path).unwrap(),
+                        tmp: Some(rel_path(td.path(), &write.tmp_path).unwrap()),
                         backup: rel_path(td.path(), &backup).unwrap(),
                         had_target: write.target.exists(),
                     }
@@ -1224,6 +1560,75 @@ mod tests {
             .unwrap();
         assert_eq!(messages[0].text(), "old");
         assert!(recovered.load_run("r-new").await.unwrap().is_none());
+        assert!(!checkpoint_marker_path(td.path()).exists());
+    }
+
+    #[tokio::test]
+    async fn file_store_new_rolls_back_incomplete_hierarchy_delete_journal() {
+        let td = TempDir::new().unwrap();
+        let store = FileStore::new(td.path());
+        store.save_thread(&Thread::with_id("root")).await.unwrap();
+        store
+            .save_thread(&Thread::with_id("child").with_parent_thread_id("root"))
+            .await
+            .unwrap();
+        store
+            .save_messages("root", &[Message::user("root message")])
+            .await
+            .unwrap();
+
+        let mut updated_child = store.load_thread("child").await.unwrap().unwrap();
+        updated_child.parent_thread_id = None;
+        updated_child.touch(2_000);
+        let child_payload = serde_json::to_string_pretty(&updated_child).unwrap();
+        let child_write = stage_write(&store.threads_dir(), "child.json", &child_payload)
+            .await
+            .unwrap();
+        let root_thread_delete = stage_delete(store.thread_path("root")).unwrap();
+        let root_messages_delete = stage_delete(store.messages_path("root")).unwrap();
+        let ops = [
+            StagedFileOp::Write(child_write.clone()),
+            StagedFileOp::Delete(root_thread_delete.clone()),
+            StagedFileOp::Delete(root_messages_delete.clone()),
+        ];
+        let tx_id = "delete-rollback-test";
+        let journal = CheckpointJournal {
+            writes: ops
+                .iter()
+                .map(|op| {
+                    let target = staged_op_target(op);
+                    let backup = checkpoint_backup_path(target, tx_id);
+                    CheckpointJournalWrite {
+                        target: rel_path(td.path(), target).unwrap(),
+                        tmp: staged_op_tmp(op).map(|tmp| rel_path(td.path(), tmp).unwrap()),
+                        backup: rel_path(td.path(), &backup).unwrap(),
+                        had_target: target.exists(),
+                    }
+                })
+                .collect(),
+        };
+        std::fs::write(
+            checkpoint_marker_path(td.path()),
+            serde_json::to_vec_pretty(&journal).unwrap(),
+        )
+        .unwrap();
+
+        // Simulate a crash after the child update and root thread delete were
+        // committed, but before root messages were deleted.
+        let child_backup = join_rel(td.path(), &journal.writes[0].backup);
+        std::fs::rename(&child_write.target, &child_backup).unwrap();
+        std::fs::rename(&child_write.tmp_path, &child_write.target).unwrap();
+        let root_thread_backup = join_rel(td.path(), &journal.writes[1].backup);
+        std::fs::rename(store.thread_path("root"), &root_thread_backup).unwrap();
+
+        let recovered = FileStore::new(td.path());
+        let root = recovered.load_thread("root").await.unwrap().unwrap();
+        let child = recovered.load_thread("child").await.unwrap().unwrap();
+        let messages = recovered.load_messages("root").await.unwrap().unwrap();
+
+        assert_eq!(root.id, "root");
+        assert_eq!(child.parent_thread_id.as_deref(), Some("root"));
+        assert_eq!(messages[0].text(), "root message");
         assert!(!checkpoint_marker_path(td.path()).exists());
     }
 

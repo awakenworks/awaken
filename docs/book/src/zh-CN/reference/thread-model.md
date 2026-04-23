@@ -63,8 +63,21 @@ pub struct ThreadMetadata {
 pub trait ThreadStore: Send + Sync {
     async fn load_thread(&self, thread_id: &str) -> Result<Option<Thread>, StorageError>;
     async fn save_thread(&self, thread: &Thread) -> Result<(), StorageError>;
+    async fn save_thread_validated(&self, thread: &Thread) -> Result<(), StorageError>;
     async fn delete_thread(&self, thread_id: &str) -> Result<(), StorageError>;
+    async fn delete_thread_with_strategy(
+        &self,
+        thread_id: &str,
+        strategy: ChildThreadDeleteStrategy,
+    ) -> Result<(), StorageError>;
     async fn list_threads(&self, offset: usize, limit: usize) -> Result<Vec<String>, StorageError>;
+    async fn list_threads_query(&self, query: &ThreadQuery) -> Result<ThreadPage, StorageError>;
+    async fn list_child_threads(&self, parent_thread_id: &str) -> Result<Vec<Thread>, StorageError>;
+    async fn validate_thread_hierarchy(
+        &self,
+        thread_id: &str,
+        parent_thread_id: Option<&str>,
+    ) -> Result<(), StorageError>;
     async fn load_messages(&self, thread_id: &str) -> Result<Option<Vec<Message>>, StorageError>;
     async fn load_message_records(&self, thread_id: &str) -> Result<Option<Vec<MessageRecord>>, StorageError>;
     async fn save_messages(&self, thread_id: &str, messages: &[Message]) -> Result<(), StorageError>;
@@ -72,6 +85,9 @@ pub trait ThreadStore: Send + Sync {
     async fn update_thread_metadata(&self, id: &str, metadata: ThreadMetadata) -> Result<(), StorageError>;
 }
 ```
+
+`ThreadStore` 的默认辅助方法现在直接覆盖了 lineage 过滤、父线程存在性/环检测，
+以及子线程删除策略（`reject` / `detach` / `cascade`），后端不需要重复实现这套逻辑。
 
 `Message` 是协议载荷；`MessageRecord` 是 thread 消息日志的持久化投影：
 

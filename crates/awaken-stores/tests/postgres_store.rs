@@ -12,9 +12,10 @@ use awaken_contract::contract::config_store::{
     ConfigChangeKind, ConfigChangeNotifier, ConfigStore,
 };
 use awaken_contract::contract::message::Message;
+use awaken_contract::contract::storage::RunRecord;
 use awaken_contract::contract::storage::{
-    MessageSeqRange, RunMessageInput, RunMessageOutput, RunQuery, RunStore, ThreadRunStore,
-    ThreadStore,
+    ChildThreadDeleteStrategy, MessageSeqRange, RunMessageInput, RunMessageOutput, RunQuery,
+    RunRequestSnapshot, RunStore, StorageError, ThreadQuery, ThreadRunStore, ThreadStore,
 };
 use awaken_contract::thread::Thread;
 use awaken_stores::PostgresStore;
@@ -37,7 +38,25 @@ async fn make_store() -> Option<PostgresStore> {
 async fn make_prefixed_store(prefix: &str) -> Option<PostgresStore> {
     let url = std::env::var("DATABASE_URL").ok()?;
     let pool = sqlx::PgPool::connect(&url).await.ok()?;
-    let unique = format!(
+    let unique = unique_prefix(prefix)?;
+    let store = PostgresStore::with_prefix(pool, &unique);
+    store.ensure_schema().await.ok()?;
+    Some(store)
+}
+
+async fn make_prefixed_store_with_pool(
+    prefix: &str,
+) -> Option<(PostgresStore, String, sqlx::PgPool)> {
+    let url = std::env::var("DATABASE_URL").ok()?;
+    let pool = sqlx::PgPool::connect(&url).await.ok()?;
+    let unique = unique_prefix(prefix)?;
+    let store = PostgresStore::with_prefix(pool.clone(), &unique);
+    store.ensure_schema().await.ok()?;
+    Some((store, unique, pool))
+}
+
+fn unique_prefix(prefix: &str) -> Option<String> {
+    Some(format!(
         "{}_{}_{}",
         prefix,
         std::process::id(),
@@ -45,10 +64,7 @@ async fn make_prefixed_store(prefix: &str) -> Option<PostgresStore> {
             .duration_since(std::time::UNIX_EPOCH)
             .ok()?
             .as_millis()
-    );
-    let store = PostgresStore::with_prefix(pool, &unique);
-    store.ensure_schema().await.ok()?;
-    Some(store)
+    ))
 }
 
 // ========================================================================
@@ -108,6 +124,350 @@ async fn overwrite_thread() {
 
     let loaded = store.load_thread("pg-overwrite").await.unwrap().unwrap();
     assert_eq!(loaded.metadata.title.as_deref(), Some("v2"));
+}
+
+#[tokio::test]
+#[ignore = "requires PostgreSQL via DATABASE_URL"]
+async fn list_threads_query_filters_lineage() {
+    let Some(store) = make_prefixed_store("pg_lineage_filter").await else {
+        return;
+    };
+    let match_id = "pg-lineage-match";
+    store
+        .save_thread(
+            &Thread::with_id(match_id)
+                .with_resource_id("resource-a")
+                .with_parent_thread_id("parent-1"),
+        )
+        .await
+        .unwrap();
+    store
+        .save_thread(
+            &Thread::with_id("pg-lineage-other")
+                .with_resource_id("resource-b")
+                .with_parent_thread_id("parent-1"),
+        )
+        .await
+        .unwrap();
+
+    let page = store
+        .list_threads_query(&ThreadQuery {
+            offset: 0,
+            limit: 10,
+            resource_id: Some("resource-a".to_string()),
+            parent_thread_id: Some("parent-1".to_string()),
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(page.items, vec![match_id.to_string()]);
+    assert_eq!(page.total, 1);
+}
+
+#[tokio::test]
+#[ignore = "requires PostgreSQL via DATABASE_URL"]
+async fn checkpoint_rejects_missing_parent_thread() {
+    let Some(store) = make_prefixed_store("pg_missing_parent").await else {
+        return;
+    };
+    let run = RunRecord {
+        request: Some(RunRequestSnapshot {
+            parent_thread_id: Some("missing-parent".to_string()),
+            ..Default::default()
+        }),
+        status: awaken_contract::contract::lifecycle::RunStatus::Created,
+        ..make_run("pg-missing-parent-run", "pg-child-thread", 1)
+    };
+
+    let error = store
+        .checkpoint("pg-child-thread", &[], &run)
+        .await
+        .expect_err("checkpoint should reject unknown parent thread");
+
+    assert!(
+        matches!(error, StorageError::Validation(message) if message == "parent thread not found: missing-parent")
+    );
+}
+
+#[tokio::test]
+#[ignore = "requires PostgreSQL via DATABASE_URL"]
+async fn delete_thread_with_detach_clears_direct_child_parent() {
+    let Some(store) = make_prefixed_store("pg_detach_child").await else {
+        return;
+    };
+    store
+        .save_thread(&Thread::with_id("pg-root"))
+        .await
+        .unwrap();
+    store
+        .save_thread(&Thread::with_id("pg-child").with_parent_thread_id("pg-root"))
+        .await
+        .unwrap();
+    store
+        .save_thread(&Thread::with_id("pg-grandchild").with_parent_thread_id("pg-child"))
+        .await
+        .unwrap();
+
+    store
+        .delete_thread_with_strategy("pg-root", ChildThreadDeleteStrategy::Detach)
+        .await
+        .unwrap();
+
+    assert!(store.load_thread("pg-root").await.unwrap().is_none());
+    assert_eq!(
+        store
+            .load_thread("pg-child")
+            .await
+            .unwrap()
+            .and_then(|thread| thread.parent_thread_id),
+        None
+    );
+    assert_eq!(
+        store
+            .load_thread("pg-grandchild")
+            .await
+            .unwrap()
+            .and_then(|thread| thread.parent_thread_id),
+        Some("pg-child".to_string())
+    );
+}
+
+#[tokio::test]
+#[ignore = "requires PostgreSQL via DATABASE_URL"]
+async fn delete_thread_with_detach_rolls_back_on_child_update_failure() {
+    let Some((store, prefix, pool)) = make_prefixed_store_with_pool("pg_detach_atomic").await
+    else {
+        return;
+    };
+    store
+        .save_thread(&Thread::with_id("pg-root"))
+        .await
+        .unwrap();
+    store
+        .save_thread(&Thread::with_id("pg-child-a").with_parent_thread_id("pg-root"))
+        .await
+        .unwrap();
+    store
+        .save_thread(&Thread::with_id("pg-child-b").with_parent_thread_id("pg-root"))
+        .await
+        .unwrap();
+
+    let function_name = format!("{prefix}_detach_fail");
+    let trigger_name = format!("{prefix}_detach_fail_trigger");
+    let table = format!("{prefix}_threads");
+    let function_sql = format!(
+        r#"
+        CREATE OR REPLACE FUNCTION {function_name}() RETURNS trigger AS $$
+        BEGIN
+            IF NEW.id = 'pg-child-b' AND NEW.parent_thread_id IS NULL THEN
+                RAISE EXCEPTION 'forced child detach failure';
+            END IF;
+            RETURN NEW;
+        END;
+        $$ LANGUAGE plpgsql
+        "#
+    );
+    sqlx::query(&function_sql).execute(&pool).await.unwrap();
+    let trigger_sql = format!(
+        r#"
+        CREATE TRIGGER {trigger_name}
+        BEFORE UPDATE ON {table}
+        FOR EACH ROW
+        EXECUTE FUNCTION {function_name}()
+        "#
+    );
+    sqlx::query(&trigger_sql).execute(&pool).await.unwrap();
+
+    let error = store
+        .delete_thread_with_strategy("pg-root", ChildThreadDeleteStrategy::Detach)
+        .await
+        .expect_err("detach should roll back when a child update fails");
+
+    assert!(matches!(
+        error,
+        StorageError::Io(message) if message.contains("forced child detach failure")
+    ));
+    assert!(store.load_thread("pg-root").await.unwrap().is_some());
+    assert_eq!(
+        store
+            .load_thread("pg-child-a")
+            .await
+            .unwrap()
+            .and_then(|thread| thread.parent_thread_id),
+        Some("pg-root".to_string())
+    );
+    assert_eq!(
+        store
+            .load_thread("pg-child-b")
+            .await
+            .unwrap()
+            .and_then(|thread| thread.parent_thread_id),
+        Some("pg-root".to_string())
+    );
+}
+
+#[tokio::test]
+#[ignore = "requires PostgreSQL via DATABASE_URL"]
+async fn delete_thread_with_reject_preserves_tree() {
+    let Some(store) = make_prefixed_store("pg_reject_child").await else {
+        return;
+    };
+    store
+        .save_thread(&Thread::with_id("pg-root"))
+        .await
+        .unwrap();
+    store
+        .save_thread(&Thread::with_id("pg-child").with_parent_thread_id("pg-root"))
+        .await
+        .unwrap();
+
+    let error = store
+        .delete_thread_with_strategy("pg-root", ChildThreadDeleteStrategy::Reject)
+        .await
+        .expect_err("reject strategy should fail");
+
+    assert!(
+        matches!(error, StorageError::Validation(message) if message.contains("child threads"))
+    );
+    assert!(store.load_thread("pg-root").await.unwrap().is_some());
+    assert!(store.load_thread("pg-child").await.unwrap().is_some());
+}
+
+#[tokio::test]
+#[ignore = "requires PostgreSQL via DATABASE_URL"]
+async fn delete_thread_with_cascade_removes_descendants() {
+    let Some(store) = make_prefixed_store("pg_cascade_child").await else {
+        return;
+    };
+    store
+        .save_thread(&Thread::with_id("pg-root"))
+        .await
+        .unwrap();
+    store
+        .save_thread(&Thread::with_id("pg-child").with_parent_thread_id("pg-root"))
+        .await
+        .unwrap();
+    store
+        .save_thread(&Thread::with_id("pg-grandchild").with_parent_thread_id("pg-child"))
+        .await
+        .unwrap();
+
+    store
+        .delete_thread_with_strategy("pg-root", ChildThreadDeleteStrategy::Cascade)
+        .await
+        .unwrap();
+
+    assert!(store.load_thread("pg-root").await.unwrap().is_none());
+    assert!(store.load_thread("pg-child").await.unwrap().is_none());
+    assert!(store.load_thread("pg-grandchild").await.unwrap().is_none());
+}
+
+#[tokio::test]
+#[ignore = "requires PostgreSQL via DATABASE_URL"]
+async fn ensure_schema_normalizes_legacy_thread_lineage_columns_from_json() {
+    let url = match std::env::var("DATABASE_URL") {
+        Ok(url) => url,
+        Err(_) => return,
+    };
+    let prefix = format!(
+        "pg_backfill_{}_{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis()
+    );
+    let pool = sqlx::PgPool::connect(&url).await.unwrap();
+    let store = PostgresStore::with_prefix(pool.clone(), &prefix);
+    store.ensure_schema().await.unwrap();
+
+    let table = format!("{prefix}_threads");
+    let legacy_match = {
+        let mut thread = Thread::with_id("legacy-match");
+        thread.resource_id = Some(" resource-a ".to_string());
+        thread.parent_thread_id = Some(" parent-1 ".to_string());
+        thread
+    };
+    let legacy_blank_parent = {
+        let mut thread = Thread::with_id("legacy-blank-parent");
+        thread.resource_id = Some(" resource-a ".to_string());
+        thread.parent_thread_id = Some("   ".to_string());
+        thread
+    };
+    let insert_sql = format!("INSERT INTO {} (id, data) VALUES ($1, $2)", table);
+    for legacy in [&legacy_match, &legacy_blank_parent] {
+        let data = serde_json::to_value(legacy).unwrap();
+        sqlx::query(&insert_sql)
+            .bind(&legacy.id)
+            .bind(&data)
+            .execute(&pool)
+            .await
+            .unwrap();
+    }
+    let clear_sql = format!(
+        "UPDATE {} SET resource_id = NULL, parent_thread_id = NULL WHERE id = $1",
+        table
+    );
+    for legacy_id in [&legacy_match.id, &legacy_blank_parent.id] {
+        sqlx::query(&clear_sql)
+            .bind(legacy_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+    }
+
+    let migrated = PostgresStore::with_prefix(pool.clone(), &prefix);
+    migrated.ensure_schema().await.unwrap();
+
+    let loaded_match = migrated
+        .load_thread(&legacy_match.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(loaded_match.resource_id.as_deref(), Some("resource-a"));
+    assert_eq!(loaded_match.parent_thread_id.as_deref(), Some("parent-1"));
+
+    let loaded_blank_parent = migrated
+        .load_thread(&legacy_blank_parent.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        loaded_blank_parent.resource_id.as_deref(),
+        Some("resource-a")
+    );
+    assert_eq!(loaded_blank_parent.parent_thread_id, None);
+
+    let raw_sql = format!(
+        "SELECT resource_id, parent_thread_id FROM {} WHERE id = $1",
+        table
+    );
+    let match_columns: (Option<String>, Option<String>) = sqlx::query_as(&raw_sql)
+        .bind(&legacy_match.id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(match_columns.0.as_deref(), Some("resource-a"));
+    assert_eq!(match_columns.1.as_deref(), Some("parent-1"));
+
+    let blank_columns: (Option<String>, Option<String>) = sqlx::query_as(&raw_sql)
+        .bind(&legacy_blank_parent.id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(blank_columns.0.as_deref(), Some("resource-a"));
+    assert_eq!(blank_columns.1, None);
+
+    let page = migrated
+        .list_threads_query(&ThreadQuery {
+            offset: 0,
+            limit: 10,
+            resource_id: Some("resource-a".to_string()),
+            parent_thread_id: Some("parent-1".to_string()),
+        })
+        .await
+        .unwrap();
+    assert_eq!(page.items, vec![legacy_match.id.clone()]);
 }
 
 // ========================================================================

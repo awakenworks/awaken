@@ -4,6 +4,12 @@ use async_trait::async_trait;
 use awaken_contract::contract::config_store::ConfigStore;
 use awaken_contract::contract::executor::{InferenceExecutionError, InferenceRequest, LlmExecutor};
 use awaken_contract::contract::inference::{StopReason, StreamResult, TokenUsage};
+#[cfg(feature = "nats")]
+use awaken_contract::contract::lifecycle::RunStatus;
+#[cfg(feature = "nats")]
+use awaken_contract::contract::message::{Message, MessageMetadata};
+#[cfg(feature = "nats")]
+use awaken_contract::contract::storage::RunRecord;
 use awaken_contract::contract::storage::{RunStore, ThreadRunStore, ThreadStore};
 use awaken_contract::{AgentSpec, ModelBindingSpec, ProviderSpec};
 use awaken_runtime::AgentRuntime;
@@ -21,6 +27,11 @@ use axum::http::{Method, Request, StatusCode};
 use serde_json::{Value, json};
 use sqlx::PgPool;
 use tower::ServiceExt;
+
+#[cfg(feature = "nats")]
+use awaken_stores::{InMemoryStore, NatsBufferedThreadConfig, NatsBufferedThreadStore};
+#[cfg(feature = "nats")]
+use testcontainers::{ContainerAsync, GenericImage, ImageExt, core::WaitFor, runners::AsyncRunner};
 
 struct ImmediateExecutor;
 
@@ -155,6 +166,111 @@ where
     }
 }
 
+async fn make_thread_app<S>(store: Arc<S>, server_name: &str) -> axum::Router
+where
+    S: ThreadRunStore + Send + Sync + 'static,
+{
+    let runtime = Arc::new(
+        AgentRuntimeBuilder::new()
+            .with_provider("mock", Arc::new(ImmediateExecutor))
+            .with_model_binding(
+                "test-model",
+                ModelBinding {
+                    provider_id: "mock".into(),
+                    upstream_model: "mock-model".into(),
+                },
+            )
+            .with_agent_spec(AgentSpec {
+                id: "test-agent".into(),
+                model_id: "test-model".into(),
+                system_prompt: "test".into(),
+                max_rounds: 0,
+                ..Default::default()
+            })
+            .with_thread_run_store(store.clone() as Arc<dyn ThreadRunStore>)
+            .build()
+            .expect("build runtime"),
+    );
+
+    let mailbox = Arc::new(Mailbox::new(
+        runtime.clone(),
+        Arc::new(InMemoryMailboxStore::new()),
+        store.clone() as Arc<dyn ThreadRunStore>,
+        server_name.to_string(),
+        MailboxConfig::default(),
+    ));
+    let state = AppState::new(
+        runtime.clone(),
+        mailbox,
+        store as Arc<dyn ThreadRunStore>,
+        runtime.resolver_arc(),
+        ServerConfig::default(),
+    );
+    build_router().with_state(state)
+}
+
+#[cfg(feature = "nats")]
+fn test_run_record(run_id: &str, thread_id: &str, updated_at: u64) -> RunRecord {
+    RunRecord {
+        run_id: run_id.to_string(),
+        thread_id: thread_id.to_string(),
+        agent_id: "test-agent".to_string(),
+        parent_run_id: None,
+        request: None,
+        input: None,
+        output: None,
+        status: RunStatus::Done,
+        termination_reason: None,
+        final_output: None,
+        error_payload: None,
+        dispatch_id: None,
+        session_id: None,
+        transport_request_id: None,
+        waiting: None,
+        outcome: None,
+        created_at: updated_at,
+        started_at: None,
+        finished_at: Some(updated_at),
+        updated_at,
+        steps: 0,
+        input_tokens: 0,
+        output_tokens: 0,
+        state: None,
+    }
+}
+
+#[cfg(feature = "nats")]
+struct NatsFixture {
+    _container: ContainerAsync<GenericImage>,
+    url: String,
+}
+
+#[cfg(feature = "nats")]
+impl NatsFixture {
+    async fn start() -> Self {
+        let image = GenericImage::new("nats", "2.10-alpine")
+            .with_wait_for(WaitFor::message_on_stderr("Server is ready"))
+            .with_cmd(vec!["-js"]);
+        let container = image.start().await.expect("failed to start nats container");
+        let host_port = container.get_host_port_ipv4(4222).await.expect("nats port");
+        let url = format!("nats://127.0.0.1:{host_port}");
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        Self {
+            _container: container,
+            url,
+        }
+    }
+}
+
+#[cfg(feature = "nats")]
+fn unique_nats_config(fixture: &NatsFixture) -> NatsBufferedThreadConfig {
+    let mut config = NatsBufferedThreadConfig::new(fixture.url.clone());
+    config.stream_name = format!("THREADLOG_{}", uuid::Uuid::now_v7().simple());
+    config.consumer_name = format!("c_{}", uuid::Uuid::now_v7().simple());
+    config.hot_bucket = format!("hot_{}", uuid::Uuid::now_v7().simple());
+    config
+}
+
 async fn send_request(
     router: &axum::Router,
     method: Method,
@@ -184,6 +300,88 @@ async fn send_request(
         status,
         String::from_utf8(bytes.to_vec()).expect("utf-8 body"),
     )
+}
+
+async fn assert_thread_hierarchy_management_round_trip<S>(
+    router: &axum::Router,
+    store: &Arc<S>,
+    parent_id: &str,
+) where
+    S: ThreadRunStore + Send + Sync + 'static,
+{
+    store
+        .save_thread(&awaken_contract::thread::Thread::with_id(parent_id))
+        .await
+        .expect("save parent thread");
+
+    let (status, body) = send_request(
+        router,
+        Method::POST,
+        "/v1/threads",
+        Some(json!({
+            "title": "Managed Child",
+            "parentThreadId": parent_id,
+        })),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected create body: {body}"
+    );
+    let body: Value = serde_json::from_str(&body).expect("create thread json");
+    let child_id = body["id"].as_str().expect("child thread id").to_string();
+    assert_eq!(body["parent_thread_id"].as_str(), Some(parent_id));
+
+    let (status, body) = send_request(
+        router,
+        Method::DELETE,
+        &format!("/v1/threads/{parent_id}"),
+        None,
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::NO_CONTENT,
+        "unexpected delete body: {body}"
+    );
+
+    assert!(
+        store
+            .load_thread(parent_id)
+            .await
+            .expect("load parent")
+            .is_none()
+    );
+    let child = store
+        .load_thread(&child_id)
+        .await
+        .expect("load child")
+        .expect("child should still exist");
+    assert_eq!(child.parent_thread_id, None);
+}
+
+async fn assert_thread_hierarchy_rejects_missing_parent(router: &axum::Router) {
+    let (status, body) = send_request(
+        router,
+        Method::POST,
+        "/v1/threads",
+        Some(json!({
+            "title": "Broken Child",
+            "parentThreadId": "missing-parent",
+        })),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "unexpected error body: {body}"
+    );
+    let body: Value = serde_json::from_str(&body).expect("error json");
+    assert_eq!(
+        body["error"].as_str(),
+        Some("parent thread not found: missing-parent")
+    );
 }
 
 fn extract_sse_events(body: &str) -> Vec<Value> {
@@ -315,6 +513,62 @@ async fn file_store_config_api_persists_and_publishes_runtime() {
     assert_eq!(latest_run.run_id, run_id);
 }
 
+#[tokio::test]
+async fn file_store_thread_lineage_filters_round_trip_via_http() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let app = make_app(Arc::new(FileStore::new(dir.path())), "file-lineage-test").await;
+
+    app.store
+        .save_thread(
+            &awaken_contract::thread::Thread::with_id("file-lineage-match")
+                .with_resource_id("resource-a")
+                .with_parent_thread_id("parent-1"),
+        )
+        .await
+        .expect("save matching thread");
+    app.store
+        .save_thread(
+            &awaken_contract::thread::Thread::with_id("file-lineage-other-resource")
+                .with_resource_id("resource-b")
+                .with_parent_thread_id("parent-1"),
+        )
+        .await
+        .expect("save other thread");
+    app.store
+        .save_thread(
+            &awaken_contract::thread::Thread::with_id("file-lineage-other-parent")
+                .with_resource_id("resource-a")
+                .with_parent_thread_id("parent-2"),
+        )
+        .await
+        .expect("save other thread");
+
+    let (status, body) = send_request(
+        &app.router,
+        Method::GET,
+        "/v1/threads?resourceId=resource-a&parentThreadId=parent-1",
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "unexpected list body: {body}");
+    let body: Value = serde_json::from_str(&body).expect("threads list json");
+    let items = body["items"].as_array().expect("items array");
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0].as_str(), Some("file-lineage-match"));
+    assert_eq!(body["total"].as_u64(), Some(1));
+    assert_eq!(body["has_more"].as_bool(), Some(false));
+}
+
+#[tokio::test]
+async fn file_store_thread_hierarchy_management_round_trip_via_http() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let store = Arc::new(FileStore::new(dir.path()));
+    let router = make_thread_app(store.clone(), "file-hierarchy-test").await;
+
+    assert_thread_hierarchy_management_round_trip(&router, &store, "file-parent").await;
+    assert_thread_hierarchy_rejects_missing_parent(&router).await;
+}
+
 fn unique_postgres_prefix(seed: &str) -> String {
     format!(
         "{}_{}_{}",
@@ -405,4 +659,178 @@ async fn postgres_store_auto_creates_schema_and_supports_end_to_end_runtime() {
     assert!(table_exists(&pool, &format!("{prefix}_threads")).await);
     assert!(table_exists(&pool, &format!("{prefix}_runs")).await);
     assert!(table_exists(&pool, &format!("{prefix}_messages")).await);
+}
+
+#[tokio::test]
+#[ignore = "requires PostgreSQL via DATABASE_URL"]
+async fn postgres_store_thread_lineage_filters_round_trip_via_http() {
+    let (store, _pool, _prefix) = make_postgres_store("cfg_lineage").await;
+    let app = make_app(store.clone(), "postgres-lineage-test").await;
+
+    store
+        .save_thread(
+            &awaken_contract::thread::Thread::with_id("pg-lineage-match")
+                .with_resource_id("resource-a")
+                .with_parent_thread_id("parent-1"),
+        )
+        .await
+        .expect("save matching thread");
+    store
+        .save_thread(
+            &awaken_contract::thread::Thread::with_id("pg-lineage-other-resource")
+                .with_resource_id("resource-b")
+                .with_parent_thread_id("parent-1"),
+        )
+        .await
+        .expect("save other thread");
+    store
+        .save_thread(
+            &awaken_contract::thread::Thread::with_id("pg-lineage-other-parent")
+                .with_resource_id("resource-a")
+                .with_parent_thread_id("parent-2"),
+        )
+        .await
+        .expect("save other thread");
+
+    let (status, body) = send_request(
+        &app.router,
+        Method::GET,
+        "/v1/threads?resourceId=resource-a&parentThreadId=parent-1",
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "unexpected list body: {body}");
+    let body: Value = serde_json::from_str(&body).expect("threads list json");
+    let items = body["items"].as_array().expect("items array");
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0].as_str(), Some("pg-lineage-match"));
+    assert_eq!(body["total"].as_u64(), Some(1));
+    assert_eq!(body["has_more"].as_bool(), Some(false));
+}
+
+#[tokio::test]
+#[ignore = "requires PostgreSQL via DATABASE_URL"]
+async fn postgres_store_thread_hierarchy_management_round_trip_via_http() {
+    let (store, _pool, _prefix) = make_postgres_store("cfg_hierarchy").await;
+    let router = make_thread_app(store.clone(), "postgres-hierarchy-test").await;
+
+    assert_thread_hierarchy_management_round_trip(&router, &store, "pg-parent").await;
+    assert_thread_hierarchy_rejects_missing_parent(&router).await;
+}
+
+#[cfg(feature = "nats")]
+#[tokio::test]
+async fn nats_buffered_store_thread_routes_round_trip_via_http() {
+    let fixture = NatsFixture::start().await;
+    let inner = Arc::new(InMemoryStore::new());
+    let store = Arc::new(
+        NatsBufferedThreadStore::connect(inner, unique_nats_config(&fixture))
+            .await
+            .expect("connect buffered nats store"),
+    );
+    let router = make_thread_app(store.clone(), "nats-lineage-test").await;
+
+    store
+        .save_thread(
+            &awaken_contract::thread::Thread::with_id("nats-lineage-match")
+                .with_title("NATS Match")
+                .with_resource_id("resource-a")
+                .with_parent_thread_id("parent-1"),
+        )
+        .await
+        .expect("save matching thread");
+    store
+        .save_thread(
+            &awaken_contract::thread::Thread::with_id("nats-lineage-other-resource")
+                .with_title("Other Resource")
+                .with_resource_id("resource-b")
+                .with_parent_thread_id("parent-1"),
+        )
+        .await
+        .expect("save other thread");
+    store
+        .save_thread(
+            &awaken_contract::thread::Thread::with_id("nats-lineage-other-parent")
+                .with_title("Other Parent")
+                .with_resource_id("resource-a")
+                .with_parent_thread_id("parent-2"),
+        )
+        .await
+        .expect("save other thread");
+
+    store
+        .create_run(&test_run_record("nats-run-1", "nats-lineage-match", 100))
+        .await
+        .expect("create latest run");
+    let run_metadata = MessageMetadata {
+        run_id: Some("nats-run-1".to_string()),
+        step_index: Some(0),
+    };
+    store
+        .save_messages(
+            "nats-lineage-match",
+            &[
+                Message::user("input"),
+                Message::assistant("first").with_metadata(run_metadata.clone()),
+                Message::internal_system("hidden").with_metadata(run_metadata.clone()),
+                Message::assistant("second").with_metadata(run_metadata),
+            ],
+        )
+        .await
+        .expect("save messages");
+
+    let (status, body) = send_request(
+        &router,
+        Method::GET,
+        "/v1/threads?resourceId=resource-a&parentThreadId=parent-1",
+        None,
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected thread list body: {body}"
+    );
+    let body: Value = serde_json::from_str(&body).expect("threads list json");
+    let items = body["items"].as_array().expect("items array");
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0].as_str(), Some("nats-lineage-match"));
+    assert_eq!(body["total"].as_u64(), Some(1));
+    assert_eq!(body["has_more"].as_bool(), Some(false));
+
+    let (status, body) = send_request(
+        &router,
+        Method::GET,
+        "/v1/threads/summaries?resourceId=resource-a&parentThreadId=parent-1",
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "unexpected summary body: {body}");
+    let body: Value = serde_json::from_str(&body).expect("threads summaries json");
+    let items = body["items"].as_array().expect("items array");
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0]["id"].as_str(), Some("nats-lineage-match"));
+    assert_eq!(items[0]["title"].as_str(), Some("NATS Match"));
+    assert_eq!(items[0]["resource_id"].as_str(), Some("resource-a"));
+    assert_eq!(items[0]["parent_thread_id"].as_str(), Some("parent-1"));
+    assert_eq!(items[0]["agent_id"].as_str(), Some("test-agent"));
+
+    let (status, body) = send_request(
+        &router,
+        Method::GET,
+        "/v1/threads/nats-lineage-match/messages?runId=nats-run-1&after=1&order=desc",
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "unexpected messages body: {body}");
+    let body: Value = serde_json::from_str(&body).expect("messages json");
+    let messages = body["messages"].as_array().expect("messages array");
+    assert_eq!(messages.len(), 2);
+    assert_eq!(messages[0]["content"][0]["text"].as_str(), Some("second"));
+    assert_eq!(messages[1]["content"][0]["text"].as_str(), Some("first"));
+    assert_eq!(body["total"].as_u64(), Some(2));
+    assert_eq!(body["has_more"].as_bool(), Some(false));
+
+    assert_thread_hierarchy_management_round_trip(&router, &store, "nats-parent").await;
+    assert_thread_hierarchy_rejects_missing_parent(&router).await;
 }

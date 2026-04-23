@@ -90,6 +90,7 @@ pub enum InferenceExecutionError {
 
 ```rust,ignore
 pub enum StorageError {
+    Validation(String),
     NotFound(String),
     AlreadyExists(String),
     VersionConflict { expected: u64, actual: u64 },

@@ -9,7 +9,7 @@ use super::message::{Message, MessageRecord, Visibility};
 use super::suspension::{ToolCallResume, ToolCallResumeMode};
 use super::tool::ToolDescriptor;
 use crate::state::PersistedState;
-use crate::thread::Thread;
+use crate::thread::{Thread, normalize_lineage_id};
 use serde_json::Value;
 
 // ── errors ──────────────────────────────────────────────────────────
@@ -17,6 +17,9 @@ use serde_json::Value;
 /// Errors returned by storage operations.
 #[derive(Debug, Error)]
 pub enum StorageError {
+    /// The provided input violates a storage-level invariant.
+    #[error("validation error: {0}")]
+    Validation(String),
     /// The requested entity was not found.
     #[error("not found: {0}")]
     NotFound(String),
@@ -357,6 +360,20 @@ impl Default for MessageQuery {
 }
 
 impl MessageQuery {
+    /// Return a copy with contract-level pagination limits applied.
+    #[must_use]
+    pub fn normalized(&self) -> Self {
+        Self {
+            offset: self.offset,
+            limit: self.limit.clamp(1, 200),
+            after: self.after,
+            before: self.before,
+            order: self.order,
+            visibility: self.visibility,
+            run_id: self.run_id.clone(),
+        }
+    }
+
     /// Return true when a record passes the query filters.
     #[must_use]
     pub fn matches_record(&self, record: &MessageRecord) -> bool {
@@ -461,24 +478,40 @@ impl ThreadQuery {
     /// Return true when the query carries any non-pagination filter.
     #[must_use]
     pub fn has_filters(&self) -> bool {
-        self.resource_id.is_some() || self.parent_thread_id.is_some()
+        normalize_lineage_id(self.resource_id.as_deref()).is_some()
+            || normalize_lineage_id(self.parent_thread_id.as_deref()).is_some()
+    }
+
+    /// Return a copy with normalized lineage filters.
+    #[must_use]
+    pub fn normalized(&self) -> Self {
+        Self {
+            offset: self.offset,
+            limit: self.limit.clamp(1, 200),
+            resource_id: normalize_lineage_id(self.resource_id.as_deref()),
+            parent_thread_id: normalize_lineage_id(self.parent_thread_id.as_deref()),
+        }
     }
 
     /// Return true when a thread passes the query filters.
     #[must_use]
     pub fn matches_thread(&self, thread: &Thread) -> bool {
-        if self
+        let normalized = self.normalized();
+        if normalized
             .resource_id
             .as_deref()
-            .is_some_and(|resource_id| thread.resource_id.as_deref() != Some(resource_id))
+            .is_some_and(|resource_id| {
+                normalize_lineage_id(thread.resource_id.as_deref()).as_deref() != Some(resource_id)
+            })
         {
             return false;
         }
-        if self
+        if normalized
             .parent_thread_id
             .as_deref()
             .is_some_and(|parent_thread_id| {
-                thread.parent_thread_id.as_deref() != Some(parent_thread_id)
+                normalize_lineage_id(thread.parent_thread_id.as_deref()).as_deref()
+                    != Some(parent_thread_id)
             })
         {
             return false;
@@ -513,6 +546,34 @@ impl ThreadPage {
     }
 }
 
+/// How deleting a thread should treat direct and transitive child threads.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ChildThreadDeleteStrategy {
+    /// Reject deletion when at least one direct child exists.
+    Reject,
+    /// Preserve child threads and clear their `parent_thread_id`.
+    #[default]
+    Detach,
+    /// Recursively delete all descendants before deleting the target thread.
+    Cascade,
+}
+
+/// Parent thread that should be materialized by a checkpoint projection.
+#[must_use]
+pub fn checkpoint_parent_thread_id<'a>(
+    existing_thread: Option<&'a Thread>,
+    run: &'a RunRecord,
+) -> Option<&'a str> {
+    existing_thread
+        .and_then(|thread| thread.parent_thread_id.as_deref())
+        .or_else(|| {
+            run.request
+                .as_ref()
+                .and_then(|request| request.parent_thread_id.as_deref())
+        })
+}
+
 /// Sort threads by recent activity, then ID for deterministic ties.
 pub fn sort_threads_by_recent_activity(threads: &mut [Thread]) {
     threads.sort_by(|a, b| {
@@ -525,6 +586,7 @@ pub fn sort_threads_by_recent_activity(threads: &mut [Thread]) {
 /// Apply thread filters and offset pagination to an in-memory thread set.
 #[must_use]
 pub fn paginate_threads(mut threads: Vec<Thread>, query: &ThreadQuery) -> ThreadPage {
+    let query = query.normalized();
     sort_threads_by_recent_activity(&mut threads);
     let filtered: Vec<Thread> = threads
         .into_iter()
@@ -555,6 +617,7 @@ pub fn paginate_message_records(
     mut records: Vec<MessageRecord>,
     query: &MessageQuery,
 ) -> MessagePage {
+    let query = query.normalized();
     records.retain(|record| query.matches_record(record));
     match query.order {
         MessageOrder::Asc => records.sort_by_key(|record| record.seq),
@@ -621,8 +684,78 @@ pub trait ThreadStore: Send + Sync {
     /// Persist a thread (create or overwrite).
     async fn save_thread(&self, thread: &Thread) -> Result<(), StorageError>;
 
+    /// Persist a thread after validating parent-child hierarchy invariants.
+    async fn save_thread_validated(&self, thread: &Thread) -> Result<(), StorageError> {
+        self.validate_thread_hierarchy(&thread.id, thread.parent_thread_id.as_deref())
+            .await?;
+        self.save_thread(thread).await
+    }
+
     /// Delete a thread and its associated messages.
     async fn delete_thread(&self, thread_id: &str) -> Result<(), StorageError>;
+
+    /// Delete a thread while managing direct and transitive children.
+    async fn delete_thread_with_strategy(
+        &self,
+        thread_id: &str,
+        strategy: ChildThreadDeleteStrategy,
+    ) -> Result<(), StorageError> {
+        if self.load_thread(thread_id).await?.is_none() {
+            return Err(StorageError::NotFound(thread_id.to_owned()));
+        }
+
+        match strategy {
+            ChildThreadDeleteStrategy::Reject => {
+                let children = self.list_child_threads(thread_id).await?;
+                if !children.is_empty() {
+                    return Err(StorageError::Validation(format!(
+                        "thread '{thread_id}' has child threads; choose 'detach' or 'cascade'"
+                    )));
+                }
+                self.delete_thread(thread_id).await
+            }
+            ChildThreadDeleteStrategy::Detach => {
+                let mut children = self.list_child_threads(thread_id).await?;
+                let updated_at = crate::now_ms();
+                for child in &mut children {
+                    child.parent_thread_id = None;
+                    child.metadata.updated_at = Some(updated_at);
+                    self.save_thread(child).await?;
+                }
+                self.delete_thread(thread_id).await
+            }
+            ChildThreadDeleteStrategy::Cascade => {
+                let mut visited = std::collections::HashSet::new();
+                let mut stack = vec![(thread_id.to_owned(), false)];
+                let mut delete_order = Vec::new();
+
+                while let Some((current_thread_id, expanded)) = stack.pop() {
+                    if expanded {
+                        delete_order.push(current_thread_id);
+                        continue;
+                    }
+
+                    if !visited.insert(current_thread_id.clone()) {
+                        return Err(StorageError::Validation(format!(
+                            "thread hierarchy cycle detected while deleting '{thread_id}'"
+                        )));
+                    }
+
+                    stack.push((current_thread_id.clone(), true));
+                    let mut children = self.list_child_threads(&current_thread_id).await?;
+                    children.sort_by(|left, right| left.id.cmp(&right.id));
+                    for child in children.into_iter().rev() {
+                        stack.push((child.id, false));
+                    }
+                }
+
+                for id in delete_order {
+                    self.delete_thread(&id).await?;
+                }
+                Ok(())
+            }
+        }
+    }
 
     /// List thread IDs with pagination.
     async fn list_threads(&self, offset: usize, limit: usize) -> Result<Vec<String>, StorageError>;
@@ -651,6 +784,86 @@ pub trait ThreadStore: Send + Sync {
         }
 
         Ok(paginate_threads(threads, query))
+    }
+
+    /// Load all direct child threads for a given parent thread.
+    async fn list_child_threads(
+        &self,
+        parent_thread_id: &str,
+    ) -> Result<Vec<Thread>, StorageError> {
+        const PAGE_LIMIT: usize = 200;
+
+        let mut offset = 0;
+        let mut children = Vec::new();
+        loop {
+            let page = self
+                .list_threads_query(&ThreadQuery {
+                    offset,
+                    limit: PAGE_LIMIT,
+                    resource_id: None,
+                    parent_thread_id: Some(parent_thread_id.to_owned()),
+                })
+                .await?;
+            let count = page.items.len();
+            for id in page.items {
+                if let Some(thread) = self.load_thread(&id).await? {
+                    children.push(thread);
+                }
+            }
+            if !page.has_more || count == 0 {
+                break;
+            }
+            offset = page
+                .next_cursor
+                .as_deref()
+                .and_then(|cursor| cursor.parse::<usize>().ok())
+                .unwrap_or(offset.saturating_add(count));
+        }
+        Ok(children)
+    }
+
+    /// Validate parent-child hierarchy invariants for a thread.
+    async fn validate_thread_hierarchy(
+        &self,
+        thread_id: &str,
+        parent_thread_id: Option<&str>,
+    ) -> Result<(), StorageError> {
+        let Some(parent_thread_id) = normalize_lineage_id(parent_thread_id) else {
+            return Ok(());
+        };
+        if parent_thread_id == thread_id {
+            return Err(StorageError::Validation(format!(
+                "thread '{thread_id}' cannot parent itself"
+            )));
+        }
+
+        let root_parent_thread_id = parent_thread_id.to_owned();
+        let mut current_thread_id = root_parent_thread_id.clone();
+        let mut visited = std::collections::HashSet::from([thread_id.to_owned()]);
+
+        loop {
+            if !visited.insert(current_thread_id.clone()) {
+                return Err(StorageError::Validation(format!(
+                    "thread hierarchy cycle detected at '{current_thread_id}'"
+                )));
+            }
+
+            let Some(thread) = self.load_thread(&current_thread_id).await? else {
+                let message = if current_thread_id == root_parent_thread_id {
+                    format!("parent thread not found: {root_parent_thread_id}")
+                } else {
+                    format!("thread hierarchy references missing ancestor '{current_thread_id}'")
+                };
+                return Err(StorageError::Validation(message));
+            };
+
+            let Some(next_parent_thread_id) =
+                normalize_lineage_id(thread.parent_thread_id.as_deref())
+            else {
+                return Ok(());
+            };
+            current_thread_id = next_parent_thread_id;
+        }
     }
 
     /// Load all messages for a thread. Returns `None` if no messages exist.
@@ -989,6 +1202,201 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn thread_store_query_normalizes_lineage_filters() {
+        let store = MockThreadStore::default();
+        let mut thread = Thread::with_id("match");
+        thread.resource_id = Some(" resource-a ".to_string());
+        thread.parent_thread_id = Some(" parent-1 ".to_string());
+        store.save_thread(&thread).await.unwrap();
+
+        let page = store
+            .list_threads_query(&ThreadQuery {
+                offset: 0,
+                limit: 10,
+                resource_id: Some(" resource-a ".to_string()),
+                parent_thread_id: Some(" parent-1 ".to_string()),
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(page.items, vec!["match"]);
+        assert_eq!(page.total, 1);
+    }
+
+    #[tokio::test]
+    async fn thread_store_query_clamps_zero_limit() {
+        let store = MockThreadStore::default();
+        store.save_thread(&Thread::with_id("t-1")).await.unwrap();
+        store.save_thread(&Thread::with_id("t-2")).await.unwrap();
+
+        let page = store
+            .list_threads_query(&ThreadQuery {
+                offset: 0,
+                limit: 0,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(page.items.len(), 1);
+        assert!(page.has_more);
+        assert_eq!(page.next_cursor.as_deref(), Some("1"));
+    }
+
+    #[tokio::test]
+    async fn thread_store_list_child_threads_returns_direct_children() {
+        let store = MockThreadStore::default();
+        store.save_thread(&Thread::with_id("root")).await.unwrap();
+        store
+            .save_thread(&Thread::with_id("child-a").with_parent_thread_id("root"))
+            .await
+            .unwrap();
+        store
+            .save_thread(&Thread::with_id("child-b").with_parent_thread_id("root"))
+            .await
+            .unwrap();
+        store
+            .save_thread(&Thread::with_id("grandchild").with_parent_thread_id("child-a"))
+            .await
+            .unwrap();
+
+        let mut children = store.list_child_threads("root").await.unwrap();
+        children.sort_by(|left, right| left.id.cmp(&right.id));
+
+        assert_eq!(
+            children
+                .into_iter()
+                .map(|thread| thread.id)
+                .collect::<Vec<_>>(),
+            vec!["child-a", "child-b"]
+        );
+    }
+
+    #[tokio::test]
+    async fn thread_store_validate_thread_hierarchy_rejects_missing_parent() {
+        let store = MockThreadStore::default();
+
+        let err = store
+            .validate_thread_hierarchy("child", Some("missing"))
+            .await
+            .expect_err("missing parent should be rejected");
+
+        assert!(
+            matches!(err, StorageError::Validation(message) if message == "parent thread not found: missing")
+        );
+    }
+
+    #[tokio::test]
+    async fn thread_store_validate_thread_hierarchy_treats_blank_parent_as_absent() {
+        let store = MockThreadStore::default();
+
+        store
+            .validate_thread_hierarchy("child", Some("   "))
+            .await
+            .expect("blank lineage ids should normalize to absent");
+    }
+
+    #[tokio::test]
+    async fn thread_store_validate_thread_hierarchy_rejects_cycle() {
+        let store = MockThreadStore::default();
+        store.save_thread(&Thread::with_id("a")).await.unwrap();
+        store
+            .save_thread(&Thread::with_id("b").with_parent_thread_id("a"))
+            .await
+            .unwrap();
+
+        let err = store
+            .validate_thread_hierarchy("a", Some("b"))
+            .await
+            .expect_err("cycle should be rejected");
+
+        assert!(
+            matches!(err, StorageError::Validation(message) if message.contains("cycle detected"))
+        );
+    }
+
+    #[tokio::test]
+    async fn thread_store_delete_with_reject_preserves_tree() {
+        let store = MockThreadStore::default();
+        store.save_thread(&Thread::with_id("root")).await.unwrap();
+        store
+            .save_thread(&Thread::with_id("child").with_parent_thread_id("root"))
+            .await
+            .unwrap();
+
+        let err = store
+            .delete_thread_with_strategy("root", ChildThreadDeleteStrategy::Reject)
+            .await
+            .expect_err("reject strategy should fail when children exist");
+
+        assert!(
+            matches!(err, StorageError::Validation(message) if message.contains("child threads"))
+        );
+        assert!(store.load_thread("root").await.unwrap().is_some());
+        assert!(store.load_thread("child").await.unwrap().is_some());
+    }
+
+    #[tokio::test]
+    async fn thread_store_delete_with_detach_clears_direct_child_parent() {
+        let store = MockThreadStore::default();
+        store.save_thread(&Thread::with_id("root")).await.unwrap();
+        store
+            .save_thread(&Thread::with_id("child").with_parent_thread_id("root"))
+            .await
+            .unwrap();
+        store
+            .save_thread(&Thread::with_id("grandchild").with_parent_thread_id("child"))
+            .await
+            .unwrap();
+
+        store
+            .delete_thread_with_strategy("root", ChildThreadDeleteStrategy::Detach)
+            .await
+            .unwrap();
+
+        assert!(store.load_thread("root").await.unwrap().is_none());
+        assert_eq!(
+            store
+                .load_thread("child")
+                .await
+                .unwrap()
+                .and_then(|thread| thread.parent_thread_id),
+            None
+        );
+        assert_eq!(
+            store
+                .load_thread("grandchild")
+                .await
+                .unwrap()
+                .and_then(|thread| thread.parent_thread_id),
+            Some("child".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn thread_store_delete_with_cascade_removes_descendants() {
+        let store = MockThreadStore::default();
+        store.save_thread(&Thread::with_id("root")).await.unwrap();
+        store
+            .save_thread(&Thread::with_id("child").with_parent_thread_id("root"))
+            .await
+            .unwrap();
+        store
+            .save_thread(&Thread::with_id("grandchild").with_parent_thread_id("child"))
+            .await
+            .unwrap();
+
+        store
+            .delete_thread_with_strategy("root", ChildThreadDeleteStrategy::Cascade)
+            .await
+            .unwrap();
+
+        assert!(store.load_thread("root").await.unwrap().is_none());
+        assert!(store.load_thread("child").await.unwrap().is_none());
+        assert!(store.load_thread("grandchild").await.unwrap().is_none());
+    }
+
+    #[tokio::test]
     async fn thread_store_save_and_load_messages() {
         let store = MockThreadStore::default();
         let msgs = vec![
@@ -1049,6 +1457,30 @@ mod tests {
         assert_eq!(texts, vec!["second", "first"]);
         assert_eq!(page.total, 2);
         assert!(!page.has_more);
+    }
+
+    #[tokio::test]
+    async fn thread_store_message_query_clamps_zero_limit() {
+        let store = MockThreadStore::default();
+        store
+            .save_messages("t-1", &[Message::user("one"), Message::assistant("two")])
+            .await
+            .unwrap();
+
+        let page = store
+            .list_message_records(
+                "t-1",
+                &MessageQuery {
+                    limit: 0,
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(page.records.len(), 1);
+        assert!(page.has_more);
+        assert_eq!(page.next_cursor.as_deref(), Some("1"));
     }
 
     #[tokio::test]
@@ -1341,6 +1773,10 @@ mod tests {
 
     #[test]
     fn storage_error_display() {
+        assert_eq!(
+            StorageError::Validation("bad lineage".into()).to_string(),
+            "validation error: bad lineage"
+        );
         assert_eq!(
             StorageError::NotFound("x".into()).to_string(),
             "not found: x"

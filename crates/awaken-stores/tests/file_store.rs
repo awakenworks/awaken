@@ -4,9 +4,11 @@
 
 use awaken_contract::contract::lifecycle::{RunStatus, TerminationReason};
 use awaken_contract::contract::message::Message;
+use awaken_contract::contract::storage::RunRecord;
 use awaken_contract::contract::storage::{
-    MessageOrder, MessageQuery, MessageSeqRange, MessageVisibilityFilter, RunMessageInput,
-    RunMessageOutput, RunQuery, RunStore, StorageError, ThreadQuery, ThreadRunStore, ThreadStore,
+    ChildThreadDeleteStrategy, MessageOrder, MessageQuery, MessageSeqRange,
+    MessageVisibilityFilter, RunMessageInput, RunMessageOutput, RunQuery, RunRequestSnapshot,
+    RunStore, StorageError, ThreadQuery, ThreadRunStore, ThreadStore,
 };
 use awaken_contract::thread::Thread;
 use awaken_stores::FileStore;
@@ -109,6 +111,113 @@ async fn list_threads_query_filters_lineage() {
 
     assert_eq!(page.items, vec!["match"]);
     assert_eq!(page.total, 1);
+}
+
+#[tokio::test]
+async fn checkpoint_rejects_missing_parent_thread() {
+    let tmp = TempDir::new().unwrap();
+    let store = FileStore::new(tmp.path());
+    let run = RunRecord {
+        request: Some(RunRequestSnapshot {
+            parent_thread_id: Some("missing-parent".to_string()),
+            ..Default::default()
+        }),
+        status: RunStatus::Created,
+        ..make_run("r-missing-parent", "child-thread", 1)
+    };
+
+    let error = store
+        .checkpoint("child-thread", &[], &run)
+        .await
+        .expect_err("checkpoint should reject unknown parent thread");
+
+    assert!(
+        matches!(error, StorageError::Validation(message) if message == "parent thread not found: missing-parent")
+    );
+}
+
+#[tokio::test]
+async fn delete_thread_with_detach_clears_direct_child_parent() {
+    let tmp = TempDir::new().unwrap();
+    let store = FileStore::new(tmp.path());
+    store.save_thread(&Thread::with_id("root")).await.unwrap();
+    store
+        .save_thread(&Thread::with_id("child").with_parent_thread_id("root"))
+        .await
+        .unwrap();
+    store
+        .save_thread(&Thread::with_id("grandchild").with_parent_thread_id("child"))
+        .await
+        .unwrap();
+
+    store
+        .delete_thread_with_strategy("root", ChildThreadDeleteStrategy::Detach)
+        .await
+        .unwrap();
+
+    assert!(store.load_thread("root").await.unwrap().is_none());
+    assert_eq!(
+        store
+            .load_thread("child")
+            .await
+            .unwrap()
+            .and_then(|thread| thread.parent_thread_id),
+        None
+    );
+    assert_eq!(
+        store
+            .load_thread("grandchild")
+            .await
+            .unwrap()
+            .and_then(|thread| thread.parent_thread_id),
+        Some("child".to_string())
+    );
+}
+
+#[tokio::test]
+async fn delete_thread_with_reject_preserves_tree() {
+    let tmp = TempDir::new().unwrap();
+    let store = FileStore::new(tmp.path());
+    store.save_thread(&Thread::with_id("root")).await.unwrap();
+    store
+        .save_thread(&Thread::with_id("child").with_parent_thread_id("root"))
+        .await
+        .unwrap();
+
+    let error = store
+        .delete_thread_with_strategy("root", ChildThreadDeleteStrategy::Reject)
+        .await
+        .expect_err("reject strategy should fail");
+
+    assert!(
+        matches!(error, StorageError::Validation(message) if message.contains("child threads"))
+    );
+    assert!(store.load_thread("root").await.unwrap().is_some());
+    assert!(store.load_thread("child").await.unwrap().is_some());
+}
+
+#[tokio::test]
+async fn delete_thread_with_cascade_removes_descendants() {
+    let tmp = TempDir::new().unwrap();
+    let store = FileStore::new(tmp.path());
+    store.save_thread(&Thread::with_id("root")).await.unwrap();
+    store
+        .save_thread(&Thread::with_id("child").with_parent_thread_id("root"))
+        .await
+        .unwrap();
+    store
+        .save_thread(&Thread::with_id("grandchild").with_parent_thread_id("child"))
+        .await
+        .unwrap();
+
+    store
+        .delete_thread_with_strategy("root", ChildThreadDeleteStrategy::Cascade)
+        .await
+        .unwrap();
+
+    assert!(store.load_thread("root").await.unwrap().is_none());
+    assert!(store.load_thread("child").await.unwrap().is_none());
+    assert!(store.load_thread("grandchild").await.unwrap().is_none());
 }
 
 #[tokio::test]

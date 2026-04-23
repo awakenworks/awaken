@@ -82,8 +82,21 @@ the `ThreadStore` trait:
 pub trait ThreadStore: Send + Sync {
     async fn load_thread(&self, thread_id: &str) -> Result<Option<Thread>, StorageError>;
     async fn save_thread(&self, thread: &Thread) -> Result<(), StorageError>;
+    async fn save_thread_validated(&self, thread: &Thread) -> Result<(), StorageError>;
     async fn delete_thread(&self, thread_id: &str) -> Result<(), StorageError>;
+    async fn delete_thread_with_strategy(
+        &self,
+        thread_id: &str,
+        strategy: ChildThreadDeleteStrategy,
+    ) -> Result<(), StorageError>;
     async fn list_threads(&self, offset: usize, limit: usize) -> Result<Vec<String>, StorageError>;
+    async fn list_threads_query(&self, query: &ThreadQuery) -> Result<ThreadPage, StorageError>;
+    async fn list_child_threads(&self, parent_thread_id: &str) -> Result<Vec<Thread>, StorageError>;
+    async fn validate_thread_hierarchy(
+        &self,
+        thread_id: &str,
+        parent_thread_id: Option<&str>,
+    ) -> Result<(), StorageError>;
     async fn load_messages(&self, thread_id: &str) -> Result<Option<Vec<Message>>, StorageError>;
     async fn load_message_records(&self, thread_id: &str) -> Result<Option<Vec<MessageRecord>>, StorageError>;
     async fn save_messages(&self, thread_id: &str, messages: &[Message]) -> Result<(), StorageError>;
@@ -91,6 +104,11 @@ pub trait ThreadStore: Send + Sync {
     async fn update_thread_metadata(&self, id: &str, metadata: ThreadMetadata) -> Result<(), StorageError>;
 }
 ```
+
+The default helpers on `ThreadStore` now cover first-class lineage filtering,
+parent existence / cycle validation, and child-thread delete strategies
+(`reject`, `detach`, `cascade`) without requiring every backend to reimplement
+that logic.
 
 `Message` is the protocol payload sent to agents and protocol adapters.
 `MessageRecord` is the durable thread-log projection:
