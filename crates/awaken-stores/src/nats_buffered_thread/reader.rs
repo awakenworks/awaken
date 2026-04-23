@@ -7,9 +7,9 @@ use awaken_contract::contract::storage::{
     RunPage, RunQuery, RunRecord, StorageError, ThreadPage, ThreadQuery, ThreadRunStore,
     paginate_threads,
 };
-use awaken_contract::thread::Thread;
+use awaken_contract::thread::{Thread, normalize_lineage_id};
 
-use super::{NatsBufferedThreadStore, config::ReadConsistency, entry, hot_meta};
+use super::{NatsBufferedThreadStore, config::ReadConsistency, entry, hot_meta, recovery};
 
 pub async fn load_thread<T: ThreadRunStore + Send + Sync + 'static>(
     store: &NatsBufferedThreadStore<T>,
@@ -21,32 +21,8 @@ pub async fn load_thread<T: ThreadRunStore + Send + Sync + 'static>(
             store.force_flush(thread_id).await?;
             return store.inner.load_thread(thread_id).await;
         }
-        ReadConsistency::ReadYourWrites => {}
+        ReadConsistency::ReadYourWrites => load_thread_overlay(store, thread_id).await,
     }
-
-    let meta = hot_meta::read_meta(&store.kv_hot, thread_id).await?;
-    let flushed_seq = hot_meta::read_flushed_seq(&store.kv_hot, thread_id).await?;
-
-    if meta.latest_seq <= flushed_seq {
-        return store.inner.load_thread(thread_id).await;
-    }
-
-    let mut thread = store
-        .inner
-        .load_thread(thread_id)
-        .await?
-        .unwrap_or_else(|| Thread::with_id(thread_id));
-    if let Some(latest_entry) = read_committed_wal_entry(store, &meta).await? {
-        thread
-            .metadata
-            .created_at
-            .get_or_insert(latest_entry.written_at);
-        thread.metadata.updated_at = Some(latest_entry.written_at);
-        thread.apply_run_projection(&latest_entry.run);
-        return Ok(Some(thread));
-    }
-
-    store.inner.load_thread(thread_id).await
 }
 
 pub async fn list_threads<T: ThreadRunStore + Send + Sync + 'static>(
@@ -63,13 +39,14 @@ pub async fn list_threads<T: ThreadRunStore + Send + Sync + 'static>(
         ReadConsistency::ReadYourWrites => {}
     }
 
+    recovery::reconcile_all_thread_tails(store).await?;
     let all_inner_ids = list_all_inner_thread_ids(store).await?;
     let mut ids: HashSet<String> = all_inner_ids.into_iter().collect();
     ids.extend(hot_meta::pending_thread_ids(&store.kv_hot).await?);
 
     let mut threads = Vec::new();
     for id in ids {
-        if let Some(thread) = load_thread(store, &id).await? {
+        if let Some(thread) = load_thread_overlay(store, &id).await? {
             threads.push(thread);
         }
     }
@@ -99,13 +76,14 @@ pub async fn list_threads_query<T: ThreadRunStore + Send + Sync + 'static>(
         ReadConsistency::ReadYourWrites => {}
     }
 
+    recovery::reconcile_all_thread_tails(store).await?;
     let all_inner_ids = list_all_inner_thread_ids(store).await?;
     let mut ids: HashSet<String> = all_inner_ids.into_iter().collect();
     ids.extend(hot_meta::pending_thread_ids(&store.kv_hot).await?);
 
     let mut threads = Vec::new();
     for id in ids {
-        if let Some(thread) = load_thread(store, &id).await? {
+        if let Some(thread) = load_thread_overlay(store, &id).await? {
             threads.push(thread);
         }
     }
@@ -125,6 +103,7 @@ pub async fn load_messages<T: ThreadRunStore + Send + Sync + 'static>(
         ReadConsistency::ReadYourWrites => {}
     }
 
+    recovery::reconcile_thread_tail(store, thread_id).await?;
     let meta = hot_meta::read_meta(&store.kv_hot, thread_id).await?;
     let flushed_seq = hot_meta::read_flushed_seq(&store.kv_hot, thread_id).await?;
 
@@ -203,6 +182,7 @@ pub async fn latest_run<T: ThreadRunStore + Send + Sync + 'static>(
         ReadConsistency::ReadYourWrites => {}
     }
 
+    recovery::reconcile_thread_tail(store, thread_id).await?;
     let meta = hot_meta::read_meta(&store.kv_hot, thread_id).await?;
     let flushed_seq = hot_meta::read_flushed_seq(&store.kv_hot, thread_id).await?;
 
@@ -231,6 +211,7 @@ pub async fn list_runs<T: ThreadRunStore + Send + Sync + 'static>(
         ReadConsistency::ReadYourWrites => {}
     }
 
+    recovery::reconcile_all_thread_tails(store).await?;
     let mut by_id: HashMap<String, RunRecord> = list_all_inner_runs(store, query)
         .await?
         .into_iter()
@@ -297,6 +278,81 @@ async fn latest_inner_run<T: ThreadRunStore + Send + Sync + 'static>(
         return Ok(Some(run));
     }
     store.inner.latest_run(thread_id).await
+}
+
+pub(crate) async fn load_thread_overlay<T: ThreadRunStore + Send + Sync + 'static>(
+    store: &NatsBufferedThreadStore<T>,
+    thread_id: &str,
+) -> Result<Option<Thread>, StorageError> {
+    recovery::reconcile_thread_tail(store, thread_id).await?;
+    let meta = hot_meta::read_meta(&store.kv_hot, thread_id).await?;
+    let flushed_seq = hot_meta::read_flushed_seq(&store.kv_hot, thread_id).await?;
+
+    if meta.latest_seq <= flushed_seq {
+        return store.inner.load_thread(thread_id).await;
+    }
+
+    let mut thread = store
+        .inner
+        .load_thread(thread_id)
+        .await?
+        .unwrap_or_else(|| Thread::with_id(thread_id));
+    if let Some(latest_entry) = read_committed_wal_entry(store, &meta).await? {
+        if let Some(projected_thread) = latest_entry.projected_thread.clone() {
+            return Ok(Some(projected_thread));
+        }
+        thread
+            .metadata
+            .created_at
+            .get_or_insert(latest_entry.written_at);
+        thread.metadata.updated_at = Some(latest_entry.written_at);
+        thread.apply_run_projection(&latest_entry.run);
+        return Ok(Some(thread));
+    }
+
+    store.inner.load_thread(thread_id).await
+}
+
+pub(crate) async fn validate_thread_hierarchy_overlay<T: ThreadRunStore + Send + Sync + 'static>(
+    store: &NatsBufferedThreadStore<T>,
+    thread_id: &str,
+    parent_thread_id: Option<&str>,
+) -> Result<(), StorageError> {
+    let Some(parent_thread_id) = normalize_lineage_id(parent_thread_id) else {
+        return Ok(());
+    };
+    if parent_thread_id == thread_id {
+        return Err(StorageError::Validation(format!(
+            "thread '{thread_id}' cannot parent itself"
+        )));
+    }
+
+    let root_parent_thread_id = parent_thread_id.clone();
+    let mut current_thread_id = parent_thread_id;
+    let mut visited = std::collections::HashSet::from([thread_id.to_owned()]);
+
+    loop {
+        if !visited.insert(current_thread_id.clone()) {
+            return Err(StorageError::Validation(format!(
+                "thread hierarchy cycle detected at '{current_thread_id}'"
+            )));
+        }
+
+        let Some(thread) = load_thread_overlay(store, &current_thread_id).await? else {
+            let message = if current_thread_id == root_parent_thread_id {
+                format!("parent thread not found: {root_parent_thread_id}")
+            } else {
+                format!("thread hierarchy references missing ancestor '{current_thread_id}'")
+            };
+            return Err(StorageError::Validation(message));
+        };
+
+        let Some(next_parent_thread_id) = normalize_lineage_id(thread.parent_thread_id.as_deref())
+        else {
+            return Ok(());
+        };
+        current_thread_id = next_parent_thread_id;
+    }
 }
 
 /// Fetch the WAL entry bound to `meta.latest_seq` via `meta.latest_js_seq`.

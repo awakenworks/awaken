@@ -37,6 +37,10 @@ pub enum StorageError {
     /// An I/O error occurred.
     #[error("io error: {0}")]
     Io(String),
+    /// The operation may have committed durably, but the caller cannot know
+    /// whether follow-up promotion/cache work completed.
+    #[error("commit outcome unknown: {0}")]
+    CommitUnknown(String),
     /// A serialization or deserialization error occurred.
     #[error("serialization error: {0}")]
     Serialization(String),
@@ -682,6 +686,10 @@ pub trait ThreadStore: Send + Sync {
     async fn load_thread(&self, thread_id: &str) -> Result<Option<Thread>, StorageError>;
 
     /// Persist a thread (create or overwrite).
+    ///
+    /// This is a low-level persistence primitive. Callers that change
+    /// parent-child relationships should use [`ThreadStore::save_thread_validated`]
+    /// so hierarchy invariants are checked against current store state.
     async fn save_thread(&self, thread: &Thread) -> Result<(), StorageError>;
 
     /// Persist a thread after validating parent-child hierarchy invariants.
@@ -692,6 +700,9 @@ pub trait ThreadStore: Send + Sync {
     }
 
     /// Delete a thread and its associated messages.
+    ///
+    /// This is a low-level delete primitive. Callers that need hierarchy-aware
+    /// child handling should use [`ThreadStore::delete_thread_with_strategy`].
     async fn delete_thread(&self, thread_id: &str) -> Result<(), StorageError>;
 
     /// Delete a thread while managing direct and transitive children.

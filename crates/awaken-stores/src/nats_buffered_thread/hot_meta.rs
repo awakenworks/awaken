@@ -285,6 +285,37 @@ pub async fn write_flushed_seq(
     }
 }
 
+/// Preserve the per-thread sequence watermark across thread deletion so a
+/// recreated thread id cannot reuse an older WAL sequence number.
+pub async fn write_delete_tombstone(
+    kv: &async_nats::jetstream::kv::Store,
+    thread_id: &str,
+    now: u64,
+) -> Result<u64, StorageError> {
+    let meta = read_meta(kv, thread_id).await?;
+    let flushed = read_flushed_seq(kv, thread_id).await?;
+    let watermark = meta.reserved_seq.max(meta.latest_seq).max(flushed);
+
+    if watermark == 0 {
+        return Ok(0);
+    }
+
+    let tombstone = ThreadHotMetadata {
+        reserved_seq: watermark,
+        latest_seq: watermark,
+        latest_js_seq: 0,
+        updated_at: now,
+    };
+    kv.put(keys::hot_meta_key(thread_id), encode_meta(&tombstone)?)
+        .await
+        .map_err(|error| StorageError::Io(format!("write delete tombstone meta: {error}")))?;
+    kv.put(keys::flushed_seq_key(thread_id), encode_seq(watermark))
+        .await
+        .map_err(|error| StorageError::Io(format!("write delete tombstone flushed: {error}")))?;
+
+    Ok(watermark)
+}
+
 pub async fn cache_run_if_newer(
     kv: &async_nats::jetstream::kv::Store,
     run: &RunRecord,

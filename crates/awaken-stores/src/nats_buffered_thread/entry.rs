@@ -1,5 +1,6 @@
 use awaken_contract::contract::message::Message;
 use awaken_contract::contract::storage::{RunRecord, StorageError};
+use awaken_contract::thread::Thread;
 use bytes::Bytes;
 use serde::{Deserialize, Serialize};
 
@@ -8,6 +9,8 @@ pub struct CheckpointEntry {
     pub thread_id: String,
     pub run: RunRecord,
     pub messages: Vec<Message>,
+    #[serde(default)]
+    pub projected_thread: Option<Thread>,
     pub thread_seq: u64,
     pub written_at: u64,
 }
@@ -57,6 +60,7 @@ mod tests {
                 state: None,
             },
             messages: vec![Message::user("hi")],
+            projected_thread: Some(Thread::with_id("t1")),
             thread_seq: 1,
             written_at: 1000,
         }
@@ -70,5 +74,12 @@ mod tests {
         assert_eq!(decoded.thread_id, "t1");
         assert_eq!(decoded.thread_seq, 1);
         assert_eq!(decoded.messages.len(), 1);
+        assert_eq!(
+            decoded
+                .projected_thread
+                .as_ref()
+                .map(|thread| thread.id.as_str()),
+            Some("t1")
+        );
     }
 }

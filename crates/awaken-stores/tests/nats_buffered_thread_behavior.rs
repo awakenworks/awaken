@@ -11,11 +11,13 @@ use async_trait::async_trait;
 use awaken_contract::contract::lifecycle::RunStatus;
 use awaken_contract::contract::message::Message;
 use awaken_contract::contract::storage::{
-    RunPage, RunQuery, RunRecord, RunStore, StorageError, ThreadRunStore, ThreadStore,
+    RunPage, RunQuery, RunRecord, RunRequestSnapshot, RunStore, StorageError, ThreadQuery,
+    ThreadRunStore, ThreadStore,
 };
 use awaken_contract::thread::{Thread, ThreadMetadata};
 use awaken_stores::{InMemoryStore, NatsBufferedThreadStore, ReadConsistency};
 use fixture::{NatsFixture, unique_config};
+use tokio::sync::Barrier;
 
 /// A ThreadRunStore that wraps InMemoryStore and counts checkpoint calls.
 struct CountingStore {
@@ -124,6 +126,15 @@ fn mk_run(id: &str, thread: &str) -> RunRecord {
         output_tokens: 0,
         state: None,
     }
+}
+
+fn mk_child_run(id: &str, thread: &str, parent_thread_id: &str) -> RunRecord {
+    let mut run = mk_run(id, thread);
+    run.request = Some(RunRequestSnapshot {
+        parent_thread_id: Some(parent_thread_id.to_string()),
+        ..RunRequestSnapshot::default()
+    });
+    run
 }
 
 #[tokio::test]
@@ -258,6 +269,51 @@ async fn recovery_drains_wal_on_reconnect() {
     store2.shutdown().await.unwrap();
 }
 
+#[tokio::test]
+async fn checkpoint_reports_commit_unknown_after_durable_wal_commit() {
+    let fixture = NatsFixture::start().await;
+    let inner = Arc::new(InMemoryStore::new());
+    let mut config = unique_config(&fixture);
+    config.flush_interval = Duration::from_secs(60);
+    let store = NatsBufferedThreadStore::connect(Arc::clone(&inner), config)
+        .await
+        .expect("connect");
+
+    store
+        .__test_fail_checkpoint_after_mark_committed("injected post-commit failure")
+        .await;
+
+    let error = store
+        .checkpoint(
+            "t-commit-unknown",
+            &[Message::user("durable")],
+            &mk_run("r-durable", "t-commit-unknown"),
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(error, StorageError::CommitUnknown(_)),
+        "post-commit failures must surface as CommitUnknown: {error:?}"
+    );
+
+    store.force_flush("t-commit-unknown").await.unwrap();
+
+    let thread = inner
+        .load_thread("t-commit-unknown")
+        .await
+        .unwrap()
+        .expect("thread recovered from committed WAL");
+    assert_eq!(thread.latest_run_id.as_deref(), Some("r-durable"));
+    let messages = inner
+        .load_messages("t-commit-unknown")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(messages[0].text(), "durable");
+
+    store.shutdown().await.unwrap();
+}
+
 /// Regression for the concurrent-writer WAL race: when two writers
 /// reserve seqs in order (A=20, B=10) but their JetStream publishes
 /// arrive in the opposite order (B lands first, A lands second), a
@@ -320,6 +376,227 @@ async fn read_your_writes_binds_to_committed_js_seq_not_subject_tail() {
         .unwrap()
         .expect("latest_run must return overlay run");
     assert_eq!(latest.run_id, "run-a");
+
+    store.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn checkpoint_serializes_concurrent_cycle_updates() {
+    let fixture = NatsFixture::start().await;
+    let inner = Arc::new(InMemoryStore::new());
+    inner.save_thread(&Thread::with_id("a")).await.unwrap();
+    inner.save_thread(&Thread::with_id("b")).await.unwrap();
+
+    let mut config = unique_config(&fixture);
+    config.flush_interval = Duration::from_secs(60);
+    let store = Arc::new(
+        NatsBufferedThreadStore::connect(Arc::clone(&inner), config)
+            .await
+            .expect("connect"),
+    );
+
+    let barrier = Arc::new(Barrier::new(3));
+    let spawn_checkpoint = |thread_id: &'static str, parent_thread_id: &'static str| {
+        let store = Arc::clone(&store);
+        let barrier = Arc::clone(&barrier);
+        tokio::spawn(async move {
+            barrier.wait().await;
+            store
+                .checkpoint(
+                    thread_id,
+                    &[Message::user("buffered")],
+                    &mk_child_run(
+                        &format!("run-{thread_id}-to-{parent_thread_id}"),
+                        thread_id,
+                        parent_thread_id,
+                    ),
+                )
+                .await
+        })
+    };
+
+    let left = spawn_checkpoint("a", "b");
+    let right = spawn_checkpoint("b", "a");
+    barrier.wait().await;
+
+    let left = left.await.unwrap();
+    let right = right.await.unwrap();
+    assert_ne!(left.is_ok(), right.is_ok());
+
+    for thread_id in ["a", "b"] {
+        let thread = store.load_thread(thread_id).await.unwrap().unwrap();
+        store
+            .validate_thread_hierarchy(thread_id, thread.parent_thread_id.as_deref())
+            .await
+            .unwrap();
+    }
+
+    store.force_flush_all_pending().await.unwrap();
+
+    for thread_id in ["a", "b"] {
+        let thread = inner.load_thread(thread_id).await.unwrap().unwrap();
+        inner
+            .validate_thread_hierarchy(thread_id, thread.parent_thread_id.as_deref())
+            .await
+            .unwrap();
+    }
+
+    Arc::into_inner(store)
+        .expect("single store owner for shutdown")
+        .shutdown()
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn checkpoint_validation_ignores_eventual_read_consistency() {
+    let fixture = NatsFixture::start().await;
+    let inner = Arc::new(InMemoryStore::new());
+    inner.save_thread(&Thread::with_id("a")).await.unwrap();
+    inner.save_thread(&Thread::with_id("b")).await.unwrap();
+
+    let mut config = unique_config(&fixture);
+    config.read_consistency = ReadConsistency::Eventual;
+    config.flush_interval = Duration::from_secs(60);
+    let store = NatsBufferedThreadStore::connect(Arc::clone(&inner), config)
+        .await
+        .expect("connect");
+
+    store
+        .checkpoint(
+            "a",
+            &[Message::user("buffered-a")],
+            &mk_child_run("run-a-to-b", "a", "b"),
+        )
+        .await
+        .unwrap();
+
+    let error = store
+        .checkpoint(
+            "b",
+            &[Message::user("buffered-b")],
+            &mk_child_run("run-b-to-a", "b", "a"),
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(error, StorageError::Validation(_)));
+
+    store.force_flush_all_pending().await.unwrap();
+
+    for thread_id in ["a", "b"] {
+        let thread = inner.load_thread(thread_id).await.unwrap().unwrap();
+        inner
+            .validate_thread_hierarchy(thread_id, thread.parent_thread_id.as_deref())
+            .await
+            .unwrap();
+    }
+
+    store.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn latest_wal_projection_preserves_sticky_parent_across_pending_checkpoints() {
+    let fixture = NatsFixture::start().await;
+    let inner = Arc::new(InMemoryStore::new());
+    inner.save_thread(&Thread::with_id("root")).await.unwrap();
+
+    let mut config = unique_config(&fixture);
+    config.flush_interval = Duration::from_secs(60);
+    let store = NatsBufferedThreadStore::connect(Arc::clone(&inner), config)
+        .await
+        .expect("connect");
+
+    store
+        .checkpoint(
+            "child",
+            &[Message::user("attach-child")],
+            &mk_child_run("run-child-parented", "child", "root"),
+        )
+        .await
+        .unwrap();
+    store
+        .checkpoint(
+            "child",
+            &[Message::user("sticky-parent")],
+            &mk_run("run-child-latest", "child"),
+        )
+        .await
+        .unwrap();
+
+    let child = store.load_thread("child").await.unwrap().unwrap();
+    assert_eq!(child.parent_thread_id.as_deref(), Some("root"));
+
+    let page = store
+        .list_threads_query(&ThreadQuery {
+            parent_thread_id: Some("root".to_string()),
+            ..ThreadQuery::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(page.items.len(), 1);
+    assert_eq!(page.items[0], "child");
+
+    let error = store
+        .checkpoint(
+            "root",
+            &[Message::user("introduce-cycle")],
+            &mk_child_run("run-root-to-child", "root", "child"),
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(error, StorageError::Validation(_)));
+
+    store.force_flush_all_pending().await.unwrap();
+
+    let flushed_child = inner.load_thread("child").await.unwrap().unwrap();
+    assert_eq!(flushed_child.parent_thread_id.as_deref(), Some("root"));
+
+    store.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn same_run_coalescing_flush_preserves_materialized_parent_projection() {
+    let fixture = NatsFixture::start().await;
+    let inner = Arc::new(InMemoryStore::new());
+    inner.save_thread(&Thread::with_id("root")).await.unwrap();
+
+    let mut config = unique_config(&fixture);
+    config.flush_interval = Duration::from_secs(60);
+    let store = NatsBufferedThreadStore::connect(Arc::clone(&inner), config)
+        .await
+        .expect("connect");
+
+    store
+        .checkpoint(
+            "child",
+            &[Message::user("same-run-parented")],
+            &mk_child_run("same-run", "child", "root"),
+        )
+        .await
+        .unwrap();
+    store
+        .checkpoint(
+            "child",
+            &[Message::user("same-run-latest")],
+            &mk_run("same-run", "child"),
+        )
+        .await
+        .unwrap();
+
+    store.force_flush("child").await.unwrap();
+
+    let flushed_child = inner.load_thread("child").await.unwrap().unwrap();
+    assert_eq!(flushed_child.parent_thread_id.as_deref(), Some("root"));
+
+    let error = store
+        .checkpoint(
+            "root",
+            &[Message::user("introduce-cycle")],
+            &mk_child_run("run-root-to-child-after-coalesce", "root", "child"),
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(error, StorageError::Validation(_)));
 
     store.shutdown().await.unwrap();
 }
