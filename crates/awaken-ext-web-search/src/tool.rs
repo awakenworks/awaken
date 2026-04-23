@@ -137,7 +137,6 @@ impl Tool for WebSearchTool {
     }
 }
 
-
 /// Strategy for combining results from multiple providers
 #[derive(Debug, Clone, Copy)]
 pub enum CompositeMode {
@@ -209,9 +208,7 @@ impl CompositeSearchProvider {
             let provider = provider.clone();
             let query = query.to_string();
             let ctx = ctx.clone();
-            futures.push(async move {
-                (name, provider.search(&query, num_results, &ctx).await)
-            });
+            futures.push(async move { (name, provider.search(&query, num_results, &ctx).await) });
         }
 
         // Wait for all results
@@ -225,15 +222,15 @@ impl CompositeSearchProvider {
             if let Ok(items) = result {
                 for item in items {
                     if seen_urls.insert(item.url.clone()) {
-                    // Deduplicate by URL
-                    merged.push(item);
-                    if merged.len() >= num_results {
-                        break;
+                        // Deduplicate by URL
+                        merged.push(item);
+                        if merged.len() >= num_results {
+                            break;
+                        }
                     }
                 }
             }
         }
-    }
 
         Ok(merged)
     }
@@ -248,12 +245,8 @@ impl SearchProvider for CompositeSearchProvider {
         ctx: &ToolCallContext,
     ) -> Result<Vec<SearchResult>, ToolError> {
         match self.mode {
-            CompositeMode::Fallback => {
-                self.search_fallback(query, num_results, ctx).await
-            }
-            CompositeMode::Merge => {
-                self.search_merge(query, num_results, ctx).await
-            }
+            CompositeMode::Fallback => self.search_fallback(query, num_results, ctx).await,
+            CompositeMode::Merge => self.search_merge(query, num_results, ctx).await,
         }
     }
 }

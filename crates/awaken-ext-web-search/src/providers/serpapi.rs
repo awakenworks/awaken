@@ -295,4 +295,80 @@ mod tests {
             other => panic!("expected ExecutionFailed with 'search was cancelled', got {other:?}"),
         }
     }
+
+    #[tokio::test]
+    async fn http_error_does_not_leak_api_key() {
+        let server = MockServer::start_async().await;
+        let endpoint = server.url("/search");
+
+        let mock = server
+            .mock_async(|when, then| {
+                when.method(GET).path("/search");
+                then.status(401).body("Unauthorized");
+            })
+            .await;
+
+        let provider = SerpApiProvider::new("super-secret-key-12345", Some(endpoint)).unwrap();
+        let ctx = ToolCallContext::test_default();
+        let result = provider.search("rust", 5, &ctx).await;
+
+        mock.assert_async().await;
+
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            !err.contains("super-secret-key-12345"),
+            "API key leaked in error: {}",
+            err
+        );
+    }
+
+    #[tokio::test]
+    async fn retries_on_5xx_with_backoff() {
+        let server = MockServer::start_async().await;
+        let endpoint = server.url("/search");
+
+        // First 2 requests return 503, third succeeds
+        let mock = server
+            .mock_async(|when, then| {
+                when.method(GET).path("/search");
+                then.status(503).body("Service Unavailable");
+            })
+            .await;
+
+        let provider = SerpApiProvider::new("k", Some(endpoint)).unwrap();
+        let ctx = ToolCallContext::test_default();
+        let result = provider.search("rust", 5, &ctx).await;
+
+        // Should have retried twice (3 total attempts)
+        mock.assert_hits_async(3).await;
+
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn api_error_from_response_is_propagated() {
+        let server = MockServer::start_async().await;
+        let endpoint = server.url("/search");
+
+        let mock = server
+            .mock_async(|when, then| {
+                when.method(GET).path("/search");
+                then.status(200).json_body(json!({
+                    "error": "Invalid API key",
+                    "organic_results": []
+                }));
+            })
+            .await;
+
+        let provider = SerpApiProvider::new("bad-key", Some(endpoint)).unwrap();
+        let ctx = ToolCallContext::test_default();
+        let result = provider.search("rust", 5, &ctx).await;
+
+        mock.assert_async().await;
+
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("Invalid API key"));
+    }
 }

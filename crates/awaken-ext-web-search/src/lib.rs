@@ -56,7 +56,9 @@
 pub mod providers;
 pub mod tool;
 
-pub use tool::{CompositeMode, CompositeSearchProvider, SearchProvider, SearchResult, WebSearchTool};
+pub use tool::{
+    CompositeMode, CompositeSearchProvider, SearchProvider, SearchResult, WebSearchTool,
+};
 
 #[cfg(feature = "serpapi")]
 pub use providers::SerpApiProvider;

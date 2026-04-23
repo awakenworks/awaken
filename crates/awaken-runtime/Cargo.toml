@@ -24,7 +24,7 @@ typedmap = { workspace = true }
 uuid = { workspace = true }
 genai = { workspace = true }
 tokio = { workspace = true }
-reqwest = { workspace = true }
+reqwest = { workspace = true, optional = true }
 schemars = { workspace = true }
 jsonschema = { workspace = true }
 parking_lot = { workspace = true }
