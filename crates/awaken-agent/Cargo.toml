@@ -13,6 +13,7 @@ categories = ["artificial-intelligence", "asynchronous"]
 
 [lib]
 name = "awaken"
+doc = false
 doctest = false
 
 [dependencies]
