@@ -184,6 +184,104 @@ async fn manager_cancel_nonexistent() {
     assert!(!manager.cancel("nonexistent").await);
 }
 
+#[tokio::test]
+async fn manager_cancel_tree_cascades_to_descendants() {
+    let (manager, _store) = manager_with_store();
+    let parent_id = manager
+        .spawn(
+            "thread-1",
+            "root_task",
+            Some("root-task"),
+            "parent task",
+            TaskParentContext::default(),
+            |ctx| async move {
+                ctx.cancelled().await;
+                TaskResult::Cancelled
+            },
+        )
+        .await
+        .unwrap();
+    let child_id = manager
+        .spawn(
+            "thread-1",
+            "child",
+            Some("child"),
+            "child task",
+            TaskParentContext {
+                task_id: Some(parent_id.clone()),
+                ..TaskParentContext::default()
+            },
+            |ctx| async move {
+                ctx.cancelled().await;
+                TaskResult::Cancelled
+            },
+        )
+        .await
+        .unwrap();
+    let grandchild_id = manager
+        .spawn(
+            "thread-1",
+            "grandchild",
+            Some("grandchild"),
+            "grandchild task",
+            TaskParentContext {
+                task_id: Some(child_id.clone()),
+                ..TaskParentContext::default()
+            },
+            |ctx| async move {
+                ctx.cancelled().await;
+                TaskResult::Cancelled
+            },
+        )
+        .await
+        .unwrap();
+
+    let cancelled = manager.cancel_tree(&parent_id).await;
+    assert_eq!(cancelled, 3);
+
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    assert_eq!(
+        manager.get(&parent_id).await.unwrap().status,
+        TaskStatus::Cancelled
+    );
+    assert_eq!(
+        manager.get(&child_id).await.unwrap().status,
+        TaskStatus::Cancelled
+    );
+    assert_eq!(
+        manager.get(&grandchild_id).await.unwrap().status,
+        TaskStatus::Cancelled
+    );
+}
+
+#[tokio::test]
+async fn spawn_agent_with_context_exposes_task_id() {
+    let (manager, _store) = manager_with_store();
+    let seen = Arc::new(tokio::sync::Mutex::new(None::<String>));
+    let seen_clone = Arc::clone(&seen);
+
+    let task_id = manager
+        .spawn_agent_with_context(
+            "thread-1",
+            Some("worker"),
+            "worker",
+            TaskParentContext::default(),
+            move |ctx| {
+                let seen = Arc::clone(&seen_clone);
+                async move {
+                    *seen.lock().await = Some(ctx.task_id.clone());
+                    ctx.cancel_token.cancel();
+                    TaskResult::Cancelled
+                }
+            },
+        )
+        .await
+        .unwrap();
+
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    assert_eq!(seen.lock().await.as_deref(), Some(task_id.as_str()));
+}
+
 #[test]
 fn plugin_registers_key() {
     let store = StateStore::new();
@@ -1000,6 +1098,7 @@ fn task_summary_serde_roundtrip() {
 async fn spawn_with_parent_context_preserves_lineage() {
     let (manager, _store) = manager_with_store();
     let ctx = TaskParentContext {
+        task_id: None,
         run_id: Some("run-abc".into()),
         call_id: Some("call-xyz".into()),
         agent_id: Some("agent-007".into()),
@@ -1040,6 +1139,126 @@ async fn spawn_with_parent_context_preserves_lineage() {
     assert_eq!(meta.parent_context.agent_id.as_deref(), Some("agent-007"));
 }
 
+#[tokio::test]
+async fn spawn_with_default_parent_context_inherits_ambient_tool_lineage() {
+    let (manager, _store) = manager_with_store();
+
+    let task_id = super::scope_tool_lineage_context(
+        super::ToolLineageContext {
+            run_id: "run-ambient".into(),
+            call_id: "call-ambient".into(),
+            agent_id: "agent-ambient".into(),
+        },
+        async {
+            manager
+                .spawn(
+                    "thread-1",
+                    "test",
+                    None,
+                    "ambient lineage task",
+                    TaskParentContext::default(),
+                    |_| async { TaskResult::Success(serde_json::json!({"ok": true})) },
+                )
+                .await
+                .unwrap()
+        },
+    )
+    .await;
+
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    let summary = manager.get(&task_id).await.unwrap();
+    assert_eq!(
+        summary.parent_context.run_id.as_deref(),
+        Some("run-ambient")
+    );
+    assert_eq!(
+        summary.parent_context.call_id.as_deref(),
+        Some("call-ambient")
+    );
+    assert_eq!(
+        summary.parent_context.agent_id.as_deref(),
+        Some("agent-ambient")
+    );
+}
+
+#[tokio::test]
+async fn nested_spawn_inherits_parent_task_id_from_ambient_task_context() {
+    let (manager, _store) = manager_with_store();
+    let child_task_id = Arc::new(tokio::sync::Mutex::new(None::<String>));
+    let child_task_id_seen = child_task_id.clone();
+
+    let root_id = manager
+        .spawn(
+            "thread-1",
+            "root",
+            Some("root"),
+            "root task",
+            TaskParentContext::default(),
+            {
+                let manager = manager.clone();
+                move |ctx| {
+                    let manager = manager.clone();
+                    let child_task_id_seen = child_task_id_seen.clone();
+                    async move {
+                        let current = super::current_background_task_context()
+                            .expect("plain background task should expose current task context");
+                        assert_eq!(current.task_id, ctx.task_id);
+
+                        let child_id = manager
+                            .spawn(
+                                "thread-1",
+                                "child",
+                                Some("child"),
+                                "child task",
+                                TaskParentContext::default(),
+                                |child_ctx| async move {
+                                    child_ctx.cancelled().await;
+                                    TaskResult::Cancelled
+                                },
+                            )
+                            .await
+                            .unwrap();
+                        *child_task_id_seen.lock().await = Some(child_id);
+
+                        ctx.cancelled().await;
+                        TaskResult::Cancelled
+                    }
+                }
+            },
+        )
+        .await
+        .unwrap();
+
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    let child_id = child_task_id
+        .lock()
+        .await
+        .clone()
+        .expect("child task id should be recorded");
+    let child_summary = manager
+        .get(&child_id)
+        .await
+        .expect("child task should be queryable");
+    assert_eq!(
+        child_summary.parent_context.task_id.as_deref(),
+        Some(root_id.as_str())
+    );
+
+    assert_eq!(manager.cancel_tree(&root_id).await, 2);
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    assert_eq!(
+        manager.get(&root_id).await.unwrap().status,
+        TaskStatus::Cancelled
+    );
+    assert_eq!(
+        manager.get(&child_id).await.unwrap().status,
+        TaskStatus::Cancelled
+    );
+}
+
 #[test]
 fn persisted_task_meta_with_parent_context_serde_roundtrip() {
     let meta = PersistedTaskMeta {
@@ -1054,6 +1273,7 @@ fn persisted_task_meta_with_parent_context_serde_roundtrip() {
         created_at_ms: 500,
         completed_at_ms: Some(600),
         parent_context: TaskParentContext {
+            task_id: None,
             run_id: Some("run-123".into()),
             call_id: None,
             agent_id: Some("agent-a".into()),
@@ -1130,6 +1350,13 @@ fn task_parent_context_is_empty() {
     assert!(TaskParentContext::default().is_empty());
     assert!(
         !TaskParentContext {
+            task_id: Some("t".into()),
+            ..Default::default()
+        }
+        .is_empty()
+    );
+    assert!(
+        !TaskParentContext {
             run_id: Some("r".into()),
             ..Default::default()
         }
@@ -1180,6 +1407,7 @@ fn task_summary_with_parent_context_includes_field_in_json() {
         created_at_ms: 100,
         completed_at_ms: None,
         parent_context: TaskParentContext {
+            task_id: None,
             run_id: Some("run-1".into()),
             call_id: None,
             agent_id: None,
@@ -1770,6 +1998,7 @@ async fn full_lifecycle_sub_agent_with_child_tasks() {
             None,
             "worker-agent",
             TaskParentContext {
+                task_id: None,
                 run_id: Some("run-1".into()),
                 call_id: None,
                 agent_id: Some("parent".into()),

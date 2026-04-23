@@ -4,13 +4,21 @@ use async_trait::async_trait;
 use awaken_contract::contract::executor::{InferenceExecutionError, InferenceRequest, LlmExecutor};
 use awaken_contract::contract::inference::{StopReason, StreamResult, TokenUsage};
 use awaken_contract::contract::lifecycle::RunStatus;
-use awaken_contract::contract::message::Message;
+use awaken_contract::contract::lifecycle::TerminationReason;
+use awaken_contract::contract::message::{Message, ToolCall};
 use awaken_contract::contract::storage::{
     RunRecord, RunStore, RunWaitingState, ThreadRunStore, ThreadStore, WaitingReason,
+};
+use awaken_contract::contract::tool::{
+    Tool, ToolCallContext, ToolDescriptor, ToolError, ToolOutput, ToolResult,
 };
 use awaken_contract::registry_spec::AgentSpec;
 use awaken_contract::thread::Thread;
 use awaken_runtime::builder::AgentRuntimeBuilder;
+use awaken_runtime::extensions::background::{
+    BackgroundTaskManager, BackgroundTaskPlugin, TaskParentContext,
+    TaskResult as BackgroundTaskResult, TaskStatus,
+};
 use awaken_runtime::registry::traits::ModelBinding;
 use awaken_server::app::{AppState, ServerConfig};
 use awaken_server::routes::build_router;
@@ -18,7 +26,7 @@ use awaken_stores::memory::InMemoryStore;
 use axum::body::to_bytes;
 use axum::http::{Request, StatusCode};
 use serde_json::{Value, json};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tower::ServiceExt;
 
@@ -64,6 +72,95 @@ impl LlmExecutor for DelayedExecutor {
 
     fn name(&self) -> &str {
         "delayed"
+    }
+}
+
+struct ScriptedLlm {
+    responses: Mutex<Vec<StreamResult>>,
+}
+
+impl ScriptedLlm {
+    fn new(responses: Vec<StreamResult>) -> Self {
+        Self {
+            responses: Mutex::new(responses),
+        }
+    }
+
+    fn tool_call_response(calls: Vec<ToolCall>) -> StreamResult {
+        StreamResult {
+            content: vec![],
+            tool_calls: calls,
+            usage: Some(TokenUsage::default()),
+            stop_reason: Some(StopReason::ToolUse),
+            has_incomplete_tool_calls: false,
+        }
+    }
+}
+
+#[async_trait]
+impl LlmExecutor for ScriptedLlm {
+    async fn execute(
+        &self,
+        _request: InferenceRequest,
+    ) -> Result<StreamResult, InferenceExecutionError> {
+        let mut responses = self.responses.lock().expect("responses lock");
+        Ok(if responses.is_empty() {
+            StreamResult {
+                content: vec![],
+                tool_calls: vec![],
+                usage: Some(TokenUsage::default()),
+                stop_reason: Some(StopReason::EndTurn),
+                has_incomplete_tool_calls: false,
+            }
+        } else {
+            responses.remove(0)
+        })
+    }
+
+    fn name(&self) -> &str {
+        "scripted"
+    }
+}
+
+struct SpawnBackgroundChildTool {
+    manager: Arc<BackgroundTaskManager>,
+}
+
+#[async_trait]
+impl Tool for SpawnBackgroundChildTool {
+    fn descriptor(&self) -> ToolDescriptor {
+        ToolDescriptor::new(
+            "spawn_bg_child",
+            "spawn_bg_child",
+            "Spawn a cancellable background child task",
+        )
+        .with_parameters(json!({
+            "type": "object",
+            "properties": {
+                "name": {"type": "string"}
+            }
+        }))
+    }
+
+    async fn execute(&self, args: Value, ctx: &ToolCallContext) -> Result<ToolOutput, ToolError> {
+        let name = args.get("name").and_then(Value::as_str).unwrap_or("leaf");
+        let task_id = self
+            .manager
+            .spawn(
+                &ctx.run_identity.thread_id,
+                "background_child",
+                Some(name),
+                "child spawned from A2A test",
+                TaskParentContext::default(),
+                |task_ctx| async move {
+                    task_ctx.cancelled().await;
+                    BackgroundTaskResult::Cancelled
+                },
+            )
+            .await
+            .map_err(|error| ToolError::ExecutionFailed(error.to_string()))?;
+
+        Ok(ToolResult::success("spawn_bg_child", json!({"task_id": task_id})).into())
     }
 }
 
@@ -129,6 +226,71 @@ fn make_test_app(agent_ids: &[&str]) -> axum::Router {
         Arc::new(ImmediateExecutor),
         ServerConfig::default(),
     )
+}
+
+fn build_background_cancel_fixture()
+-> (axum::Router, Arc<InMemoryStore>, Arc<BackgroundTaskManager>) {
+    let manager = Arc::new(BackgroundTaskManager::new());
+    let executor = Arc::new(ScriptedLlm::new(vec![ScriptedLlm::tool_call_response(
+        vec![
+            ToolCall::new("call-spawn", "spawn_bg_child", json!({"name": "leaf"})),
+            ToolCall::new(
+                "call-cancel",
+                "cancel_task",
+                json!({"target": {"relation": "self"}}),
+            ),
+        ],
+    )]));
+
+    let store = Arc::new(InMemoryStore::new());
+    let runtime = Arc::new(
+        AgentRuntimeBuilder::new()
+            .with_model_binding(
+                "test-model",
+                ModelBinding {
+                    provider_id: "mock".into(),
+                    upstream_model: "mock-model".into(),
+                },
+            )
+            .with_provider("mock", executor)
+            .with_agent_spec(AgentSpec {
+                id: "alpha".into(),
+                model_id: "test-model".into(),
+                system_prompt: "cancel yourself after spawning a child".into(),
+                max_rounds: 2,
+                plugin_ids: vec!["background".into()],
+                ..Default::default()
+            })
+            .with_tool(
+                "spawn_bg_child",
+                Arc::new(SpawnBackgroundChildTool {
+                    manager: manager.clone(),
+                }),
+            )
+            .with_plugin(
+                "background",
+                Arc::new(BackgroundTaskPlugin::new(manager.clone())),
+            )
+            .with_thread_run_store(store.clone())
+            .build()
+            .expect("build runtime"),
+    );
+    let mailbox_store = Arc::new(awaken_stores::InMemoryMailboxStore::new());
+    let mailbox = Arc::new(awaken_server::mailbox::Mailbox::new(
+        runtime.clone(),
+        mailbox_store,
+        store.clone(),
+        "test".to_string(),
+        awaken_server::mailbox::MailboxConfig::default(),
+    ));
+    let state = AppState::new(
+        runtime.clone(),
+        mailbox,
+        store.clone(),
+        runtime.resolver_arc(),
+        ServerConfig::default(),
+    );
+    (build_router().with_state(state), store, manager)
 }
 
 async fn request_json(
@@ -309,6 +471,69 @@ async fn message_send_returns_task_wrapper_and_task_is_retrievable() {
                 && message["role"].as_str() == Some("ROLE_USER")
         }),
         "user message missing from history: {task}"
+    );
+}
+
+#[tokio::test]
+async fn a2a_message_send_self_cancel_cascades_background_run_children() {
+    let (app, store, manager) = build_background_cancel_fixture();
+    let task_id = "task-a2a-self-cancel";
+    let context_id = "thread-a2a-self-cancel";
+
+    let (status, body) = request_json(
+        &app,
+        "POST",
+        "/v1/a2a/message:send",
+        &[("content-type", "application/json")],
+        Some(send_message_payload(
+            task_id,
+            context_id,
+            "msg-a2a-self-cancel",
+            "spawn a child and then cancel yourself",
+        )),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::OK, "unexpected body: {body}");
+    assert_eq!(body["task"]["id"].as_str(), Some(task_id));
+    assert_eq!(body["task"]["contextId"].as_str(), Some(context_id));
+    assert_eq!(
+        body["task"]["status"]["state"].as_str(),
+        Some("TASK_STATE_CANCELED"),
+        "expected cancelled A2A task body: {body}"
+    );
+
+    let run = store
+        .load_run(task_id)
+        .await
+        .expect("load run")
+        .expect("run should exist");
+    assert_eq!(run.status, RunStatus::Done);
+    assert_eq!(run.termination_reason, Some(TerminationReason::Cancelled));
+
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    let tasks = manager.list(context_id).await;
+    assert_eq!(tasks.len(), 1, "expected one spawned child task: {tasks:?}");
+    assert_eq!(tasks[0].status, TaskStatus::Cancelled);
+    assert_eq!(tasks[0].task_type, "background_child");
+    assert_eq!(
+        tasks[0].parent_context.run_id.as_deref(),
+        Some(task_id),
+        "background child should be linked to the A2A run for cascade cancel"
+    );
+
+    let (status, task) = request_json(
+        &app,
+        "GET",
+        &format!("/v1/a2a/tasks/{task_id}?historyLength=10"),
+        &[],
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        task["status"]["state"].as_str(),
+        Some("TASK_STATE_CANCELED")
     );
 }
 

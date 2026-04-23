@@ -449,6 +449,7 @@ async fn parent_child_message_roundtrip() {
             Some("worker"),
             "long-running worker agent",
             TaskParentContext {
+                task_id: None,
                 run_id: Some("run-parent".into()),
                 call_id: None,
                 agent_id: Some("parent-agent".into()),
