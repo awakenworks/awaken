@@ -11324,3 +11324,263 @@ async fn inbox_messages_injected_before_natural_end() {
     // Clean up
     manager.cancel_all("thread-1").await;
 }
+
+// ---------------------------------------------------------------------------
+// Phase-E end-to-end: mid-stream R2 recovery injects a user note for the
+// cancelled parallel tool call, and the next turn's LLM request observes it.
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn mid_stream_r2_recovery_injects_cancelled_tool_hint_into_next_turn() {
+    use awaken::contract::executor::{InferenceStream, LlmStreamEvent};
+
+    struct R2Llm {
+        call_count: Mutex<usize>,
+        captured_requests: Arc<Mutex<Vec<InferenceRequest>>>,
+    }
+
+    impl R2Llm {
+        fn new(captured: Arc<Mutex<Vec<InferenceRequest>>>) -> Self {
+            Self {
+                call_count: Mutex::new(0),
+                captured_requests: captured,
+            }
+        }
+    }
+
+    #[async_trait]
+    impl LlmExecutor for R2Llm {
+        async fn execute(
+            &self,
+            _req: InferenceRequest,
+        ) -> Result<StreamResult, InferenceExecutionError> {
+            unreachable!("streaming path only");
+        }
+
+        fn execute_stream(
+            &self,
+            request: InferenceRequest,
+        ) -> std::pin::Pin<
+            Box<
+                dyn std::future::Future<Output = Result<InferenceStream, InferenceExecutionError>>
+                    + Send
+                    + '_,
+            >,
+        > {
+            self.captured_requests.lock().unwrap().push(request);
+            let mut count = self.call_count.lock().unwrap();
+            *count += 1;
+            let call_num = *count;
+            drop(count);
+
+            Box::pin(async move {
+                let events: Vec<Result<LlmStreamEvent, InferenceExecutionError>> = match call_num {
+                    1 => vec![
+                        Ok(LlmStreamEvent::ToolCallStart {
+                            id: "echo-1".into(),
+                            name: "echo".into(),
+                        }),
+                        Ok(LlmStreamEvent::ToolCallDelta {
+                            id: "echo-1".into(),
+                            args_delta: r#"{"message":"hello"}"#.into(),
+                        }),
+                        Ok(LlmStreamEvent::ToolCallStart {
+                            id: "calc-1".into(),
+                            name: "calc".into(),
+                        }),
+                        Ok(LlmStreamEvent::ToolCallDelta {
+                            id: "calc-1".into(),
+                            args_delta: r#"{"result":"#.into(),
+                        }),
+                        Err(InferenceExecutionError::Provider("connection reset".into())),
+                    ],
+                    _ => vec![
+                        Ok(LlmStreamEvent::TextDelta("all done".into())),
+                        Ok(LlmStreamEvent::Stop(StopReason::EndTurn)),
+                    ],
+                };
+                Ok(Box::pin(futures::stream::iter(events)) as InferenceStream)
+            })
+        }
+
+        fn name(&self) -> &str {
+            "r2-llm"
+        }
+    }
+
+    let captured: Arc<Mutex<Vec<InferenceRequest>>> = Arc::new(Mutex::new(Vec::new()));
+    let llm = Arc::new(R2Llm::new(captured.clone()));
+
+    let agent = ResolvedAgent::new("test", "gpt-4o", "sys", llm)
+        .with_tool(Arc::new(EchoTool))
+        .with_tool(Arc::new(CalcTool));
+    let runtime = make_runtime();
+    let resolver = FixedResolver::new(agent);
+
+    let sink = Arc::new(VecEventSink::new());
+    let result = run_agent_loop(AgentLoopParams {
+        resolver: &resolver,
+        agent_id: "test",
+        runtime: &runtime,
+        sink: sink.clone(),
+        checkpoint_store: None,
+        messages: vec![Message::user("go")],
+        run_identity: test_identity(),
+        cancellation_token: None,
+        decision_rx: None,
+        overrides: None,
+        frontend_tools: Vec::new(),
+        inbox: None,
+        is_continuation: false,
+    })
+    .await
+    .unwrap();
+
+    assert!(matches!(result.termination, TerminationReason::NaturalEnd));
+
+    let requests = captured.lock().unwrap().clone();
+    assert_eq!(
+        requests.len(),
+        2,
+        "expected 2 LLM calls, got {}",
+        requests.len()
+    );
+
+    let hint_msg = requests[1].messages.iter().find(|m| {
+        m.role == Role::User
+            && m.text()
+                .contains("call to tool `calc` was interrupted mid-stream")
+    });
+    assert!(
+        hint_msg.is_some(),
+        "expected cancelled-tool hint in turn 2's request, got messages: {:#?}",
+        requests[1]
+            .messages
+            .iter()
+            .map(|m| (m.role, m.text()))
+            .collect::<Vec<_>>()
+    );
+
+    let events = sink.events();
+    assert!(
+        events.iter().any(|e| matches!(
+            e,
+            AgentEvent::ToolCallCancel { id, name, .. }
+            if id == "calc-1" && name == "calc"
+        )),
+        "expected ToolCallCancel{{ id=calc-1, name=calc }} in emitted events"
+    );
+
+    assert!(
+        events.iter().any(|e| matches!(
+            e,
+            AgentEvent::ToolCallDone { id, .. } if id == "echo-1"
+        )),
+        "expected ToolCallDone for the surviving echo tool"
+    );
+}
+
+#[tokio::test]
+async fn mid_stream_recovery_without_parallel_tools_does_not_inject_hint() {
+    use awaken::contract::executor::{InferenceStream, LlmStreamEvent};
+
+    struct R1Llm {
+        call_count: Mutex<usize>,
+        captured_requests: Arc<Mutex<Vec<InferenceRequest>>>,
+    }
+
+    #[async_trait]
+    impl LlmExecutor for R1Llm {
+        async fn execute(
+            &self,
+            _req: InferenceRequest,
+        ) -> Result<StreamResult, InferenceExecutionError> {
+            unreachable!();
+        }
+
+        fn execute_stream(
+            &self,
+            request: InferenceRequest,
+        ) -> std::pin::Pin<
+            Box<
+                dyn std::future::Future<Output = Result<InferenceStream, InferenceExecutionError>>
+                    + Send
+                    + '_,
+            >,
+        > {
+            self.captured_requests.lock().unwrap().push(request);
+            let mut count = self.call_count.lock().unwrap();
+            *count += 1;
+            let call_num = *count;
+            drop(count);
+
+            Box::pin(async move {
+                let events: Vec<Result<LlmStreamEvent, InferenceExecutionError>> = match call_num {
+                    1 => vec![
+                        Ok(LlmStreamEvent::TextDelta("partial ".into())),
+                        Err(InferenceExecutionError::Provider("reset".into())),
+                    ],
+                    _ => vec![
+                        Ok(LlmStreamEvent::TextDelta("answer".into())),
+                        Ok(LlmStreamEvent::Stop(StopReason::EndTurn)),
+                    ],
+                };
+                Ok(Box::pin(futures::stream::iter(events)) as InferenceStream)
+            })
+        }
+
+        fn name(&self) -> &str {
+            "r1-llm"
+        }
+    }
+
+    let captured: Arc<Mutex<Vec<InferenceRequest>>> = Arc::new(Mutex::new(Vec::new()));
+    let llm = Arc::new(R1Llm {
+        call_count: Mutex::new(0),
+        captured_requests: captured.clone(),
+    });
+
+    let agent = ResolvedAgent::new("test", "gpt-4o", "sys", llm);
+    let runtime = make_runtime();
+    let resolver = FixedResolver::new(agent);
+
+    let sink = Arc::new(VecEventSink::new());
+    let _result = run_agent_loop(AgentLoopParams {
+        resolver: &resolver,
+        agent_id: "test",
+        runtime: &runtime,
+        sink: sink.clone(),
+        checkpoint_store: None,
+        messages: vec![Message::user("go")],
+        run_identity: test_identity(),
+        cancellation_token: None,
+        decision_rx: None,
+        overrides: None,
+        frontend_tools: Vec::new(),
+        inbox: None,
+        is_continuation: false,
+    })
+    .await
+    .unwrap();
+
+    // Scan every request's messages — none should contain the
+    // cancelled-tool hint (distinct from the R1 continuation prompt).
+    let requests = captured.lock().unwrap().clone();
+    for (i, req) in requests.iter().enumerate() {
+        for msg in &req.messages {
+            assert!(
+                !msg.text().contains("parallel call to tool"),
+                "request {i} unexpectedly contained cancelled-tool hint: {}",
+                msg.text()
+            );
+        }
+    }
+
+    let events = sink.events();
+    assert!(
+        !events
+            .iter()
+            .any(|e| matches!(e, AgentEvent::ToolCallCancel { .. })),
+        "R1 recovery must not emit ToolCallCancel"
+    );
+}

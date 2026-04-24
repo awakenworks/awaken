@@ -35,6 +35,18 @@ use crate::agent::state::{
 
 const INTERRUPTED_TOOL_MESSAGE: &str = "[Tool execution was interrupted]";
 
+/// Format a user-visible note that surfaces a cancelled parallel tool
+/// call after mid-stream recovery. Centralized so telemetry and docs can
+/// reason about the exact wording.
+fn format_tool_cancel_hint(hint: &awaken_contract::contract::executor::InFlightTool) -> String {
+    format!(
+        "Note: your parallel call to tool `{}` was interrupted mid-stream due to a transient \
+         upstream error. The other tool calls completed normally. You may re-issue the call if \
+         still needed.",
+        hint.name,
+    )
+}
+
 /// Outcome of a single step.
 pub(super) enum StepOutcome {
     /// The LLM responded with text only; run ends naturally.
@@ -263,7 +275,11 @@ async fn recover_truncation(
             enable_prompt_cache: false,
         };
 
-        stream_result = execute_streaming(
+        // Truncation recovery happens after any stream-interruption
+        // recovery, so the `cancelled_tool_hint` from mid-stream retry is
+        // no longer meaningful at this layer — it was consumed on the
+        // first call. Discard it here.
+        let (next_result, _hint) = execute_streaming(
             ctx.agent,
             cont_request,
             ctx.sink.as_ref(),
@@ -272,6 +288,7 @@ async fn recover_truncation(
             ctx.total_output_tokens,
         )
         .await?;
+        stream_result = next_result;
     }
     Ok(stream_result)
 }
@@ -395,6 +412,12 @@ struct InferencePhaseOutput {
     stream_result: StreamResult,
     duration_ms: u64,
     upstream_model: String,
+    /// Set when the mid-stream recovery loop synthesized a
+    /// `StopReason::ToolUse` terminal state that dropped an in-flight
+    /// tool call (R2 plan). The loop runner appends a user-visible note
+    /// to the next `user` message after the completed tools execute,
+    /// telling the model which call was lost so it can choose to retry.
+    cancelled_tool_hint: Option<awaken_contract::contract::executor::InFlightTool>,
 }
 
 /// Run the inference phase: compaction, request building, streaming.
@@ -455,7 +478,7 @@ async fn run_inference_phase(
     };
 
     // Inference
-    let stream_result = execute_streaming(
+    let (stream_result, cancelled_tool_hint) = execute_streaming(
         ctx.agent,
         request,
         ctx.sink.as_ref(),
@@ -481,6 +504,7 @@ async fn run_inference_phase(
         stream_result,
         duration_ms,
         upstream_model: request_upstream_model,
+        cancelled_tool_hint,
     })
 }
 
@@ -1142,6 +1166,7 @@ pub(super) async fn execute_step(ctx: &mut StepContext<'_>) -> Result<StepOutcom
         stream_result,
         duration_ms,
         upstream_model,
+        cancelled_tool_hint,
     } = inference;
 
     // --- Post-inference cancellation check ---
@@ -1223,6 +1248,14 @@ pub(super) async fn execute_step(ctx: &mut StepContext<'_>) -> Result<StepOutcom
     // Messages stay step-local until the batch has complete visible outputs.
     let (blocked_reason, suspended) =
         execute_tools_with_interception(ctx, &mut transcript, &stream_result.tool_calls).await?;
+
+    // If the mid-stream recovery dropped an in-flight parallel tool call,
+    // inject a user-visible note after the surviving tool_result messages
+    // so the model can decide whether to retry the cancelled call.
+    if let Some(hint) = cancelled_tool_hint.as_ref() {
+        transcript.push_tool_message(Arc::new(Message::user(format_tool_cancel_hint(hint))));
+    }
+
     transcript.commit_into(ctx.messages);
 
     if ctx.cancellation_token.is_some_and(|t| t.is_cancelled()) {

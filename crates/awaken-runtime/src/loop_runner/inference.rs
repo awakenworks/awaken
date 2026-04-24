@@ -40,7 +40,7 @@ pub(super) async fn execute_streaming(
     cancellation_token: Option<&CancellationToken>,
     total_input_tokens: &mut u64,
     total_output_tokens: &mut u64,
-) -> Result<StreamResult, AgentLoopError> {
+) -> Result<(StreamResult, Option<InFlightTool>), AgentLoopError> {
     let policy = stream_retry_policy_for(agent);
     let idle_timeout = idle_timeout_for(&request, &policy);
     let max_retries = policy.max_stream_retries;
@@ -60,7 +60,7 @@ pub(super) async fn execute_streaming(
 
         match outcome {
             DriveOutcome::Completed(result) | DriveOutcome::Cancelled(result) => {
-                return Ok(result);
+                return Ok((result, None));
             }
             DriveOutcome::Error(err) => return Err(err),
             DriveOutcome::Interrupted { cause, snapshot } => {
@@ -80,7 +80,9 @@ pub(super) async fn execute_streaming(
                 }
 
                 match apply_recovery_plan(&mut request, sink, &cause, &snapshot).await {
-                    RecoveryOutcome::SynthesizedToolUse(result) => return Ok(result),
+                    RecoveryOutcome::SynthesizedToolUse { result, hint } => {
+                        return Ok((result, hint));
+                    }
                     RecoveryOutcome::RetryAfterPlan => {
                         let delay = stream_retry_backoff(&cause, attempt, &policy);
                         if !delay.is_zero() {
@@ -126,8 +128,13 @@ enum DriveOutcome {
 
 enum RecoveryOutcome {
     /// R2 path: return the synthesized tool-use stream result directly to
-    /// the caller without another inference round-trip.
-    SynthesizedToolUse(StreamResult),
+    /// the caller without another inference round-trip. The in-flight
+    /// tool (if any) is surfaced as a hint so the caller can append a
+    /// note to the next turn's user message.
+    SynthesizedToolUse {
+        result: StreamResult,
+        hint: Option<InFlightTool>,
+    },
     /// R1/R3/R4 paths: `request` has been mutated (R1/R3) or left as-is
     /// (R4); control flow loops back and opens a fresh stream.
     RetryAfterPlan,
@@ -171,13 +178,16 @@ async fn apply_recovery_plan(
                 Some(t) if !t.is_empty() => vec![ContentBlock::text(t.clone())],
                 _ => Vec::new(),
             };
-            RecoveryOutcome::SynthesizedToolUse(StreamResult {
-                content,
-                tool_calls: completed,
-                usage: None,
-                stop_reason: Some(StopReason::ToolUse),
-                has_incomplete_tool_calls: false,
-            })
+            RecoveryOutcome::SynthesizedToolUse {
+                result: StreamResult {
+                    content,
+                    tool_calls: completed,
+                    usage: None,
+                    stop_reason: Some(StopReason::ToolUse),
+                    has_incomplete_tool_calls: false,
+                },
+                hint: cancelled_tool_hint,
+            }
         }
         RecoveryPlan::TruncateBeforeTool {
             assistant_prefix,
@@ -682,6 +692,30 @@ mod tests {
         )
     }
 
+    /// Thin adapter that discards the in-flight tool hint. Used by
+    /// legacy tests that only care about the `StreamResult`; new tests
+    /// that exercise the hint path (Phase E) call `execute_streaming`
+    /// directly and destructure the tuple.
+    async fn stream_only(
+        agent: &ResolvedAgent,
+        request: InferenceRequest,
+        sink: &dyn EventSink,
+        cancellation_token: Option<&CancellationToken>,
+        total_input_tokens: &mut u64,
+        total_output_tokens: &mut u64,
+    ) -> Result<StreamResult, AgentLoopError> {
+        execute_streaming(
+            agent,
+            request,
+            sink,
+            cancellation_token,
+            total_input_tokens,
+            total_output_tokens,
+        )
+        .await
+        .map(|(result, _hint)| result)
+    }
+
     fn make_request() -> InferenceRequest {
         InferenceRequest {
             upstream_model: "test-model".into(),
@@ -707,7 +741,7 @@ mod tests {
         let mut input_tokens = 0u64;
         let mut output_tokens = 0u64;
 
-        let result = execute_streaming(
+        let result = stream_only(
             &agent,
             make_request(),
             &sink,
@@ -736,7 +770,7 @@ mod tests {
         let mut it = 0u64;
         let mut ot = 0u64;
 
-        execute_streaming(&agent, make_request(), &sink, None, &mut it, &mut ot)
+        stream_only(&agent, make_request(), &sink, None, &mut it, &mut ot)
             .await
             .unwrap();
 
@@ -766,7 +800,7 @@ mod tests {
         let mut input_tokens = 10u64;
         let mut output_tokens = 5u64;
 
-        let result = execute_streaming(
+        let result = stream_only(
             &agent,
             make_request(),
             &sink,
@@ -793,7 +827,7 @@ mod tests {
         let mut input_tokens = 100u64;
         let mut output_tokens = 50u64;
 
-        execute_streaming(
+        stream_only(
             &agent,
             make_request(),
             &sink,
@@ -833,7 +867,7 @@ mod tests {
         let mut it = 0u64;
         let mut ot = 0u64;
 
-        let result = execute_streaming(&agent, make_request(), &sink, None, &mut it, &mut ot)
+        let result = stream_only(&agent, make_request(), &sink, None, &mut it, &mut ot)
             .await
             .unwrap();
 
@@ -860,7 +894,7 @@ mod tests {
         let mut it = 0u64;
         let mut ot = 0u64;
 
-        execute_streaming(&agent, make_request(), &sink, None, &mut it, &mut ot)
+        stream_only(&agent, make_request(), &sink, None, &mut it, &mut ot)
             .await
             .unwrap();
 
@@ -895,7 +929,7 @@ mod tests {
         let mut it = 0u64;
         let mut ot = 0u64;
 
-        let result = execute_streaming(&agent, make_request(), &sink, None, &mut it, &mut ot)
+        let result = stream_only(&agent, make_request(), &sink, None, &mut it, &mut ot)
             .await
             .unwrap();
 
@@ -931,7 +965,7 @@ mod tests {
         let mut it = 0u64;
         let mut ot = 0u64;
 
-        let result = execute_streaming(&agent, make_request(), &sink, None, &mut it, &mut ot)
+        let result = stream_only(&agent, make_request(), &sink, None, &mut it, &mut ot)
             .await
             .unwrap();
 
@@ -967,7 +1001,7 @@ mod tests {
         let mut it = 0u64;
         let mut ot = 0u64;
 
-        let result = execute_streaming(
+        let result = stream_only(
             &agent,
             make_request(),
             &sink,
@@ -994,7 +1028,7 @@ mod tests {
         let mut it = 0u64;
         let mut ot = 0u64;
 
-        let result = execute_streaming(&agent, make_request(), &sink, None, &mut it, &mut ot)
+        let result = stream_only(&agent, make_request(), &sink, None, &mut it, &mut ot)
             .await
             .unwrap();
 
@@ -1016,7 +1050,7 @@ mod tests {
         let mut it = 0u64;
         let mut ot = 0u64;
 
-        execute_streaming(&agent, make_request(), &sink, None, &mut it, &mut ot)
+        stream_only(&agent, make_request(), &sink, None, &mut it, &mut ot)
             .await
             .unwrap();
 
@@ -1036,7 +1070,7 @@ mod tests {
         let mut it = 0u64;
         let mut ot = 0u64;
 
-        let result = execute_streaming(&agent, make_request(), &sink, None, &mut it, &mut ot)
+        let result = stream_only(&agent, make_request(), &sink, None, &mut it, &mut ot)
             .await
             .unwrap();
 
@@ -1059,7 +1093,7 @@ mod tests {
         let mut it = 0u64;
         let mut ot = 0u64;
 
-        let result = execute_streaming(&agent, make_request(), &sink, None, &mut it, &mut ot)
+        let result = stream_only(&agent, make_request(), &sink, None, &mut it, &mut ot)
             .await
             .unwrap();
 
@@ -1087,7 +1121,7 @@ mod tests {
         let mut it = 0u64;
         let mut ot = 0u64;
 
-        let err = execute_streaming(&agent, make_request(), &sink, None, &mut it, &mut ot)
+        let err = stream_only(&agent, make_request(), &sink, None, &mut it, &mut ot)
             .await
             .unwrap_err();
 
@@ -1121,7 +1155,7 @@ mod tests {
         let mut it = 0u64;
         let mut ot = 0u64;
 
-        execute_streaming(&agent, make_request(), &sink, None, &mut it, &mut ot)
+        stream_only(&agent, make_request(), &sink, None, &mut it, &mut ot)
             .await
             .unwrap();
 
@@ -1198,7 +1232,7 @@ mod tests {
         let mut it = 0u64;
         let mut ot = 0u64;
 
-        let err = execute_streaming(&agent, make_request(), &sink, None, &mut it, &mut ot)
+        let err = stream_only(&agent, make_request(), &sink, None, &mut it, &mut ot)
             .await
             .unwrap_err();
 
@@ -1228,7 +1262,7 @@ mod tests {
         let mut it = 0u64;
         let mut ot = 0u64;
 
-        let err = execute_streaming(&agent, make_request(), &sink, None, &mut it, &mut ot)
+        let err = stream_only(&agent, make_request(), &sink, None, &mut it, &mut ot)
             .await
             .unwrap_err();
 
@@ -1297,7 +1331,7 @@ mod tests {
         let mut it = 0u64;
         let mut ot = 0u64;
 
-        let err = execute_streaming(&agent, make_request(), &sink, None, &mut it, &mut ot)
+        let err = stream_only(&agent, make_request(), &sink, None, &mut it, &mut ot)
             .await
             .unwrap_err();
 
@@ -1324,7 +1358,7 @@ mod tests {
         let mut it = 0u64;
         let mut ot = 0u64;
 
-        let err = execute_streaming(&agent, make_request(), &sink, None, &mut it, &mut ot)
+        let err = stream_only(&agent, make_request(), &sink, None, &mut it, &mut ot)
             .await
             .unwrap_err();
 
@@ -1350,7 +1384,7 @@ mod tests {
         let mut it = 0u64;
         let mut ot = 0u64;
 
-        let err = execute_streaming(&agent, make_request(), &sink, None, &mut it, &mut ot)
+        let err = stream_only(&agent, make_request(), &sink, None, &mut it, &mut ot)
             .await
             .unwrap_err();
 
@@ -1424,7 +1458,7 @@ mod tests {
             token_clone.cancel();
         });
 
-        let result = execute_streaming(
+        let result = stream_only(
             &agent,
             make_request(),
             &sink,
@@ -1465,7 +1499,7 @@ mod tests {
         let mut it = 0u64;
         let mut ot = 0u64;
 
-        let err = execute_streaming(&agent, make_request(), &sink, None, &mut it, &mut ot)
+        let err = stream_only(&agent, make_request(), &sink, None, &mut it, &mut ot)
             .await
             .unwrap_err();
 
@@ -1584,7 +1618,7 @@ mod tests {
         let mut it = 0u64;
         let mut ot = 0u64;
 
-        let result = execute_streaming(&agent, make_request(), &sink, None, &mut it, &mut ot)
+        let result = stream_only(&agent, make_request(), &sink, None, &mut it, &mut ot)
             .await
             .expect("R1 should succeed after one retry");
 
@@ -1645,7 +1679,7 @@ mod tests {
         let mut it = 0u64;
         let mut ot = 0u64;
 
-        let result = execute_streaming(&agent, make_request(), &sink, None, &mut it, &mut ot)
+        let result = stream_only(&agent, make_request(), &sink, None, &mut it, &mut ot)
             .await
             .expect("R2 short-circuits to synthesized tool_use");
 
@@ -1700,7 +1734,7 @@ mod tests {
         let mut it = 0u64;
         let mut ot = 0u64;
 
-        let result = execute_streaming(&agent, make_request(), &sink, None, &mut it, &mut ot)
+        let result = stream_only(&agent, make_request(), &sink, None, &mut it, &mut ot)
             .await
             .expect("R3 recovers after truncation");
 
@@ -1741,7 +1775,7 @@ mod tests {
         let mut it = 0u64;
         let mut ot = 0u64;
 
-        let result = execute_streaming(&agent, make_request(), &sink, None, &mut it, &mut ot)
+        let result = stream_only(&agent, make_request(), &sink, None, &mut it, &mut ot)
             .await
             .expect("R4 recovers after whole restart");
 
@@ -1772,7 +1806,7 @@ mod tests {
         let mut it = 0u64;
         let mut ot = 0u64;
 
-        let err = execute_streaming(&agent, make_request(), &sink, None, &mut it, &mut ot)
+        let err = stream_only(&agent, make_request(), &sink, None, &mut it, &mut ot)
             .await
             .unwrap_err();
 
@@ -1867,7 +1901,7 @@ mod tests {
 
         // Drive the streaming call concurrently so we can advance paused
         // time past the idle-stall threshold (60s by default).
-        let exec_fut = execute_streaming(&agent, make_request(), &sink, None, &mut it, &mut ot);
+        let exec_fut = stream_only(&agent, make_request(), &sink, None, &mut it, &mut ot);
         let drive = async {
             // Wait for the first TextDelta to be emitted, then advance
             // past the idle threshold to trigger the stall.
