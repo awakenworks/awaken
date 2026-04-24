@@ -325,6 +325,10 @@ impl AgUiEncoder {
             }
 
             AgentEvent::InferenceComplete { .. } => Vec::new(),
+
+            // Mid-stream recovery is a runtime concern; AG-UI consumers can
+            // ignore these events without losing correctness.
+            AgentEvent::ToolCallCancel { .. } | AgentEvent::StreamReset { .. } => Vec::new(),
         }
     }
 }

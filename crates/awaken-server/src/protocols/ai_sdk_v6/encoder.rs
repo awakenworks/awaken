@@ -398,6 +398,9 @@ impl AiSdkEncoder {
                     }),
                 )]
             }
+
+            // Mid-stream recovery events have no AI SDK equivalent — swallow.
+            AgentEvent::ToolCallCancel { .. } | AgentEvent::StreamReset { .. } => Vec::new(),
         }
     }
 }
