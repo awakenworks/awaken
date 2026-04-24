@@ -13,11 +13,62 @@ use awaken_contract::contract::executor::{
 };
 use awaken_contract::contract::inference::{StopReason, StreamResult, TokenUsage};
 use awaken_contract::contract::message::{Message, ToolCall};
+use awaken_contract::contract::stream_checkpoint::{StreamCheckpoint, StreamCheckpointStore};
 use futures::StreamExt;
 
 use super::AgentLoopError;
 use crate::engine::retry::LlmRetryPolicy;
 use crate::registry::ResolvedAgent;
+
+/// Identifies a run for stream-checkpoint purposes. Passed into
+/// `execute_streaming` by the caller that actually knows the run
+/// identity (the loop runner's step driver); tests that don't care
+/// about cross-process resume pass `None`.
+pub(super) struct CheckpointHandle<'a> {
+    pub store: &'a dyn StreamCheckpointStore,
+    pub run_id: &'a str,
+    pub thread_id: &'a str,
+}
+
+/// Minimum delta interval between checkpoint flushes. Prevents one
+/// flush per tokenized chunk at the cost of losing up to this many
+/// deltas on a hard crash.
+const CHECKPOINT_FLUSH_DELTAS: usize = 4;
+
+/// Write the current accumulator state to the checkpoint store. Logs and
+/// suppresses backend errors — a failing checkpoint store must never
+/// disrupt the in-flight stream.
+async fn flush_checkpoint(
+    acc: &StreamingAccumulator,
+    upstream_model: &str,
+    handle: &CheckpointHandle<'_>,
+) {
+    let snapshot = acc.interrupt_snapshot();
+    let checkpoint = StreamCheckpoint {
+        run_id: handle.run_id.to_string(),
+        thread_id: handle.thread_id.to_string(),
+        upstream_model: upstream_model.to_string(),
+        partial_text: snapshot.text.clone().unwrap_or_default(),
+        completed_tool_calls: snapshot.completed_tool_calls,
+        in_flight_tool: snapshot.in_flight_tool,
+        updated_at_ms: now_ms(),
+    };
+    if let Err(e) = handle.store.put(checkpoint).await {
+        tracing::warn!(
+            run_id = %handle.run_id,
+            error = %e,
+            "stream checkpoint flush failed — continuing without persistence",
+        );
+    }
+}
+
+fn now_ms() -> u64 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
 
 /// Continuation prompt injected after a mid-stream interruption to nudge
 /// the model to pick up where its partial response left off. Intentionally
@@ -35,16 +86,149 @@ const CONTINUATION_PROMPT: &str =
 /// result is returned with `StopReason::EndTurn` (graceful cancel — no error).
 pub(super) async fn execute_streaming(
     agent: &ResolvedAgent,
-    mut request: InferenceRequest,
+    request: InferenceRequest,
     sink: &dyn EventSink,
     cancellation_token: Option<&CancellationToken>,
     total_input_tokens: &mut u64,
     total_output_tokens: &mut u64,
 ) -> Result<(StreamResult, Option<InFlightTool>), AgentLoopError> {
+    execute_streaming_with_checkpoint(
+        agent,
+        request,
+        sink,
+        cancellation_token,
+        total_input_tokens,
+        total_output_tokens,
+        None,
+    )
+    .await
+}
+
+/// Core streaming executor with an optional cross-process resume handle.
+/// `execute_streaming` is the tests-friendly wrapper that passes `None`
+/// for the checkpoint handle; production callers in step.rs use this
+/// function directly when they have a run identity and the agent has
+/// a `stream_checkpoint_store` configured.
+pub(super) async fn execute_streaming_with_checkpoint(
+    agent: &ResolvedAgent,
+    mut request: InferenceRequest,
+    sink: &dyn EventSink,
+    cancellation_token: Option<&CancellationToken>,
+    total_input_tokens: &mut u64,
+    total_output_tokens: &mut u64,
+    checkpoint: Option<CheckpointHandle<'_>>,
+) -> Result<(StreamResult, Option<InFlightTool>), AgentLoopError> {
     let policy = stream_retry_policy_for(agent);
     let idle_timeout = idle_timeout_for(&request, &policy);
     let max_retries = policy.max_stream_retries;
     let mut attempt: u32 = 0;
+
+    // Cross-process resume: if a checkpoint exists for this run id, apply
+    // its state as if we had just hit a mid-stream interruption. This
+    // pushes an assistant prefix + continuation prompt onto the request
+    // mechanically identical to the in-process R1/R2/R3 paths. The
+    // checkpoint is NOT deleted here — it is only cleared after the new
+    // attempt finalizes cleanly, so a crash during recovery doesn't lose
+    // the state.
+    let mut restored_hint: Option<InFlightTool> = None;
+    if let Some(handle) = checkpoint.as_ref() {
+        match handle.store.get(handle.run_id).await {
+            Ok(Some(saved)) => {
+                tracing::info!(
+                    run_id = %handle.run_id,
+                    partial_text_len = saved.partial_text.len(),
+                    completed_tools = saved.completed_tool_calls.len(),
+                    has_in_flight = saved.in_flight_tool.is_some(),
+                    "restoring stream checkpoint"
+                );
+                let snapshot = InterruptSnapshot {
+                    text: if saved.partial_text.is_empty() {
+                        None
+                    } else {
+                        Some(saved.partial_text.clone())
+                    },
+                    completed_tool_calls: saved.completed_tool_calls.clone(),
+                    in_flight_tool: saved.in_flight_tool.clone(),
+                    bytes_received: saved.partial_text.len(),
+                };
+                match snapshot.plan() {
+                    RecoveryPlan::ContinueText { assistant_prefix } => {
+                        push_continuation(&mut request, assistant_prefix);
+                    }
+                    RecoveryPlan::SynthesizeToolUse {
+                        completed,
+                        cancelled_tool_hint,
+                    } => {
+                        // The previous process had already observed fully
+                        // formed tool_use(s). Return the synthesized result
+                        // immediately; the loop runner will execute the
+                        // tools in this process.
+                        for call in &completed {
+                            sink.emit(AgentEvent::ToolCallReady {
+                                id: call.id.clone(),
+                                name: call.name.clone(),
+                                arguments: call.arguments.clone(),
+                            })
+                            .await;
+                        }
+                        if let Some(hint) = &cancelled_tool_hint {
+                            sink.emit(AgentEvent::ToolCallCancel {
+                                id: hint.id.clone(),
+                                name: hint.name.clone(),
+                                reason: "resumed from checkpoint".into(),
+                            })
+                            .await;
+                        }
+                        // Clear the checkpoint — we are consuming it.
+                        let _ = handle.store.delete(handle.run_id).await;
+                        let content = match &snapshot.text {
+                            Some(t) if !t.is_empty() => {
+                                vec![ContentBlock::text(t.clone())]
+                            }
+                            _ => Vec::new(),
+                        };
+                        return Ok((
+                            StreamResult {
+                                content,
+                                tool_calls: completed,
+                                usage: None,
+                                stop_reason: Some(StopReason::ToolUse),
+                                has_incomplete_tool_calls: false,
+                            },
+                            cancelled_tool_hint,
+                        ));
+                    }
+                    RecoveryPlan::TruncateBeforeTool {
+                        assistant_prefix,
+                        cancelled_tool_id,
+                        cancelled_tool_name,
+                    } => {
+                        sink.emit(AgentEvent::ToolCallCancel {
+                            id: cancelled_tool_id,
+                            name: cancelled_tool_name,
+                            reason: "resumed from checkpoint".into(),
+                        })
+                        .await;
+                        restored_hint = saved.in_flight_tool.clone();
+                        push_continuation(&mut request, assistant_prefix);
+                    }
+                    RecoveryPlan::WholeRestart => {
+                        // Nothing salvageable — proceed with the original
+                        // request unchanged but clear the stale checkpoint.
+                        let _ = handle.store.delete(handle.run_id).await;
+                    }
+                }
+            }
+            Ok(None) => {}
+            Err(e) => {
+                tracing::warn!(
+                    run_id = %handle.run_id,
+                    error = %e,
+                    "checkpoint read failed; continuing without restore"
+                );
+            }
+        }
+    }
 
     loop {
         let outcome = drive_one_stream(
@@ -55,12 +239,18 @@ pub(super) async fn execute_streaming(
             total_input_tokens,
             total_output_tokens,
             idle_timeout,
+            checkpoint.as_ref(),
         )
         .await;
 
         match outcome {
             DriveOutcome::Completed(result) | DriveOutcome::Cancelled(result) => {
-                return Ok((result, None));
+                // On clean completion delete the checkpoint — it has been
+                // fully consumed and should not leak across runs.
+                if let Some(handle) = checkpoint.as_ref() {
+                    let _ = handle.store.delete(handle.run_id).await;
+                }
+                return Ok((result, restored_hint));
             }
             DriveOutcome::Error(err) => return Err(err),
             DriveOutcome::Interrupted { cause, snapshot } => {
@@ -81,7 +271,10 @@ pub(super) async fn execute_streaming(
 
                 match apply_recovery_plan(&mut request, sink, &cause, &snapshot).await {
                     RecoveryOutcome::SynthesizedToolUse { result, hint } => {
-                        return Ok((result, hint));
+                        if let Some(handle) = checkpoint.as_ref() {
+                            let _ = handle.store.delete(handle.run_id).await;
+                        }
+                        return Ok((result, hint.or(restored_hint)));
                     }
                     RecoveryOutcome::RetryAfterPlan => {
                         let delay = stream_retry_backoff(&cause, attempt, &policy);
@@ -231,7 +424,9 @@ async fn drive_one_stream(
     total_input_tokens: &mut u64,
     total_output_tokens: &mut u64,
     idle_timeout: Duration,
+    checkpoint: Option<&CheckpointHandle<'_>>,
 ) -> DriveOutcome {
+    let upstream_model = request.upstream_model.clone();
     let mut token_stream = match agent.llm_executor.execute_stream(request).await {
         Ok(s) => s,
         Err(err) => {
@@ -242,6 +437,7 @@ async fn drive_one_stream(
     };
 
     let mut acc = StreamingAccumulator::default();
+    let mut deltas_since_last_flush: usize = 0;
 
     loop {
         let next_fut = async { tokio::time::timeout(idle_timeout, token_stream.next()).await };
@@ -262,7 +458,11 @@ async fn drive_one_stream(
         let poll = match event {
             Ok(p) => p,
             Err(_) => {
-                // Idle stall — no delta in `idle_timeout`.
+                // Idle stall — no delta in `idle_timeout`. Flush
+                // whatever we had before surrendering to recovery.
+                if let Some(handle) = checkpoint {
+                    flush_checkpoint(&acc, &upstream_model, handle).await;
+                }
                 let snapshot = acc.interrupt_snapshot();
                 return DriveOutcome::Interrupted {
                     cause: InterruptCause::IdleStall,
@@ -278,7 +478,12 @@ async fn drive_one_stream(
         let event = match event_result {
             Ok(ev) => ev,
             Err(err) => {
-                // Mid-stream transport error. Classify and surface.
+                // Mid-stream transport error. Flush accumulator state
+                // for cross-process resume before surfacing to the
+                // in-process recovery loop.
+                if let Some(handle) = checkpoint {
+                    flush_checkpoint(&acc, &upstream_model, handle).await;
+                }
                 let snapshot = acc.interrupt_snapshot();
                 match classify_mid_stream(&err) {
                     Some(cause) => {
@@ -294,8 +499,10 @@ async fn drive_one_stream(
             }
         };
 
+        let mut saw_delta = false;
         match event {
             LlmStreamEvent::TextDelta(delta) => {
+                saw_delta = true;
                 acc.current_text.push_str(&delta);
                 sink.emit(AgentEvent::TextDelta { delta }).await;
             }
@@ -303,6 +510,7 @@ async fn drive_one_stream(
                 sink.emit(AgentEvent::ReasoningDelta { delta }).await;
             }
             LlmStreamEvent::ToolCallStart { id, name } => {
+                saw_delta = true;
                 sink.emit(AgentEvent::ToolCallStart {
                     id: id.clone(),
                     name: name.clone(),
@@ -313,6 +521,7 @@ async fn drive_one_stream(
                 acc.tool_order.push(id);
             }
             LlmStreamEvent::ToolCallDelta { id, args_delta } => {
+                saw_delta = true;
                 if let Some(buf) = acc.current_tool_args.get_mut(&id) {
                     buf.push_str(&args_delta);
                 }
@@ -336,6 +545,16 @@ async fn drive_one_stream(
             }
             LlmStreamEvent::Stop(reason) => {
                 acc.stop_reason = Some(reason);
+            }
+        }
+
+        if saw_delta {
+            deltas_since_last_flush += 1;
+            if deltas_since_last_flush >= CHECKPOINT_FLUSH_DELTAS {
+                deltas_since_last_flush = 0;
+                if let Some(handle) = checkpoint {
+                    flush_checkpoint(&acc, &upstream_model, handle).await;
+                }
             }
         }
     }
@@ -2053,6 +2272,297 @@ mod tests {
     // -----------------------------------------------------------------------
     // J: Cancellation during retry backoff aborts the retry loop
     // -----------------------------------------------------------------------
+
+    // -----------------------------------------------------------------------
+    // L: Cross-process stream resume via `StreamCheckpointStore`
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn checkpoint_is_flushed_on_mid_stream_interruption() {
+        use awaken_contract::contract::stream_checkpoint::{
+            InMemoryStreamCheckpointStore, StreamCheckpointStore,
+        };
+
+        // Attempt 1 emits 8 text deltas then fails. With
+        // CHECKPOINT_FLUSH_DELTAS = 4 the writer must flush at least
+        // twice (after delta #4 and after delta #8). On mid-stream
+        // error we also flush once more before surfacing.
+        let deltas: Vec<Result<LlmStreamEvent, InferenceExecutionError>> = (0..8)
+            .map(|i| Ok(LlmStreamEvent::TextDelta(format!("d{i}"))))
+            .chain(std::iter::once(Err(InferenceExecutionError::Provider(
+                "reset".into(),
+            ))))
+            .collect();
+        let exec = Arc::new(ScriptedPerAttemptExecutor::new(vec![
+            deltas.clone(),
+            deltas,
+        ]));
+        let agent = agent_with(exec.clone());
+        let sink = VecEventSink::new();
+        let store: Arc<InMemoryStreamCheckpointStore> =
+            Arc::new(InMemoryStreamCheckpointStore::new());
+        let handle = CheckpointHandle {
+            store: store.as_ref(),
+            run_id: "run-checkpoint-flush",
+            thread_id: "thread-1",
+        };
+        let mut it = 0u64;
+        let mut ot = 0u64;
+
+        // Budget 0: exhaust on first attempt so the failure surfaces
+        // and we can assert on the persisted checkpoint.
+        let _ = execute_streaming_with_checkpoint(
+            &agent,
+            make_request(),
+            &sink,
+            None,
+            &mut it,
+            &mut ot,
+            Some(handle),
+        )
+        .await;
+
+        let saved = store
+            .get("run-checkpoint-flush")
+            .await
+            .unwrap()
+            .expect("checkpoint must have been persisted before failure");
+        assert_eq!(saved.run_id, "run-checkpoint-flush");
+        assert_eq!(saved.thread_id, "thread-1");
+        assert!(
+            saved.partial_text.contains("d0") && saved.partial_text.contains("d7"),
+            "partial_text should contain all 8 deltas, got: {}",
+            saved.partial_text
+        );
+    }
+
+    #[tokio::test]
+    async fn cross_process_resume_injects_continuation_from_checkpoint() {
+        use awaken_contract::contract::stream_checkpoint::{
+            InMemoryStreamCheckpointStore, StreamCheckpoint, StreamCheckpointStore,
+        };
+
+        // Pre-populate a checkpoint as though a prior process crashed
+        // mid-stream. The executor records every InferenceRequest it
+        // receives so we can assert the continuation prompt was
+        // injected.
+        let store: Arc<InMemoryStreamCheckpointStore> =
+            Arc::new(InMemoryStreamCheckpointStore::new());
+        store
+            .put(StreamCheckpoint {
+                run_id: "run-resumed".into(),
+                thread_id: "thread-1".into(),
+                upstream_model: "test-model".into(),
+                partial_text: "half-written answer".into(),
+                completed_tool_calls: vec![],
+                in_flight_tool: None,
+                updated_at_ms: 1_000,
+            })
+            .await
+            .unwrap();
+
+        // Capturing executor: records each request, returns a clean
+        // terminal stream so the resumed call completes immediately.
+        struct CapturingExec {
+            captured: Arc<std::sync::Mutex<Vec<InferenceRequest>>>,
+        }
+
+        #[async_trait]
+        impl awaken_contract::contract::executor::LlmExecutor for CapturingExec {
+            async fn execute(
+                &self,
+                _r: InferenceRequest,
+            ) -> Result<StreamResult, InferenceExecutionError> {
+                Err(InferenceExecutionError::Provider("unused".into()))
+            }
+
+            fn execute_stream(
+                &self,
+                request: InferenceRequest,
+            ) -> std::pin::Pin<
+                Box<
+                    dyn std::future::Future<
+                            Output = Result<InferenceStream, InferenceExecutionError>,
+                        > + Send
+                        + '_,
+                >,
+            > {
+                self.captured.lock().unwrap().push(request);
+                Box::pin(async move {
+                    let events: Vec<Result<LlmStreamEvent, InferenceExecutionError>> = vec![
+                        Ok(LlmStreamEvent::TextDelta(" — conclusion.".into())),
+                        Ok(LlmStreamEvent::Stop(StopReason::EndTurn)),
+                    ];
+                    Ok(Box::pin(futures::stream::iter(events)) as InferenceStream)
+                })
+            }
+
+            fn name(&self) -> &str {
+                "capturing"
+            }
+        }
+
+        let captured: Arc<std::sync::Mutex<Vec<InferenceRequest>>> =
+            Arc::new(std::sync::Mutex::new(Vec::new()));
+        let exec = Arc::new(CapturingExec {
+            captured: captured.clone(),
+        });
+        let agent = ResolvedAgent::new("test", "test-model", "sys", exec);
+        let sink = VecEventSink::new();
+        let handle = CheckpointHandle {
+            store: store.as_ref(),
+            run_id: "run-resumed",
+            thread_id: "thread-1",
+        };
+        let mut it = 0u64;
+        let mut ot = 0u64;
+
+        let (result, _hint) = execute_streaming_with_checkpoint(
+            &agent,
+            make_request(),
+            &sink,
+            None,
+            &mut it,
+            &mut ot,
+            Some(handle),
+        )
+        .await
+        .expect("resume should succeed");
+
+        // The executor was called exactly once, with a request whose
+        // messages end in `assistant("half-written answer")` +
+        // `user(<continuation prompt>)` — the R1 restore pattern.
+        let reqs = captured.lock().unwrap();
+        assert_eq!(reqs.len(), 1);
+        let last_two: Vec<_> = reqs[0]
+            .messages
+            .iter()
+            .rev()
+            .take(2)
+            .rev()
+            .cloned()
+            .collect();
+        assert_eq!(last_two.len(), 2);
+        assert_eq!(
+            last_two[0].text(),
+            "half-written answer",
+            "assistant prefix must carry saved partial text"
+        );
+        assert!(
+            last_two[1].text().contains("interrupted mid-stream"),
+            "user continuation prompt must follow the prefix, got: {}",
+            last_two[1].text()
+        );
+
+        // The fresh attempt's output wins: the text is whatever the
+        // resumed attempt produced.
+        assert_eq!(result.text(), " — conclusion.");
+        assert_eq!(result.stop_reason, Some(StopReason::EndTurn));
+
+        // Checkpoint must be cleared on clean completion — otherwise
+        // subsequent runs would incorrectly restore it.
+        assert!(
+            store.get("run-resumed").await.unwrap().is_none(),
+            "checkpoint must be deleted after successful resume"
+        );
+    }
+
+    #[tokio::test]
+    async fn cross_process_resume_with_completed_tool_checkpoint_short_circuits_to_tool_use() {
+        use awaken_contract::contract::stream_checkpoint::{
+            InMemoryStreamCheckpointStore, StreamCheckpoint, StreamCheckpointStore,
+        };
+        use serde_json::json;
+
+        let store: Arc<InMemoryStreamCheckpointStore> =
+            Arc::new(InMemoryStreamCheckpointStore::new());
+        store
+            .put(StreamCheckpoint {
+                run_id: "run-r2-resumed".into(),
+                thread_id: "thread-1".into(),
+                upstream_model: "test-model".into(),
+                partial_text: "thinking...".into(),
+                completed_tool_calls: vec![ToolCall::new("tc-1", "search", json!({"q": "rust"}))],
+                in_flight_tool: None,
+                updated_at_ms: 1_000,
+            })
+            .await
+            .unwrap();
+
+        // An executor that PANICS if called — the R2 short-circuit
+        // must not reopen a stream.
+        struct NeverCallMe;
+
+        #[async_trait]
+        impl awaken_contract::contract::executor::LlmExecutor for NeverCallMe {
+            async fn execute(
+                &self,
+                _r: InferenceRequest,
+            ) -> Result<StreamResult, InferenceExecutionError> {
+                panic!("R2 checkpoint resume must not reopen a stream");
+            }
+
+            fn execute_stream(
+                &self,
+                _r: InferenceRequest,
+            ) -> std::pin::Pin<
+                Box<
+                    dyn std::future::Future<
+                            Output = Result<InferenceStream, InferenceExecutionError>,
+                        > + Send
+                        + '_,
+                >,
+            > {
+                panic!("R2 checkpoint resume must not reopen a stream");
+            }
+
+            fn name(&self) -> &str {
+                "never-call"
+            }
+        }
+
+        let agent = ResolvedAgent::new("test", "test-model", "sys", Arc::new(NeverCallMe));
+        let sink = VecEventSink::new();
+        let handle = CheckpointHandle {
+            store: store.as_ref(),
+            run_id: "run-r2-resumed",
+            thread_id: "thread-1",
+        };
+        let mut it = 0u64;
+        let mut ot = 0u64;
+
+        let (result, _hint) = execute_streaming_with_checkpoint(
+            &agent,
+            make_request(),
+            &sink,
+            None,
+            &mut it,
+            &mut ot,
+            Some(handle),
+        )
+        .await
+        .expect("R2 resume should short-circuit successfully");
+
+        assert_eq!(result.stop_reason, Some(StopReason::ToolUse));
+        assert_eq!(result.tool_calls.len(), 1);
+        assert_eq!(result.tool_calls[0].name, "search");
+        assert_eq!(result.text(), "thinking...");
+
+        // Checkpoint cleared on R2 resume (consumed).
+        assert!(store.get("run-r2-resumed").await.unwrap().is_none());
+
+        // Sink should have observed the ToolCallReady event for the
+        // resumed tool so downstream consumers see the same sequence
+        // as a normal `StopReason::ToolUse` termination.
+        let events = sink.events();
+        assert!(
+            events.iter().any(|e| matches!(
+                e,
+                AgentEvent::ToolCallReady { id, .. } if id == "tc-1"
+            )),
+            "expected ToolCallReady for the resumed tool"
+        );
+    }
 
     #[tokio::test(start_paused = true)]
     async fn cancellation_during_backoff_aborts_retry_loop_with_cancelled_error() {

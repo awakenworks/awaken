@@ -15,6 +15,7 @@ pub mod profile_store;
 pub mod progress;
 pub mod shared_state;
 pub mod storage;
+pub mod stream_checkpoint;
 pub mod suspension;
 pub mod tool;
 pub mod tool_intercept;

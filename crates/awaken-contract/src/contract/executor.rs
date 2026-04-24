@@ -52,7 +52,7 @@ impl std::fmt::Display for InterruptCause {
 }
 
 /// A tool_use block observed mid-stream whose argument JSON did not close.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct InFlightTool {
     pub id: String,
     pub name: String,
