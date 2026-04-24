@@ -467,16 +467,53 @@ impl StreamingAccumulator {
 fn classify_mid_stream(err: &InferenceExecutionError) -> Option<InterruptCause> {
     match err {
         // Recoverable — transport-ish failures.
-        InferenceExecutionError::Provider(_)
-        | InferenceExecutionError::Timeout(_)
-        | InferenceExecutionError::RateLimited { .. }
-        | InferenceExecutionError::Overloaded { .. } => Some(InterruptCause::ConnectionReset),
+        InferenceExecutionError::Provider(msg) | InferenceExecutionError::Timeout(msg) => {
+            Some(interpret_transport_message(msg))
+        }
+        InferenceExecutionError::RateLimited { message, .. }
+        | InferenceExecutionError::Overloaded { message, .. } => {
+            Some(interpret_transport_message(message))
+        }
 
         // Already-classified stream interruption — preserve cause.
         InferenceExecutionError::StreamInterrupted { cause, .. } => Some(cause.clone()),
 
         // Permanent / lifecycle — surface to caller, not a mid-stream retry.
         _ => None,
+    }
+}
+
+/// Heuristic substring match to distinguish HTTP/2 GOAWAY — which is a
+/// graceful server-initiated disconnect — from a raw TCP reset. The
+/// difference matters for telemetry (GOAWAY is benign, TCP reset is not)
+/// and for future policy (GOAWAY often warrants immediate fallback to a
+/// different endpoint rather than a naive retry).
+///
+/// `genai` surfaces these through error messages whose contents are
+/// provider- / reqwest-dependent, so string matching is the pragmatic
+/// contract. Keep patterns case-insensitive.
+fn interpret_transport_message(msg: &str) -> InterruptCause {
+    let lower = msg.to_lowercase();
+    if lower.contains("goaway")
+        || lower.contains("go_away")
+        || lower.contains("http/2 going away")
+        || lower.contains("connection: close")
+    {
+        InterruptCause::GoAway
+    } else if lower.contains("connection reset") || lower.contains("econnreset") {
+        InterruptCause::ConnectionReset
+    } else if lower.starts_with("502")
+        || lower.starts_with("503")
+        || lower.contains("502 bad gateway")
+        || lower.contains("503 service unavailable")
+    {
+        // Gateway-level 5xx that reaches us after the stream opened is
+        // treated as a mid-stream provider fault. The actual status
+        // code is typically available in `msg`, but for
+        // classification we only need the shape.
+        InterruptCause::Provider5xxMidStream(503)
+    } else {
+        InterruptCause::ConnectionReset
     }
 }
 
@@ -1951,5 +1988,125 @@ mod tests {
             ..plain.clone()
         };
         assert_eq!(idle_timeout_for(&o3, &policy), base * 2);
+    }
+
+    // -----------------------------------------------------------------------
+    // GOAWAY / transport-message classification
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn classify_mid_stream_maps_goaway_substring_to_goaway_cause() {
+        let err = InferenceExecutionError::Provider("HTTP/2 GOAWAY frame received".into());
+        assert!(matches!(
+            classify_mid_stream(&err),
+            Some(InterruptCause::GoAway)
+        ));
+    }
+
+    #[test]
+    fn classify_mid_stream_maps_connection_reset_substring_to_connection_reset() {
+        let err = InferenceExecutionError::Provider("ECONNRESET: connection reset by peer".into());
+        assert!(matches!(
+            classify_mid_stream(&err),
+            Some(InterruptCause::ConnectionReset)
+        ));
+    }
+
+    #[test]
+    fn classify_mid_stream_maps_503_substring_to_provider_5xx() {
+        let err = InferenceExecutionError::Provider("503 Service Unavailable".into());
+        assert!(matches!(
+            classify_mid_stream(&err),
+            Some(InterruptCause::Provider5xxMidStream(_))
+        ));
+    }
+
+    #[test]
+    fn classify_mid_stream_preserves_cause_from_stream_interrupted() {
+        let err = InferenceExecutionError::StreamInterrupted {
+            cause: InterruptCause::IdleStall,
+            snapshot: Box::new(InterruptSnapshot {
+                text: None,
+                completed_tool_calls: vec![],
+                in_flight_tool: None,
+                bytes_received: 0,
+            }),
+        };
+        assert!(matches!(
+            classify_mid_stream(&err),
+            Some(InterruptCause::IdleStall)
+        ));
+    }
+
+    #[test]
+    fn classify_mid_stream_refuses_permanent_errors() {
+        assert!(
+            classify_mid_stream(&InferenceExecutionError::ContextOverflow("x".into())).is_none()
+        );
+        assert!(classify_mid_stream(&InferenceExecutionError::Unauthorized("x".into())).is_none());
+        assert!(
+            classify_mid_stream(&InferenceExecutionError::ContentFiltered("x".into())).is_none()
+        );
+        assert!(classify_mid_stream(&InferenceExecutionError::Cancelled).is_none());
+    }
+
+    // -----------------------------------------------------------------------
+    // J: Cancellation during retry backoff aborts the retry loop
+    // -----------------------------------------------------------------------
+
+    #[tokio::test(start_paused = true)]
+    async fn cancellation_during_backoff_aborts_retry_loop_with_cancelled_error() {
+        use crate::cancellation::CancellationToken;
+
+        // R4-path executor: first attempt fails immediately with no
+        // accumulated state. With default policy the retry loop sleeps
+        // before attempt 2; the cancellation token fires during that
+        // sleep and the error surfaces as `Cancelled`, not as
+        // `StreamInterrupted`.
+        let exec = Arc::new(ScriptedPerAttemptExecutor::new(vec![
+            vec![Err(InferenceExecutionError::Provider("reset".into()))],
+            vec![Err(InferenceExecutionError::Provider(
+                "should-not-be-reached".into(),
+            ))],
+        ]));
+        let agent = agent_with(exec.clone());
+        let sink = VecEventSink::new();
+        let token = CancellationToken::new();
+        let mut it = 0u64;
+        let mut ot = 0u64;
+
+        // Kick off the streaming call and cancel mid-backoff.
+        let exec_fut = stream_only(
+            &agent,
+            make_request(),
+            &sink,
+            Some(&token),
+            &mut it,
+            &mut ot,
+        );
+        let drive = async {
+            // Let the first attempt open and fail.
+            tokio::time::sleep(Duration::from_millis(1)).await;
+            // Cancel before the backoff sleep completes. The default
+            // stream retry backoff for ConnectionReset ends up using
+            // the general `delay_before_retry` path, so sleeping any
+            // paused duration >= 1s guarantees we're inside it.
+            token.cancel();
+            tokio::time::advance(Duration::from_secs(30)).await;
+        };
+
+        let (result, ()) = tokio::join!(exec_fut, drive);
+        let err = result.expect_err("cancellation must abort the retry loop");
+        match err {
+            AgentLoopError::InferenceFailed(msg) => {
+                assert!(
+                    msg.contains("cancelled"),
+                    "expected cancellation message, got: {msg}"
+                );
+            }
+            other => panic!("expected InferenceFailed(cancelled), got: {other:?}"),
+        }
+        // Only the first attempt should have run.
+        assert_eq!(exec.attempts(), 1, "retry must not proceed after cancel");
     }
 }

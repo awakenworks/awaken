@@ -153,7 +153,13 @@ impl GenaiExecutor {
 
         // Fall back to string matching for errors without structured status codes.
         let lower = msg.to_lowercase();
-        if lower.contains("overloaded") {
+        if lower.contains("content_filter")
+            || lower.contains("content policy")
+            || lower.contains("content_policy_violation")
+            || lower.contains("blocked by safety")
+        {
+            InferenceExecutionError::ContentFiltered(msg)
+        } else if lower.contains("overloaded") {
             InferenceExecutionError::overloaded(msg)
         } else if lower.contains("rate")
             || lower.contains("429")
@@ -1116,6 +1122,50 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn map_error_content_filter_string_maps_to_content_filtered() {
+        let err =
+            genai::Error::Internal("response blocked by content_filter policy violation".into());
+        let mapped = GenaiExecutor::map_error(err);
+        assert!(
+            matches!(mapped, InferenceExecutionError::ContentFiltered(_)),
+            "expected ContentFiltered, got {mapped:?}"
+        );
+    }
+
+    #[test]
+    fn map_error_content_policy_string_maps_to_content_filtered() {
+        let err = genai::Error::Internal("content policy triggered".into());
+        let mapped = GenaiExecutor::map_error(err);
+        assert!(
+            matches!(mapped, InferenceExecutionError::ContentFiltered(_)),
+            "expected ContentFiltered, got {mapped:?}"
+        );
+    }
+
+    #[test]
+    fn map_error_safety_string_maps_to_content_filtered() {
+        let err = genai::Error::Internal("blocked by safety filter".into());
+        let mapped = GenaiExecutor::map_error(err);
+        assert!(
+            matches!(mapped, InferenceExecutionError::ContentFiltered(_)),
+            "expected ContentFiltered, got {mapped:?}"
+        );
+    }
+
+    #[test]
+    fn content_filtered_is_not_retryable_and_does_not_count_toward_breaker() {
+        let err = InferenceExecutionError::ContentFiltered("policy".into());
+        assert!(
+            !err.is_retryable(),
+            "ContentFiltered must be permanent (no retry)"
+        );
+        assert!(
+            !err.counts_toward_circuit_breaker(),
+            "ContentFiltered must not increment the breaker"
+        );
     }
 
     #[test]

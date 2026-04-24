@@ -11584,3 +11584,187 @@ async fn mid_stream_recovery_without_parallel_tools_does_not_inject_hint() {
         "R1 recovery must not emit ToolCallCancel"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Phase-G end-to-end: malformed tool args (non-MaxTokens) → user hint
+// injected so the main model can retry the call with valid JSON.
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn malformed_tool_args_on_end_turn_injects_user_hint_for_next_turn() {
+    use awaken::contract::executor::{InferenceStream, LlmStreamEvent};
+
+    struct MalformedArgsLlm {
+        call_count: Mutex<usize>,
+        captured_requests: Arc<Mutex<Vec<InferenceRequest>>>,
+    }
+
+    #[async_trait]
+    impl LlmExecutor for MalformedArgsLlm {
+        async fn execute(
+            &self,
+            _req: InferenceRequest,
+        ) -> Result<StreamResult, InferenceExecutionError> {
+            unreachable!("streaming path only");
+        }
+
+        fn execute_stream(
+            &self,
+            request: InferenceRequest,
+        ) -> std::pin::Pin<
+            Box<
+                dyn std::future::Future<Output = Result<InferenceStream, InferenceExecutionError>>
+                    + Send
+                    + '_,
+            >,
+        > {
+            self.captured_requests.lock().unwrap().push(request);
+            let mut count = self.call_count.lock().unwrap();
+            *count += 1;
+            let call_num = *count;
+            drop(count);
+
+            Box::pin(async move {
+                // Turn 1: model emits a tool_use with TRUNCATED/BROKEN JSON
+                // args but terminates with end_turn (NOT MaxTokens). The
+                // accumulator drops the tool because its JSON is invalid,
+                // setting has_incomplete_tool_calls=true. Because the stop
+                // reason is not MaxTokens, truncation recovery does NOT
+                // retry. step.rs should surface the generic hint.
+                //
+                // Turn 2: model returns final text once it's been told.
+                let events: Vec<Result<LlmStreamEvent, InferenceExecutionError>> = match call_num {
+                    1 => vec![
+                        Ok(LlmStreamEvent::TextDelta("checking".into())),
+                        Ok(LlmStreamEvent::ToolCallStart {
+                            id: "bad-1".into(),
+                            name: "calc".into(),
+                        }),
+                        Ok(LlmStreamEvent::ToolCallDelta {
+                            id: "bad-1".into(),
+                            args_delta: r#"{"result": not-json"#.into(),
+                        }),
+                        Ok(LlmStreamEvent::Stop(StopReason::EndTurn)),
+                    ],
+                    _ => vec![
+                        Ok(LlmStreamEvent::TextDelta("got it".into())),
+                        Ok(LlmStreamEvent::Stop(StopReason::EndTurn)),
+                    ],
+                };
+                Ok(Box::pin(futures::stream::iter(events)) as InferenceStream)
+            })
+        }
+
+        fn name(&self) -> &str {
+            "malformed-args-llm"
+        }
+    }
+
+    let captured: Arc<Mutex<Vec<InferenceRequest>>> = Arc::new(Mutex::new(Vec::new()));
+    let llm = Arc::new(MalformedArgsLlm {
+        call_count: Mutex::new(0),
+        captured_requests: captured.clone(),
+    });
+
+    let agent = ResolvedAgent::new("test", "gpt-4o", "sys", llm).with_tool(Arc::new(CalcTool));
+    let runtime = make_runtime();
+    let resolver = FixedResolver::new(agent);
+
+    let sink = Arc::new(VecEventSink::new());
+    let _ = run_agent_loop(AgentLoopParams {
+        resolver: &resolver,
+        agent_id: "test",
+        runtime: &runtime,
+        sink,
+        checkpoint_store: None,
+        messages: vec![Message::user("go")],
+        run_identity: test_identity(),
+        cancellation_token: None,
+        decision_rx: None,
+        overrides: None,
+        frontend_tools: Vec::new(),
+        inbox: None,
+        is_continuation: false,
+    })
+    .await
+    .unwrap();
+
+    let requests = captured.lock().unwrap().clone();
+    // The first request is turn 1. If the hint is injected correctly the
+    // loop should proceed to turn 2 and we'll see an additional request.
+    assert!(
+        requests.len() >= 2,
+        "expected at least 2 LLM calls (turn 2 sees the hint), got {}",
+        requests.len()
+    );
+
+    // Turn 2's request must contain the malformed-args hint.
+    let hint_found = requests[1].messages.iter().any(|m| {
+        m.role == Role::User
+            && m.text()
+                .contains("one or more of your tool calls had malformed arguments")
+    });
+    assert!(
+        hint_found,
+        "expected malformed-args user hint in turn 2's request; \
+         got messages: {:#?}",
+        requests[1]
+            .messages
+            .iter()
+            .map(|m| (m.role, m.text()))
+            .collect::<Vec<_>>()
+    );
+}
+
+#[tokio::test]
+async fn malformed_tool_args_hint_absent_when_all_tools_have_valid_json() {
+    // Negative-control: a clean turn with valid tool args must NOT
+    // trigger the malformed-args hint.
+    let llm = Arc::new(ScriptedLlm::new(vec![
+        StreamResult {
+            content: vec![ContentBlock::text("calling")],
+            tool_calls: vec![ToolCall::new("c1", "calc", json!({"result": 42}))],
+            usage: None,
+            stop_reason: Some(StopReason::ToolUse),
+            has_incomplete_tool_calls: false,
+        },
+        StreamResult {
+            content: vec![ContentBlock::text("done")],
+            tool_calls: vec![],
+            usage: None,
+            stop_reason: Some(StopReason::EndTurn),
+            has_incomplete_tool_calls: false,
+        },
+    ]));
+
+    let agent = ResolvedAgent::new("test", "gpt-4o", "sys", llm).with_tool(Arc::new(CalcTool));
+    let runtime = make_runtime();
+    let resolver = FixedResolver::new(agent);
+
+    let sink = Arc::new(VecEventSink::new());
+    let result = run_agent_loop(AgentLoopParams {
+        resolver: &resolver,
+        agent_id: "test",
+        runtime: &runtime,
+        sink,
+        checkpoint_store: None,
+        messages: vec![Message::user("go")],
+        run_identity: test_identity(),
+        cancellation_token: None,
+        decision_rx: None,
+        overrides: None,
+        frontend_tools: Vec::new(),
+        inbox: None,
+        is_continuation: false,
+    })
+    .await
+    .unwrap();
+
+    assert!(matches!(result.termination, TerminationReason::NaturalEnd));
+    // The response text should NOT contain the malformed-args hint.
+    assert!(
+        !result.response.contains("malformed arguments"),
+        "unexpected malformed-args hint leaked into response: {}",
+        result.response
+    );
+}
