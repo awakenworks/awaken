@@ -70,38 +70,21 @@ const CONTINUATION_PROMPT: &str =
 
 /// Execute LLM inference with streaming, emitting delta events via sink.
 ///
-/// Consumes the token stream from `execute_stream()`, forwards deltas to sink,
-/// and collects the final `StreamResult`.
+/// Consumes the token stream from `execute_stream()`, forwards deltas to
+/// sink, and collects the final `StreamResult`. Drives the in-process R1-R4
+/// retry loop on mid-stream interruption and, when a `CheckpointHandle` is
+/// supplied, persists / restores accumulator state for cross-process resume.
 ///
-/// Supports mid-stream cancellation: if the `CancellationToken` is signalled while
-/// waiting for the next token, the stream is dropped and the partially accumulated
-/// result is returned with `StopReason::EndTurn` (graceful cancel — no error).
+/// Supports mid-stream cancellation: if the `CancellationToken` is signalled
+/// while waiting for the next token, the stream is dropped and the partially
+/// accumulated result is returned with `StopReason::EndTurn` (graceful
+/// cancel — no error).
+///
+/// Returns `(stream_result, cancelled_tool_hint)`. `cancelled_tool_hint`
+/// is `Some` only when an in-flight parallel tool was dropped during
+/// recovery; the loop runner uses it to inject a user-visible note in
+/// the next turn.
 pub(super) async fn execute_streaming(
-    agent: &ResolvedAgent,
-    request: InferenceRequest,
-    sink: &dyn EventSink,
-    cancellation_token: Option<&CancellationToken>,
-    total_input_tokens: &mut u64,
-    total_output_tokens: &mut u64,
-) -> Result<(StreamResult, Option<InFlightTool>), AgentLoopError> {
-    execute_streaming_with_checkpoint(
-        agent,
-        request,
-        sink,
-        cancellation_token,
-        total_input_tokens,
-        total_output_tokens,
-        None,
-    )
-    .await
-}
-
-/// Core streaming executor with an optional cross-process resume handle.
-/// `execute_streaming` is the tests-friendly wrapper that passes `None`
-/// for the checkpoint handle; production callers in step.rs use this
-/// function directly when they have a run identity and the agent has
-/// a `stream_checkpoint_store` configured.
-pub(super) async fn execute_streaming_with_checkpoint(
     agent: &ResolvedAgent,
     mut request: InferenceRequest,
     sink: &dyn EventSink,
@@ -871,44 +854,39 @@ mod tests {
     use awaken_contract::contract::inference::{StopReason, StreamResult, TokenUsage};
     use awaken_contract::contract::message::Message;
 
-    // -- Streaming LLM executor that yields explicit stream events --
+    // -- Scripted LLM executor used by every test in this module --
 
-    /// Mock LLM executor that yields a fixed scripted event sequence on
-    /// EVERY call to `execute_stream`. Cloning the script per attempt means
-    /// stream-level retries in `execute_streaming` observe the same
-    /// behavior across attempts — useful when asserting retry budgets.
-    struct StreamingMockExecutor {
-        script: Vec<ClonedEvent>,
+    /// Mock LLM executor that yields scripted events keyed by attempt
+    /// number. On the Nth call to `execute_stream`, yields
+    /// `scripts[min(N, scripts.len() - 1)]` so a single-element script
+    /// repeats forever (legacy use case) and a multi-element script
+    /// drives different per-attempt behavior (R1-R4 retry tests).
+    struct ScriptedPerAttemptExecutor {
+        scripts: Vec<Vec<Result<LlmStreamEvent, InferenceExecutionError>>>,
+        attempt: std::sync::atomic::AtomicUsize,
     }
 
-    /// Serializable-as-needed twin of the scripted events. `LlmStreamEvent`
-    /// itself is Clone via Copy/String fields; `InferenceExecutionError` is
-    /// now Clone as of the Phase-A refactor — so a straightforward clone
-    /// works, but we normalize to owned values here for clarity.
-    #[derive(Clone)]
-    struct ClonedEvent(Result<LlmStreamEvent, InferenceExecutionError>);
-
-    impl StreamingMockExecutor {
-        fn new(events: Vec<Result<LlmStreamEvent, InferenceExecutionError>>) -> Self {
+    impl ScriptedPerAttemptExecutor {
+        fn new(scripts: Vec<Vec<Result<LlmStreamEvent, InferenceExecutionError>>>) -> Self {
+            assert!(!scripts.is_empty(), "need at least one attempt script");
             Self {
-                script: events.into_iter().map(ClonedEvent).collect(),
+                scripts,
+                attempt: std::sync::atomic::AtomicUsize::new(0),
             }
+        }
+
+        fn attempts(&self) -> usize {
+            self.attempt.load(std::sync::atomic::Ordering::SeqCst)
         }
     }
 
     #[async_trait]
-    impl awaken_contract::contract::executor::LlmExecutor for StreamingMockExecutor {
+    impl awaken_contract::contract::executor::LlmExecutor for ScriptedPerAttemptExecutor {
         async fn execute(
             &self,
-            _request: InferenceRequest,
+            _r: InferenceRequest,
         ) -> Result<StreamResult, InferenceExecutionError> {
-            Ok(StreamResult {
-                content: vec![],
-                tool_calls: vec![],
-                usage: None,
-                stop_reason: None,
-                has_incomplete_tool_calls: false,
-            })
+            Err(InferenceExecutionError::Provider("unused".into()))
         }
 
         fn execute_stream(
@@ -921,47 +899,27 @@ mod tests {
                     + '_,
             >,
         > {
-            let events: Vec<Result<LlmStreamEvent, InferenceExecutionError>> =
-                self.script.iter().map(|e| e.0.clone()).collect();
+            let n = self
+                .attempt
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let idx = n.min(self.scripts.len() - 1);
+            let events = self.scripts[idx].clone();
             Box::pin(async move { Ok(Box::pin(futures::stream::iter(events)) as InferenceStream) })
         }
 
         fn name(&self) -> &str {
-            "streaming-mock"
+            "scripted-per-attempt"
         }
     }
 
+    /// Build an agent backed by a single-script executor (the script
+    /// repeats on every attempt).
     fn make_agent(events: Vec<Result<LlmStreamEvent, InferenceExecutionError>>) -> ResolvedAgent {
-        ResolvedAgent::new(
-            "test-agent",
-            "test-model",
-            "system prompt",
-            Arc::new(StreamingMockExecutor::new(events)),
-        )
+        agent_with(Arc::new(ScriptedPerAttemptExecutor::new(vec![events])))
     }
 
-    /// Thin adapter that discards the in-flight tool hint. Used by
-    /// legacy tests that only care about the `StreamResult`; new tests
-    /// that exercise the hint path (Phase E) call `execute_streaming`
-    /// directly and destructure the tuple.
-    async fn stream_only(
-        agent: &ResolvedAgent,
-        request: InferenceRequest,
-        sink: &dyn EventSink,
-        cancellation_token: Option<&CancellationToken>,
-        total_input_tokens: &mut u64,
-        total_output_tokens: &mut u64,
-    ) -> Result<StreamResult, AgentLoopError> {
-        execute_streaming(
-            agent,
-            request,
-            sink,
-            cancellation_token,
-            total_input_tokens,
-            total_output_tokens,
-        )
-        .await
-        .map(|(result, _hint)| result)
+    fn agent_with(exec: Arc<ScriptedPerAttemptExecutor>) -> ResolvedAgent {
+        ResolvedAgent::new("test-agent", "test-model", "system prompt", exec)
     }
 
     fn make_request() -> InferenceRequest {
@@ -989,13 +947,14 @@ mod tests {
         let mut input_tokens = 0u64;
         let mut output_tokens = 0u64;
 
-        let result = stream_only(
+        let (result, _hint) = execute_streaming(
             &agent,
             make_request(),
             &sink,
             None,
             &mut input_tokens,
             &mut output_tokens,
+            None,
         )
         .await
         .unwrap();
@@ -1018,7 +977,7 @@ mod tests {
         let mut it = 0u64;
         let mut ot = 0u64;
 
-        stream_only(&agent, make_request(), &sink, None, &mut it, &mut ot)
+        execute_streaming(&agent, make_request(), &sink, None, &mut it, &mut ot, None)
             .await
             .unwrap();
 
@@ -1048,13 +1007,14 @@ mod tests {
         let mut input_tokens = 10u64;
         let mut output_tokens = 5u64;
 
-        let result = stream_only(
+        let (result, _hint) = execute_streaming(
             &agent,
             make_request(),
             &sink,
             None,
             &mut input_tokens,
             &mut output_tokens,
+            None,
         )
         .await
         .unwrap();
@@ -1075,13 +1035,14 @@ mod tests {
         let mut input_tokens = 100u64;
         let mut output_tokens = 50u64;
 
-        stream_only(
+        execute_streaming(
             &agent,
             make_request(),
             &sink,
             None,
             &mut input_tokens,
             &mut output_tokens,
+            None,
         )
         .await
         .unwrap();
@@ -1115,9 +1076,10 @@ mod tests {
         let mut it = 0u64;
         let mut ot = 0u64;
 
-        let result = stream_only(&agent, make_request(), &sink, None, &mut it, &mut ot)
-            .await
-            .unwrap();
+        let (result, _hint) =
+            execute_streaming(&agent, make_request(), &sink, None, &mut it, &mut ot, None)
+                .await
+                .unwrap();
 
         assert_eq!(result.tool_calls.len(), 1);
         assert_eq!(result.tool_calls[0].name, "get_weather");
@@ -1142,7 +1104,7 @@ mod tests {
         let mut it = 0u64;
         let mut ot = 0u64;
 
-        stream_only(&agent, make_request(), &sink, None, &mut it, &mut ot)
+        execute_streaming(&agent, make_request(), &sink, None, &mut it, &mut ot, None)
             .await
             .unwrap();
 
@@ -1177,9 +1139,10 @@ mod tests {
         let mut it = 0u64;
         let mut ot = 0u64;
 
-        let result = stream_only(&agent, make_request(), &sink, None, &mut it, &mut ot)
-            .await
-            .unwrap();
+        let (result, _hint) =
+            execute_streaming(&agent, make_request(), &sink, None, &mut it, &mut ot, None)
+                .await
+                .unwrap();
 
         // Truncated tool call is skipped, but has_incomplete_tool_calls is flagged
         assert!(result.tool_calls.is_empty());
@@ -1213,9 +1176,10 @@ mod tests {
         let mut it = 0u64;
         let mut ot = 0u64;
 
-        let result = stream_only(&agent, make_request(), &sink, None, &mut it, &mut ot)
-            .await
-            .unwrap();
+        let (result, _hint) =
+            execute_streaming(&agent, make_request(), &sink, None, &mut it, &mut ot, None)
+                .await
+                .unwrap();
 
         assert_eq!(result.tool_calls.len(), 2);
         assert_eq!(result.tool_calls[0].name, "tool_a");
@@ -1249,13 +1213,14 @@ mod tests {
         let mut it = 0u64;
         let mut ot = 0u64;
 
-        let result = stream_only(
+        let (result, _hint) = execute_streaming(
             &agent,
             make_request(),
             &sink,
             Some(&token),
             &mut it,
             &mut ot,
+            None,
         )
         .await
         .unwrap();
@@ -1276,9 +1241,10 @@ mod tests {
         let mut it = 0u64;
         let mut ot = 0u64;
 
-        let result = stream_only(&agent, make_request(), &sink, None, &mut it, &mut ot)
-            .await
-            .unwrap();
+        let (result, _hint) =
+            execute_streaming(&agent, make_request(), &sink, None, &mut it, &mut ot, None)
+                .await
+                .unwrap();
 
         assert_eq!(result.content.len(), 1);
         assert_eq!(result.stop_reason, Some(StopReason::EndTurn));
@@ -1298,7 +1264,7 @@ mod tests {
         let mut it = 0u64;
         let mut ot = 0u64;
 
-        stream_only(&agent, make_request(), &sink, None, &mut it, &mut ot)
+        execute_streaming(&agent, make_request(), &sink, None, &mut it, &mut ot, None)
             .await
             .unwrap();
 
@@ -1318,9 +1284,10 @@ mod tests {
         let mut it = 0u64;
         let mut ot = 0u64;
 
-        let result = stream_only(&agent, make_request(), &sink, None, &mut it, &mut ot)
-            .await
-            .unwrap();
+        let (result, _hint) =
+            execute_streaming(&agent, make_request(), &sink, None, &mut it, &mut ot, None)
+                .await
+                .unwrap();
 
         assert!(result.content.is_empty());
         assert!(result.tool_calls.is_empty());
@@ -1341,9 +1308,10 @@ mod tests {
         let mut it = 0u64;
         let mut ot = 0u64;
 
-        let result = stream_only(&agent, make_request(), &sink, None, &mut it, &mut ot)
-            .await
-            .unwrap();
+        let (result, _hint) =
+            execute_streaming(&agent, make_request(), &sink, None, &mut it, &mut ot, None)
+                .await
+                .unwrap();
 
         // Text should still be flushed
         assert_eq!(result.content.len(), 1);
@@ -1369,7 +1337,7 @@ mod tests {
         let mut it = 0u64;
         let mut ot = 0u64;
 
-        let err = stream_only(&agent, make_request(), &sink, None, &mut it, &mut ot)
+        let err = execute_streaming(&agent, make_request(), &sink, None, &mut it, &mut ot, None)
             .await
             .unwrap_err();
 
@@ -1403,7 +1371,7 @@ mod tests {
         let mut it = 0u64;
         let mut ot = 0u64;
 
-        stream_only(&agent, make_request(), &sink, None, &mut it, &mut ot)
+        execute_streaming(&agent, make_request(), &sink, None, &mut it, &mut ot, None)
             .await
             .unwrap();
 
@@ -1480,7 +1448,7 @@ mod tests {
         let mut it = 0u64;
         let mut ot = 0u64;
 
-        let err = stream_only(&agent, make_request(), &sink, None, &mut it, &mut ot)
+        let err = execute_streaming(&agent, make_request(), &sink, None, &mut it, &mut ot, None)
             .await
             .unwrap_err();
 
@@ -1510,7 +1478,7 @@ mod tests {
         let mut it = 0u64;
         let mut ot = 0u64;
 
-        let err = stream_only(&agent, make_request(), &sink, None, &mut it, &mut ot)
+        let err = execute_streaming(&agent, make_request(), &sink, None, &mut it, &mut ot, None)
             .await
             .unwrap_err();
 
@@ -1579,7 +1547,7 @@ mod tests {
         let mut it = 0u64;
         let mut ot = 0u64;
 
-        let err = stream_only(&agent, make_request(), &sink, None, &mut it, &mut ot)
+        let err = execute_streaming(&agent, make_request(), &sink, None, &mut it, &mut ot, None)
             .await
             .unwrap_err();
 
@@ -1606,7 +1574,7 @@ mod tests {
         let mut it = 0u64;
         let mut ot = 0u64;
 
-        let err = stream_only(&agent, make_request(), &sink, None, &mut it, &mut ot)
+        let err = execute_streaming(&agent, make_request(), &sink, None, &mut it, &mut ot, None)
             .await
             .unwrap_err();
 
@@ -1632,7 +1600,7 @@ mod tests {
         let mut it = 0u64;
         let mut ot = 0u64;
 
-        let err = stream_only(&agent, make_request(), &sink, None, &mut it, &mut ot)
+        let err = execute_streaming(&agent, make_request(), &sink, None, &mut it, &mut ot, None)
             .await
             .unwrap_err();
 
@@ -1706,13 +1674,14 @@ mod tests {
             token_clone.cancel();
         });
 
-        let result = stream_only(
+        let (result, _hint) = execute_streaming(
             &agent,
             make_request(),
             &sink,
             Some(&token),
             &mut it,
             &mut ot,
+            None,
         )
         .await
         .unwrap();
@@ -1747,7 +1716,7 @@ mod tests {
         let mut it = 0u64;
         let mut ot = 0u64;
 
-        let err = stream_only(&agent, make_request(), &sink, None, &mut it, &mut ot)
+        let err = execute_streaming(&agent, make_request(), &sink, None, &mut it, &mut ot, None)
             .await
             .unwrap_err();
 
@@ -1786,64 +1755,6 @@ mod tests {
     // and the retry-budget exhaustion path has its own test.
     // ========================================================================
 
-    /// Scripted streaming executor keyed by attempt number. On the Nth call
-    /// to `execute_stream`, yields `scripts[min(N, scripts.len()-1)]` so
-    /// short scripts naturally repeat the last attempt's script forever.
-    struct ScriptedPerAttemptExecutor {
-        scripts: Vec<Vec<Result<LlmStreamEvent, InferenceExecutionError>>>,
-        attempt: std::sync::atomic::AtomicUsize,
-    }
-
-    impl ScriptedPerAttemptExecutor {
-        fn new(scripts: Vec<Vec<Result<LlmStreamEvent, InferenceExecutionError>>>) -> Self {
-            assert!(!scripts.is_empty(), "need at least one attempt script");
-            Self {
-                scripts,
-                attempt: std::sync::atomic::AtomicUsize::new(0),
-            }
-        }
-
-        fn attempts(&self) -> usize {
-            self.attempt.load(std::sync::atomic::Ordering::SeqCst)
-        }
-    }
-
-    #[async_trait]
-    impl awaken_contract::contract::executor::LlmExecutor for ScriptedPerAttemptExecutor {
-        async fn execute(
-            &self,
-            _r: InferenceRequest,
-        ) -> Result<StreamResult, InferenceExecutionError> {
-            Err(InferenceExecutionError::Provider("unused".into()))
-        }
-
-        fn execute_stream(
-            &self,
-            _request: InferenceRequest,
-        ) -> std::pin::Pin<
-            Box<
-                dyn std::future::Future<Output = Result<InferenceStream, InferenceExecutionError>>
-                    + Send
-                    + '_,
-            >,
-        > {
-            let n = self
-                .attempt
-                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            let idx = n.min(self.scripts.len() - 1);
-            let events = self.scripts[idx].clone();
-            Box::pin(async move { Ok(Box::pin(futures::stream::iter(events)) as InferenceStream) })
-        }
-
-        fn name(&self) -> &str {
-            "scripted-per-attempt"
-        }
-    }
-
-    fn agent_with(exec: Arc<ScriptedPerAttemptExecutor>) -> ResolvedAgent {
-        ResolvedAgent::new("test-agent", "test-model", "system prompt", exec)
-    }
-
     // --- R1: pure text interruption → continuation retry succeeds --------
 
     #[tokio::test]
@@ -1866,9 +1777,10 @@ mod tests {
         let mut it = 0u64;
         let mut ot = 0u64;
 
-        let result = stream_only(&agent, make_request(), &sink, None, &mut it, &mut ot)
-            .await
-            .expect("R1 should succeed after one retry");
+        let (result, _hint) =
+            execute_streaming(&agent, make_request(), &sink, None, &mut it, &mut ot, None)
+                .await
+                .expect("R1 should succeed after one retry");
 
         assert_eq!(exec.attempts(), 2, "expected exactly two attempts");
         // The second attempt's deltas are preserved in the returned result.
@@ -1927,9 +1839,10 @@ mod tests {
         let mut it = 0u64;
         let mut ot = 0u64;
 
-        let result = stream_only(&agent, make_request(), &sink, None, &mut it, &mut ot)
-            .await
-            .expect("R2 short-circuits to synthesized tool_use");
+        let (result, _hint) =
+            execute_streaming(&agent, make_request(), &sink, None, &mut it, &mut ot, None)
+                .await
+                .expect("R2 short-circuits to synthesized tool_use");
 
         assert_eq!(exec.attempts(), 1, "R2 must not trigger a retry");
         assert_eq!(result.stop_reason, Some(StopReason::ToolUse));
@@ -1982,9 +1895,10 @@ mod tests {
         let mut it = 0u64;
         let mut ot = 0u64;
 
-        let result = stream_only(&agent, make_request(), &sink, None, &mut it, &mut ot)
-            .await
-            .expect("R3 recovers after truncation");
+        let (result, _hint) =
+            execute_streaming(&agent, make_request(), &sink, None, &mut it, &mut ot, None)
+                .await
+                .expect("R3 recovers after truncation");
 
         assert_eq!(exec.attempts(), 2);
         assert_eq!(result.text(), "done.");
@@ -2023,9 +1937,10 @@ mod tests {
         let mut it = 0u64;
         let mut ot = 0u64;
 
-        let result = stream_only(&agent, make_request(), &sink, None, &mut it, &mut ot)
-            .await
-            .expect("R4 recovers after whole restart");
+        let (result, _hint) =
+            execute_streaming(&agent, make_request(), &sink, None, &mut it, &mut ot, None)
+                .await
+                .expect("R4 recovers after whole restart");
 
         assert_eq!(exec.attempts(), 2);
         assert_eq!(result.text(), "fresh start");
@@ -2054,7 +1969,7 @@ mod tests {
         let mut it = 0u64;
         let mut ot = 0u64;
 
-        let err = stream_only(&agent, make_request(), &sink, None, &mut it, &mut ot)
+        let err = execute_streaming(&agent, make_request(), &sink, None, &mut it, &mut ot, None)
             .await
             .unwrap_err();
 
@@ -2149,7 +2064,8 @@ mod tests {
 
         // Drive the streaming call concurrently so we can advance paused
         // time past the idle-stall threshold (60s by default).
-        let exec_fut = stream_only(&agent, make_request(), &sink, None, &mut it, &mut ot);
+        let exec_fut =
+            execute_streaming(&agent, make_request(), &sink, None, &mut it, &mut ot, None);
         let drive = async {
             // Wait for the first TextDelta to be emitted, then advance
             // past the idle threshold to trigger the stall.
@@ -2157,8 +2073,8 @@ mod tests {
             tokio::time::advance(Duration::from_secs(70)).await;
         };
 
-        let (result, ()) = tokio::join!(exec_fut, drive);
-        let result = result.expect("idle-stall should recover");
+        let (outcome, ()) = tokio::join!(exec_fut, drive);
+        let (result, _hint) = outcome.expect("idle-stall should recover");
         assert_eq!(
             exec.attempt.load(std::sync::atomic::Ordering::SeqCst),
             2,
@@ -2303,7 +2219,7 @@ mod tests {
 
         // Budget 0: exhaust on first attempt so the failure surfaces
         // and we can assert on the persisted checkpoint.
-        let _ = execute_streaming_with_checkpoint(
+        let _ = execute_streaming(
             &agent,
             make_request(),
             &sink,
@@ -2409,7 +2325,7 @@ mod tests {
         let mut it = 0u64;
         let mut ot = 0u64;
 
-        let (result, _hint) = execute_streaming_with_checkpoint(
+        let (result, _hint) = execute_streaming(
             &agent,
             make_request(),
             &sink,
@@ -2523,7 +2439,7 @@ mod tests {
         let mut it = 0u64;
         let mut ot = 0u64;
 
-        let (result, _hint) = execute_streaming_with_checkpoint(
+        let (result, _hint) = execute_streaming(
             &agent,
             make_request(),
             &sink,
@@ -2578,13 +2494,14 @@ mod tests {
         let mut ot = 0u64;
 
         // Kick off the streaming call and cancel mid-backoff.
-        let exec_fut = stream_only(
+        let exec_fut = execute_streaming(
             &agent,
             make_request(),
             &sink,
             Some(&token),
             &mut it,
             &mut ot,
+            None,
         );
         let drive = async {
             // Let the first attempt open and fail.

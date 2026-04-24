@@ -28,9 +28,7 @@ use super::actions::{
     resolve_intercept_payloads, take_context_messages,
 };
 use super::checkpoint::{StepCompletion, check_termination, complete_step};
-use super::inference::{
-    CheckpointHandle, compact_with_llm, execute_streaming, execute_streaming_with_checkpoint,
-};
+use super::inference::{CheckpointHandle, compact_with_llm, execute_streaming};
 use super::{AgentLoopError, commit_update, now_ms, tool_result_to_content};
 use crate::agent::state::{
     InferenceOverrideState, InferenceOverrideStateAction, RunLifecycle, RunLifecycleUpdate,
@@ -297,7 +295,9 @@ async fn recover_truncation(
         // Truncation recovery happens after any stream-interruption
         // recovery, so the `cancelled_tool_hint` from mid-stream retry is
         // no longer meaningful at this layer — it was consumed on the
-        // first call. Discard it here.
+        // first call. Pass `None` for checkpoint: continuation requests
+        // are mid-turn retries that share the run id with the in-flight
+        // attempt and should not race the same checkpoint key.
         let (next_result, _hint) = execute_streaming(
             ctx.agent,
             cont_request,
@@ -305,6 +305,7 @@ async fn recover_truncation(
             ctx.cancellation_token,
             ctx.total_input_tokens,
             ctx.total_output_tokens,
+            None,
         )
         .await?;
         stream_result = next_result;
@@ -509,7 +510,7 @@ async fn run_inference_phase(
                 run_id: &ctx.run_identity.run_id,
                 thread_id: &ctx.run_identity.thread_id,
             });
-    let (stream_result, cancelled_tool_hint) = execute_streaming_with_checkpoint(
+    let (stream_result, cancelled_tool_hint) = execute_streaming(
         ctx.agent,
         request,
         ctx.sink.as_ref(),
