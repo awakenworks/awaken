@@ -2,6 +2,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use awaken_contract::StateError;
+use parking_lot::RwLock;
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
 
@@ -55,24 +57,39 @@ impl std::error::Error for SendError {}
 const RESERVED_NAMES: &[&str] = &["parent", "self", "all", "broadcast"];
 
 /// Errors from task spawn operations.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[non_exhaustive]
 pub enum SpawnError {
     /// The name is reserved by the system.
+    #[error("'{0}' is a reserved name")]
     ReservedName(String),
     /// Another running task on this thread already has this name.
+    #[error("a running task named '{0}' already exists")]
     DuplicateName(String),
+    /// No state store has been configured for the manager.
+    #[error("background task state store is not configured")]
+    StoreNotConfigured,
+    /// Commit to the state store failed.
+    #[error(transparent)]
+    State(#[from] StateError),
 }
 
-impl std::fmt::Display for SpawnError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::ReservedName(n) => write!(f, "'{n}' is a reserved name"),
-            Self::DuplicateName(n) => write!(f, "a running task named '{n}' already exists"),
+#[derive(Debug, thiserror::Error)]
+enum MetaCommitError {
+    #[error("background task state store is not configured")]
+    StoreUnavailable,
+    #[error(transparent)]
+    State(#[from] StateError),
+}
+
+impl From<MetaCommitError> for SpawnError {
+    fn from(err: MetaCommitError) -> Self {
+        match err {
+            MetaCommitError::StoreUnavailable => Self::StoreNotConfigured,
+            MetaCommitError::State(e) => Self::State(e),
         }
     }
 }
-
-impl std::error::Error for SpawnError {}
 
 /// Runtime-only handle for a live background task.
 ///
@@ -97,7 +114,7 @@ struct TaskHandle {
 pub struct BackgroundTaskManager {
     handles: Mutex<HashMap<TaskId, TaskHandle>>,
     counter: AtomicU64,
-    owner_inbox: std::sync::RwLock<Option<InboxSender>>,
+    owner_inbox: RwLock<Option<InboxSender>>,
     store: std::sync::OnceLock<StateStore>,
 }
 
@@ -106,7 +123,7 @@ impl BackgroundTaskManager {
         Self {
             handles: Mutex::new(HashMap::new()),
             counter: AtomicU64::new(0),
-            owner_inbox: std::sync::RwLock::new(None),
+            owner_inbox: RwLock::new(None),
             store: std::sync::OnceLock::new(),
         }
     }
@@ -114,7 +131,7 @@ impl BackgroundTaskManager {
     /// Set the inbox sender that background tasks receive for pushing
     /// messages to the owner thread.
     pub fn set_owner_inbox(&self, inbox: InboxSender) {
-        *self.owner_inbox.write().expect("owner_inbox poisoned") = Some(inbox);
+        *self.owner_inbox.write() = Some(inbox);
     }
 
     /// Provide the state store for metadata persistence.
@@ -152,10 +169,18 @@ impl BackgroundTaskManager {
     }
 
     fn owner_inbox(&self) -> Option<InboxSender> {
-        self.owner_inbox
-            .read()
-            .expect("owner_inbox poisoned")
-            .clone()
+        self.owner_inbox.read().clone()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn panic_while_holding_owner_inbox_lock_for_test(&self) {
+        let _guard = self.owner_inbox.write();
+        panic!("owner_inbox lock test panic");
+    }
+
+    #[cfg(test)]
+    pub(crate) fn has_owner_inbox_for_test(&self) -> bool {
+        self.owner_inbox().is_some()
     }
 
     fn next_task_id(&self) -> TaskId {
@@ -188,13 +213,51 @@ impl BackgroundTaskManager {
         parent_context
     }
 
-    /// Commit a state update to the store (if available).
-    fn commit_meta(&self, action: BackgroundTaskStateAction) {
-        if let Some(store) = self.store() {
-            let mut batch = MutationBatch::new();
-            batch.update::<BackgroundTaskStateKey>(action);
-            // Ignore commit errors (e.g. key not registered in test setups)
-            let _ = store.commit(batch);
+    /// Commit a state update to the store.
+    fn commit_meta(&self, action: BackgroundTaskStateAction) -> Result<u64, MetaCommitError> {
+        let Some(store) = self.store() else {
+            return Err(MetaCommitError::StoreUnavailable);
+        };
+
+        let mut batch = MutationBatch::new();
+        batch.update::<BackgroundTaskStateKey>(action);
+        store.commit(batch).map_err(Into::into)
+    }
+
+    fn commit_meta_or_warn(
+        &self,
+        action: BackgroundTaskStateAction,
+        operation: &'static str,
+        task_id: &str,
+    ) {
+        if let Err(error) = self.commit_meta(action) {
+            metrics::counter!(
+                "awaken_background_task_state_commit_failures_total",
+                "operation" => operation
+            )
+            .increment(1);
+            tracing::warn!(
+                operation,
+                task_id,
+                error = %error,
+                "background task metadata commit failed"
+            );
+        }
+    }
+
+    fn terminal_event(task_id: &str, result: &TaskResult) -> TaskEvent {
+        match result {
+            TaskResult::Success(val) => TaskEvent::Completed {
+                task_id: task_id.to_string(),
+                result: Some(val.clone()),
+            },
+            TaskResult::Failed(err) => TaskEvent::Failed {
+                task_id: task_id.to_string(),
+                error: err.clone(),
+            },
+            TaskResult::Cancelled => TaskEvent::Cancelled {
+                task_id: task_id.to_string(),
+            },
         }
     }
 
@@ -250,7 +313,8 @@ impl BackgroundTaskManager {
                 completed_at_ms: None,
                 parent_context: parent_context.clone(),
             },
-        )));
+        )))
+        .map_err(SpawnError::from)?;
 
         let manager = Arc::clone(self);
         let tid = task_id.clone();
@@ -278,8 +342,8 @@ impl BackgroundTaskManager {
                 TaskResult::Cancelled => (TaskStatus::Cancelled, None, None),
             };
 
-            manager.commit_meta(BackgroundTaskStateAction::Upsert(Box::new(
-                PersistedTaskMeta {
+            manager.commit_meta_or_warn(
+                BackgroundTaskStateAction::Upsert(Box::new(PersistedTaskMeta {
                     task_id: tid.clone(),
                     owner_thread_id: owner,
                     task_type: ttype,
@@ -291,25 +355,17 @@ impl BackgroundTaskManager {
                     created_at_ms: now,
                     completed_at_ms: Some(completed_at),
                     parent_context,
-                },
-            )));
+                })),
+                "task_completion",
+                &tid,
+            );
 
             // Notify owner via inbox (terminal event).
             if let Some(ref inbox) = owner_inbox {
-                let event = match &result {
-                    TaskResult::Success(val) => TaskEvent::Completed {
-                        task_id: tid.clone(),
-                        result: Some(val.clone()),
-                    },
-                    TaskResult::Failed(err) => TaskEvent::Failed {
-                        task_id: tid.clone(),
-                        error: err.clone(),
-                    },
-                    TaskResult::Cancelled => TaskEvent::Cancelled {
-                        task_id: tid.clone(),
-                    },
-                };
-                inbox.send(serde_json::to_value(&event).unwrap_or_default());
+                let event = Self::terminal_event(&tid, &result);
+                inbox.send(
+                    serde_json::to_value(&event).expect("TaskEvent serialization is infallible"),
+                );
             }
         });
 
@@ -474,7 +530,11 @@ impl BackgroundTaskManager {
                         Some("task orphaned: runtime restarted while running".to_string());
                 }
 
-                self.commit_meta(BackgroundTaskStateAction::Upsert(Box::new(to_store)));
+                self.commit_meta_or_warn(
+                    BackgroundTaskStateAction::Upsert(Box::new(to_store)),
+                    "restore_task_metadata",
+                    task_id,
+                );
             }
         }
     }
@@ -562,7 +622,8 @@ impl BackgroundTaskManager {
                 completed_at_ms: None,
                 parent_context: parent_context.clone(),
             },
-        )));
+        )))
+        .map_err(SpawnError::from)?;
 
         let manager = Arc::clone(self);
         let tid = task_id.clone();
@@ -593,8 +654,8 @@ impl BackgroundTaskManager {
                 TaskResult::Cancelled => (TaskStatus::Cancelled, None, None),
             };
 
-            manager.commit_meta(BackgroundTaskStateAction::Upsert(Box::new(
-                PersistedTaskMeta {
+            manager.commit_meta_or_warn(
+                BackgroundTaskStateAction::Upsert(Box::new(PersistedTaskMeta {
                     task_id: tid.clone(),
                     owner_thread_id: owner,
                     task_type: "sub_agent".to_string(),
@@ -606,24 +667,16 @@ impl BackgroundTaskManager {
                     created_at_ms: now,
                     completed_at_ms: Some(completed_at),
                     parent_context,
-                },
-            )));
+                })),
+                "sub_agent_completion",
+                &tid,
+            );
 
-            let event = match &result {
-                TaskResult::Success(val) => TaskEvent::Completed {
-                    task_id: tid.clone(),
-                    result: Some(val.clone()),
-                },
-                TaskResult::Failed(err) => TaskEvent::Failed {
-                    task_id: tid.clone(),
-                    error: err.clone(),
-                },
-                TaskResult::Cancelled => TaskEvent::Cancelled {
-                    task_id: tid.clone(),
-                },
-            };
+            let event = Self::terminal_event(&tid, &result);
             if let Some(ref inbox) = owner_inbox {
-                inbox.send(serde_json::to_value(&event).unwrap_or_default());
+                inbox.send(
+                    serde_json::to_value(&event).expect("TaskEvent serialization is infallible"),
+                );
             }
         });
 
@@ -679,7 +732,8 @@ impl BackgroundTaskManager {
             }),
         };
 
-        if inbox.send(serde_json::to_value(&event).unwrap_or_default()) {
+        if inbox.send(serde_json::to_value(&event).expect("TaskEvent serialization is infallible"))
+        {
             Ok(())
         } else {
             Err(SendError::InboxClosed)
