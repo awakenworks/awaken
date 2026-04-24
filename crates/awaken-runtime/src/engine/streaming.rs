@@ -1,10 +1,12 @@
 //! Streaming response collector: accumulates genai ChatStreamEvents into a StreamResult.
 
 use std::collections::{HashMap, VecDeque};
+use std::time::Instant;
 
 use genai::chat::{ChatStreamEvent, StreamEnd};
 use serde_json::Value;
 
+use awaken_contract::contract::executor::{InFlightTool, InterruptSnapshot};
 use awaken_contract::contract::inference::{StreamResult, TokenUsage};
 use awaken_contract::contract::message::ToolCall;
 
@@ -34,6 +36,13 @@ pub struct StreamCollector {
     pending_outputs: VecDeque<StreamOutput>,
     /// Set to true after `ChatStreamEvent::End` is processed.
     end_seen: bool,
+    /// Timestamp of the most recent delta (text / reasoning / tool-call)
+    /// processed. Used by the stream-level recovery loop to detect idle
+    /// stalls. Updated within `process` when an event yields content.
+    last_delta_at: Option<Instant>,
+    /// Approximate running total of the byte-size of received deltas —
+    /// surfaced on `InterruptSnapshot` for telemetry.
+    bytes_received: usize,
 }
 
 struct PartialToolCall {
@@ -59,6 +68,73 @@ impl StreamCollector {
             usage: None,
             stop_reason: None,
             pending_outputs: VecDeque::new(),
+            last_delta_at: None,
+            bytes_received: 0,
+        }
+    }
+
+    /// Timestamp of the most recent delta processed, if any.
+    pub fn last_delta_at(&self) -> Option<Instant> {
+        self.last_delta_at
+    }
+
+    /// Accumulated text so far — useful to construct a continuation prompt
+    /// without having to finalize the collector.
+    pub fn text(&self) -> &str {
+        &self.text
+    }
+
+    /// Capture a snapshot of accumulated state as of "now" for use when a
+    /// stream interruption triggers recovery. Does not consume the
+    /// collector; the caller typically discards it and opens a fresh one.
+    pub fn interrupt_snapshot(&self) -> InterruptSnapshot {
+        let mut completed: Vec<ToolCall> = Vec::new();
+        let mut in_flight: Option<InFlightTool> = None;
+
+        for id in &self.tool_call_order {
+            let Some(p) = self.tool_calls.get(id) else {
+                continue;
+            };
+            if p.name.is_empty() {
+                // Name has not been observed yet — treat as in-flight but
+                // keep scanning in case a later entry is valid. Rare.
+                in_flight = Some(InFlightTool {
+                    id: p.id.clone(),
+                    name: String::new(),
+                    partial_args: p.arguments.clone(),
+                });
+                continue;
+            }
+            let parsed = serde_json::from_str::<Value>(&p.arguments);
+            match parsed {
+                Ok(arguments) if !(arguments.is_null() && !p.arguments.is_empty()) => {
+                    completed.push(ToolCall::new(p.id.clone(), p.name.clone(), arguments));
+                }
+                // Args present but unparseable → in-flight. If multiple
+                // unclosed tools race to be "in flight" only the most recent
+                // is retained (Anthropic/OpenAI emit at most one at a time
+                // per assistant turn; the last one wins).
+                _ => {
+                    in_flight = Some(InFlightTool {
+                        id: p.id.clone(),
+                        name: p.name.clone(),
+                        partial_args: p.arguments.clone(),
+                    });
+                }
+            }
+        }
+
+        let text = if self.text.is_empty() {
+            None
+        } else {
+            Some(self.text.clone())
+        };
+
+        InterruptSnapshot {
+            text,
+            completed_tool_calls: completed,
+            in_flight_tool: in_flight,
+            bytes_received: self.bytes_received,
         }
     }
 
@@ -73,15 +149,22 @@ impl StreamCollector {
             ChatStreamEvent::Start => StreamOutput::None,
 
             ChatStreamEvent::Chunk(chunk) => {
+                self.bytes_received += chunk.content.len();
+                self.last_delta_at = Some(Instant::now());
                 self.text.push_str(&chunk.content);
                 StreamOutput::TextDelta(chunk.content)
             }
 
-            ChatStreamEvent::ReasoningChunk(chunk) => StreamOutput::ReasoningDelta(chunk.content),
+            ChatStreamEvent::ReasoningChunk(chunk) => {
+                self.bytes_received += chunk.content.len();
+                self.last_delta_at = Some(Instant::now());
+                StreamOutput::ReasoningDelta(chunk.content)
+            }
 
             ChatStreamEvent::ThoughtSignatureChunk(_) => StreamOutput::None,
 
             ChatStreamEvent::ToolCallChunk(tool_chunk) => {
+                self.last_delta_at = Some(Instant::now());
                 let call = &tool_chunk.tool_call;
                 let id = call.call_id.clone();
 
@@ -115,6 +198,7 @@ impl StreamCollector {
                     String::new()
                 };
                 entry.arguments = args_str;
+                self.bytes_received += delta.len();
 
                 let should_emit_start = !entry.start_emitted && !entry.name.is_empty();
                 if should_emit_start {
@@ -688,6 +772,112 @@ mod tests {
             result.tool_calls[0].arguments["prompt"],
             "build a dashboard"
         );
+    }
+
+    // -- interrupt_snapshot tests --------------------------------------------
+
+    #[test]
+    fn interrupt_snapshot_empty_when_nothing_received() {
+        let c = StreamCollector::new();
+        let snap = c.interrupt_snapshot();
+        assert!(snap.text.is_none());
+        assert!(snap.completed_tool_calls.is_empty());
+        assert!(snap.in_flight_tool.is_none());
+        assert_eq!(snap.bytes_received, 0);
+    }
+
+    #[test]
+    fn interrupt_snapshot_captures_text_only() {
+        let mut c = StreamCollector::new();
+        c.process(ChatStreamEvent::Chunk(StreamChunk {
+            content: "hello ".into(),
+        }));
+        c.process(ChatStreamEvent::Chunk(StreamChunk {
+            content: "world".into(),
+        }));
+
+        let snap = c.interrupt_snapshot();
+        assert_eq!(snap.text.as_deref(), Some("hello world"));
+        assert!(snap.completed_tool_calls.is_empty());
+        assert!(snap.in_flight_tool.is_none());
+        assert_eq!(snap.bytes_received, "hello world".len());
+        assert!(c.last_delta_at().is_some());
+    }
+
+    #[test]
+    fn interrupt_snapshot_captures_completed_and_in_flight_tool() {
+        use genai::chat::ToolCall as GToolCall;
+
+        let mut c = StreamCollector::new();
+
+        // Completed tool: arrives in one chunk with valid JSON args.
+        c.process(ChatStreamEvent::ToolCallChunk(ToolChunk {
+            tool_call: GToolCall {
+                call_id: "c1".into(),
+                fn_name: "search".into(),
+                fn_arguments: serde_json::json!({"q": "rust"}),
+                thought_signatures: None,
+            },
+        }));
+
+        // In-flight tool: invalid JSON fragment.
+        c.process(ChatStreamEvent::ToolCallChunk(ToolChunk {
+            tool_call: GToolCall {
+                call_id: "c2".into(),
+                fn_name: "fetch".into(),
+                fn_arguments: Value::String(r#"{"url":"#.into()),
+                thought_signatures: None,
+            },
+        }));
+
+        let snap = c.interrupt_snapshot();
+        assert_eq!(snap.completed_tool_calls.len(), 1);
+        assert_eq!(snap.completed_tool_calls[0].name, "search");
+        let p = snap.in_flight_tool.expect("expected in-flight tool");
+        assert_eq!(p.id, "c2");
+        assert_eq!(p.name, "fetch");
+        assert_eq!(p.partial_args, r#"{"url":"#);
+    }
+
+    #[test]
+    fn interrupt_snapshot_truncated_only_becomes_in_flight_with_empty_completed() {
+        use genai::chat::ToolCall as GToolCall;
+
+        let mut c = StreamCollector::new();
+        c.process(ChatStreamEvent::ToolCallChunk(ToolChunk {
+            tool_call: GToolCall {
+                call_id: "c1".into(),
+                fn_name: "calc".into(),
+                fn_arguments: Value::String(r#"{"expr":"2+"#.into()),
+                thought_signatures: None,
+            },
+        }));
+
+        let snap = c.interrupt_snapshot();
+        assert!(snap.completed_tool_calls.is_empty());
+        let p = snap.in_flight_tool.expect("expected in-flight");
+        assert_eq!(p.name, "calc");
+    }
+
+    #[test]
+    fn last_delta_at_only_updates_on_deltas_not_start_or_end() {
+        use genai::chat::StreamEnd;
+
+        let mut c = StreamCollector::new();
+        // Start event alone does not count.
+        c.process(ChatStreamEvent::Start);
+        assert!(c.last_delta_at().is_none());
+
+        // Chunk updates last_delta_at.
+        c.process(ChatStreamEvent::Chunk(StreamChunk {
+            content: "x".into(),
+        }));
+        let t1 = c.last_delta_at().expect("should have timestamp");
+
+        // End does not overwrite last_delta_at (it's not a delta).
+        c.process(ChatStreamEvent::End(StreamEnd::default()));
+        let t2 = c.last_delta_at().expect("preserved across end");
+        assert_eq!(t1, t2);
     }
 
     #[test]
