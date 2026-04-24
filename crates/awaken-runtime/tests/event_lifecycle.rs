@@ -206,6 +206,8 @@ fn event_type(e: &AgentEvent) -> &'static str {
         AgentEvent::ActivityDelta { .. } => "activity_delta",
         AgentEvent::ToolCallResumed { .. } => "tool_call_resumed",
         AgentEvent::ToolCallStreamDelta { .. } => "tool_call_stream_delta",
+        AgentEvent::ToolCallCancel { .. } => "tool_call_cancel",
+        AgentEvent::StreamReset { .. } => "stream_reset",
         AgentEvent::Error { .. } => "error",
     }
 }

@@ -232,7 +232,9 @@ impl AcpEncoder {
             | AgentEvent::InferenceComplete { .. }
             | AgentEvent::ReasoningEncryptedValue { .. }
             | AgentEvent::MessagesSnapshot { .. }
-            | AgentEvent::ToolCallStreamDelta { .. } => Vec::new(),
+            | AgentEvent::ToolCallStreamDelta { .. }
+            | AgentEvent::ToolCallCancel { .. }
+            | AgentEvent::StreamReset { .. } => Vec::new(),
         }
     }
 }
