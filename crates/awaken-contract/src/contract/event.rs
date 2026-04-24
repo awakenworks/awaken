@@ -92,6 +92,24 @@ pub enum AgentEvent {
     /// Tool call resumed from suspension.
     ToolCallResumed { target_id: String, result: Value },
 
+    /// A previously-started tool call was cancelled mid-stream before its
+    /// argument JSON closed. Emitted during stream-interruption recovery so
+    /// downstream consumers can drop any partial delta they buffered.
+    ToolCallCancel {
+        id: String,
+        name: String,
+        /// Human-readable reason (e.g. `"connection reset"`, `"idle stall"`).
+        reason: String,
+    },
+
+    /// The entire stream was restarted after a mid-stream interruption that
+    /// could not be recovered via continuation — all previously-emitted
+    /// deltas in this assistant turn should be discarded by consumers.
+    StreamReset {
+        /// Human-readable cause.
+        reason: String,
+    },
+
     /// Step started.
     StepStart {
         #[serde(default)]
@@ -283,6 +301,14 @@ mod tests {
                 snapshot: json!({}),
             },
             AgentEvent::StateDelta { delta: vec![] },
+            AgentEvent::ToolCallCancel {
+                id: "c1".into(),
+                name: "search".into(),
+                reason: "connection reset".into(),
+            },
+            AgentEvent::StreamReset {
+                reason: "connection reset".into(),
+            },
         ];
 
         for event in non_terminal_events {
@@ -291,6 +317,48 @@ mod tests {
                 "event should not be terminal: {event:?}"
             );
         }
+    }
+
+    #[test]
+    fn tool_call_cancel_serde_roundtrip() {
+        let event = AgentEvent::ToolCallCancel {
+            id: "c3".into(),
+            name: "fetch".into(),
+            reason: "connection reset".into(),
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        let parsed: AgentEvent = serde_json::from_str(&json).unwrap();
+        assert!(matches!(
+            parsed,
+            AgentEvent::ToolCallCancel { id, name, reason }
+            if id == "c3" && name == "fetch" && reason == "connection reset"
+        ));
+    }
+
+    #[test]
+    fn stream_reset_serde_roundtrip() {
+        let event = AgentEvent::StreamReset {
+            reason: "idle stall".into(),
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        let parsed: AgentEvent = serde_json::from_str(&json).unwrap();
+        assert!(matches!(
+            parsed,
+            AgentEvent::StreamReset { reason } if reason == "idle stall"
+        ));
+    }
+
+    #[test]
+    fn tool_call_cancel_and_stream_reset_are_not_terminal() {
+        let cancel = AgentEvent::ToolCallCancel {
+            id: "c1".into(),
+            name: "x".into(),
+            reason: "r".into(),
+        };
+        assert!(!cancel.is_terminal());
+
+        let reset = AgentEvent::StreamReset { reason: "r".into() };
+        assert!(!reset.is_terminal());
     }
 
     #[test]
