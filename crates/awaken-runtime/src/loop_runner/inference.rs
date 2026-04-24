@@ -558,39 +558,9 @@ struct StreamingAccumulator {
 
 impl StreamingAccumulator {
     /// Build an [`InterruptSnapshot`] reflecting the current accumulator
-    /// state. Preserves text (may be empty), marks tool calls with valid
-    /// JSON as completed and the most-recent unparseable one as in-flight.
+    /// state. Delegates partials → snapshot translation to the contract
+    /// helper so the two stream collectors in this crate stay in lockstep.
     fn interrupt_snapshot(&self) -> InterruptSnapshot {
-        let mut completed: Vec<ToolCall> = Vec::new();
-        let mut in_flight: Option<InFlightTool> = None;
-
-        for id in &self.tool_order {
-            let args_json = self.current_tool_args.get(id).cloned().unwrap_or_default();
-            let name = self.tool_names.get(id).cloned().unwrap_or_default();
-
-            if name.is_empty() {
-                in_flight = Some(InFlightTool {
-                    id: id.clone(),
-                    name: String::new(),
-                    partial_args: args_json,
-                });
-                continue;
-            }
-
-            match serde_json::from_str::<serde_json::Value>(&args_json) {
-                Ok(arguments) if !(arguments.is_null() && !args_json.is_empty()) => {
-                    completed.push(ToolCall::new(id.clone(), name, arguments));
-                }
-                _ => {
-                    in_flight = Some(InFlightTool {
-                        id: id.clone(),
-                        name,
-                        partial_args: args_json,
-                    });
-                }
-            }
-        }
-
         let text = if self.current_text.is_empty() {
             self.content_blocks
                 .iter()
@@ -602,13 +572,14 @@ impl StreamingAccumulator {
         } else {
             Some(self.current_text.clone())
         };
-
-        InterruptSnapshot {
-            text,
-            completed_tool_calls: completed,
-            in_flight_tool: in_flight,
-            bytes_received: self.bytes_received,
-        }
+        let partials = self.tool_order.iter().map(|id| {
+            (
+                id.clone(),
+                self.tool_names.get(id).cloned().unwrap_or_default(),
+                self.current_tool_args.get(id).cloned().unwrap_or_default(),
+            )
+        });
+        InterruptSnapshot::from_partials(text, partials, self.bytes_received)
     }
 
     async fn finalize(&mut self, sink: &dyn EventSink) -> StreamResult {
