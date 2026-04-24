@@ -840,6 +840,56 @@ mod tests {
     }
 
     #[test]
+    fn duplicate_tool_use_id_is_deduplicated_to_single_entry() {
+        use genai::chat::ToolCall as GToolCall;
+
+        let mut c = StreamCollector::new();
+
+        // First ToolCallStart establishes the id/name.
+        c.process(ChatStreamEvent::ToolCallChunk(ToolChunk {
+            tool_call: GToolCall {
+                call_id: "dup-1".into(),
+                fn_name: "search".into(),
+                fn_arguments: serde_json::json!({"q": "a"}),
+                thought_signatures: None,
+            },
+        }));
+
+        // Second event reuses the same id with richer args — collector
+        // extends the existing entry rather than creating a duplicate.
+        c.process(ChatStreamEvent::ToolCallChunk(ToolChunk {
+            tool_call: GToolCall {
+                call_id: "dup-1".into(),
+                fn_name: "search".into(),
+                fn_arguments: serde_json::json!({"q": "abc"}),
+                thought_signatures: None,
+            },
+        }));
+
+        // A semantically duplicate "start" emission of the same id that
+        // actually provides FULLY new args (edge case some providers
+        // emit on retry) is also folded into the same entry.
+        c.process(ChatStreamEvent::ToolCallChunk(ToolChunk {
+            tool_call: GToolCall {
+                call_id: "dup-1".into(),
+                fn_name: "search".into(),
+                fn_arguments: serde_json::json!({"q": "abcdef"}),
+                thought_signatures: None,
+            },
+        }));
+
+        let result = c.finish();
+        assert_eq!(
+            result.tool_calls.len(),
+            1,
+            "duplicate ids must collapse to one entry, got: {:?}",
+            result.tool_calls
+        );
+        assert_eq!(result.tool_calls[0].id, "dup-1");
+        assert_eq!(result.tool_calls[0].arguments["q"], "abcdef");
+    }
+
+    #[test]
     fn interrupt_snapshot_truncated_only_becomes_in_flight_with_empty_completed() {
         use genai::chat::ToolCall as GToolCall;
 

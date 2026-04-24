@@ -12,7 +12,9 @@ use awaken_contract::contract::event::AgentEvent;
 use awaken_contract::contract::event_sink::EventSink;
 use awaken_contract::contract::executor::InferenceRequest;
 use awaken_contract::contract::identity::RunIdentity;
-use awaken_contract::contract::inference::{InferenceOverride, LLMResponse, StreamResult};
+use awaken_contract::contract::inference::{
+    InferenceOverride, LLMResponse, StopReason, StreamResult,
+};
 use awaken_contract::contract::lifecycle::TerminationReason;
 use awaken_contract::contract::message::{Message, ToolCall};
 use awaken_contract::contract::storage::ThreadRunStore;
@@ -46,6 +48,18 @@ fn format_tool_cancel_hint(hint: &awaken_contract::contract::executor::InFlightT
         hint.name,
     )
 }
+
+/// Note injected when one or more tool calls were dropped because their
+/// argument JSON was malformed and no further recovery path applied.
+///
+/// The message is intentionally generic: by the time the loop runner
+/// sees a dropped tool the accumulator has already lost the id/name
+/// mapping, and the API-level `assistant` message can only carry the
+/// tool_use blocks that actually had valid JSON. Naming is unnecessary
+/// — the main model has full conversation context and will identify
+/// which call to retry.
+const MALFORMED_TOOL_ARGS_HINT: &str = "Note: one or more of your tool calls had malformed arguments and were not executed. \
+     Please re-issue any affected calls with valid JSON if still needed.";
 
 /// Outcome of a single step.
 pub(super) enum StepOutcome {
@@ -1219,7 +1233,17 @@ pub(super) async fn execute_step(ctx: &mut StepContext<'_>) -> Result<StepOutcom
     }
 
     // --- No tools needed: natural end ---
-    if !stream_result.needs_tools() {
+    //
+    // If every tool call in the stream was dropped due to malformed
+    // argument JSON on a *non-MaxTokens* stop, we want to continue the
+    // loop so the hint can surface on the next turn. MaxTokens with
+    // incomplete tools is already handled by `recover_truncation` above
+    // — by the time we reach this point, that path has either retried
+    // successfully or exhausted its budget and we treat the result as
+    // text-only natural end (preserving prior behavior).
+    let malformed_non_max_tokens = stream_result.has_incomplete_tool_calls
+        && stream_result.stop_reason != Some(StopReason::MaxTokens);
+    if !stream_result.needs_tools() && !malformed_non_max_tokens {
         ctx.messages
             .push(Arc::new(Message::assistant(stream_result.text())));
         complete_step(StepCompletion {
@@ -1254,6 +1278,17 @@ pub(super) async fn execute_step(ctx: &mut StepContext<'_>) -> Result<StepOutcom
     // so the model can decide whether to retry the cancelled call.
     if let Some(hint) = cancelled_tool_hint.as_ref() {
         transcript.push_tool_message(Arc::new(Message::user(format_tool_cancel_hint(hint))));
+    }
+
+    // If the stream contained malformed tool-call argument JSON that we
+    // could NOT recover via truncation retry (non-MaxTokens case, or
+    // MaxTokens retries exhausted), surface a user note so the model
+    // can fix its output on the next turn instead of silently losing
+    // the call. `recover_truncation` runs before tool execution and
+    // only retries on MaxTokens; any lingering `has_incomplete_tool_calls`
+    // at this point is unrecoverable at the stream level.
+    if stream_result.has_incomplete_tool_calls {
+        transcript.push_tool_message(Arc::new(Message::user(MALFORMED_TOOL_ARGS_HINT)));
     }
 
     transcript.commit_into(ctx.messages);
