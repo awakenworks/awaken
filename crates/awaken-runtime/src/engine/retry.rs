@@ -31,10 +31,38 @@ pub struct LlmRetryPolicy {
     /// Actual delay = min(base_ms * 2^attempt, 8000ms). Set to 0 to disable backoff.
     #[serde(default = "default_backoff_base_ms")]
     pub backoff_base_ms: u64,
+    /// Base delay for `Overloaded` errors, which signal provider-wide surges.
+    /// Uses the same exponential curve and cap as `backoff_base_ms` but a
+    /// longer base to give the provider more headroom.
+    #[serde(default = "default_overloaded_backoff_base_ms")]
+    pub overloaded_backoff_base_ms: u64,
+    /// Maximum number of mid-stream retries (independent of `max_retries`).
+    /// Applies only when a stream interruption is recovered by
+    /// `execute_streaming`; the initial open of a stream is still governed
+    /// by `max_retries`.
+    #[serde(default = "default_max_stream_retries")]
+    pub max_stream_retries: u32,
+    /// Per-event idle window during streaming. If no delta arrives within
+    /// this window the current attempt is treated as a stall and the
+    /// recovery path is entered. Doubles for thinking/reasoning models.
+    #[serde(default = "default_stream_idle_timeout_secs")]
+    pub stream_idle_timeout_secs: u64,
 }
 
 fn default_backoff_base_ms() -> u64 {
     500
+}
+
+fn default_overloaded_backoff_base_ms() -> u64 {
+    2_000
+}
+
+fn default_max_stream_retries() -> u32 {
+    2
+}
+
+fn default_stream_idle_timeout_secs() -> u64 {
+    60
 }
 
 impl Default for LlmRetryPolicy {
@@ -43,6 +71,9 @@ impl Default for LlmRetryPolicy {
             max_retries: 2,
             fallback_upstream_models: Vec::new(),
             backoff_base_ms: default_backoff_base_ms(),
+            overloaded_backoff_base_ms: default_overloaded_backoff_base_ms(),
+            max_stream_retries: default_max_stream_retries(),
+            stream_idle_timeout_secs: default_stream_idle_timeout_secs(),
         }
     }
 }
@@ -74,30 +105,62 @@ impl LlmRetryPolicy {
         self
     }
 
+    /// Set the backoff base delay for `Overloaded` errors in milliseconds.
+    pub fn with_overloaded_backoff_base_ms(mut self, ms: u64) -> Self {
+        self.overloaded_backoff_base_ms = ms;
+        self
+    }
+
+    /// Set the maximum number of mid-stream retries.
+    pub fn with_max_stream_retries(mut self, n: u32) -> Self {
+        self.max_stream_retries = n;
+        self
+    }
+
+    /// Set the per-event stream idle timeout in seconds.
+    pub fn with_stream_idle_timeout_secs(mut self, secs: u64) -> Self {
+        self.stream_idle_timeout_secs = secs;
+        self
+    }
+
     /// Compute the backoff delay for a given retry attempt (0-indexed).
     fn backoff_delay(&self, attempt: u32) -> Duration {
-        if self.backoff_base_ms == 0 {
+        Self::backoff_delay_with_base(self.backoff_base_ms, attempt)
+    }
+
+    /// Compute the backoff delay for an `Overloaded` error.
+    fn overloaded_backoff_delay(&self, attempt: u32) -> Duration {
+        Self::backoff_delay_with_base(self.overloaded_backoff_base_ms, attempt)
+    }
+
+    fn backoff_delay_with_base(base_ms: u64, attempt: u32) -> Duration {
+        if base_ms == 0 {
             return Duration::ZERO;
         }
-        let delay_ms = self
-            .backoff_base_ms
+        let delay_ms = base_ms
             .saturating_mul(1u64 << attempt.min(16))
             .min(MAX_BACKOFF_MS);
         Duration::from_millis(delay_ms)
     }
+
+    /// Select the delay to wait before the next retry attempt. Picks the
+    /// larger of the error-type-specific exponential backoff and any
+    /// provider-supplied `Retry-After` hint.
+    pub fn delay_before_retry(&self, err: &InferenceExecutionError, attempt: u32) -> Duration {
+        let base = match err {
+            InferenceExecutionError::Overloaded { .. } => self.overloaded_backoff_delay(attempt),
+            _ => self.backoff_delay(attempt),
+        };
+        match err.retry_after() {
+            Some(hint) if hint > base => hint,
+            _ => base,
+        }
+    }
 }
 
-/// Whether an error is retryable.
-///
-/// Transient errors (rate limits, timeouts, provider errors) are retryable.
-/// Terminal errors (cancellation) are not.
+/// Whether an error is retryable by the retry subsystem.
 fn is_retryable(err: &InferenceExecutionError) -> bool {
-    matches!(
-        err,
-        InferenceExecutionError::RateLimited(_)
-            | InferenceExecutionError::Timeout(_)
-            | InferenceExecutionError::Provider(_)
-    )
+    err.is_retryable()
 }
 
 /// An [`LlmExecutor`] wrapper that applies a [`LlmRetryPolicy`].
@@ -148,18 +211,21 @@ impl RetryingExecutor {
                     return Ok(result);
                 }
                 Err(err) => {
-                    if let Some(ref cb) = self.circuit_breaker {
-                        cb.record_failure(&request.upstream_model);
+                    if err.counts_toward_circuit_breaker() {
+                        if let Some(ref cb) = self.circuit_breaker {
+                            cb.record_failure(&request.upstream_model);
+                        }
                     }
                     if !is_retryable(&err) {
                         return Err(err);
                     }
-                    last_error = Some(err);
                     if attempt == self.policy.max_retries {
+                        last_error = Some(err);
                         break;
                     }
                     // Exponential backoff between retries (not before the first attempt).
-                    let delay = self.policy.backoff_delay(attempt);
+                    let delay = self.policy.delay_before_retry(&err, attempt);
+                    last_error = Some(err);
                     if !delay.is_zero() {
                         tokio::time::sleep(delay).await;
                     }
@@ -181,8 +247,8 @@ impl RetryingExecutor {
     /// Attempt to open a streaming response with retries for one model variant.
     ///
     /// Retries apply only while creating the stream. Once a provider has returned
-    /// a stream, retrying later stream-item errors would duplicate already
-    /// emitted deltas, so those errors are surfaced to the caller.
+    /// a stream, mid-stream errors are recovered by `execute_streaming` (see
+    /// `loop_runner::inference`), not here.
     async fn try_stream_with_retries(
         &self,
         request: &InferenceRequest,
@@ -202,17 +268,20 @@ impl RetryingExecutor {
                     return Ok(stream);
                 }
                 Err(err) => {
-                    if let Some(ref cb) = self.circuit_breaker {
-                        cb.record_failure(&request.upstream_model);
+                    if err.counts_toward_circuit_breaker() {
+                        if let Some(ref cb) = self.circuit_breaker {
+                            cb.record_failure(&request.upstream_model);
+                        }
                     }
                     if !is_retryable(&err) {
                         return Err(err);
                     }
-                    last_error = Some(err);
                     if attempt == self.policy.max_retries {
+                        last_error = Some(err);
                         break;
                     }
-                    let delay = self.policy.backoff_delay(attempt);
+                    let delay = self.policy.delay_before_retry(&err, attempt);
+                    last_error = Some(err);
                     if !delay.is_zero() {
                         tokio::time::sleep(delay).await;
                     }
@@ -221,6 +290,24 @@ impl RetryingExecutor {
         }
 
         Err(last_error.expect("at least one stream attempt was made"))
+    }
+
+    /// Return `AllModelsUnavailable` iff a circuit breaker is attached and
+    /// every candidate model (primary + fallbacks) is currently open.
+    fn all_models_blocked(
+        &self,
+        request: &InferenceRequest,
+        fallback_upstream_models: &[String],
+    ) -> bool {
+        let Some(ref cb) = self.circuit_breaker else {
+            return false;
+        };
+        if cb.check(&request.upstream_model).is_ok() {
+            return false;
+        }
+        fallback_upstream_models
+            .iter()
+            .all(|m| cb.check(m).is_err())
     }
 }
 
@@ -231,6 +318,10 @@ impl LlmExecutor for RetryingExecutor {
         request: InferenceRequest,
     ) -> Result<StreamResult, InferenceExecutionError> {
         let fallback_upstream_models = self.fallback_upstream_models_for_request(&request);
+
+        if self.all_models_blocked(&request, &fallback_upstream_models) {
+            return Err(InferenceExecutionError::AllModelsUnavailable);
+        }
 
         // Try primary model.
         match self.try_with_retries(&request).await {
@@ -275,6 +366,10 @@ impl LlmExecutor for RetryingExecutor {
     > {
         Box::pin(async move {
             let fallback_upstream_models = self.fallback_upstream_models_for_request(&request);
+
+            if self.all_models_blocked(&request, &fallback_upstream_models) {
+                return Err(InferenceExecutionError::AllModelsUnavailable);
+            }
 
             match self.try_stream_with_retries(&request).await {
                 Ok(stream) => return Ok(stream),
@@ -432,18 +527,7 @@ mod tests {
                 .lock()
                 .unwrap()
                 .push(request.upstream_model.clone());
-            match &self.error {
-                InferenceExecutionError::Provider(s) => {
-                    Err(InferenceExecutionError::Provider(s.clone()))
-                }
-                InferenceExecutionError::RateLimited(s) => {
-                    Err(InferenceExecutionError::RateLimited(s.clone()))
-                }
-                InferenceExecutionError::Timeout(s) => {
-                    Err(InferenceExecutionError::Timeout(s.clone()))
-                }
-                InferenceExecutionError::Cancelled => Err(InferenceExecutionError::Cancelled),
-            }
+            Err(self.error.clone())
         }
 
         fn name(&self) -> &str {
@@ -502,7 +586,7 @@ mod tests {
     #[tokio::test]
     async fn fallback_upstream_model_used_after_primary_exhausts_retries() {
         let inner = Arc::new(ModelRecorder::always_fail_with(
-            InferenceExecutionError::RateLimited("overloaded".into()),
+            InferenceExecutionError::rate_limited("overloaded"),
         ));
         let policy = test_policy()
             .with_max_retries(1)
@@ -529,7 +613,7 @@ mod tests {
     #[tokio::test]
     async fn request_override_fallback_upstream_models_replace_policy_fallbacks() {
         let inner = Arc::new(ModelRecorder::always_fail_with(
-            InferenceExecutionError::RateLimited("overloaded".into()),
+            InferenceExecutionError::rate_limited("overloaded"),
         ));
         let policy = test_policy()
             .with_max_retries(0)
@@ -565,7 +649,7 @@ mod tests {
     #[tokio::test]
     async fn execute_stream_uses_request_override_fallback_upstream_models() {
         let inner = Arc::new(ModelRecorder::always_fail_with(
-            InferenceExecutionError::RateLimited("overloaded".into()),
+            InferenceExecutionError::rate_limited("overloaded"),
         ));
         let policy = test_policy()
             .with_max_retries(0)
@@ -667,6 +751,9 @@ mod tests {
         assert_eq!(policy.max_retries, 2);
         assert!(policy.fallback_upstream_models.is_empty());
         assert_eq!(policy.backoff_base_ms, 500);
+        assert_eq!(policy.overloaded_backoff_base_ms, 2_000);
+        assert_eq!(policy.max_stream_retries, 2);
+        assert_eq!(policy.stream_idle_timeout_secs, 60);
     }
 
     #[test]
@@ -678,9 +765,47 @@ mod tests {
 
     #[test]
     fn rate_limit_error_is_retryable() {
-        assert!(is_retryable(&InferenceExecutionError::RateLimited(
-            "429".into()
+        assert!(is_retryable(&InferenceExecutionError::rate_limited("429")));
+    }
+
+    #[test]
+    fn overloaded_error_is_retryable() {
+        assert!(is_retryable(&InferenceExecutionError::overloaded("529")));
+    }
+
+    #[test]
+    fn context_overflow_is_not_retryable() {
+        assert!(!is_retryable(&InferenceExecutionError::ContextOverflow(
+            "too long".into()
         )));
+    }
+
+    #[test]
+    fn context_overflow_does_not_count_toward_breaker() {
+        let err = InferenceExecutionError::ContextOverflow("too long".into());
+        assert!(!err.counts_toward_circuit_breaker());
+    }
+
+    #[test]
+    fn invalid_request_does_not_count_toward_breaker() {
+        assert!(
+            !InferenceExecutionError::InvalidRequest("schema".into())
+                .counts_toward_circuit_breaker()
+        );
+    }
+
+    #[test]
+    fn unauthorized_does_not_count_toward_breaker() {
+        assert!(
+            !InferenceExecutionError::Unauthorized("key".into()).counts_toward_circuit_breaker()
+        );
+    }
+
+    #[test]
+    fn all_models_unavailable_is_fail_fast() {
+        let err = InferenceExecutionError::AllModelsUnavailable;
+        assert!(!err.is_retryable());
+        assert!(!err.counts_toward_circuit_breaker());
     }
 
     #[test]
@@ -805,7 +930,7 @@ mod tests {
     async fn retry_on_rate_limit_then_succeed() {
         let inner = Arc::new(
             FailNThenSucceed::new(2)
-                .with_error(|_| InferenceExecutionError::RateLimited("rate limited".into())),
+                .with_error(|_| InferenceExecutionError::rate_limited("rate limited")),
         );
         let policy = test_policy().with_max_retries(3);
         let executor = RetryingExecutor::new(inner.clone(), policy);
@@ -858,7 +983,7 @@ mod tests {
     async fn all_error_types_handled() {
         for error_fn in [
             (|_: u32| InferenceExecutionError::Provider("down".into())) as fn(u32) -> _,
-            |_| InferenceExecutionError::RateLimited("429".into()),
+            |_| InferenceExecutionError::rate_limited("429"),
             |_| InferenceExecutionError::Timeout("timeout".into()),
         ] {
             let inner = Arc::new(FailNThenSucceed::new(1).with_error(error_fn));
@@ -908,7 +1033,10 @@ mod tests {
             .with_max_retries(5)
             .with_fallback_upstream_model("fallback-a")
             .with_fallback_upstream_model("fallback-b")
-            .with_backoff_base_ms(200);
+            .with_backoff_base_ms(200)
+            .with_overloaded_backoff_base_ms(4_000)
+            .with_max_stream_retries(3)
+            .with_stream_idle_timeout_secs(90);
         let json = serde_json::to_string(&policy).unwrap();
         let parsed: LlmRetryPolicy = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed.max_retries, 5);
@@ -917,14 +1045,20 @@ mod tests {
             vec!["fallback-a", "fallback-b"]
         );
         assert_eq!(parsed.backoff_base_ms, 200);
+        assert_eq!(parsed.overloaded_backoff_base_ms, 4_000);
+        assert_eq!(parsed.max_stream_retries, 3);
+        assert_eq!(parsed.stream_idle_timeout_secs, 90);
     }
 
     #[test]
     fn retry_policy_serde_default_backoff() {
-        // Deserializing without backoff_base_ms should use the default.
+        // Deserializing without optional fields should use defaults.
         let json = r#"{"max_retries":2,"fallback_upstream_models":[]}"#;
         let parsed: LlmRetryPolicy = serde_json::from_str(json).unwrap();
         assert_eq!(parsed.backoff_base_ms, 500);
+        assert_eq!(parsed.overloaded_backoff_base_ms, 2_000);
+        assert_eq!(parsed.max_stream_retries, 2);
+        assert_eq!(parsed.stream_idle_timeout_secs, 60);
     }
 
     #[test]
@@ -1011,6 +1145,147 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
+    // Phase 1: Retry-After, Overloaded base, AllModelsUnavailable, permanent
+    //          errors bypass the circuit breaker.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn delay_before_retry_respects_retry_after_when_longer() {
+        let policy = LlmRetryPolicy::default().with_backoff_base_ms(100);
+        let err = InferenceExecutionError::RateLimited {
+            message: "slow".into(),
+            retry_after: Some(Duration::from_secs(5)),
+        };
+        // 100ms exp backoff at attempt 0 < 5s hint → hint wins.
+        assert_eq!(policy.delay_before_retry(&err, 0), Duration::from_secs(5));
+    }
+
+    #[test]
+    fn delay_before_retry_uses_exponential_when_longer_than_retry_after() {
+        let policy = LlmRetryPolicy::default().with_backoff_base_ms(10_000);
+        let err = InferenceExecutionError::RateLimited {
+            message: "fast hint".into(),
+            retry_after: Some(Duration::from_millis(100)),
+        };
+        // 10s base capped at 8s at attempt 0, still > 100ms hint.
+        assert_eq!(
+            policy.delay_before_retry(&err, 0),
+            Duration::from_millis(MAX_BACKOFF_MS)
+        );
+    }
+
+    #[test]
+    fn delay_before_retry_uses_overloaded_base_for_overloaded_errors() {
+        let policy = LlmRetryPolicy::default()
+            .with_backoff_base_ms(500)
+            .with_overloaded_backoff_base_ms(2_000);
+        let overloaded = InferenceExecutionError::overloaded("surge");
+        // At attempt 0 the overloaded base dominates: 2000ms vs 500ms.
+        assert_eq!(
+            policy.delay_before_retry(&overloaded, 0),
+            Duration::from_millis(2_000)
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn rate_limited_retry_after_waits_hint_duration() {
+        let inner = Arc::new(FailNThenSucceed::new(1).with_error(|_| {
+            InferenceExecutionError::RateLimited {
+                message: "slow down".into(),
+                retry_after: Some(Duration::from_secs(3)),
+            }
+        }));
+        let policy = LlmRetryPolicy::default()
+            .with_max_retries(2)
+            .with_backoff_base_ms(10); // short base so Retry-After dominates
+        let executor = RetryingExecutor::new(inner.clone(), policy);
+
+        let start = tokio::time::Instant::now();
+        let result = executor.execute(test_request()).await;
+        assert!(result.is_ok());
+        let elapsed = start.elapsed();
+        assert!(
+            elapsed >= Duration::from_secs(3),
+            "expected >=3s retry-after wait, got {elapsed:?}"
+        );
+        assert_eq!(inner.call_count(), 2);
+    }
+
+    #[tokio::test]
+    async fn context_overflow_error_is_not_retried() {
+        let inner =
+            Arc::new(FailNThenSucceed::new(5).with_error(|_| {
+                InferenceExecutionError::ContextOverflow("prompt too long".into())
+            }));
+        let policy = test_policy().with_max_retries(3);
+        let executor = RetryingExecutor::new(inner.clone(), policy);
+
+        let result = executor.execute(test_request()).await;
+        assert!(matches!(
+            result,
+            Err(InferenceExecutionError::ContextOverflow(_))
+        ));
+        assert_eq!(inner.call_count(), 1, "permanent error must not retry");
+    }
+
+    #[tokio::test]
+    async fn context_overflow_does_not_trip_circuit_breaker() {
+        use crate::engine::circuit_breaker::CircuitBreakerConfig;
+
+        let inner = Arc::new(
+            FailNThenSucceed::new(100)
+                .with_error(|_| InferenceExecutionError::ContextOverflow("too long".into())),
+        );
+        let cb = Arc::new(CircuitBreaker::new(CircuitBreakerConfig {
+            failure_threshold: 2,
+            cooldown: Duration::from_secs(60),
+            half_open_max: 1,
+        }));
+
+        let policy = test_policy().with_max_retries(0);
+        let executor =
+            RetryingExecutor::new(inner.clone(), policy).with_circuit_breaker(cb.clone());
+
+        // Five independent calls: none should trip the breaker.
+        for _ in 0..5 {
+            let _ = executor.execute(test_request()).await;
+        }
+        assert!(
+            cb.check("primary-model").is_ok(),
+            "ContextOverflow must not increment the breaker"
+        );
+    }
+
+    #[tokio::test]
+    async fn all_models_blocked_short_circuits_with_all_models_unavailable() {
+        use crate::engine::circuit_breaker::CircuitBreakerConfig;
+
+        let cb = Arc::new(CircuitBreaker::new(CircuitBreakerConfig {
+            failure_threshold: 1,
+            cooldown: Duration::from_secs(60),
+            half_open_max: 1,
+        }));
+        cb.record_failure("primary-model");
+        cb.record_failure("fallback-a");
+        cb.record_failure("fallback-b");
+
+        let inner = Arc::new(FailNThenSucceed::new(0)); // would succeed if called
+        let policy = test_policy()
+            .with_max_retries(2)
+            .with_fallback_upstream_model("fallback-a")
+            .with_fallback_upstream_model("fallback-b");
+        let executor =
+            RetryingExecutor::new(inner.clone(), policy).with_circuit_breaker(cb.clone());
+
+        let result = executor.execute(test_request()).await;
+        assert!(
+            matches!(result, Err(InferenceExecutionError::AllModelsUnavailable)),
+            "expected AllModelsUnavailable, got {result:?}"
+        );
+        assert_eq!(inner.call_count(), 0, "no inner call should be made");
+    }
+
+    // -----------------------------------------------------------------------
     // Backoff sleep verification with paused time
     // -----------------------------------------------------------------------
 
@@ -1048,17 +1323,26 @@ mod tests {
             fn llm_retry_policy_serde_roundtrip(
                 max_retries in 0u32..10,
                 backoff_base_ms in 0u64..10000,
+                overloaded_backoff_base_ms in 0u64..10000,
+                max_stream_retries in 0u32..10,
+                stream_idle_timeout_secs in 1u64..300,
                 num_fallbacks in 0usize..5,
             ) {
                 let policy = LlmRetryPolicy {
                     max_retries,
                     fallback_upstream_models: (0..num_fallbacks).map(|i| format!("model-{i}")).collect(),
                     backoff_base_ms,
+                    overloaded_backoff_base_ms,
+                    max_stream_retries,
+                    stream_idle_timeout_secs,
                 };
                 let json = serde_json::to_string(&policy).unwrap();
                 let parsed: LlmRetryPolicy = serde_json::from_str(&json).unwrap();
                 prop_assert_eq!(parsed.max_retries, max_retries);
                 prop_assert_eq!(parsed.backoff_base_ms, backoff_base_ms);
+                prop_assert_eq!(parsed.overloaded_backoff_base_ms, overloaded_backoff_base_ms);
+                prop_assert_eq!(parsed.max_stream_retries, max_stream_retries);
+                prop_assert_eq!(parsed.stream_idle_timeout_secs, stream_idle_timeout_secs);
                 prop_assert_eq!(parsed.fallback_upstream_models.len(), num_fallbacks);
             }
 
