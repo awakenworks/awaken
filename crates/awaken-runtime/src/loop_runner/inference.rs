@@ -1493,4 +1493,429 @@ mod tests {
                 .any(|e| matches!(e, AgentEvent::StreamReset { .. }))
         );
     }
+
+    // ========================================================================
+    // Phase-F failure-injection harness + R1-R4 matrix
+    //
+    // These tests exercise the stream-level retry loop introduced in Phase D.
+    // A per-attempt scripted executor lets us express "first attempt fails
+    // like X, second attempt succeeds like Y" without resorting to time or
+    // real transport. Each recovery plan (R1/R2/R3/R4), the idle-stall path,
+    // and the retry-budget exhaustion path has its own test.
+    // ========================================================================
+
+    /// Scripted streaming executor keyed by attempt number. On the Nth call
+    /// to `execute_stream`, yields `scripts[min(N, scripts.len()-1)]` so
+    /// short scripts naturally repeat the last attempt's script forever.
+    struct ScriptedPerAttemptExecutor {
+        scripts: Vec<Vec<Result<LlmStreamEvent, InferenceExecutionError>>>,
+        attempt: std::sync::atomic::AtomicUsize,
+    }
+
+    impl ScriptedPerAttemptExecutor {
+        fn new(scripts: Vec<Vec<Result<LlmStreamEvent, InferenceExecutionError>>>) -> Self {
+            assert!(!scripts.is_empty(), "need at least one attempt script");
+            Self {
+                scripts,
+                attempt: std::sync::atomic::AtomicUsize::new(0),
+            }
+        }
+
+        fn attempts(&self) -> usize {
+            self.attempt.load(std::sync::atomic::Ordering::SeqCst)
+        }
+    }
+
+    #[async_trait]
+    impl awaken_contract::contract::executor::LlmExecutor for ScriptedPerAttemptExecutor {
+        async fn execute(
+            &self,
+            _r: InferenceRequest,
+        ) -> Result<StreamResult, InferenceExecutionError> {
+            Err(InferenceExecutionError::Provider("unused".into()))
+        }
+
+        fn execute_stream(
+            &self,
+            _request: InferenceRequest,
+        ) -> std::pin::Pin<
+            Box<
+                dyn std::future::Future<Output = Result<InferenceStream, InferenceExecutionError>>
+                    + Send
+                    + '_,
+            >,
+        > {
+            let n = self
+                .attempt
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let idx = n.min(self.scripts.len() - 1);
+            let events = self.scripts[idx].clone();
+            Box::pin(async move { Ok(Box::pin(futures::stream::iter(events)) as InferenceStream) })
+        }
+
+        fn name(&self) -> &str {
+            "scripted-per-attempt"
+        }
+    }
+
+    fn agent_with(exec: Arc<ScriptedPerAttemptExecutor>) -> ResolvedAgent {
+        ResolvedAgent::new("test-agent", "test-model", "system prompt", exec)
+    }
+
+    // --- R1: pure text interruption → continuation retry succeeds --------
+
+    #[tokio::test]
+    async fn r1_text_only_interruption_recovers_via_continuation() {
+        let exec = Arc::new(ScriptedPerAttemptExecutor::new(vec![
+            // Attempt 1: partial text + mid-stream failure
+            vec![
+                Ok(LlmStreamEvent::TextDelta("Hello, ".into())),
+                Ok(LlmStreamEvent::TextDelta("this is".into())),
+                Err(InferenceExecutionError::Provider("connection reset".into())),
+            ],
+            // Attempt 2: fresh completion (model picks up from continuation)
+            vec![
+                Ok(LlmStreamEvent::TextDelta(" the second half.".into())),
+                Ok(LlmStreamEvent::Stop(StopReason::EndTurn)),
+            ],
+        ]));
+        let agent = agent_with(exec.clone());
+        let sink = VecEventSink::new();
+        let mut it = 0u64;
+        let mut ot = 0u64;
+
+        let result = execute_streaming(&agent, make_request(), &sink, None, &mut it, &mut ot)
+            .await
+            .expect("R1 should succeed after one retry");
+
+        assert_eq!(exec.attempts(), 2, "expected exactly two attempts");
+        // The second attempt's deltas are preserved in the returned result.
+        assert_eq!(result.text(), " the second half.");
+        assert_eq!(result.stop_reason, Some(StopReason::EndTurn));
+
+        // No StreamReset / ToolCallCancel on the R1 path.
+        let events = sink.take();
+        assert!(
+            !events
+                .iter()
+                .any(|e| matches!(e, AgentEvent::StreamReset { .. })),
+            "R1 must not emit StreamReset"
+        );
+        assert!(
+            !events
+                .iter()
+                .any(|e| matches!(e, AgentEvent::ToolCallCancel { .. })),
+            "R1 must not emit ToolCallCancel"
+        );
+    }
+
+    // --- R2: completed tool + partial tool → synthesize tool_use ---------
+
+    #[tokio::test]
+    async fn r2_completed_tool_synthesizes_tool_use_without_another_round_trip() {
+        let exec = Arc::new(ScriptedPerAttemptExecutor::new(vec![
+            // Attempt 1: completed tool A + partial tool B + failure.
+            vec![
+                Ok(LlmStreamEvent::ToolCallStart {
+                    id: "a".into(),
+                    name: "search".into(),
+                }),
+                Ok(LlmStreamEvent::ToolCallDelta {
+                    id: "a".into(),
+                    args_delta: r#"{"q":"rust"}"#.into(),
+                }),
+                Ok(LlmStreamEvent::ToolCallStart {
+                    id: "b".into(),
+                    name: "fetch".into(),
+                }),
+                Ok(LlmStreamEvent::ToolCallDelta {
+                    id: "b".into(),
+                    args_delta: r#"{"url":"#.into(), // unclosed
+                }),
+                Err(InferenceExecutionError::Provider("connection reset".into())),
+            ],
+            // If R2 is correct we should never see attempt 2: synthesize
+            // tool_use short-circuits the retry loop. Put an obvious trap.
+            vec![Err(InferenceExecutionError::Provider(
+                "R2 should not retry".into(),
+            ))],
+        ]));
+        let agent = agent_with(exec.clone());
+        let sink = VecEventSink::new();
+        let mut it = 0u64;
+        let mut ot = 0u64;
+
+        let result = execute_streaming(&agent, make_request(), &sink, None, &mut it, &mut ot)
+            .await
+            .expect("R2 short-circuits to synthesized tool_use");
+
+        assert_eq!(exec.attempts(), 1, "R2 must not trigger a retry");
+        assert_eq!(result.stop_reason, Some(StopReason::ToolUse));
+        assert_eq!(result.tool_calls.len(), 1);
+        assert_eq!(result.tool_calls[0].id, "a");
+        assert_eq!(result.tool_calls[0].name, "search");
+
+        let events = sink.take();
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, AgentEvent::ToolCallCancel { id, name, .. }
+                    if id == "b" && name == "fetch")),
+            "expected ToolCallCancel for the in-flight tool"
+        );
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, AgentEvent::ToolCallReady { id, .. } if id == "a")),
+            "expected ToolCallReady for the completed tool"
+        );
+    }
+
+    // --- R3: text + unclosed tool → truncate + continuation --------------
+
+    #[tokio::test]
+    async fn r3_text_plus_partial_tool_truncates_and_continues() {
+        let exec = Arc::new(ScriptedPerAttemptExecutor::new(vec![
+            // Attempt 1: text prefix + unclosed tool + failure
+            vec![
+                Ok(LlmStreamEvent::TextDelta("Looking it up: ".into())),
+                Ok(LlmStreamEvent::ToolCallStart {
+                    id: "t1".into(),
+                    name: "lookup".into(),
+                }),
+                Ok(LlmStreamEvent::ToolCallDelta {
+                    id: "t1".into(),
+                    args_delta: r#"{"id":"#.into(),
+                }),
+                Err(InferenceExecutionError::Provider("connection reset".into())),
+            ],
+            // Attempt 2: model continues with a different plan (just text).
+            vec![
+                Ok(LlmStreamEvent::TextDelta("done.".into())),
+                Ok(LlmStreamEvent::Stop(StopReason::EndTurn)),
+            ],
+        ]));
+        let agent = agent_with(exec.clone());
+        let sink = VecEventSink::new();
+        let mut it = 0u64;
+        let mut ot = 0u64;
+
+        let result = execute_streaming(&agent, make_request(), &sink, None, &mut it, &mut ot)
+            .await
+            .expect("R3 recovers after truncation");
+
+        assert_eq!(exec.attempts(), 2);
+        assert_eq!(result.text(), "done.");
+
+        let events = sink.take();
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, AgentEvent::ToolCallCancel { id, name, .. }
+                    if id == "t1" && name == "lookup")),
+            "R3 must emit ToolCallCancel for the unclosed tool"
+        );
+        assert!(
+            !events
+                .iter()
+                .any(|e| matches!(e, AgentEvent::StreamReset { .. })),
+            "R3 must NOT emit StreamReset"
+        );
+    }
+
+    // --- R4: nothing salvageable → whole restart + StreamReset -----------
+
+    #[tokio::test]
+    async fn r4_empty_snapshot_whole_restarts_and_emits_stream_reset() {
+        let exec = Arc::new(ScriptedPerAttemptExecutor::new(vec![
+            // Attempt 1: immediate failure, no accumulated state
+            vec![Err(InferenceExecutionError::Provider("reset".into()))],
+            // Attempt 2: succeeds cleanly
+            vec![
+                Ok(LlmStreamEvent::TextDelta("fresh start".into())),
+                Ok(LlmStreamEvent::Stop(StopReason::EndTurn)),
+            ],
+        ]));
+        let agent = agent_with(exec.clone());
+        let sink = VecEventSink::new();
+        let mut it = 0u64;
+        let mut ot = 0u64;
+
+        let result = execute_streaming(&agent, make_request(), &sink, None, &mut it, &mut ot)
+            .await
+            .expect("R4 recovers after whole restart");
+
+        assert_eq!(exec.attempts(), 2);
+        assert_eq!(result.text(), "fresh start");
+
+        let events = sink.take();
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, AgentEvent::StreamReset { .. })),
+            "R4 must emit StreamReset"
+        );
+    }
+
+    // --- Budget exhaustion → StreamInterrupted ---------------------------
+
+    #[tokio::test]
+    async fn retry_budget_exhausted_surfaces_stream_interrupted() {
+        // Every attempt fails. Default max_stream_retries = 2, so we expect
+        // 3 total attempts (1 initial + 2 retries) before the error
+        // surfaces.
+        let exec = Arc::new(ScriptedPerAttemptExecutor::new(vec![vec![Err(
+            InferenceExecutionError::Provider("reset".into()),
+        )]]));
+        let agent = agent_with(exec.clone());
+        let sink = VecEventSink::new();
+        let mut it = 0u64;
+        let mut ot = 0u64;
+
+        let err = execute_streaming(&agent, make_request(), &sink, None, &mut it, &mut ot)
+            .await
+            .unwrap_err();
+
+        assert_eq!(
+            exec.attempts(),
+            3,
+            "expected 1 initial + 2 retries = 3 attempts"
+        );
+        match err {
+            AgentLoopError::InferenceFailed(msg) => {
+                assert!(
+                    msg.contains("stream interrupted"),
+                    "expected stream-interrupt message, got: {msg}"
+                );
+            }
+            other => panic!("expected InferenceFailed, got: {other:?}"),
+        }
+    }
+
+    // --- Idle-stall: hung stream triggers IdleStall cause ---------------
+
+    /// Executor that returns a stream which yields one event and then
+    /// never yields again, exercising the idle-stall timeout branch in
+    /// `drive_one_stream`. We use `tokio::time::advance` under
+    /// `tokio::test(start_paused = true)` to avoid wall-clock waits.
+    struct StallingExecutor {
+        attempt: std::sync::atomic::AtomicUsize,
+    }
+
+    #[async_trait]
+    impl awaken_contract::contract::executor::LlmExecutor for StallingExecutor {
+        async fn execute(
+            &self,
+            _r: InferenceRequest,
+        ) -> Result<StreamResult, InferenceExecutionError> {
+            Err(InferenceExecutionError::Provider("unused".into()))
+        }
+
+        fn execute_stream(
+            &self,
+            _request: InferenceRequest,
+        ) -> std::pin::Pin<
+            Box<
+                dyn std::future::Future<Output = Result<InferenceStream, InferenceExecutionError>>
+                    + Send
+                    + '_,
+            >,
+        > {
+            let n = self
+                .attempt
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Box::pin(async move {
+                if n == 0 {
+                    // Attempt 1: one text delta then hang forever.
+                    let hung = futures::stream::unfold((), |()| async move {
+                        // Never yields — the select! / timeout in
+                        // drive_one_stream is responsible for noticing.
+                        futures::future::pending::<()>().await;
+                        None
+                    });
+                    let prefix: Vec<Result<LlmStreamEvent, InferenceExecutionError>> =
+                        vec![Ok(LlmStreamEvent::TextDelta("partial".into()))];
+                    let combined = futures::stream::iter(prefix)
+                        .chain(hung)
+                        .map(|r: Result<LlmStreamEvent, InferenceExecutionError>| r);
+                    Ok(Box::pin(combined) as InferenceStream)
+                } else {
+                    // Attempt 2: clean finish.
+                    let events: Vec<Result<LlmStreamEvent, InferenceExecutionError>> = vec![
+                        Ok(LlmStreamEvent::TextDelta(" done.".into())),
+                        Ok(LlmStreamEvent::Stop(StopReason::EndTurn)),
+                    ];
+                    Ok(Box::pin(futures::stream::iter(events)) as InferenceStream)
+                }
+            })
+        }
+
+        fn name(&self) -> &str {
+            "stalling"
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn idle_stall_triggers_recovery_and_second_attempt_succeeds() {
+        let exec = Arc::new(StallingExecutor {
+            attempt: std::sync::atomic::AtomicUsize::new(0),
+        });
+        let agent = ResolvedAgent::new("test-agent", "test-model", "system prompt", exec.clone());
+        let sink = VecEventSink::new();
+        let mut it = 0u64;
+        let mut ot = 0u64;
+
+        // Drive the streaming call concurrently so we can advance paused
+        // time past the idle-stall threshold (60s by default).
+        let exec_fut = execute_streaming(&agent, make_request(), &sink, None, &mut it, &mut ot);
+        let drive = async {
+            // Wait for the first TextDelta to be emitted, then advance
+            // past the idle threshold to trigger the stall.
+            tokio::time::sleep(Duration::from_millis(1)).await;
+            tokio::time::advance(Duration::from_secs(70)).await;
+        };
+
+        let (result, ()) = tokio::join!(exec_fut, drive);
+        let result = result.expect("idle-stall should recover");
+        assert_eq!(
+            exec.attempt.load(std::sync::atomic::Ordering::SeqCst),
+            2,
+            "expected 2 attempts after stall recovery"
+        );
+        assert!(result.text().contains("done"));
+    }
+
+    #[test]
+    fn idle_timeout_for_doubles_on_thinking_model_names() {
+        let policy = LlmRetryPolicy::default().with_stream_idle_timeout_secs(30);
+        let base = Duration::from_secs(30);
+
+        let plain = InferenceRequest {
+            upstream_model: "gpt-4o-mini".into(),
+            messages: vec![],
+            tools: vec![],
+            system: vec![],
+            overrides: None,
+            enable_prompt_cache: false,
+        };
+        assert_eq!(idle_timeout_for(&plain, &policy), base);
+
+        let thinking = InferenceRequest {
+            upstream_model: "claude-opus-4-7-thinking".into(),
+            ..plain.clone()
+        };
+        assert_eq!(idle_timeout_for(&thinking, &policy), base * 2);
+
+        let reasoning = InferenceRequest {
+            upstream_model: "o1-mini".into(),
+            ..plain.clone()
+        };
+        assert_eq!(idle_timeout_for(&reasoning, &policy), base * 2);
+
+        let o3 = InferenceRequest {
+            upstream_model: "o3-preview".into(),
+            ..plain.clone()
+        };
+        assert_eq!(idle_timeout_for(&o3, &policy), base * 2);
+    }
 }
