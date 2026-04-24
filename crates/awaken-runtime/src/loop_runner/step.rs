@@ -60,8 +60,11 @@ fn format_tool_cancel_hint(hint: &awaken_contract::contract::executor::InFlightT
 /// tool_use blocks that actually had valid JSON. Naming is unnecessary
 /// — the main model has full conversation context and will identify
 /// which call to retry.
-const MALFORMED_TOOL_ARGS_HINT: &str = "Note: one or more of your tool calls had malformed arguments and were not executed. \
-     Please re-issue any affected calls with valid JSON if still needed.";
+const MALFORMED_TOOL_ARGS_HINT: &str = concat!(
+    "Note: one or more of your tool calls had malformed arguments ",
+    "and were not executed. Please re-issue any affected calls with ",
+    "valid JSON if still needed.",
+);
 
 /// Outcome of a single step.
 pub(super) enum StepOutcome {

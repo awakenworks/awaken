@@ -58,13 +58,13 @@ pub struct StreamCheckpoint {
     pub updated_at_ms: u64,
 }
 
-/// Errors returned by `StreamCheckpointStore` operations.
+/// Backend-level failure (IO, network, serialization). The contract is a
+/// newtype rather than a multi-variant enum because every checkpoint
+/// backend collapses its native error to a string at this boundary —
+/// callers never branch on the cause.
 #[derive(Debug, Error)]
-pub enum StreamCheckpointError {
-    /// Backend-level failure (IO, network, serialization).
-    #[error("stream checkpoint backend error: {0}")]
-    Backend(String),
-}
+#[error("stream checkpoint backend error: {0}")]
+pub struct StreamCheckpointError(pub String);
 
 /// Persistence for stream checkpoints.
 ///
