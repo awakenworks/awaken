@@ -88,54 +88,13 @@ impl StreamCollector {
     /// stream interruption triggers recovery. Does not consume the
     /// collector; the caller typically discards it and opens a fresh one.
     pub fn interrupt_snapshot(&self) -> InterruptSnapshot {
-        let mut completed: Vec<ToolCall> = Vec::new();
-        let mut in_flight: Option<InFlightTool> = None;
-
-        for id in &self.tool_call_order {
-            let Some(p) = self.tool_calls.get(id) else {
-                continue;
-            };
-            if p.name.is_empty() {
-                // Name has not been observed yet — treat as in-flight but
-                // keep scanning in case a later entry is valid. Rare.
-                in_flight = Some(InFlightTool {
-                    id: p.id.clone(),
-                    name: String::new(),
-                    partial_args: p.arguments.clone(),
-                });
-                continue;
-            }
-            let parsed = serde_json::from_str::<Value>(&p.arguments);
-            match parsed {
-                Ok(arguments) if !(arguments.is_null() && !p.arguments.is_empty()) => {
-                    completed.push(ToolCall::new(p.id.clone(), p.name.clone(), arguments));
-                }
-                // Args present but unparseable → in-flight. If multiple
-                // unclosed tools race to be "in flight" only the most recent
-                // is retained (Anthropic/OpenAI emit at most one at a time
-                // per assistant turn; the last one wins).
-                _ => {
-                    in_flight = Some(InFlightTool {
-                        id: p.id.clone(),
-                        name: p.name.clone(),
-                        partial_args: p.arguments.clone(),
-                    });
-                }
-            }
-        }
-
-        let text = if self.text.is_empty() {
-            None
-        } else {
-            Some(self.text.clone())
-        };
-
-        InterruptSnapshot {
-            text,
-            completed_tool_calls: completed,
-            in_flight_tool: in_flight,
-            bytes_received: self.bytes_received,
-        }
+        let text = (!self.text.is_empty()).then(|| self.text.clone());
+        let partials = self.tool_call_order.iter().filter_map(|id| {
+            self.tool_calls
+                .get(id)
+                .map(|p| (p.id.clone(), p.name.clone(), p.arguments.clone()))
+        });
+        InterruptSnapshot::from_partials(text, partials, self.bytes_received)
     }
 
     /// Take the next deferred output produced by the previous provider event, if any.

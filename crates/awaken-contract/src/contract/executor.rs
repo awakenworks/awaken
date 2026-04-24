@@ -105,6 +105,53 @@ pub enum RecoveryPlan {
 }
 
 impl InterruptSnapshot {
+    /// Build an `InterruptSnapshot` from a stream of `(id, name, args_json)`
+    /// triples in declaration order, plus the accumulated text.
+    ///
+    /// Tools whose `name` is empty or whose `args_json` does not parse as
+    /// JSON become the `in_flight_tool` (last-write-wins if multiple);
+    /// the rest land in `completed_tool_calls`. This is the single source
+    /// of truth for partials → snapshot translation; the multiple
+    /// stream-collector implementations across the runtime delegate to
+    /// it instead of reimplementing.
+    pub fn from_partials<I>(text: Option<String>, partials: I, bytes_received: usize) -> Self
+    where
+        I: IntoIterator<Item = (String, String, String)>,
+    {
+        let mut completed: Vec<ToolCall> = Vec::new();
+        let mut in_flight: Option<InFlightTool> = None;
+
+        for (id, name, args_json) in partials {
+            if name.is_empty() {
+                in_flight = Some(InFlightTool {
+                    id,
+                    name: String::new(),
+                    partial_args: args_json,
+                });
+                continue;
+            }
+            match serde_json::from_str::<serde_json::Value>(&args_json) {
+                Ok(arguments) if !(arguments.is_null() && !args_json.is_empty()) => {
+                    completed.push(ToolCall::new(id, name, arguments));
+                }
+                _ => {
+                    in_flight = Some(InFlightTool {
+                        id,
+                        name,
+                        partial_args: args_json,
+                    });
+                }
+            }
+        }
+
+        Self {
+            text,
+            completed_tool_calls: completed,
+            in_flight_tool: in_flight,
+            bytes_received,
+        }
+    }
+
     /// Decide which recovery plan applies to this snapshot.
     pub fn plan(&self) -> RecoveryPlan {
         let text = self.text.as_deref().unwrap_or("");
