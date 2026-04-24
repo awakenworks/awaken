@@ -98,125 +98,60 @@ pub(super) async fn execute_streaming(
     let max_retries = policy.max_stream_retries;
     let mut attempt: u32 = 0;
 
-    // Cross-process resume: if a checkpoint exists for this run id, apply
-    // its state as if we had just hit a mid-stream interruption. This
-    // pushes an assistant prefix + continuation prompt onto the request
-    // mechanically identical to the in-process R1/R2/R3 paths. The
-    // checkpoint is NOT deleted here — it is only cleared after the new
-    // attempt finalizes cleanly, so a crash during recovery doesn't lose
-    // the state.
-    let mut restored_hint: Option<InFlightTool> = None;
-    if let Some(handle) = checkpoint.as_ref() {
-        match handle.store.get(handle.run_id).await {
-            Ok(Some(saved)) => {
-                tracing::info!(
-                    run_id = %handle.run_id,
-                    partial_text_len = saved.partial_text.len(),
-                    completed_tools = saved.completed_tool_calls.len(),
-                    has_in_flight = saved.in_flight_tool.is_some(),
-                    "restoring stream checkpoint"
-                );
-                let snapshot = InterruptSnapshot {
-                    text: if saved.partial_text.is_empty() {
-                        None
-                    } else {
-                        Some(saved.partial_text.clone())
-                    },
-                    completed_tool_calls: saved.completed_tool_calls.clone(),
-                    in_flight_tool: saved.in_flight_tool.clone(),
-                    bytes_received: saved.partial_text.len(),
-                };
-                match snapshot.plan() {
-                    RecoveryPlan::ContinueText { assistant_prefix } => {
-                        push_continuation(&mut request, assistant_prefix);
-                    }
-                    RecoveryPlan::SynthesizeToolUse {
-                        completed,
-                        cancelled_tool_hint,
-                    } => {
-                        // The previous process had already observed fully
-                        // formed tool_use(s). Return the synthesized result
-                        // immediately; the loop runner will execute the
-                        // tools in this process.
-                        for call in &completed {
-                            sink.emit(AgentEvent::ToolCallReady {
-                                id: call.id.clone(),
-                                name: call.name.clone(),
-                                arguments: call.arguments.clone(),
-                            })
-                            .await;
-                        }
-                        if let Some(hint) = &cancelled_tool_hint {
-                            sink.emit(AgentEvent::ToolCallCancel {
-                                id: hint.id.clone(),
-                                name: hint.name.clone(),
-                                reason: "resumed from checkpoint".into(),
-                            })
-                            .await;
-                        }
-                        // Clear the checkpoint — we are consuming it.
-                        let _ = handle.store.delete(handle.run_id).await;
-                        let content = match &snapshot.text {
-                            Some(t) if !t.is_empty() => {
-                                vec![ContentBlock::text(t.clone())]
-                            }
-                            _ => Vec::new(),
-                        };
-                        return Ok((
-                            StreamResult {
-                                content,
-                                tool_calls: completed,
-                                usage: None,
-                                stop_reason: Some(StopReason::ToolUse),
-                                has_incomplete_tool_calls: false,
-                            },
-                            cancelled_tool_hint,
-                        ));
-                    }
-                    RecoveryPlan::TruncateBeforeTool {
-                        assistant_prefix,
-                        cancelled_tool_id,
-                        cancelled_tool_name,
-                    } => {
-                        sink.emit(AgentEvent::ToolCallCancel {
-                            id: cancelled_tool_id,
-                            name: cancelled_tool_name,
-                            reason: "resumed from checkpoint".into(),
-                        })
-                        .await;
-                        restored_hint = saved.in_flight_tool.clone();
-                        push_continuation(&mut request, assistant_prefix);
-                    }
-                    RecoveryPlan::WholeRestart => {
-                        // Nothing salvageable — proceed with the original
-                        // request unchanged but clear the stale checkpoint.
-                        let _ = handle.store.delete(handle.run_id).await;
-                    }
-                }
-            }
-            Ok(None) => {}
-            Err(e) => {
-                tracing::warn!(
-                    run_id = %handle.run_id,
-                    error = %e,
-                    "checkpoint read failed; continuing without restore"
-                );
-            }
-        }
+    // Cross-process resume: if a checkpoint exists for this run id,
+    // synthesize a `DriveOutcome::Interrupted` and feed it through the
+    // same recovery dispatch the in-process retry loop uses. This means
+    // crash-resume reuses every R1-R4 code path verbatim — there is no
+    // separate "restore" code path to keep in sync.
+    let mut pending_resume: Option<DriveOutcome> = None;
+    if let Some(handle) = checkpoint.as_ref()
+        && let Some(saved) = read_checkpoint(handle).await
+    {
+        let snapshot = InterruptSnapshot::from_partials(
+            (!saved.partial_text.is_empty()).then(|| saved.partial_text.clone()),
+            saved
+                .completed_tool_calls
+                .into_iter()
+                .map(|c| {
+                    (
+                        c.id,
+                        c.name,
+                        serde_json::to_string(&c.arguments).unwrap_or_default(),
+                    )
+                })
+                .chain(
+                    saved
+                        .in_flight_tool
+                        .into_iter()
+                        .map(|p| (p.id, p.name, p.partial_args)),
+                ),
+            saved.partial_text.len(),
+        );
+        pending_resume = Some(DriveOutcome::Interrupted {
+            cause: InterruptCause::ResumedFromCheckpoint,
+            snapshot,
+        });
     }
 
     loop {
-        let outcome = drive_one_stream(
-            agent,
-            request.clone(),
-            sink,
-            cancellation_token,
-            total_input_tokens,
-            total_output_tokens,
-            idle_timeout,
-            checkpoint.as_ref(),
-        )
-        .await;
+        // Consume the synthetic resume outcome on the first iteration,
+        // then fall through to driving real streams on subsequent ones.
+        let outcome = match pending_resume.take() {
+            Some(o) => o,
+            None => {
+                drive_one_stream(
+                    agent,
+                    request.clone(),
+                    sink,
+                    cancellation_token,
+                    total_input_tokens,
+                    total_output_tokens,
+                    idle_timeout,
+                    checkpoint.as_ref(),
+                )
+                .await
+            }
+        };
 
         match outcome {
             DriveOutcome::Completed(result) | DriveOutcome::Cancelled(result) => {
@@ -225,11 +160,15 @@ pub(super) async fn execute_streaming(
                 if let Some(handle) = checkpoint.as_ref() {
                     let _ = handle.store.delete(handle.run_id).await;
                 }
-                return Ok((result, restored_hint));
+                return Ok((result, None));
             }
             DriveOutcome::Error(err) => return Err(err),
             DriveOutcome::Interrupted { cause, snapshot } => {
-                if attempt >= max_retries {
+                // Resume-from-checkpoint never counts against the retry
+                // budget — it is a "free" first attempt that mutates the
+                // request, then proceeds to drive a real stream.
+                let counts_against_budget = !matches!(cause, InterruptCause::ResumedFromCheckpoint);
+                if counts_against_budget && attempt >= max_retries {
                     tracing::warn!(
                         attempts = attempt,
                         cause = %cause,
@@ -249,30 +188,58 @@ pub(super) async fn execute_streaming(
                         if let Some(handle) = checkpoint.as_ref() {
                             let _ = handle.store.delete(handle.run_id).await;
                         }
-                        return Ok((result, hint.or(restored_hint)));
+                        return Ok((result, hint));
                     }
                     RecoveryOutcome::RetryAfterPlan => {
-                        let delay = stream_retry_backoff(&cause, attempt, &policy);
-                        if !delay.is_zero() {
-                            if let Some(token) = cancellation_token {
-                                tokio::select! {
-                                    biased;
-                                    _ = token.cancelled() => {
-                                        return Err(AgentLoopError::from(
-                                            InferenceExecutionError::Cancelled,
-                                        ));
+                        if counts_against_budget {
+                            let delay = stream_retry_backoff(&cause, attempt, &policy);
+                            if !delay.is_zero() {
+                                if let Some(token) = cancellation_token {
+                                    tokio::select! {
+                                        biased;
+                                        _ = token.cancelled() => {
+                                            return Err(AgentLoopError::from(
+                                                InferenceExecutionError::Cancelled,
+                                            ));
+                                        }
+                                        _ = tokio::time::sleep(delay) => {}
                                     }
-                                    _ = tokio::time::sleep(delay) => {}
+                                } else {
+                                    tokio::time::sleep(delay).await;
                                 }
-                            } else {
-                                tokio::time::sleep(delay).await;
                             }
+                            attempt += 1;
                         }
-                        attempt += 1;
                         continue;
                     }
                 }
             }
+        }
+    }
+}
+
+/// Best-effort checkpoint read. Logs and swallows backend errors so a
+/// failing store can never block forward progress.
+async fn read_checkpoint(handle: &CheckpointHandle<'_>) -> Option<StreamCheckpoint> {
+    match handle.store.get(handle.run_id).await {
+        Ok(Some(saved)) => {
+            tracing::info!(
+                run_id = %handle.run_id,
+                partial_text_len = saved.partial_text.len(),
+                completed_tools = saved.completed_tool_calls.len(),
+                has_in_flight = saved.in_flight_tool.is_some(),
+                "restoring stream checkpoint"
+            );
+            Some(saved)
+        }
+        Ok(None) => None,
+        Err(e) => {
+            tracing::warn!(
+                run_id = %handle.run_id,
+                error = %e,
+                "checkpoint read failed; continuing without restore"
+            );
+            None
         }
     }
 }
