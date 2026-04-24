@@ -3,6 +3,7 @@
 use crate::backend::{ExecutionBackend, ExecutionBackendError, ExecutionBackendFactory};
 use awaken_contract::contract::executor::LlmExecutor;
 use awaken_contract::contract::inference::ContextWindowPolicy;
+use awaken_contract::contract::stream_checkpoint::StreamCheckpointStore;
 use awaken_contract::contract::tool::Tool;
 use awaken_contract::registry_spec::{AgentSpec, RemoteEndpoint};
 use std::collections::HashMap;
@@ -28,6 +29,12 @@ pub struct ResolvedAgent {
     /// Context summarizer for LLM-based compaction. `None` disables LLM compaction
     /// (hard truncation still works if `context_policy` is set).
     pub context_summarizer: Option<Arc<dyn crate::context::ContextSummarizer>>,
+    /// Optional store for cross-process stream resume. When `Some`, the
+    /// loop runner flushes mid-stream accumulator snapshots to this
+    /// store and restores from it on the next `execute_streaming` call
+    /// that targets the same run. `None` disables cross-process resume
+    /// entirely (in-process retry still works via the normal R1-R4 loop).
+    pub stream_checkpoint_store: Option<Arc<dyn StreamCheckpointStore>>,
     /// Plugin-provided behavior (hooks, handlers, transforms).
     pub env: ExecutionEnv,
 }
@@ -65,8 +72,18 @@ impl ResolvedAgent {
             llm_executor,
             tool_executor: Arc::new(SequentialToolExecutor),
             context_summarizer: None,
+            stream_checkpoint_store: None,
             env: ExecutionEnv::empty(),
         }
+    }
+
+    /// Attach a stream checkpoint store (builder-style). Enables cross-process
+    /// resume: mid-stream accumulator snapshots will be flushed here and
+    /// restored by the next `execute_streaming` call for the same `run_id`.
+    #[must_use]
+    pub fn with_stream_checkpoint_store(mut self, store: Arc<dyn StreamCheckpointStore>) -> Self {
+        self.stream_checkpoint_store = Some(store);
+        self
     }
 
     // -- delegation accessors -------------------------------------------------

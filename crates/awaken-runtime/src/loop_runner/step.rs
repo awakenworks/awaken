@@ -28,7 +28,9 @@ use super::actions::{
     resolve_intercept_payloads, take_context_messages,
 };
 use super::checkpoint::{StepCompletion, check_termination, complete_step};
-use super::inference::{compact_with_llm, execute_streaming};
+use super::inference::{
+    CheckpointHandle, compact_with_llm, execute_streaming, execute_streaming_with_checkpoint,
+};
 use super::{AgentLoopError, commit_update, now_ms, tool_result_to_content};
 use crate::agent::state::{
     InferenceOverrideState, InferenceOverrideStateAction, RunLifecycle, RunLifecycleUpdate,
@@ -491,14 +493,27 @@ async fn run_inference_phase(
         enable_prompt_cache,
     };
 
-    // Inference
-    let (stream_result, cancelled_tool_hint) = execute_streaming(
+    // Inference. Wire the agent's stream checkpoint store (if any) so
+    // mid-stream accumulator snapshots are flushed for cross-process
+    // resume. The `run_identity` supplies the keying — `run_id` is the
+    // primary key; `thread_id` is carried for operator inspection.
+    let checkpoint_handle =
+        ctx.agent
+            .stream_checkpoint_store
+            .as_ref()
+            .map(|store| CheckpointHandle {
+                store: store.as_ref(),
+                run_id: &ctx.run_identity.run_id,
+                thread_id: &ctx.run_identity.thread_id,
+            });
+    let (stream_result, cancelled_tool_hint) = execute_streaming_with_checkpoint(
         ctx.agent,
         request,
         ctx.sink.as_ref(),
         ctx.cancellation_token,
         ctx.total_input_tokens,
         ctx.total_output_tokens,
+        checkpoint_handle,
     )
     .await?;
 

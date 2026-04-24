@@ -80,6 +80,7 @@ pub(crate) fn resolve_registry_set(
         llm_executor: executor,
         tool_executor: Arc::new(SequentialToolExecutor),
         context_summarizer: None,
+        stream_checkpoint_store: None,
         env,
     })
 }
@@ -149,6 +150,7 @@ fn resolve_local_spec(
         llm_executor: executor,
         tool_executor: Arc::new(SequentialToolExecutor),
         context_summarizer: None,
+        stream_checkpoint_store: None,
         env,
     })
 }
