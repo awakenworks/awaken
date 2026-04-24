@@ -63,12 +63,11 @@ pub(crate) async fn settle_thread_states<T: ThreadRunStore + Send + Sync + 'stat
 ) -> Result<Vec<wal_state::ThreadWalState>, StorageError> {
     let mut states = wal_state::list_thread_states(&store.kv_hot, thread_id).await?;
     for state in &mut states {
-        if state.state.status == wal_state::WalEntryStatus::Prepared {
-            if let Some(updated) =
+        if state.state.status == wal_state::WalEntryStatus::Prepared
+            && let Some(updated) =
                 wal_state::settle_thread_state(&store.kv_hot, thread_id, state.thread_seq).await?
-            {
-                state.state = updated;
-            }
+        {
+            state.state = updated;
         }
     }
     Ok(states)

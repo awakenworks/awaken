@@ -118,17 +118,16 @@ pub async fn checkpoint<T: ThreadRunStore + Send + Sync + 'static>(
     let payload = entry::encode(&wal_entry)?;
 
     let result = checkpoint_after_prepare(store, claim, thread_id, run, seq, payload, now).await;
-    if result.is_err() {
-        if let Err(abort_error) =
+    if result.is_err()
+        && let Err(abort_error) =
             wal_state::mark_aborted(&store.kv_hot, thread_id, seq, claim.claim_token()).await
-        {
-            tracing::warn!(
-                thread_id,
-                thread_seq = seq,
-                error = %abort_error,
-                "failed to mark prepared WAL entry aborted"
-            );
-        }
+    {
+        tracing::warn!(
+            thread_id,
+            thread_seq = seq,
+            error = %abort_error,
+            "failed to mark prepared WAL entry aborted"
+        );
     }
     result
 }

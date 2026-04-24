@@ -27,6 +27,7 @@ mod flusher;
 mod hierarchy_claim;
 mod hot_meta;
 mod keys;
+mod metrics;
 mod reader;
 mod recovery;
 mod wal_state;
@@ -196,16 +197,16 @@ impl<T: ThreadRunStore + Send + Sync + 'static> NatsBufferedThreadStore<T> {
         let flusher_test_hooks = flusher::FlusherTestHooks::default();
 
         let shutdown_rx = shutdown_tx.subscribe();
-        let flusher_handle = flusher::spawn_flusher(
-            Arc::clone(&inner),
-            consumer.clone(),
-            kv_hot.clone(),
-            config.clone(),
-            flush_claim_options.clone(),
-            flusher_test_hooks.clone(),
-            Arc::clone(&flush_notify),
+        let flusher_handle = flusher::spawn_flusher(flusher::FlusherLoop {
+            inner: Arc::clone(&inner),
+            consumer: consumer.clone(),
+            kv_hot: kv_hot.clone(),
+            config: config.clone(),
+            claim_options: flush_claim_options.clone(),
+            test_hooks: flusher_test_hooks.clone(),
+            flush_notify: Arc::clone(&flush_notify),
             shutdown_rx,
-        );
+        });
 
         Ok(Self {
             inner,
@@ -309,6 +310,67 @@ impl<T: ThreadRunStore + Send + Sync + 'static> NatsBufferedThreadStore<T> {
             .await
             .map_err(|e| StorageError::Io(format!("kv put: {e}")))?;
         Ok(())
+    }
+
+    #[doc(hidden)]
+    pub async fn __test_publish_raw_wal(
+        &self,
+        thread_id: &str,
+        payload: &[u8],
+    ) -> Result<u64, StorageError> {
+        let ack = self
+            .jetstream
+            .publish(keys::thread_subject(thread_id), payload.to_vec().into())
+            .await
+            .map_err(|e| StorageError::Io(format!("publish raw WAL: {e}")))?
+            .await
+            .map_err(|e| StorageError::Io(format!("publish raw WAL ack: {e}")))?;
+        Ok(ack.sequence)
+    }
+
+    #[doc(hidden)]
+    pub async fn __test_list_poison_wal_records(
+        &self,
+    ) -> Result<Vec<(String, serde_json::Value)>, StorageError> {
+        use futures::StreamExt;
+
+        let mut key_stream = self
+            .kv_hot
+            .keys()
+            .await
+            .map_err(|error| StorageError::Io(format!("list poison WAL keys: {error}")))?;
+        let mut records = Vec::new();
+        while let Some(key_result) = key_stream.next().await {
+            let key = key_result
+                .map_err(|error| StorageError::Io(format!("poison WAL key stream: {error}")))?;
+            if !key.starts_with(keys::poison_wal_prefix()) {
+                continue;
+            }
+            let entry = match self.kv_hot.entry(&key).await {
+                Ok(Some(entry)) => entry,
+                Ok(None) => continue,
+                Err(error) => {
+                    return Err(StorageError::Io(format!(
+                        "load poison WAL entry {key}: {error}"
+                    )));
+                }
+            };
+            if matches!(
+                entry.operation,
+                async_nats::jetstream::kv::Operation::Delete
+                    | async_nats::jetstream::kv::Operation::Purge
+            ) {
+                continue;
+            }
+            let value = serde_json::from_slice(&entry.value).map_err(|error| {
+                StorageError::Serialization(format!(
+                    "decode poison WAL entry {key} from kv bucket: {error}"
+                ))
+            })?;
+            records.push((key, value));
+        }
+        records.sort_by(|left, right| left.0.cmp(&right.0));
+        Ok(records)
     }
 
     #[doc(hidden)]

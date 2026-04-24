@@ -51,6 +51,18 @@ pub fn flush_lock_key(thread_id: &str) -> String {
     format!("flush.lock.{}", encode_segment(thread_id))
 }
 
+pub fn poison_wal_stream_key(stream_seq: u64) -> String {
+    format!("poison.seq.{stream_seq}")
+}
+
+pub fn poison_wal_hash_key(payload_hash: u64) -> String {
+    format!("poison.hash.{payload_hash:016x}")
+}
+
+pub fn poison_wal_prefix() -> &'static str {
+    "poison."
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -78,6 +90,12 @@ mod tests {
         assert_eq!(thread_seq_from_wal_state_key("wal.h7431.42"), Some(42));
         assert_eq!(hierarchy_lock_key(), "hierarchy.lock");
         assert_eq!(flush_lock_key("t1"), "flush.lock.h7431");
+        assert_eq!(poison_wal_stream_key(7), "poison.seq.7");
+        assert_eq!(
+            poison_wal_hash_key(0xfeed_beef),
+            "poison.hash.00000000feedbeef"
+        );
+        assert_eq!(poison_wal_prefix(), "poison.");
     }
 
     #[test]

@@ -21,8 +21,11 @@ use awaken_contract::contract::message::Message;
 use awaken_contract::contract::storage::{RunRecord, StorageError, ThreadRunStore};
 use awaken_contract::thread::Thread;
 use futures::StreamExt;
+use serde::{Deserialize, Serialize};
 
-use super::{config::NatsBufferedThreadConfig, entry, hierarchy_claim, hot_meta, keys, wal_state};
+use super::{
+    config::NatsBufferedThreadConfig, entry, hierarchy_claim, hot_meta, keys, metrics, wal_state,
+};
 
 #[derive(Debug, Clone, Default)]
 pub(crate) struct FlusherTestHooks {
@@ -137,18 +140,83 @@ enum WalEntryDecision {
     Retry,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+enum PoisonWalReason {
+    MissingMetadata,
+    DecodeFailed,
+}
+
+impl PoisonWalReason {
+    fn metric_label(self) -> &'static str {
+        match self {
+            Self::MissingMetadata => "missing_metadata",
+            Self::DecodeFailed => "decode_failed",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct PoisonWalRecord {
+    reason: PoisonWalReason,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    stream_seq: Option<u64>,
+    subject: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    thread_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
+    payload_len: usize,
+    payload_preview_hex: String,
+    quarantined_at: u64,
+}
+
+impl PoisonWalRecord {
+    fn from_message(
+        reason: PoisonWalReason,
+        msg: &async_nats::jetstream::Message,
+        stream_seq: Option<u64>,
+        error: Option<String>,
+    ) -> Self {
+        Self {
+            reason,
+            stream_seq,
+            subject: msg.subject.to_string(),
+            thread_id: keys::thread_id_from_thread_subject(msg.subject.as_str()),
+            error,
+            payload_len: msg.payload.len(),
+            payload_preview_hex: payload_preview_hex(&msg.payload),
+            quarantined_at: now_millis(),
+        }
+    }
+}
+
+enum DecodeOutcome {
+    Buffered(Box<BufferedWalEntry>),
+    Quarantined(async_nats::jetstream::Message),
+    Retry(async_nats::jetstream::Message),
+}
+
+pub(super) struct FlusherLoop<T: ThreadRunStore + Send + Sync + 'static> {
+    pub(super) inner: Arc<T>,
+    pub(super) consumer: async_nats::jetstream::consumer::PullConsumer,
+    pub(super) kv_hot: async_nats::jetstream::kv::Store,
+    pub(super) config: NatsBufferedThreadConfig,
+    pub(super) claim_options: hierarchy_claim::ClaimOptions,
+    pub(super) test_hooks: FlusherTestHooks,
+    pub(super) flush_notify: Arc<tokio::sync::Notify>,
+    pub(super) shutdown_rx: tokio::sync::watch::Receiver<bool>,
+}
+
 pub fn spawn_flusher<T: ThreadRunStore + Send + Sync + 'static>(
-    inner: Arc<T>,
-    consumer: async_nats::jetstream::consumer::PullConsumer,
-    kv_hot: async_nats::jetstream::kv::Store,
-    config: NatsBufferedThreadConfig,
-    claim_options: hierarchy_claim::ClaimOptions,
-    test_hooks: FlusherTestHooks,
-    flush_notify: Arc<tokio::sync::Notify>,
-    mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
+    flusher: FlusherLoop<T>,
 ) -> tokio::task::JoinHandle<()> {
-    tokio::spawn(async move {
-        let mut messages = match consumer.messages().await {
+    tokio::spawn(flusher.run())
+}
+
+impl<T: ThreadRunStore + Send + Sync + 'static> FlusherLoop<T> {
+    async fn run(mut self) {
+        let mut messages = match self.consumer.messages().await {
             Ok(m) => m,
             Err(e) => {
                 tracing::warn!(error = %e, "flusher failed to open message stream");
@@ -158,19 +226,19 @@ pub fn spawn_flusher<T: ThreadRunStore + Send + Sync + 'static>(
 
         loop {
             let mut by_thread: HashMap<String, ThreadBatch> = HashMap::new();
-            let window = tokio::time::sleep(config.flush_interval);
+            let window = tokio::time::sleep(self.config.flush_interval);
             tokio::pin!(window);
             let mut shutdown_requested = false;
 
             loop {
                 tokio::select! {
-                    _ = shutdown_rx.changed() => {
-                        if *shutdown_rx.borrow() {
+                    _ = self.shutdown_rx.changed() => {
+                        if *self.shutdown_rx.borrow() {
                             shutdown_requested = true;
                             break;
                         }
                     }
-                    _ = flush_notify.notified() => break,
+                    _ = self.flush_notify.notified() => break,
                     _ = &mut window => break,
                     next = messages.next() => match next {
                         None => return,
@@ -178,10 +246,18 @@ pub fn spawn_flusher<T: ThreadRunStore + Send + Sync + 'static>(
                             tracing::warn!(error = %e, "flusher message stream error");
                         }
                         Some(Ok(msg)) => {
-                            if let Some(decoded) = decode_or_ack(msg).await {
-                                merge_entry(&mut by_thread, decoded);
-                                if by_thread.len() >= config.flush_batch_size {
-                                    break;
+                            match self.decode_message(msg).await {
+                                DecodeOutcome::Buffered(decoded) => {
+                                    merge_entry(&mut by_thread, *decoded);
+                                    if by_thread.len() >= self.config.flush_batch_size {
+                                        break;
+                                    }
+                                }
+                                DecodeOutcome::Quarantined(msg) => {
+                                    finish_decode_outcome(msg, WalAckAction::Ack).await;
+                                }
+                                DecodeOutcome::Retry(msg) => {
+                                    finish_decode_outcome(msg, WalAckAction::Nak).await;
                                 }
                             }
                         }
@@ -190,37 +266,183 @@ pub fn spawn_flusher<T: ThreadRunStore + Send + Sync + 'static>(
             }
 
             if !by_thread.is_empty() {
-                flush_batch(&inner, &kv_hot, &claim_options, &test_hooks, by_thread).await;
+                flush_batch(
+                    &self.inner,
+                    &self.kv_hot,
+                    &self.claim_options,
+                    &self.test_hooks,
+                    by_thread,
+                )
+                .await;
             }
             if shutdown_requested {
                 return;
             }
         }
-    })
-}
+    }
 
-async fn decode_or_ack(msg: async_nats::jetstream::Message) -> Option<BufferedWalEntry> {
-    let stream_seq = match msg.info() {
-        Ok(info) => info.stream_sequence,
-        Err(error) => {
-            tracing::warn!(%error, "WAL message missing JetStream metadata; acking to skip");
-            let _ = msg.ack().await;
-            return None;
-        }
-    };
+    async fn decode_message(&self, msg: async_nats::jetstream::Message) -> DecodeOutcome {
+        let stream_seq = match msg.info() {
+            Ok(info) => info.stream_sequence,
+            Err(error) => {
+                return self
+                    .quarantine_or_retry(
+                        msg,
+                        None,
+                        PoisonWalReason::MissingMetadata,
+                        Some(error.to_string()),
+                    )
+                    .await;
+            }
+        };
 
-    match entry::decode(&msg.payload) {
-        Ok(checkpoint) => Some(BufferedWalEntry {
-            checkpoint,
-            stream_seq,
-            msg,
-        }),
-        Err(err) => {
-            tracing::warn!(error = %err, "poison entry; acking to skip");
-            let _ = msg.ack().await;
-            None
+        match entry::decode(&msg.payload) {
+            Ok(checkpoint) => DecodeOutcome::Buffered(
+                BufferedWalEntry {
+                    checkpoint,
+                    stream_seq,
+                    msg,
+                }
+                .into(),
+            ),
+            Err(error) => {
+                self.quarantine_or_retry(
+                    msg,
+                    Some(stream_seq),
+                    PoisonWalReason::DecodeFailed,
+                    Some(error.to_string()),
+                )
+                .await
+            }
         }
     }
+
+    async fn quarantine_or_retry(
+        &self,
+        msg: async_nats::jetstream::Message,
+        stream_seq: Option<u64>,
+        reason: PoisonWalReason,
+        error: Option<String>,
+    ) -> DecodeOutcome {
+        match quarantine_poison_wal(&self.kv_hot, &msg, stream_seq, reason, error).await {
+            Ok(()) => {
+                metrics::inc_poison_wal_quarantined(reason.metric_label());
+                DecodeOutcome::Quarantined(msg)
+            }
+            Err(quarantine_error) => {
+                metrics::inc_poison_wal_quarantine_failure(reason.metric_label());
+                // When metadata is missing we cannot read `delivered`, so we
+                // ack immediately to avoid an infinite Nak loop with no
+                // progress signal.
+                let delivered = msg.info().ok().map(|i| i.delivered).unwrap_or(i64::MAX);
+                if should_drop_poison_on_quarantine_failure(delivered) {
+                    metrics::inc_poison_wal_quarantine_dropped(reason.metric_label());
+                    tracing::error!(
+                        subject = msg.subject.as_str(),
+                        stream_seq,
+                        delivered,
+                        reason = ?reason,
+                        error = %quarantine_error,
+                        "quarantine failed after max NAKs; acking to unblock consumer"
+                    );
+                    DecodeOutcome::Quarantined(msg)
+                } else {
+                    tracing::warn!(
+                        subject = msg.subject.as_str(),
+                        stream_seq,
+                        delivered,
+                        reason = ?reason,
+                        error = %quarantine_error,
+                        "failed to quarantine poison WAL message; requesting redelivery"
+                    );
+                    DecodeOutcome::Retry(msg)
+                }
+            }
+        }
+    }
+}
+
+const MAX_POISON_QUARANTINE_NAKS: i64 = 5;
+
+// After this many redeliveries on the same poison message, ack it even
+// when quarantine is still failing — otherwise a persistent KV outage
+// would trap the consumer in an unbounded Nak loop on that message.
+fn should_drop_poison_on_quarantine_failure(delivered: i64) -> bool {
+    delivered >= MAX_POISON_QUARANTINE_NAKS
+}
+
+async fn finish_decode_outcome(msg: async_nats::jetstream::Message, action: WalAckAction) {
+    let result = match action {
+        WalAckAction::Ack => msg.ack().await,
+        WalAckAction::Nak => {
+            msg.ack_with(async_nats::jetstream::AckKind::Nak(None))
+                .await
+        }
+    };
+    if let Err(error) = result {
+        tracing::warn!(%error, action = ?action, "failed to finish decoded WAL message");
+    }
+}
+
+async fn quarantine_poison_wal(
+    kv_hot: &async_nats::jetstream::kv::Store,
+    msg: &async_nats::jetstream::Message,
+    stream_seq: Option<u64>,
+    reason: PoisonWalReason,
+    error: Option<String>,
+) -> Result<(), StorageError> {
+    let record = PoisonWalRecord::from_message(reason, msg, stream_seq, error);
+    let key = poison_wal_key(msg.subject.as_str(), &msg.payload, stream_seq);
+    let payload = serde_json::to_vec(&record)
+        .map_err(|e| StorageError::Serialization(format!("encode poison WAL record: {e}")))?;
+    kv_hot
+        .put(&key, payload.into())
+        .await
+        .map(|_| ())
+        .map_err(|e| StorageError::Io(format!("put poison WAL quarantine {key}: {e}")))
+}
+
+fn poison_wal_key(subject: &str, payload: &[u8], stream_seq: Option<u64>) -> String {
+    match stream_seq {
+        Some(stream_seq) => keys::poison_wal_stream_key(stream_seq),
+        None => keys::poison_wal_hash_key(hash_poison_wal(subject, payload)),
+    }
+}
+
+// FNV-1a 64-bit. Defined inline so the output is stable across Rust
+// toolchain upgrades — `std::collections::hash_map::DefaultHasher` is
+// explicitly documented as not stable, which would cause the same
+// malformed payload to land under different `poison.hash.*` keys after
+// a compiler upgrade and silently break per-payload quarantine dedup.
+fn hash_poison_wal(subject: &str, payload: &[u8]) -> u64 {
+    const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+    const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
+
+    let mut hash = FNV_OFFSET;
+    for byte in subject.as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(FNV_PRIME);
+    }
+    // Separator so "ab" + "cd" and "a" + "bcd" hash differently.
+    hash ^= 0xff;
+    hash = hash.wrapping_mul(FNV_PRIME);
+    for byte in payload {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(FNV_PRIME);
+    }
+    hash
+}
+
+fn payload_preview_hex(payload: &[u8]) -> String {
+    const MAX_PREVIEW_BYTES: usize = 96;
+
+    let mut preview = String::with_capacity(payload.len().min(MAX_PREVIEW_BYTES) * 2);
+    for byte in payload.iter().take(MAX_PREVIEW_BYTES) {
+        use std::fmt::Write as _;
+
+        let _ = write!(&mut preview, "{byte:02x}");
+    }
+    preview
 }
 
 async fn finish_wal_messages(
@@ -276,6 +498,106 @@ struct FlushClaimContext<'a> {
     test_hooks: &'a FlusherTestHooks,
     thread_id: &'a str,
     claim_token: &'a str,
+}
+
+struct FlushExecutionContext<'a, T: ThreadRunStore + Send + Sync> {
+    inner: &'a T,
+    kv_hot: &'a async_nats::jetstream::kv::Store,
+    test_hooks: &'a FlusherTestHooks,
+    thread_id: &'a str,
+    claim_token: Option<&'a str>,
+}
+
+impl<'a, T: ThreadRunStore + Send + Sync> FlushExecutionContext<'a, T> {
+    async fn ensure_claim_current(&self, stage: &'static str, thread_seq: u64) -> bool {
+        let Some(claim_token) = self.claim_token else {
+            return true;
+        };
+
+        if let Err(error) =
+            ensure_flush_claim_current(self.kv_hot, self.test_hooks, self.thread_id, claim_token)
+                .await
+        {
+            tracing::warn!(
+                thread_id = self.thread_id,
+                thread_seq,
+                stage,
+                error = %error,
+                "flush claim expired during WAL materialization"
+            );
+            return false;
+        }
+
+        true
+    }
+
+    async fn apply_thread_batch_ordered(
+        &self,
+        messages: &[Message],
+        ordered_runs: &[(RunRecord, u64)],
+    ) -> bool {
+        let claim = self.claim_token.map(|claim_token| FlushClaimContext {
+            kv_hot: self.kv_hot,
+            test_hooks: self.test_hooks,
+            thread_id: self.thread_id,
+            claim_token,
+        });
+        apply_thread_batch_ordered(
+            self.inner,
+            claim.as_ref(),
+            self.thread_id,
+            messages,
+            ordered_runs,
+        )
+        .await
+    }
+
+    async fn persist_stale_runs(&self, stale_runs: &[(RunRecord, u64)]) -> bool {
+        persist_stale_runs_without_projection(self.inner, self.thread_id, stale_runs).await
+    }
+
+    async fn materialize_projection(
+        &self,
+        messages: &[Message],
+        thread_seq: u64,
+        projected_thread: Option<&Thread>,
+    ) -> bool {
+        if !self
+            .ensure_claim_current("materialize_thread_projection", thread_seq)
+            .await
+        {
+            return false;
+        }
+        if let Some(projected_thread) = projected_thread
+            && let Err(error) = self.inner.save_thread(projected_thread).await
+        {
+            tracing::warn!(
+                thread_id = self.thread_id,
+                thread_seq,
+                error = %error,
+                "inner save_thread for materialized WAL projection failed"
+            );
+            return false;
+        }
+
+        if !self
+            .ensure_claim_current("materialize_messages", thread_seq)
+            .await
+        {
+            return false;
+        }
+        if let Err(error) = self.inner.save_messages(self.thread_id, messages).await {
+            tracing::warn!(
+                thread_id = self.thread_id,
+                thread_seq,
+                error = %error,
+                "inner save_messages for materialized WAL projection failed"
+            );
+            return false;
+        }
+
+        true
+    }
 }
 
 /// Apply a per-thread batch to `inner` in seq-ascending order. Returns
@@ -406,71 +728,8 @@ fn build_flush_projection(committed: &[CommittedFlushEntry]) -> Option<FlushProj
     })
 }
 
-async fn materialize_projection<T: ThreadRunStore + Send + Sync>(
-    inner: &T,
-    kv_hot: &async_nats::jetstream::kv::Store,
-    test_hooks: &FlusherTestHooks,
-    thread_id: &str,
-    claim_token: Option<&str>,
-    latest_thread_seq: u64,
-    latest_messages: &[Message],
-    latest_projected_thread: Option<&Thread>,
-) -> bool {
-    if let Some(claim_token) = claim_token
-        && let Err(error) =
-            ensure_flush_claim_current(kv_hot, test_hooks, thread_id, claim_token).await
-    {
-        tracing::warn!(
-            thread_id,
-            thread_seq = latest_thread_seq,
-            error = %error,
-            "flush claim expired before materializing thread projection"
-        );
-        return false;
-    }
-    if let Some(projected_thread) = latest_projected_thread
-        && let Err(error) = inner.save_thread(projected_thread).await
-    {
-        tracing::warn!(
-            thread_id,
-            thread_seq = latest_thread_seq,
-            error = %error,
-            "inner save_thread for materialized WAL projection failed"
-        );
-        return false;
-    }
-
-    if let Some(claim_token) = claim_token
-        && let Err(error) =
-            ensure_flush_claim_current(kv_hot, test_hooks, thread_id, claim_token).await
-    {
-        tracing::warn!(
-            thread_id,
-            thread_seq = latest_thread_seq,
-            error = %error,
-            "flush claim expired before materializing messages"
-        );
-        return false;
-    }
-    if let Err(error) = inner.save_messages(thread_id, latest_messages).await {
-        tracing::warn!(
-            thread_id,
-            thread_seq = latest_thread_seq,
-            error = %error,
-            "inner save_messages for materialized WAL projection failed"
-        );
-        return false;
-    }
-
-    true
-}
-
 async fn flush_committed_entries<T: ThreadRunStore + Send + Sync>(
-    inner: &T,
-    kv_hot: &async_nats::jetstream::kv::Store,
-    test_hooks: &FlusherTestHooks,
-    thread_id: &str,
-    claim_token: Option<&str>,
+    ctx: &FlushExecutionContext<'_, T>,
     current_flushed: u64,
     current_latest: u64,
     committed: &[CommittedFlushEntry],
@@ -490,52 +749,32 @@ async fn flush_committed_entries<T: ThreadRunStore + Send + Sync>(
         .into_iter()
         .partition(|(_, seq)| *seq <= current_flushed);
 
-    let stale_ok = persist_stale_runs_without_projection(inner, thread_id, &stale_runs).await;
+    let stale_ok = ctx.persist_stale_runs(&stale_runs).await;
     if !stale_ok {
         return false;
     }
 
     let has_fresh = latest_thread_seq > current_flushed;
     if has_fresh {
-        if let Some(claim_token) = claim_token
-            && let Err(error) =
-                ensure_flush_claim_current(kv_hot, test_hooks, thread_id, claim_token).await
+        if !ctx
+            .ensure_claim_current("materialize_fresh_projection", latest_thread_seq)
+            .await
         {
-            tracing::warn!(
-                thread_id,
-                thread_seq = latest_thread_seq,
-                error = %error,
-                "flush claim expired before materializing fresh WAL projection"
-            );
             return false;
         }
         let fresh_ok = if fresh_runs.is_empty() {
             true
         } else {
-            let claim = claim_token.map(|claim_token| FlushClaimContext {
-                kv_hot,
-                test_hooks,
-                thread_id,
-                claim_token,
-            });
-            apply_thread_batch_ordered(
-                inner,
-                claim.as_ref(),
-                thread_id,
-                &latest_messages,
-                &fresh_runs,
-            )
-            .await
+            ctx.apply_thread_batch_ordered(&latest_messages, &fresh_runs)
+                .await
         };
-        if !fresh_ok
-            || !materialize_projection(
-                inner,
-                kv_hot,
-                test_hooks,
-                thread_id,
-                claim_token,
-                latest_thread_seq,
+        if !fresh_ok {
+            return false;
+        }
+        if !ctx
+            .materialize_projection(
                 &latest_messages,
+                latest_thread_seq,
                 latest_projected_thread.as_ref(),
             )
             .await
@@ -545,21 +784,15 @@ async fn flush_committed_entries<T: ThreadRunStore + Send + Sync>(
     }
 
     if latest_thread_seq > current_latest {
-        if let Some(claim_token) = claim_token
-            && let Err(error) =
-                ensure_flush_claim_current(kv_hot, test_hooks, thread_id, claim_token).await
+        if !ctx
+            .ensure_claim_current("promote_latest_seq", latest_thread_seq)
+            .await
         {
-            tracing::warn!(
-                thread_id,
-                thread_seq = latest_thread_seq,
-                error = %error,
-                "flush claim expired before promoting latest_seq"
-            );
             return false;
         }
         if hot_meta::promote_latest_seq(
-            kv_hot,
-            thread_id,
+            ctx.kv_hot,
+            ctx.thread_id,
             latest_thread_seq,
             latest_thread_js_seq,
             now_millis(),
@@ -568,7 +801,7 @@ async fn flush_committed_entries<T: ThreadRunStore + Send + Sync>(
         .is_err()
         {
             tracing::warn!(
-                thread_id,
+                thread_id = ctx.thread_id,
                 thread_seq = latest_thread_seq,
                 "failed to promote latest_seq from committed WAL batch"
             );
@@ -577,22 +810,17 @@ async fn flush_committed_entries<T: ThreadRunStore + Send + Sync>(
     }
 
     if has_fresh {
-        if let Some(claim_token) = claim_token
-            && let Err(error) =
-                ensure_flush_claim_current(kv_hot, test_hooks, thread_id, claim_token).await
+        if !ctx
+            .ensure_claim_current("write_flushed_seq", latest_thread_seq)
+            .await
         {
-            tracing::warn!(
-                thread_id,
-                thread_seq = latest_thread_seq,
-                error = %error,
-                "flush claim expired before writing flushed_seq"
-            );
             return false;
         }
-        if let Err(error) = hot_meta::write_flushed_seq(kv_hot, thread_id, latest_thread_seq).await
+        if let Err(error) =
+            hot_meta::write_flushed_seq(ctx.kv_hot, ctx.thread_id, latest_thread_seq).await
         {
             tracing::warn!(
-                thread_id,
+                thread_id = ctx.thread_id,
                 thread_seq = latest_thread_seq,
                 error = %error,
                 "write flushed_seq failed; nacking WAL batch for redelivery"
@@ -691,6 +919,13 @@ async fn flush_thread_batch<T: ThreadRunStore + Send + Sync>(
         test_hooks
             .pause_after_read_flushed_if_configured(thread_id)
             .await;
+        let ctx = FlushExecutionContext {
+            inner: inner.as_ref(),
+            kv_hot,
+            test_hooks,
+            thread_id,
+            claim_token: Some(claim_token.as_str()),
+        };
 
         let mut decisions = Vec::with_capacity(batch.entries.len());
         for entry in &batch.entries {
@@ -736,17 +971,9 @@ async fn flush_thread_batch<T: ThreadRunStore + Send + Sync>(
         }
 
         committed_entries.sort_by_key(|entry| entry.checkpoint.thread_seq);
-        let committed_ok = flush_committed_entries(
-            inner.as_ref(),
-            kv_hot,
-            test_hooks,
-            thread_id,
-            Some(claim_token.as_str()),
-            current_flushed,
-            meta.latest_seq,
-            &committed_entries,
-        )
-        .await;
+        let committed_ok =
+            flush_committed_entries(&ctx, current_flushed, meta.latest_seq, &committed_entries)
+                .await;
         let committed_action = if committed_ok {
             WalAckAction::Ack
         } else {
@@ -780,6 +1007,13 @@ pub(crate) async fn flush_test_entries<T: ThreadRunStore + Send + Sync>(
         test_hooks
             .pause_after_read_flushed_if_configured(thread_id)
             .await;
+        let ctx = FlushExecutionContext {
+            inner: inner.as_ref(),
+            kv_hot,
+            test_hooks,
+            thread_id,
+            claim_token: Some(claim_token.as_str()),
+        };
 
         let mut committed: Vec<CommittedFlushEntry> = entries
             .into_iter()
@@ -790,18 +1024,7 @@ pub(crate) async fn flush_test_entries<T: ThreadRunStore + Send + Sync>(
             .collect();
         committed.sort_by_key(|entry| entry.checkpoint.thread_seq);
 
-        if flush_committed_entries(
-            inner.as_ref(),
-            kv_hot,
-            test_hooks,
-            thread_id,
-            Some(claim_token.as_str()),
-            current_flushed,
-            meta.latest_seq,
-            &committed,
-        )
-        .await
-        {
+        if flush_committed_entries(&ctx, current_flushed, meta.latest_seq, &committed).await {
             Ok(())
         } else {
             Err(StorageError::Io(format!(
@@ -826,6 +1049,13 @@ pub(crate) async fn process_test_entries<T: ThreadRunStore + Send + Sync>(
         test_hooks
             .pause_after_read_flushed_if_configured(thread_id)
             .await;
+        let ctx = FlushExecutionContext {
+            inner: inner.as_ref(),
+            kv_hot,
+            test_hooks,
+            thread_id,
+            claim_token: Some(claim_token.as_str()),
+        };
 
         let mut committed = Vec::new();
         for (checkpoint, stream_seq) in entries {
@@ -840,18 +1070,7 @@ pub(crate) async fn process_test_entries<T: ThreadRunStore + Send + Sync>(
         }
         committed.sort_by_key(|entry| entry.checkpoint.thread_seq);
 
-        if flush_committed_entries(
-            inner.as_ref(),
-            kv_hot,
-            test_hooks,
-            thread_id,
-            Some(claim_token.as_str()),
-            current_flushed,
-            meta.latest_seq,
-            &committed,
-        )
-        .await
-        {
+        if flush_committed_entries(&ctx, current_flushed, meta.latest_seq, &committed).await {
             Ok(())
         } else {
             Err(StorageError::Io(format!(
@@ -966,5 +1185,98 @@ mod tests {
             open == Some("run-new") || open.is_none(),
             "open_run_id must match highest-seq projection; got {open:?}"
         );
+    }
+
+    #[test]
+    fn poison_wal_hash_key_is_stable_for_metadata_less_messages() {
+        let subject = "thread.h7431";
+        let payload = br#"broken"#;
+
+        let first = poison_wal_key(subject, payload, None);
+        let second = poison_wal_key(subject, payload, None);
+
+        assert_eq!(first, second);
+        assert!(first.starts_with("poison.hash."));
+    }
+
+    #[test]
+    fn poison_wal_key_routes_by_presence_of_stream_seq() {
+        let subject = "thread.h7431";
+        let payload = br#"broken"#;
+
+        assert_eq!(poison_wal_key(subject, payload, Some(42)), "poison.seq.42");
+
+        let hash_key = poison_wal_key(subject, payload, None);
+        assert!(hash_key.starts_with("poison.hash."));
+        assert_ne!(poison_wal_key(subject, payload, Some(42)), hash_key);
+    }
+
+    #[test]
+    fn poison_wal_hash_key_separates_distinct_payloads_and_subjects() {
+        let a = poison_wal_key("thread.h7431", b"payload-a", None);
+        let b = poison_wal_key("thread.h7431", b"payload-b", None);
+        assert_ne!(
+            a, b,
+            "different payloads under the same subject must not share a quarantine slot"
+        );
+
+        let c = poison_wal_key("thread.h0000001", b"payload-a", None);
+        let d = poison_wal_key("thread.h0000002", b"payload-a", None);
+        assert_ne!(
+            c, d,
+            "same bytes on different subjects must not share a quarantine slot"
+        );
+    }
+
+    // Pins the exact hash output for a known input. If this golden value
+    // changes, the hash algorithm changed; any deployed KV already holding
+    // `poison.hash.*` entries will silently dedupe into new slots and
+    // accumulate duplicates. Bump the key prefix (e.g. `poison.hash.v2.`)
+    // if you need to replace the algorithm, so old and new entries can
+    // coexist instead of masking each other.
+    #[test]
+    fn poison_wal_hash_key_is_pinned_to_fnv1a_golden_value() {
+        assert_eq!(
+            poison_wal_key("thread.h7431", b"broken", None),
+            "poison.hash.f0b96944d6ae33ac"
+        );
+    }
+
+    #[test]
+    fn payload_preview_hex_truncates_to_fixed_budget() {
+        let payload = vec![0xab; 128];
+
+        let preview = payload_preview_hex(&payload);
+
+        assert_eq!(preview.len(), 96 * 2);
+        assert!(preview.starts_with("abab"));
+    }
+
+    #[test]
+    fn payload_preview_hex_does_not_pad_short_payloads() {
+        let preview = payload_preview_hex(&[0x01, 0x02, 0x03]);
+        assert_eq!(preview, "010203");
+    }
+
+    // Guards the invariant that a persistent KV outage cannot trap the
+    // consumer in an unbounded Nak loop. First delivery gets a Nak chance;
+    // after MAX_POISON_QUARANTINE_NAKS retries the flusher ack-drops.
+    #[test]
+    fn quarantine_nak_loop_is_bounded_by_delivered_count() {
+        for delivered in 1..MAX_POISON_QUARANTINE_NAKS {
+            assert!(
+                !should_drop_poison_on_quarantine_failure(delivered),
+                "delivery #{delivered} should still be retried"
+            );
+        }
+        assert!(should_drop_poison_on_quarantine_failure(
+            MAX_POISON_QUARANTINE_NAKS
+        ));
+        assert!(should_drop_poison_on_quarantine_failure(
+            MAX_POISON_QUARANTINE_NAKS + 1
+        ));
+        // Missing JetStream metadata path: caller substitutes i64::MAX so
+        // the first failure is acked immediately.
+        assert!(should_drop_poison_on_quarantine_failure(i64::MAX));
     }
 }

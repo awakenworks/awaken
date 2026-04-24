@@ -270,6 +270,177 @@ async fn recovery_drains_wal_on_reconnect() {
 }
 
 #[tokio::test]
+async fn poison_wal_is_quarantined_without_repeated_redelivery() {
+    let fixture = NatsFixture::start().await;
+    let inner = Arc::new(InMemoryStore::new());
+    let mut config = unique_config(&fixture);
+    config.flush_interval = Duration::from_millis(50);
+    config.ack_wait = Duration::from_millis(250);
+    let store = NatsBufferedThreadStore::connect(Arc::clone(&inner), config)
+        .await
+        .expect("connect");
+
+    let stream_seq = store
+        .__test_publish_raw_wal("t-poison", br#"not-json"#)
+        .await
+        .expect("publish raw poison WAL");
+
+    tokio::time::sleep(Duration::from_millis(400)).await;
+
+    let records = store
+        .__test_list_poison_wal_records()
+        .await
+        .expect("load poison WAL quarantine");
+    assert_eq!(
+        records.len(),
+        1,
+        "poison WAL should be quarantined exactly once"
+    );
+    let (key, record) = &records[0];
+    assert_eq!(key, &format!("poison.seq.{stream_seq}"));
+    assert_eq!(record["reason"], "decode_failed");
+    assert_eq!(record["stream_seq"], stream_seq);
+    assert_eq!(record["thread_id"], "t-poison");
+    assert_eq!(record["payload_len"], 8);
+    assert!(
+        record["payload_preview_hex"]
+            .as_str()
+            .is_some_and(|preview| !preview.is_empty()),
+        "quarantine record should retain a payload preview"
+    );
+    assert!(
+        inner.load_thread("t-poison").await.unwrap().is_none(),
+        "poison WAL must not materialize any inner thread state"
+    );
+
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    let records_after_ack_wait = store
+        .__test_list_poison_wal_records()
+        .await
+        .expect("reload poison WAL quarantine");
+    assert_eq!(
+        records_after_ack_wait.len(),
+        1,
+        "quarantined poison WAL should not keep redelivering after ack"
+    );
+
+    store.shutdown().await.unwrap();
+}
+
+// Documents the current quarantine-key design: keys include the JetStream
+// stream sequence, so two separate publishes of identical malformed bytes
+// are stored as TWO distinct quarantine records. Same-message redelivery is
+// deduplicated (covered above), but payload-level dedupe is not. If the
+// design changes to hash-by-content, this test must change in lockstep.
+#[tokio::test]
+async fn duplicate_poison_payloads_create_separate_quarantine_records_per_stream_seq() {
+    let fixture = NatsFixture::start().await;
+    let inner = Arc::new(InMemoryStore::new());
+    let mut config = unique_config(&fixture);
+    config.flush_interval = Duration::from_millis(50);
+    config.ack_wait = Duration::from_millis(250);
+    let store = NatsBufferedThreadStore::connect(Arc::clone(&inner), config)
+        .await
+        .expect("connect");
+
+    let payload = br#"broken-payload"#;
+    let seq1 = store
+        .__test_publish_raw_wal("t-dup-poison", payload)
+        .await
+        .expect("publish 1");
+    let seq2 = store
+        .__test_publish_raw_wal("t-dup-poison", payload)
+        .await
+        .expect("publish 2");
+    assert_ne!(seq1, seq2, "stream should hand out distinct sequences");
+
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    let records = store
+        .__test_list_poison_wal_records()
+        .await
+        .expect("list poison WAL");
+    assert_eq!(
+        records.len(),
+        2,
+        "identical payloads across different stream sequences are quarantined separately"
+    );
+    let keys: Vec<String> = records.iter().map(|(k, _)| k.clone()).collect();
+    assert!(
+        keys.contains(&format!("poison.seq.{seq1}"))
+            && keys.contains(&format!("poison.seq.{seq2}")),
+        "both quarantine slots must be keyed by stream seq, got {keys:?}"
+    );
+    for (_, record) in &records {
+        assert_eq!(record["reason"], "decode_failed");
+        assert_eq!(record["thread_id"], "t-dup-poison");
+        assert_eq!(record["payload_len"], payload.len());
+    }
+
+    store.shutdown().await.unwrap();
+}
+
+// Regression: a persistent KV outage must NOT trap the consumer in an
+// unbounded Nak loop on a poison message. After the bound kicks in
+// (`should_drop_poison_on_quarantine_failure`), the flusher acks the
+// message so the stream can make progress.
+#[tokio::test]
+async fn poison_quarantine_nak_loop_terminates_when_kv_bucket_is_deleted() {
+    let fixture = NatsFixture::start().await;
+    let inner = Arc::new(InMemoryStore::new());
+    let mut config = unique_config(&fixture);
+    config.flush_interval = Duration::from_millis(50);
+    config.ack_wait = Duration::from_millis(200);
+    let bucket_name = config.hot_bucket.clone();
+    let stream_name = config.stream_name.clone();
+    let consumer_name = config.consumer_name.clone();
+    let url = fixture.url.clone();
+
+    let store = NatsBufferedThreadStore::connect(Arc::clone(&inner), config)
+        .await
+        .expect("connect");
+
+    // Nuke the KV bucket so every quarantine `put` will fail from the
+    // flusher's side while the stream/consumer remain healthy.
+    let admin_client = async_nats::connect(&url).await.expect("admin client");
+    let admin_js = async_nats::jetstream::new(admin_client);
+    admin_js
+        .delete_key_value(&bucket_name)
+        .await
+        .expect("delete KV bucket");
+
+    // Publish a single poison message. The flusher will try to quarantine,
+    // fail repeatedly, and after the bound kicks in it must ack-drop.
+    store
+        .__test_publish_raw_wal("t-nak-bound", b"not-json-and-kv-is-gone")
+        .await
+        .expect("publish poison");
+
+    // Wait for 5 * ack_wait (1s) + ample slack so the bound has fired.
+    tokio::time::sleep(Duration::from_secs(3)).await;
+
+    // Attach a fresh admin handle and verify the consumer is no longer
+    // holding the message in its ack-pending set. If the Nak loop were
+    // unbounded, this would stay at 1 indefinitely.
+    let probe_client = async_nats::connect(&url).await.expect("probe client");
+    let probe_js = async_nats::jetstream::new(probe_client);
+    let stream = probe_js.get_stream(&stream_name).await.expect("get stream");
+    let mut consumer = stream
+        .get_consumer::<async_nats::jetstream::consumer::pull::Config>(&consumer_name)
+        .await
+        .expect("get consumer");
+    let info = consumer.info().await.expect("consumer info");
+    assert_eq!(
+        info.num_ack_pending, 0,
+        "poison message must be acked after max NAKs; consumer still shows {} pending: {info:?}",
+        info.num_ack_pending
+    );
+
+    // KV is gone, so internal shutdown housekeeping will fail — tolerate it.
+    let _ = store.shutdown().await;
+}
+
+#[tokio::test]
 async fn checkpoint_reports_commit_unknown_after_durable_wal_commit() {
     let fixture = NatsFixture::start().await;
     let inner = Arc::new(InMemoryStore::new());
