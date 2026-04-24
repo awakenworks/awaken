@@ -16,7 +16,7 @@ use awaken_contract::contract::message::{Message, ToolCall};
 use awaken_contract::contract::stream_checkpoint::{StreamCheckpoint, StreamCheckpointStore};
 use futures::StreamExt;
 
-use super::AgentLoopError;
+use super::{AgentLoopError, now_ms};
 use crate::engine::retry::LlmRetryPolicy;
 use crate::registry::ResolvedAgent;
 
@@ -60,14 +60,6 @@ async fn flush_checkpoint(
             "stream checkpoint flush failed — continuing without persistence",
         );
     }
-}
-
-fn now_ms() -> u64 {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0)
 }
 
 /// Continuation prompt injected after a mid-stream interruption to nudge
