@@ -1,17 +1,29 @@
 //! LLM inference execution and context compaction.
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use crate::cancellation::CancellationToken;
+use awaken_contract::contract::content::ContentBlock;
 use awaken_contract::contract::event::AgentEvent;
 use awaken_contract::contract::event_sink::EventSink;
-use awaken_contract::contract::executor::{InferenceRequest, LlmStreamEvent};
+use awaken_contract::contract::executor::{
+    InFlightTool, InferenceExecutionError, InferenceRequest, InterruptCause, InterruptSnapshot,
+    LlmStreamEvent, RecoveryPlan,
+};
 use awaken_contract::contract::inference::{StopReason, StreamResult, TokenUsage};
 use awaken_contract::contract::message::{Message, ToolCall};
 use futures::StreamExt;
 
 use super::AgentLoopError;
+use crate::engine::retry::LlmRetryPolicy;
 use crate::registry::ResolvedAgent;
+
+/// Continuation prompt injected after a mid-stream interruption to nudge
+/// the model to pick up where its partial response left off. Intentionally
+/// short — long prompts dilute the assistant prefix context.
+const CONTINUATION_PROMPT: &str =
+    "Your previous response was interrupted mid-stream. Continue from where you left off.";
 
 /// Execute LLM inference with streaming, emitting delta events via sink.
 ///
@@ -23,52 +35,258 @@ use crate::registry::ResolvedAgent;
 /// result is returned with `StopReason::EndTurn` (graceful cancel — no error).
 pub(super) async fn execute_streaming(
     agent: &ResolvedAgent,
-    request: InferenceRequest,
+    mut request: InferenceRequest,
     sink: &dyn EventSink,
     cancellation_token: Option<&CancellationToken>,
     total_input_tokens: &mut u64,
     total_output_tokens: &mut u64,
 ) -> Result<StreamResult, AgentLoopError> {
-    use awaken_contract::contract::content::ContentBlock;
-
-    let mut token_stream = agent.llm_executor.execute_stream(request).await?;
-
-    let mut content_blocks: Vec<ContentBlock> = Vec::new();
-    let mut tool_calls: Vec<ToolCall> = Vec::new();
-    let mut usage: Option<TokenUsage> = None;
-    let mut stop_reason: Option<StopReason> = None;
-    let mut current_text = String::new();
-    let mut current_tool_args: std::collections::HashMap<String, String> =
-        std::collections::HashMap::new();
-    let mut tool_names: std::collections::HashMap<String, String> =
-        std::collections::HashMap::new();
-    // Track insertion order so tool_calls preserves the LLM's declared order.
-    let mut tool_order: Vec<String> = Vec::new();
-    let mut cancelled = false;
+    let policy = stream_retry_policy_for(agent);
+    let idle_timeout = idle_timeout_for(&request, &policy);
+    let max_retries = policy.max_stream_retries;
+    let mut attempt: u32 = 0;
 
     loop {
+        let outcome = drive_one_stream(
+            agent,
+            request.clone(),
+            sink,
+            cancellation_token,
+            total_input_tokens,
+            total_output_tokens,
+            idle_timeout,
+        )
+        .await;
+
+        match outcome {
+            DriveOutcome::Completed(result) | DriveOutcome::Cancelled(result) => {
+                return Ok(result);
+            }
+            DriveOutcome::Error(err) => return Err(err),
+            DriveOutcome::Interrupted { cause, snapshot } => {
+                if attempt >= max_retries {
+                    tracing::warn!(
+                        attempts = attempt,
+                        cause = %cause,
+                        bytes_received = snapshot.bytes_received,
+                        "stream retry budget exhausted; surfacing StreamInterrupted",
+                    );
+                    return Err(AgentLoopError::from(
+                        InferenceExecutionError::StreamInterrupted {
+                            cause,
+                            snapshot: Box::new(snapshot),
+                        },
+                    ));
+                }
+
+                match apply_recovery_plan(&mut request, sink, &cause, &snapshot).await {
+                    RecoveryOutcome::SynthesizedToolUse(result) => return Ok(result),
+                    RecoveryOutcome::RetryAfterPlan => {
+                        let delay = stream_retry_backoff(&cause, attempt, &policy);
+                        if !delay.is_zero() {
+                            if let Some(token) = cancellation_token {
+                                tokio::select! {
+                                    biased;
+                                    _ = token.cancelled() => {
+                                        return Err(AgentLoopError::from(
+                                            InferenceExecutionError::Cancelled,
+                                        ));
+                                    }
+                                    _ = tokio::time::sleep(delay) => {}
+                                }
+                            } else {
+                                tokio::time::sleep(delay).await;
+                            }
+                        }
+                        attempt += 1;
+                        continue;
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Result of driving a single stream attempt to completion.
+enum DriveOutcome {
+    /// Stream finished naturally.
+    Completed(StreamResult),
+    /// Cancellation token fired; partial state returned with
+    /// `StopReason::EndTurn` (graceful).
+    Cancelled(StreamResult),
+    /// Mid-stream transport/idle failure; caller decides whether to retry.
+    Interrupted {
+        cause: InterruptCause,
+        snapshot: InterruptSnapshot,
+    },
+    /// Non-recoverable runtime error (stream open failed with permanent
+    /// error, sink emit failed, etc.).
+    Error(AgentLoopError),
+}
+
+enum RecoveryOutcome {
+    /// R2 path: return the synthesized tool-use stream result directly to
+    /// the caller without another inference round-trip.
+    SynthesizedToolUse(StreamResult),
+    /// R1/R3/R4 paths: `request` has been mutated (R1/R3) or left as-is
+    /// (R4); control flow loops back and opens a fresh stream.
+    RetryAfterPlan,
+}
+
+async fn apply_recovery_plan(
+    request: &mut InferenceRequest,
+    sink: &dyn EventSink,
+    cause: &InterruptCause,
+    snapshot: &InterruptSnapshot,
+) -> RecoveryOutcome {
+    match snapshot.plan() {
+        RecoveryPlan::ContinueText { assistant_prefix } => {
+            push_continuation(request, assistant_prefix);
+            RecoveryOutcome::RetryAfterPlan
+        }
+        RecoveryPlan::SynthesizeToolUse {
+            completed,
+            cancelled_tool_hint,
+        } => {
+            if let Some(hint) = &cancelled_tool_hint {
+                sink.emit(AgentEvent::ToolCallCancel {
+                    id: hint.id.clone(),
+                    name: hint.name.clone(),
+                    reason: cause.to_string(),
+                })
+                .await;
+            }
+            // Emit ToolCallReady for each completed tool so downstream
+            // consumers (UI, telemetry) see the same sequence they would
+            // have on a normal `StopReason::ToolUse` termination.
+            for call in &completed {
+                sink.emit(AgentEvent::ToolCallReady {
+                    id: call.id.clone(),
+                    name: call.name.clone(),
+                    arguments: call.arguments.clone(),
+                })
+                .await;
+            }
+            let content = match snapshot.text.as_ref() {
+                Some(t) if !t.is_empty() => vec![ContentBlock::text(t.clone())],
+                _ => Vec::new(),
+            };
+            RecoveryOutcome::SynthesizedToolUse(StreamResult {
+                content,
+                tool_calls: completed,
+                usage: None,
+                stop_reason: Some(StopReason::ToolUse),
+                has_incomplete_tool_calls: false,
+            })
+        }
+        RecoveryPlan::TruncateBeforeTool {
+            assistant_prefix,
+            cancelled_tool_id,
+            cancelled_tool_name,
+        } => {
+            sink.emit(AgentEvent::ToolCallCancel {
+                id: cancelled_tool_id,
+                name: cancelled_tool_name,
+                reason: cause.to_string(),
+            })
+            .await;
+            push_continuation(request, assistant_prefix);
+            RecoveryOutcome::RetryAfterPlan
+        }
+        RecoveryPlan::WholeRestart => {
+            sink.emit(AgentEvent::StreamReset {
+                reason: cause.to_string(),
+            })
+            .await;
+            RecoveryOutcome::RetryAfterPlan
+        }
+    }
+}
+
+fn push_continuation(request: &mut InferenceRequest, assistant_prefix: String) {
+    if !assistant_prefix.is_empty() {
+        request.messages.push(Message::assistant(assistant_prefix));
+    }
+    request.messages.push(Message::user(CONTINUATION_PROMPT));
+}
+
+/// Drive a single `execute_stream` call to completion, returning one of
+/// three outcomes. The mid-stream error-to-`InterruptCause` classification
+/// lives here.
+async fn drive_one_stream(
+    agent: &ResolvedAgent,
+    request: InferenceRequest,
+    sink: &dyn EventSink,
+    cancellation_token: Option<&CancellationToken>,
+    total_input_tokens: &mut u64,
+    total_output_tokens: &mut u64,
+    idle_timeout: Duration,
+) -> DriveOutcome {
+    let mut token_stream = match agent.llm_executor.execute_stream(request).await {
+        Ok(s) => s,
+        Err(err) => {
+            // `err` here comes from the executor (including `RetryingExecutor`)
+            // and has already exhausted its own retries. Surface it.
+            return DriveOutcome::Error(AgentLoopError::from(err));
+        }
+    };
+
+    let mut acc = StreamingAccumulator::default();
+
+    loop {
+        let next_fut = async { tokio::time::timeout(idle_timeout, token_stream.next()).await };
+
         let event = if let Some(token) = cancellation_token {
             tokio::select! {
                 biased;
                 _ = token.cancelled() => {
-                    cancelled = true;
+                    acc.cancelled = true;
                     break;
                 }
-                next = token_stream.next() => next,
+                r = next_fut => r,
             }
         } else {
-            token_stream.next().await
+            next_fut.await
         };
 
-        let Some(event_result) = event else {
-            break; // stream ended
+        let poll = match event {
+            Ok(p) => p,
+            Err(_) => {
+                // Idle stall — no delta in `idle_timeout`.
+                let snapshot = acc.interrupt_snapshot();
+                return DriveOutcome::Interrupted {
+                    cause: InterruptCause::IdleStall,
+                    snapshot,
+                };
+            }
         };
 
-        let event = event_result?;
+        let Some(event_result) = poll else {
+            break; // stream ended cleanly
+        };
+
+        let event = match event_result {
+            Ok(ev) => ev,
+            Err(err) => {
+                // Mid-stream transport error. Classify and surface.
+                let snapshot = acc.interrupt_snapshot();
+                match classify_mid_stream(&err) {
+                    Some(cause) => {
+                        tracing::debug!(
+                            cause = %cause,
+                            bytes_received = snapshot.bytes_received,
+                            "mid-stream error captured, entering recovery"
+                        );
+                        return DriveOutcome::Interrupted { cause, snapshot };
+                    }
+                    None => return DriveOutcome::Error(AgentLoopError::from(err)),
+                }
+            }
+        };
 
         match event {
             LlmStreamEvent::TextDelta(delta) => {
-                current_text.push_str(&delta);
+                acc.current_text.push_str(&delta);
                 sink.emit(AgentEvent::TextDelta { delta }).await;
             }
             LlmStreamEvent::ReasoningDelta(delta) => {
@@ -80,20 +298,21 @@ pub(super) async fn execute_streaming(
                     name: name.clone(),
                 })
                 .await;
-                tool_names.insert(id.clone(), name);
-                current_tool_args.insert(id.clone(), String::new());
-                tool_order.push(id);
+                acc.tool_names.insert(id.clone(), name);
+                acc.current_tool_args.insert(id.clone(), String::new());
+                acc.tool_order.push(id);
             }
             LlmStreamEvent::ToolCallDelta { id, args_delta } => {
-                if let Some(buf) = current_tool_args.get_mut(&id) {
+                if let Some(buf) = acc.current_tool_args.get_mut(&id) {
                     buf.push_str(&args_delta);
                 }
                 sink.emit(AgentEvent::ToolCallDelta { id, args_delta })
                     .await;
             }
             LlmStreamEvent::ContentBlockStop => {
-                if !current_text.is_empty() {
-                    content_blocks.push(ContentBlock::text(std::mem::take(&mut current_text)));
+                if !acc.current_text.is_empty() {
+                    acc.content_blocks
+                        .push(ContentBlock::text(std::mem::take(&mut acc.current_text)));
                 }
             }
             LlmStreamEvent::Usage(u) => {
@@ -103,51 +322,195 @@ pub(super) async fn execute_streaming(
                 if let Some(v) = u.completion_tokens {
                     *total_output_tokens = total_output_tokens.saturating_add(v.max(0) as u64);
                 }
-                usage = Some(u);
+                acc.usage = Some(u);
             }
             LlmStreamEvent::Stop(reason) => {
-                stop_reason = Some(reason);
+                acc.stop_reason = Some(reason);
             }
         }
     }
 
-    // Flush remaining text
-    if !current_text.is_empty() {
-        content_blocks.push(ContentBlock::text(current_text));
+    // Stream drained cleanly (or cancelled): finalize.
+    let result = acc.finalize(sink).await;
+    if acc.cancelled {
+        DriveOutcome::Cancelled(result)
+    } else {
+        DriveOutcome::Completed(result)
     }
+}
 
-    // Collect tool calls from accumulated args in LLM-declared order (drop incomplete on cancel)
-    let mut has_incomplete_tool_calls = false;
-    if !cancelled {
-        for id in &tool_order {
-            let args_json = current_tool_args.get(id).cloned().unwrap_or_default();
-            let name = tool_names.get(id).cloned().unwrap_or_default();
-            let arguments = serde_json::from_str(&args_json).unwrap_or(serde_json::Value::Null);
-            if arguments.is_null() && !args_json.is_empty() {
-                has_incomplete_tool_calls = true;
-                continue; // truncated JSON, skip
+#[derive(Default)]
+struct StreamingAccumulator {
+    content_blocks: Vec<ContentBlock>,
+    usage: Option<TokenUsage>,
+    stop_reason: Option<StopReason>,
+    current_text: String,
+    current_tool_args: std::collections::HashMap<String, String>,
+    tool_names: std::collections::HashMap<String, String>,
+    tool_order: Vec<String>,
+    bytes_received: usize,
+    cancelled: bool,
+}
+
+impl StreamingAccumulator {
+    /// Build an [`InterruptSnapshot`] reflecting the current accumulator
+    /// state. Preserves text (may be empty), marks tool calls with valid
+    /// JSON as completed and the most-recent unparseable one as in-flight.
+    fn interrupt_snapshot(&self) -> InterruptSnapshot {
+        let mut completed: Vec<ToolCall> = Vec::new();
+        let mut in_flight: Option<InFlightTool> = None;
+
+        for id in &self.tool_order {
+            let args_json = self.current_tool_args.get(id).cloned().unwrap_or_default();
+            let name = self.tool_names.get(id).cloned().unwrap_or_default();
+
+            if name.is_empty() {
+                in_flight = Some(InFlightTool {
+                    id: id.clone(),
+                    name: String::new(),
+                    partial_args: args_json,
+                });
+                continue;
             }
-            tool_calls.push(ToolCall::new(id.clone(), name.clone(), arguments.clone()));
-            sink.emit(AgentEvent::ToolCallReady {
-                id: id.clone(),
-                name,
-                arguments,
-            })
-            .await;
-        }
-    }
 
-    Ok(StreamResult {
-        content: content_blocks,
-        tool_calls,
-        usage,
-        stop_reason: if cancelled {
-            Some(StopReason::EndTurn)
+            match serde_json::from_str::<serde_json::Value>(&args_json) {
+                Ok(arguments) if !(arguments.is_null() && !args_json.is_empty()) => {
+                    completed.push(ToolCall::new(id.clone(), name, arguments));
+                }
+                _ => {
+                    in_flight = Some(InFlightTool {
+                        id: id.clone(),
+                        name,
+                        partial_args: args_json,
+                    });
+                }
+            }
+        }
+
+        let text = if self.current_text.is_empty() {
+            self.content_blocks
+                .iter()
+                .filter_map(|b| match b {
+                    ContentBlock::Text { text } if !text.is_empty() => Some(text.clone()),
+                    _ => None,
+                })
+                .reduce(|a, b| a + &b)
         } else {
-            stop_reason
-        },
-        has_incomplete_tool_calls,
-    })
+            Some(self.current_text.clone())
+        };
+
+        InterruptSnapshot {
+            text,
+            completed_tool_calls: completed,
+            in_flight_tool: in_flight,
+            bytes_received: self.bytes_received,
+        }
+    }
+
+    async fn finalize(&mut self, sink: &dyn EventSink) -> StreamResult {
+        // Flush remaining text into a content block.
+        if !self.current_text.is_empty() {
+            self.content_blocks
+                .push(ContentBlock::text(std::mem::take(&mut self.current_text)));
+        }
+
+        let mut tool_calls = Vec::new();
+        let mut has_incomplete_tool_calls = false;
+
+        if !self.cancelled {
+            for id in &self.tool_order {
+                let args_json = self.current_tool_args.get(id).cloned().unwrap_or_default();
+                let name = self.tool_names.get(id).cloned().unwrap_or_default();
+                let arguments = serde_json::from_str(&args_json).unwrap_or(serde_json::Value::Null);
+                if arguments.is_null() && !args_json.is_empty() {
+                    has_incomplete_tool_calls = true;
+                    continue;
+                }
+                tool_calls.push(ToolCall::new(id.clone(), name.clone(), arguments.clone()));
+                sink.emit(AgentEvent::ToolCallReady {
+                    id: id.clone(),
+                    name,
+                    arguments,
+                })
+                .await;
+            }
+        }
+
+        StreamResult {
+            content: std::mem::take(&mut self.content_blocks),
+            tool_calls,
+            usage: self.usage.take(),
+            stop_reason: if self.cancelled {
+                Some(StopReason::EndTurn)
+            } else {
+                self.stop_reason.take()
+            },
+            has_incomplete_tool_calls,
+        }
+    }
+}
+
+/// Classify a mid-stream error into an `InterruptCause`. Returns `None`
+/// when the error is of a kind that should NOT enter the recovery loop
+/// (e.g. `ContextOverflow`, `Unauthorized`, `Cancelled`) — those propagate
+/// as a regular `Error` outcome.
+fn classify_mid_stream(err: &InferenceExecutionError) -> Option<InterruptCause> {
+    match err {
+        // Recoverable — transport-ish failures.
+        InferenceExecutionError::Provider(_)
+        | InferenceExecutionError::Timeout(_)
+        | InferenceExecutionError::RateLimited { .. }
+        | InferenceExecutionError::Overloaded { .. } => Some(InterruptCause::ConnectionReset),
+
+        // Already-classified stream interruption — preserve cause.
+        InferenceExecutionError::StreamInterrupted { cause, .. } => Some(cause.clone()),
+
+        // Permanent / lifecycle — surface to caller, not a mid-stream retry.
+        _ => None,
+    }
+}
+
+/// Fetch the active retry policy. Falls back to defaults for agents that
+/// do not configure one. The agent-level override plumbing lives in
+/// `engine::retry::RetryConfigKey`; for now, treat missing config as
+/// "use defaults".
+fn stream_retry_policy_for(_agent: &ResolvedAgent) -> LlmRetryPolicy {
+    LlmRetryPolicy::default()
+}
+
+/// Model-aware idle-stall threshold. Thinking / reasoning models receive
+/// a 2× window to accommodate long silent reasoning phases.
+fn idle_timeout_for(request: &InferenceRequest, policy: &LlmRetryPolicy) -> Duration {
+    let base = Duration::from_secs(policy.stream_idle_timeout_secs);
+    let model = request.upstream_model.as_str();
+    let name_hits = model.contains("thinking")
+        || model.contains("reasoning")
+        || model.starts_with("o1")
+        || model.starts_with("o3")
+        || model.starts_with("o4");
+    let options_hits = request
+        .overrides
+        .as_ref()
+        .and_then(|o| o.reasoning_effort.as_ref())
+        .is_some();
+    if name_hits || options_hits {
+        base * 2
+    } else {
+        base
+    }
+}
+
+fn stream_retry_backoff(cause: &InterruptCause, attempt: u32, policy: &LlmRetryPolicy) -> Duration {
+    // Mid-stream retries use the normal backoff; Overloaded-style
+    // surges propagate through `RetryingExecutor` on stream open, not
+    // here. For idle stalls, use a short delay to probe quickly.
+    match cause {
+        InterruptCause::IdleStall => Duration::from_millis(200),
+        _ => policy.delay_before_retry(
+            &InferenceExecutionError::Provider("mid-stream".into()),
+            attempt,
+        ),
+    }
 }
 
 /// Compact messages using the configured ContextSummarizer.
@@ -252,14 +615,25 @@ mod tests {
 
     // -- Streaming LLM executor that yields explicit stream events --
 
+    /// Mock LLM executor that yields a fixed scripted event sequence on
+    /// EVERY call to `execute_stream`. Cloning the script per attempt means
+    /// stream-level retries in `execute_streaming` observe the same
+    /// behavior across attempts — useful when asserting retry budgets.
     struct StreamingMockExecutor {
-        events: std::sync::Mutex<Option<Vec<Result<LlmStreamEvent, InferenceExecutionError>>>>,
+        script: Vec<ClonedEvent>,
     }
+
+    /// Serializable-as-needed twin of the scripted events. `LlmStreamEvent`
+    /// itself is Clone via Copy/String fields; `InferenceExecutionError` is
+    /// now Clone as of the Phase-A refactor — so a straightforward clone
+    /// works, but we normalize to owned values here for clarity.
+    #[derive(Clone)]
+    struct ClonedEvent(Result<LlmStreamEvent, InferenceExecutionError>);
 
     impl StreamingMockExecutor {
         fn new(events: Vec<Result<LlmStreamEvent, InferenceExecutionError>>) -> Self {
             Self {
-                events: std::sync::Mutex::new(Some(events)),
+                script: events.into_iter().map(ClonedEvent).collect(),
             }
         }
     }
@@ -289,7 +663,8 @@ mod tests {
                     + '_,
             >,
         > {
-            let events = self.events.lock().unwrap().take().unwrap_or_default();
+            let events: Vec<Result<LlmStreamEvent, InferenceExecutionError>> =
+                self.script.iter().map(|e| e.0.clone()).collect();
             Box::pin(async move { Ok(Box::pin(futures::stream::iter(events)) as InferenceStream) })
         }
 
@@ -700,6 +1075,10 @@ mod tests {
 
     #[tokio::test]
     async fn stream_error_propagated_as_agent_loop_error() {
+        // Mid-stream provider error after accumulated text. Under the
+        // Phase-D recovery flow this enters R1 (ContinueText), retries up
+        // to the stream-retry budget, and finally surfaces a
+        // StreamInterrupted error when every attempt reproduces the fault.
         let agent = make_agent(vec![
             Ok(LlmStreamEvent::TextDelta("before error".into())),
             Err(InferenceExecutionError::Provider("rate limited".into())),
@@ -714,7 +1093,10 @@ mod tests {
 
         match err {
             AgentLoopError::InferenceFailed(msg) => {
-                assert!(msg.contains("rate limited"));
+                assert!(
+                    msg.contains("stream interrupted"),
+                    "expected stream-interrupt message, got: {msg}"
+                );
             }
             other => panic!("expected InferenceFailed, got: {other:?}"),
         }
@@ -808,6 +1190,9 @@ mod tests {
 
     #[tokio::test]
     async fn error_after_zero_events_returns_inference_failed() {
+        // 0 successful events + error → R4 (WholeRestart). The recovery
+        // loop emits `StreamReset` for each retry then surfaces
+        // `StreamInterrupted` once the budget exhausts.
         let agent = make_failing_agent(0);
         let sink = VecEventSink::new();
         let mut it = 0u64;
@@ -819,13 +1204,21 @@ mod tests {
 
         match err {
             AgentLoopError::InferenceFailed(msg) => {
-                assert!(msg.contains("injected mid-stream failure"));
+                assert!(
+                    msg.contains("stream interrupted"),
+                    "expected stream-interrupt message, got: {msg}"
+                );
             }
             other => panic!("expected InferenceFailed, got: {other:?}"),
         }
 
-        // No events should have been emitted
-        assert!(sink.take().is_empty());
+        let events = sink.take();
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, AgentEvent::StreamReset { .. })),
+            "expected at least one StreamReset event, got: {events:?}"
+        );
     }
 
     #[tokio::test]
@@ -841,13 +1234,20 @@ mod tests {
 
         assert!(matches!(err, AgentLoopError::InferenceFailed(_)));
 
-        // 3 TextDelta events should have been emitted before the error
+        // At least 3 TextDelta events should have been emitted before the
+        // first error. Retries under the R1 recovery plan may emit more
+        // duplicated deltas across attempts; we assert the floor rather
+        // than an exact count so the test stays agnostic to retry budget.
         let events = sink.take();
         let text_deltas: Vec<_> = events
             .iter()
             .filter(|e| matches!(e, AgentEvent::TextDelta { .. }))
             .collect();
-        assert_eq!(text_deltas.len(), 3);
+        assert!(
+            text_deltas.len() >= 3,
+            "expected >=3 text deltas (with possible retries), got {}",
+            text_deltas.len()
+        );
     }
 
     // -- Executor that immediately fails at execute_stream level --
@@ -913,6 +1313,10 @@ mod tests {
 
     #[tokio::test]
     async fn rate_limited_error_surfaces_correctly() {
+        // Rate-limit mid-stream retries through R4 (WholeRestart) since no
+        // deltas are accumulated yet when the error fires. After the
+        // stream retry budget is exhausted the caller sees a
+        // stream-interrupted error.
         let agent = make_agent(vec![Err(InferenceExecutionError::rate_limited(
             "429 too many requests",
         ))]);
@@ -926,7 +1330,10 @@ mod tests {
 
         match err {
             AgentLoopError::InferenceFailed(msg) => {
-                assert!(msg.contains("429 too many requests"));
+                assert!(
+                    msg.contains("stream interrupted"),
+                    "expected stream-interrupt message, got: {msg}"
+                );
             }
             other => panic!("expected InferenceFailed, got: {other:?}"),
         }
@@ -934,6 +1341,8 @@ mod tests {
 
     #[tokio::test]
     async fn timeout_error_surfaces_correctly() {
+        // Timeout mid-stream routes through the recovery loop and
+        // surfaces as `stream interrupted` after the budget exhausts.
         let agent = make_agent(vec![Err(InferenceExecutionError::Timeout(
             "30s exceeded".into(),
         ))]);
@@ -947,7 +1356,12 @@ mod tests {
 
         match err {
             AgentLoopError::InferenceFailed(msg) => {
-                assert!(msg.contains("30s exceeded"));
+                assert!(
+                    msg.contains("stream interrupted"),
+                    "expected stream-interrupt message, got: {msg}"
+                );
+                // original classifier info is preserved in snapshot cause (connection reset for mapped Timeout).
+                let _ = "30s exceeded"; // keep literal for test discoverability
             }
             other => panic!("expected InferenceFailed, got: {other:?}"),
         }
@@ -1031,6 +1445,11 @@ mod tests {
 
     #[tokio::test]
     async fn error_mid_tool_call_returns_inference_error() {
+        // ToolCallStart + partial ToolCallDelta + mid-stream error →
+        // snapshot has an in-flight tool but no completed tools and no
+        // text. That's R4 (WholeRestart): emit StreamReset, retry. All
+        // retries reproduce the same failure and the stream retry budget
+        // exhausts into a stream-interrupt error.
         let agent = make_agent(vec![
             Ok(LlmStreamEvent::ToolCallStart {
                 id: "tc1".into(),
@@ -1052,17 +1471,26 @@ mod tests {
 
         match err {
             AgentLoopError::InferenceFailed(msg) => {
-                assert!(msg.contains("connection reset"));
+                assert!(
+                    msg.contains("stream interrupted"),
+                    "expected stream-interrupt message, got: {msg}"
+                );
             }
             other => panic!("expected InferenceFailed, got: {other:?}"),
         }
 
-        // Events before the error should still have been emitted
+        // Events before the error should still have been emitted, and
+        // a StreamReset event should appear from the R4 recovery path.
         let events = sink.take();
         assert!(
             events
                 .iter()
                 .any(|e| matches!(e, AgentEvent::ToolCallStart { .. }))
+        );
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, AgentEvent::StreamReset { .. }))
         );
     }
 }
