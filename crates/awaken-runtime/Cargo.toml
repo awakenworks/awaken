@@ -27,6 +27,7 @@ reqwest = { workspace = true }
 schemars = { workspace = true }
 jsonschema = { workspace = true }
 parking_lot = { workspace = true }
+metrics = "0.24"
 
 [features]
 default = ["a2a", "handoff", "background"]
@@ -41,6 +42,7 @@ awaken-runtime = { path = ".", features = ["test-utils"] }
 awaken-stores = { workspace = true }
 tokio = { workspace = true }
 proptest = { workspace = true }
+metrics-util = "0.20"
 
 [lints]
 workspace = true

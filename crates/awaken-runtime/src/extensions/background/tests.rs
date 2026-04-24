@@ -2005,9 +2005,15 @@ async fn full_lifecycle_sub_agent_with_child_tasks() {
             },
             |_cancel, child_inbox_sender, mut child_inbox_receiver| async move {
                 // Sub-agent creates its own background task manager
+                let child_store = StateStore::new();
                 let child_manager = BackgroundTaskManager::new();
                 child_manager.set_owner_inbox(child_inbox_sender);
                 let child_manager = Arc::new(child_manager);
+                child_manager.set_store(child_store.clone());
+                let plugin: Arc<dyn Plugin> =
+                    Arc::new(BackgroundTaskPlugin::new(child_manager.clone()));
+                let env = ExecutionEnv::from_plugins(&[plugin], &Default::default()).unwrap();
+                child_store.register_keys(&env.key_registrations).unwrap();
 
                 // Sub-agent spawns a background task
                 child_manager
@@ -2596,6 +2602,232 @@ async fn spawn_rejects_duplicate_name() {
     ));
 
     manager.cancel(&_id).await;
+}
+
+#[tokio::test]
+async fn spawn_fails_when_background_store_is_not_configured() {
+    let manager = Arc::new(BackgroundTaskManager::new());
+
+    let result = manager
+        .spawn(
+            "thread-1",
+            "test",
+            None,
+            "desc",
+            TaskParentContext::default(),
+            |_ctx| async { TaskResult::Success(serde_json::json!(null)) },
+        )
+        .await;
+
+    assert!(matches!(
+        result,
+        Err(super::manager::SpawnError::StoreNotConfigured)
+    ));
+}
+
+#[tokio::test]
+async fn spawn_agent_fails_when_background_keys_are_not_registered() {
+    use awaken_contract::StateError;
+
+    let store = StateStore::new();
+    let manager = Arc::new(BackgroundTaskManager::new());
+    manager.set_store(store);
+
+    let result = manager
+        .spawn_agent(
+            "thread-1",
+            Some("worker"),
+            "desc",
+            TaskParentContext::default(),
+            |_cancel, _tx, _rx| async { TaskResult::Success(serde_json::json!(null)) },
+        )
+        .await;
+
+    assert!(matches!(
+        result,
+        Err(super::manager::SpawnError::State(
+            StateError::UnknownKey { .. }
+        ))
+    ));
+}
+
+#[test]
+fn owner_inbox_lock_recovers_after_panicking_holder() {
+    let manager = BackgroundTaskManager::new();
+    let panic_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        manager.panic_while_holding_owner_inbox_lock_for_test();
+    }));
+    assert!(panic_result.is_err());
+
+    let (tx, _rx) = inbox_channel();
+    manager.set_owner_inbox(tx);
+    assert!(manager.has_owner_inbox_for_test());
+}
+
+/// Exposes the asymmetry flagged in PR review: spawn-time commit failure is
+/// returned as `SpawnError::State(_)`, but completion-time commit failure is
+/// only logged via `tracing::warn!`. The task genuinely runs and terminates,
+/// yet the store still shows `TaskStatus::Running` with no `completed_at_ms`,
+/// so downstream consumers of the persisted metadata see a permanent zombie.
+#[tokio::test]
+async fn completion_metadata_commit_failure_leaves_store_stuck_at_running() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::time::Duration;
+    use tokio::sync::Notify;
+
+    // Install via `install_plugin` so we can later `uninstall_plugin` to rip
+    // the key registration out from under the completion-time commit.
+    let store = StateStore::new();
+    let manager = Arc::new(BackgroundTaskManager::new());
+    manager.set_store(store.clone());
+    store
+        .install_plugin(BackgroundTaskPlugin::new(manager.clone()))
+        .unwrap();
+
+    let gate = Arc::new(Notify::new());
+    let gate_for_task = gate.clone();
+    let ran = Arc::new(AtomicBool::new(false));
+    let ran_for_task = ran.clone();
+
+    let task_id = manager
+        .spawn(
+            "thread-zombie",
+            "worker",
+            None,
+            "desc",
+            TaskParentContext::default(),
+            move |_ctx| async move {
+                gate_for_task.notified().await;
+                ran_for_task.store(true, Ordering::SeqCst);
+                TaskResult::Success(serde_json::json!("done"))
+            },
+        )
+        .await
+        .expect("spawn succeeds while the store is healthy");
+
+    let running_snap = store
+        .read::<BackgroundTaskStateKey>()
+        .expect("spawn commit must have populated the key");
+    let running_meta = running_snap
+        .tasks
+        .get(&task_id)
+        .expect("spawn-time metadata must be visible");
+    assert_eq!(running_meta.status, TaskStatus::Running);
+    assert!(running_meta.completed_at_ms.is_none());
+
+    // Break the commit path: uninstall clears the key state AND unregisters
+    // the key, so subsequent commit_meta calls hit `StateError::UnknownKey`.
+    store
+        .uninstall_plugin::<BackgroundTaskPlugin>()
+        .expect("uninstall clears registration and snapshot state");
+
+    gate.notify_one();
+    let deadline = std::time::Instant::now() + Duration::from_secs(2);
+    while !ran.load(Ordering::SeqCst) {
+        if std::time::Instant::now() >= deadline {
+            panic!("task body never ran");
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    // Give the completion branch a moment to *attempt* its commit.
+    tokio::time::sleep(Duration::from_millis(75)).await;
+
+    // The task visibly completed (it set `ran = true` and its tokio body
+    // returned), yet the store has no Completed record. Observability of
+    // the divergence is covered by tracing::warn! plus the
+    // `awaken_background_task_state_commit_failures_total` counter (see
+    // `completion_metadata_commit_failure_increments_observability_metric`).
+    assert!(ran.load(Ordering::SeqCst), "task ran to completion");
+    let still_running_or_absent = match store.read::<BackgroundTaskStateKey>() {
+        None => true,
+        Some(snap) => match snap.tasks.get(&task_id) {
+            None => true,
+            Some(meta) => meta.status == TaskStatus::Running,
+        },
+    };
+    assert!(
+        still_running_or_absent,
+        "completion-time commit failure is silent: store does not reflect the task's real outcome"
+    );
+}
+
+/// Companion to `completion_metadata_commit_failure_leaves_store_stuck_at_running`:
+/// proves that the silent commit failure is now also exposed through a
+/// low-cardinality counter (`awaken_background_task_state_commit_failures_total`
+/// labelled by `operation`). This is the signal ops can alert on.
+#[test]
+fn completion_metadata_commit_failure_increments_observability_metric() {
+    use metrics_util::debugging::{DebugValue, DebuggingRecorder};
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::time::Duration;
+    use tokio::sync::Notify;
+
+    let recorder = DebuggingRecorder::new();
+    let snapshotter = recorder.snapshotter();
+
+    metrics::with_local_recorder(&recorder, || {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+        rt.block_on(async {
+            let store = StateStore::new();
+            let manager = Arc::new(BackgroundTaskManager::new());
+            manager.set_store(store.clone());
+            store
+                .install_plugin(BackgroundTaskPlugin::new(manager.clone()))
+                .unwrap();
+
+            let gate = Arc::new(Notify::new());
+            let gate_for_task = gate.clone();
+            let ran = Arc::new(AtomicBool::new(false));
+            let ran_for_task = ran.clone();
+
+            manager
+                .spawn(
+                    "thread-metric",
+                    "worker",
+                    None,
+                    "desc",
+                    TaskParentContext::default(),
+                    move |_ctx| async move {
+                        gate_for_task.notified().await;
+                        ran_for_task.store(true, Ordering::SeqCst);
+                        TaskResult::Success(serde_json::json!(null))
+                    },
+                )
+                .await
+                .expect("spawn");
+
+            store.uninstall_plugin::<BackgroundTaskPlugin>().unwrap();
+            gate.notify_one();
+            let deadline = std::time::Instant::now() + Duration::from_secs(2);
+            while !ran.load(Ordering::SeqCst) {
+                assert!(std::time::Instant::now() < deadline, "task body never ran");
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            tokio::time::sleep(Duration::from_millis(75)).await;
+        });
+    });
+
+    let snapshot = snapshotter.snapshot().into_vec();
+    let entry = snapshot
+        .iter()
+        .find(|(ck, _, _, _)| {
+            ck.key().name() == "awaken_background_task_state_commit_failures_total"
+                && ck
+                    .key()
+                    .labels()
+                    .any(|label| label.key() == "operation" && label.value() == "task_completion")
+        })
+        .expect("counter awaken_background_task_state_commit_failures_total{operation=task_completion} must be emitted");
+    match entry.3 {
+        DebugValue::Counter(n) => assert!(
+            n >= 1,
+            "counter should have incremented at least once, got {n}"
+        ),
+        ref other => panic!("expected Counter, got {other:?}"),
+    }
 }
 
 #[tokio::test]

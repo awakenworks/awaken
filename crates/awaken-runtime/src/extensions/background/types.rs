@@ -122,7 +122,9 @@ impl TaskContext {
             payload,
         };
         match &self.inbox {
-            Some(s) => s.send(serde_json::to_value(&event).unwrap_or_default()),
+            Some(s) => {
+                s.send(serde_json::to_value(&event).expect("TaskEvent serialization is infallible"))
+            }
             None => false,
         }
     }
