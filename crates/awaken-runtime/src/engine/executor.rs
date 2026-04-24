@@ -144,29 +144,25 @@ impl GenaiExecutor {
     fn map_error(e: genai::Error) -> InferenceExecutionError {
         tracing::warn!(error = ?e, "LLM inference error");
 
-        // Try structured matching on status codes first.
-        if let Some(status) = Self::extract_status_code(&e) {
-            let msg = format!("{e:#}");
-            return match status.as_u16() {
-                429 => InferenceExecutionError::RateLimited(msg),
-                408 | 504 => InferenceExecutionError::Timeout(msg),
-                500 | 502 | 503 => InferenceExecutionError::Provider(msg),
-                _ => InferenceExecutionError::Provider(msg),
-            };
+        let parts = Self::extract_structured_parts(&e);
+        let msg = format!("{e:#}");
+
+        if let Some((status, body, retry_after)) = parts {
+            return Self::classify_status(status, &msg, body.as_deref(), retry_after);
         }
 
         // Fall back to string matching for errors without structured status codes.
-        let msg = format!("{e:#}");
         let lower = msg.to_lowercase();
-        if lower.contains("rate") || lower.contains("429") || lower.contains("too many requests") {
-            InferenceExecutionError::RateLimited(msg)
+        if lower.contains("overloaded") {
+            InferenceExecutionError::overloaded(msg)
+        } else if lower.contains("rate")
+            || lower.contains("429")
+            || lower.contains("too many requests")
+        {
+            InferenceExecutionError::rate_limited(msg)
         } else if lower.contains("timeout") || lower.contains("timed out") {
             InferenceExecutionError::Timeout(msg)
-        } else if lower.contains("overloaded")
-            || lower.contains("503")
-            || lower.contains("502")
-            || lower.contains("500")
-        {
+        } else if lower.contains("503") || lower.contains("502") || lower.contains("500") {
             InferenceExecutionError::Provider(msg)
         } else {
             tracing::warn!(error_msg = %msg, "unclassified LLM error — consider adding a pattern");
@@ -174,21 +170,96 @@ impl GenaiExecutor {
         }
     }
 
-    /// Extract an HTTP status code from structured `genai::Error` variants.
-    fn extract_status_code(e: &genai::Error) -> Option<StatusCode> {
-        match e {
-            genai::Error::HttpError { status, .. } => Some(*status),
-            genai::Error::WebAdapterCall { webc_error, .. }
-            | genai::Error::WebModelCall { webc_error, .. } => {
-                if let genai::webc::Error::ResponseFailedStatus { status, .. } = webc_error {
-                    Some(*status)
+    /// Classify a structured HTTP status into an `InferenceExecutionError`.
+    ///
+    /// `body` is inspected for status 400 to distinguish `ContextOverflow`
+    /// (prompt too long / token limit exceeded) from generic `InvalidRequest`.
+    fn classify_status(
+        status: StatusCode,
+        msg: &str,
+        body: Option<&str>,
+        retry_after: Option<Duration>,
+    ) -> InferenceExecutionError {
+        match status.as_u16() {
+            429 => InferenceExecutionError::RateLimited {
+                message: msg.to_string(),
+                retry_after,
+            },
+            529 | 503 => InferenceExecutionError::Overloaded {
+                message: msg.to_string(),
+                retry_after,
+            },
+            408 | 504 => InferenceExecutionError::Timeout(msg.to_string()),
+            500 | 502 => InferenceExecutionError::Provider(msg.to_string()),
+            400 => {
+                if Self::looks_like_context_overflow(body, msg) {
+                    InferenceExecutionError::ContextOverflow(msg.to_string())
                 } else {
-                    None
+                    InferenceExecutionError::InvalidRequest(msg.to_string())
                 }
             }
+            401 | 403 => InferenceExecutionError::Unauthorized(msg.to_string()),
+            404 => InferenceExecutionError::ModelNotFound(msg.to_string()),
+            413 => InferenceExecutionError::ContextOverflow(msg.to_string()),
+            422 => InferenceExecutionError::InvalidRequest(msg.to_string()),
+            _ => InferenceExecutionError::Provider(msg.to_string()),
+        }
+    }
+
+    /// Match provider error bodies that signal a context-length problem.
+    ///
+    /// Patterns are drawn from Anthropic, OpenAI, and Azure OpenAI error
+    /// messages. Matching is substring-based and case-insensitive.
+    fn looks_like_context_overflow(body: Option<&str>, msg: &str) -> bool {
+        const NEEDLES: &[&str] = &[
+            "prompt is too long",
+            "context_length_exceeded",
+            "context length",
+            "input is too long",
+            "maximum context length",
+            "reduce the length",
+            "too many tokens",
+            "request too large",
+        ];
+        let haystack_lower = match body {
+            Some(b) if !b.is_empty() => b.to_lowercase(),
+            _ => msg.to_lowercase(),
+        };
+        NEEDLES.iter().any(|needle| haystack_lower.contains(needle))
+    }
+
+    /// Extract `(status, body, Retry-After)` from structured `genai::Error`
+    /// variants when available. `HttpError` only yields a status.
+    fn extract_structured_parts(
+        e: &genai::Error,
+    ) -> Option<(StatusCode, Option<String>, Option<Duration>)> {
+        match e {
+            genai::Error::HttpError { status, .. } => Some((*status, None, None)),
+            genai::Error::WebAdapterCall { webc_error, .. }
+            | genai::Error::WebModelCall { webc_error, .. } => match webc_error {
+                genai::webc::Error::ResponseFailedStatus {
+                    status,
+                    body,
+                    headers,
+                } => {
+                    let retry = parse_retry_after(headers);
+                    Some((*status, Some(body.clone()), retry))
+                }
+                _ => None,
+            },
             _ => None,
         }
     }
+}
+
+/// Parse an HTTP `Retry-After` header as a `Duration`. Only the
+/// delta-seconds form (RFC 9110 §10.2.3 form 1) is supported; HTTP-date
+/// form is rare in LLM provider responses and yields `None`.
+fn parse_retry_after(headers: &reqwest::header::HeaderMap) -> Option<Duration> {
+    let value = headers.get(reqwest::header::RETRY_AFTER)?;
+    let text = value.to_str().ok()?.trim();
+    let seconds: u64 = text.parse().ok()?;
+    Some(Duration::from_secs(seconds))
 }
 
 impl Default for GenaiExecutor {
@@ -564,7 +635,7 @@ mod tests {
         let err = genai::Error::Internal("server returned 429".into());
         let mapped = GenaiExecutor::map_error(err);
         assert!(
-            matches!(mapped, InferenceExecutionError::RateLimited(_)),
+            matches!(mapped, InferenceExecutionError::RateLimited { .. }),
             "expected RateLimited, got {mapped:?}"
         );
     }
@@ -574,7 +645,7 @@ mod tests {
         let err = genai::Error::Internal("rate limit exceeded".into());
         let mapped = GenaiExecutor::map_error(err);
         assert!(
-            matches!(mapped, InferenceExecutionError::RateLimited(_)),
+            matches!(mapped, InferenceExecutionError::RateLimited { .. }),
             "expected RateLimited, got {mapped:?}"
         );
     }
@@ -614,7 +685,7 @@ mod tests {
         let err = genai::Error::Internal("Too Many Requests".into());
         let mapped = GenaiExecutor::map_error(err);
         assert!(
-            matches!(mapped, InferenceExecutionError::RateLimited(_)),
+            matches!(mapped, InferenceExecutionError::RateLimited { .. }),
             "expected RateLimited, got {mapped:?}"
         );
     }
@@ -624,8 +695,8 @@ mod tests {
         let err = genai::Error::Internal("server overloaded".into());
         let mapped = GenaiExecutor::map_error(err);
         assert!(
-            matches!(mapped, InferenceExecutionError::Provider(_)),
-            "expected Provider, got {mapped:?}"
+            matches!(mapped, InferenceExecutionError::Overloaded { .. }),
+            "expected Overloaded, got {mapped:?}"
         );
     }
 
@@ -648,7 +719,7 @@ mod tests {
         };
         let mapped = GenaiExecutor::map_error(err);
         assert!(
-            matches!(mapped, InferenceExecutionError::RateLimited(_)),
+            matches!(mapped, InferenceExecutionError::RateLimited { .. }),
             "expected RateLimited, got {mapped:?}"
         );
     }
@@ -686,7 +757,7 @@ mod tests {
         let err = genai::Error::Internal("rate limit exceeded".into());
         let mapped = GenaiExecutor::map_error(err);
         let msg = match mapped {
-            InferenceExecutionError::RateLimited(m) => m,
+            InferenceExecutionError::RateLimited { message, .. } => message,
             other => panic!("expected RateLimited, got {other:?}"),
         };
         // format!("{e:#}") should give us the full chain
@@ -793,7 +864,7 @@ mod tests {
         };
         let mapped = GenaiExecutor::map_error(err);
         assert!(
-            matches!(mapped, InferenceExecutionError::RateLimited(_)),
+            matches!(mapped, InferenceExecutionError::RateLimited { .. }),
             "expected RateLimited, got {mapped:?}"
         );
     }
@@ -814,13 +885,13 @@ mod tests {
         };
         let mapped = GenaiExecutor::map_error(err);
         assert!(
-            matches!(mapped, InferenceExecutionError::RateLimited(_)),
+            matches!(mapped, InferenceExecutionError::RateLimited { .. }),
             "expected RateLimited, got {mapped:?}"
         );
     }
 
     #[test]
-    fn map_error_web_adapter_call_503() {
+    fn map_error_web_adapter_call_503_is_overloaded() {
         use genai::adapter::AdapterKind;
         use reqwest::header::HeaderMap;
 
@@ -834,9 +905,247 @@ mod tests {
         };
         let mapped = GenaiExecutor::map_error(err);
         assert!(
-            matches!(mapped, InferenceExecutionError::Provider(_)),
-            "expected Provider, got {mapped:?}"
+            matches!(mapped, InferenceExecutionError::Overloaded { .. }),
+            "expected Overloaded, got {mapped:?}"
         );
+    }
+
+    #[test]
+    fn map_error_web_adapter_call_529_is_overloaded() {
+        use genai::adapter::AdapterKind;
+        use reqwest::header::HeaderMap;
+
+        let err = genai::Error::WebAdapterCall {
+            adapter_kind: AdapterKind::Anthropic,
+            webc_error: genai::webc::Error::ResponseFailedStatus {
+                status: StatusCode::from_u16(529).unwrap(),
+                body: r#"{"type":"error","error":{"type":"overloaded_error"}}"#.into(),
+                headers: Box::new(HeaderMap::new()),
+            },
+        };
+        let mapped = GenaiExecutor::map_error(err);
+        assert!(
+            matches!(mapped, InferenceExecutionError::Overloaded { .. }),
+            "expected Overloaded, got {mapped:?}"
+        );
+    }
+
+    #[test]
+    fn map_error_http_400_prompt_too_long_is_context_overflow() {
+        use genai::adapter::AdapterKind;
+        use reqwest::header::HeaderMap;
+
+        let err = genai::Error::WebAdapterCall {
+            adapter_kind: AdapterKind::Anthropic,
+            webc_error: genai::webc::Error::ResponseFailedStatus {
+                status: StatusCode::BAD_REQUEST,
+                body: r#"{"error":{"message":"prompt is too long: 210000 tokens"}}"#.into(),
+                headers: Box::new(HeaderMap::new()),
+            },
+        };
+        let mapped = GenaiExecutor::map_error(err);
+        assert!(
+            matches!(mapped, InferenceExecutionError::ContextOverflow(_)),
+            "expected ContextOverflow, got {mapped:?}"
+        );
+    }
+
+    #[test]
+    fn map_error_http_400_context_length_exceeded_is_context_overflow() {
+        use genai::adapter::AdapterKind;
+        use reqwest::header::HeaderMap;
+
+        let err = genai::Error::WebModelCall {
+            model_iden: genai::ModelIden::new(AdapterKind::OpenAI, "gpt-4o"),
+            webc_error: genai::webc::Error::ResponseFailedStatus {
+                status: StatusCode::BAD_REQUEST,
+                body: r#"{"error":{"code":"context_length_exceeded"}}"#.into(),
+                headers: Box::new(HeaderMap::new()),
+            },
+        };
+        let mapped = GenaiExecutor::map_error(err);
+        assert!(
+            matches!(mapped, InferenceExecutionError::ContextOverflow(_)),
+            "expected ContextOverflow, got {mapped:?}"
+        );
+    }
+
+    #[test]
+    fn map_error_http_400_generic_is_invalid_request() {
+        use genai::adapter::AdapterKind;
+        use reqwest::header::HeaderMap;
+
+        let err = genai::Error::WebAdapterCall {
+            adapter_kind: AdapterKind::OpenAI,
+            webc_error: genai::webc::Error::ResponseFailedStatus {
+                status: StatusCode::BAD_REQUEST,
+                body: r#"{"error":"messages must be a non-empty array"}"#.into(),
+                headers: Box::new(HeaderMap::new()),
+            },
+        };
+        let mapped = GenaiExecutor::map_error(err);
+        assert!(
+            matches!(mapped, InferenceExecutionError::InvalidRequest(_)),
+            "expected InvalidRequest, got {mapped:?}"
+        );
+    }
+
+    #[test]
+    fn map_error_http_401_is_unauthorized() {
+        use genai::adapter::AdapterKind;
+        use reqwest::header::HeaderMap;
+
+        let err = genai::Error::WebAdapterCall {
+            adapter_kind: AdapterKind::OpenAI,
+            webc_error: genai::webc::Error::ResponseFailedStatus {
+                status: StatusCode::UNAUTHORIZED,
+                body: "bad api key".into(),
+                headers: Box::new(HeaderMap::new()),
+            },
+        };
+        let mapped = GenaiExecutor::map_error(err);
+        assert!(
+            matches!(mapped, InferenceExecutionError::Unauthorized(_)),
+            "expected Unauthorized, got {mapped:?}"
+        );
+    }
+
+    #[test]
+    fn map_error_http_404_is_model_not_found() {
+        use genai::adapter::AdapterKind;
+        use reqwest::header::HeaderMap;
+
+        let err = genai::Error::WebAdapterCall {
+            adapter_kind: AdapterKind::OpenAI,
+            webc_error: genai::webc::Error::ResponseFailedStatus {
+                status: StatusCode::NOT_FOUND,
+                body: "no such model".into(),
+                headers: Box::new(HeaderMap::new()),
+            },
+        };
+        let mapped = GenaiExecutor::map_error(err);
+        assert!(
+            matches!(mapped, InferenceExecutionError::ModelNotFound(_)),
+            "expected ModelNotFound, got {mapped:?}"
+        );
+    }
+
+    #[test]
+    fn map_error_http_413_is_context_overflow() {
+        use genai::adapter::AdapterKind;
+        use reqwest::header::HeaderMap;
+
+        let err = genai::Error::WebAdapterCall {
+            adapter_kind: AdapterKind::OpenAI,
+            webc_error: genai::webc::Error::ResponseFailedStatus {
+                status: StatusCode::PAYLOAD_TOO_LARGE,
+                body: "too big".into(),
+                headers: Box::new(HeaderMap::new()),
+            },
+        };
+        let mapped = GenaiExecutor::map_error(err);
+        assert!(
+            matches!(mapped, InferenceExecutionError::ContextOverflow(_)),
+            "expected ContextOverflow, got {mapped:?}"
+        );
+    }
+
+    #[test]
+    fn map_error_http_422_is_invalid_request() {
+        use genai::adapter::AdapterKind;
+        use reqwest::header::HeaderMap;
+
+        let err = genai::Error::WebAdapterCall {
+            adapter_kind: AdapterKind::OpenAI,
+            webc_error: genai::webc::Error::ResponseFailedStatus {
+                status: StatusCode::UNPROCESSABLE_ENTITY,
+                body: "schema violation".into(),
+                headers: Box::new(HeaderMap::new()),
+            },
+        };
+        let mapped = GenaiExecutor::map_error(err);
+        assert!(
+            matches!(mapped, InferenceExecutionError::InvalidRequest(_)),
+            "expected InvalidRequest, got {mapped:?}"
+        );
+    }
+
+    #[test]
+    fn map_error_retry_after_seconds_header_is_parsed() {
+        use genai::adapter::AdapterKind;
+        use reqwest::header::{HeaderMap, HeaderValue, RETRY_AFTER};
+
+        let mut headers = HeaderMap::new();
+        headers.insert(RETRY_AFTER, HeaderValue::from_static("42"));
+
+        let err = genai::Error::WebAdapterCall {
+            adapter_kind: AdapterKind::Anthropic,
+            webc_error: genai::webc::Error::ResponseFailedStatus {
+                status: StatusCode::TOO_MANY_REQUESTS,
+                body: "slow down".into(),
+                headers: Box::new(headers),
+            },
+        };
+        let mapped = GenaiExecutor::map_error(err);
+        match mapped {
+            InferenceExecutionError::RateLimited { retry_after, .. } => {
+                assert_eq!(retry_after, Some(Duration::from_secs(42)));
+            }
+            other => panic!("expected RateLimited with retry_after, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn map_error_retry_after_absent_yields_none() {
+        use genai::adapter::AdapterKind;
+        use reqwest::header::HeaderMap;
+
+        let err = genai::Error::WebAdapterCall {
+            adapter_kind: AdapterKind::Anthropic,
+            webc_error: genai::webc::Error::ResponseFailedStatus {
+                status: StatusCode::TOO_MANY_REQUESTS,
+                body: "no header".into(),
+                headers: Box::new(HeaderMap::new()),
+            },
+        };
+        let mapped = GenaiExecutor::map_error(err);
+        assert!(matches!(
+            mapped,
+            InferenceExecutionError::RateLimited {
+                retry_after: None,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn map_error_retry_after_non_numeric_yields_none() {
+        use genai::adapter::AdapterKind;
+        use reqwest::header::{HeaderMap, HeaderValue, RETRY_AFTER};
+
+        let mut headers = HeaderMap::new();
+        // HTTP-date form is intentionally NOT supported in Phase 1.
+        headers.insert(
+            RETRY_AFTER,
+            HeaderValue::from_static("Fri, 31 Dec 1999 23:59:59 GMT"),
+        );
+
+        let err = genai::Error::WebAdapterCall {
+            adapter_kind: AdapterKind::Anthropic,
+            webc_error: genai::webc::Error::ResponseFailedStatus {
+                status: StatusCode::from_u16(529).unwrap(),
+                body: "overloaded".into(),
+                headers: Box::new(headers),
+            },
+        };
+        let mapped = GenaiExecutor::map_error(err);
+        assert!(matches!(
+            mapped,
+            InferenceExecutionError::Overloaded {
+                retry_after: None,
+                ..
+            }
+        ));
     }
 
     #[test]

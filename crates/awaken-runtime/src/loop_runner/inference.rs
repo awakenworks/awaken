@@ -913,8 +913,8 @@ mod tests {
 
     #[tokio::test]
     async fn rate_limited_error_surfaces_correctly() {
-        let agent = make_agent(vec![Err(InferenceExecutionError::RateLimited(
-            "429 too many requests".into(),
+        let agent = make_agent(vec![Err(InferenceExecutionError::rate_limited(
+            "429 too many requests",
         ))]);
         let sink = VecEventSink::new();
         let mut it = 0u64;

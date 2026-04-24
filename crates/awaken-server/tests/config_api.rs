@@ -99,7 +99,7 @@ impl LlmExecutor for RecordingFallbackExecutor {
             .push(request.upstream_model.clone());
 
         if request.upstream_model == self.retryable_model {
-            return Err(InferenceExecutionError::RateLimited("test retry".into()));
+            return Err(InferenceExecutionError::rate_limited("test retry"));
         }
 
         Ok(StreamResult {
