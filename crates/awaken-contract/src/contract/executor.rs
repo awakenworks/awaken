@@ -38,6 +38,10 @@ pub enum InterruptCause {
     GoAway,
     /// Provider returned a 5xx status after headers had been sent.
     Provider5xxMidStream(u16),
+    /// Synthetic cause used when a stream is being resumed from a
+    /// persisted checkpoint (no real interruption happened in this
+    /// process — the previous process crashed or restarted).
+    ResumedFromCheckpoint,
 }
 
 impl std::fmt::Display for InterruptCause {
@@ -47,6 +51,7 @@ impl std::fmt::Display for InterruptCause {
             Self::IdleStall => f.write_str("idle stall"),
             Self::GoAway => f.write_str("goaway"),
             Self::Provider5xxMidStream(s) => write!(f, "provider {s} mid-stream"),
+            Self::ResumedFromCheckpoint => f.write_str("resumed from checkpoint"),
         }
     }
 }

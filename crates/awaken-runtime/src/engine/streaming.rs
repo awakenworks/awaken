@@ -6,7 +6,7 @@ use std::time::Instant;
 use genai::chat::{ChatStreamEvent, StreamEnd};
 use serde_json::Value;
 
-use awaken_contract::contract::executor::{InFlightTool, InterruptSnapshot};
+use awaken_contract::contract::executor::InterruptSnapshot;
 use awaken_contract::contract::inference::{StreamResult, TokenUsage};
 use awaken_contract::contract::message::ToolCall;
 
