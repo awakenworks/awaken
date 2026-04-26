@@ -12,7 +12,8 @@ test.describe('mailbox operations', () => {
     });
     expect(pushRes.status()).toBe(201);
     const body = await pushRes.json();
-    expect(body.job_id).toBeTruthy();
+    expect(body.dispatch_id).toBeTruthy();
+    expect(body.run_id).toBeTruthy();
     expect(body.thread_id).toBe(thread.id);
   });
 
@@ -27,7 +28,8 @@ test.describe('mailbox operations', () => {
     });
     expect(pushRes.status()).toBe(201);
     const body = await pushRes.json();
-    expect(body.job_id).toBeTruthy();
+    expect(body.dispatch_id).toBeTruthy();
+    expect(body.run_id).toBeTruthy();
   });
 
   test('peek thread mailbox returns items array', async ({ request }) => {
