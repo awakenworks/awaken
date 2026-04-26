@@ -7,7 +7,14 @@ use awaken_contract::contract::inference::ContextWindowPolicy;
 use awaken_contract::contract::message::{Message, Role, Visibility};
 use awaken_contract::contract::transform::estimate_message_tokens;
 
+use super::plugin::{CompactionAction, CompactionBoundary, CompactionInFlight, CompactionStateKey};
 use super::summarizer::{MIN_COMPACTION_GAIN_TOKENS, extract_previous_summary, render_transcript};
+use crate::state::{MutationBatch, StateStore};
+
+/// Custom event type emitted by a successful background compaction task.
+pub const COMPACTION_COMPLETED_EVENT: &str = "context.compacted";
+/// Custom event type emitted when a background compaction task fails.
+pub const COMPACTION_FAILED_EVENT: &str = "context.compaction_failed";
 
 /// Find a safe compaction boundary in the message history.
 ///
@@ -142,6 +149,127 @@ pub fn plan_compaction(
         boundary_message_id,
         pre_tokens,
     })
+}
+
+/// Mark a background compaction pass as in-flight in the state store.
+/// Used by the spawn helper after a task has been queued.
+pub fn record_compaction_in_flight(in_flight: CompactionInFlight) -> CompactionAction {
+    CompactionAction::SetInFlight(in_flight)
+}
+
+/// Clear the in-flight marker. Called from the inbox-event router on both
+/// success and failure of the background pass.
+pub fn clear_compaction_in_flight() -> CompactionAction {
+    CompactionAction::ClearInFlight
+}
+
+/// Detect and handle a context-compaction event arriving via the inbox.
+///
+/// Returns `true` when `payload` was a compaction event — in that case the
+/// caller MUST NOT also push it as a regular Internal user message. The
+/// success path performs the message swap by stable id and records the
+/// boundary; both success and failure paths clear the in-flight marker
+/// so future compactions can be triggered.
+///
+/// Returns `false` for any payload that is not a compaction event; the
+/// caller should fall back to the normal inbox handling.
+pub fn try_consume_compaction_event(
+    messages: &mut Vec<Arc<Message>>,
+    payload: &serde_json::Value,
+    store: &StateStore,
+) -> bool {
+    let Some(event_type) = compaction_event_type(payload) else {
+        return false;
+    };
+    let inner = payload.get("payload");
+
+    match event_type {
+        e if e == COMPACTION_COMPLETED_EVENT => {
+            let boundary_id = inner
+                .and_then(|p| p.get("boundary_message_id"))
+                .and_then(|v| v.as_str())
+                .unwrap_or_default();
+            let summary = inner
+                .and_then(|p| p.get("summary"))
+                .and_then(|v| v.as_str())
+                .unwrap_or_default();
+            let reported_pre_tokens = inner
+                .and_then(|p| p.get("pre_tokens"))
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0) as usize;
+
+            let mut batch = MutationBatch::new();
+            if !boundary_id.is_empty()
+                && !summary.is_empty()
+                && let Some(applied) = apply_summary(messages, boundary_id, summary)
+            {
+                batch.update::<CompactionStateKey>(CompactionAction::RecordBoundary(
+                    CompactionBoundary {
+                        summary: summary.to_string(),
+                        pre_tokens: applied.pre_tokens.max(reported_pre_tokens),
+                        post_tokens: applied.post_tokens,
+                        timestamp_ms: now_ms(),
+                    },
+                ));
+                tracing::info!(
+                    pre_tokens = applied.pre_tokens,
+                    post_tokens = applied.post_tokens,
+                    boundary_index = applied.boundary_index,
+                    "background_compaction_swap_applied"
+                );
+            } else {
+                tracing::warn!(
+                    boundary_message_id = boundary_id,
+                    "background compaction completed but boundary message no longer present; skipping swap"
+                );
+            }
+            batch.update::<CompactionStateKey>(CompactionAction::ClearInFlight);
+            if let Err(error) = store.commit(batch) {
+                tracing::warn!(
+                    error = %error,
+                    "failed to commit compaction completion state"
+                );
+            }
+        }
+        e if e == COMPACTION_FAILED_EVENT => {
+            let error_text = inner
+                .and_then(|p| p.get("error"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown error");
+            tracing::warn!(
+                error = error_text,
+                "background compaction failed; clearing in-flight marker"
+            );
+            let mut batch = MutationBatch::new();
+            batch.update::<CompactionStateKey>(CompactionAction::ClearInFlight);
+            if let Err(error) = store.commit(batch) {
+                tracing::warn!(
+                    error = %error,
+                    "failed to clear in-flight marker after compaction failure"
+                );
+            }
+        }
+        _ => {}
+    }
+    true
+}
+
+fn compaction_event_type(payload: &serde_json::Value) -> Option<&str> {
+    if payload.get("kind").and_then(|k| k.as_str()) != Some("custom") {
+        return None;
+    }
+    payload
+        .get("event_type")
+        .and_then(|t| t.as_str())
+        .filter(|t| *t == COMPACTION_COMPLETED_EVENT || *t == COMPACTION_FAILED_EVENT)
+}
+
+fn now_ms() -> u64 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
 }
 
 /// Apply a freshly produced summary to the live message list. Locates the
