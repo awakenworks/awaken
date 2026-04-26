@@ -1627,3 +1627,71 @@ async fn failed_publish_stops_prepared_mcp_registry() {
         "failed publish must not leak prepared MCP tools into the live runtime"
     );
 }
+
+// ── apply / apply_if_changed semantics ──────────────────────────────
+//
+// These tests pin the externally-visible contract of the apply path:
+//   * apply() always rebuilds and publishes a snapshot, returning a
+//     strictly increasing registry version even when the underlying
+//     store is unchanged.
+//   * apply_if_changed() returns Some(version) on first call after a
+//     mutation and None when nothing has changed since the last apply.
+
+#[tokio::test]
+async fn apply_returns_monotonically_advancing_version() {
+    let (_runtime, _store, manager) = make_runtime_manager(None).await;
+
+    let first = manager.apply().await.expect("first apply");
+    let second = manager.apply().await.expect("second apply");
+
+    assert!(
+        second > first,
+        "apply() must always publish and advance the registry version, got {first} then {second}"
+    );
+}
+
+#[tokio::test]
+async fn apply_if_changed_returns_none_when_nothing_changed() {
+    let (_runtime, _store, manager) = make_runtime_manager(None).await;
+
+    let result = manager
+        .apply_if_changed()
+        .await
+        .expect("apply_if_changed succeeds");
+    assert!(
+        result.is_none(),
+        "apply_if_changed must return None when the snapshot fingerprint matches the last applied"
+    );
+}
+
+#[tokio::test]
+async fn apply_if_changed_returns_some_after_store_mutation() {
+    let (_runtime, store, manager) = make_runtime_manager(None).await;
+
+    // Mutating the providers namespace must invalidate the previously
+    // applied fingerprint so apply_if_changed publishes again.
+    let new_provider = json!({
+        "id": "extra",
+        "adapter": "stub"
+    });
+    (store.clone() as Arc<dyn ConfigStore>)
+        .put("providers", "extra", &new_provider)
+        .await
+        .expect("write extra provider");
+
+    let result = manager
+        .apply_if_changed()
+        .await
+        .expect("apply_if_changed succeeds")
+        .expect("store mutation must produce a new fingerprint");
+
+    let after_no_change = manager
+        .apply_if_changed()
+        .await
+        .expect("apply_if_changed succeeds");
+    assert!(
+        after_no_change.is_none(),
+        "calling apply_if_changed twice without further mutation must return None"
+    );
+    let _ = result;
+}
