@@ -17,7 +17,7 @@ doc = false
 doctest = false
 
 [dependencies]
-awaken = { version = "0.4.0", path = "../awaken", default-features = false }
+awaken = { version = "0.4.1-dev", path = "../awaken", default-features = false }
 
 [features]
 default = ["full"]
