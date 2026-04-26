@@ -1,6 +1,5 @@
-//! LLM inference execution and context compaction.
+//! LLM inference execution.
 
-use std::sync::Arc;
 use std::time::Duration;
 
 use crate::cancellation::CancellationToken;
@@ -692,94 +691,11 @@ fn stream_retry_backoff(cause: &InterruptCause, attempt: u32, policy: &LlmRetryP
     }
 }
 
-/// Compact messages using the configured ContextSummarizer.
-///
-/// Finds a safe compaction boundary, renders messages as transcript (filtering
-/// Internal messages), extracts any previous summary for cumulative updates,
-/// calls the summarizer, and replaces old messages with the summary.
-///
-/// Skips compaction if the estimated token savings are below `MIN_COMPACTION_GAIN_TOKENS`.
-pub(super) async fn compact_with_llm(
-    agent: &ResolvedAgent,
-    messages: &mut Vec<Arc<Message>>,
-    policy: &awaken_contract::contract::inference::ContextWindowPolicy,
-) -> Result<(), AgentLoopError> {
-    use crate::context::{
-        MIN_COMPACTION_GAIN_TOKENS, extract_previous_summary, find_compaction_boundary,
-        render_transcript,
-    };
-
-    let summarizer = match agent.context_summarizer {
-        Some(ref s) => s,
-        None => return Ok(()),
-    };
-
-    if messages.len() < 2 {
-        return Ok(());
-    }
-
-    let keep_suffix = policy.compaction_raw_suffix_messages.min(messages.len());
-    let search_end = messages.len().saturating_sub(keep_suffix);
-    if search_end < 2 {
-        return Ok(());
-    }
-
-    let boundary = match find_compaction_boundary(messages, 0, search_end) {
-        Some(b) => b,
-        None => return Ok(()),
-    };
-
-    // Check minimum gain threshold
-    let compactable_tokens: usize = messages[..=boundary]
-        .iter()
-        .map(|message| awaken_contract::contract::transform::estimate_message_tokens(message))
-        .sum();
-    if compactable_tokens < MIN_COMPACTION_GAIN_TOKENS {
-        return Ok(());
-    }
-
-    // Render transcript (excludes Internal messages)
-    let transcript = render_transcript(&messages[..=boundary]);
-    if transcript.is_empty() {
-        return Ok(());
-    }
-
-    // Extract previous summary for cumulative update
-    let previous_summary = extract_previous_summary(messages);
-
-    let summary_text = summarizer
-        .summarize(
-            &transcript,
-            previous_summary.as_deref(),
-            agent.llm_executor.as_ref(),
-        )
-        .await
-        .map_err(|e| AgentLoopError::InferenceFailed(format!("compaction failed: {e}")))?;
-
-    // Replace messages up to boundary with the summary
-    let post_tokens =
-        awaken_contract::contract::transform::estimate_tokens(&messages[boundary + 1..]);
-    messages.drain(..=boundary);
-    messages.insert(
-        0,
-        Arc::new(Message::internal_system(format!(
-            "<conversation-summary>\n{summary_text}\n</conversation-summary>"
-        ))),
-    );
-
-    tracing::info!(
-        pre_tokens = compactable_tokens,
-        post_tokens,
-        boundary,
-        "compaction_complete"
-    );
-
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
+
     use crate::cancellation::CancellationToken;
     use crate::registry::ResolvedAgent;
     use async_trait::async_trait;
