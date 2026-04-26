@@ -160,7 +160,7 @@ where
     .with_config_runtime_manager(manager);
 
     TestApp {
-        router: build_router().with_state(state),
+        router: build_router(&state).with_state(state),
         runtime,
         store,
     }
@@ -206,7 +206,7 @@ where
         runtime.resolver_arc(),
         ServerConfig::default(),
     );
-    build_router().with_state(state)
+    build_router(&state).with_state(state)
 }
 
 #[cfg(feature = "nats")]

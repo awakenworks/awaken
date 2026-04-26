@@ -1141,7 +1141,7 @@ Always greet the user warmly and ask how you can help today.
             as Arc<dyn SkillCatalogProvider>,
     );
 
-    let mut app = build_router().with_state(state);
+    let mut app = build_router(&state).with_state(state);
 
     if config.enable_cors {
         let cors = CorsLayer::new()

@@ -105,6 +105,16 @@ pub struct AdminApiConfig {
     /// Origins allowed to call browser admin APIs.
     #[serde(default = "default_admin_cors_allowed_origins")]
     pub cors_allowed_origins: Vec<String>,
+    /// Whether the server mounts the `/v1/config/*` and `/v1/agents` admin
+    /// CRUD routes. Defaults to `true` for back-compat. Embedders that drive
+    /// configuration through their own RBAC / audit pipeline can set this to
+    /// `false` to keep the HTTP surface free of those endpoints entirely.
+    #[serde(default = "default_expose_config_routes")]
+    pub expose_config_routes: bool,
+}
+
+const fn default_expose_config_routes() -> bool {
+    true
 }
 
 impl Default for AdminApiConfig {
@@ -112,6 +122,7 @@ impl Default for AdminApiConfig {
         Self {
             bearer_token: None,
             cors_allowed_origins: default_admin_cors_allowed_origins(),
+            expose_config_routes: default_expose_config_routes(),
         }
     }
 }
@@ -483,7 +494,7 @@ pub async fn serve(state: AppState) -> std::io::Result<()> {
     tracing::info!("listening on {addr}");
 
     let admin_cors = admin_cors_layer(&state)?;
-    let app = crate::routes::build_router()
+    let app = crate::routes::build_router(&state)
         .layer(tower::limit::ConcurrencyLimitLayer::new(max_concurrent))
         .layer(admin_cors)
         .with_state(state);
@@ -498,7 +509,11 @@ pub async fn serve(state: AppState) -> std::io::Result<()> {
 }
 
 fn validate_admin_surface(state: &AppState) -> std::io::Result<()> {
-    if admin_api_config(state).bearer_token.is_some() {
+    let admin = admin_api_config(state);
+    if !admin.expose_config_routes {
+        return Ok(());
+    }
+    if admin.bearer_token.is_some() {
         return Ok(());
     }
     if state.config_store.is_none() && state.config_runtime_manager.is_none() {
@@ -551,6 +566,70 @@ fn admin_cors_layer(state: &AppState) -> std::io::Result<tower_http::cors::CorsL
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn admin_api_config_default_exposes_config_routes() {
+        let config = AdminApiConfig::default();
+        assert!(
+            config.expose_config_routes,
+            "default AdminApiConfig must expose config CRUD routes for back-compat"
+        );
+    }
+
+    #[test]
+    fn validate_admin_surface_short_circuits_when_routes_disabled() {
+        use crate::mailbox::{Mailbox, MailboxConfig};
+        use awaken_contract::contract::config_store::ConfigStore;
+        use awaken_runtime::AgentRuntime;
+        use awaken_stores::{InMemoryMailboxStore, InMemoryStore};
+
+        struct StubResolver;
+        impl awaken_runtime::AgentResolver for StubResolver {
+            fn resolve(
+                &self,
+                agent_id: &str,
+            ) -> Result<awaken_runtime::ResolvedAgent, awaken_runtime::RuntimeError> {
+                Err(awaken_runtime::RuntimeError::AgentNotFound {
+                    agent_id: agent_id.to_string(),
+                })
+            }
+        }
+
+        let runtime = Arc::new(AgentRuntime::new(Arc::new(StubResolver)));
+        let store = Arc::new(InMemoryStore::new());
+        let mailbox_store = Arc::new(InMemoryMailboxStore::new());
+        let mailbox = Arc::new(Mailbox::new(
+            runtime.clone(),
+            mailbox_store,
+            store.clone(),
+            "test".to_string(),
+            MailboxConfig::default(),
+        ));
+
+        // Non-loopback bind, no bearer token, *with* a config store —
+        // historically this would refuse to start. The toggle should
+        // short-circuit that check.
+        let config = ServerConfig {
+            address: "0.0.0.0:3000".to_string(),
+            ..ServerConfig::default()
+        };
+
+        let state = AppState::new(
+            runtime,
+            mailbox,
+            store.clone() as Arc<dyn awaken_contract::contract::storage::ThreadRunStore>,
+            Arc::new(StubResolver),
+            config,
+        )
+        .with_config_store(store as Arc<dyn ConfigStore>)
+        .with_admin_api_config(AdminApiConfig {
+            expose_config_routes: false,
+            ..AdminApiConfig::default()
+        });
+
+        validate_admin_surface(&state)
+            .expect("disabling config routes must waive the bearer-token requirement");
+    }
 
     #[test]
     fn server_config_default_values() {

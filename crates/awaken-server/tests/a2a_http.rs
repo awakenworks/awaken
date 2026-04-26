@@ -210,7 +210,7 @@ where
         runtime.resolver_arc(),
         config,
     );
-    (build_router().with_state(state), store)
+    (build_router(&state).with_state(state), store)
 }
 
 fn build_test_app<E>(agent_ids: &[&str], executor: Arc<E>, config: ServerConfig) -> axum::Router
@@ -290,7 +290,7 @@ fn build_background_cancel_fixture()
         runtime.resolver_arc(),
         ServerConfig::default(),
     );
-    (build_router().with_state(state), store, manager)
+    (build_router(&state).with_state(state), store, manager)
 }
 
 async fn request_json(

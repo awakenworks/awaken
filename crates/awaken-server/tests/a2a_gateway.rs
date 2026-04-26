@@ -410,7 +410,7 @@ fn make_gateway_app_with_options(
     );
 
     TestApp {
-        router: build_router().with_state(state),
+        router: build_router(&state).with_state(state),
         store,
         runtime,
     }
@@ -477,7 +477,7 @@ fn make_delegate_gateway_app(mock_base_url: &str) -> TestApp {
     );
 
     TestApp {
-        router: build_router().with_state(state),
+        router: build_router(&state).with_state(state),
         store,
         runtime,
     }

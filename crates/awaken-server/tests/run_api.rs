@@ -211,7 +211,7 @@ fn make_test_app_with_runtime(
         ServerConfig::default(),
     );
     TestApp {
-        router: build_router().with_state(state),
+        router: build_router(&state).with_state(state),
         store,
     }
 }

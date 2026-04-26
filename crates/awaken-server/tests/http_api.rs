@@ -4,7 +4,7 @@
 //! API error types, and message conversion logic.
 
 use awaken_server::app::ServerConfig;
-use awaken_server::routes::{ApiError, build_router};
+use awaken_server::routes::ApiError;
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use serde_json::json;
@@ -87,15 +87,6 @@ fn api_error_internal_response() {
     let err = ApiError::Internal("db error".into());
     let resp = err.into_response();
     assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
-}
-
-// ============================================================================
-// Route builder (smoke test — verifies router construction doesn't panic)
-// ============================================================================
-
-#[test]
-fn build_router_constructs_without_panic() {
-    let _router = build_router();
 }
 
 // ============================================================================
@@ -360,7 +351,7 @@ mod integration {
             ServerConfig::default(),
         );
         TestApp {
-            router: build_router().with_state(state),
+            router: build_router(&state).with_state(state),
             store,
             mailbox_store,
         }

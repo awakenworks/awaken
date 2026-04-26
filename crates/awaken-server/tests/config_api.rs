@@ -625,7 +625,7 @@ async fn make_app_with_skill_catalog_config_and_admin(
     }
 
     TestApp {
-        router: build_router().with_state(state),
+        router: build_router(&state).with_state(state),
         runtime,
         store,
         manager,
@@ -966,7 +966,7 @@ async fn documented_config_driven_agent_tuning_publishes_sections_and_retry() {
     )
     .with_config_store(config_store)
     .with_config_runtime_manager(manager);
-    let router = build_router().with_state(state);
+    let router = build_router(&state).with_state(state);
 
     let (status, _) = request_json(
         &router,

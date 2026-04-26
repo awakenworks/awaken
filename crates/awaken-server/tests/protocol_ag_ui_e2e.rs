@@ -216,7 +216,7 @@ fn make_ag_ui_app(llm: Arc<dyn LlmExecutor>, tools: Vec<(String, Arc<dyn Tool>)>
         ServerConfig::default(),
     );
     TestApp {
-        router: build_router().with_state(state),
+        router: build_router(&state).with_state(state),
         store,
     }
 }
@@ -1015,7 +1015,7 @@ async fn multiple_sequential_runs_on_same_thread() {
         runtime.resolver_arc(),
         ServerConfig::default(),
     );
-    let router = build_router().with_state(state);
+    let router = build_router(&state).with_state(state);
 
     // First run
     let (status1, body1) = post_ag_ui_run(

@@ -85,7 +85,7 @@ fn make_app() -> axum::Router {
         runtime.resolver_arc(),
         ServerConfig::default(),
     );
-    build_router().with_state(state)
+    build_router(&state).with_state(state)
 }
 
 /// Turn 3 of a multi-turn conversation where turns 1-2 included tool calls.

@@ -350,7 +350,7 @@ async fn a2a_loopback_remote_self_cancel_cascades_background_children() {
         ServerConfig::default(),
     );
 
-    let router = build_router().with_state(state);
+    let router = build_router(&state).with_state(state);
     let server_handle = tokio::spawn(async move {
         axum::serve(listener, router).await.ok();
     });
@@ -525,7 +525,7 @@ async fn a2a_dual_server_remote_self_cancel_cascades_background_children() {
         worker_runtime.resolver_arc(),
         ServerConfig::default(),
     );
-    let worker_router = build_router().with_state(worker_state);
+    let worker_router = build_router(&worker_state).with_state(worker_state);
     let worker_handle = tokio::spawn(async move {
         axum::serve(worker_listener, worker_router).await.ok();
     });
@@ -608,7 +608,7 @@ async fn a2a_dual_server_remote_self_cancel_cascades_background_children() {
         orchestrator_runtime.resolver_arc(),
         ServerConfig::default(),
     );
-    let orchestrator_router = build_router().with_state(orchestrator_state);
+    let orchestrator_router = build_router(&orchestrator_state).with_state(orchestrator_state);
     let orchestrator_handle = tokio::spawn(async move {
         axum::serve(orchestrator_listener, orchestrator_router)
             .await
@@ -852,7 +852,7 @@ async fn a2a_loopback_orchestrator_delegates_to_worker() {
 
     // -- Start server ---------------------------------------------------------
 
-    let router = build_router().with_state(state);
+    let router = build_router(&state).with_state(state);
     let server_handle = tokio::spawn(async move {
         axum::serve(listener, router).await.ok();
     });

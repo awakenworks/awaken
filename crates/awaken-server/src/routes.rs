@@ -93,22 +93,27 @@ fn map_run_control_error(error: RunControlError) -> ApiError {
     }
 }
 
-/// Build the complete router with all routes and a concurrency limit layer.
+/// Build the complete router for the given state.
 ///
-/// `max_concurrent` controls the maximum number of in-flight requests.
-/// Pass `0` to disable the limit (useful in tests).
-pub fn build_router() -> Router<AppState> {
+/// Honors [`AdminApiConfig::expose_config_routes`] — when disabled, the
+/// `/v1/config/*` and `/v1/agents` admin CRUD endpoints are not mounted.
+pub fn build_router(state: &AppState) -> Router<AppState> {
     crate::metrics::install_recorder();
 
-    Router::new()
+    let mut router = Router::new()
         .merge(health_routes())
         .merge(thread_routes())
         .merge(run_routes())
-        .merge(config_routes())
         .merge(ai_sdk_routes())
         .merge(ag_ui_routes())
         .merge(a2a_routes())
-        .merge(mcp_routes())
+        .merge(mcp_routes());
+
+    if state.admin_api_config().expose_config_routes {
+        router = router.merge(config_routes());
+    }
+
+    router
         .route("/metrics", get(crate::metrics::metrics_handler))
         .layer(middleware::from_fn(crate::metrics::http_metrics_middleware))
 }
@@ -1464,9 +1469,52 @@ mod tests {
         }
 
         #[tokio::test]
+        async fn config_routes_return_404_when_admin_surface_disabled() {
+            use crate::app::AdminApiConfig;
+            use axum::http::StatusCode;
+
+            let state = make_app_state().with_admin_api_config(AdminApiConfig {
+                expose_config_routes: false,
+                ..AdminApiConfig::default()
+            });
+            let app = build_router(&state).with_state(state);
+
+            let req = axum::http::Request::builder()
+                .uri("/v1/agents")
+                .body(axum::body::Body::empty())
+                .unwrap();
+            let resp = app.oneshot(req).await.unwrap();
+            assert_eq!(
+                resp.status(),
+                StatusCode::NOT_FOUND,
+                "disabled config routes must not be mounted"
+            );
+        }
+
+        #[tokio::test]
+        async fn config_routes_mounted_by_default() {
+            use axum::http::StatusCode;
+
+            let state = make_app_state();
+            let app = build_router(&state).with_state(state);
+
+            let req = axum::http::Request::builder()
+                .uri("/v1/agents")
+                .body(axum::body::Body::empty())
+                .unwrap();
+            let resp = app.oneshot(req).await.unwrap();
+            assert_ne!(
+                resp.status(),
+                StatusCode::NOT_FOUND,
+                "default config routes must remain mounted; got {}",
+                resp.status()
+            );
+        }
+
+        #[tokio::test]
         async fn health_live_returns_200() {
             let state = make_app_state();
-            let app = build_router().with_state(state);
+            let app = build_router(&state).with_state(state);
 
             let req = axum::http::Request::builder()
                 .uri("/health/live")
@@ -1479,7 +1527,7 @@ mod tests {
         #[tokio::test]
         async fn health_ready_returns_healthy_with_working_store() {
             let state = make_app_state();
-            let app = build_router().with_state(state);
+            let app = build_router(&state).with_state(state);
 
             let req = axum::http::Request::builder()
                 .uri("/health")
@@ -1498,7 +1546,7 @@ mod tests {
         #[tokio::test]
         async fn metrics_endpoint_is_installed_and_records_http_requests() {
             let state = make_app_state();
-            let app = build_router().with_state(state);
+            let app = build_router(&state).with_state(state);
 
             let req = axum::http::Request::builder()
                 .uri("/health/live")
@@ -1625,7 +1673,7 @@ mod tests {
                 Arc::new(StubResolver),
                 ServerConfig::default(),
             );
-            let app = build_router().with_state(state);
+            let app = build_router(&state).with_state(state);
 
             let req = axum::http::Request::builder()
                 .uri("/health")

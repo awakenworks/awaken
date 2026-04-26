@@ -95,7 +95,7 @@ fn make_mcp_app() -> axum::Router {
         runtime.resolver_arc(),
         ServerConfig::default(),
     );
-    build_router().with_state(state)
+    build_router(&state).with_state(state)
 }
 
 async fn mcp_post(
