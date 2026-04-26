@@ -1723,6 +1723,99 @@ async fn apply_reuses_executor_for_unchanged_provider() {
 }
 
 #[tokio::test]
+async fn change_listener_coalesces_event_bursts_within_min_apply_interval() {
+    let factory = Arc::new(CountingProviderFactory::default());
+    let notifier = Arc::new(TestConfigChangeNotifier::new());
+    let store = Arc::new(InMemoryStore::new());
+    let bootstrap_provider = ProviderSpec {
+        id: "bootstrap".into(),
+        adapter: "stub".into(),
+        ..Default::default()
+    };
+    let bootstrap_model = ModelBindingSpec {
+        id: "bootstrap".into(),
+        provider_id: "bootstrap".into(),
+        upstream_model: "bootstrap-model".into(),
+    };
+    let bootstrap_agent = agent_spec("bootstrap", "bootstrap");
+
+    let runtime = Arc::new(
+        AgentRuntimeBuilder::new()
+            .with_provider("bootstrap", Arc::new(ImmediateExecutor))
+            .with_model_binding(
+                "bootstrap",
+                ModelBinding {
+                    provider_id: "bootstrap".into(),
+                    upstream_model: "bootstrap-model".into(),
+                },
+            )
+            .with_agent_spec(bootstrap_agent.clone())
+            .with_thread_run_store(store.clone())
+            .build()
+            .expect("build runtime"),
+    );
+
+    let manager = Arc::new(
+        ConfigRuntimeManager::new(runtime.clone(), store.clone() as Arc<dyn ConfigStore>)
+            .expect("config runtime manager")
+            .with_provider_factory(factory.clone() as Arc<dyn ProviderExecutorFactory>)
+            .with_mcp_registry_factory(Arc::new(TestMcpRegistryFactory))
+            .with_change_notifier(notifier.clone() as Arc<dyn ConfigChangeNotifier>)
+            .with_min_apply_interval(Duration::from_millis(200)),
+    );
+    manager
+        .bootstrap_if_empty(
+            std::slice::from_ref(&bootstrap_provider),
+            std::slice::from_ref(&bootstrap_model),
+            std::slice::from_ref(&bootstrap_agent),
+            &[],
+        )
+        .await
+        .expect("bootstrap config store");
+    manager.apply().await.expect("initial apply");
+    manager
+        .start_periodic_refresh(Duration::from_secs(60))
+        .expect("start change listener");
+
+    let listening = wait_until(Duration::from_secs(1), Duration::from_millis(10), || {
+        notifier.subscriber_count() > 0
+    })
+    .await;
+    assert!(listening, "listener should subscribe before publish");
+
+    let initial_builds = factory.builds_for("bootstrap");
+
+    // Mutate provider 4 times rapidly. Each mutation flips the cache miss
+    // bit so the executor gets rebuilt on every apply that runs.
+    for i in 1..=4u64 {
+        let spec = json!({
+            "id": "bootstrap",
+            "adapter": "stub",
+            "timeout_secs": 100 + i,
+        });
+        (store.clone() as Arc<dyn ConfigStore>)
+            .put("providers", "bootstrap", &spec)
+            .await
+            .expect("write mutated provider");
+        notifier.publish(ConfigChangeEvent {
+            namespace: "providers".into(),
+            id: "bootstrap".into(),
+            kind: ConfigChangeKind::Put,
+        });
+    }
+
+    // Wait long enough for the debounce window to flush.
+    tokio::time::sleep(Duration::from_millis(600)).await;
+
+    let new_builds = factory.builds_for("bootstrap") - initial_builds;
+    assert!(
+        new_builds <= 2,
+        "4 events fired within {min}ms must coalesce to ≤2 applies (got {new_builds} new builds)",
+        min = 200
+    );
+}
+
+#[tokio::test]
 async fn apply_rebuilds_executor_when_provider_spec_changes() {
     let factory = Arc::new(CountingProviderFactory::default());
     let (_runtime, store, manager) = make_runtime_manager_custom(

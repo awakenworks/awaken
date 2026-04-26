@@ -40,6 +40,10 @@ const NS_MODELS: &str = "models";
 const NS_PROVIDERS: &str = "providers";
 const NS_MCP_SERVERS: &str = "mcp-servers";
 
+/// Per-provider executor cache entry: the spec used to build the cached
+/// executor and the executor itself.
+type ProviderExecutorCache = HashMap<String, (ProviderSpec, Arc<dyn LlmExecutor>)>;
+
 #[derive(Debug, thiserror::Error)]
 pub enum ConfigRuntimeError {
     #[error("runtime does not expose a configurable registry snapshot")]
@@ -295,10 +299,15 @@ pub struct ConfigRuntimeManager {
     /// per-apply executor rebuild for providers whose spec is unchanged.
     /// Keys are pruned to the current providers list on every apply, so
     /// removed providers do not leak memory.
-    provider_executor_cache: Mutex<HashMap<String, (ProviderSpec, Arc<dyn LlmExecutor>)>>,
+    provider_executor_cache: Mutex<ProviderExecutorCache>,
     periodic_refresh: PeriodicRefresher,
     change_listener: Mutex<Option<ChangeListenerRuntime>>,
     mcp_refresh_interval: RwLock<Option<Duration>>,
+    /// Minimum interval between successive applies driven by the change
+    /// listener. Bursts of events that arrive within this window coalesce
+    /// into a single apply. Direct calls to [`Self::apply`] /
+    /// [`Self::apply_if_changed`] are unaffected.
+    min_apply_interval: Duration,
 }
 
 impl ConfigRuntimeManager {
@@ -328,6 +337,7 @@ impl ConfigRuntimeManager {
             periodic_refresh: PeriodicRefresher::new(),
             change_listener: Mutex::new(None),
             mcp_refresh_interval: RwLock::new(None),
+            min_apply_interval: Duration::ZERO,
         })
     }
 
@@ -358,6 +368,16 @@ impl ConfigRuntimeManager {
             return self;
         }
         *self.mcp_refresh_interval.write() = Some(interval);
+        self
+    }
+
+    /// Set the minimum interval between successive applies driven by the
+    /// change listener. Default is zero (no debounce). Direct calls to
+    /// [`Self::apply`] / [`Self::apply_if_changed`] always run immediately
+    /// regardless of this setting.
+    #[must_use]
+    pub fn with_min_apply_interval(mut self, interval: Duration) -> Self {
+        self.min_apply_interval = interval;
         self
     }
 
@@ -607,8 +627,12 @@ impl ConfigRuntimeManager {
 
         let (stop_tx, mut stop_rx) = oneshot::channel();
         let weak = Arc::downgrade(self);
+        let min_apply_interval = self.min_apply_interval;
         let join = runtime_handle.spawn(async move {
             let retry_delay = Duration::from_secs(1);
+            // `last_applied_at` is `None` until the first event-driven apply,
+            // so the first event is never delayed.
+            let mut last_applied_at: Option<tokio::time::Instant> = None;
 
             loop {
                 let mut subscriber = tokio::select! {
@@ -650,9 +674,41 @@ impl ConfigRuntimeManager {
                         "config change notification received"
                     );
 
+                    // Enforce the minimum apply interval and coalesce any
+                    // events that arrive while we are waiting. Direct calls
+                    // to `manager.apply()` are unaffected.
+                    if !min_apply_interval.is_zero()
+                        && let Some(last) = last_applied_at
+                    {
+                        let next_allowed = last + min_apply_interval;
+                        let now = tokio::time::Instant::now();
+                        if now < next_allowed {
+                            let wait = next_allowed - now;
+                            tokio::select! {
+                                _ = &mut stop_rx => return,
+                                _ = tokio::time::sleep(wait) => {}
+                            }
+                            // Drain any events that arrived during the wait
+                            // so we apply once for the whole burst. The
+                            // subscriber trait is async-only, so we peek
+                            // with a zero-duration timeout.
+                            while tokio::time::timeout(
+                                Duration::ZERO,
+                                subscriber.next(),
+                            )
+                            .await
+                            .is_ok()
+                            {
+                                // discarded — apply_if_changed reads the
+                                // latest store snapshot below.
+                            }
+                        }
+                    }
+
                     if let Err(error) = manager.apply_if_changed().await {
                         tracing::warn!(error = %error, "config change apply failed");
                     }
+                    last_applied_at = Some(tokio::time::Instant::now());
                 }
 
                 tokio::select! {
@@ -743,8 +799,7 @@ impl ConfigRuntimeManager {
         dynamic_tools: Option<Arc<dyn ToolRegistry>>,
     ) -> Result<RegistrySet, ConfigRuntimeError> {
         let mut provider_registry = MapProviderRegistry::new();
-        let mut next_cache: HashMap<String, (ProviderSpec, Arc<dyn LlmExecutor>)> =
-            HashMap::with_capacity(providers.len());
+        let mut next_cache: ProviderExecutorCache = HashMap::with_capacity(providers.len());
         let prior_cache = self.provider_executor_cache.lock().clone();
         for provider in providers {
             let executor = match prior_cache.get(&provider.id) {
