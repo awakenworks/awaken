@@ -691,16 +691,27 @@ impl ConfigRuntimeManager {
                             // Drain any events that arrived during the wait
                             // so we apply once for the whole burst. The
                             // subscriber trait is async-only, so we peek
-                            // with a zero-duration timeout.
-                            while tokio::time::timeout(
-                                Duration::ZERO,
-                                subscriber.next(),
-                            )
-                            .await
-                            .is_ok()
-                            {
-                                // discarded — apply_if_changed reads the
-                                // latest store snapshot below.
+                            // with a zero-duration timeout. A subscriber
+                            // error here must surface — drain stops and
+                            // the outer loop re-receives, hits the same
+                            // error, and triggers a reconnect.
+                            loop {
+                                match tokio::time::timeout(
+                                    Duration::ZERO,
+                                    subscriber.next(),
+                                )
+                                .await
+                                {
+                                    Ok(Ok(_event)) => continue,
+                                    Ok(Err(error)) => {
+                                        tracing::warn!(
+                                            error = %error,
+                                            "config change listener receive failed while draining debounce window"
+                                        );
+                                        break;
+                                    }
+                                    Err(_elapsed) => break,
+                                }
                             }
                         }
                     }

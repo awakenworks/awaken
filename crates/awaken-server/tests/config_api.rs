@@ -1809,9 +1809,9 @@ async fn change_listener_coalesces_event_bursts_within_min_apply_interval() {
 
     let new_builds = factory.builds_for("bootstrap") - initial_builds;
     assert!(
-        new_builds <= 2,
-        "4 events fired within {min}ms must coalesce to ≤2 applies (got {new_builds} new builds)",
-        min = 200
+        (1..=2).contains(&new_builds),
+        "4 events fired within 200ms debounce window must produce 1 or 2 applies — \
+         0 means the listener missed the burst, >2 means coalescing failed (got {new_builds})"
     );
 }
 
