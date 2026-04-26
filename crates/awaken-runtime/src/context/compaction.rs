@@ -313,6 +313,164 @@ mod tests {
         Arc::new(Message::user(text.repeat(copies)))
     }
 
+    fn store_with_compaction_plugin() -> StateStore {
+        let store = StateStore::new();
+        store
+            .install_plugin(super::super::plugin::CompactionPlugin::default())
+            .unwrap();
+        store
+    }
+
+    fn completed_event(boundary_id: &str, summary: &str, pre_tokens: u64) -> serde_json::Value {
+        json!({
+            "kind": "custom",
+            "task_id": "bg_99",
+            "event_type": COMPACTION_COMPLETED_EVENT,
+            "payload": {
+                "boundary_message_id": boundary_id,
+                "summary": summary,
+                "pre_tokens": pre_tokens,
+            },
+        })
+    }
+
+    fn failed_event(boundary_id: &str, error_text: &str) -> serde_json::Value {
+        json!({
+            "kind": "custom",
+            "task_id": "bg_99",
+            "event_type": COMPACTION_FAILED_EVENT,
+            "payload": {
+                "boundary_message_id": boundary_id,
+                "error": error_text,
+            },
+        })
+    }
+
+    fn mark_in_flight(store: &StateStore, boundary_id: &str) {
+        let mut batch = MutationBatch::new();
+        batch.update::<CompactionStateKey>(record_compaction_in_flight(CompactionInFlight {
+            task_id: "bg_99".into(),
+            boundary_message_id: boundary_id.into(),
+            started_at_ms: 1,
+        }));
+        store.commit(batch).unwrap();
+    }
+
+    #[test]
+    fn try_consume_compaction_event_swaps_messages_and_records_boundary() {
+        let store = store_with_compaction_plugin();
+        let mut messages: Vec<Arc<Message>> = vec![
+            Arc::new(Message::user("OLD-1")),
+            Arc::new(Message::assistant("OLD-2")),
+            Arc::new(Message::user("BOUNDARY")),
+            Arc::new(Message::assistant("AFTER")),
+            // simulates a user message that arrived during the compaction window
+            Arc::new(Message::user("RACE-NEW")),
+        ];
+        let boundary_id = messages[2].id.clone().unwrap();
+        mark_in_flight(&store, &boundary_id);
+
+        let consumed = try_consume_compaction_event(
+            &mut messages,
+            &completed_event(&boundary_id, "the summary", 4321),
+            &store,
+        );
+        assert!(consumed, "must report the event was consumed");
+
+        // Swap happened: summary at front, race-new message preserved.
+        assert!(
+            messages[0]
+                .text()
+                .contains("<conversation-summary>\nthe summary"),
+            "summary not at front: {}",
+            messages[0].text()
+        );
+        assert_eq!(messages[1].text(), "AFTER");
+        assert_eq!(messages[2].text(), "RACE-NEW");
+        assert_eq!(messages.len(), 3);
+
+        let state = store.read::<CompactionStateKey>().unwrap();
+        assert!(!state.is_compacting(), "in-flight must be cleared");
+        assert_eq!(state.boundaries.len(), 1, "boundary must be recorded");
+        assert_eq!(state.boundaries[0].summary, "the summary");
+    }
+
+    #[test]
+    fn try_consume_compaction_event_skips_swap_when_boundary_no_longer_present() {
+        let store = store_with_compaction_plugin();
+        let mut messages: Vec<Arc<Message>> = vec![
+            Arc::new(Message::user("only-msg")),
+            Arc::new(Message::assistant("only-reply")),
+        ];
+        mark_in_flight(&store, "ghost-boundary-id");
+
+        let consumed = try_consume_compaction_event(
+            &mut messages,
+            &completed_event("ghost-boundary-id", "irrelevant", 0),
+            &store,
+        );
+        assert!(consumed);
+
+        // No mutation: skip is benign.
+        assert_eq!(messages.len(), 2);
+        assert_eq!(messages[0].text(), "only-msg");
+
+        let state = store.read::<CompactionStateKey>().unwrap();
+        assert!(
+            !state.is_compacting(),
+            "in-flight must clear even on benign skip"
+        );
+        assert!(
+            state.boundaries.is_empty(),
+            "no boundary should be recorded when swap was skipped"
+        );
+    }
+
+    #[test]
+    fn try_consume_compaction_event_clears_in_flight_on_failure() {
+        let store = store_with_compaction_plugin();
+        let mut messages: Vec<Arc<Message>> = vec![Arc::new(Message::user("x"))];
+        mark_in_flight(&store, "any");
+
+        let consumed =
+            try_consume_compaction_event(&mut messages, &failed_event("any", "boom"), &store);
+        assert!(consumed);
+
+        let state = store.read::<CompactionStateKey>().unwrap();
+        assert!(!state.is_compacting());
+        assert!(
+            state.boundaries.is_empty(),
+            "failure must not record a boundary"
+        );
+    }
+
+    #[test]
+    fn try_consume_compaction_event_passes_through_unrelated_payloads() {
+        let store = store_with_compaction_plugin();
+        let mut messages: Vec<Arc<Message>> = vec![Arc::new(Message::user("x"))];
+
+        // Other Custom event: not for compaction.
+        let other = json!({
+            "kind": "custom",
+            "task_id": "bg_42",
+            "event_type": "task.heartbeat",
+            "payload": {"pct": 50},
+        });
+        assert!(!try_consume_compaction_event(&mut messages, &other, &store));
+
+        // Plain non-Custom payload.
+        let task_completed = json!({
+            "kind": "completed",
+            "task_id": "bg_43",
+            "result": null,
+        });
+        assert!(!try_consume_compaction_event(
+            &mut messages,
+            &task_completed,
+            &store
+        ));
+    }
+
     #[test]
     fn plan_compaction_returns_none_when_savings_below_threshold() {
         let messages: Vec<Arc<Message>> = vec![
