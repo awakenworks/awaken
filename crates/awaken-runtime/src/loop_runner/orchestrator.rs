@@ -1,6 +1,6 @@
 //! Main agent loop orchestration.
 
-use crate::context::TruncationState;
+use crate::context::{TruncationState, try_consume_compaction_event};
 use crate::inbox::inbox_payload_messages;
 use crate::state::StateStore;
 use awaken_contract::contract::event::AgentEvent;
@@ -39,6 +39,22 @@ fn push_inbox_payload(messages: &mut Vec<std::sync::Arc<Message>>, payload: &ser
     for message in inbox_payload_messages(payload) {
         messages.push(std::sync::Arc::new(message));
     }
+}
+
+/// Drain a single inbox payload. Returns `true` when the payload caused
+/// new conversational input to be appended (caller should keep the loop
+/// running). Compaction events return `false` because they perform an
+/// in-place context swap rather than introducing new turns for the LLM.
+fn apply_inbox_payload(
+    messages: &mut Vec<std::sync::Arc<Message>>,
+    payload: &serde_json::Value,
+    store: &StateStore,
+) -> bool {
+    if try_consume_compaction_event(messages, payload, store) {
+        return false;
+    }
+    push_inbox_payload(messages, payload);
+    true
 }
 
 #[tracing::instrument(skip_all, fields(agent_id = %params.agent_id, run_id = %params.run_identity.run_id))]
@@ -267,8 +283,9 @@ pub(super) async fn run_agent_loop_impl(
                 let mut has_new_messages = false;
                 if let Some(ref mut inbox) = inbox {
                     for msg in inbox.drain() {
-                        push_inbox_payload(&mut messages, &msg);
-                        has_new_messages = true;
+                        if apply_inbox_payload(&mut messages, &msg, store) {
+                            has_new_messages = true;
+                        }
                     }
                 }
 
@@ -288,9 +305,9 @@ pub(super) async fn run_agent_loop_impl(
                         if let Some(ref mut inbox) = inbox {
                             match inbox.recv_or_cancel(cancellation_token.as_ref()).await {
                                 Some(msg) => {
-                                    push_inbox_payload(&mut messages, &msg);
+                                    apply_inbox_payload(&mut messages, &msg, store);
                                     for extra in inbox.drain() {
-                                        push_inbox_payload(&mut messages, &extra);
+                                        apply_inbox_payload(&mut messages, &extra, store);
                                     }
                                     continue; // back to loop — LLM processes events
                                 }

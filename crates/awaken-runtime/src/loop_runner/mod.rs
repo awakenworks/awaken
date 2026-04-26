@@ -5,6 +5,7 @@
 
 pub(crate) mod actions;
 mod checkpoint;
+mod compaction;
 mod inference;
 mod orchestrator;
 #[cfg(feature = "parallel-tools")]
