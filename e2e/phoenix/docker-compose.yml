@@ -1,0 +1,31 @@
+# Standalone Arize Phoenix instance for OTLP/HTTP trace verification tests.
+#
+# Boot:
+#   docker compose -f e2e/phoenix/docker-compose.yml up -d --wait
+#
+# Tear down:
+#   docker compose -f e2e/phoenix/docker-compose.yml down -v
+#
+# UI / REST:  http://localhost:6006
+# OTLP/HTTP:  http://localhost:6006/v1/traces  (default ingestion target)
+# OTLP/gRPC:  http://localhost:4317            (when grpc protocol is preferred)
+services:
+  phoenix:
+    image: arizephoenix/phoenix:version-7.10.0
+    container_name: awaken-phoenix-e2e
+    ports:
+      - "6006:6006"
+      - "4317:4317"
+    environment:
+      PHOENIX_WORKING_DIR: /tmp/phoenix
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:6006/v1/projects')"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 5s
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 1G

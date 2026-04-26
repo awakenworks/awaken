@@ -1,0 +1,18 @@
+[package]
+name = "phoenix-test-helpers"
+version = "0.0.0"
+edition.workspace = true
+license.workspace = true
+publish = false
+description = "Test helpers for Arize Phoenix OTLP/HTTP ingestion verification"
+
+[dependencies]
+opentelemetry = "0.28"
+opentelemetry_sdk = "0.28"
+opentelemetry-otlp = { version = "0.28", features = ["http-proto", "reqwest-blocking-client"] }
+reqwest = { workspace = true, default-features = true, features = ["json"] }
+serde_json = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt", "time"] }
+
+[lints]
+workspace = true

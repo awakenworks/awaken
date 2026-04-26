@@ -20,6 +20,7 @@ members = [
     "examples",
     "examples/ai-sdk-starter/agent",
     "examples/copilotkit-starter/agent",
+    "e2e/phoenix/test-helpers",
 ]
 
 [workspace.package]
