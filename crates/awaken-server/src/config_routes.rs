@@ -202,11 +202,11 @@ impl IntoResponse for ConfigRouteError {
 
 fn ensure_admin_auth(state: &AppState, headers: &HeaderMap) -> Result<(), ConfigRouteError> {
     let config = crate::app::admin_api_config(state);
-    ensure_admin_auth_for_token(config.bearer_token.as_deref(), headers)
+    ensure_admin_auth_for_token(config.bearer_token.as_ref(), headers)
 }
 
 fn ensure_admin_auth_for_token(
-    expected: Option<&str>,
+    expected: Option<&awaken_contract::RedactedString>,
     headers: &HeaderMap,
 ) -> Result<(), ConfigRouteError> {
     let Some(expected) = expected else {
@@ -228,7 +228,7 @@ fn ensure_admin_auth_for_token(
             "Authorization header must use Bearer authentication".into(),
         ));
     };
-    if token != expected {
+    if token != expected.expose_secret() {
         return Err(ConfigRouteError::Unauthorized(
             "invalid admin bearer token".into(),
         ));
@@ -257,6 +257,7 @@ fn map_service_error(error: ConfigServiceError) -> ApiError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use awaken_contract::RedactedString;
     use axum::http::{HeaderMap, HeaderValue, header};
 
     #[test]
@@ -267,8 +268,9 @@ mod tests {
 
     #[test]
     fn admin_auth_rejects_missing_or_wrong_token() {
+        let expected = RedactedString::from("secret");
         let headers = HeaderMap::new();
-        let missing = ensure_admin_auth_for_token(Some("secret"), &headers).unwrap_err();
+        let missing = ensure_admin_auth_for_token(Some(&expected), &headers).unwrap_err();
         assert_eq!(missing.into_response().status(), StatusCode::UNAUTHORIZED);
 
         let mut headers = HeaderMap::new();
@@ -276,17 +278,18 @@ mod tests {
             header::AUTHORIZATION,
             HeaderValue::from_static("Bearer wrong"),
         );
-        let wrong = ensure_admin_auth_for_token(Some("secret"), &headers).unwrap_err();
+        let wrong = ensure_admin_auth_for_token(Some(&expected), &headers).unwrap_err();
         assert_eq!(wrong.into_response().status(), StatusCode::UNAUTHORIZED);
     }
 
     #[test]
     fn admin_auth_accepts_bearer_token() {
+        let expected = RedactedString::from("secret");
         let mut headers = HeaderMap::new();
         headers.insert(
             header::AUTHORIZATION,
             HeaderValue::from_static("Bearer secret"),
         );
-        assert!(ensure_admin_auth_for_token(Some("secret"), &headers).is_ok());
+        assert!(ensure_admin_auth_for_token(Some(&expected), &headers).is_ok());
     }
 }

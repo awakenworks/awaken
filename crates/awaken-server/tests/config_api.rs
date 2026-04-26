@@ -608,7 +608,7 @@ async fn make_app_with_admin_token(token: &str) -> TestApp {
         None,
         ServerConfig::default(),
         Some(AdminApiConfig {
-            bearer_token: Some(token.to_string()),
+            bearer_token: Some(token.into()),
             ..Default::default()
         }),
     )

@@ -1944,7 +1944,7 @@ fn supports_extended_agent_card(st: &AppState) -> bool {
 }
 
 fn ensure_extended_card_auth(st: &AppState, headers: &HeaderMap) -> Result<(), A2aError> {
-    let Some(expected) = st.config.a2a_extended_card_bearer_token.as_deref() else {
+    let Some(expected) = st.config.a2a_extended_card_bearer_token.as_ref() else {
         return Err(A2aError::unsupported_operation(
             "extendedAgentCard is not configured for this agent",
         ));
@@ -1962,7 +1962,7 @@ fn ensure_extended_card_auth(st: &AppState, headers: &HeaderMap) -> Result<(), A
             "Authorization header must use Bearer authentication",
         ));
     };
-    if token.trim() != expected {
+    if token.trim() != expected.expose_secret() {
         return Err(A2aError::unauthenticated(
             "invalid bearer token for extendedAgentCard",
         ));

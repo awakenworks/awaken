@@ -4,6 +4,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, OnceLock, Weak};
 use std::time::Instant;
 
+use awaken_contract::RedactedString;
 use awaken_contract::contract::config_store::ConfigStore;
 use awaken_contract::contract::storage::ThreadRunStore;
 use awaken_runtime::{AgentResolver, AgentRuntime};
@@ -100,8 +101,11 @@ pub enum MailboxLifecycleMode {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AdminApiConfig {
     /// Optional bearer token required for admin/configuration APIs.
+    ///
+    /// Wrapped in [`RedactedString`] so it does not leak through `Debug` /
+    /// `Display`. The wire format remains a plain JSON string.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub bearer_token: Option<String>,
+    pub bearer_token: Option<RedactedString>,
     /// Origins allowed to call browser admin APIs.
     #[serde(default = "default_admin_cors_allowed_origins")]
     pub cors_allowed_origins: Vec<String>,
@@ -146,8 +150,11 @@ pub struct ServerConfig {
     #[serde(default = "default_max_concurrent")]
     pub max_concurrent_requests: usize,
     /// Optional bearer token required for authenticated extended A2A agent cards.
+    ///
+    /// Wrapped in [`RedactedString`] so it does not leak through `Debug` /
+    /// `Display`. The wire format remains a plain JSON string.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub a2a_extended_card_bearer_token: Option<String>,
+    pub a2a_extended_card_bearer_token: Option<RedactedString>,
     /// Mailbox lifecycle ownership. Defaults to framework-managed auto mode.
     #[serde(default)]
     pub mailbox_lifecycle: MailboxLifecycleMode,
@@ -173,11 +180,12 @@ fn admin_api_config_registry() -> &'static Mutex<AdminApiConfigRegistry> {
     ADMIN_API_CONFIGS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-fn admin_api_bearer_token_from_env() -> Option<String> {
+fn admin_api_bearer_token_from_env() -> Option<RedactedString> {
     std::env::var(ADMIN_API_BEARER_TOKEN_ENV)
         .ok()
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
+        .map(RedactedString::from)
 }
 
 fn admin_cors_allowed_origins_from_env() -> Option<Vec<String>> {
@@ -326,7 +334,7 @@ impl AppState {
     }
 
     /// Require a bearer token for admin/configuration APIs.
-    pub fn with_admin_api_bearer_token(self, token: impl Into<String>) -> Self {
+    pub fn with_admin_api_bearer_token(self, token: impl Into<RedactedString>) -> Self {
         let mut config = admin_api_config(&self);
         config.bearer_token = Some(token.into());
         self.with_admin_api_config(config)
@@ -573,6 +581,32 @@ mod tests {
         assert!(
             config.expose_config_routes,
             "default AdminApiConfig must expose config CRUD routes for back-compat"
+        );
+    }
+
+    #[test]
+    fn admin_api_config_debug_does_not_leak_bearer_token() {
+        let config = AdminApiConfig {
+            bearer_token: Some("admin-bearer-secret-12345".into()),
+            ..AdminApiConfig::default()
+        };
+        let debug = format!("{config:?}");
+        assert!(
+            !debug.contains("admin-bearer-secret-12345"),
+            "AdminApiConfig Debug must redact bearer_token, got: {debug}"
+        );
+    }
+
+    #[test]
+    fn server_config_debug_does_not_leak_a2a_extended_card_bearer_token() {
+        let config = ServerConfig {
+            a2a_extended_card_bearer_token: Some("a2a-secret-67890".into()),
+            ..ServerConfig::default()
+        };
+        let debug = format!("{config:?}");
+        assert!(
+            !debug.contains("a2a-secret-67890"),
+            "ServerConfig Debug must redact a2a_extended_card_bearer_token, got: {debug}"
         );
     }
 
