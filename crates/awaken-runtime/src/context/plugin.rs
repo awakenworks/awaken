@@ -69,16 +69,35 @@ pub struct CompactionBoundary {
     pub timestamp_ms: u64,
 }
 
+/// Pointer to a single in-flight background compaction pass. Used as a
+/// single-flight guard so the runtime never spawns a second compaction
+/// while one is still summarizing.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CompactionInFlight {
+    /// Background task id of the running compaction.
+    pub task_id: String,
+    /// Stable message id of the boundary message at trigger time. Used
+    /// to locate the cut point against the current message list when the
+    /// summary lands — robust to messages appended during the window.
+    pub boundary_message_id: String,
+    /// Wall-clock millis when the task was spawned.
+    pub started_at_ms: u64,
+}
+
 /// Durable state for context compaction tracking.
 ///
 /// Stores a history of compaction boundaries so that load-time trimming
-/// and plugin queries can identify already-summarized ranges.
+/// and plugin queries can identify already-summarized ranges, plus a
+/// single-flight guard for background compaction passes.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct CompactionState {
     /// Ordered list of compaction boundaries (most recent last).
     pub boundaries: Vec<CompactionBoundary>,
     /// Total number of compaction passes performed.
     pub total_compactions: u64,
+    /// Currently running background compaction, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub in_flight: Option<CompactionInFlight>,
 }
 
 /// Reducer actions for [`CompactionState`].
@@ -87,6 +106,10 @@ pub struct CompactionState {
 pub enum CompactionAction {
     /// Record a new compaction boundary.
     RecordBoundary(CompactionBoundary),
+    /// Mark a background compaction as in flight.
+    SetInFlight(CompactionInFlight),
+    /// Clear the in-flight marker (called on success and failure).
+    ClearInFlight,
     /// Clear all tracked boundaries (e.g. on thread reset).
     Clear,
 }
@@ -98,9 +121,16 @@ impl CompactionState {
                 self.boundaries.push(boundary);
                 self.total_compactions += 1;
             }
+            CompactionAction::SetInFlight(in_flight) => {
+                self.in_flight = Some(in_flight);
+            }
+            CompactionAction::ClearInFlight => {
+                self.in_flight = None;
+            }
             CompactionAction::Clear => {
                 self.boundaries.clear();
                 self.total_compactions = 0;
+                self.in_flight = None;
             }
         }
     }
@@ -108,6 +138,11 @@ impl CompactionState {
     /// Latest compaction boundary, if any.
     pub fn latest_boundary(&self) -> Option<&CompactionBoundary> {
         self.boundaries.last()
+    }
+
+    /// True when a background compaction pass is already running.
+    pub fn is_compacting(&self) -> bool {
+        self.in_flight.is_some()
     }
 }
 
@@ -261,6 +296,7 @@ mod tests {
                 timestamp_ms: 1,
             }],
             total_compactions: 1,
+            in_flight: None,
         };
 
         state.reduce(CompactionAction::Clear);
@@ -292,6 +328,7 @@ mod tests {
                 },
             ],
             total_compactions: 2,
+            in_flight: None,
         };
 
         let json = serde_json::to_string(&state).unwrap();
@@ -746,6 +783,59 @@ mod tests {
             long_total > policy_with_threshold.autocompact_threshold.unwrap(),
             "100-message conversation should exceed threshold of 500, got {long_total}"
         );
+    }
+
+    #[test]
+    fn in_flight_set_and_clear_round_trip() {
+        let mut state = CompactionState::default();
+        assert!(!state.is_compacting());
+
+        state.reduce(CompactionAction::SetInFlight(CompactionInFlight {
+            task_id: "bg_42".into(),
+            boundary_message_id: "01HZ-msg-01".into(),
+            started_at_ms: 100,
+        }));
+        let live = state.in_flight.as_ref().expect("in-flight set");
+        assert_eq!(live.task_id, "bg_42");
+        assert_eq!(live.boundary_message_id, "01HZ-msg-01");
+        assert!(state.is_compacting());
+
+        state.reduce(CompactionAction::ClearInFlight);
+        assert!(state.in_flight.is_none());
+        assert!(!state.is_compacting());
+    }
+
+    #[test]
+    fn clear_action_resets_in_flight_too() {
+        let mut state = CompactionState::default();
+        state.reduce(CompactionAction::SetInFlight(CompactionInFlight {
+            task_id: "bg_1".into(),
+            boundary_message_id: "msg-id".into(),
+            started_at_ms: 1,
+        }));
+        state.reduce(CompactionAction::Clear);
+        assert!(state.in_flight.is_none());
+        assert!(state.boundaries.is_empty());
+    }
+
+    #[test]
+    fn record_boundary_does_not_touch_in_flight() {
+        let mut state = CompactionState::default();
+        state.reduce(CompactionAction::SetInFlight(CompactionInFlight {
+            task_id: "bg_99".into(),
+            boundary_message_id: "msg".into(),
+            started_at_ms: 1,
+        }));
+        state.reduce(CompactionAction::RecordBoundary(CompactionBoundary {
+            summary: "s".into(),
+            pre_tokens: 10,
+            post_tokens: 1,
+            timestamp_ms: 2,
+        }));
+        // RecordBoundary alone does not clear the marker — the inbox
+        // event router is responsible for the explicit ClearInFlight.
+        assert!(state.is_compacting());
+        assert_eq!(state.boundaries.len(), 1);
     }
 
     #[test]
