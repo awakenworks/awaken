@@ -653,9 +653,7 @@ async fn deliver_live_subject(
                 | async_nats::client::RequestErrorKind::TimedOut => {
                     Ok(LiveDeliveryOutcome::NoSubscriber)
                 }
-                async_nats::client::RequestErrorKind::Other => {
-                    Err(StorageError::Io(format!("nats request: {err}")))
-                }
+                _ => Err(StorageError::Io(format!("nats request: {err}"))),
             },
         },
     };
