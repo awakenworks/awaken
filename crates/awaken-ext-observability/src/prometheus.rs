@@ -1,8 +1,47 @@
 use metrics::{counter, histogram};
 
 use crate::metrics::{
-    AgentMetrics, DelegationSpan, GenAISpan, HandoffSpan, SuspensionSpan, ToolSpan,
+    AgentMetrics, DelegationSpan, GenAISpan, HandoffSpan, MetricsEvent, SuspensionSpan, ToolSpan,
 };
+use crate::sink::MetricsSink;
+
+/// `MetricsSink` that emits Prometheus counters and histograms via the global
+/// `metrics` recorder.
+///
+/// All recording happens through the [`metrics`](https://crates.io/crates/metrics)
+/// facade — installing a `metrics-exporter-prometheus` recorder is the
+/// caller's responsibility (`awaken-server::metrics::install_recorder` already
+/// does this for the HTTP `/metrics` route).  When no recorder is installed
+/// the calls become silent no-ops.
+///
+/// `PrometheusSink` is `Default`, `Clone`, `Send`, and `Sync` so it can be
+/// freely shared across plugin instances and threads.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct PrometheusSink;
+
+impl PrometheusSink {
+    /// Construct a new sink. Recording is a no-op until a `metrics` recorder
+    /// is installed somewhere in the process.
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl MetricsSink for PrometheusSink {
+    fn record(&self, event: &MetricsEvent) {
+        match event {
+            MetricsEvent::Inference(span) => record_inference(span),
+            MetricsEvent::Tool(span) => record_tool(span),
+            MetricsEvent::Suspension(span) => record_suspension(span),
+            MetricsEvent::Handoff(span) => record_handoff(span),
+            MetricsEvent::Delegation(span) => record_delegation(span),
+        }
+    }
+
+    fn on_run_end(&self, metrics: &AgentMetrics) {
+        record_run_end(metrics);
+    }
+}
 
 pub(crate) fn record_inference(span: &GenAISpan) {
     let status = if span.error_type.is_some() {
@@ -191,5 +230,40 @@ mod tests {
         assert!(output.contains("awaken_inference_tokens_total"));
         assert!(output.contains("awaken_tool_calls_total"));
         assert!(output.contains("awaken_tool_duration_seconds"));
+    }
+
+    #[test]
+    fn prometheus_sink_routes_events_through_recorder() {
+        let handle = install_recorder();
+        let sink = PrometheusSink::new();
+
+        sink.record(&MetricsEvent::Inference(sample_inference()));
+        sink.record(&MetricsEvent::Tool(ToolSpan {
+            context: crate::metrics::SpanContext::default(),
+            step_index: Some(0),
+            name: "sink-test-tool".to_string(),
+            operation: "execute_tool".to_string(),
+            call_id: "call-sink".to_string(),
+            tool_type: "function".to_string(),
+            error_type: None,
+            duration_ms: 7,
+        }));
+        sink.on_run_end(&AgentMetrics {
+            session_duration_ms: 1234,
+            ..Default::default()
+        });
+
+        let output = handle.render();
+        assert!(output.contains("sink-test-tool"));
+        assert!(output.contains("awaken_agent_session_duration_seconds"));
+    }
+
+    #[test]
+    fn prometheus_sink_is_copy_clone_send_sync() {
+        fn assert_send_sync<T: Send + Sync + Copy + Clone>() {}
+        assert_send_sync::<PrometheusSink>();
+        let a = PrometheusSink::new();
+        let b = a;
+        let _ = (a, b);
     }
 }

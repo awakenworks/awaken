@@ -11,6 +11,7 @@ mod plugin;
 mod prometheus;
 mod sink;
 mod stats;
+mod wiring;
 
 #[cfg(feature = "otel")]
 pub mod otel;
@@ -25,7 +26,12 @@ pub use metrics::{
 };
 pub use persistent::{PersistenceConfig, PersistentSink};
 pub use plugin::{OBSERVABILITY_PLUGIN_ID, ObservabilityPlugin};
+pub use prometheus::PrometheusSink;
 pub use sink::{InMemorySink, MetricsSink, SinkError};
+pub use wiring::{
+    WiringSummary, install_default_sinks_from_env, observability_plugin_from_env,
+    observability_plugin_from_env_with_summary,
+};
 
 #[cfg(feature = "otel")]
 pub use otel::OtelMetricsSink;
