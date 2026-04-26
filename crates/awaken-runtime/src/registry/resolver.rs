@@ -29,6 +29,10 @@ pub struct ResolvedAgent {
     /// Context summarizer for LLM-based compaction. `None` disables LLM compaction
     /// (hard truncation still works if `context_policy` is set).
     pub context_summarizer: Option<Arc<dyn crate::context::ContextSummarizer>>,
+    /// Background task manager used to run context compaction off the
+    /// main agent loop. `None` falls back to no compaction (compaction is
+    /// only triggered when both this and `context_summarizer` are set).
+    pub background_manager: Option<Arc<crate::extensions::background::BackgroundTaskManager>>,
     /// Optional store for cross-process stream resume. When `Some`, the
     /// loop runner flushes mid-stream accumulator snapshots to this
     /// store and restores from it on the next `execute_streaming` call
@@ -72,6 +76,7 @@ impl ResolvedAgent {
             llm_executor,
             tool_executor: Arc::new(SequentialToolExecutor),
             context_summarizer: None,
+            background_manager: None,
             stream_checkpoint_store: None,
             env: ExecutionEnv::empty(),
         }
@@ -158,6 +163,18 @@ impl ResolvedAgent {
         summarizer: Arc<dyn crate::context::ContextSummarizer>,
     ) -> Self {
         self.context_summarizer = Some(summarizer);
+        self
+    }
+
+    /// Attach a background task manager so context compaction can run
+    /// off the main agent loop. Without this, compaction is disabled
+    /// even if a summarizer is configured.
+    #[must_use]
+    pub fn with_background_manager(
+        mut self,
+        manager: Arc<crate::extensions::background::BackgroundTaskManager>,
+    ) -> Self {
+        self.background_manager = Some(manager);
         self
     }
 
@@ -422,7 +439,19 @@ mod tests {
         assert!(agent.tools.is_empty());
         assert!(agent.context_policy().is_none());
         assert!(agent.context_summarizer.is_none());
+        assert!(agent.background_manager.is_none());
         assert_eq!(agent.max_continuation_retries(), 2);
+    }
+
+    #[test]
+    fn with_background_manager_attaches_handle() {
+        let manager = Arc::new(crate::extensions::background::BackgroundTaskManager::new());
+        let agent = ResolvedAgent::new("a", "m", "s", mock_executor())
+            .with_background_manager(manager.clone());
+        assert!(Arc::ptr_eq(
+            agent.background_manager.as_ref().unwrap(),
+            &manager
+        ));
     }
 
     #[test]
