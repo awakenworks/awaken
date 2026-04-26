@@ -23,8 +23,8 @@ pub use plugin::BackgroundTaskPlugin;
 pub use send_message_tool::SendMessageTool;
 pub use state::{BackgroundTaskViewKey, PersistedTaskMeta};
 pub use types::{
-    AgentTaskContext, TaskContext, TaskEvent, TaskId, TaskParentContext, TaskResult, TaskStatus,
-    TaskSummary,
+    AgentTaskContext, BACKGROUND_TASKS_PLUGIN_ID, TaskContext, TaskEvent, TaskId,
+    TaskParentContext, TaskResult, TaskStatus, TaskSummary,
 };
 
 #[cfg(test)]
