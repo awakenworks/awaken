@@ -38,7 +38,7 @@ Agent 选择工具、调用工具、读写状态，如此循环 — 全部由运
 
 ```toml
 [dependencies]
-awaken = { version = "0.4.0-dev" }
+awaken = { version = "0.4.0" }
 tokio = { version = "1.51.0", features = ["full"] }
 async-trait = "0.1.89"
 serde_json = "1.0.149"

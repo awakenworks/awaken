@@ -12,15 +12,15 @@ Use this when you need file-based persistence for threads, runs, and messages wi
 
 ```toml
 [dependencies]
-awaken-stores = { version = "0.4.0-dev", features = ["file"] }
+awaken-stores = { version = "0.4.0", features = ["file"] }
 ```
 
 Or, if using the `awaken` facade crate (which re-exports `awaken-stores`), add `awaken-stores` directly for the feature flag:
 
 ```toml
 [dependencies]
-awaken = { version = "0.4.0-dev" }
-awaken-stores = { version = "0.4.0-dev", features = ["file"] }
+awaken = { version = "0.4.0" }
+awaken-stores = { version = "0.4.0", features = ["file"] }
 ```
 
 2. Create a FileStore.

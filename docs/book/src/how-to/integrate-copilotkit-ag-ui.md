@@ -10,7 +10,7 @@ Use this when you have a CopilotKit React frontend and need to connect it to an 
 
 ```toml
 [dependencies]
-awaken = { version = "0.4.0-dev", features = ["server"] }
+awaken = { version = "0.4.0", features = ["server"] }
 tokio = { version = "1", features = ["full"] }
 async-trait = "0.1"
 serde_json = "1"
@@ -117,7 +117,7 @@ import "@copilotkit/react-ui/styles.css";
 
 export default function App() {
   return (
-    <CopilotKit runtimeUrl="http://localhost:3000/v1/ag-ui">
+    <CopilotKit runtimeUrl="http://localhost:3000/v1/ag-ui/run">
       <CopilotChat
         labels={{ title: "Agent", initial: "How can I help?" }}
       />
@@ -148,7 +148,7 @@ npm run dev
 | Symptom | Cause | Fix |
 |---------|-------|-----|
 | CORS error in browser | No CORS middleware | Add `tower-http` CORS layer to the axum router |
-| CopilotKit shows "connection failed" | Wrong `runtimeUrl` | Confirm it points to `http://localhost:3000/v1/ag-ui` |
+| CopilotKit shows "connection failed" | Wrong `runtimeUrl` | Confirm it points to `http://localhost:3000/v1/ag-ui/run` (the AG-UI run endpoint, not the namespace) |
 | Events arrive but UI does not update | AG-UI event format mismatch | Ensure CopilotKit version is compatible with AG-UI protocol |
 | 404 on `/v1/ag-ui/run` | Missing `server` feature | Enable `features = ["server"]` in `Cargo.toml` |
 

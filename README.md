@@ -2,49 +2,46 @@
 
 [English](./README.md) | [中文](./README.zh-CN.md)
 
-[![CI](https://github.com/AwakenWorks/awaken/actions/workflows/test.yml/badge.svg)](https://github.com/AwakenWorks/awaken/actions/workflows/test.yml) [![crates.io awaken](https://img.shields.io/crates/v/awaken.svg?label=awaken)](https://crates.io/crates/awaken) [![crates.io awaken-agent](https://img.shields.io/crates/v/awaken-agent.svg?label=awaken-agent)](https://crates.io/crates/awaken-agent) ![License](https://img.shields.io/badge/license-MIT%2FApache--2.0-blue) ![MSRV](https://img.shields.io/badge/MSRV-1.93-orange)
+[![CI](https://github.com/AwakenWorks/awaken/actions/workflows/test.yml/badge.svg)](https://github.com/AwakenWorks/awaken/actions/workflows/test.yml) [![crates.io awaken](https://img.shields.io/crates/v/awaken.svg?label=awaken)](https://crates.io/crates/awaken) [![crates.io awaken-agent](https://img.shields.io/crates/v/awaken-agent.svg?label=awaken-agent)](https://crates.io/crates/awaken-agent) [![Changelog](https://img.shields.io/badge/changelog-0.4.0-informational)](./CHANGELOG.md) ![License](https://img.shields.io/badge/license-MIT%2FApache--2.0-blue) ![MSRV](https://img.shields.io/badge/MSRV-1.93-orange)
 
-Production AI agent runtime for Rust — type-safe state, multi-protocol serving, plugin extensibility.
+A Rust agent runtime that serves AI SDK, CopilotKit, A2A, and MCP from the same backend, recovers from mid-stream LLM failures, and treats configuration as the control plane.
 
-Published on crates.io as both `awaken` and `awaken-agent`. `awaken` is the
-primary umbrella package; `awaken-agent` is a compatibility package. Import in
-Rust as `awaken` either way.
-The workspace uses Rust 1.93.0 for development; the crate MSRV is 1.93.
+`awaken` is the canonical crate (transferred to this project from
+[@brayniac](https://github.com/brayniac); see the acknowledgement below).
+`awaken-agent` is a thin compatibility republish from when the project shipped
+under that name. Import path is `awaken` either way. MSRV: Rust 1.93.
 
-Docs: [GitHub Pages](https://awakenworks.github.io/awaken/) | [Chinese docs](https://awakenworks.github.io/awaken/zh-CN/)
+Docs: [GitHub Pages](https://awakenworks.github.io/awaken/) · [Chinese docs](https://awakenworks.github.io/awaken/zh-CN/) · [Changelog](./CHANGELOG.md)
 
 <p align="center">
   <img src="./docs/assets/demo.svg" alt="Awaken demo — tool call + LLM streaming" width="800">
 </p>
 
-## Highlights
+## What you get in 0.4
 
-- **Rust-first agent runtime**: typed tools, generated JSON Schema, typed state keys, scoped snapshots, and atomic state commits.
-- **One runtime, many clients**: HTTP/SSE run API, AI SDK v6, AG-UI/CopilotKit, A2A, and MCP JSON-RPC from the same backend.
-- **Configuration-first optimization**: choose models/providers, tune prompts, reminders, permissions, generative UI, and deferred tools through `/v1/config/*`, `/v1/capabilities`, and the admin console.
-- **Production control paths**: mailbox-backed background runs, HITL decisions, cancellation/interrupt, SSE replay, retries, fallback models, circuit breakers, metrics, and health probes.
-- **Plugin surface**: permission gates, reminders, OpenTelemetry, MCP tools, skills, generative UI, and deferred tool loading with an explicit probability model.
+- **Multi-protocol from one backend.** A single runtime serves AI SDK v6, AG-UI / CopilotKit, A2A, and MCP. The same `/v1/runs` powers all of them.
+- **Streaming LLM calls survive transient failures.** Mid-stream interruptions and idle stalls are detected and recovered through four explicit plans (continue text, replay completed tool calls, restart with a cancelled-tool hint, or whole restart). `Retry-After` is honored. A `StreamCheckpointStore` contract extends the same recovery across process restarts. ([details](./docs/book/src/how-to/recover-streaming-llms.md))
+- **Threads have a parent-child lineage.** Sub-agent runs create child threads; deletion is explicit (`reject` / `detach` / `cascade`). Filters and cursors on `/v1/threads` make hierarchical UIs straightforward.
+- **Secrets stay redacted.** `ProviderSpec.api_key`, admin and A2A bearer tokens are wrapped in `RedactedString` — `Debug`/`Display` print `***`, the buffer is zeroized on drop, and the JSON wire format is unchanged.
+- **Configuration is the control plane.** Models, providers, prompts, reminders, permissions, and tool-loading policy live behind `/v1/config/*` and `/v1/capabilities`. Apply bursts can be debounced and provider executors are reused across unchanged specs.
+- **Type-safe state and tools.** Typed `StateKey`s with merge strategies, generated JSON Schema for `TypedTool`, atomic batched commits after each phase. `unsafe_code = "forbid"` workspace-wide.
 
-## 30-second mental model
+## Mental model
 
-1. **Tools** — implement `Tool` directly or `TypedTool` with `schemars`-generated JSON Schema
-2. **Agents** — each agent has a system prompt, a model, and a set of allowed tools; the LLM drives orchestration through natural language — no predefined graphs
-3. **State** — typed run/thread state plus persistent profile/shared state for cross-thread or cross-agent coordination
-4. **Plugins** — lifecycle hooks for permissions, observability, context management, skills, MCP, and more
+1. **Tools** — implement `Tool` directly, or `TypedTool` with `schemars`-generated JSON Schema.
+2. **Agents** — system prompt, model binding, allowed tools. The LLM orchestrates through natural language; there is no DAG.
+3. **State** — typed run/thread state plus persistent profile and shared state for cross-thread or cross-agent coordination.
+4. **Plugins** — lifecycle hooks for permission, observability, context management, skills, MCP, generative UI.
 
-Your agent picks tools, calls them, reads and updates state, and repeats — all orchestrated by the runtime through 9 typed phases, including a pure `ToolGate` before tool execution. Every state change is committed atomically after the gather phase.
+The runtime drives 9 typed phases per round, including a pure `ToolGate` before tool execution. State mutations are batched and committed atomically.
 
-## Try it in 5 minutes
+## Quickstart
 
-Prerequisites: Rust 1.93+ for the published crate, or the pinned `rust-toolchain.toml`
-toolchain when working from this repository, plus an LLM provider API key.
-
-- Rust 1.93 or newer. This repository pins Rust 1.93.0 for local development.
-- An OpenAI-compatible API key.
+Prerequisites: Rust 1.93+ and an OpenAI-compatible API key.
 
 ```toml
 [dependencies]
-awaken = { version = "0.4.0-dev" }
+awaken = { version = "0.4.0" }
 tokio = { version = "1.51.0", features = ["full"] }
 async-trait = "0.1.89"
 serde_json = "1.0.149"
@@ -169,36 +166,33 @@ serve(state).await?;
 | A2A | `POST /v1/a2a/message:send` | Other agents |
 | MCP | `POST /v1/mcp` | JSON-RPC 2.0 |
 
-The optional admin console uses `/v1/capabilities` and `/v1/config/*` to edit
-agents, models, providers, MCP servers, and plugin config sections in the
-browser. Plugins expose JSON Schema through the same typed `PluginConfigKey`
-path used by runtime hooks, so saving an agent section such as `permission`,
-`reminder`, `generative-ui`, or `deferred_tools` publishes a new registry
-snapshot and applies to subsequent `/v1/runs` requests. OpenAI-compatible
-providers, including BigModel, use the `openai` adapter with a provider-specific
-`base_url`.
+The optional admin console reads `/v1/capabilities` and writes through
+`/v1/config/*` to manage agents, models, providers, MCP servers, and plugin
+config sections. Plugins expose their schema via the same typed
+`PluginConfigKey` used at runtime, so saving an agent's `permission`,
+`reminder`, `generative-ui`, or `deferred_tools` section publishes a new
+registry snapshot that takes effect on the next `/v1/runs` request.
+OpenAI-compatible providers (including BigModel) use the `openai` adapter
+with their own `base_url`; non-secret extras go in `ProviderSpec.adapter_options`.
 
-The design intent is that agent optimization stays data-driven: model choice,
-provider endpoints, base prompts, system reminders, generated-UI instructions,
-permission policy, and tool-loading policy should be configured through the
-same schema-backed path rather than hard-coded into the agent loop.
-
-| Tuning surface | Configuration path |
+| Tuning surface | Where it lives |
 |---|---|
-| Base prompt | `AgentSpec.system_prompt` on the agent entry |
-| Model and provider routing | `AgentSpec.model_id`, `/v1/config/models`, `/v1/config/providers` |
-| System reminders and prompt context injection | `reminder` plugin section, using `system` or `suffix_system` targets |
-| Generative UI prompt guidance | `generative-ui` plugin section (`catalog_id`, `examples`, or full `instructions`) |
+| Base prompt | `AgentSpec.system_prompt` |
+| Model and provider routing | `AgentSpec.model_id` + `/v1/config/models` + `/v1/config/providers` |
+| System reminders and prompt injection | `reminder` plugin section |
+| Generative UI prompt guidance | `generative-ui` plugin section |
 | Tool policy and context cost | `permission` and `deferred_tools` plugin sections |
-| Prompt semantic hooks | Not a built-in plugin yet; add them as typed `PluginConfigKey` sections with schema-backed hooks |
 
 **React + AI SDK v6:**
 
 ```typescript
-import { useChat } from "ai/react";
+import { useChat } from "@ai-sdk/react";
+import { DefaultChatTransport } from "ai";
 
-const { messages, input, handleSubmit } = useChat({
-  api: "http://localhost:3000/v1/ai-sdk/chat",
+const { messages, sendMessage } = useChat({
+  transport: new DefaultChatTransport({
+    api: "http://localhost:3000/v1/ai-sdk/chat",
+  }),
 });
 ```
 
@@ -218,54 +212,37 @@ Wire a `ConfigStore` into `AppState` to manage agents, models, providers, and MC
 
 ## Built-in plugins
 
-Facade features are enabled by default via the `full` feature. Use
-`default-features = false` to opt out. Workspace extension crates that are not
-re-exported by the facade, such as deferred tools, are added as direct
-dependencies.
+The facade `full` feature pulls in the plugins below. Use
+`default-features = false` to opt out. `awaken-ext-deferred-tools` is not
+re-exported by the facade and is added as a direct dependency.
 
 | Plugin | What it does | Feature flag |
 |---|---|---|
-| **Permission** | Firewall-style tool access control with Deny/Allow/Ask rules, glob/regex matching, and HITL suspension via mailbox. | `permission` |
-| **Reminder** | Injects system or conversation-level context messages when tool calls match configured patterns. | `reminder` |
-| **Observability** | OpenTelemetry telemetry aligned with GenAI Semantic Conventions; supports OTLP, file, and in-memory export. | `observability` |
+| **Permission** | Allow/Deny/Ask rules with glob and regex matching on tool name and arguments. Deny beats Allow beats Ask; Ask suspends the run via the mailbox for HITL. | `permission` |
+| **Reminder** | Injects system or conversation-level context messages when a tool call matches a configured pattern. | `reminder` |
+| **Observability** | OpenTelemetry traces and metrics aligned with the GenAI Semantic Conventions; OTLP, file, and in-memory exports. | `observability` |
 | **MCP** | Connects to external MCP servers and registers their tools as native Awaken tools. | `mcp` |
 | **Skills** | Discovers skill packages and injects a catalog before inference so the LLM can activate skills on demand. | `skills` |
 | **Generative UI** | Streams declarative UI components to frontends via A2UI, JSON Render, and OpenUI Lang integrations. | `generative-ui` |
-| **Deferred Tools** | Hides large tool schemas behind `ToolSearch`, then uses a discounted Beta probability model to re-defer idle promoted tools. | direct crate: `awaken-ext-deferred-tools` |
+| **Deferred Tools** | Hides large tool schemas behind a `ToolSearch` step, then re-defers tools that have been idle for a configurable number of turns using a discounted Beta usage model. | direct crate: `awaken-ext-deferred-tools` |
 
-Deferred tools are configured through the `deferred_tools` agent section when
-the `ext-deferred-tools` plugin is registered. See
-[Use Deferred Tools](./docs/book/src/how-to/use-deferred-tools.md) for setup,
-the activation heuristic, and the DiscBeta probability model.
+Custom tool interception goes through `ToolGateHook` via
+`PluginRegistrar::register_tool_gate_hook()`. `BeforeToolExecute` is reserved
+for execution-time hooks that only run when a tool is actually about to execute.
 
-Custom interception hooks should use `ToolGateHook` via `PluginRegistrar::register_tool_gate_hook()`. `BeforeToolExecute` is reserved for execution-time hooks that run only when a tool is actually about to execute.
+## When this fits
 
-## Why Awaken
+- You want a **Rust backend** for AI agents with compile-time guarantees.
+- You need to serve **AI SDK, CopilotKit, A2A, and/or MCP** from a single backend.
+- Tools need to **share state safely** during concurrent execution, and runs need **auditable history** with checkpoints and resume.
+- You're comfortable registering your own tools and providers instead of relying on batteries-included defaults.
 
-- One backend serves multiple protocols: AI SDK v6, AG-UI, A2A, MCP, plus native HTTP/SSE routes.
-- Configuration is the control plane: model/provider routing, prompts, reminders, permissions, and tool-loading policy use schema-backed config that can be validated and applied at runtime.
-- The LLM orchestrates: define the agent identity, model binding, and tool access; no hand-coded DAG is required.
-- Runtime-managed configuration updates agents, model bindings, providers, and MCP servers through the Config API or Admin Console.
-- Plugin extension points are typed: 9 lifecycle phases, `PhaseHook`, `ToolGateHook`, scheduled actions, effects, request transforms, and plugin-provided tools.
-- State is type-safe: `StateKey` binds each key to Rust value/update types, scopes it to run/thread/profile, and applies declared merge strategies before commit.
-- Operational surfaces are built in: LLM retry/backoff, per-model circuit breaker, request timeout, graceful shutdown, Prometheus metrics, health probes, and mailbox retry/backoff.
-- Zero `unsafe` — the entire workspace forbids `unsafe` and relies on the Rust compiler for memory safety.
+## When it doesn't
 
-## When to use Awaken
-
-- You want a **Rust backend** for AI agents with compile-time safety
-- You need to serve **multiple frontend or agent protocols** from one backend
-- Your tools need to **safely share state** during concurrent execution
-- You need **auditable thread history**, checkpoints, and resumable control paths
-- You are comfortable wiring your own tools, providers, and model registry instead of relying on batteries-included defaults
-
-## When NOT to use Awaken
-
-- You need **built-in file/shell/web tools** out of the box — consider OpenAI Agents SDK, Dify, or CrewAI
-- You want a **visual workflow builder** — consider Dify, LangGraph Studio
-- You want **Python** and rapid prototyping — consider LangGraph, AG2, PydanticAI
-- You need a **stable, slow-moving surface area** more than an evolving runtime platform
-- You need **LLM-managed memory** (agent decides what to remember) — consider Letta
+- You need **built-in file/shell/web tools** out of the box — consider OpenAI Agents SDK, Dify, or CrewAI.
+- You want a **visual workflow builder** — consider Dify or LangGraph Studio.
+- You want **Python** and rapid prototyping — consider LangGraph, AG2, or PydanticAI.
+- You need an **LLM-managed memory** subsystem where the agent decides what to remember — consider Letta.
 
 ## Architecture
 
@@ -333,9 +310,19 @@ Areas where contributions are especially welcome:
 
 Join the conversation on [GitHub Discussions](https://github.com/AwakenWorks/awaken/discussions).
 
----
+## Acknowledgement
 
-Awaken is a ground-up rewrite of [tirea](../../tree/tirea-0.5); it is not backwards-compatible. The tirea 0.5 codebase is archived on the [`tirea-0.5`](../../tree/tirea-0.5) branch.
+The `awaken` crate name on crates.io was generously transferred from
+[@brayniac](https://github.com/brayniac), who maintained an earlier crate
+under the same name and offered to hand it over so this project could publish
+canonically. Versions `0.1`–`0.3` of `awaken` on crates.io belong to that
+earlier project; this codebase resumes the line that previously shipped as
+`awaken-agent 0.2.x` and starts at `0.4.0` to skip past the prior versions.
+Thank you.
+
+Awaken is also a ground-up rewrite of [tirea](../../tree/tirea-0.5) and is not
+backwards-compatible with it. The tirea 0.5 codebase remains archived on the
+[`tirea-0.5`](../../tree/tirea-0.5) branch.
 
 ## License
 

@@ -12,11 +12,13 @@ pub enum AgentEvent {
         thread_id: String,
         run_id: String,
         parent_run_id: Option<String>,    // 为 None 时省略
+        identity: Option<RunIdentity>,    // 为 None 时省略
     },
 
     RunFinish {
         thread_id: String,
         run_id: String,
+        identity: Option<RunIdentity>,    // 为 None 时省略
         result: Option<Value>,            // 为 None 时省略
         termination: TerminationReason,
     },
@@ -67,6 +69,18 @@ pub enum AgentEvent {
 
     ToolCallResumed { target_id: String, result: Value },
 
+    /// 已经开始流式产生的 tool call，在参数 JSON 闭合前被中途取消（mid-stream
+    /// 中断恢复路径触发）。消费者应该把对应 `id` 已缓冲的 partial delta 丢掉。
+    ToolCallCancel {
+        id: String,
+        name: String,
+        reason: String,                   // 例如 "connection reset"、"idle stall"
+    },
+
+    /// 当前 assistant 轮次因 mid-stream 中断而无法通过 continuation 恢复，
+    /// 整个轮次重启。消费者应该把这一轮已发出的所有 delta 丢掉。
+    StreamReset { reason: String },
+
     StepStart { message_id: String },
 
     StepEnd,
@@ -89,6 +103,14 @@ pub enum AgentEvent {
 ```
 
 **Crate 路径：** `awaken::contract::event::AgentEvent`
+
+### 流式恢复语义
+
+`ToolCallCancel` 和 `StreamReset` 是 mid-stream 恢复期间发出的"丢弃信号"。
+消费者把对应 tool call（或整轮）的 partial buffer 丢掉、继续读流即可，恢复后
+的 delta 会通过常规的 `TextDelta` / `ToolCallDelta` 通道到来。四种恢复方案与
+`StreamCheckpointStore` 接入见
+[流式 LLM 错误恢复](../how-to/recover-streaming-llms.md)。
 
 ### Helper
 

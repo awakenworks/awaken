@@ -73,16 +73,70 @@ pub enum RuntimeError {
 
 ## InferenceExecutionError
 
-LLM 执行层错误。
+LLM 执行层错误。变体按可恢复性分为三类：
+
+- **Transient（可重试）**：会被重试子系统再次发起，且计入每模型的熔断器计数。
+- **Permanent（不可重试）**：换模型也会失败，不计入熔断器。
+- **Fail-fast**：重试子系统已经无法（或不应该）再尝试。
+
+枚举为 `#[non_exhaustive]`。crate 外部的代码必须包含 `_ => …` 分支，并优先使
+用 `is_retryable()`、`counts_toward_circuit_breaker()`、`retry_after()` 三个
+访问器，而不是直接对具体变体做模式匹配。
 
 ```rust,ignore
+use std::time::Duration;
+use awaken::contract::executor::{InterruptCause, InterruptSnapshot};
+
+#[non_exhaustive]
 pub enum InferenceExecutionError {
+    // Transient
     Provider(String),
-    RateLimited(String),
+    RateLimited { message: String, retry_after: Option<Duration> },
+    Overloaded  { message: String, retry_after: Option<Duration> },
     Timeout(String),
+    StreamInterrupted { cause: InterruptCause, snapshot: Box<InterruptSnapshot> },
+
+    // Permanent
+    ContextOverflow(String),
+    InvalidRequest(String),
+    Unauthorized(String),
+    ModelNotFound(String),
+    ContentFiltered(String),
+
+    // Fail-fast
+    AllModelsUnavailable,
     Cancelled,
 }
 ```
+
+| 类别 | 变体 |
+|---|---|
+| Transient（可重试） | `Provider`、`RateLimited`、`Overloaded`、`Timeout`、`StreamInterrupted` |
+| Permanent（不可重试） | `ContextOverflow`、`InvalidRequest`、`Unauthorized`、`ModelNotFound`、`ContentFiltered` |
+| Fail-fast | `AllModelsUnavailable`、`Cancelled` |
+
+`RateLimited` 与 `Overloaded` 携带从 provider `Retry-After` 头解析得到的可选
+`retry_after`；retry 子系统会优先尊重该提示，再回退到指数退避。
+
+`StreamInterrupted` 携带 `InterruptCause`（`ConnectionReset`、`IdleStall`、
+`GoAway`、`Provider5xxMidStream(u16)`）以及 `InterruptSnapshot`，里面记录了
+中断时的 partial 文本、已完成的 tool call，以及参数尚未完成的 in-flight tool。
+loop runner 据此选择四种恢复方案之一，详见
+[流式 LLM 错误恢复](../how-to/recover-streaming-llms.md)。
+
+### 便捷访问器
+
+```rust,ignore
+fn is_retryable(&self) -> bool;
+fn counts_toward_circuit_breaker(&self) -> bool;
+fn retry_after(&self) -> Option<std::time::Duration>;
+
+// 常用短构造：
+fn rate_limited(message: impl Into<String>) -> Self;
+fn overloaded(message: impl Into<String>) -> Self;
+```
+
+**Crate 路径：** `awaken::contract::executor::InferenceExecutionError`
 
 ## StorageError
 

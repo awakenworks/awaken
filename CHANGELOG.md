@@ -7,6 +7,83 @@ Format follows [Keep a Changelog](https://keepachangelog.com/). Versions use [Se
 
 Development work lands here before the next versioned release.
 
+## [0.4.0] - 2026-04-27
+
+This release adopts the `awaken` crate name on crates.io. Versions 0.1–0.3 of
+`awaken` belonged to a separate, now-archived crate maintained by
+[@brayniac](https://github.com/brayniac), who generously transferred the name —
+thank you. The codebase continues the line that previously shipped as
+`awaken-agent`; the 0.4 jump exists only to skip past the prior versions
+already published under the `awaken` name. There is no 0.3 release of this
+codebase. Rust imports remain `awaken` either way.
+
+The headline work since `awaken-agent 0.2.1`: streaming LLM calls now survive
+mid-stream failures and can resume across processes; threads carry a durable
+parent-child lineage with explicit child-delete strategies; provider keys and
+admin tokens redact themselves through `RedactedString`.
+
+### Added
+
+- New `AgentEvent::ToolCallCancel` and `AgentEvent::StreamReset` variants so
+  consumers can drop partial deltas during stream recovery without ambiguity.
+- `StreamCheckpointStore` contract for cross-process stream resume (the
+  in-process retry loop already covered same-process recovery).
+- `ProviderSpec.adapter_options`: a non-secret `BTreeMap<String, Value>` that
+  adapters can read for things like custom headers on OpenAI-compatible
+  proxies; unknown keys are accepted by the schema but ignored at build time.
+- Filtered thread queries (`ThreadQuery`/`ThreadPage`) and message paging
+  (`MessageQuery`/`MessagePage`) on `ThreadStore`, consumed by the AG-UI and
+  AI SDK v6 protocol routes.
+- Thread parent-child lineage: `Thread.parent_thread_id`,
+  `RunRequestSnapshot.parent_thread_id`, and
+  `ThreadStore::delete_thread_with_strategy` (`reject`/`detach`/`cascade`),
+  with backend-native overrides on the file, PostgreSQL, and NATS-buffered
+  stores.
+- `AdminApiConfig.expose_config_routes` toggle and
+  `ConfigRuntimeManager::with_min_apply_interval` for hardening and
+  debouncing the admin/config plane. Provider executors are reused across
+  applies whose `ProviderSpec` is unchanged.
+- `awaken::RedactedString` re-export from the facade so secret-handling code
+  no longer needs a direct `awaken-contract` dependency.
+
+### Changed
+
+- `ProviderSpec.api_key`, `AdminApiConfig.bearer_token`, and
+  `ServerConfig.a2a_extended_card_bearer_token` are now
+  `Option<RedactedString>`. JSON wire format is unchanged. Code that reads
+  these fields must call `.expose_secret()`; logging that relied on
+  `Debug`/`Display` now prints `***`.
+- `InferenceExecutionError` is `#[non_exhaustive]` and splits into retryable
+  (`Provider`, `RateLimited`, `Overloaded`, `Timeout`, `StreamInterrupted`),
+  permanent (`ContextOverflow`, `InvalidRequest`, `Unauthorized`,
+  `ModelNotFound`, `ContentFiltered`), and fail-fast (`AllModelsUnavailable`,
+  `Cancelled`) classes. `RateLimited` and `Overloaded` carry an optional
+  `retry_after` parsed from `Retry-After`. Prefer `is_retryable()`,
+  `counts_toward_circuit_breaker()`, and `retry_after()` over matching
+  specific variants.
+- Context compaction runs on a background task with single-flight semantics
+  and swaps the summary back through the owner inbox; the synchronous
+  `compact_with_llm` path is removed.
+
+### Fixed
+
+- NATS buffered thread store now quarantines poison WAL messages with
+  bounded NAK and a stable hash, so an unrecoverable entry no longer stalls
+  the WAL.
+- Background-task spawn commit failures surface through `SpawnError` and a
+  metric, rather than silently dropping the spawn.
+- Self-cancel commands now cascade across runs in the same lineage.
+- Thread-query history ordering hardened across server CI surfaces.
+
+### Compatibility
+
+- Existing serialized config keeps loading; `RedactedString` serializes and
+  deserializes as a plain JSON string.
+- The 0.4 jump is solely a name-collision skip; the Rust API additions and
+  changes are limited to the items above.
+- 0.2.0 mailbox and server-facing types remain compatible. The NATS backend
+  is additive behind the `awaken-stores/nats` feature.
+
 ## [0.2.1] - 2026-04-21
 
 ### Added

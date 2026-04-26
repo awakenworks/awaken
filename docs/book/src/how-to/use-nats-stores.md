@@ -22,7 +22,7 @@ Two backends live in the `nats` feature of `awaken-stores`:
 
 ```toml
 [dependencies]
-awaken-stores = { version = "0.4.0-dev", features = ["nats"] }
+awaken-stores = { version = "0.4.0", features = ["nats"] }
 ```
 
 ## NatsMailboxStore
@@ -222,6 +222,16 @@ store.force_flush("thread-123").await?;
 
 Blocks until the background flusher has drained every WAL entry for the given
 thread into the inner store. Use for admin operations or critical reads.
+
+### Poison-message quarantine
+
+A WAL entry that consistently fails to apply (for example, a deserialization
+error after an incompatible upgrade) is quarantined instead of being retried
+forever. The flusher computes a stable hash over the entry, NAKs with bounded
+backoff, and after the configured threshold parks the entry to a side channel
+so the WAL stream keeps moving. Operators see this as a metric tick rather
+than as silently stuck checkpoints. Inspect quarantined entries through the
+JetStream admin tooling and replay them after the underlying defect is fixed.
 
 ## When to choose which
 

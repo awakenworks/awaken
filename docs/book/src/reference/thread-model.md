@@ -20,7 +20,11 @@ RunRecord produces MessageRecord through checkpointed assistant/tool output.
 pub struct Thread {
     /// Unique thread identifier (UUID v7).
     pub id: String,
-    /// Thread metadata.
+    /// External resource or tenant grouping for this thread.
+    pub resource_id: Option<String>,
+    /// Parent thread id when this thread was created by a sub-agent run.
+    pub parent_thread_id: Option<String>,
+    /// Thread metadata (timestamps, title, custom data).
     pub metadata: ThreadMetadata,
     /// Run currently executing on a worker for this thread.
     pub active_run_id: Option<String>,
@@ -32,6 +36,13 @@ pub struct Thread {
 ```
 
 **Crate path:** `awaken::contract::thread::Thread` (re-exported from `awaken-contract`)
+
+`parent_thread_id` is normalized on assignment: leading/trailing whitespace is
+trimmed and empty strings deserialize to `None`. The same trimming is applied
+to `resource_id`. Thread hierarchy participates in the run lifecycle: when a
+sub-agent run begins, `RunRequestSnapshot.parent_thread_id` carries the parent
+thread, and the checkpoint projection populates `Thread.parent_thread_id` on
+the child thread the first time it is materialized.
 
 ### Constructors
 
@@ -47,6 +58,8 @@ fn with_id(id: impl Into<String>) -> Self
 
 ```rust,ignore
 fn with_title(self, title: impl Into<String>) -> Self
+fn with_resource_id(self, resource_id: impl Into<String>) -> Self
+fn with_parent_thread_id(self, parent_thread_id: impl Into<String>) -> Self
 ```
 
 `Thread` implements `Default` (delegates to `Thread::new()`), `Clone`,
@@ -105,10 +118,32 @@ pub trait ThreadStore: Send + Sync {
 }
 ```
 
-The default helpers on `ThreadStore` now cover first-class lineage filtering,
+The default helpers on `ThreadStore` cover first-class lineage filtering,
 parent existence / cycle validation, and child-thread delete strategies
-(`reject`, `detach`, `cascade`) without requiring every backend to reimplement
-that logic.
+without requiring every backend to reimplement that logic.
+
+```rust,ignore
+pub enum ChildThreadDeleteStrategy {
+    /// Reject deletion when at least one direct child exists.
+    Reject,
+    /// Preserve child threads and clear their `parent_thread_id`. Default.
+    Detach,
+    /// Recursively delete all descendants before deleting the target thread.
+    Cascade,
+}
+```
+
+The default `delete_thread_with_strategy` implementation issues multiple
+low-level writes and is **not atomic** across child updates and the final
+delete. Production backends with concurrent writers should override the
+method with a transactional or otherwise fenced implementation. The file,
+PostgreSQL, and NATS-buffered backends ship with backend-native overrides.
+
+The default `list_threads_query` walks `list_threads` in fixed-size chunks
+and filters in memory; the file, PostgreSQL, and NATS-buffered backends each
+override it with a backend-native pushdown. Cursors returned by
+`ThreadQuery::encode_cursor` are validated against the original query shape
+on decode, so a paged sequence cannot drift onto a different filter.
 
 `Message` is the protocol payload sent to agents and protocol adapters.
 `MessageRecord` is the durable thread-log projection:

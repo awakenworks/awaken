@@ -10,7 +10,7 @@ Use this when you have a Vercel AI SDK (v6) React frontend and need to connect i
 
 ```toml
 [dependencies]
-awaken = { version = "0.4.0-dev", features = ["server"] }
+awaken = { version = "0.4.0", features = ["server"] }
 tokio = { version = "1", features = ["full"] }
 async-trait = "0.1"
 serde_json = "1"
@@ -104,32 +104,53 @@ The server automatically registers AI SDK v6 routes at:
 npm install ai @ai-sdk/react
 ```
 
-Use the `useChat` hook pointed at your awaken server:
+Use the `useChat` hook pointed at your awaken server. AI SDK v6 returns
+`{ messages, sendMessage, status, ... }` and reads requests from a transport,
+so the awaken endpoint goes inside `DefaultChatTransport`:
 
 ```tsx
+import { useState } from "react";
 import { useChat } from "@ai-sdk/react";
+import { DefaultChatTransport } from "ai";
 
 export default function Chat() {
-  const { messages, input, handleInputChange, handleSubmit } = useChat({
-    api: "http://localhost:3000/v1/ai-sdk/chat",
+  const { messages, sendMessage } = useChat({
     id: "thread-1",
+    transport: new DefaultChatTransport({
+      api: "http://localhost:3000/v1/ai-sdk/chat",
+    }),
   });
+  const [input, setInput] = useState("");
 
   return (
     <div>
       {messages.map((m) => (
         <div key={m.id}>
-          <strong>{m.role}:</strong> {m.content}
+          <strong>{m.role}:</strong>
+          {m.parts.map((part, idx) =>
+            part.type === "text" ? <span key={idx}>{part.text}</span> : null,
+          )}
         </div>
       ))}
-      <form onSubmit={handleSubmit}>
-        <input value={input} onChange={handleInputChange} />
+      <form
+        onSubmit={(event) => {
+          event.preventDefault();
+          if (!input.trim()) return;
+          sendMessage({ text: input });
+          setInput("");
+        }}
+      >
+        <input value={input} onChange={(event) => setInput(event.target.value)} />
         <button type="submit">Send</button>
       </form>
     </div>
   );
 }
 ```
+
+For the full pattern with custom transport headers, automatic resubmission, and
+typed tool parts, see the working example in
+[`examples/ai-sdk-starter/src/hooks/use-chat-session.ts`](../../../../examples/ai-sdk-starter/src/hooks/use-chat-session.ts).
 
 3. Run both sides.
 

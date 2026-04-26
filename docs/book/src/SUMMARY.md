@@ -48,6 +48,7 @@
 - [Report Tool Progress](./how-to/report-tool-progress.md)
 - [Testing Strategy](./how-to/testing-strategy.md)
 - [Use Shared State](./how-to/use-shared-state.md)
+- [Recover Streaming LLMs](./how-to/recover-streaming-llms.md)
 
 # Reference
 

@@ -139,9 +139,9 @@ pub mod state {
 // contract types
 pub use awaken_contract::{
     AgentSpec, EffectSpec, FailedScheduledActions, JsonValue, KeyScope, MergeStrategy,
-    PendingScheduledActions, PersistedState, Phase, PluginConfigKey, ScheduledActionSpec, Snapshot,
-    StateError, StateKey, StateKeyOptions, StateMap, TypedEffect, TypedTool, UnknownKeyPolicy,
-    generate_tool_schema, sanitize_for_llm, validate_against_schema,
+    PendingScheduledActions, PersistedState, Phase, PluginConfigKey, RedactedString,
+    ScheduledActionSpec, Snapshot, StateError, StateKey, StateKeyOptions, StateMap, TypedEffect,
+    TypedTool, UnknownKeyPolicy, generate_tool_schema, sanitize_for_llm, validate_against_schema,
 };
 
 // runtime types

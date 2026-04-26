@@ -195,17 +195,20 @@ pub struct RemoteAuth {
 HTTP server 配置。需启用 `server` feature。
 
 ```rust,ignore
+use awaken::RedactedString;
+
 pub struct ServerConfig {
-    pub address: String,                   // default: "0.0.0.0:3000"
-    pub sse_buffer_size: usize,            // default: 64
-    pub replay_buffer_capacity: usize,     // default: 1024
+    pub address: String,                              // default: "0.0.0.0:3000"
+    pub sse_buffer_size: usize,                       // default: 64
+    pub replay_buffer_capacity: usize,                // default: 1024
     pub shutdown: ShutdownConfig,
-    pub max_concurrent_requests: usize,    // default: 100
-    pub a2a_extended_card_bearer_token: Option<String>,
+    pub max_concurrent_requests: usize,               // default: 100
+    pub a2a_extended_card_bearer_token: Option<RedactedString>,
+    pub mailbox_lifecycle: MailboxLifecycleMode,      // default: Auto
 }
 
 pub struct ShutdownConfig {
-    pub timeout_secs: u64,                 // default: 30
+    pub timeout_secs: u64,                            // default: 30
 }
 ```
 
@@ -217,7 +220,8 @@ pub struct ShutdownConfig {
 | `sse_buffer_size` | `usize` | `64` | 单连接 SSE 通道最大缓冲帧数 |
 | `replay_buffer_capacity` | `usize` | `1024` | 每次 run 用于断线续接的最大 replay buffer 帧数 |
 | `max_concurrent_requests` | `usize` | `100` | 最大并发请求数；超出时返回 503 |
-| `a2a_extended_card_bearer_token` | `Option<String>` | `None` | 设置后启用带认证的 `GET /v1/a2a/extendedAgentCard` |
+| `a2a_extended_card_bearer_token` | `Option<RedactedString>` | `None` | 设置后启用带认证的 `GET /v1/a2a/extendedAgentCard`。`Debug`/`Display` 自动遮蔽，需要明文请调用 `expose_secret()`；JSON 序列化保持普通字符串 |
+| `mailbox_lifecycle` | `MailboxLifecycleMode` | `Auto` | `Auto` 由框架启停 mailbox；`Manual` 把生命周期交给嵌入应用 |
 | `shutdown.timeout_secs` | `u64` | `30` | 强制退出前等待飞行中请求排空的秒数 |
 
 ## AdminApiConfig
@@ -227,16 +231,20 @@ admin/configuration API 安全配置。通过
 认证时可使用 `AppState::with_admin_api_bearer_token`。
 
 ```rust,ignore
+use awaken::RedactedString;
+
 pub struct AdminApiConfig {
-    pub bearer_token: Option<String>,
+    pub bearer_token: Option<RedactedString>,
     pub cors_allowed_origins: Vec<String>,
+    pub expose_config_routes: bool,                   // default: true
 }
 ```
 
 | 字段 | 类型 | 默认值 | 说明 |
 |---|---|---|---|
-| `bearer_token` | `Option<String>` | `None` | 设置后，`/v1/capabilities`、`/v1/config/*` 和 `/v1/agents*` 要求 `Authorization: Bearer ...` |
+| `bearer_token` | `Option<RedactedString>` | `None` | 设置后，`/v1/capabilities`、`/v1/config/*` 和 `/v1/agents*` 要求 `Authorization: Bearer ...`。`Debug`/`Display` 自动遮蔽，需要明文请调用 `expose_secret()`；JSON 序列化保持普通字符串 |
 | `cors_allowed_origins` | `Vec<String>` | `["http://127.0.0.1:3002", "http://localhost:3002"]` | admin CORS layer 允许的浏览器来源 |
+| `expose_config_routes` | `bool` | `true` | 是否挂载 `/v1/config/*` 与 `/v1/agents` 这套 admin CRUD 路由。当配置由外部 RBAC/审计流水线管理时设为 `false`，可以彻底隐藏这部分 HTTP 表面；`/v1/capabilities` 仍保持暴露以便前端发现已注册组件 |
 
 环境变量会覆盖 `AppState` 上的 admin 配置：
 
@@ -244,6 +252,27 @@ pub struct AdminApiConfig {
 |---|---|
 | `AWAKEN_ADMIN_API_BEARER_TOKEN` | admin/configuration API 要求的 bearer token |
 | `AWAKEN_ADMIN_CORS_ALLOWED_ORIGINS` | 浏览器 admin API 的 CORS 来源，逗号分隔 |
+
+### 凭据处理
+
+`RedactedString`（门面 crate 重新导出为 `awaken::RedactedString`，定义在
+`awaken_contract::secret`）是序列化配置中所有凭据的唯一信任边界。线缆格式仍是普通 JSON 字符串、JSON Schema 报告 `string`，内
+部 buffer 在 `Drop` 时被清零。`Debug` 输出 `RedactedString(***)`，`Display`
+输出 `***`；真正发起请求时调用 `expose_secret()` 获取明文，且不要把返回的
+`&str` 传到日志。原本持有 `String` token 的代码只需在构造处加一个 `.into()`
+或在读取处加一个 `.expose_secret()`。
+
+## ConfigRuntimeManager
+
+`ConfigRuntimeManager` 在配置变化时编译候选注册快照并发布到运行中的 runtime。
+
+| 构建器方法 | 默认值 | 说明 |
+|---|---|---|
+| `with_provider_factory(factory)` | `GenaiProviderExecutorFactory` | 覆盖 `ProviderSpec` 到 `LlmExecutor` 的物化方式 |
+| `with_change_notifier(notifier)` | `None` | 订阅原生变更通知，避免轮询 |
+| `with_mcp_registry_factory(factory)` | `DefaultMcpRegistryFactory` | 覆盖 MCP server spec 到注册表的转换 |
+| `with_mcp_refresh_interval(interval)` | 关闭 | 周期性刷新 MCP server 连接 |
+| `with_min_apply_interval(interval)` | `Duration::ZERO` | 由 change listener 驱动的相邻 apply 之间的最小间隔。窗口内到达的事件会合并为一次 apply；直接调用 `apply` / `apply_if_changed` 不受影响。spec hash 未变的 provider 在 apply 之间会复用缓存的 executor |
 
 ## MailboxConfig
 

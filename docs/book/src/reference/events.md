@@ -14,11 +14,13 @@ pub enum AgentEvent {
         thread_id: String,
         run_id: String,
         parent_run_id: Option<String>,    // omitted when None
+        identity: Option<RunIdentity>,    // omitted when None
     },
 
     RunFinish {
         thread_id: String,
         run_id: String,
+        identity: Option<RunIdentity>,    // omitted when None
         result: Option<Value>,            // omitted when None
         termination: TerminationReason,
     },
@@ -53,6 +55,20 @@ pub enum AgentEvent {
     },
 
     ToolCallResumed { target_id: String, result: Value },
+
+    /// A tool call that started streaming was cancelled before its argument
+    /// JSON closed (mid-stream interruption recovery). Consumers should drop
+    /// any partial deltas they buffered for this `id`.
+    ToolCallCancel {
+        id: String,
+        name: String,
+        reason: String,                   // e.g. "connection reset", "idle stall"
+    },
+
+    /// The current assistant turn was restarted after a mid-stream
+    /// interruption that could not be recovered via continuation. Consumers
+    /// should discard all previously-emitted deltas in this turn.
+    StreamReset { reason: String },
 
     MessagesSnapshot { messages: Vec<Value> },
 
@@ -91,6 +107,15 @@ pub enum AgentEvent {
 ```
 
 **Crate path:** `awaken::contract::event::AgentEvent`
+
+### Stream-recovery semantics
+
+`ToolCallCancel` and `StreamReset` are advisory drop signals emitted during
+mid-stream recovery. Consumers discard partial deltas for the named tool call
+(or for the whole turn) and keep reading; the recovered deltas follow on the
+normal `TextDelta` / `ToolCallDelta` channels. See
+[Recover Streaming LLMs](../how-to/recover-streaming-llms.md) for the four
+recovery plans and `StreamCheckpointStore` wiring.
 
 ### Helper
 

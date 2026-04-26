@@ -16,21 +16,22 @@
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| `GET` | `/v1/threads` | 列出 thread ID |
-| `POST` | `/v1/threads` | 创建 thread |
-| `GET` | `/v1/threads/summaries` | 列出 thread 摘要 |
+| `GET` | `/v1/threads` | 列出 thread ID，支持分页与父子过滤；返回 `{ items, offset, limit, total, has_more, next_cursor }` |
+| `POST` | `/v1/threads` | 创建 thread；body：`{ "title"?: string, "resource_id"?: string, "parent_thread_id"?: string }` |
+| `GET` | `/v1/threads/summaries` | 列出 thread 摘要（id、`resource_id`、`parent_thread_id`、title、`updated_at`、`agent_id`），分页与父子过滤参数与 `/v1/threads` 相同 |
 | `GET` | `/v1/threads/:id` | 获取 thread |
 | `PATCH` | `/v1/threads/:id` | 更新 thread 元信息 |
-| `DELETE` | `/v1/threads/:id` | 删除 thread |
+| `DELETE` | `/v1/threads/:id` | 删除 thread；可通过 `?child_strategy=detach\|reject\|cascade`（默认 `detach`）控制子 thread 的处理方式 |
 | `POST` | `/v1/threads/:id/cancel` | 取消该 thread 上排队或运行中的某个 dispatch；返回 `cancel_requested` |
 | `POST` | `/v1/threads/:id/decision` | 向该 thread 上等待中的 run 提交 HITL decision |
 | `POST` | `/v1/threads/:id/interrupt` | 中断该 thread：递增 thread dispatch epoch、取消所有待执行 dispatch、中止活动 run；返回 `interrupt_requested` 及 `superseded_dispatches` 计数。与 `/cancel` 不同，此接口通过 `mailbox.interrupt()` 执行完整的"清空并中断"操作 |
 | `PATCH` | `/v1/threads/:id/metadata` | 更新 metadata 的别名接口 |
-| `GET` | `/v1/threads/:id/messages` | 列出消息 |
+| `GET` | `/v1/threads/:id/messages` | 列出消息，支持游标分页、序号窗口、排序、可见性与产生 run 过滤 |
 | `POST` | `/v1/threads/:id/messages` | 作为后台 run 提交消息 |
 | `POST` | `/v1/threads/:id/mailbox` | 向 mailbox 推送消息载荷 |
 | `GET` | `/v1/threads/:id/mailbox` | 查看该 thread 的 mailbox dispatch |
 | `GET` | `/v1/threads/:id/runs` | 列出该 thread 的 runs |
+| `GET` | `/v1/threads/:id/runs/active` | 获取该 thread 当前活动 run（如有） |
 | `GET` | `/v1/threads/:id/runs/latest` | 获取最新 run |
 
 `POST /v1/threads/:id/messages` 与 `POST /v1/runs/:id/inputs` 支持可选的
@@ -147,11 +148,31 @@ section。
 
 ## 常见查询参数
 
+分页：
+
 - `offset`：跳过的条数
-- `limit`：返回上限，范围会被限制在 `1..=200`
-- `cursor`：消息历史分页游标；提供后会优先于 `offset`，历史消息接口响应会返回 `next_cursor`
-- `status`：按 run 状态过滤，支持 `running`、`waiting`、`done`
-- `visibility`：消息可见性过滤；省略时只看外部消息，`all` 表示包含内部消息
+- `limit`：返回上限，范围限制在 `1..=200`（默认 `50`）
+- `cursor`：不透明分页游标，提供后会优先于 `offset`。游标绑定到原始 query
+  形状，filter 一旦改变就会被拒绝
+- 响应中的 `next_cursor` / `prev_cursor` 在仍有更多页时返回
+
+Thread 列表过滤（`/v1/threads`、`/v1/threads/summaries`）：
+
+- `resource_id`（别名 `resourceId`）：按外部资源分组过滤
+- `parent_thread_id`（别名 `parentThreadId`）：仅返回该父 thread 的直接子线程
+- `root`：为 `true` 时仅返回没有父线程的根 thread；不能与 `parent_thread_id`
+  同时使用
+
+消息列表过滤（`/v1/threads/:id/messages` 及各协议别名）：
+
+- `after`、`before`：序号窗口
+- `order`：`asc`（默认）或 `desc`
+- `visibility`：`external`（默认）、`internal` 或 `all`
+- `run_id`（别名 `runId`）：仅保留由该 run 产生的消息
+
+Run 列表过滤：
+
+- `status`：`running`、`waiting` 或 `done`
 
 ## 错误格式
 

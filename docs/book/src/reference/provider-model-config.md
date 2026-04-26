@@ -81,7 +81,8 @@ Example config documents:
   "adapter": "openai",
   "api_key": "sk-...",
   "base_url": null,
-  "timeout_secs": 300
+  "timeout_secs": 300,
+  "adapter_options": {}
 }
 ```
 
@@ -98,6 +99,33 @@ Example config documents:
   "id": "assistant",
   "model_id": "default",
   "system_prompt": "You are helpful."
+}
+```
+
+### ProviderSpec fields
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `id` | `String` | required | Provider identifier referenced by `ModelBindingSpec.provider_id` |
+| `adapter` | `String` | required | GenAI adapter kind (e.g. `"openai"`, `"anthropic"`, `"ollama"`) |
+| `api_key` | `Option<RedactedString>` | `None` | Wrapped in `RedactedString`; redacted in `Debug`/`Display`. Wire format is a plain JSON string. Empty-string input deserializes as `None` so a stored key is preserved when the field is omitted on update |
+| `base_url` | `Option<String>` | `None` | Override base URL for proxies or self-hosted deployments. Empty-string input deserializes as `None` |
+| `timeout_secs` | `u64` | `300` | Request timeout in seconds |
+| `adapter_options` | `BTreeMap<String, Value>` | `{}` | Adapter-specific non-secret options. Today the OpenAI-compatible adapter recognizes `headers` (an object of string→string pairs added as default request headers). Unknown keys are accepted by the schema and ignored at build time. Secrets must use `api_key`; do not store credentials here |
+
+Example with custom headers:
+
+```json
+{
+  "id": "bigmodel",
+  "adapter": "openai",
+  "api_key": "<redacted>",
+  "base_url": "https://open.bigmodel.cn/api/paas/v4",
+  "adapter_options": {
+    "headers": {
+      "X-Tenant-Id": "team-42"
+    }
+  }
 }
 ```
 
@@ -139,14 +167,16 @@ rg '"model"\s*:|"provider"\s*:|fallback_models' config/ docs/ tests/
 Each match should be checked. Protocol payloads may still use a field named
 `model` when they mirror an external protocol; managed Awaken config should not.
 
-## Provider secrets
+## Provider secrets via the config API
 
-Provider API keys are write-only through the config API:
+The config API treats `api_key` as write-only:
 
-- responses redact `api_key`;
-- responses expose `has_api_key: true` when a key is stored;
-- updating a provider without `api_key` preserves the existing key;
-- setting `api_key` to `null` or an empty string clears it.
+- list/get responses replace `api_key` with `has_api_key: true|false`;
+- `PUT` with `api_key` omitted keeps the stored key;
+- `PUT` with `api_key: null` or `api_key: ""` clears it.
+
+The in-memory representation is `RedactedString` (see
+[config reference — secret handling](./config.md#secret-handling)).
 
 ## Runtime snapshot behavior
 

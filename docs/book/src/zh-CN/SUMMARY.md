@@ -46,6 +46,7 @@
 - [启用可观测性](./how-to/enable-observability.md)
 - [上报 Tool 进度](./how-to/report-tool-progress.md)
 - [测试策略](./how-to/testing-strategy.md)
+- [流式 LLM 错误恢复](./how-to/recover-streaming-llms.md)
 
 # 参考
 

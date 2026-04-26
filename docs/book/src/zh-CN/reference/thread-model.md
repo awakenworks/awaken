@@ -19,6 +19,8 @@ RunRecord 通过 checkpoint 产出 assistant/tool 消息。
 ```rust,ignore
 pub struct Thread {
     pub id: String,
+    pub resource_id: Option<String>,
+    pub parent_thread_id: Option<String>,
     pub metadata: ThreadMetadata,
     pub active_run_id: Option<String>,
     pub open_run_id: Option<String>,
@@ -29,6 +31,11 @@ pub struct Thread {
 `active_run_id` 指向正在 worker 上执行的 run。`open_run_id` 指向当前未完成、
 可以继续恢复的用户意图。`latest_run_id` 指向最近一次 run。过期 dispatch
 的 supersede epoch 属于 `RunDispatch`/mailbox 平面，不属于 thread 真相。
+
+`parent_thread_id` 在赋值时会规范化：去除前后空白、空字符串反序列化为 `None`，
+`resource_id` 同样处理。Thread hierarchy 与 run 生命周期联动：当一个 sub-agent
+run 启动时，`RunRequestSnapshot.parent_thread_id` 携带父 thread；checkpoint
+投影会在子 thread 第一次被物化时填充 `Thread.parent_thread_id`。
 
 ### 构造函数
 
@@ -41,6 +48,8 @@ fn with_id(id: impl Into<String>) -> Self
 
 ```rust,ignore
 fn with_title(self, title: impl Into<String>) -> Self
+fn with_resource_id(self, resource_id: impl Into<String>) -> Self
+fn with_parent_thread_id(self, parent_thread_id: impl Into<String>) -> Self
 ```
 
 ## ThreadMetadata
@@ -86,8 +95,28 @@ pub trait ThreadStore: Send + Sync {
 }
 ```
 
-`ThreadStore` 的默认辅助方法现在直接覆盖了 lineage 过滤、父线程存在性/环检测，
-以及子线程删除策略（`reject` / `detach` / `cascade`），后端不需要重复实现这套逻辑。
+`ThreadStore` 的默认辅助方法直接覆盖了 lineage 过滤、父线程存在性/环检测，
+以及子线程删除策略，后端不需要重复实现这套逻辑。
+
+```rust,ignore
+pub enum ChildThreadDeleteStrategy {
+    /// 当存在直接子 thread 时，拒绝删除。
+    Reject,
+    /// 保留子 thread，并清空它们的 `parent_thread_id`。默认值。
+    Detach,
+    /// 递归删除所有后代 thread，再删除目标 thread。
+    Cascade,
+}
+```
+
+默认的 `delete_thread_with_strategy` 实现会发出多次低级写操作，**不是**原子操
+作。生产级的并发后端应该用事务或栅栏化的实现覆盖该方法；file、PostgreSQL 与
+NATS-buffered 后端已经提供了原生覆盖。
+
+默认的 `list_threads_query` 会按固定步长扫 `list_threads` 后在内存里做过滤；
+file、PostgreSQL 与 NATS-buffered 后端各自提供了原生下推。
+`ThreadQuery::encode_cursor` 返回的游标在 decode 时会校验原始 query 的形状，
+因此分页序列不会漂移到不同的过滤条件。
 
 `Message` 是协议载荷；`MessageRecord` 是 thread 消息日志的持久化投影：
 

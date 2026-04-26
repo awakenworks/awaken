@@ -10,7 +10,7 @@
 
 ```toml
 [dependencies]
-awaken = { version = "0.4.0-dev", features = ["server"] }
+awaken = { version = "0.4.0", features = ["server"] }
 tokio = { version = "1", features = ["full"] }
 async-trait = "0.1"
 serde_json = "1"
@@ -117,7 +117,7 @@ import "@copilotkit/react-ui/styles.css";
 
 export default function App() {
   return (
-    <CopilotKit runtimeUrl="http://localhost:3000/v1/ag-ui">
+    <CopilotKit runtimeUrl="http://localhost:3000/v1/ag-ui/run">
       <CopilotChat
         labels={{ title: "Agent", initial: "How can I help?" }}
       />
@@ -140,7 +140,7 @@ export default function App() {
 | 错误 | 原因 | 修复 |
 |---|---|---|
 | 浏览器 CORS 错误 | 未配置 CORS 中间件 | 给 axum router 加 CORS |
-| CopilotKit 提示 connection failed | `runtimeUrl` 错了 | 指向 `http://localhost:3000/v1/ag-ui` |
+| CopilotKit 提示 connection failed | `runtimeUrl` 错了 | 指向 `http://localhost:3000/v1/ag-ui/run`（AG-UI 的 run 端点，不是命名空间） |
 | 有事件但 UI 不更新 | AG-UI 事件格式不兼容 | 确认 CopilotKit 版本匹配 |
 | `/v1/ag-ui/run` 返回 404 | 没开 `server` feature | 在 `Cargo.toml` 里启用 |
 

@@ -10,7 +10,7 @@ Use this when you need to trace LLM inference calls and tool executions with Ope
 
 ```toml
 [dependencies]
-awaken = { version = "0.4.0-dev", features = ["observability"] }
+awaken = { version = "0.4.0", features = ["observability"] }
 tokio = { version = "1", features = ["full"] }
 ```
 

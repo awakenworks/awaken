@@ -108,6 +108,22 @@ let config = CompactionConfig {
 
 内置 `DefaultSummarizer` 会读取 `CompactionConfig`，并支持“在已有摘要上继续增量总结”。
 
+### 后台执行
+
+压缩**不会**阻塞推理 phase。条件满足时，`maybe_spawn_compaction` 会先确定边
+界、把 `CompactionInFlight` 标记写进 `CompactionStateKey`，再通过 agent 的
+`BackgroundTaskManager` 把摘要 LLM 调用 spawn 到后台。完成事件经由 owner inbox
+返回，由 `try_consume_compaction_event` 消费；如果边界依然存在，
+`apply_summary` 会把摘要 swap 到消息日志里。
+
+实践上需要知道两件事：
+
+- 同一 agent 上的压缩是单飞（single-flight）的。`CompactionState::is_compacting`
+  为真时，下一轮推理不会再规划新的压缩，直接以未压缩的历史继续；swap 完成后
+  下一轮才会基于新的摘要前缀继续。
+- 一次压缩需要已解析 agent 上同时存在 LLM summarizer 和 `BackgroundTaskManager`。
+  缺少任意一个，`maybe_spawn_compaction` 直接 no-op，runtime 退回到 truncation。
+
 ### 摘要存储
 
 压缩结果会被保存成带 `<conversation-summary>` 标签的内部 system message。重新加载时，历史中较早的已摘要部分不会再被重新放回上下文窗口。

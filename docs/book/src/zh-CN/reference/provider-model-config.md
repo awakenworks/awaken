@@ -76,7 +76,8 @@ let runtime = AgentRuntimeBuilder::new()
   "adapter": "openai",
   "api_key": "sk-...",
   "base_url": null,
-  "timeout_secs": 300
+  "timeout_secs": 300,
+  "adapter_options": {}
 }
 ```
 
@@ -93,6 +94,33 @@ let runtime = AgentRuntimeBuilder::new()
   "id": "assistant",
   "model_id": "default",
   "system_prompt": "You are helpful."
+}
+```
+
+### ProviderSpec 字段
+
+| 字段 | 类型 | 默认值 | 说明 |
+|---|---|---|---|
+| `id` | `String` | 必填 | provider 标识，被 `ModelBindingSpec.provider_id` 引用 |
+| `adapter` | `String` | 必填 | GenAI 适配器类型（如 `"openai"`、`"anthropic"`、`"ollama"`） |
+| `api_key` | `Option<RedactedString>` | `None` | 用 `RedactedString` 包裹，`Debug`/`Display` 自动遮蔽。线缆格式是普通 JSON 字符串。空字符串输入会反序列化为 `None`，便于在更新时省略字段以保留已有 key |
+| `base_url` | `Option<String>` | `None` | 代理或自托管部署的 base URL 覆盖。空字符串输入反序列化为 `None` |
+| `timeout_secs` | `u64` | `300` | 请求超时（秒） |
+| `adapter_options` | `BTreeMap<String, Value>` | `{}` | 适配器专属、非密的扩展选项。当前 OpenAI 兼容适配器识别 `headers`（一个 string→string 的对象，作为默认请求头加进去）。Schema 接受未知 key，但构建时会被忽略。秘密值必须用 `api_key`，不要塞到这里 |
+
+带自定义 header 的示例：
+
+```json
+{
+  "id": "bigmodel",
+  "adapter": "openai",
+  "api_key": "<redacted>",
+  "base_url": "https://open.bigmodel.cn/api/paas/v4",
+  "adapter_options": {
+    "headers": {
+      "X-Tenant-Id": "team-42"
+    }
+  }
 }
 ```
 
@@ -133,14 +161,16 @@ rg '"model"\s*:|"provider"\s*:|fallback_models' config/ docs/ tests/
 每个匹配项都需要人工确认。某些外部协议 payload 可能仍然有名为 `model` 的字段；
 Awaken 托管配置不应再使用这些旧字段。
 
-## Provider 密钥
+## Provider 密钥（配置 API 视角）
 
-Provider API key 通过配置 API 写入后不会明文返回：
+配置 API 把 `api_key` 当作只写字段：
 
-- 响应会移除 `api_key`；
-- 已保存 key 时响应包含 `has_api_key: true`；
-- 更新 provider 时省略 `api_key` 会保留已有 key；
-- 把 `api_key` 设为 `null` 或空字符串会清除 key。
+- list/get 响应中 `api_key` 被替换为 `has_api_key: true|false`；
+- `PUT` 时省略 `api_key` 会保留已有 key；
+- `PUT` `api_key: null` 或 `""` 会清空 key。
+
+进程内的存储类型是 `RedactedString`（详见
+[配置参考 — 凭据处理](./config.md#凭据处理)）。
 
 ## Runtime 快照行为
 

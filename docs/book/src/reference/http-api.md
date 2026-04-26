@@ -18,21 +18,22 @@ and `crates/awaken-server/src/config_routes.rs`.
 
 | Method | Path | Description |
 |---|---|---|
-| `GET` | `/v1/threads` | List thread IDs |
-| `POST` | `/v1/threads` | Create a thread. Body: `{ "title": "..." }` |
-| `GET` | `/v1/threads/summaries` | List thread summaries |
+| `GET` | `/v1/threads` | List thread IDs with paging and lineage filters; returns `{ items, offset, limit, total, has_more, next_cursor }` |
+| `POST` | `/v1/threads` | Create a thread. Body: `{ "title"?: string, "resource_id"?: string, "parent_thread_id"?: string }` |
+| `GET` | `/v1/threads/summaries` | List thread summaries (id, `resource_id`, `parent_thread_id`, title, `updated_at`, `agent_id`) with the same paging and lineage filters as `/v1/threads` |
 | `GET` | `/v1/threads/:id` | Get a thread by ID |
 | `PATCH` | `/v1/threads/:id` | Update thread metadata |
-| `DELETE` | `/v1/threads/:id` | Delete a thread |
+| `DELETE` | `/v1/threads/:id` | Delete a thread; accepts `?child_strategy=detach\|reject\|cascade` (default `detach`) to control how direct and transitive child threads are handled |
 | `POST` | `/v1/threads/:id/cancel` | Cancel a specific queued or running dispatch addressed by this thread ID. Returns `cancel_requested`. |
 | `POST` | `/v1/threads/:id/decision` | Submit a HITL decision for a waiting run on this thread |
 | `POST` | `/v1/threads/:id/interrupt` | Interrupt the thread: bumps the thread dispatch epoch, supersedes all pending queued dispatches, and cancels the active run. Returns `interrupt_requested` with `superseded_dispatches` count. Unlike `/cancel`, this performs a clean-slate interrupt via `mailbox.interrupt()`. |
 | `PATCH` | `/v1/threads/:id/metadata` | Alias for thread metadata updates |
-| `GET` | `/v1/threads/:id/messages` | List thread messages |
+| `GET` | `/v1/threads/:id/messages` | List thread messages with cursor pagination, sequence range, ordering, and visibility/run filters |
 | `POST` | `/v1/threads/:id/messages` | Submit messages as a background run on this thread |
 | `POST` | `/v1/threads/:id/mailbox` | Push a message payload to the thread mailbox |
 | `GET` | `/v1/threads/:id/mailbox` | List mailbox dispatches for the thread |
 | `GET` | `/v1/threads/:id/runs` | List runs for the thread |
+| `GET` | `/v1/threads/:id/runs/active` | Get the active run for the thread, if any |
 | `GET` | `/v1/threads/:id/runs/latest` | Get the latest run for the thread |
 
 `POST /v1/threads/:id/messages` and `POST /v1/runs/:id/inputs` accept an
@@ -152,11 +153,35 @@ responses. All MCP HTTP routes validate `Origin` when present.
 
 ## Common query parameters
 
+Pagination:
+
 - `offset` — number of items to skip
-- `limit` — maximum items to return, clamped to `1..=200`
-- `cursor` — message-history pagination cursor; when provided it takes precedence over `offset`, and history responses return `next_cursor`
-- `status` — run filter: `running`, `waiting`, or `done`
-- `visibility` — message filter: omit for external-only, set to `all` to include internal messages
+- `limit` — maximum items to return, clamped to `1..=200` (default `50`)
+- `cursor` — opaque pagination cursor; when provided it takes precedence over
+  `offset`. Cursors are bound to the original query shape and rejected if
+  any filter changes between requests
+- `next_cursor` / `prev_cursor` — returned in the response body when more
+  pages exist
+
+Thread list filters (`/v1/threads`, `/v1/threads/summaries`):
+
+- `resource_id` (alias `resourceId`) — filter by external resource grouping
+- `parent_thread_id` (alias `parentThreadId`) — restrict to direct children of
+  this parent thread
+- `root` — when `true`, restrict to root threads with no parent. Cannot be
+  combined with `parent_thread_id`
+
+Message list filters (`/v1/threads/:id/messages` and the protocol-specific
+aliases):
+
+- `after`, `before` — sequence-number window
+- `order` — `asc` (default) or `desc`
+- `visibility` — `external` (default), `internal`, or `all`
+- `run_id` (alias `runId`) — restrict to messages produced by this run
+
+Run list filters:
+
+- `status` — `running`, `waiting`, or `done`
 
 ## Error format
 

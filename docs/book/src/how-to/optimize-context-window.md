@@ -118,6 +118,26 @@ The built-in `DefaultSummarizer` reads prompts from `CompactionConfig` and suppo
 
 The transcript renderer filters out `Visibility::Internal` messages before sending to the summarizer, since system-injected context is re-injected each turn and should not be included in summaries.
 
+### Background execution
+
+Compaction does **not** block the inference phase. When the conditions are
+met, `maybe_spawn_compaction` plans the boundary, writes a
+`CompactionInFlight` marker into `CompactionStateKey`, and offloads the
+summarization LLM call to a background task through the agent's
+`BackgroundTaskManager`. The completion event flows back through the owner
+inbox; `try_consume_compaction_event` picks it up and `apply_summary` swaps
+the summary into the message log if the boundary is still present.
+
+Two consequences worth knowing:
+
+- Compaction is single-flight per agent. While `CompactionState::is_compacting`
+  is true, subsequent inference rounds skip planning a new compaction and run
+  with the un-compacted history. Once the swap completes, the next round
+  continues with the summarized prefix.
+- A compaction pass needs both an LLM summarizer and a `BackgroundTaskManager`
+  on the resolved agent. Without either, `maybe_spawn_compaction` is a no-op
+  and the runtime falls back to truncation.
+
 ### Summary storage
 
 Compaction summaries are stored as `<conversation-summary>` tagged internal system messages. On load, `trim_to_compaction_boundary` drops all messages before the latest summary message, so already-summarized history is never re-loaded into the context window.

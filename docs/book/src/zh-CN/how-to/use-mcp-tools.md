@@ -10,7 +10,7 @@
 
 ```toml
 [dependencies]
-awaken = { version = "0.4.0-dev", features = ["mcp"] }
+awaken = { version = "0.4.0", features = ["mcp"] }
 tokio = { version = "1", features = ["full"] }
 serde_json = "1"
 ```

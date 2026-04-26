@@ -8,6 +8,23 @@
 - runtime config、mailbox job 与 profile/shared state 放在哪里
 - 状态键和合并策略怎么组织
 - 每一轮究竟把多少上下文送给模型
+- sub-agent 派生子 thread 时，父子层级如何建模
+
+## Thread 父子层级
+
+Thread 携带可选的 `parent_thread_id`。当 sub-agent run 第一次物化子 thread
+时，runtime 会用 `RunRequestSnapshot.parent_thread_id` 填充该字段。
+`ThreadStore` 暴露 `list_child_threads`、`validate_thread_hierarchy` 和
+`delete_thread_with_strategy(reject | detach | cascade)`，让调用方显式选择子
+线程的处理策略。默认 `Detach` 会保留子线程并清空它们的 `parent_thread_id`。
+默认的 `delete_thread_with_strategy` 在「子线程更新 + 最终删除」之间不是原子
+操作；并发写场景下应当用事务或栅栏化的实现覆盖；file、PostgreSQL 与
+NATS-buffered 后端已经有原生覆盖。
+
+分页：`list_threads_query(&ThreadQuery)` 支持 `parent_filter`（`Any`、`Root`
+或 `Parent(parent_id)`）与 `resource_id` 过滤，游标在 decode 时会校验原始
+query 形状。`list_message_records(thread_id, &MessageQuery)` 提供带序号窗口、
+`asc`/`desc` 排序、可见性过滤与产生 run 过滤的消息分页。
 
 ## 推荐顺序
 

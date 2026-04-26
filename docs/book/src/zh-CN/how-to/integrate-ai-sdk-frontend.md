@@ -10,7 +10,7 @@
 
 ```toml
 [dependencies]
-awaken = { version = "0.4.0-dev", features = ["server"] }
+awaken = { version = "0.4.0", features = ["server"] }
 tokio = { version = "1", features = ["full"] }
 async-trait = "0.1"
 serde_json = "1"
@@ -99,32 +99,52 @@ AI SDK v6 相关路由：
 npm install ai @ai-sdk/react
 ```
 
-3. 在前端里使用 `useChat`：
+3. 在前端里使用 `useChat`。AI SDK v6 的 `useChat` 返回
+   `{ messages, sendMessage, status, ... }`，请求通过 transport 发出，因此
+   awaken 后端 URL 写在 `DefaultChatTransport` 里：
 
 ```tsx
+import { useState } from "react";
 import { useChat } from "@ai-sdk/react";
+import { DefaultChatTransport } from "ai";
 
 export default function Chat() {
-  const { messages, input, handleInputChange, handleSubmit } = useChat({
-    api: "http://localhost:3000/v1/ai-sdk/chat",
+  const { messages, sendMessage } = useChat({
     id: "thread-1",
+    transport: new DefaultChatTransport({
+      api: "http://localhost:3000/v1/ai-sdk/chat",
+    }),
   });
+  const [input, setInput] = useState("");
 
   return (
     <div>
       {messages.map((m) => (
         <div key={m.id}>
-          <strong>{m.role}:</strong> {m.content}
+          <strong>{m.role}:</strong>
+          {m.parts.map((part, idx) =>
+            part.type === "text" ? <span key={idx}>{part.text}</span> : null,
+          )}
         </div>
       ))}
-      <form onSubmit={handleSubmit}>
-        <input value={input} onChange={handleInputChange} />
+      <form
+        onSubmit={(event) => {
+          event.preventDefault();
+          if (!input.trim()) return;
+          sendMessage({ text: input });
+          setInput("");
+        }}
+      >
+        <input value={input} onChange={(event) => setInput(event.target.value)} />
         <button type="submit">Send</button>
       </form>
     </div>
   );
 }
 ```
+
+完整模式（自定义 transport header、自动续发、带类型的 tool parts）见
+[`examples/ai-sdk-starter/src/hooks/use-chat-session.ts`](../../../../examples/ai-sdk-starter/src/hooks/use-chat-session.ts)。
 
 4. 分别启动后端和前端。
 

@@ -99,15 +99,72 @@ pub enum RuntimeError {
 
 ## InferenceExecutionError
 
-Errors from the LLM execution layer.
+Errors from the LLM execution layer. Variants split into three recoverability
+classes:
+
+- **Transient** — retryable and counted toward the per-model circuit breaker.
+- **Permanent** — not retryable and not counted toward the circuit breaker;
+  these would have failed with the same error on any model.
+- **Fail-fast** — the retry subsystem cannot or should not try again.
+
+The enum is `#[non_exhaustive]`. Code outside the crate must handle a
+`_ => …` arm and should prefer the `is_retryable()`,
+`counts_toward_circuit_breaker()`, and `retry_after()` accessors over matching
+specific variants.
 
 ```rust,no_run
+use std::time::Duration;
+use awaken::contract::executor::{InterruptCause, InterruptSnapshot};
+
+#[non_exhaustive]
 pub enum InferenceExecutionError {
+    // Transient
     Provider(String),
-    RateLimited(String),
+    RateLimited { message: String, retry_after: Option<Duration> },
+    Overloaded  { message: String, retry_after: Option<Duration> },
     Timeout(String),
+    StreamInterrupted { cause: InterruptCause, snapshot: Box<InterruptSnapshot> },
+
+    // Permanent
+    ContextOverflow(String),
+    InvalidRequest(String),
+    Unauthorized(String),
+    ModelNotFound(String),
+    ContentFiltered(String),
+
+    // Fail-fast
+    AllModelsUnavailable,
     Cancelled,
 }
+```
+
+| Class | Variants |
+|---|---|
+| Transient (retryable) | `Provider`, `RateLimited`, `Overloaded`, `Timeout`, `StreamInterrupted` |
+| Permanent (not retryable) | `ContextOverflow`, `InvalidRequest`, `Unauthorized`, `ModelNotFound`, `ContentFiltered` |
+| Fail-fast | `AllModelsUnavailable`, `Cancelled` |
+
+`RateLimited` and `Overloaded` carry an optional `retry_after` parsed from the
+provider's `Retry-After` header. The retry subsystem honors that hint before
+falling back to exponential backoff.
+
+`StreamInterrupted` carries an `InterruptCause`
+(`ConnectionReset`, `IdleStall`, `GoAway`, or `Provider5xxMidStream(u16)`) and
+an `InterruptSnapshot` capturing the partial assistant text, completed tool
+calls, and the open tool whose arguments had not finished arriving. The loop
+runner consumes the snapshot to choose one of four recovery plans; see
+[Recover Streaming LLMs](../how-to/recover-streaming-llms.md).
+
+### Convenience accessors
+
+```rust,ignore
+fn is_retryable(&self) -> bool;
+fn counts_toward_circuit_breaker(&self) -> bool;
+fn retry_after(&self) -> Option<std::time::Duration>;
+
+// Short constructors for common cases:
+fn rate_limited(message: impl Into<String>) -> Self;
+fn overloaded(message: impl Into<String>) -> Self;
 ```
 
 **Crate path:** `awaken::contract::executor::InferenceExecutionError`

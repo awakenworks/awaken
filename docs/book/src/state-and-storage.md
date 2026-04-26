@@ -8,6 +8,28 @@ This path is for teams moving beyond stateless demos.
 - where runtime config, mailbox jobs, and profile/shared state should live
 - how state is keyed and merged
 - how much context should reach the model each turn
+- how to model parent–child threads when sub-agents create their own threads
+
+## Thread hierarchy
+
+Threads carry an optional `parent_thread_id`. The runtime sets it on a child
+thread the first time a sub-agent run materializes the thread, taking the
+value from `RunRequestSnapshot.parent_thread_id`. `ThreadStore` exposes
+`list_child_threads`, `validate_thread_hierarchy`, and
+`delete_thread_with_strategy(reject | detach | cascade)` so callers can pick a
+child-handling policy explicitly. The default `Detach` strategy preserves
+children with `parent_thread_id` cleared. The default
+`delete_thread_with_strategy` implementation is not atomic across child writes
+and the final delete; production stores with concurrent writers should
+override it. The file, PostgreSQL, and NATS-buffered backends ship native
+overrides.
+
+Pagination: `list_threads_query(&ThreadQuery)` supports `parent_filter`
+(`Any`, `Root`, or `Parent(parent_id)`) and `resource_id` filters with cursor
+tokens that are validated against the original query shape on decode.
+`list_message_records(thread_id, &MessageQuery)` paginates messages with
+sequence-number windows, `asc`/`desc` ordering, visibility filters, and
+producing-run filters.
 
 ## Recommended order
 

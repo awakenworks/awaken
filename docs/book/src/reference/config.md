@@ -228,17 +228,20 @@ present. New config should use `auth`, `target`, and `options`.
 HTTP server configuration. Used when the `server` feature is enabled.
 
 ```rust,ignore
+use awaken::RedactedString;
+
 pub struct ServerConfig {
-    pub address: String,                   // default: "0.0.0.0:3000"
-    pub sse_buffer_size: usize,            // default: 64
-    pub replay_buffer_capacity: usize,     // default: 1024
+    pub address: String,                              // default: "0.0.0.0:3000"
+    pub sse_buffer_size: usize,                       // default: 64
+    pub replay_buffer_capacity: usize,                // default: 1024
     pub shutdown: ShutdownConfig,
-    pub max_concurrent_requests: usize,    // default: 100
-    pub a2a_extended_card_bearer_token: Option<String>,
+    pub max_concurrent_requests: usize,               // default: 100
+    pub a2a_extended_card_bearer_token: Option<RedactedString>,
+    pub mailbox_lifecycle: MailboxLifecycleMode,      // default: Auto
 }
 
 pub struct ShutdownConfig {
-    pub timeout_secs: u64,                 // default: 30
+    pub timeout_secs: u64,                            // default: 30
 }
 ```
 
@@ -250,7 +253,8 @@ pub struct ShutdownConfig {
 | `sse_buffer_size` | `usize` | `64` | Maximum SSE channel buffer size per connection |
 | `replay_buffer_capacity` | `usize` | `1024` | Maximum SSE frames buffered per run for reconnection replay |
 | `max_concurrent_requests` | `usize` | `100` | Maximum in-flight requests; excess requests receive 503 |
-| `a2a_extended_card_bearer_token` | `Option<String>` | `None` | Enables authenticated `GET /v1/a2a/extendedAgentCard` when set |
+| `a2a_extended_card_bearer_token` | `Option<RedactedString>` | `None` | Enables authenticated `GET /v1/a2a/extendedAgentCard` when set. The token redacts itself in `Debug`/`Display`; call `expose_secret()` to read the value. JSON wire format remains a plain string |
+| `mailbox_lifecycle` | `MailboxLifecycleMode` | `Auto` | `Auto` lets the framework start and shut down the mailbox; `Manual` hands lifecycle to the embedder |
 | `shutdown.timeout_secs` | `u64` | `30` | Seconds to wait for in-flight requests to drain before force-exiting |
 
 ## AdminApiConfig
@@ -260,16 +264,20 @@ Admin/configuration API security settings. Attach this to `AppState` with
 `AppState::with_admin_api_bearer_token` when only bearer auth is needed.
 
 ```rust,ignore
+use awaken::RedactedString;
+
 pub struct AdminApiConfig {
-    pub bearer_token: Option<String>,
+    pub bearer_token: Option<RedactedString>,
     pub cors_allowed_origins: Vec<String>,
+    pub expose_config_routes: bool,                   // default: true
 }
 ```
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `bearer_token` | `Option<String>` | `None` | Requires `Authorization: Bearer ...` for `/v1/capabilities`, `/v1/config/*`, and `/v1/agents*` when set |
+| `bearer_token` | `Option<RedactedString>` | `None` | Requires `Authorization: Bearer ...` for `/v1/capabilities`, `/v1/config/*`, and `/v1/agents*` when set. Redacts itself in `Debug`/`Display`; call `expose_secret()` to read the value. JSON wire format remains a plain string |
 | `cors_allowed_origins` | `Vec<String>` | `["http://127.0.0.1:3002", "http://localhost:3002"]` | Browser origins allowed by the admin CORS layer |
+| `expose_config_routes` | `bool` | `true` | Whether the server mounts the `/v1/config/*` and `/v1/agents` admin CRUD routes. Set to `false` to drop those routes entirely when configuration is driven through an external RBAC/audit pipeline. `/v1/capabilities` remains available so frontends can still discover registered components |
 
 Environment variables override the `AppState` admin settings:
 
@@ -277,6 +285,31 @@ Environment variables override the `AppState` admin settings:
 |---|---|
 | `AWAKEN_ADMIN_API_BEARER_TOKEN` | Bearer token required for admin/configuration APIs |
 | `AWAKEN_ADMIN_CORS_ALLOWED_ORIGINS` | Comma-separated CORS origins for browser admin APIs |
+
+### Secret handling
+
+`RedactedString` (re-exported from the facade as `awaken::RedactedString`,
+defined in `awaken_contract::secret`) is the single trust boundary for
+credentials in serialized config. The wire format is a plain JSON
+string, JSON Schema reports `string`, and the inner buffer is zeroized on drop.
+`Debug` formats as `RedactedString(***)` and `Display` formats as `***`. Call
+`expose_secret()` to obtain the plaintext when actually issuing a request, and
+do not propagate the returned `&str` into log lines. Code that previously held
+plain `String` tokens needs a one-line `.into()` at construction or a
+`.expose_secret()` at the read site.
+
+## ConfigRuntimeManager
+
+`ConfigRuntimeManager` compiles candidate registry snapshots when configuration
+changes and publishes them to the live runtime.
+
+| Builder method | Default | Description |
+|---|---|---|
+| `with_provider_factory(factory)` | `GenaiProviderExecutorFactory` | Override how `ProviderSpec` is materialized into an `LlmExecutor` |
+| `with_change_notifier(notifier)` | `None` | Subscribe to native change notifications instead of polling |
+| `with_mcp_registry_factory(factory)` | `DefaultMcpRegistryFactory` | Override how MCP server specs are turned into a registry |
+| `with_mcp_refresh_interval(interval)` | disabled | Periodically refresh MCP server connections |
+| `with_min_apply_interval(interval)` | `Duration::ZERO` | Minimum interval between successive applies driven by the change listener. Bursts that arrive within this window coalesce into a single apply. Direct calls to `apply` / `apply_if_changed` are unaffected. Provider executors are reused across applies for specs whose hash is unchanged |
 
 ## MailboxConfig
 

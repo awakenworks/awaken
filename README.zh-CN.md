@@ -2,47 +2,47 @@
 
 [English](./README.md) | [中文](./README.zh-CN.md)
 
-[![CI](https://github.com/AwakenWorks/awaken/actions/workflows/test.yml/badge.svg)](https://github.com/AwakenWorks/awaken/actions/workflows/test.yml) [![crates.io awaken](https://img.shields.io/crates/v/awaken.svg?label=awaken)](https://crates.io/crates/awaken) [![crates.io awaken-agent](https://img.shields.io/crates/v/awaken-agent.svg?label=awaken-agent)](https://crates.io/crates/awaken-agent) ![License](https://img.shields.io/badge/license-MIT%2FApache--2.0-blue) ![MSRV](https://img.shields.io/badge/MSRV-1.93-orange)
+[![CI](https://github.com/AwakenWorks/awaken/actions/workflows/test.yml/badge.svg)](https://github.com/AwakenWorks/awaken/actions/workflows/test.yml) [![crates.io awaken](https://img.shields.io/crates/v/awaken.svg?label=awaken)](https://crates.io/crates/awaken) [![crates.io awaken-agent](https://img.shields.io/crates/v/awaken-agent.svg?label=awaken-agent)](https://crates.io/crates/awaken-agent) [![Changelog](https://img.shields.io/badge/changelog-0.4.0-informational)](./CHANGELOG.md) ![License](https://img.shields.io/badge/license-MIT%2FApache--2.0-blue) ![MSRV](https://img.shields.io/badge/MSRV-1.93-orange)
 
-生产级 Rust AI Agent 运行时 — 类型安全状态、多协议服务、插件化扩展。
+一个用 Rust 写的 Agent runtime：同一份 backend 同时给 AI SDK、CopilotKit、A2A、MCP 用，能在 LLM 流式过程中自愈，并把配置当作真正的控制面。
 
-在 crates.io 上同时发布 `awaken` 和 `awaken-agent`。其中 `awaken`
-是主 umbrella package，`awaken-agent` 是兼容包；两者在 Rust 代码中都保持导入为
-`awaken`。
-仓库开发工具链由 Rust 1.93.0 固定，crate 的 MSRV 为 1.93。
+`awaken` 是当前的规范 crate（由 [@brayniac](https://github.com/brayniac) 转
+让而来，详见下方鸣谢）。`awaken-agent` 是项目早期发布期的兼容包，导入名都是
+`awaken`。MSRV：Rust 1.93。
 
-在线文档：[GitHub Pages（英文）](https://awakenworks.github.io/awaken/) | [GitHub Pages（中文）](https://awakenworks.github.io/awaken/zh-CN/)
+在线文档：[GitHub Pages（英文）](https://awakenworks.github.io/awaken/) ·
+[GitHub Pages（中文）](https://awakenworks.github.io/awaken/zh-CN/) ·
+[Changelog](./CHANGELOG.md)
 
 <p align="center">
   <img src="./docs/assets/demo.svg" alt="Awaken 演示 — 工具调用 + LLM 流式输出" width="800">
 </p>
 
-## 亮点
+## 0.4 给你什么
 
-- **Rust-first Agent Runtime**：类型化工具、自动生成 JSON Schema、类型化 state key、作用域化 snapshot，以及原子状态提交。
-- **一个 runtime 服务多类客户端**：同一后端同时提供 HTTP/SSE run API、AI SDK v6、AG-UI/CopilotKit、A2A 与 MCP JSON-RPC。
-- **配置优先的优化控制面**：model/provider 选择、prompt、reminder、permission、generative UI 与 deferred tools 都通过 `/v1/config/*`、`/v1/capabilities` 和 admin console 管理。
-- **生产控制路径**：mailbox 后台 run、HITL 决策、取消/中断、SSE replay、重试、fallback model、熔断器、指标和健康检查。
-- **插件能力面**：权限网关、Reminder、OpenTelemetry、MCP tools、Skills、Generative UI，以及带明确概率模型的 deferred tool loading。
+- **一个 backend 同时多协议。** 同一个 runtime 同时提供 AI SDK v6、AG-UI / CopilotKit、A2A、MCP；它们都跑在同一个 `/v1/runs` 之上。
+- **流式 LLM 调用能从瞬时故障中恢复。** mid-stream 中断与 idle stall 会被识别，并按四种明确方案恢复：继续文本、回放已完成的 tool call、注入 cancelled tool 提示重启、整轮重启；`Retry-After` 被尊重；`StreamCheckpointStore` 契约让恢复可以跨进程。 ([详情](./docs/book/src/zh-CN/how-to/recover-streaming-llms.md))
+- **Thread 有父子层级。** sub-agent run 会创建子 thread，删除策略需显式指定（`reject` / `detach` / `cascade`）；`/v1/threads` 上的过滤与游标让带层级的 UI 直接好做。
+- **凭据自动遮蔽。** `ProviderSpec.api_key`、admin / A2A bearer token 都用 `RedactedString` 包裹：`Debug`/`Display` 输出 `***`，`Drop` 时清零，JSON 序列化保持不变。
+- **配置即控制面。** model、provider、prompt、reminder、permission、tool-loading 策略都在 `/v1/config/*` 与 `/v1/capabilities` 后面；apply 可以去抖，未变化的 provider executor 会被复用。
+- **类型安全的状态与工具。** 类型化 `StateKey` + 合并策略，`TypedTool` 自动生成 JSON Schema，每个 phase 后批量原子提交。整个 workspace `unsafe_code = "forbid"`。
 
-## 30 秒速览
+## 心智模型
 
-1. **Tools** — 可直接实现 `Tool`，也可用 `TypedTool` 通过 `schemars` 生成 JSON Schema
-2. **Agents** — 每个 Agent 拥有系统提示词、模型和允许的工具集；LLM 通过自然语言驱动编排 — 无需预定义流程图
-3. **State** — 既有 `run` / `thread` 作用域的类型化状态，也有用于跨线程/跨 Agent 协作的持久化 profile/shared state
-4. **Plugins** — 生命周期钩子覆盖权限、可观测性、上下文管理、Skills、MCP 等
+1. **Tools** — 直接实现 `Tool`，或用 `TypedTool` 通过 `schemars` 生成 JSON Schema。
+2. **Agents** — 系统提示词 + model binding + 允许的工具集；LLM 用自然语言编排，没有 DAG。
+3. **State** — `run`/`thread` 作用域的类型化状态，加上跨 thread/agent 协作用的持久 profile 与 shared state。
+4. **Plugins** — 覆盖 permission、可观测性、上下文管理、Skills、MCP、Generative UI 的生命周期钩子。
 
-Agent 选择工具、调用工具、读写状态，如此循环 — 全部由运行时通过 9 个类型化阶段编排，其中在真正执行工具前增加了纯判定的 `ToolGate`。每次状态变更都在 gather 阶段后原子提交。
+runtime 每轮跑 9 个类型化 phase，其中包含一个纯判定的 `ToolGate`；状态变更在每轮结束时批量原子提交。
 
-## 5 分钟上手
+## 上手
 
-**前置条件：** 使用发布 crate 时需要 Rust `1.93+`；从本仓库运行示例时使用 `rust-toolchain.toml` 固定的 `1.93.0`；还需要一个 LLM 提供商 API Key。
-
-在 `Cargo.toml` 中添加：
+**前置条件：** Rust 1.93+ 和一个 OpenAI 兼容的 API Key。
 
 ```toml
 [dependencies]
-awaken = { version = "0.4.0-dev" }
+awaken = { version = "0.4.0" }
 tokio = { version = "1.51.0", features = ["full"] }
 async-trait = "0.1.89"
 serde_json = "1.0.149"
@@ -176,33 +176,31 @@ serve(state).await?;
 | A2A | `POST /v1/a2a/message:send` | 其他 Agent |
 | MCP | `POST /v1/mcp` | JSON-RPC 2.0 |
 
-可选的 admin console 通过 `/v1/capabilities` 与 `/v1/config/*` 在页面中编辑
-agents、models、providers、MCP servers 以及插件配置 section。插件配置通过
-同一套类型化 `PluginConfigKey` 逻辑暴露 JSON Schema，运行时 hook 也从同一
-section 读取，因此保存 `permission`、`reminder`、`generative-ui` 或
-`deferred_tools` 后会发布新的 registry snapshot，并对后续 `/v1/runs` 生效。
-BigModel 等 OpenAI 兼容服务使用 `openai` adapter，并配置对应的 `base_url`。
+可选的 admin console 读取 `/v1/capabilities`、写入 `/v1/config/*`，在浏览器里
+管理 agents、models、providers、MCP servers 和插件配置 section。插件通过同一
+套 `PluginConfigKey` 暴露 schema，因此保存 `permission`、`reminder`、
+`generative-ui`、`deferred_tools` 等 section 后会发布新的 registry snapshot，
+对下一次 `/v1/runs` 立即生效。BigModel 等 OpenAI 兼容服务使用 `openai`
+adapter + 对应 `base_url`；非密的扩展项放到 `ProviderSpec.adapter_options`。
 
-设计意图是把 agent 优化能力保持为数据驱动：model 选择、provider 端点、基础
-prompt、system reminder、生成式 UI 指令、permission 策略和工具加载策略都应走
-同一套 schema-backed 配置链路，而不是硬编码进 agent loop。
-
-| 调优面 | 配置路径 |
+| 调优面 | 配置位置 |
 |---|---|
-| 基础 prompt | agent 条目中的 `AgentSpec.system_prompt` |
-| model/provider 路由 | `AgentSpec.model_id`、`/v1/config/models`、`/v1/config/providers` |
-| system reminder 与 prompt 上下文注入 | `reminder` 插件 section，使用 `system` 或 `suffix_system` target |
-| Generative UI prompt 指令 | `generative-ui` 插件 section（`catalog_id`、`examples` 或完整 `instructions`） |
+| 基础 prompt | `AgentSpec.system_prompt` |
+| model 与 provider 路由 | `AgentSpec.model_id` + `/v1/config/models` + `/v1/config/providers` |
+| system reminder 与 prompt 注入 | `reminder` 插件 section |
+| Generative UI prompt 指令 | `generative-ui` 插件 section |
 | 工具策略与上下文成本 | `permission` 与 `deferred_tools` 插件 section |
-| prompt 语义 hook | 当前还不是内置插件；后续应以类型化 `PluginConfigKey` section 和 schema-backed hook 接入 |
 
 **React + AI SDK v6：**
 
 ```typescript
-import { useChat } from "ai/react";
+import { useChat } from "@ai-sdk/react";
+import { DefaultChatTransport } from "ai";
 
-const { messages, input, handleSubmit } = useChat({
-  api: "http://localhost:3000/v1/ai-sdk/chat",
+const { messages, sendMessage } = useChat({
+  transport: new DefaultChatTransport({
+    api: "http://localhost:3000/v1/ai-sdk/chat",
+  }),
 });
 ```
 
@@ -222,51 +220,35 @@ import { CopilotKit } from "@copilotkit/react-core";
 
 ## 内置插件
 
-| Plugin | 说明 | Feature Flag |
+门面 crate 的 `full` feature 默认启用以下插件。`default-features = false` 可
+按需关闭。`awaken-ext-deferred-tools` 不被门面 crate 重新导出，需要直接依赖。
+
+| 插件 | 作用 | Feature flag |
 |---|---|---|
-| **Permission** | 防火墙式工具访问控制，支持 Deny/Allow/Ask 规则、glob/正则匹配和 HITL 邮箱暂停。 | `permission` |
-| **Reminder** | 工具调用匹配模式时自动注入 system/conversation 级别的上下文消息。 | `reminder` |
-| **Observability** | 符合 GenAI 语义规范的 OpenTelemetry 遥测，支持 OTLP、文件和内存导出。 | `observability` |
-| **MCP** | 连接外部 MCP 服务器，自动发现并注册其工具为 Awaken 原生工具。 | `mcp` |
-| **Skills** | 发现技能包，推理前注入技能目录供 LLM 按需激活。 | `skills` |
-| **Generative UI** | 通过 A2UI、JSON Render 和 OpenUI Lang 集成向前端流式推送声明式 UI 组件。 | `generative-ui` |
-| **Deferred Tools** | 将大型工具 schema 隐藏在 `ToolSearch` 之后，并用折扣 Beta 概率模型把空闲的已提升工具重新延迟。 | 直接依赖：`awaken-ext-deferred-tools` |
+| **Permission** | Allow/Deny/Ask 规则匹配工具名和参数（支持 glob 与正则）。优先级 Deny > Allow > Ask；Ask 通过 mailbox 暂停 run，等待 HITL 决策。 | `permission` |
+| **Reminder** | 工具调用匹配某模式时，在 system 或会话级注入上下文消息。 | `reminder` |
+| **Observability** | 与 GenAI Semantic Conventions 对齐的 OpenTelemetry trace 与 metric；支持 OTLP、文件和内存导出。 | `observability` |
+| **MCP** | 连接外部 MCP server，把它们的工具注册成 Awaken 原生工具。 | `mcp` |
+| **Skills** | 发现 skill 包，推理前注入 catalog 让 LLM 按需激活。 | `skills` |
+| **Generative UI** | 通过 A2UI、JSON Render、OpenUI Lang 把声明式 UI 组件流式发到前端。 | `generative-ui` |
+| **Deferred Tools** | 把大体量工具 schema 藏在 `ToolSearch` 后，连续多轮没用就用折扣 Beta 用量模型把已提升的工具重新延迟。 | 直接依赖：`awaken-ext-deferred-tools` |
 
-`awaken-ext-deferred-tools` 未包含在 `awaken` 门面 crate 的 `full` feature 中。
-注册 `ext-deferred-tools` 插件后，通过 agent 的 `deferred_tools` section 配置。
-设置方式、自动启用启发式以及 DiscBeta 概率模型见
-[使用延迟加载工具](./docs/book/src/zh-CN/how-to/use-deferred-tools.md)。
+自定义工具拦截通过 `ToolGateHook` + `PluginRegistrar::register_tool_gate_hook()`
+完成；`BeforeToolExecute` 仅用于工具真正即将执行那一刻的钩子。
 
-如需自定义工具拦截，应实现 `ToolGateHook` 并通过 `PluginRegistrar::register_tool_gate_hook()` 注册；`BeforeToolExecute` 仅用于真正执行前的一次性钩子。
+## 适合的场景
 
-## 为什么选择 Awaken
+- 想用 **Rust 后端**写 AI Agent，要编译期保证。
+- 需要从一个 backend 同时服务 **AI SDK、CopilotKit、A2A 或 MCP**。
+- 工具需要在并发中**安全共享状态**，run 需要**可审计历史 + checkpoint + 可恢复控制路径**。
+- 可以接受自己注册工具与 provider，而不是依赖开箱即用的默认能力。
 
-- **一个后端服务多种协议** — 同一个二进制可提供 AI SDK v6、AG-UI、A2A、MCP，以及原生 HTTP/SSE 路由。
-- **配置就是控制面** — model/provider 路由、prompt、reminder、permission 与工具加载策略使用 schema-backed 配置，可校验并在运行时应用。
-- **LLM 编排，无需 DAG** — 定义 Agent 身份、模型绑定和工具访问权限；无需手写流程图。
-- **运行时托管配置** — 通过 Config API 或 Admin Console 更新 agents、model bindings、providers 与 MCP servers。
-- **类型化插件扩展点** — 9 个生命周期阶段、`PhaseHook`、`ToolGateHook`、scheduled actions、effects、request transforms 和插件注册工具都由代码契约约束。
-- **类型安全的状态与回放** — `StateKey` 把每个 key 绑定到 Rust value/update 类型，限定 run/thread/profile 作用域，并在提交前按声明的 merge strategy 合并。
-- **内置运维面** — LLM retry/backoff、按 model 维度的熔断器、请求超时、优雅关闭、Prometheus 指标、健康探针和 mailbox retry/backoff。
-- **零 `unsafe` 代码** — 整个工作空间禁止 `unsafe`，内存安全由 Rust 编译器保证。
+## 不适合的场景
 
-## 适用场景 / 不适用场景
-
-**适合 Awaken：**
-
-- 需要 **Rust 后端**构建 AI Agent，享受编译时安全
-- 需要从一个后端同时提供**多种前端或 Agent 协议**
-- 工具需要在并发执行中**安全共享状态**
-- 需要**可审计的线程历史**、checkpoint 与可恢复控制路径
-- 能接受自己注册工具、provider 与 model registry，而不是依赖开箱即用的默认能力
-
-**不适合 Awaken：**
-
-- 需要**开箱即用的文件/Shell/Web 工具** — 可考虑 OpenAI Agents SDK、Dify、CrewAI
-- 需要**可视化工作流编辑器** — 考虑 Dify、LangGraph Studio
-- 需要 **Python** 快速原型开发 — 考虑 LangGraph、AG2、PydanticAI
-- 需要一个**稳定且变化缓慢**的表面 API，而不是持续演进的运行时平台
-- 需要 **LLM 自主管理的记忆**（Agent 自行决定记住什么）— 考虑 Letta
+- 想要**开箱即用的文件 / Shell / Web 工具** — 看 OpenAI Agents SDK、Dify、CrewAI。
+- 想要**可视化工作流编辑器** — 看 Dify、LangGraph Studio。
+- 想要 **Python** 快速原型开发 — 看 LangGraph、AG2、PydanticAI。
+- 想要 **LLM 自主管理记忆**（让 Agent 自行决定记住什么）— 看 Letta。
 
 ## 架构
 
@@ -333,8 +315,17 @@ npm --prefix apps/admin-console run dev
 
 **贡献流程：** Fork → 新建分支 → 实现 + 测试 → `cargo clippy` 通过 → PR。
 
+## 鸣谢
+
+crates.io 上 `awaken` 这个名字是
+[@brayniac](https://github.com/brayniac) 转让过来的——他原先维护着同名的另
+一个 crate，并主动愿意把名字让出来，让本项目能用规范名发布。crates.io 上的
+`awaken` `0.1`–`0.3` 属于那个早期项目；本仓库的发版历史延续自之前的
+`awaken-agent 0.2.x`，并直接从 `0.4.0` 起步以跳过此前的版本号。再次感谢。
+
+Awaken 也是 [tirea](../../tree/tirea-0.5) 的全新重写版本，与 tirea **不兼容**。
+tirea 0.5 代码归档在 [`tirea-0.5`](../../tree/tirea-0.5) 分支。
+
 ## 许可证
 
 双重许可：[MIT](./LICENSE-MIT) 或 [Apache-2.0](./LICENSE-APACHE)。
-
-> Awaken 是 [tirea](../../tree/tirea-0.5) 的全新重写版本，专为简洁性和生产可靠性而设计。tirea 0.5 代码已归档在 [`tirea-0.5`](../../tree/tirea-0.5) 分支，Awaken 与 tirea **不兼容**。

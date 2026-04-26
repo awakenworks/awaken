@@ -14,7 +14,7 @@ Use this when you need durable, multi-instance persistence backed by PostgreSQL.
 
 ```toml
 [dependencies]
-awaken-stores = { version = "0.4.0-dev", features = ["postgres"] }
+awaken-stores = { version = "0.4.0", features = ["postgres"] }
 ```
 
 2. Create a connection pool.
