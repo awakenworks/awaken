@@ -64,6 +64,7 @@ agent-client-protocol = "0.10.4"
 jsonschema = "0.45"
 parking_lot = "0.12"
 proptest = "1"
+secrecy = { version = "0.10", features = ["serde"] }
 tokio-util = { version = "0.7", features = ["compat"] }
 
 [workspace.lints.rust]

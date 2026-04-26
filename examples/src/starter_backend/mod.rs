@@ -243,7 +243,7 @@ fn build_default_provider_spec(model_name: &str) -> ProviderSpec {
         ProviderSpec {
             id: DEFAULT_PROVIDER_ID.into(),
             adapter: adapter_kind_name(adapter).into(),
-            api_key: std::env::var("OPENAI_API_KEY").ok(),
+            api_key: std::env::var("OPENAI_API_KEY").ok().map(Into::into),
             base_url: std::env::var("OPENAI_BASE_URL").ok(),
             ..Default::default()
         }

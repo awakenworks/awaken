@@ -1,5 +1,5 @@
 use std::collections::hash_map::DefaultHasher;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 use std::sync::{Arc, Weak};
 use std::time::Duration;
@@ -23,11 +23,11 @@ use awaken_runtime::registry::{
     AgentSpecRegistry, ModelBinding, PluginSource, RegistrySet, ToolRegistry,
 };
 use awaken_runtime::{AgentResolver, AgentRuntime};
-use genai::Client;
 use genai::adapter::AdapterKind;
 use genai::resolver::{AuthData, Endpoint};
-use genai::{ModelIden, ServiceTarget};
+use genai::{Client, ModelIden, ServiceTarget, WebConfig};
 use parking_lot::{Mutex, RwLock};
+use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use serde_json::Value;
 use tokio::runtime::Handle;
 use tokio::sync::oneshot;
@@ -827,9 +827,10 @@ pub fn build_genai_provider_executor(
         Ok(ModelIden::new(adapter_kind, model.model_name.to_string()))
     });
 
-    if let Some(api_key) = spec.api_key.clone().filter(|value| !value.is_empty()) {
-        builder = builder
-            .with_auth_resolver_fn(move |_| Ok(Some(AuthData::from_single(api_key.clone()))));
+    if let Some(api_key) = spec.api_key.as_ref().filter(|value| !value.is_empty()) {
+        let key = api_key.expose_secret().to_owned();
+        builder =
+            builder.with_auth_resolver_fn(move |_| Ok(Some(AuthData::from_single(key.clone()))));
     }
 
     if let Some(base_url) = spec.base_url.clone().filter(|value| !value.is_empty()) {
@@ -844,10 +845,55 @@ pub fn build_genai_provider_executor(
         });
     }
 
+    if let Some(headers) = build_default_headers_from_options(&spec.adapter_options)? {
+        builder = builder.with_web_config(WebConfig::default().with_default_headers(headers));
+    }
+
     let client = builder.build();
     let executor = GenaiExecutor::with_client(client)
         .with_timeout(Duration::from_secs(spec.timeout_secs.max(1)));
     Ok(Arc::new(executor))
+}
+
+/// Parse `adapter_options.headers` into a [`HeaderMap`]. Returns `Ok(None)`
+/// when the key is absent. Returns [`ConfigRuntimeError::InvalidConfig`] when
+/// the value is not an object of `string -> string` pairs or when an entry
+/// fails to parse as a valid HTTP header.
+///
+/// All other keys in `adapter_options` are ignored here — unknown keys are a
+/// forward-compatibility surface, not an error.
+fn build_default_headers_from_options(
+    options: &BTreeMap<String, Value>,
+) -> Result<Option<HeaderMap>, ConfigRuntimeError> {
+    let Some(headers_value) = options.get("headers") else {
+        return Ok(None);
+    };
+    let entries = headers_value.as_object().ok_or_else(|| {
+        ConfigRuntimeError::InvalidConfig(
+            "adapter_options.headers must be an object of string -> string pairs".into(),
+        )
+    })?;
+
+    let mut map = HeaderMap::with_capacity(entries.len());
+    for (name, value) in entries {
+        let value_str = value.as_str().ok_or_else(|| {
+            ConfigRuntimeError::InvalidConfig(format!(
+                "adapter_options.headers[{name}] must be a string"
+            ))
+        })?;
+        let header_name = HeaderName::try_from(name).map_err(|err| {
+            ConfigRuntimeError::InvalidConfig(format!(
+                "adapter_options.headers[{name}] invalid header name: {err}"
+            ))
+        })?;
+        let header_value = HeaderValue::from_str(value_str).map_err(|err| {
+            ConfigRuntimeError::InvalidConfig(format!(
+                "adapter_options.headers[{name}] invalid header value: {err}"
+            ))
+        })?;
+        map.insert(header_name, header_value);
+    }
+    Ok(Some(map))
 }
 
 /// Canonical list of provider adapter identifiers supported by the runtime.
@@ -1005,5 +1051,108 @@ fn canonicalize_value(value: &Value) -> Value {
             Value::Object(normalized)
         }
         _ => value.clone(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+    use std::collections::BTreeMap;
+
+    fn provider_spec_with_options(adapter_options: BTreeMap<String, Value>) -> ProviderSpec {
+        ProviderSpec {
+            id: "test".into(),
+            adapter: "openai".into(),
+            adapter_options,
+            ..ProviderSpec::default()
+        }
+    }
+
+    #[test]
+    fn build_genai_with_valid_headers_succeeds() {
+        let mut options = BTreeMap::new();
+        options.insert("headers".into(), json!({"OpenAI-Organization": "org-xyz"}));
+        let spec = provider_spec_with_options(options);
+        build_genai_provider_executor(&spec).expect("valid headers must build");
+    }
+
+    #[test]
+    fn build_genai_rejects_non_object_headers() {
+        let mut options = BTreeMap::new();
+        options.insert("headers".into(), json!("not-an-object"));
+        let spec = provider_spec_with_options(options);
+        let err = match build_genai_provider_executor(&spec) {
+            Ok(_) => panic!("expected build to fail"),
+            Err(e) => e,
+        };
+        assert!(
+            matches!(err, ConfigRuntimeError::InvalidConfig(ref msg) if msg.contains("headers")),
+            "expected InvalidConfig mentioning headers, got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn build_genai_rejects_non_string_header_value() {
+        let mut options = BTreeMap::new();
+        options.insert("headers".into(), json!({"X-Numeric-Value": 42}));
+        let spec = provider_spec_with_options(options);
+        let err = match build_genai_provider_executor(&spec) {
+            Ok(_) => panic!("expected build to fail"),
+            Err(e) => e,
+        };
+        assert!(
+            matches!(err, ConfigRuntimeError::InvalidConfig(ref msg) if msg.contains("X-Numeric-Value")),
+            "expected InvalidConfig naming the bad header, got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn build_genai_ignores_unknown_adapter_options() {
+        let mut options = BTreeMap::new();
+        options.insert("future_extension_key".into(), json!({"anything": true}));
+        let spec = provider_spec_with_options(options);
+        build_genai_provider_executor(&spec)
+            .expect("unknown adapter_options keys must not break the build");
+    }
+
+    #[test]
+    fn build_default_headers_returns_none_when_absent() {
+        let result = build_default_headers_from_options(&BTreeMap::new()).unwrap();
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn build_default_headers_parses_string_pairs() {
+        let mut options = BTreeMap::new();
+        options.insert(
+            "headers".into(),
+            json!({
+                "OpenAI-Organization": "org-xyz",
+                "X-Custom": "value",
+            }),
+        );
+        let map = build_default_headers_from_options(&options)
+            .unwrap()
+            .expect("headers should be present");
+        assert_eq!(
+            map.get("openai-organization").and_then(|v| v.to_str().ok()),
+            Some("org-xyz")
+        );
+        assert_eq!(
+            map.get("x-custom").and_then(|v| v.to_str().ok()),
+            Some("value")
+        );
+    }
+
+    #[test]
+    fn build_default_headers_rejects_invalid_header_name() {
+        let mut options = BTreeMap::new();
+        options.insert("headers".into(), json!({"Invalid Header Name": "value"}));
+        let err = build_default_headers_from_options(&options).unwrap_err();
+        assert!(
+            matches!(err, ConfigRuntimeError::InvalidConfig(ref msg) if msg.contains("Invalid Header Name")),
+            "expected InvalidConfig naming the bad header, got: {err:?}"
+        );
     }
 }

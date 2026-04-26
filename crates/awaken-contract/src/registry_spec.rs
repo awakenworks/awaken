@@ -278,14 +278,49 @@ pub struct ProviderSpec {
     /// GenAI adapter kind (for example `"openai"`, `"anthropic"`, `"ollama"`).
     pub adapter: String,
     /// Explicit API key. If absent, the adapter's environment variable is used.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub api_key: Option<String>,
-    /// Base URL override for proxy or self-hosted deployments.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    ///
+    /// Wrapped in [`crate::RedactedString`] so it does not leak through
+    /// `Debug` / `Display`. The wire format remains a plain JSON string;
+    /// empty-string input deserializes to `None`.
+    #[serde(
+        default,
+        deserialize_with = "deserialize_optional_non_empty",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub api_key: Option<crate::RedactedString>,
+    /// Base URL override for proxy or self-hosted deployments. Empty-string
+    /// input deserializes to `None`.
+    #[serde(
+        default,
+        deserialize_with = "deserialize_optional_non_empty",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub base_url: Option<String>,
     /// Request timeout in seconds.
     #[serde(default = "default_provider_timeout_secs")]
     pub timeout_secs: u64,
+    /// Adapter-specific non-secret options consumed by
+    /// `build_genai_provider_executor` (for example
+    /// `{"headers": {"OpenAI-Organization": "org-xxx"}}`).
+    ///
+    /// Secrets must use [`ProviderSpec::api_key`]; do not store credentials
+    /// here. Unrecognised keys are accepted by the schema but ignored at
+    /// build time.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub adapter_options: BTreeMap<String, Value>,
+}
+
+/// Treat an absent field, JSON `null`, or `""` as `None`. Used by spec types
+/// that accept optional textual configuration so callers do not have to
+/// strip/convert empty values themselves.
+fn deserialize_optional_non_empty<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
+where
+    D: Deserializer<'de>,
+    T: From<String>,
+{
+    Ok(Option::<String>::deserialize(deserializer)?
+        .filter(|value| !value.is_empty())
+        .map(T::from))
 }
 
 fn default_provider_timeout_secs() -> u64 {
@@ -408,6 +443,7 @@ impl Default for ProviderSpec {
             api_key: None,
             base_url: None,
             timeout_secs: default_provider_timeout_secs(),
+            adapter_options: BTreeMap::new(),
         }
     }
 }
@@ -819,5 +855,78 @@ mod tests {
         assert_eq!(spec.id, "reviewer");
         assert_eq!(spec.model_id, "claude-opus");
         assert!(spec.active_hook_filter.contains("permission"));
+    }
+
+    // ── ProviderSpec ───────────────────────────────────────────────────
+
+    #[test]
+    fn provider_spec_debug_does_not_leak_api_key() {
+        let spec = ProviderSpec {
+            id: "openai".into(),
+            adapter: "openai".into(),
+            api_key: Some("sk-super-secret-12345".into()),
+            ..ProviderSpec::default()
+        };
+        let debug = format!("{spec:?}");
+        assert!(
+            !debug.contains("sk-super-secret-12345"),
+            "ProviderSpec Debug must not contain the api_key value, got: {debug}"
+        );
+    }
+
+    #[test]
+    fn provider_spec_empty_string_api_key_deserializes_as_none() {
+        let json_str = r#"{"id":"x","adapter":"openai","api_key":""}"#;
+        let spec: ProviderSpec = serde_json::from_str(json_str).unwrap();
+        assert!(
+            spec.api_key.is_none(),
+            "empty-string api_key should deserialize as None"
+        );
+    }
+
+    #[test]
+    fn provider_spec_empty_string_base_url_deserializes_as_none() {
+        let json_str = r#"{"id":"x","adapter":"openai","base_url":""}"#;
+        let spec: ProviderSpec = serde_json::from_str(json_str).unwrap();
+        assert!(
+            spec.base_url.is_none(),
+            "empty-string base_url should deserialize as None"
+        );
+    }
+
+    #[test]
+    fn provider_spec_adapter_options_round_trip() {
+        let mut opts = BTreeMap::new();
+        opts.insert("headers".into(), json!({"OpenAI-Organization": "org-xyz"}));
+        let spec = ProviderSpec {
+            id: "openai".into(),
+            adapter: "openai".into(),
+            adapter_options: opts,
+            ..ProviderSpec::default()
+        };
+        let encoded = serde_json::to_string(&spec).unwrap();
+        let parsed: ProviderSpec = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(
+            parsed
+                .adapter_options
+                .get("headers")
+                .and_then(|value| value.get("OpenAI-Organization"))
+                .and_then(Value::as_str),
+            Some("org-xyz")
+        );
+    }
+
+    #[test]
+    fn provider_spec_adapter_options_skipped_when_empty() {
+        let spec = ProviderSpec {
+            id: "openai".into(),
+            adapter: "openai".into(),
+            ..ProviderSpec::default()
+        };
+        let encoded = serde_json::to_string(&spec).unwrap();
+        assert!(
+            !encoded.contains("adapter_options"),
+            "expected adapter_options to be elided when empty, got: {encoded}"
+        );
     }
 }

@@ -14,6 +14,7 @@ async fn exercise_store(store: Arc<dyn ConfigStore>) {
         api_key: Some("sk-test".into()),
         base_url: Some("https://proxy.example.com/v1".into()),
         timeout_secs: 120,
+        ..ProviderSpec::default()
     };
     let model = ModelBindingSpec {
         id: "gpt-4o-mini".into(),

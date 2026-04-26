@@ -19,6 +19,7 @@ mod error;
 pub mod model;
 pub mod periodic_refresh;
 pub mod registry_spec;
+pub mod secret;
 pub mod state;
 pub mod thread;
 pub mod time;
@@ -40,6 +41,9 @@ pub use registry_spec::{
     AgentSpec, McpRestartPolicy, McpServerSpec, McpTransportKind, ModelBindingSpec,
     PluginConfigKey, ProviderSpec,
 };
+
+// ── secret ──
+pub use secret::RedactedString;
 
 // ── state ──
 pub use state::{

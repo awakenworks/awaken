@@ -65,9 +65,35 @@ pub struct ModelBinding {
     pub provider_id: String,        // ProviderRegistry ID
     pub upstream_model: String,     // Actual model name for API call
 }
+
+pub struct ProviderSpec {
+    pub id: String,
+    pub adapter: String,                       // genai adapter kind
+    pub api_key: Option<RedactedString>,       // redacted in Debug, zeroized on drop
+    pub base_url: Option<String>,
+    pub timeout_secs: u64,
+    pub adapter_options: BTreeMap<String, Value>,  // non-secret adapter knobs
+}
 ```
 
 Resolution: `model_id → ModelBinding → provider_id → Arc<dyn LlmExecutor>`.
+
+**Spec invariants** (enforced at the type level rather than by convention):
+
+- **Secrets are typed.** `api_key` is wrapped in `RedactedString` so `Debug` /
+  `Display` cannot leak the value. The plaintext is reachable only via
+  `expose_secret()`; `preview()` returns a head-4/tail-4 mask suitable for
+  operator-facing logs. The wire format remains a plain JSON string.
+- **`adapter_options` is non-secret.** Adapter-specific knobs (custom HTTP
+  headers, organization IDs, API versions) live here and may be inspected
+  freely. Credentials must use `api_key`. A future cross-adapter
+  authentication abstraction (`AuthStrategy`) is deferred to a 0.x version
+  bump; until then secrets that do not fit `api_key` are out of scope.
+- **Empty strings deserialize as `None`.** `api_key` and `base_url` accept
+  `""` from JSON and treat it as unset, removing the need for callers to
+  strip empty values.
+- **Forward-compatible options.** Unknown keys in `adapter_options` are
+  ignored at build time so older binaries do not reject newer specs.
 
 ### D4: resolve(agent_id) → ResolvedRun
 
