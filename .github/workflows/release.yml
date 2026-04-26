@@ -54,6 +54,7 @@ jobs:
           publish awaken-ext-reminder
           publish awaken-ext-skills
           publish awaken-server
+          publish awaken
           # Final crate — no sleep needed
           echo "=== Publishing awaken-agent ==="
           cargo publish --no-verify -p awaken-agent
