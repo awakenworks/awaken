@@ -7,7 +7,8 @@ pub mod transform;
 pub mod truncation;
 
 pub use compaction::{
-    find_compaction_boundary, record_compaction_boundary, trim_to_compaction_boundary,
+    AppliedCompaction, CompactionPlan, apply_summary, find_compaction_boundary, plan_compaction,
+    record_compaction_boundary, trim_to_compaction_boundary,
 };
 pub use plugin::{
     CONTEXT_COMPACTION_PLUGIN_ID, CONTEXT_TRANSFORM_PLUGIN_ID, CompactionAction,

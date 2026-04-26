@@ -1,9 +1,13 @@
-//! Compaction boundary discovery and load-time trimming.
+//! Compaction boundary discovery, plan/apply helpers, and load-time trimming.
 
 use std::collections::HashSet;
 use std::sync::Arc;
 
+use awaken_contract::contract::inference::ContextWindowPolicy;
 use awaken_contract::contract::message::{Message, Role, Visibility};
+use awaken_contract::contract::transform::estimate_message_tokens;
+
+use super::summarizer::{MIN_COMPACTION_GAIN_TOKENS, extract_previous_summary, render_transcript};
 
 /// Find a safe compaction boundary in the message history.
 ///
@@ -72,11 +76,202 @@ pub fn record_compaction_boundary(
     super::plugin::CompactionAction::RecordBoundary(boundary)
 }
 
+/// Inputs needed to run a compaction off the main thread. Snapshotted at
+/// trigger time so the background task does not race with the live
+/// `messages` list (which keeps growing during summarization).
+#[derive(Debug, Clone)]
+pub struct CompactionPlan {
+    /// Pre-rendered transcript to feed the summarizer (Internal messages
+    /// already filtered).
+    pub transcript: String,
+    /// Previous cumulative summary, if any, for incremental updates.
+    pub previous_summary: Option<String>,
+    /// Stable id of the last message included in the summary. The swap
+    /// path locates the cut point against the current message list by
+    /// this id, so it survives any new messages appended in the window.
+    pub boundary_message_id: String,
+    /// Token estimate of the messages that the summary will replace.
+    /// Used for the `pre_tokens` field of the recorded boundary.
+    pub pre_tokens: usize,
+}
+
+/// Result of a successful in-place swap.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AppliedCompaction {
+    /// Index in the original list where the cut happened.
+    pub boundary_index: usize,
+    /// Tokens that were dropped from the head of the message list.
+    pub pre_tokens: usize,
+    /// Tokens used by the inserted summary message.
+    pub post_tokens: usize,
+}
+
+/// Decide whether compaction should run right now and, if so, capture the
+/// inputs needed by the background summarization task. Returns `None` if
+/// compaction is not feasible (no safe boundary, savings below threshold,
+/// boundary message has no stable id, transcript is empty, etc.).
+pub fn plan_compaction(
+    messages: &[Arc<Message>],
+    policy: &ContextWindowPolicy,
+) -> Option<CompactionPlan> {
+    if messages.len() < 2 {
+        return None;
+    }
+    let keep_suffix = policy.compaction_raw_suffix_messages.min(messages.len());
+    let search_end = messages.len().saturating_sub(keep_suffix);
+    if search_end < 2 {
+        return None;
+    }
+    let boundary = find_compaction_boundary(messages, 0, search_end)?;
+    let boundary_message_id = messages[boundary].id.clone()?;
+    let pre_tokens: usize = messages[..=boundary]
+        .iter()
+        .map(|m| estimate_message_tokens(m))
+        .sum();
+    if pre_tokens < MIN_COMPACTION_GAIN_TOKENS {
+        return None;
+    }
+    let transcript = render_transcript(&messages[..=boundary]);
+    if transcript.is_empty() {
+        return None;
+    }
+    let previous_summary = extract_previous_summary(messages);
+    Some(CompactionPlan {
+        transcript,
+        previous_summary,
+        boundary_message_id,
+        pre_tokens,
+    })
+}
+
+/// Apply a freshly produced summary to the live message list. Locates the
+/// boundary message by id (not by index) so it is safe against any
+/// messages appended between trigger and completion. Returns `None` when
+/// the boundary message is no longer present (already trimmed by an
+/// earlier compaction or rewritten by another path); callers should treat
+/// that as a benign skip.
+pub fn apply_summary(
+    messages: &mut Vec<Arc<Message>>,
+    boundary_message_id: &str,
+    summary_text: &str,
+) -> Option<AppliedCompaction> {
+    let idx = messages
+        .iter()
+        .position(|m| m.id.as_deref() == Some(boundary_message_id))?;
+    let pre_tokens: usize = messages[..=idx]
+        .iter()
+        .map(|m| estimate_message_tokens(m))
+        .sum();
+    messages.drain(..=idx);
+    let summary_message = Arc::new(Message::internal_system(format!(
+        "<conversation-summary>\n{summary_text}\n</conversation-summary>"
+    )));
+    let post_tokens = estimate_message_tokens(&summary_message);
+    messages.insert(0, summary_message);
+    Some(AppliedCompaction {
+        boundary_index: idx,
+        pre_tokens,
+        post_tokens,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use awaken_contract::contract::message::ToolCall;
     use serde_json::json;
+
+    fn long_user(text: &str, copies: usize) -> Arc<Message> {
+        Arc::new(Message::user(text.repeat(copies)))
+    }
+
+    #[test]
+    fn plan_compaction_returns_none_when_savings_below_threshold() {
+        let messages: Vec<Arc<Message>> = vec![
+            Arc::new(Message::user("hi")),
+            Arc::new(Message::assistant("hello")),
+            Arc::new(Message::user("how are you?")),
+            Arc::new(Message::assistant("fine")),
+        ];
+        let policy = ContextWindowPolicy {
+            compaction_raw_suffix_messages: 1,
+            ..Default::default()
+        };
+        assert!(plan_compaction(&messages, &policy).is_none());
+    }
+
+    #[test]
+    fn plan_compaction_captures_boundary_message_id() {
+        // Pad the head with enough tokens to clear MIN_COMPACTION_GAIN_TOKENS.
+        let mut messages: Vec<Arc<Message>> = (0..6)
+            .map(|i| {
+                if i % 2 == 0 {
+                    long_user("filler ", 600)
+                } else {
+                    Arc::new(Message::assistant("ack"))
+                }
+            })
+            .collect();
+        messages.push(Arc::new(Message::user("recent")));
+        let policy = ContextWindowPolicy {
+            compaction_raw_suffix_messages: 1,
+            ..Default::default()
+        };
+        let plan = plan_compaction(&messages, &policy).expect("plan");
+        // Boundary id must reference an actual message in the snapshot.
+        assert!(
+            messages
+                .iter()
+                .any(|m| m.id.as_deref() == Some(plan.boundary_message_id.as_str()))
+        );
+        assert!(plan.pre_tokens >= MIN_COMPACTION_GAIN_TOKENS);
+        assert!(!plan.transcript.is_empty());
+    }
+
+    #[test]
+    fn apply_summary_swaps_when_boundary_present() {
+        let mut messages: Vec<Arc<Message>> = vec![
+            Arc::new(Message::user("old1")),
+            Arc::new(Message::assistant("old2")),
+            Arc::new(Message::user("BOUNDARY")),
+            Arc::new(Message::assistant("after-boundary")),
+            Arc::new(Message::user("appended-during-window")),
+        ];
+        let boundary_id = messages[2].id.clone().unwrap();
+
+        let applied = apply_summary(&mut messages, &boundary_id, "synthetic summary").unwrap();
+        assert_eq!(applied.boundary_index, 2);
+        assert!(applied.pre_tokens > 0);
+        assert!(applied.post_tokens > 0);
+
+        // First message must now be the summary; messages after the boundary
+        // (including ones appended during the compaction window) are kept.
+        assert!(
+            messages[0]
+                .text()
+                .contains("<conversation-summary>\nsynthetic summary"),
+            "summary missing or malformed: {}",
+            messages[0].text()
+        );
+        assert_eq!(messages[1].text(), "after-boundary");
+        assert_eq!(messages[2].text(), "appended-during-window");
+        assert_eq!(messages.len(), 3);
+    }
+
+    #[test]
+    fn apply_summary_returns_none_when_boundary_already_gone() {
+        let mut messages: Vec<Arc<Message>> = vec![
+            Arc::new(Message::user("a")),
+            Arc::new(Message::assistant("b")),
+        ];
+        let original = messages.clone();
+        assert!(apply_summary(&mut messages, "non-existent-id", "any").is_none());
+        // Skip must be benign: the live list is unchanged.
+        assert_eq!(messages.len(), original.len());
+        for (a, b) in messages.iter().zip(original.iter()) {
+            assert_eq!(a.text(), b.text());
+        }
+    }
 
     #[test]
     fn find_compaction_boundary_respects_tool_pairs() {
