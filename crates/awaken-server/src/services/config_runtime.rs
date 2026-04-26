@@ -291,6 +291,11 @@ pub struct ConfigRuntimeManager {
     apply_lock: tokio::sync::Mutex<()>,
     active_mcp_registry: Mutex<Option<ActiveMcpRegistry>>,
     last_applied_fingerprint: RwLock<Option<u64>>,
+    /// Provider id → (last-built spec, cached executor). Hits skip the
+    /// per-apply executor rebuild for providers whose spec is unchanged.
+    /// Keys are pruned to the current providers list on every apply, so
+    /// removed providers do not leak memory.
+    provider_executor_cache: Mutex<HashMap<String, (ProviderSpec, Arc<dyn LlmExecutor>)>>,
     periodic_refresh: PeriodicRefresher,
     change_listener: Mutex<Option<ChangeListenerRuntime>>,
     mcp_refresh_interval: RwLock<Option<Duration>>,
@@ -319,6 +324,7 @@ impl ConfigRuntimeManager {
             apply_lock: tokio::sync::Mutex::new(()),
             active_mcp_registry: Mutex::new(None),
             last_applied_fingerprint: RwLock::new(None),
+            provider_executor_cache: Mutex::new(HashMap::new()),
             periodic_refresh: PeriodicRefresher::new(),
             change_listener: Mutex::new(None),
             mcp_refresh_interval: RwLock::new(None),
@@ -737,11 +743,25 @@ impl ConfigRuntimeManager {
         dynamic_tools: Option<Arc<dyn ToolRegistry>>,
     ) -> Result<RegistrySet, ConfigRuntimeError> {
         let mut provider_registry = MapProviderRegistry::new();
+        let mut next_cache: HashMap<String, (ProviderSpec, Arc<dyn LlmExecutor>)> =
+            HashMap::with_capacity(providers.len());
+        let prior_cache = self.provider_executor_cache.lock().clone();
         for provider in providers {
+            let executor = match prior_cache.get(&provider.id) {
+                Some((cached_spec, cached_executor)) if cached_spec == provider => {
+                    Arc::clone(cached_executor)
+                }
+                _ => self.provider_factory.build(provider)?,
+            };
+            next_cache.insert(
+                provider.id.clone(),
+                (provider.clone(), Arc::clone(&executor)),
+            );
             provider_registry
-                .register_provider(provider.id.clone(), self.provider_factory.build(provider)?)
+                .register_provider(provider.id.clone(), executor)
                 .map_err(|error| ConfigRuntimeError::InvalidConfig(error.to_string()))?;
         }
+        *self.provider_executor_cache.lock() = next_cache;
 
         let mut model_registry = MapModelRegistry::new();
         for model in models {

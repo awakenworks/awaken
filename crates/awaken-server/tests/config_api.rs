@@ -80,6 +80,37 @@ impl ProviderExecutorFactory for TestProviderFactory {
     }
 }
 
+/// Test factory that records how many times `build` runs per provider id —
+/// used to assert that the executor cache reuses unchanged providers.
+#[derive(Default)]
+struct CountingProviderFactory {
+    builds_per_id: Arc<Mutex<std::collections::HashMap<String, usize>>>,
+}
+
+impl CountingProviderFactory {
+    fn builds_for(&self, id: &str) -> usize {
+        self.builds_per_id
+            .lock()
+            .expect("counts lock")
+            .get(id)
+            .copied()
+            .unwrap_or(0)
+    }
+}
+
+impl ProviderExecutorFactory for CountingProviderFactory {
+    fn build(&self, spec: &ProviderSpec) -> Result<Arc<dyn LlmExecutor>, ConfigRuntimeError> {
+        let mut map = self.builds_per_id.lock().expect("counts lock");
+        *map.entry(spec.id.clone()).or_insert(0) += 1;
+        if spec.adapter.eq_ignore_ascii_case("stub") {
+            return Ok(Arc::new(ImmediateExecutor));
+        }
+        Err(ConfigRuntimeError::UnsupportedProviderAdapter(
+            spec.adapter.clone(),
+        ))
+    }
+}
+
 #[cfg(feature = "permission")]
 struct RecordingFallbackExecutor {
     attempts: Arc<Mutex<Vec<String>>>,
@@ -1661,6 +1692,68 @@ async fn apply_if_changed_returns_none_when_nothing_changed() {
     assert!(
         result.is_none(),
         "apply_if_changed must return None when the snapshot fingerprint matches the last applied"
+    );
+}
+
+#[tokio::test]
+async fn apply_reuses_executor_for_unchanged_provider() {
+    let factory = Arc::new(CountingProviderFactory::default());
+    let (_runtime, _store, manager) = make_runtime_manager_custom(
+        None,
+        Arc::new(TestMcpRegistryFactory),
+        None,
+        factory.clone() as Arc<dyn ProviderExecutorFactory>,
+        false,
+    )
+    .await;
+
+    let initial_builds = factory.builds_for("bootstrap");
+    assert!(
+        initial_builds >= 1,
+        "bootstrap apply should have built the provider at least once, got {initial_builds}"
+    );
+
+    manager.apply().await.expect("re-apply with no changes");
+
+    assert_eq!(
+        factory.builds_for("bootstrap"),
+        initial_builds,
+        "executor cache must reuse the unchanged provider across applies"
+    );
+}
+
+#[tokio::test]
+async fn apply_rebuilds_executor_when_provider_spec_changes() {
+    let factory = Arc::new(CountingProviderFactory::default());
+    let (_runtime, store, manager) = make_runtime_manager_custom(
+        None,
+        Arc::new(TestMcpRegistryFactory),
+        None,
+        factory.clone() as Arc<dyn ProviderExecutorFactory>,
+        false,
+    )
+    .await;
+
+    let initial_builds = factory.builds_for("bootstrap");
+
+    // Mutate the provider spec — different timeout makes the spec unequal,
+    // so the cache must miss and the factory must be invoked again.
+    let mutated = json!({
+        "id": "bootstrap",
+        "adapter": "stub",
+        "timeout_secs": 999
+    });
+    (store.clone() as Arc<dyn ConfigStore>)
+        .put("providers", "bootstrap", &mutated)
+        .await
+        .expect("write mutated provider");
+
+    manager.apply().await.expect("re-apply after mutation");
+
+    assert!(
+        factory.builds_for("bootstrap") > initial_builds,
+        "provider must be rebuilt when its spec changes (initial {initial_builds}, after {})",
+        factory.builds_for("bootstrap")
     );
 }
 
