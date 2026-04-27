@@ -1,11 +1,14 @@
 import { describe, expect, it } from "vitest";
 import {
+  aggregateToolCallsByAgent,
   describeDiffEntry,
   describeFailure,
   diffReports,
+  hasAnyAgentToolStats,
   isBlockingDiff,
   parseReportsNdjson,
   summariseReports,
+  type AgentToolStats,
   type DiffEntry,
   type Failure,
   type ReplayReport,
@@ -26,6 +29,22 @@ function makeReport(overrides: Partial<ReplayReport> = {}): ReplayReport {
     total_output_tokens: 5,
     session_duration_ms: 100,
     elapsed_ms: 100,
+    tool_calls_by_agent: [],
+    ...overrides,
+  };
+}
+
+function toolStats(
+  agent_id: string,
+  tool: string,
+  overrides: Partial<AgentToolStats> = {},
+): AgentToolStats {
+  return {
+    agent_id,
+    tool,
+    call_count: 1,
+    failure_count: 0,
+    total_duration_ms: 10,
     ...overrides,
   };
 }
@@ -436,6 +455,206 @@ describe("describeDiffEntry", () => {
       const text = describeDiffEntry(e);
       expect(text).toBeTruthy();
     }
+  });
+});
+
+// ── parseReportsNdjson + tool_calls_by_agent ───────────────────────
+
+describe("parseReportsNdjson with tool_calls_by_agent", () => {
+  it("parses a record carrying populated tool_calls_by_agent", () => {
+    const text = JSON.stringify(
+      makeReport({
+        fixture_id: "with-agents",
+        tool_calls_by_agent: [
+          toolStats("planner", "search", { call_count: 3 }),
+          toolStats("worker", "write", { call_count: 1, failure_count: 1 }),
+        ],
+      }),
+    );
+    const result = parseReportsNdjson(text);
+    expect(result.issues).toHaveLength(0);
+    expect(result.reports).toHaveLength(1);
+    expect(result.reports[0]?.tool_calls_by_agent).toHaveLength(2);
+    expect(result.reports[0]?.tool_calls_by_agent[0]?.call_count).toBe(3);
+  });
+
+  it("defaults tool_calls_by_agent to [] when the field is omitted", () => {
+    // Build a legacy-shaped JSON line without the new field.
+    const legacy = {
+      fixture_id: "legacy",
+      passed: true,
+      failures: [],
+      final_text: "ok",
+      inference_count: 1,
+      tool_count: 0,
+      tool_failures: 0,
+      total_input_tokens: 0,
+      total_output_tokens: 0,
+      session_duration_ms: 0,
+      elapsed_ms: 0,
+    };
+    const result = parseReportsNdjson(JSON.stringify(legacy));
+    expect(result.issues).toHaveLength(0);
+    expect(result.reports).toHaveLength(1);
+    expect(result.reports[0]?.tool_calls_by_agent).toEqual([]);
+  });
+
+  it("rejects records whose tool_calls_by_agent is not an array", () => {
+    const text = JSON.stringify({
+      ...makeReport(),
+      tool_calls_by_agent: "not-array",
+    });
+    const result = parseReportsNdjson(text);
+    expect(result.reports).toHaveLength(0);
+    expect(result.issues).toHaveLength(1);
+  });
+
+  it("rejects records whose tool_calls_by_agent entry is malformed", () => {
+    const text = JSON.stringify({
+      ...makeReport(),
+      tool_calls_by_agent: [{ agent_id: "x" }], // missing tool/count fields
+    });
+    const result = parseReportsNdjson(text);
+    expect(result.reports).toHaveLength(0);
+    expect(result.issues).toHaveLength(1);
+  });
+
+  it("accepts an empty tool_calls_by_agent array", () => {
+    const text = JSON.stringify(
+      makeReport({ tool_calls_by_agent: [] }),
+    );
+    const result = parseReportsNdjson(text);
+    expect(result.reports).toHaveLength(1);
+    expect(result.reports[0]?.tool_calls_by_agent).toEqual([]);
+  });
+});
+
+// ── aggregateToolCallsByAgent ──────────────────────────────────────
+
+describe("aggregateToolCallsByAgent", () => {
+  it("returns empty for empty input", () => {
+    expect(aggregateToolCallsByAgent([])).toEqual([]);
+  });
+
+  it("returns empty when no report has tool calls", () => {
+    expect(
+      aggregateToolCallsByAgent([makeReport(), makeReport()]),
+    ).toEqual([]);
+  });
+
+  it("aggregates calls across multiple fixtures for the same (agent,tool)", () => {
+    const r1 = makeReport({
+      fixture_id: "a",
+      tool_calls_by_agent: [
+        toolStats("planner", "search", {
+          call_count: 2,
+          failure_count: 0,
+          total_duration_ms: 50,
+        }),
+      ],
+    });
+    const r2 = makeReport({
+      fixture_id: "b",
+      tool_calls_by_agent: [
+        toolStats("planner", "search", {
+          call_count: 3,
+          failure_count: 1,
+          total_duration_ms: 70,
+        }),
+      ],
+    });
+    const agg = aggregateToolCallsByAgent([r1, r2]);
+    expect(agg).toHaveLength(1);
+    expect(agg[0]).toEqual({
+      agent_id: "planner",
+      tool: "search",
+      call_count: 5,
+      failure_count: 1,
+      total_duration_ms: 120,
+      fixture_count: 2,
+    });
+  });
+
+  it("does not double-count fixture_count when an agent/tool appears twice in one fixture", () => {
+    // Pre-aggregated within a single report: only one entry per pair, but
+    // make sure repeated identical pairs in the same report still bump
+    // fixture_count exactly once. (Defensive — Rust never emits duplicate
+    // pairs for one report, but parser tolerance matters for hand-edited
+    // NDJSON.)
+    const r = makeReport({
+      tool_calls_by_agent: [
+        toolStats("worker", "write", { call_count: 1 }),
+        toolStats("worker", "write", { call_count: 4 }),
+      ],
+    });
+    const agg = aggregateToolCallsByAgent([r]);
+    expect(agg).toHaveLength(1);
+    expect(agg[0]?.call_count).toBe(5);
+    expect(agg[0]?.fixture_count).toBe(1);
+  });
+
+  it("keeps separate buckets per (agent, tool) pair", () => {
+    const r = makeReport({
+      tool_calls_by_agent: [
+        toolStats("planner", "search"),
+        toolStats("planner", "write"),
+        toolStats("worker", "search"),
+      ],
+    });
+    const agg = aggregateToolCallsByAgent([r]);
+    expect(agg).toHaveLength(3);
+  });
+
+  it("returns rows sorted lexicographically by (agent_id, tool)", () => {
+    const r = makeReport({
+      tool_calls_by_agent: [
+        toolStats("zeta", "alpha"),
+        toolStats("alpha", "zeta"),
+        toolStats("alpha", "alpha"),
+      ],
+    });
+    const agg = aggregateToolCallsByAgent([r]);
+    expect(agg.map((a) => `${a.agent_id}/${a.tool}`)).toEqual([
+      "alpha/alpha",
+      "alpha/zeta",
+      "zeta/alpha",
+    ]);
+  });
+
+  it("handles legacy reports without the field gracefully", () => {
+    // hasAnyAgentToolStats happy-path covered separately; here we want
+    // aggregation to behave like the field is empty.
+    const legacy = makeReport();
+    // Force-cast away the field to simulate hand-edited legacy NDJSON.
+    delete (legacy as Partial<ReplayReport>).tool_calls_by_agent;
+    expect(
+      aggregateToolCallsByAgent([legacy as ReplayReport]),
+    ).toEqual([]);
+  });
+});
+
+// ── hasAnyAgentToolStats ───────────────────────────────────────────
+
+describe("hasAnyAgentToolStats", () => {
+  it("returns false for empty input", () => {
+    expect(hasAnyAgentToolStats([])).toBe(false);
+  });
+
+  it("returns false when every report has empty tool_calls_by_agent", () => {
+    expect(
+      hasAnyAgentToolStats([makeReport(), makeReport()]),
+    ).toBe(false);
+  });
+
+  it("returns true as soon as one report has a populated bucket", () => {
+    expect(
+      hasAnyAgentToolStats([
+        makeReport(),
+        makeReport({
+          tool_calls_by_agent: [toolStats("a", "b")],
+        }),
+      ]),
+    ).toBe(true);
   });
 });
 
