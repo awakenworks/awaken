@@ -38,7 +38,7 @@ pub use wiring::{
 pub use otel::OtelMetricsSink;
 #[cfg(feature = "otel")]
 pub use otel_config::{OtelConfig, OtelConfigBuilder, OtelProtocol};
-pub use stats::{ModelStats, ToolStats};
+pub use stats::{AgentToolStats, ModelStats, ToolStats};
 
 // Make private helpers visible to the test module below.
 #[cfg(test)]
