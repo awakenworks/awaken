@@ -1,0 +1,187 @@
+// Client for the Rust-side agent runtime-stats endpoints.
+//
+// Mirrors `awaken_ext_observability::AgentRuntimeSnapshot` and the
+// awaken-server routes added in M10.2.  All shapes are 1:1 with the
+// Rust JSON serialisation; drift here will surface as parse errors.
+
+import { BACKEND_URL } from "./config-api";
+
+export type ToolRuntimeStats = {
+  tool: string;
+  call_count: number;
+  failure_count: number;
+  total_duration_ms: number;
+  avg_duration_ms: number;
+};
+
+export type AgentRuntimeSnapshot = {
+  agent_id: string;
+  window_seconds: number;
+  bucket_window_seconds: number;
+  bucket_count: number;
+  inference_count: number;
+  error_count: number;
+  input_tokens: number;
+  output_tokens: number;
+  avg_inference_duration_ms: number;
+  p50_inference_duration_ms: number;
+  p95_inference_duration_ms: number;
+  suspensions: number;
+  handoffs: number;
+  delegations: number;
+  tool_calls_by_tool: ToolRuntimeStats[];
+};
+
+/// What a `fetchAgentRuntimeStats` call resolves to.  We surface 503
+/// (registry not configured) as a distinct case because it's an
+/// expected operational state, not an error.
+export type AgentRuntimeStatsResult =
+  | { kind: "ok"; snapshot: AgentRuntimeSnapshot }
+  | { kind: "registry_disabled" }
+  | { kind: "not_found"; agent_id: string }
+  | { kind: "error"; status: number; message: string };
+
+const REGISTRY_DISABLED_HINT = "runtime_stats registry not configured";
+
+/// Fetch the rolling-window snapshot for a single agent.
+export async function fetchAgentRuntimeStats(
+  agentId: string,
+  fetchImpl: typeof fetch = globalThis.fetch,
+): Promise<AgentRuntimeStatsResult> {
+  const url = `${BACKEND_URL}/v1/agents/${encodeURIComponent(agentId)}/runtime-stats`;
+  const resp = await fetchImpl(url);
+  if (resp.status === 503) {
+    return { kind: "registry_disabled" };
+  }
+  if (resp.status === 404) {
+    return { kind: "not_found", agent_id: agentId };
+  }
+  if (!resp.ok) {
+    const text = await safeText(resp);
+    return { kind: "error", status: resp.status, message: text };
+  }
+  const json = (await resp.json()) as unknown;
+  if (!isAgentRuntimeSnapshot(json)) {
+    return {
+      kind: "error",
+      status: resp.status,
+      message: "snapshot payload missing required fields",
+    };
+  }
+  return { kind: "ok", snapshot: json };
+}
+
+export type AgentRuntimeStatsListResult =
+  | { kind: "ok"; agents: AgentRuntimeSnapshot[] }
+  | { kind: "registry_disabled" }
+  | { kind: "error"; status: number; message: string };
+
+/// Fetch snapshots for every known agent.  Returns sorted-by-id list.
+export async function fetchAllAgentRuntimeStats(
+  fetchImpl: typeof fetch = globalThis.fetch,
+): Promise<AgentRuntimeStatsListResult> {
+  const url = `${BACKEND_URL}/v1/agents/runtime-stats`;
+  const resp = await fetchImpl(url);
+  if (resp.status === 503) {
+    return { kind: "registry_disabled" };
+  }
+  if (!resp.ok) {
+    const text = await safeText(resp);
+    return { kind: "error", status: resp.status, message: text };
+  }
+  const json = (await resp.json()) as unknown;
+  if (
+    typeof json !== "object" ||
+    json === null ||
+    !Array.isArray((json as { agents?: unknown[] }).agents) ||
+    !(json as { agents: unknown[] }).agents.every(isAgentRuntimeSnapshot)
+  ) {
+    return {
+      kind: "error",
+      status: resp.status,
+      message: "list payload missing 'agents' array",
+    };
+  }
+  return {
+    kind: "ok",
+    agents: (json as { agents: AgentRuntimeSnapshot[] }).agents,
+  };
+}
+
+// ── Type guards ─────────────────────────────────────────────────────
+
+function isToolRuntimeStats(value: unknown): value is ToolRuntimeStats {
+  if (typeof value !== "object" || value === null) return false;
+  const v = value as Record<string, unknown>;
+  return (
+    typeof v.tool === "string" &&
+    typeof v.call_count === "number" &&
+    typeof v.failure_count === "number" &&
+    typeof v.total_duration_ms === "number" &&
+    typeof v.avg_duration_ms === "number"
+  );
+}
+
+export function isAgentRuntimeSnapshot(
+  value: unknown,
+): value is AgentRuntimeSnapshot {
+  if (typeof value !== "object" || value === null) return false;
+  const v = value as Record<string, unknown>;
+  return (
+    typeof v.agent_id === "string" &&
+    typeof v.window_seconds === "number" &&
+    typeof v.bucket_window_seconds === "number" &&
+    typeof v.bucket_count === "number" &&
+    typeof v.inference_count === "number" &&
+    typeof v.error_count === "number" &&
+    typeof v.input_tokens === "number" &&
+    typeof v.output_tokens === "number" &&
+    typeof v.avg_inference_duration_ms === "number" &&
+    typeof v.p50_inference_duration_ms === "number" &&
+    typeof v.p95_inference_duration_ms === "number" &&
+    typeof v.suspensions === "number" &&
+    typeof v.handoffs === "number" &&
+    typeof v.delegations === "number" &&
+    Array.isArray(v.tool_calls_by_tool) &&
+    v.tool_calls_by_tool.every(isToolRuntimeStats)
+  );
+}
+
+// ── Display helpers ─────────────────────────────────────────────────
+
+/// Pretty-print a window length in seconds as "Nh", "Nm", or "Ns".
+export function formatWindow(seconds: number): string {
+  if (!Number.isFinite(seconds) || seconds <= 0) return "0s";
+  if (seconds % 3600 === 0) return `${seconds / 3600}h`;
+  if (seconds % 60 === 0) return `${seconds / 60}m`;
+  return `${seconds}s`;
+}
+
+/// Compute an error rate in `[0, 1]` from an [`AgentRuntimeSnapshot`].
+/// Returns 0 when the snapshot has no inferences.
+export function errorRate(snapshot: AgentRuntimeSnapshot): number {
+  if (snapshot.inference_count === 0) return 0;
+  return snapshot.error_count / snapshot.inference_count;
+}
+
+/// Compute an aggregate tool failure rate.
+export function toolFailureRate(snapshot: AgentRuntimeSnapshot): number {
+  const totals = snapshot.tool_calls_by_tool.reduce(
+    (acc, t) => {
+      acc.calls += t.call_count;
+      acc.fails += t.failure_count;
+      return acc;
+    },
+    { calls: 0, fails: 0 },
+  );
+  if (totals.calls === 0) return 0;
+  return totals.fails / totals.calls;
+}
+
+async function safeText(resp: Response): Promise<string> {
+  try {
+    return await resp.text();
+  } catch {
+    return "<unreadable response body>";
+  }
+}

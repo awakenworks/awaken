@@ -51,6 +51,11 @@ const EvalReportsPage = lazy(async () => {
   return { default: module.EvalReportsPage };
 });
 
+const AgentDashboardPage = lazy(async () => {
+  const module = await import("./pages/agent-dashboard-page");
+  return { default: module.AgentDashboardPage };
+});
+
 export function App() {
   return (
     <Routes>
@@ -91,6 +96,14 @@ export function App() {
           element={
             <RouteLoader>
               <AgentEditorPage />
+            </RouteLoader>
+          }
+        />
+        <Route
+          path="agents/:id/dashboard"
+          element={
+            <RouteLoader>
+              <AgentDashboardPage />
             </RouteLoader>
           }
         />
