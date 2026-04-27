@@ -28,7 +28,20 @@ export const FAILURE_KINDS = [
 
 export type FailureKind = (typeof FAILURE_KINDS)[number];
 
+/// Per-(agent, tool) breakdown attached to each report (M9.2+).
+/// Mirrors `awaken_ext_observability::AgentToolStats`.
+export type AgentToolStats = {
+  agent_id: string;
+  tool: string;
+  call_count: number;
+  failure_count: number;
+  total_duration_ms: number;
+};
+
 /// One line of an NDJSON eval report, mirroring `awaken_eval::ReplayReport`.
+///
+/// `tool_calls_by_agent` was introduced in 0.4.1; older NDJSON omits the
+/// field, so the parser treats it as optional and defaults to `[]`.
 export type ReplayReport = {
   fixture_id: string;
   passed: boolean;
@@ -41,6 +54,7 @@ export type ReplayReport = {
   total_output_tokens: number;
   session_duration_ms: number;
   elapsed_ms: number;
+  tool_calls_by_agent: AgentToolStats[];
 };
 
 /// One per malformed NDJSON line.  The page surfaces these without
@@ -95,10 +109,22 @@ function isFailure(value: unknown): value is Failure {
   return typeof v.kind === "string" && FAILURE_KINDS.includes(v.kind as FailureKind);
 }
 
-function isReplayReport(value: unknown): value is ReplayReport {
+function isAgentToolStats(value: unknown): value is AgentToolStats {
   if (typeof value !== "object" || value === null) return false;
   const v = value as Record<string, unknown>;
   return (
+    typeof v.agent_id === "string" &&
+    typeof v.tool === "string" &&
+    typeof v.call_count === "number" &&
+    typeof v.failure_count === "number" &&
+    typeof v.total_duration_ms === "number"
+  );
+}
+
+function isReplayReport(value: unknown): value is ReplayReport {
+  if (typeof value !== "object" || value === null) return false;
+  const v = value as Record<string, unknown>;
+  const requiredOk =
     typeof v.fixture_id === "string" &&
     typeof v.passed === "boolean" &&
     Array.isArray(v.failures) &&
@@ -110,8 +136,18 @@ function isReplayReport(value: unknown): value is ReplayReport {
     typeof v.total_input_tokens === "number" &&
     typeof v.total_output_tokens === "number" &&
     typeof v.session_duration_ms === "number" &&
-    typeof v.elapsed_ms === "number"
-  );
+    typeof v.elapsed_ms === "number";
+  if (!requiredOk) return false;
+  // `tool_calls_by_agent` is optional (older reports omit it). When
+  // present it must be a homogeneous array. Mutate-in-place via the
+  // (value as Record) handle so the parsed object always exposes
+  // the field as an array, even when the NDJSON omitted it.
+  if (v.tool_calls_by_agent === undefined) {
+    (v as { tool_calls_by_agent?: AgentToolStats[] }).tool_calls_by_agent = [];
+    return true;
+  }
+  if (!Array.isArray(v.tool_calls_by_agent)) return false;
+  return v.tool_calls_by_agent.every(isAgentToolStats);
 }
 
 // ---------------------------------------------------------------------------
@@ -288,4 +324,71 @@ export function describeDiffEntry(entry: DiffEntry): string {
 
 export function isBlockingDiff(entry: DiffEntry): boolean {
   return entry.kind === "regression" || entry.kind === "missing_from_new";
+}
+
+// ---------------------------------------------------------------------------
+// Per-agent tool-call aggregation across the whole report
+// ---------------------------------------------------------------------------
+
+/// One row of the aggregate-across-fixtures view: which agent invoked
+/// which tool how many times, summed across every fixture in the report.
+export type AgentToolAggregate = {
+  agent_id: string;
+  tool: string;
+  call_count: number;
+  failure_count: number;
+  total_duration_ms: number;
+  /// Number of fixtures this (agent, tool) pair appeared in. Useful for
+  /// distinguishing 100 calls in 1 fixture from 100 calls spread across
+  /// 50 fixtures.
+  fixture_count: number;
+};
+
+/// Sum the `tool_calls_by_agent` fields across `reports` and return a
+/// stably-sorted (`agent_id`, then `tool`) view. Empty when no fixture
+/// recorded any tool calls.
+export function aggregateToolCallsByAgent(
+  reports: ReplayReport[],
+): AgentToolAggregate[] {
+  const map = new Map<string, AgentToolAggregate>();
+  for (const r of reports) {
+    const seenInThisReport = new Set<string>();
+    for (const stats of r.tool_calls_by_agent ?? []) {
+      const key = `${stats.agent_id} ${stats.tool}`;
+      const existing = map.get(key);
+      if (existing) {
+        existing.call_count += stats.call_count;
+        existing.failure_count += stats.failure_count;
+        existing.total_duration_ms += stats.total_duration_ms;
+        if (!seenInThisReport.has(key)) {
+          existing.fixture_count += 1;
+          seenInThisReport.add(key);
+        }
+      } else {
+        map.set(key, {
+          agent_id: stats.agent_id,
+          tool: stats.tool,
+          call_count: stats.call_count,
+          failure_count: stats.failure_count,
+          total_duration_ms: stats.total_duration_ms,
+          fixture_count: 1,
+        });
+        seenInThisReport.add(key);
+      }
+    }
+  }
+  return [...map.values()].sort((a, b) => {
+    if (a.agent_id !== b.agent_id) {
+      return a.agent_id.localeCompare(b.agent_id);
+    }
+    return a.tool.localeCompare(b.tool);
+  });
+}
+
+/// Returns `true` when at least one report carries non-empty
+/// `tool_calls_by_agent`. The Eval Reports page hides the per-agent panel
+/// entirely when no report has populated the field, which keeps older
+/// fixtures (no tool calls) visually clean.
+export function hasAnyAgentToolStats(reports: ReplayReport[]): boolean {
+  return reports.some((r) => (r.tool_calls_by_agent ?? []).length > 0);
 }

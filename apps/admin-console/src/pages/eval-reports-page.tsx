@@ -1,11 +1,14 @@
 import { useMemo, useState, type ChangeEvent } from "react";
 import {
+  aggregateToolCallsByAgent,
   describeDiffEntry,
   describeFailure,
   diffReports,
+  hasAnyAgentToolStats,
   isBlockingDiff,
   parseReportsNdjson,
   summariseReports,
+  type AgentToolAggregate,
   type DiffEntry,
   type ParseIssue,
   type ReplayReport,
@@ -52,6 +55,16 @@ export function EvalReportsPage() {
     if (!diff) return new Map<string, DiffEntry>();
     return new Map(diff.entries.map((e) => [e.fixture_id, e]));
   }, [diff]);
+
+  const perAgentRows = useMemo(
+    () => (report ? aggregateToolCallsByAgent(report.reports) : []),
+    [report],
+  );
+
+  const showPerAgentPanel = useMemo(
+    () => (report ? hasAnyAgentToolStats(report.reports) : false),
+    [report],
+  );
 
   return (
     <div className="mx-auto max-w-6xl p-6 md:p-8">
@@ -153,6 +166,10 @@ export function EvalReportsPage() {
                 <DiffStat label="Newly added" value={diff.added} />
               </dl>
             </section>
+          )}
+
+          {showPerAgentPanel && (
+            <PerAgentToolPanel rows={perAgentRows} />
           )}
 
           {report.issues.length > 0 && (
@@ -358,6 +375,66 @@ function FixtureRow({
         </td>
       )}
     </tr>
+  );
+}
+
+function PerAgentToolPanel({ rows }: { rows: AgentToolAggregate[] }) {
+  return (
+    <section className="mt-6 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+      <div className="flex items-center justify-between">
+        <h3 className="text-lg font-semibold text-slate-900">
+          Tool calls by agent
+        </h3>
+        <span className="text-sm text-slate-500">
+          {rows.length} (agent, tool) pair(s)
+        </span>
+      </div>
+      <table className="mt-4 min-w-full text-sm">
+        <thead className="text-left text-xs uppercase tracking-wide text-slate-500">
+          <tr>
+            <th className="px-2 py-2">Agent</th>
+            <th className="px-2 py-2">Tool</th>
+            <th className="px-2 py-2 text-right">Calls</th>
+            <th className="px-2 py-2 text-right">Failures</th>
+            <th className="px-2 py-2 text-right">Total ms</th>
+            <th className="px-2 py-2 text-right">Fixtures</th>
+          </tr>
+        </thead>
+        <tbody className="divide-y divide-slate-200">
+          {rows.map((row) => (
+            <tr
+              key={`${row.agent_id}::${row.tool}`}
+              className="hover:bg-slate-50"
+            >
+              <td className="px-2 py-2 font-mono text-xs text-slate-900">
+                {row.agent_id || (
+                  <span className="italic text-slate-400">(unset)</span>
+                )}
+              </td>
+              <td className="px-2 py-2 font-mono text-xs text-slate-900">
+                {row.tool}
+              </td>
+              <td className="px-2 py-2 text-right font-mono text-xs text-slate-700">
+                {row.call_count}
+              </td>
+              <td className="px-2 py-2 text-right font-mono text-xs text-slate-700">
+                {row.failure_count > 0 ? (
+                  <span className="text-rose-700">{row.failure_count}</span>
+                ) : (
+                  row.failure_count
+                )}
+              </td>
+              <td className="px-2 py-2 text-right font-mono text-xs text-slate-700">
+                {row.total_duration_ms}
+              </td>
+              <td className="px-2 py-2 text-right font-mono text-xs text-slate-700">
+                {row.fixture_count}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </section>
   );
 }
 
