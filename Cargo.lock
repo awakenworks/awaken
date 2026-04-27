@@ -550,6 +550,7 @@ dependencies = [
  "async-stream",
  "async-trait",
  "awaken-contract",
+ "awaken-eval",
  "awaken-ext-mcp",
  "awaken-ext-observability",
  "awaken-ext-permission",
