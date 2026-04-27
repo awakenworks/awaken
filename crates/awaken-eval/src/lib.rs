@@ -20,9 +20,14 @@
 pub mod expectation;
 pub mod fixture;
 pub mod outcome;
+pub mod report;
 pub mod score;
 
 pub use expectation::{Expectation, Failure};
 pub use fixture::{Fixture, FixtureError, MockResponse};
 pub use outcome::{ReplayOutcome, ReplayReport};
+pub use report::{
+    DiffEntry, DiffSummary, ReportError, diff_against_baseline, read_ndjson, read_ndjson_path,
+    write_ndjson, write_ndjson_path,
+};
 pub use score::score;
