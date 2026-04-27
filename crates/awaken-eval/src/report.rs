@@ -261,6 +261,7 @@ mod tests {
             total_output_tokens: 5,
             session_duration_ms: 100,
             elapsed_ms: 100,
+            tool_calls_by_agent: Vec::new(),
         }
     }
 

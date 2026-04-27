@@ -2,7 +2,7 @@
 
 use std::time::Duration;
 
-use awaken_ext_observability::AgentMetrics;
+use awaken_ext_observability::{AgentMetrics, AgentToolStats};
 use serde::{Deserialize, Serialize};
 
 use crate::expectation::Failure;
@@ -37,6 +37,9 @@ impl ReplayOutcome {
 
 /// Compact, JSON-friendly view of a [`ReplayOutcome`] paired with its
 /// scoring [`Failure`]s.  Each line of the NDJSON report is one of these.
+///
+/// Older NDJSON reports (pre-`tool_calls_by_agent`) deserialize cleanly
+/// thanks to `#[serde(default)]` on the new field.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ReplayReport {
     pub fixture_id: String,
@@ -50,6 +53,12 @@ pub struct ReplayReport {
     pub total_output_tokens: u32,
     pub session_duration_ms: u64,
     pub elapsed_ms: u64,
+    /// Per-(agent, tool) tool-call counts. Empty when the run had no tool
+    /// invocations or when no `agent_id` is on the spans. Populated by
+    /// [`ReplayReport::from_outcome`] from
+    /// [`AgentMetrics::stats_by_agent_and_tool`].
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tool_calls_by_agent: Vec<AgentToolStats>,
 }
 
 impl ReplayReport {
@@ -68,6 +77,7 @@ impl ReplayReport {
             total_output_tokens: u32::try_from(outcome.metrics.total_output_tokens()).unwrap_or(0),
             session_duration_ms: outcome.metrics.session_duration_ms,
             elapsed_ms: u64::try_from(outcome.elapsed.as_millis()).unwrap_or(u64::MAX),
+            tool_calls_by_agent: outcome.metrics.stats_by_agent_and_tool(),
         }
     }
 }
@@ -228,5 +238,101 @@ mod tests {
         // We just need to confirm it doesn't panic; exact value depends on
         // platform but must be finite (u64).
         let _ = r.elapsed_ms;
+    }
+
+    // ── tool_calls_by_agent ────────────────────────────────────────
+
+    fn tool_for(agent_id: &str, name: &str, error: bool) -> awaken_ext_observability::ToolSpan {
+        awaken_ext_observability::ToolSpan {
+            context: awaken_ext_observability::SpanContext {
+                run_id: "r".into(),
+                thread_id: "t".into(),
+                agent_id: agent_id.into(),
+                parent_run_id: None,
+            },
+            step_index: None,
+            name: name.into(),
+            operation: "execute_tool".into(),
+            call_id: format!("call-{name}-{agent_id}"),
+            tool_type: "function".into(),
+            error_type: if error { Some("err".into()) } else { None },
+            duration_ms: 1,
+        }
+    }
+
+    #[test]
+    fn report_tool_calls_by_agent_empty_when_no_tools() {
+        let o = outcome_with(AgentMetrics::default(), "");
+        let r = ReplayReport::from_outcome(&o, Vec::new());
+        assert!(r.tool_calls_by_agent.is_empty());
+    }
+
+    #[test]
+    fn report_tool_calls_by_agent_aggregates_per_pair() {
+        let metrics = AgentMetrics {
+            tools: vec![
+                tool_for("planner", "search", false),
+                tool_for("planner", "search", true),
+                tool_for("worker", "search", false),
+                tool_for("worker", "write", false),
+            ],
+            ..Default::default()
+        };
+        let o = outcome_with(metrics, "");
+        let r = ReplayReport::from_outcome(&o, Vec::new());
+        assert_eq!(r.tool_calls_by_agent.len(), 3);
+        let planner_search = r
+            .tool_calls_by_agent
+            .iter()
+            .find(|s| s.agent_id == "planner" && s.tool == "search")
+            .unwrap();
+        assert_eq!(planner_search.call_count, 2);
+        assert_eq!(planner_search.failure_count, 1);
+    }
+
+    #[test]
+    fn report_serde_with_tool_calls_by_agent_roundtrips() {
+        let metrics = AgentMetrics {
+            tools: vec![tool_for("a", "search", false)],
+            ..Default::default()
+        };
+        let o = outcome_with(metrics, "ok");
+        let r = ReplayReport::from_outcome(&o, Vec::new());
+        let json = serde_json::to_string(&r).unwrap();
+        assert!(json.contains(r#""tool_calls_by_agent""#));
+        let parsed: ReplayReport = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed, r);
+    }
+
+    #[test]
+    fn report_serde_omits_field_when_empty() {
+        let o = outcome_with(AgentMetrics::default(), "");
+        let r = ReplayReport::from_outcome(&o, Vec::new());
+        let json = serde_json::to_string(&r).unwrap();
+        // skip_serializing_if = "Vec::is_empty" must keep older baselines
+        // exactly the same shape they had pre-M9.2.
+        assert!(!json.contains("tool_calls_by_agent"));
+    }
+
+    #[test]
+    fn report_deserializes_legacy_ndjson_without_field() {
+        // Pre-M9.2 baseline line. Must round-trip via deserialise +
+        // re-serialise without losing fields or panicking.
+        let legacy = r#"{
+            "fixture_id": "legacy",
+            "passed": true,
+            "failures": [],
+            "final_text": "ok",
+            "inference_count": 1,
+            "tool_count": 0,
+            "tool_failures": 0,
+            "total_input_tokens": 0,
+            "total_output_tokens": 0,
+            "session_duration_ms": 0,
+            "elapsed_ms": 0
+        }"#;
+        let parsed: ReplayReport = serde_json::from_str(legacy).unwrap();
+        assert_eq!(parsed.fixture_id, "legacy");
+        assert!(parsed.tool_calls_by_agent.is_empty());
     }
 }
