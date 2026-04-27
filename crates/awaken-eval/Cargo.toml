@@ -1,0 +1,31 @@
+[package]
+name = "awaken-eval"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+description = "Fixture-driven replay and scoring framework for awaken agent runs"
+
+[dependencies]
+awaken-contract = { workspace = true }
+awaken-runtime = { workspace = true }
+awaken-ext-observability = { workspace = true }
+awaken-stores = { workspace = true }
+async-trait = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread"] }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"
+tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "time"] }
+
+[features]
+default = []
+# Reserved for M5: LLM-backed grading via TensorZero `[functions.judge]`.
+llm-judge = []
+
+[lints]
+workspace = true

@@ -331,6 +331,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "awaken-eval"
+version = "0.4.1-dev"
+dependencies = [
+ "async-trait",
+ "awaken-contract",
+ "awaken-ext-observability",
+ "awaken-runtime",
+ "awaken-stores",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "awaken-examples"
 version = "0.4.1-dev"
 dependencies = [

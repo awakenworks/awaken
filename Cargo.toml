@@ -21,6 +21,7 @@ members = [
     "examples/ai-sdk-starter/agent",
     "examples/copilotkit-starter/agent",
     "e2e/phoenix/test-helpers",
+    "crates/awaken-eval",
 ]
 
 [workspace.package]
