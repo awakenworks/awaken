@@ -3,10 +3,13 @@ import { Link, useParams } from "react-router";
 import {
   errorRate,
   fetchAgentRuntimeStats,
+  formatHistogramLabel,
   formatWindow,
+  maxHistogramCount,
   toolFailureRate,
   type AgentRuntimeSnapshot,
   type AgentRuntimeStatsResult,
+  type HistogramBucket,
 } from "@/lib/agent-stats";
 import { adminRoutes } from "@/lib/routes";
 
@@ -125,6 +128,10 @@ export function AgentDashboardPage() {
             value={Math.round(snapshot.avg_inference_duration_ms)}
           />
           <StatCard
+            label="Min latency (ms)"
+            value={snapshot.min_inference_duration_ms}
+          />
+          <StatCard
             label="p50 latency (ms)"
             value={snapshot.p50_inference_duration_ms}
           />
@@ -132,8 +139,22 @@ export function AgentDashboardPage() {
             label="p95 latency (ms)"
             value={snapshot.p95_inference_duration_ms}
           />
+          <StatCard
+            label="p99 latency (ms)"
+            value={snapshot.p99_inference_duration_ms}
+          />
+          <StatCard
+            label="Max latency (ms)"
+            value={snapshot.max_inference_duration_ms}
+          />
         </StatGrid>
       </Section>
+
+      {snapshot.inference_duration_histogram.length > 0 && (
+        <Section title="Inference latency distribution">
+          <HistogramPanel buckets={snapshot.inference_duration_histogram} />
+        </Section>
+      )}
 
       <Section title="Lifecycle events">
         <StatGrid>
@@ -154,27 +175,31 @@ export function AgentDashboardPage() {
             No tool invocations recorded in the current window.
           </div>
         ) : (
-          <div className="rounded-2xl border border-slate-200 bg-white shadow-sm">
+          <div className="overflow-auto rounded-2xl border border-slate-200 bg-white shadow-sm">
             <table className="min-w-full text-sm">
               <thead className="bg-slate-50 text-left text-xs uppercase tracking-wide text-slate-500">
                 <tr>
-                  <th className="px-4 py-3">Tool</th>
-                  <th className="px-4 py-3 text-right">Calls</th>
-                  <th className="px-4 py-3 text-right">Failures</th>
-                  <th className="px-4 py-3 text-right">Total ms</th>
-                  <th className="px-4 py-3 text-right">Avg ms</th>
+                  <th className="px-3 py-3">Tool</th>
+                  <th className="px-3 py-3 text-right">Calls</th>
+                  <th className="px-3 py-3 text-right">Failures</th>
+                  <th className="px-3 py-3 text-right">Avg ms</th>
+                  <th className="px-3 py-3 text-right">Min</th>
+                  <th className="px-3 py-3 text-right">p50</th>
+                  <th className="px-3 py-3 text-right">p95</th>
+                  <th className="px-3 py-3 text-right">p99</th>
+                  <th className="px-3 py-3 text-right">Max</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-200">
                 {snapshot.tool_calls_by_tool.map((row) => (
                   <tr key={row.tool} className="hover:bg-slate-50">
-                    <td className="px-4 py-3 font-mono text-xs text-slate-900">
+                    <td className="px-3 py-3 font-mono text-xs text-slate-900">
                       {row.tool}
                     </td>
-                    <td className="px-4 py-3 text-right font-mono text-xs">
+                    <td className="px-3 py-3 text-right font-mono text-xs">
                       {row.call_count}
                     </td>
-                    <td className="px-4 py-3 text-right font-mono text-xs">
+                    <td className="px-3 py-3 text-right font-mono text-xs">
                       {row.failure_count > 0 ? (
                         <span className="text-rose-700">
                           {row.failure_count}
@@ -183,11 +208,23 @@ export function AgentDashboardPage() {
                         row.failure_count
                       )}
                     </td>
-                    <td className="px-4 py-3 text-right font-mono text-xs">
-                      {row.total_duration_ms}
-                    </td>
-                    <td className="px-4 py-3 text-right font-mono text-xs">
+                    <td className="px-3 py-3 text-right font-mono text-xs">
                       {row.avg_duration_ms.toFixed(1)}
+                    </td>
+                    <td className="px-3 py-3 text-right font-mono text-xs">
+                      {row.min_duration_ms}
+                    </td>
+                    <td className="px-3 py-3 text-right font-mono text-xs">
+                      {row.p50_duration_ms}
+                    </td>
+                    <td className="px-3 py-3 text-right font-mono text-xs">
+                      {row.p95_duration_ms}
+                    </td>
+                    <td className="px-3 py-3 text-right font-mono text-xs">
+                      {row.p99_duration_ms}
+                    </td>
+                    <td className="px-3 py-3 text-right font-mono text-xs">
+                      {row.max_duration_ms}
                     </td>
                   </tr>
                 ))}
@@ -196,6 +233,33 @@ export function AgentDashboardPage() {
           </div>
         )}
       </Section>
+
+      {snapshot.tool_calls_by_tool.some(
+        (t) => t.duration_histogram.length > 0,
+      ) && (
+        <Section title="Tool latency distributions">
+          <div className="grid gap-4 lg:grid-cols-2">
+            {snapshot.tool_calls_by_tool
+              .filter((t) => t.duration_histogram.length > 0)
+              .map((t) => (
+                <div
+                  key={t.tool}
+                  className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm"
+                >
+                  <h4 className="font-mono text-sm font-semibold text-slate-900">
+                    {t.tool}
+                  </h4>
+                  <p className="text-xs text-slate-500">
+                    {t.call_count} call(s) · p95 {t.p95_duration_ms} ms
+                  </p>
+                  <div className="mt-3">
+                    <HistogramPanel buckets={t.duration_histogram} compact />
+                  </div>
+                </div>
+              ))}
+          </div>
+        </Section>
+      )}
 
       <Section title="Quick actions">
         <ul className="flex flex-wrap gap-3">
@@ -339,6 +403,49 @@ function NotYetSeenPanel({
       >
         Refresh
       </button>
+    </div>
+  );
+}
+
+function HistogramPanel({
+  buckets,
+  compact,
+}: {
+  buckets: HistogramBucket[];
+  compact?: boolean;
+}) {
+  const max = maxHistogramCount(buckets);
+  const containerClass = compact
+    ? "rounded-xl bg-slate-50 p-3"
+    : "rounded-2xl border border-slate-200 bg-white p-5 shadow-sm";
+  return (
+    <div className={containerClass}>
+      <ul className="space-y-1.5">
+        {buckets.map((b, idx) => {
+          const widthPct = max === 0 ? 0 : Math.round((b.count / max) * 100);
+          const label = formatHistogramLabel(b);
+          return (
+            <li
+              key={`${idx}-${b.upper_bound_ms ?? "inf"}`}
+              className="flex items-center gap-3 text-xs"
+            >
+              <span className="w-24 shrink-0 text-right font-mono text-slate-500">
+                {label}
+              </span>
+              <div className="relative flex-1 overflow-hidden rounded bg-slate-100">
+                <div
+                  className="h-3 rounded bg-slate-700 transition-[width]"
+                  style={{ width: `${widthPct}%` }}
+                  aria-hidden
+                />
+              </div>
+              <span className="w-12 shrink-0 text-right font-mono text-slate-700">
+                {b.count}
+              </span>
+            </li>
+          );
+        })}
+      </ul>
     </div>
   );
 }

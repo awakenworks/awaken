@@ -6,12 +6,25 @@
 
 import { BACKEND_URL } from "./config-api";
 
+/// One bin of a duration histogram. `upper_bound_ms === null` is the
+/// catch-all `+infinity` bucket.
+export type HistogramBucket = {
+  upper_bound_ms: number | null;
+  count: number;
+};
+
 export type ToolRuntimeStats = {
   tool: string;
   call_count: number;
   failure_count: number;
   total_duration_ms: number;
   avg_duration_ms: number;
+  min_duration_ms: number;
+  max_duration_ms: number;
+  p50_duration_ms: number;
+  p95_duration_ms: number;
+  p99_duration_ms: number;
+  duration_histogram: HistogramBucket[];
 };
 
 export type AgentRuntimeSnapshot = {
@@ -24,8 +37,12 @@ export type AgentRuntimeSnapshot = {
   input_tokens: number;
   output_tokens: number;
   avg_inference_duration_ms: number;
+  min_inference_duration_ms: number;
+  max_inference_duration_ms: number;
   p50_inference_duration_ms: number;
   p95_inference_duration_ms: number;
+  p99_inference_duration_ms: number;
+  inference_duration_histogram: HistogramBucket[];
   suspensions: number;
   handoffs: number;
   delegations: number;
@@ -110,16 +127,44 @@ export async function fetchAllAgentRuntimeStats(
 
 // ── Type guards ─────────────────────────────────────────────────────
 
-function isToolRuntimeStats(value: unknown): value is ToolRuntimeStats {
+function isHistogramBucket(value: unknown): value is HistogramBucket {
   if (typeof value !== "object" || value === null) return false;
   const v = value as Record<string, unknown>;
   return (
+    (v.upper_bound_ms === null || typeof v.upper_bound_ms === "number") &&
+    typeof v.count === "number"
+  );
+}
+
+function isToolRuntimeStats(value: unknown): value is ToolRuntimeStats {
+  if (typeof value !== "object" || value === null) return false;
+  const v = value as Record<string, unknown>;
+  const requiredOk =
     typeof v.tool === "string" &&
     typeof v.call_count === "number" &&
     typeof v.failure_count === "number" &&
     typeof v.total_duration_ms === "number" &&
-    typeof v.avg_duration_ms === "number"
-  );
+    typeof v.avg_duration_ms === "number";
+  if (!requiredOk) return false;
+  // M12+ optional fields — defaulted to 0 / [] when absent so older
+  // server snapshots still parse cleanly.
+  defaultMissingNumber(v, "min_duration_ms");
+  defaultMissingNumber(v, "max_duration_ms");
+  defaultMissingNumber(v, "p50_duration_ms");
+  defaultMissingNumber(v, "p95_duration_ms");
+  defaultMissingNumber(v, "p99_duration_ms");
+  if (v.duration_histogram === undefined) {
+    (v as { duration_histogram?: HistogramBucket[] }).duration_histogram = [];
+    return true;
+  }
+  if (!Array.isArray(v.duration_histogram)) return false;
+  return v.duration_histogram.every(isHistogramBucket);
+}
+
+function defaultMissingNumber(v: Record<string, unknown>, key: string) {
+  if (v[key] === undefined) {
+    v[key] = 0;
+  }
 }
 
 export function isAgentRuntimeSnapshot(
@@ -127,7 +172,7 @@ export function isAgentRuntimeSnapshot(
 ): value is AgentRuntimeSnapshot {
   if (typeof value !== "object" || value === null) return false;
   const v = value as Record<string, unknown>;
-  return (
+  const requiredOk =
     typeof v.agent_id === "string" &&
     typeof v.window_seconds === "number" &&
     typeof v.bucket_window_seconds === "number" &&
@@ -142,9 +187,22 @@ export function isAgentRuntimeSnapshot(
     typeof v.suspensions === "number" &&
     typeof v.handoffs === "number" &&
     typeof v.delegations === "number" &&
-    Array.isArray(v.tool_calls_by_tool) &&
-    v.tool_calls_by_tool.every(isToolRuntimeStats)
-  );
+    Array.isArray(v.tool_calls_by_tool);
+  if (!requiredOk) return false;
+  // M12+ optional snapshot fields.
+  defaultMissingNumber(v, "min_inference_duration_ms");
+  defaultMissingNumber(v, "max_inference_duration_ms");
+  defaultMissingNumber(v, "p99_inference_duration_ms");
+  if (v.inference_duration_histogram === undefined) {
+    (v as { inference_duration_histogram?: HistogramBucket[] })
+      .inference_duration_histogram = [];
+  } else if (!Array.isArray(v.inference_duration_histogram)) {
+    return false;
+  } else if (!v.inference_duration_histogram.every(isHistogramBucket)) {
+    return false;
+  }
+  // tool_calls_by_tool entries — recurse with normalisation.
+  return (v.tool_calls_by_tool as unknown[]).every(isToolRuntimeStats);
 }
 
 // ── Display helpers ─────────────────────────────────────────────────
@@ -176,6 +234,24 @@ export function toolFailureRate(snapshot: AgentRuntimeSnapshot): number {
   );
   if (totals.calls === 0) return 0;
   return totals.fails / totals.calls;
+}
+
+/// Pretty-print a histogram bucket boundary as a label like "≤100 ms" or "> 10000 ms".
+export function formatHistogramLabel(bucket: HistogramBucket): string {
+  if (bucket.upper_bound_ms === null) {
+    return "> 10000 ms"; // matches DEFAULT_DURATION_BUCKETS_MS top
+  }
+  return `≤${bucket.upper_bound_ms} ms`;
+}
+
+/// Return the maximum count across the buckets, or 0 when empty.
+/// Used by the bar-chart UI to size each row's fill width.
+export function maxHistogramCount(buckets: HistogramBucket[]): number {
+  let m = 0;
+  for (const b of buckets) {
+    if (b.count > m) m = b.count;
+  }
+  return m;
 }
 
 async function safeText(resp: Response): Promise<string> {

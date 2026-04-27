@@ -3,10 +3,13 @@ import {
   errorRate,
   fetchAgentRuntimeStats,
   fetchAllAgentRuntimeStats,
+  formatHistogramLabel,
   formatWindow,
   isAgentRuntimeSnapshot,
+  maxHistogramCount,
   toolFailureRate,
   type AgentRuntimeSnapshot,
+  type HistogramBucket,
 } from "./agent-stats";
 import { BACKEND_URL } from "./config-api";
 
@@ -25,8 +28,12 @@ function makeSnapshot(
     input_tokens: 0,
     output_tokens: 0,
     avg_inference_duration_ms: 0,
+    min_inference_duration_ms: 0,
+    max_inference_duration_ms: 0,
     p50_inference_duration_ms: 0,
     p95_inference_duration_ms: 0,
+    p99_inference_duration_ms: 0,
+    inference_duration_histogram: [],
     suspensions: 0,
     handoffs: 0,
     delegations: 0,
@@ -241,6 +248,148 @@ describe("toolFailureRate", () => {
       ],
     });
     expect(toolFailureRate(snap)).toBeCloseTo(0.2);
+  });
+});
+
+// ── Histogram + parser back-compat ─────────────────────────────────
+
+describe("isAgentRuntimeSnapshot M12 fields", () => {
+  it("accepts snapshot with full histogram + extended percentiles", () => {
+    const snap = makeSnapshot({
+      inference_count: 5,
+      min_inference_duration_ms: 1,
+      max_inference_duration_ms: 100,
+      p99_inference_duration_ms: 95,
+      inference_duration_histogram: [
+        { upper_bound_ms: 10, count: 1 },
+        { upper_bound_ms: 100, count: 4 },
+        { upper_bound_ms: null, count: 0 },
+      ],
+    });
+    expect(isAgentRuntimeSnapshot(snap)).toBe(true);
+  });
+
+  it("accepts legacy snapshot without M12 fields and defaults to zero / empty", () => {
+    // Strip the M12 fields to simulate a M10/M11 server.
+    const legacy = {
+      agent_id: "alpha",
+      window_seconds: 86400,
+      bucket_window_seconds: 600,
+      bucket_count: 144,
+      inference_count: 1,
+      error_count: 0,
+      input_tokens: 10,
+      output_tokens: 5,
+      avg_inference_duration_ms: 100,
+      p50_inference_duration_ms: 100,
+      p95_inference_duration_ms: 100,
+      suspensions: 0,
+      handoffs: 0,
+      delegations: 0,
+      tool_calls_by_tool: [],
+    };
+    expect(isAgentRuntimeSnapshot(legacy)).toBe(true);
+    // Guard mutates the object in place to set defaults; verify them.
+    const snap = legacy as unknown as AgentRuntimeSnapshot;
+    expect(snap.min_inference_duration_ms).toBe(0);
+    expect(snap.max_inference_duration_ms).toBe(0);
+    expect(snap.p99_inference_duration_ms).toBe(0);
+    expect(snap.inference_duration_histogram).toEqual([]);
+  });
+
+  it("rejects when inference_duration_histogram is not an array", () => {
+    const snap = makeSnapshot();
+    (snap as unknown as Record<string, unknown>).inference_duration_histogram =
+      "garbage";
+    expect(isAgentRuntimeSnapshot(snap)).toBe(false);
+  });
+
+  it("rejects malformed histogram bucket entry", () => {
+    const snap = makeSnapshot({
+      inference_duration_histogram: [
+        // @ts-expect-error - malformed
+        { upper_bound_ms: 10 },
+      ],
+    });
+    expect(isAgentRuntimeSnapshot(snap)).toBe(false);
+  });
+
+  it("accepts tool stats with optional histogram + percentiles", () => {
+    const snap = makeSnapshot({
+      tool_calls_by_tool: [
+        {
+          tool: "search",
+          call_count: 3,
+          failure_count: 0,
+          total_duration_ms: 30,
+          avg_duration_ms: 10,
+          min_duration_ms: 5,
+          max_duration_ms: 15,
+          p50_duration_ms: 10,
+          p95_duration_ms: 15,
+          p99_duration_ms: 15,
+          duration_histogram: [{ upper_bound_ms: 25, count: 3 }],
+        },
+      ],
+    });
+    expect(isAgentRuntimeSnapshot(snap)).toBe(true);
+  });
+
+  it("accepts tool stats without M12 fields (legacy server)", () => {
+    const snap = {
+      ...makeSnapshot(),
+      tool_calls_by_tool: [
+        {
+          tool: "search",
+          call_count: 2,
+          failure_count: 0,
+          total_duration_ms: 20,
+          avg_duration_ms: 10,
+        },
+      ],
+    };
+    expect(isAgentRuntimeSnapshot(snap as unknown)).toBe(true);
+  });
+});
+
+describe("formatHistogramLabel", () => {
+  it("formats finite upper bound", () => {
+    expect(formatHistogramLabel({ upper_bound_ms: 100, count: 5 })).toBe(
+      "≤100 ms",
+    );
+    expect(formatHistogramLabel({ upper_bound_ms: 10, count: 0 })).toBe(
+      "≤10 ms",
+    );
+  });
+
+  it("formats +infinity bucket", () => {
+    expect(formatHistogramLabel({ upper_bound_ms: null, count: 0 })).toBe(
+      "> 10000 ms",
+    );
+  });
+});
+
+describe("maxHistogramCount", () => {
+  it("returns 0 for empty input", () => {
+    expect(maxHistogramCount([])).toBe(0);
+  });
+
+  it("returns the max count across buckets", () => {
+    const buckets: HistogramBucket[] = [
+      { upper_bound_ms: 10, count: 1 },
+      { upper_bound_ms: 100, count: 5 },
+      { upper_bound_ms: null, count: 2 },
+    ];
+    expect(maxHistogramCount(buckets)).toBe(5);
+  });
+
+  it("treats all-zero counts as 0", () => {
+    expect(
+      maxHistogramCount([
+        { upper_bound_ms: 10, count: 0 },
+        { upper_bound_ms: null, count: 0 },
+      ]),
+    ).toBe(0);
   });
 });
 
