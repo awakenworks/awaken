@@ -10,6 +10,7 @@ const navItems = [
   { path: adminRoutes.providers, label: "Providers" },
   { path: adminRoutes.mcpServers, label: "MCP Servers" },
   { path: adminRoutes.assistant, label: "AI Assistant" },
+  { path: adminRoutes.evalReports, label: "Eval Reports" },
 ];
 
 export function AdminLayout() {

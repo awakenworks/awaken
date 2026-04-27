@@ -8,4 +8,5 @@ export const adminRoutes = {
   providers: "/providers",
   mcpServers: "/mcp-servers",
   assistant: "/assistant",
+  evalReports: "/eval-reports",
 } as const;

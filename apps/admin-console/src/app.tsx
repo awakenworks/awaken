@@ -46,6 +46,11 @@ const AssistantPage = lazy(async () => {
   return { default: module.AssistantPage };
 });
 
+const EvalReportsPage = lazy(async () => {
+  const module = await import("./pages/eval-reports-page");
+  return { default: module.EvalReportsPage };
+});
+
 export function App() {
   return (
     <Routes>
@@ -118,6 +123,14 @@ export function App() {
           element={
             <RouteLoader>
               <AssistantPage />
+            </RouteLoader>
+          }
+        />
+        <Route
+          path="eval-reports"
+          element={
+            <RouteLoader>
+              <EvalReportsPage />
             </RouteLoader>
           }
         />
