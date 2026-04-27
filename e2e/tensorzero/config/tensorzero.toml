@@ -1,0 +1,55 @@
+# TensorZero gateway configuration for awaken e2e tests.
+#
+# Mounted read-only into the gateway container at /app/config/tensorzero.toml.
+# Update the variants block when targeting a different upstream provider; the
+# function name `agent_chat` is wired into awaken-server tests.
+
+[gateway]
+observability = { async_writes = true }
+
+# ---------------------------------------------------------------------------
+# Functions
+# ---------------------------------------------------------------------------
+
+[functions.agent_chat]
+type = "chat"
+
+[functions.agent_chat.variants.deepseek_v3]
+type = "chat_completion"
+model = "deepseek::deepseek-chat"
+weight = 1.0
+
+# A second variant lets local development point at OpenAI-compatible proxies
+# when DEEPSEEK_API_KEY is unavailable. Disabled by default (weight = 0.0).
+[functions.agent_chat.variants.openai_4o_mini]
+type = "chat_completion"
+model = "openai::gpt-4o-mini"
+weight = 0.0
+
+# Judge function used by awaken-eval's optional `llm-judge` feature in M5.
+[functions.judge]
+type = "chat"
+
+[functions.judge.variants.openai_4o_mini]
+type = "chat_completion"
+model = "openai::gpt-4o-mini"
+weight = 1.0
+
+# ---------------------------------------------------------------------------
+# Metrics
+# ---------------------------------------------------------------------------
+
+[metrics.answer_correct]
+type = "boolean"
+optimize = "max"
+level = "inference"
+
+[metrics.tool_choice_correct]
+type = "boolean"
+optimize = "max"
+level = "inference"
+
+[metrics.response_quality]
+type = "float"
+optimize = "max"
+level = "inference"

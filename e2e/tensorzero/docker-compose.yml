@@ -1,0 +1,82 @@
+# Standalone TensorZero stack (ClickHouse + Gateway + UI) for awaken e2e
+# evaluation tests.
+#
+# Boot:
+#   docker compose -f e2e/tensorzero/docker-compose.yml up -d --wait
+# Tear down:
+#   docker compose -f e2e/tensorzero/docker-compose.yml down -v
+#
+# Endpoints:
+#   ClickHouse REST     : http://localhost:8123
+#   TensorZero Gateway  : http://localhost:3000   (OpenAI-compat: /openai/v1/, /feedback)
+#   TensorZero UI       : http://localhost:4000
+#
+# Required environment for live model variants:
+#   DEEPSEEK_API_KEY   — for `agent_chat.variants.deepseek_v3`
+#   OPENAI_API_KEY     — for `agent_chat.variants.openai_4o_mini`, judge function
+services:
+  clickhouse:
+    image: clickhouse/clickhouse-server:24.10-alpine
+    container_name: awaken-tensorzero-clickhouse
+    environment:
+      CLICKHOUSE_DB: tensorzero
+      CLICKHOUSE_USER: chuser
+      CLICKHOUSE_PASSWORD: chpass
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: 1
+    ports:
+      - "8123:8123"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8123/ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 24
+      start_period: 5s
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 1G
+
+  gateway:
+    image: tensorzero/gateway:2025.10.0
+    container_name: awaken-tensorzero-gateway
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+    environment:
+      TENSORZERO_CLICKHOUSE_URL: http://chuser:chpass@clickhouse:8123/tensorzero
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+    volumes:
+      - ./config:/app/config:ro
+    ports:
+      - "3000:3000"
+    command: ["--config-file", "/app/config/tensorzero.toml"]
+    healthcheck:
+      test: ["CMD", "/usr/bin/curl", "-fsS", "http://localhost:3000/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 24
+      start_period: 5s
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512M
+
+  ui:
+    image: tensorzero/ui:2025.10.0
+    container_name: awaken-tensorzero-ui
+    depends_on:
+      gateway:
+        condition: service_healthy
+    environment:
+      TENSORZERO_GATEWAY_URL: http://gateway:3000
+      TENSORZERO_CLICKHOUSE_URL: http://chuser:chpass@clickhouse:8123/tensorzero
+    ports:
+      - "4000:4000"
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 256M
