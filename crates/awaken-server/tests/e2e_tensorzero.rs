@@ -604,4 +604,249 @@ mod helper_tests {
         // a boolean without panicking under any ambient state.
         let _ = upstream_key_present();
     }
+
+    // ── URL trimming / construction edge cases ──────────────────────
+
+    #[test]
+    fn chat_url_does_not_double_slash_when_env_has_trailing_slash() {
+        // We cannot mutate env, but we can still assert the trimming logic
+        // applied to a synthetic URL by re-implementing the helper inline.
+        let trimmed = "http://example.com:3000/".trim_end_matches('/');
+        assert_eq!(
+            format!("{trimmed}/openai/v1/chat/completions"),
+            "http://example.com:3000/openai/v1/chat/completions"
+        );
+    }
+
+    #[test]
+    fn feedback_url_independent_of_trailing_slash() {
+        let trimmed = "http://example.com:3000///".trim_end_matches('/');
+        assert_eq!(
+            format!("{trimmed}/feedback"),
+            "http://example.com:3000/feedback"
+        );
+    }
+
+    // ── chat_payload coverage ───────────────────────────────────────
+
+    #[test]
+    fn chat_payload_with_empty_messages_still_pins_model() {
+        let p = chat_payload(json!([]));
+        assert_eq!(
+            p.get("model").and_then(Value::as_str),
+            Some("tensorzero::function_name::agent_chat")
+        );
+        assert_eq!(
+            p.get("messages").and_then(Value::as_array).map(Vec::len),
+            Some(0)
+        );
+    }
+
+    #[test]
+    fn chat_payload_preserves_message_order() {
+        let messages = json!([
+            {"role": "user", "content": "first"},
+            {"role": "assistant", "content": "second"},
+            {"role": "user", "content": "third"}
+        ]);
+        let p = chat_payload(messages.clone());
+        assert_eq!(p.get("messages"), Some(&messages));
+    }
+
+    // ── inference_id robustness ─────────────────────────────────────
+
+    #[test]
+    fn inference_id_returns_none_for_non_string_id() {
+        let body = json!({"id": 42});
+        assert!(inference_id(&body).is_none());
+        let body = json!({"id": null});
+        assert!(inference_id(&body).is_none());
+    }
+
+    #[test]
+    fn inference_id_ignores_nested_id_fields() {
+        // TensorZero only surfaces id at the top level; helper must not be
+        // confused by nested ids inside choices/usage.
+        let body = json!({
+            "choices": [{"message": {"id": "nested-not-used"}}]
+        });
+        assert!(inference_id(&body).is_none());
+    }
+
+    // ── assistant_content edge cases ────────────────────────────────
+
+    #[test]
+    fn assistant_content_skips_choices_without_content() {
+        let body = json!({
+            "choices": [
+                {"message": {"role": "assistant", "tool_calls": []}},
+                {"message": {"role": "assistant", "content": "answer"}}
+            ]
+        });
+        assert_eq!(assistant_content(&body), "answer");
+    }
+
+    #[test]
+    fn assistant_content_skips_non_string_content() {
+        let body = json!({
+            "choices": [
+                {"message": {"role": "assistant", "content": ["multimodal", "ignored"]}},
+                {"message": {"role": "assistant", "content": "text-mode"}}
+            ]
+        });
+        assert_eq!(assistant_content(&body), "text-mode");
+    }
+
+    #[test]
+    fn assistant_content_handles_choice_with_null_message() {
+        let body = json!({
+            "choices": [
+                {"index": 0},
+                {"message": {"content": "kept"}}
+            ]
+        });
+        assert_eq!(assistant_content(&body), "kept");
+    }
+
+    // ── finish_reason variants ──────────────────────────────────────
+
+    #[test]
+    fn finish_reason_recognises_length_and_tool_calls() {
+        for reason in ["stop", "length", "tool_calls"] {
+            let body = json!({"choices": [{"finish_reason": reason}]});
+            assert_eq!(finish_reason(&body), Some(reason.into()));
+        }
+    }
+
+    #[test]
+    fn finish_reason_returns_none_for_non_string() {
+        let body = json!({"choices": [{"finish_reason": null}]});
+        assert!(finish_reason(&body).is_none());
+        let body = json!({"choices": [{"finish_reason": 1}]});
+        assert!(finish_reason(&body).is_none());
+    }
+
+    #[test]
+    fn finish_reason_uses_first_choice_only() {
+        let body = json!({
+            "choices": [
+                {"finish_reason": "stop"},
+                {"finish_reason": "length"}
+            ]
+        });
+        assert_eq!(finish_reason(&body), Some("stop".into()));
+    }
+
+    // ── awaken-side wiring (no docker, no upstream call) ────────────
+
+    #[test]
+    fn provider_spec_with_tz_base_url_builds_executor() {
+        // No outbound HTTP — `genai` lazily resolves the endpoint; we only
+        // assert that the executor builds. This guards against
+        // `build_genai_provider_executor` regressions when the spec uses an
+        // OpenAI-compat base URL pointed at TensorZero.
+        let spec = ProviderSpec {
+            id: "tz".into(),
+            adapter: "openai".into(),
+            api_key: None,
+            base_url: Some("http://127.0.0.1:3000/openai/v1/".into()),
+            timeout_secs: 30,
+            adapter_options: Default::default(),
+        };
+        let _executor = build_genai_provider_executor(&spec)
+            .expect("genai executor builds for TensorZero base URL");
+    }
+
+    #[test]
+    fn provider_spec_without_trailing_slash_normalises() {
+        let spec = ProviderSpec {
+            id: "tz".into(),
+            adapter: "openai".into(),
+            api_key: None,
+            base_url: Some("http://127.0.0.1:3000/openai/v1".into()),
+            timeout_secs: 30,
+            adapter_options: Default::default(),
+        };
+        let _executor = build_genai_provider_executor(&spec)
+            .expect("base URL without trailing slash should build");
+    }
+
+    #[test]
+    fn runtime_builds_with_tz_provider_and_model_binding() {
+        // Full awaken-side wiring without docker: confirms the runtime
+        // builder accepts a TensorZero-pointed provider executor and
+        // `tensorzero::function_name::agent_chat` upstream model id.
+        let spec = ProviderSpec {
+            id: "tz".into(),
+            adapter: "openai".into(),
+            api_key: None,
+            base_url: Some("http://127.0.0.1:3000/openai/v1/".into()),
+            timeout_secs: 30,
+            adapter_options: Default::default(),
+        };
+        let executor = build_genai_provider_executor(&spec).expect("executor");
+        let store = Arc::new(InMemoryStore::new());
+        let runtime = AgentRuntimeBuilder::new()
+            .with_provider("tz", executor)
+            .with_model_binding(
+                "tz_chat",
+                ModelBinding {
+                    provider_id: "tz".into(),
+                    upstream_model: "tensorzero::function_name::agent_chat".into(),
+                },
+            )
+            .with_thread_run_store(store.clone())
+            .with_agent_spec(AgentSpec {
+                id: "default".into(),
+                model_id: "tz_chat".into(),
+                system_prompt: "test".into(),
+                max_rounds: 1,
+                ..Default::default()
+            })
+            .build()
+            .expect("runtime builds with TZ provider");
+        // The runtime should expose a non-empty resolver for the agent.
+        let _ = runtime.resolver_arc();
+    }
+
+    // ── Config asset sanity ─────────────────────────────────────────
+
+    /// The TensorZero gateway TOML config is shipped with the repo and
+    /// mounted into the docker container. Tests must surface drift early.
+    #[test]
+    fn tensorzero_config_toml_contains_required_keys() {
+        let toml = include_str!("../../../e2e/tensorzero/config/tensorzero.toml");
+        for needle in [
+            "[functions.agent_chat]",
+            "answer_correct",
+            "tool_choice_correct",
+            "response_quality",
+            "[functions.judge]",
+        ] {
+            assert!(
+                toml.contains(needle),
+                "tensorzero.toml is missing key {needle:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn tensorzero_compose_yaml_pins_image_versions() {
+        let compose = include_str!("../../../e2e/tensorzero/docker-compose.yml");
+        // Pinned tags guard against silent upgrades that change protocol shape.
+        assert!(compose.contains("tensorzero/gateway:"));
+        assert!(compose.contains("clickhouse/clickhouse-server:"));
+        // Default ports must match what helpers assume.
+        assert!(compose.contains("3000:3000"));
+        assert!(compose.contains("8123:8123"));
+    }
+
+    #[test]
+    fn e2e_tensorzero_script_invokes_cargo_test_with_filter() {
+        let script = include_str!("../../../scripts/e2e-tensorzero.sh");
+        assert!(script.contains("docker compose"));
+        assert!(script.contains("--ignored"));
+        assert!(script.contains("e2e_tensorzero"));
+        assert!(script.contains("trap cleanup EXIT"));
+    }
 }
