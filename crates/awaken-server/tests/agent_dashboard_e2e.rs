@@ -338,6 +338,61 @@ async fn snapshot_avg_and_percentile_durations_are_finite() {
 }
 
 #[tokio::test]
+async fn snapshot_carries_histogram_and_extended_percentiles_after_a_run() {
+    let (app, _registry) = build_app("ok");
+    drive_chat(app.clone(), "histogram-thread", "hi").await;
+    let (status, body) = fetch_json(app, "/v1/agents/default/runtime-stats").await;
+    assert_eq!(status, StatusCode::OK);
+    let snap: AgentRuntimeSnapshot = serde_json::from_value(body).expect("serde");
+
+    // Inference percentiles + min/max are present (≥0; min ≤ max ≤ ~ms).
+    assert!(snap.min_inference_duration_ms <= snap.max_inference_duration_ms);
+    assert!(snap.p50_inference_duration_ms <= snap.p95_inference_duration_ms);
+    assert!(snap.p95_inference_duration_ms <= snap.p99_inference_duration_ms);
+
+    // Histogram is non-empty and counts sum to inference_count.
+    assert!(!snap.inference_duration_histogram.is_empty());
+    let total: u64 = snap
+        .inference_duration_histogram
+        .iter()
+        .map(|b| b.count)
+        .sum();
+    assert_eq!(total, snap.inference_count);
+
+    // Last entry of the histogram is the +infinity bucket.
+    assert_eq!(
+        snap.inference_duration_histogram
+            .last()
+            .map(|b| b.upper_bound_ms),
+        Some(None),
+    );
+}
+
+#[tokio::test]
+async fn snapshot_field_names_match_extended_shape() {
+    // Locks the JSON keys against accidental schema drift in the new
+    // M12 fields — admin-console parser depends on the exact spelling.
+    let (app, _registry) = build_app("ok");
+    drive_chat(app.clone(), "shape-thread", "hi").await;
+    let (_, body) = fetch_json(app, "/v1/agents/default/runtime-stats").await;
+    let obj = body.as_object().expect("snapshot is JSON object");
+    for key in [
+        "min_inference_duration_ms",
+        "max_inference_duration_ms",
+        "p99_inference_duration_ms",
+        "inference_duration_histogram",
+    ] {
+        assert!(obj.contains_key(key), "snapshot missing {key} key");
+    }
+    let bucket = body["inference_duration_histogram"][0]
+        .as_object()
+        .expect("histogram entry is object");
+    for key in ["upper_bound_ms", "count"] {
+        assert!(bucket.contains_key(key), "bucket missing {key} key");
+    }
+}
+
+#[tokio::test]
 async fn registry_unaffected_when_other_endpoint_called_first() {
     // Defends against an accidental shared-state coupling between the
     // /v1/agents/runtime-stats list endpoint and the per-agent endpoint.

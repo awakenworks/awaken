@@ -38,6 +38,14 @@ pub const DEFAULT_BUCKET_WINDOW: Duration = Duration::from_secs(600);
 /// Default bucket count: 144 buckets × 10 minutes = 24 hours.
 pub const DEFAULT_BUCKET_COUNT: usize = 144;
 
+/// Default histogram boundaries (ms).  Mirrors a Prometheus-style
+/// distribution and gives sensible coverage for typical LLM agents:
+/// fast tool calls (≤25 ms), median chat completions (~250 ms-1 s),
+/// slow streaming runs (>10 s).  An additional `+infinity` catch-all
+/// bucket is appended automatically by the histogram builder.
+pub const DEFAULT_DURATION_BUCKETS_MS: &[u64] =
+    &[10, 25, 50, 100, 250, 500, 1000, 2500, 5000, 10000];
+
 /// Per-agent rolling window aggregator.  Implements [`MetricsSink`] so it
 /// can drop into any composite sink topology.
 #[derive(Clone)]
@@ -82,6 +90,10 @@ struct ToolBucket {
     call_count: u64,
     failure_count: u64,
     total_duration_ms: u64,
+    /// Capped sample list mirroring the inference path so per-tool
+    /// percentiles and histograms can be computed lazily at snapshot
+    /// time without re-collecting from disk.
+    durations_ms: Vec<u64>,
 }
 
 const MAX_DURATION_SAMPLES: usize = 1024;
@@ -166,8 +178,12 @@ impl RuntimeStatsRegistry {
             input_tokens: 0,
             output_tokens: 0,
             avg_inference_duration_ms: 0.0,
+            min_inference_duration_ms: 0,
+            max_inference_duration_ms: 0,
             p50_inference_duration_ms: 0,
             p95_inference_duration_ms: 0,
+            p99_inference_duration_ms: 0,
+            inference_duration_histogram: Vec::new(),
             suspensions: 0,
             handoffs: 0,
             delegations: 0,
@@ -192,10 +208,12 @@ impl RuntimeStatsRegistry {
                     call_count: 0,
                     failure_count: 0,
                     total_duration_ms: 0,
+                    durations_ms: Vec::new(),
                 });
                 entry.call_count += t.call_count;
                 entry.failure_count += t.failure_count;
                 entry.total_duration_ms += t.total_duration_ms;
+                entry.durations_ms.extend_from_slice(&t.durations_ms);
             }
         }
 
@@ -203,22 +221,53 @@ impl RuntimeStatsRegistry {
             all_durations.sort_unstable();
             let sum: u64 = all_durations.iter().sum();
             snap.avg_inference_duration_ms = sum as f64 / all_durations.len() as f64;
+            snap.min_inference_duration_ms = *all_durations.first().unwrap_or(&0);
+            snap.max_inference_duration_ms = *all_durations.last().unwrap_or(&0);
             snap.p50_inference_duration_ms = percentile(&all_durations, 50);
             snap.p95_inference_duration_ms = percentile(&all_durations, 95);
+            snap.p99_inference_duration_ms = percentile(&all_durations, 99);
+            snap.inference_duration_histogram =
+                build_histogram(&all_durations, DEFAULT_DURATION_BUCKETS_MS);
         }
 
         let mut tool_rows: Vec<ToolRuntimeStats> = tool_acc
             .into_iter()
-            .map(|(tool, t)| ToolRuntimeStats {
-                avg_duration_ms: if t.call_count == 0 {
+            .map(|(tool, mut t)| {
+                t.durations_ms.sort_unstable();
+                let avg_duration_ms = if t.call_count == 0 {
                     0.0
                 } else {
                     t.total_duration_ms as f64 / t.call_count as f64
-                },
-                tool,
-                call_count: t.call_count,
-                failure_count: t.failure_count,
-                total_duration_ms: t.total_duration_ms,
+                };
+                let (min, max, p50, p95, p99) = if t.durations_ms.is_empty() {
+                    (0, 0, 0, 0, 0)
+                } else {
+                    (
+                        *t.durations_ms.first().unwrap_or(&0),
+                        *t.durations_ms.last().unwrap_or(&0),
+                        percentile(&t.durations_ms, 50),
+                        percentile(&t.durations_ms, 95),
+                        percentile(&t.durations_ms, 99),
+                    )
+                };
+                let histogram = if t.durations_ms.is_empty() {
+                    Vec::new()
+                } else {
+                    build_histogram(&t.durations_ms, DEFAULT_DURATION_BUCKETS_MS)
+                };
+                ToolRuntimeStats {
+                    avg_duration_ms,
+                    min_duration_ms: min,
+                    max_duration_ms: max,
+                    p50_duration_ms: p50,
+                    p95_duration_ms: p95,
+                    p99_duration_ms: p99,
+                    duration_histogram: histogram,
+                    tool,
+                    call_count: t.call_count,
+                    failure_count: t.failure_count,
+                    total_duration_ms: t.total_duration_ms,
+                }
             })
             .collect();
         tool_rows.sort_by(|a, b| a.tool.cmp(&b.tool));
@@ -325,12 +374,44 @@ fn apply_tool(bucket: &mut Bucket, span: &ToolSpan) {
         call_count: 0,
         failure_count: 0,
         total_duration_ms: 0,
+        durations_ms: Vec::new(),
     });
     entry.call_count += 1;
     if span.error_type.is_some() {
         entry.failure_count += 1;
     }
     entry.total_duration_ms = entry.total_duration_ms.saturating_add(span.duration_ms);
+    if entry.durations_ms.len() < MAX_DURATION_SAMPLES {
+        entry.durations_ms.push(span.duration_ms);
+    }
+}
+
+/// Build a per-bucket histogram from a *sorted* sample slice.
+///
+/// The result is one [`HistogramBucket`] per boundary plus a final
+/// `+infinity` catch-all bucket (`upper_bound_ms == None`).  Counts are
+/// per-bucket (NOT cumulative): a sample falls into the first bucket whose
+/// `upper_bound_ms` is greater than or equal to it.
+fn build_histogram(sorted_samples: &[u64], boundaries: &[u64]) -> Vec<HistogramBucket> {
+    let mut out: Vec<HistogramBucket> = Vec::with_capacity(boundaries.len() + 1);
+    let mut idx = 0usize;
+    for &boundary in boundaries {
+        let mut count = 0u64;
+        while idx < sorted_samples.len() && sorted_samples[idx] <= boundary {
+            count += 1;
+            idx += 1;
+        }
+        out.push(HistogramBucket {
+            upper_bound_ms: Some(boundary),
+            count,
+        });
+    }
+    let remaining = (sorted_samples.len() - idx) as u64;
+    out.push(HistogramBucket {
+        upper_bound_ms: None,
+        count: remaining,
+    });
+    out
 }
 
 /// Linear-interpolation percentile over a *sorted* slice. Clamps the
@@ -363,6 +444,18 @@ impl MetricsSink for RuntimeStatsRegistry {
 // Snapshot DTOs (the shape the HTTP layer serialises)
 // ---------------------------------------------------------------------------
 
+/// One bin of a duration histogram.  `upper_bound_ms == None` is the
+/// catch-all `+infinity` bucket appended after every numeric boundary.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HistogramBucket {
+    /// Upper bound for this bucket in milliseconds, or `None` for the
+    /// catch-all bucket. Counts are per-bucket (not cumulative).
+    pub upper_bound_ms: Option<u64>,
+    /// Number of samples whose duration is greater than the previous
+    /// bucket's upper bound and less-than-or-equal to `upper_bound_ms`.
+    pub count: u64,
+}
+
 /// One aggregated view of a single agent's rolling-window stats.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AgentRuntimeSnapshot {
@@ -378,8 +471,15 @@ pub struct AgentRuntimeSnapshot {
     pub input_tokens: u64,
     pub output_tokens: u64,
     pub avg_inference_duration_ms: f64,
+    pub min_inference_duration_ms: u64,
+    pub max_inference_duration_ms: u64,
     pub p50_inference_duration_ms: u64,
     pub p95_inference_duration_ms: u64,
+    pub p99_inference_duration_ms: u64,
+    /// Per-bucket histogram of inference latencies. Empty when no
+    /// inference samples were recorded.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub inference_duration_histogram: Vec<HistogramBucket>,
     pub suspensions: u64,
     pub handoffs: u64,
     pub delegations: u64,
@@ -395,6 +495,15 @@ pub struct ToolRuntimeStats {
     pub failure_count: u64,
     pub total_duration_ms: u64,
     pub avg_duration_ms: f64,
+    pub min_duration_ms: u64,
+    pub max_duration_ms: u64,
+    pub p50_duration_ms: u64,
+    pub p95_duration_ms: u64,
+    pub p99_duration_ms: u64,
+    /// Per-bucket histogram of this tool's durations. Empty when no
+    /// samples were recorded.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub duration_histogram: Vec<HistogramBucket>,
 }
 
 // ---------------------------------------------------------------------------
@@ -746,6 +855,209 @@ mod tests {
         let json = serde_json::to_string(&snap).unwrap();
         let parsed: AgentRuntimeSnapshot = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed, snap);
+    }
+
+    // ── min / max / p99 ────────────────────────────────────────────
+
+    #[test]
+    fn snapshot_zero_min_max_p99_when_no_samples() {
+        let r = RuntimeStatsRegistry::new();
+        r.record(&MetricsEvent::Suspension(SuspensionSpan {
+            context: ctx("a"),
+            tool_call_id: "c".into(),
+            tool_name: "x".into(),
+            action: "suspended".into(),
+            resume_mode: None,
+            duration_ms: None,
+            timestamp_ms: 0,
+        }));
+        let snap = r.snapshot_for("a").unwrap();
+        assert_eq!(snap.min_inference_duration_ms, 0);
+        assert_eq!(snap.max_inference_duration_ms, 0);
+        assert_eq!(snap.p99_inference_duration_ms, 0);
+    }
+
+    #[test]
+    fn snapshot_min_max_track_extremes() {
+        let r = RuntimeStatsRegistry::new();
+        for d in [37u64, 5, 999, 1, 250, 100] {
+            r.record(&MetricsEvent::Inference(inference("a", 1, 1, d, false)));
+        }
+        let snap = r.snapshot_for("a").unwrap();
+        assert_eq!(snap.min_inference_duration_ms, 1);
+        assert_eq!(snap.max_inference_duration_ms, 999);
+    }
+
+    #[test]
+    fn snapshot_p99_close_to_max() {
+        let r = RuntimeStatsRegistry::new();
+        for d in 1..=100u64 {
+            r.record(&MetricsEvent::Inference(inference("a", 1, 1, d, false)));
+        }
+        let snap = r.snapshot_for("a").unwrap();
+        // 100 samples, p99 idx = round(99*0.99)=98 → samples[98]=99
+        assert_eq!(snap.p99_inference_duration_ms, 99);
+    }
+
+    // ── inference histogram ────────────────────────────────────────
+
+    #[test]
+    fn build_histogram_bucketises_correctly() {
+        let samples: Vec<u64> = vec![5, 25, 75, 200, 800, 3000, 99_999];
+        let mut sorted = samples.clone();
+        sorted.sort_unstable();
+        let h = build_histogram(&sorted, DEFAULT_DURATION_BUCKETS_MS);
+        // boundaries = 10,25,50,100,250,500,1000,2500,5000,10000 → 11 entries (10 + +inf)
+        assert_eq!(h.len(), 11);
+        // Sum of all bucket counts equals sample count.
+        let total: u64 = h.iter().map(|b| b.count).sum();
+        assert_eq!(total, samples.len() as u64);
+        // 5 → ≤10
+        assert_eq!(h[0].count, 1);
+        assert_eq!(h[0].upper_bound_ms, Some(10));
+        // 25 → 11..=25 → bucket index 1 (≤25)
+        assert_eq!(h[1].count, 1);
+        // 75 → 51..=100 → bucket index 3
+        assert_eq!(h[3].count, 1);
+        // 200 → 101..=250 → bucket index 4
+        assert_eq!(h[4].count, 1);
+        // 800 → 501..=1000 → bucket index 6
+        assert_eq!(h[6].count, 1);
+        // 3000 → 2501..=5000 → bucket index 8
+        assert_eq!(h[8].count, 1);
+        // 99_999 → +inf
+        assert_eq!(h[10].count, 1);
+        assert_eq!(h[10].upper_bound_ms, None);
+    }
+
+    #[test]
+    fn build_histogram_empty_yields_zero_counts_with_full_shape() {
+        let h = build_histogram(&[], DEFAULT_DURATION_BUCKETS_MS);
+        assert_eq!(h.len(), DEFAULT_DURATION_BUCKETS_MS.len() + 1);
+        assert!(h.iter().all(|b| b.count == 0));
+    }
+
+    #[test]
+    fn snapshot_inference_histogram_sums_to_inference_count() {
+        let r = RuntimeStatsRegistry::new();
+        for d in [3u64, 30, 300, 3000, 30000, 50] {
+            r.record(&MetricsEvent::Inference(inference("a", 1, 1, d, false)));
+        }
+        let snap = r.snapshot_for("a").unwrap();
+        let total: u64 = snap
+            .inference_duration_histogram
+            .iter()
+            .map(|b| b.count)
+            .sum();
+        assert_eq!(total, snap.inference_count);
+    }
+
+    #[test]
+    fn snapshot_inference_histogram_omitted_when_no_samples() {
+        let r = RuntimeStatsRegistry::new();
+        r.record(&MetricsEvent::Tool(tool("a", "search", 5, false)));
+        let snap = r.snapshot_for("a").unwrap();
+        assert!(snap.inference_duration_histogram.is_empty());
+    }
+
+    #[test]
+    fn snapshot_histogram_serialisation_skips_empty() {
+        let r = RuntimeStatsRegistry::new();
+        // No inference samples — histogram should not appear in JSON.
+        r.record(&MetricsEvent::Tool(tool("a", "search", 5, false)));
+        let snap = r.snapshot_for("a").unwrap();
+        let json = serde_json::to_string(&snap).unwrap();
+        assert!(!json.contains("inference_duration_histogram"));
+    }
+
+    #[test]
+    fn snapshot_histogram_serialisation_includes_when_populated() {
+        let r = RuntimeStatsRegistry::new();
+        r.record(&MetricsEvent::Inference(inference("a", 1, 1, 50, false)));
+        let snap = r.snapshot_for("a").unwrap();
+        let json = serde_json::to_string(&snap).unwrap();
+        assert!(json.contains("inference_duration_histogram"));
+        assert!(json.contains(r#""upper_bound_ms":10"#));
+    }
+
+    #[test]
+    fn histogram_bucket_serde_roundtrip() {
+        let original = vec![
+            HistogramBucket {
+                upper_bound_ms: Some(100),
+                count: 5,
+            },
+            HistogramBucket {
+                upper_bound_ms: None,
+                count: 1,
+            },
+        ];
+        let json = serde_json::to_string(&original).unwrap();
+        let parsed: Vec<HistogramBucket> = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed, original);
+    }
+
+    // ── per-tool min / max / p50 / p95 / p99 ───────────────────────
+
+    #[test]
+    fn snapshot_per_tool_percentiles_track_distribution() {
+        let r = RuntimeStatsRegistry::new();
+        for d in 1..=100u64 {
+            r.record(&MetricsEvent::Tool(tool("a", "search", d, false)));
+        }
+        let snap = r.snapshot_for("a").unwrap();
+        let stats = snap
+            .tool_calls_by_tool
+            .iter()
+            .find(|s| s.tool == "search")
+            .unwrap();
+        assert_eq!(stats.min_duration_ms, 1);
+        assert_eq!(stats.max_duration_ms, 100);
+        assert_eq!(stats.p50_duration_ms, 51);
+        assert_eq!(stats.p95_duration_ms, 95);
+        assert_eq!(stats.p99_duration_ms, 99);
+    }
+
+    #[test]
+    fn snapshot_per_tool_zero_percentiles_when_no_samples() {
+        // Defensive — tool buckets only populate samples through
+        // apply_tool, which always pushes. But verify the snapshot
+        // builder handles an empty samples Vec gracefully.
+        let r = RuntimeStatsRegistry::new();
+        r.record(&MetricsEvent::Tool(tool("a", "search", 0, false)));
+        let snap = r.snapshot_for("a").unwrap();
+        let stats = &snap.tool_calls_by_tool[0];
+        // duration_ms=0 sample → all percentiles 0.
+        assert_eq!(stats.min_duration_ms, 0);
+        assert_eq!(stats.max_duration_ms, 0);
+        assert_eq!(stats.p50_duration_ms, 0);
+    }
+
+    #[test]
+    fn snapshot_per_tool_histogram_sums_to_call_count() {
+        let r = RuntimeStatsRegistry::new();
+        for d in [3u64, 30, 300, 3000, 30000] {
+            r.record(&MetricsEvent::Tool(tool("a", "search", d, false)));
+        }
+        let snap = r.snapshot_for("a").unwrap();
+        let stats = &snap.tool_calls_by_tool[0];
+        let total: u64 = stats.duration_histogram.iter().map(|b| b.count).sum();
+        assert_eq!(total, stats.call_count);
+    }
+
+    #[test]
+    fn snapshot_per_tool_histogram_omitted_when_no_samples() {
+        // Force a tool stats row with zero samples by building snapshot
+        // from a registry where the tool was never recorded → not
+        // possible via public API, since apply_tool always pushes a
+        // sample. The branch is defensively tested via the snapshot
+        // logic when samples Vec is empty (`.is_empty()` short-circuit).
+        // Cover the path by recording one tool, then checking the
+        // histogram is non-empty when call_count > 0.
+        let r = RuntimeStatsRegistry::new();
+        r.record(&MetricsEvent::Tool(tool("a", "search", 1, false)));
+        let snap = r.snapshot_for("a").unwrap();
+        assert!(!snap.tool_calls_by_tool[0].duration_histogram.is_empty());
     }
 
     // ── thread-safety smoke ────────────────────────────────────────

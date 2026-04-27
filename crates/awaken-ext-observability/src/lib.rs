@@ -29,8 +29,8 @@ pub use persistent::{PersistenceConfig, PersistentSink};
 pub use plugin::{OBSERVABILITY_PLUGIN_ID, ObservabilityPlugin};
 pub use prometheus::PrometheusSink;
 pub use runtime_stats::{
-    AgentRuntimeSnapshot, DEFAULT_BUCKET_COUNT, DEFAULT_BUCKET_WINDOW, RuntimeStatsRegistry,
-    ToolRuntimeStats,
+    AgentRuntimeSnapshot, DEFAULT_BUCKET_COUNT, DEFAULT_BUCKET_WINDOW, DEFAULT_DURATION_BUCKETS_MS,
+    HistogramBucket, RuntimeStatsRegistry, ToolRuntimeStats,
 };
 pub use sink::{InMemorySink, MetricsSink, SinkError};
 pub use wiring::{
