@@ -9,6 +9,7 @@ mod metrics;
 mod persistent;
 mod plugin;
 mod prometheus;
+mod runtime_stats;
 mod sink;
 mod stats;
 mod wiring;
@@ -27,6 +28,10 @@ pub use metrics::{
 pub use persistent::{PersistenceConfig, PersistentSink};
 pub use plugin::{OBSERVABILITY_PLUGIN_ID, ObservabilityPlugin};
 pub use prometheus::PrometheusSink;
+pub use runtime_stats::{
+    AgentRuntimeSnapshot, DEFAULT_BUCKET_COUNT, DEFAULT_BUCKET_WINDOW, RuntimeStatsRegistry,
+    ToolRuntimeStats,
+};
 pub use sink::{InMemorySink, MetricsSink, SinkError};
 pub use wiring::{
     WiringSettings, WiringSummary, install_default_sinks, install_default_sinks_from_env,
