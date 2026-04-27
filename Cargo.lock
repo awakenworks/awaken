@@ -339,6 +339,7 @@ dependencies = [
  "awaken-ext-observability",
  "awaken-runtime",
  "awaken-stores",
+ "reqwest 0.13.2",
  "serde",
  "serde_json",
  "tempfile",

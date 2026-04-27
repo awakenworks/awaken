@@ -18,14 +18,19 @@ thiserror = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread"] }
 tracing = { workspace = true }
 
+# Optional — only pulled in when the `llm-judge` feature is enabled.
+reqwest = { workspace = true, optional = true }
+
 [dev-dependencies]
 tempfile = "3"
 tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "time"] }
+reqwest = { workspace = true, features = ["blocking"] }
 
 [features]
 default = []
-# Reserved for M5: LLM-backed grading via TensorZero `[functions.judge]`.
-llm-judge = []
+# LLM-backed grading via TensorZero `[functions.judge]`. Adds a reqwest
+# dependency and enables the `judge` module.
+llm-judge = ["dep:reqwest"]
 
 [lints]
 workspace = true

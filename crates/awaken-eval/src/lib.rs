@@ -19,6 +19,8 @@
 
 pub mod expectation;
 pub mod fixture;
+#[cfg(feature = "llm-judge")]
+pub mod judge;
 pub mod outcome;
 pub mod replay;
 pub mod report;
@@ -34,3 +36,6 @@ pub use report::{
     write_ndjson, write_ndjson_path,
 };
 pub use score::score;
+
+#[cfg(feature = "llm-judge")]
+pub use judge::{Judge, JudgeConfig, JudgeError, JudgeResult, TensorZeroJudge, score_with_judge};
