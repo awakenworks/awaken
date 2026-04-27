@@ -1,0 +1,14 @@
+{
+  "id": "03_token_budget",
+  "description": "Verbosity guard — the model must answer concisely (≤ 30 total tokens).",
+  "user_input": "Reply with the digit nine.",
+  "mock_response": {
+    "kind": "text",
+    "text": "9"
+  },
+  "expect": {
+    "final_answer_contains": ["9"],
+    "max_tokens_total": 30,
+    "max_duration_ms": 5000
+  }
+}

@@ -1,0 +1,14 @@
+{
+  "id": "02_phrase_recall",
+  "description": "Memory recall — the answer must echo the phrase the user asked to remember.",
+  "user_input": "Remember the phrase 'green pelican'. Reply with the same phrase verbatim.",
+  "mock_response": {
+    "kind": "text",
+    "text": "green pelican"
+  },
+  "expect": {
+    "final_answer_contains": ["green pelican"],
+    "final_answer_excludes": ["pink", "secret"],
+    "max_tokens_total": 200
+  }
+}

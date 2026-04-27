@@ -1,0 +1,5 @@
+{"fixture_id":"01_simple_qa","passed":true,"failures":[],"final_text":"4","inference_count":1,"tool_count":0,"tool_failures":0,"total_input_tokens":10,"total_output_tokens":1,"session_duration_ms":0,"elapsed_ms":0}
+{"fixture_id":"02_phrase_recall","passed":true,"failures":[],"final_text":"green pelican","inference_count":1,"tool_count":0,"tool_failures":0,"total_input_tokens":19,"total_output_tokens":4,"session_duration_ms":0,"elapsed_ms":0}
+{"fixture_id":"03_token_budget","passed":true,"failures":[],"final_text":"9","inference_count":1,"tool_count":0,"tool_failures":0,"total_input_tokens":7,"total_output_tokens":1,"session_duration_ms":0,"elapsed_ms":0}
+{"fixture_id":"04_excludes_secret","passed":true,"failures":[],"final_text":"All systems nominal; no incidents in the last hour.","inference_count":1,"tool_count":0,"tool_failures":0,"total_input_tokens":14,"total_output_tokens":13,"session_duration_ms":0,"elapsed_ms":0}
+{"fixture_id":"05_error_path","passed":true,"failures":[],"final_text":"","inference_count":1,"tool_count":0,"tool_failures":0,"total_input_tokens":6,"total_output_tokens":0,"session_duration_ms":0,"elapsed_ms":0}

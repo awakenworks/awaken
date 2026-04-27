@@ -1,0 +1,13 @@
+{
+  "id": "01_simple_qa",
+  "description": "Single-turn arithmetic QA — the model must include the digit 4 in its reply.",
+  "user_input": "What is 2+2? Reply with the digit only.",
+  "mock_response": {
+    "kind": "text",
+    "text": "4"
+  },
+  "expect": {
+    "final_answer_contains": ["4"],
+    "max_tokens_total": 100
+  }
+}
