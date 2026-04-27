@@ -25,6 +25,7 @@ pub mod report;
 pub mod score;
 
 pub use expectation::{Expectation, Failure};
+pub use fixture::load_directory;
 pub use fixture::{Fixture, FixtureError, MockResponse};
 pub use outcome::{ReplayOutcome, ReplayReport};
 pub use replay::{MockReplayer, Replayer, replay_all};
