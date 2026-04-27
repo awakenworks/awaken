@@ -156,6 +156,55 @@ fn run_routes() -> Router<AppState> {
         .route("/v1/threads/:id/runs", get(list_thread_runs))
         .route("/v1/threads/:id/runs/active", get(active_thread_run))
         .route("/v1/threads/:id/runs/latest", get(latest_thread_run))
+        .route("/v1/agents/:id/runtime-stats", get(get_agent_runtime_stats))
+        .route("/v1/agents/runtime-stats", get(list_agents_runtime_stats))
+}
+
+// ── Agent runtime-stats endpoints ───────────────────────────────────
+
+/// `GET /v1/agents/:id/runtime-stats` — return the agent's rolling-window
+/// snapshot, or 404 when the agent has not been seen by the registry, or
+/// 503 when the registry is not configured on this server.
+#[tracing::instrument(skip(state))]
+async fn get_agent_runtime_stats(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Response {
+    let Some(registry) = state.runtime_stats.as_ref() else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({ "error": "runtime_stats registry not configured" })),
+        )
+            .into_response();
+    };
+    match registry.snapshot_for(&id) {
+        Some(snapshot) => Json(snapshot).into_response(),
+        None => (
+            StatusCode::NOT_FOUND,
+            Json(json!({ "error": format!("agent not found in runtime stats: {id}") })),
+        )
+            .into_response(),
+    }
+}
+
+/// `GET /v1/agents/runtime-stats` — return one snapshot per known agent,
+/// sorted by `agent_id`. Returns `{"agents":[...]}` (or 503 when the
+/// registry is missing).
+#[tracing::instrument(skip(state))]
+async fn list_agents_runtime_stats(State(state): State<AppState>) -> Response {
+    let Some(registry) = state.runtime_stats.as_ref() else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({ "error": "runtime_stats registry not configured" })),
+        )
+            .into_response();
+    };
+    let snapshots: Vec<_> = registry
+        .known_agents()
+        .into_iter()
+        .filter_map(|id| registry.snapshot_for(&id))
+        .collect();
+    Json(json!({ "agents": snapshots })).into_response()
 }
 
 // ── Health ──

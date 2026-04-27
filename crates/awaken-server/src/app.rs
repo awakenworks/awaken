@@ -7,6 +7,7 @@ use std::time::Instant;
 use awaken_contract::RedactedString;
 use awaken_contract::contract::config_store::ConfigStore;
 use awaken_contract::contract::storage::ThreadRunStore;
+use awaken_ext_observability::RuntimeStatsRegistry;
 use awaken_runtime::{AgentResolver, AgentRuntime};
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
@@ -280,6 +281,10 @@ pub struct AppState {
     pub replay_buffers: ReplayBufferMap,
     /// MCP Streamable HTTP session state.
     pub mcp_http: Arc<crate::protocols::mcp::http::McpHttpState>,
+    /// Optional per-agent runtime stats registry used by
+    /// `/v1/agents/:id/runtime-stats`.  When `None`, the endpoint returns
+    /// 503 so embedders can opt out.
+    pub runtime_stats: Option<Arc<RuntimeStatsRegistry>>,
 }
 
 impl AppState {
@@ -302,7 +307,17 @@ impl AppState {
             skill_catalog_provider: None,
             replay_buffers: Arc::new(Mutex::new(HashMap::new())),
             mcp_http: Arc::new(crate::protocols::mcp::http::McpHttpState::new()),
+            runtime_stats: None,
         }
+    }
+
+    /// Attach a runtime stats registry. The same `Arc` should already be
+    /// wired into the embedder's `ObservabilityPlugin` sink list so that
+    /// recording and reading share state.
+    #[must_use]
+    pub fn with_runtime_stats(mut self, registry: Arc<RuntimeStatsRegistry>) -> Self {
+        self.runtime_stats = Some(registry);
+        self
     }
 
     /// Attach the config store used by config management routes.

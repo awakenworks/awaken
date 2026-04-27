@@ -49,6 +49,7 @@ mcp = { package = "model-context-protocol", version = "0.2", default-features = 
 # Metrics / observability
 metrics = "0.24"
 metrics-exporter-prometheus = "0.16"
+awaken-ext-observability = { workspace = true }
 
 # Optional
 awaken-ext-permission = { workspace = true, optional = true }
