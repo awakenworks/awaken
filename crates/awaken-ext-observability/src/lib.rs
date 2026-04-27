@@ -29,7 +29,8 @@ pub use plugin::{OBSERVABILITY_PLUGIN_ID, ObservabilityPlugin};
 pub use prometheus::PrometheusSink;
 pub use sink::{InMemorySink, MetricsSink, SinkError};
 pub use wiring::{
-    WiringSummary, install_default_sinks_from_env, observability_plugin_from_env,
+    WiringSettings, WiringSummary, install_default_sinks, install_default_sinks_from_env,
+    observability_plugin_from, observability_plugin_from_env,
     observability_plugin_from_env_with_summary,
 };
 

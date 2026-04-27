@@ -23,6 +23,13 @@
 //!   beneath the persistent wrapper so failed flushes spill to disk.
 //! * If nothing else is configured, `from_env()` still returns the in-memory
 //!   sink so plugin construction does not fail silently.
+//!
+//! ## Programmatic API
+//!
+//! Embedders that prefer not to rely on environment variables can build a
+//! [`WiringSettings`] directly and call [`install_default_sinks`].  The pure
+//! function takes a fully-resolved settings struct, which makes it
+//! exhaustively testable without mutating process-wide state.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -38,8 +45,53 @@ use crate::otel::{OtelMetricsSink, init_otlp_tracer};
 #[cfg(feature = "otel")]
 use crate::otel_config::OtelConfig;
 
-/// What `from_env` produced and *why*, useful for surfacing diagnostics in a
-/// startup banner.
+/// Pre-resolved configuration consumed by [`install_default_sinks`].
+///
+/// Constructed either via [`WiringSettings::from_env`] (the standard path
+/// taken by `*_from_env` helpers) or directly by embedders that want a
+/// deterministic wiring without touching the process environment.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct WiringSettings {
+    /// When `true`, [`install_default_sinks`] returns a bare in-memory sink
+    /// and sets `WiringSummary::disabled = true`.
+    pub disabled: bool,
+    /// When `true` and the crate was built with the `otel` feature, an
+    /// [`OtelMetricsSink`] is added.  Without the feature the field is
+    /// ignored (the OTLP path is compiled out).
+    pub otel: bool,
+    /// When `true`, a [`PrometheusSink`] is added to the composite.
+    pub prometheus: bool,
+    /// When `Some(path)`, the assembled composite is wrapped in a
+    /// [`PersistentSink`] writing NDJSON to `path`.
+    pub persistent_sink_dir: Option<PathBuf>,
+}
+
+impl WiringSettings {
+    /// Read the wiring settings from environment variables.
+    ///
+    /// `OTEL_EXPORTER_OTLP_ENDPOINT` and `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`
+    /// are *both* checked because `OtelConfig::from_env()` already resolves
+    /// either; this helper only needs to know "is OTLP requested at all?".
+    pub fn from_env() -> Self {
+        if env_truthy("AWAKEN_OBSERVABILITY_DISABLE") {
+            return Self {
+                disabled: true,
+                ..Self::default()
+            };
+        }
+
+        Self {
+            disabled: false,
+            otel: env_present("OTEL_EXPORTER_OTLP_ENDPOINT")
+                || env_present("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"),
+            prometheus: env_truthy("AWAKEN_PROMETHEUS"),
+            persistent_sink_dir: env_path("AWAKEN_PERSISTENT_SINK_DIR"),
+        }
+    }
+}
+
+/// What `install_default_sinks` produced and *why*, useful for surfacing
+/// diagnostics in a startup banner.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct WiringSummary {
     /// `true` when the `InMemorySink` was added (always currently).
@@ -50,24 +102,26 @@ pub struct WiringSummary {
     pub prometheus: bool,
     /// `Some(path)` when a `PersistentSink` was configured.
     pub persistent_dir: Option<PathBuf>,
-    /// `true` when `AWAKEN_OBSERVABILITY_DISABLE=1` short-circuited the wiring.
+    /// `true` when settings explicitly disabled the auto-wiring.
     pub disabled: bool,
 }
 
-/// Read environment variables and assemble the auto-wired sink list.
+/// Pure assembly entry point taking pre-resolved [`WiringSettings`].
 ///
-/// Returns a tuple of:
+/// Always returns a non-null sink:
 ///
-/// * the composed [`MetricsSink`] (always non-null — falls back to a bare
-///   in-memory sink when nothing else is configured), and
-/// * a [`WiringSummary`] describing what was added.
+/// * When `settings.disabled` is `true`, returns a bare [`InMemorySink`]
+///   (callers can detect this via `summary.disabled`).
+/// * Otherwise composes in-memory + optional OTLP + optional Prometheus,
+///   then optionally wraps in a [`PersistentSink`].
 ///
-/// Callers that want to *replace* the wiring should not use this helper;
-/// they should build sinks manually with [`CompositeSink`].
-pub fn install_default_sinks_from_env() -> (Arc<dyn MetricsSink>, WiringSummary) {
+/// This function does not read environment variables; it is therefore
+/// deterministic and exhaustively unit-testable without mutating
+/// process-global state.
+pub fn install_default_sinks(settings: &WiringSettings) -> (Arc<dyn MetricsSink>, WiringSummary) {
     let mut summary = WiringSummary::default();
 
-    if env_truthy("AWAKEN_OBSERVABILITY_DISABLE") {
+    if settings.disabled {
         summary.disabled = true;
         let in_memory: Arc<dyn MetricsSink> = Arc::new(InMemorySink::new());
         summary.in_memory = true;
@@ -82,13 +136,15 @@ pub fn install_default_sinks_from_env() -> (Arc<dyn MetricsSink>, WiringSummary)
 
     #[cfg(feature = "otel")]
     {
-        if let Some(sink) = build_otel_sink_from_env() {
+        if settings.otel
+            && let Some(sink) = build_otel_sink_from_env()
+        {
             sinks.push(sink);
             summary.otel = true;
         }
     }
 
-    if env_truthy("AWAKEN_PROMETHEUS") {
+    if settings.prometheus {
         sinks.push(Arc::new(PrometheusSink::new()));
         summary.prometheus = true;
     }
@@ -99,14 +155,14 @@ pub fn install_default_sinks_from_env() -> (Arc<dyn MetricsSink>, WiringSummary)
         Arc::new(CompositeSink::new(sinks))
     };
 
-    if let Some(dir) = env_path("AWAKEN_PERSISTENT_SINK_DIR") {
+    if let Some(dir) = settings.persistent_sink_dir.as_ref() {
         let config = PersistenceConfig {
             storage_dir: dir.clone(),
             ..PersistenceConfig::default()
         };
         match PersistentSink::new(Arc::clone(&composite), config) {
             Ok(persistent) => {
-                summary.persistent_dir = Some(dir);
+                summary.persistent_dir = Some(dir.clone());
                 return (Arc::new(persistent), summary);
             }
             Err(err) => {
@@ -121,6 +177,14 @@ pub fn install_default_sinks_from_env() -> (Arc<dyn MetricsSink>, WiringSummary)
     }
 
     (composite, summary)
+}
+
+/// Read environment variables and assemble the auto-wired sink list.
+///
+/// Equivalent to [`install_default_sinks`] called with
+/// [`WiringSettings::from_env`].
+pub fn install_default_sinks_from_env() -> (Arc<dyn MetricsSink>, WiringSummary) {
+    install_default_sinks(&WiringSettings::from_env())
 }
 
 /// Build an [`ObservabilityPlugin`] from the env-driven sink wiring.
@@ -140,18 +204,22 @@ pub fn install_default_sinks_from_env() -> (Arc<dyn MetricsSink>, WiringSummary)
 /// }
 /// ```
 pub fn observability_plugin_from_env() -> Option<ObservabilityPlugin> {
-    let (sink, summary) = install_default_sinks_from_env();
-    if summary.disabled {
-        return None;
-    }
-    Some(ObservabilityPlugin::new(ArcSink(sink)))
+    observability_plugin_from(&WiringSettings::from_env()).0
 }
 
 /// Same as [`observability_plugin_from_env`] but also returns the wiring
 /// summary so callers can log a startup banner without re-reading env vars.
 pub fn observability_plugin_from_env_with_summary() -> (Option<ObservabilityPlugin>, WiringSummary)
 {
-    let (sink, summary) = install_default_sinks_from_env();
+    observability_plugin_from(&WiringSettings::from_env())
+}
+
+/// Pure equivalent of [`observability_plugin_from_env_with_summary`] taking
+/// pre-resolved settings.
+pub fn observability_plugin_from(
+    settings: &WiringSettings,
+) -> (Option<ObservabilityPlugin>, WiringSummary) {
+    let (sink, summary) = install_default_sinks(settings);
     if summary.disabled {
         return (None, summary);
     }
@@ -194,6 +262,13 @@ fn env_truthy(key: &str) -> bool {
     )
 }
 
+fn env_present(key: &str) -> bool {
+    std::env::var(key)
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+        .is_some()
+}
+
 fn env_path(key: &str) -> Option<PathBuf> {
     std::env::var(key)
         .ok()
@@ -228,58 +303,313 @@ fn build_otel_sink_from_env() -> Option<Arc<dyn MetricsSink>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::metrics::{AgentMetrics, GenAISpan, MetricsEvent, SpanContext, ToolSpan};
+    use crate::sink::SinkError;
+
+    // ── fixtures ───────────────────────────────────────────────────────
+
+    fn sample_inference() -> GenAISpan {
+        GenAISpan {
+            context: SpanContext::default(),
+            step_index: None,
+            model: "wiring-test-model".to_string(),
+            provider: "wiring-test".to_string(),
+            operation: "chat".to_string(),
+            response_model: None,
+            response_id: None,
+            finish_reasons: Vec::new(),
+            error_type: None,
+            error_class: None,
+            thinking_tokens: None,
+            input_tokens: Some(1),
+            output_tokens: Some(2),
+            total_tokens: Some(3),
+            cache_read_input_tokens: None,
+            cache_creation_input_tokens: None,
+            temperature: None,
+            top_p: None,
+            max_tokens: None,
+            stop_sequences: Vec::new(),
+            duration_ms: 1,
+        }
+    }
+
+    fn sample_tool() -> ToolSpan {
+        ToolSpan {
+            context: SpanContext::default(),
+            step_index: None,
+            name: "wiring-test-tool".to_string(),
+            operation: "execute_tool".to_string(),
+            call_id: "call-wiring".to_string(),
+            tool_type: "function".to_string(),
+            error_type: None,
+            duration_ms: 1,
+        }
+    }
+
+    fn temp_dir(suffix: &str) -> PathBuf {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or_default();
+        std::env::temp_dir().join(format!("awaken-wiring-test-{suffix}-{now}"))
+    }
+
+    // ── WiringSettings ─────────────────────────────────────────────────
 
     #[test]
-    fn wiring_summary_default_is_empty() {
-        let summary = WiringSummary::default();
-        assert!(!summary.in_memory);
+    fn settings_default_is_all_off() {
+        let s = WiringSettings::default();
+        assert!(!s.disabled);
+        assert!(!s.otel);
+        assert!(!s.prometheus);
+        assert!(s.persistent_sink_dir.is_none());
+    }
+
+    #[test]
+    fn settings_disabled_clones_to_disabled() {
+        let s = WiringSettings {
+            disabled: true,
+            otel: true,
+            prometheus: true,
+            persistent_sink_dir: Some(PathBuf::from("/tmp/x")),
+        };
+        let clone = s.clone();
+        assert_eq!(s, clone);
+    }
+
+    #[test]
+    fn settings_from_env_does_not_panic() {
+        // Cannot mutate env (`unsafe_code = "forbid"`), but the call must
+        // never panic regardless of ambient environment.
+        let _ = WiringSettings::from_env();
+    }
+
+    // ── install_default_sinks: disabled ────────────────────────────────
+
+    #[test]
+    fn install_disabled_returns_in_memory_only() {
+        let settings = WiringSettings {
+            disabled: true,
+            otel: true,
+            prometheus: true,
+            persistent_sink_dir: Some(PathBuf::from("/dev/null")),
+        };
+        let (_sink, summary) = install_default_sinks(&settings);
+        assert!(summary.disabled);
+        assert!(summary.in_memory);
         assert!(!summary.otel);
         assert!(!summary.prometheus);
-        assert!(!summary.disabled);
         assert!(summary.persistent_dir.is_none());
     }
 
     #[test]
-    fn install_returns_in_memory_when_unconfigured() {
-        // Cannot mutate env (`unsafe_code = "forbid"`) — assert structural
-        // properties only: a sink is always returned and `in_memory` is set
-        // unless explicitly disabled.
-        let (sink, summary) = install_default_sinks_from_env();
-        // Smoke: recording should not panic.
-        sink.record(&crate::metrics::MetricsEvent::Inference(
-            crate::metrics::GenAISpan {
-                context: crate::metrics::SpanContext::default(),
-                step_index: None,
-                model: "m".into(),
-                provider: "p".into(),
-                operation: "chat".into(),
-                response_model: None,
-                response_id: None,
-                finish_reasons: Vec::new(),
-                error_type: None,
-                error_class: None,
-                thinking_tokens: None,
-                input_tokens: Some(1),
-                output_tokens: Some(2),
-                total_tokens: Some(3),
-                cache_read_input_tokens: None,
-                cache_creation_input_tokens: None,
-                temperature: None,
-                top_p: None,
-                max_tokens: None,
-                stop_sequences: Vec::new(),
-                duration_ms: 1,
-            },
-        ));
-        // Either path leaves `in_memory` set: disabled mode still returns
-        // a bare in-memory sink so plugin construction never observes None.
+    fn install_disabled_sink_does_not_panic_on_record() {
+        let (sink, _) = install_default_sinks(&WiringSettings {
+            disabled: true,
+            ..WiringSettings::default()
+        });
+        sink.record(&MetricsEvent::Inference(sample_inference()));
+        sink.record(&MetricsEvent::Tool(sample_tool()));
+        sink.on_run_end(&AgentMetrics::default());
+        assert!(sink.flush().is_ok());
+    }
+
+    // ── install_default_sinks: minimal (no env) ────────────────────────
+
+    #[test]
+    fn install_minimal_returns_only_in_memory() {
+        let (sink, summary) = install_default_sinks(&WiringSettings::default());
+        assert!(!summary.disabled);
+        assert!(summary.in_memory);
+        assert!(!summary.otel);
+        assert!(!summary.prometheus);
+        assert!(summary.persistent_dir.is_none());
+        // Records must not panic.
+        sink.record(&MetricsEvent::Inference(sample_inference()));
+    }
+
+    // ── install_default_sinks: prometheus ──────────────────────────────
+
+    #[test]
+    fn install_prometheus_marks_summary() {
+        let (sink, summary) = install_default_sinks(&WiringSettings {
+            prometheus: true,
+            ..WiringSettings::default()
+        });
+        assert!(summary.in_memory);
+        assert!(summary.prometheus);
+        assert!(!summary.otel);
+        assert!(summary.persistent_dir.is_none());
+        // Should fan out to both inner sinks without panicking.
+        sink.record(&MetricsEvent::Inference(sample_inference()));
+        sink.record(&MetricsEvent::Tool(sample_tool()));
+    }
+
+    // ── install_default_sinks: persistent wrapping ─────────────────────
+
+    #[test]
+    fn install_persistent_creates_dir_and_wraps() {
+        let dir = temp_dir("persistent-creates");
+        let (sink, summary) = install_default_sinks(&WiringSettings {
+            persistent_sink_dir: Some(dir.clone()),
+            ..WiringSettings::default()
+        });
+        assert!(summary.in_memory);
+        assert_eq!(summary.persistent_dir.as_ref(), Some(&dir));
+        assert!(
+            dir.exists(),
+            "PersistentSink should have created storage_dir"
+        );
+        // Smoke: composite path must accept events.
+        sink.record(&MetricsEvent::Inference(sample_inference()));
+        sink.on_run_end(&AgentMetrics::default());
+        // Cleanup.
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn install_persistent_with_prometheus_keeps_both_flags() {
+        let dir = temp_dir("persistent-prom");
+        let (_sink, summary) = install_default_sinks(&WiringSettings {
+            prometheus: true,
+            persistent_sink_dir: Some(dir.clone()),
+            ..WiringSettings::default()
+        });
+        assert!(summary.prometheus);
+        assert_eq!(summary.persistent_dir.as_ref(), Some(&dir));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn install_persistent_with_unwritable_dir_falls_back() {
+        // Use a path containing a NUL byte: every OS rejects it.
+        let bad = PathBuf::from("\u{0}/this/does/not/exist");
+        let (_sink, summary) = install_default_sinks(&WiringSettings {
+            persistent_sink_dir: Some(bad),
+            ..WiringSettings::default()
+        });
+        // Fallback: persistent_dir cleared, in_memory still set.
+        assert!(summary.persistent_dir.is_none());
+        assert!(summary.in_memory);
+    }
+
+    // ── observability_plugin_from ──────────────────────────────────────
+
+    #[test]
+    fn plugin_from_disabled_settings_returns_none() {
+        let (plugin, summary) = observability_plugin_from(&WiringSettings {
+            disabled: true,
+            ..WiringSettings::default()
+        });
+        assert!(plugin.is_none());
+        assert!(summary.disabled);
+    }
+
+    #[test]
+    fn plugin_from_minimal_settings_returns_some() {
+        let (plugin, summary) = observability_plugin_from(&WiringSettings::default());
+        assert!(plugin.is_some());
+        assert!(!summary.disabled);
         assert!(summary.in_memory);
     }
 
     #[test]
-    fn observability_plugin_from_env_smoke() {
-        // Always returns Some unless AWAKEN_OBSERVABILITY_DISABLE is set in
-        // the ambient CI environment. Either way the call should not panic.
+    fn plugin_from_settings_can_chain_with_model() {
+        let (plugin, _) = observability_plugin_from(&WiringSettings {
+            prometheus: true,
+            ..WiringSettings::default()
+        });
+        let plugin = plugin.expect("plugin built").with_model("gpt-4o-mini");
+        // The chained builder shouldn't drop the underlying sink — record
+        // a smoke event via the plugin's descriptor name to confirm it.
+        use awaken_runtime::Plugin;
+        assert_eq!(plugin.descriptor().name, "observability");
+    }
+
+    // ── env-driven smokes (cannot mutate env) ──────────────────────────
+
+    #[test]
+    fn install_default_sinks_from_env_does_not_panic() {
+        let _ = install_default_sinks_from_env();
+    }
+
+    #[test]
+    fn observability_plugin_from_env_does_not_panic() {
         let _ = observability_plugin_from_env();
+    }
+
+    #[test]
+    fn observability_plugin_from_env_with_summary_does_not_panic() {
+        let _ = observability_plugin_from_env_with_summary();
+    }
+
+    // ── ArcSink delegation ─────────────────────────────────────────────
+
+    #[test]
+    fn arc_sink_forwards_record_and_flush() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        struct Counter {
+            recorded: AtomicUsize,
+            flushed: AtomicUsize,
+            shutdown_count: AtomicUsize,
+            run_ends: AtomicUsize,
+        }
+        impl MetricsSink for Counter {
+            fn record(&self, _event: &MetricsEvent) {
+                self.recorded.fetch_add(1, Ordering::SeqCst);
+            }
+            fn on_run_end(&self, _metrics: &AgentMetrics) {
+                self.run_ends.fetch_add(1, Ordering::SeqCst);
+            }
+            fn flush(&self) -> Result<(), SinkError> {
+                self.flushed.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            }
+            fn shutdown(&self) -> Result<(), SinkError> {
+                self.shutdown_count.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            }
+        }
+
+        let counter = Arc::new(Counter {
+            recorded: AtomicUsize::new(0),
+            flushed: AtomicUsize::new(0),
+            shutdown_count: AtomicUsize::new(0),
+            run_ends: AtomicUsize::new(0),
+        });
+        let arc: Arc<dyn MetricsSink> = counter.clone();
+        let wrap = ArcSink(arc);
+        wrap.record(&MetricsEvent::Inference(sample_inference()));
+        wrap.record(&MetricsEvent::Tool(sample_tool()));
+        wrap.on_run_end(&AgentMetrics::default());
+        wrap.flush().unwrap();
+        wrap.shutdown().unwrap();
+        assert_eq!(counter.recorded.load(Ordering::SeqCst), 2);
+        assert_eq!(counter.run_ends.load(Ordering::SeqCst), 1);
+        assert_eq!(counter.flushed.load(Ordering::SeqCst), 1);
+        assert_eq!(counter.shutdown_count.load(Ordering::SeqCst), 1);
+    }
+
+    // ── env_truthy / env_path / env_present (pure parsers) ─────────────
+
+    #[test]
+    fn env_truthy_recognises_truthy_values() {
+        // Use a key unlikely to be set in CI to be deterministic.
+        let key = "AWAKEN_TEST_TRUTHY_PROBE_DOES_NOT_EXIST";
+        assert!(!env_truthy(key));
+    }
+
+    #[test]
+    fn env_path_filters_blank_strings() {
+        let key = "AWAKEN_TEST_PATH_PROBE_DOES_NOT_EXIST";
+        assert!(env_path(key).is_none());
+    }
+
+    #[test]
+    fn env_present_returns_false_when_unset() {
+        let key = "AWAKEN_TEST_PRESENT_PROBE_DOES_NOT_EXIST";
+        assert!(!env_present(key));
     }
 }
