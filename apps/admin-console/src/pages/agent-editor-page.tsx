@@ -9,6 +9,7 @@ import { type AgentSpec, type Capabilities, configApi } from "@/lib/config-api";
 import { Field } from "@/components/form-components";
 import { AgentPreviewPanel } from "@/components/agent-preview-panel";
 import { PluginConfigWorkspace } from "@/components/plugin-config-workspace";
+import { ToolSelector } from "@/components/tool-selector";
 import { useToast } from "@/components/toast-provider";
 import { useUnsavedChangesGuard } from "@/components/unsaved-changes-guard";
 import {
@@ -17,8 +18,12 @@ import {
   readTabFromSearch,
   writeTabToSearch,
 } from "@/lib/editor-tabs";
-import { isToolAllowed, nextAllowedTools } from "@/lib/agent-tool-selection";
 import { pluginConfigEntryKey, pluginDisplayName } from "@/lib/plugin-config";
+import {
+  REASONING_EFFORT_PRESETS,
+  reasoningEffortMode,
+  reasoningEffortValue,
+} from "@/lib/reasoning-effort";
 import { adminRoutes } from "@/lib/routes";
 
 const EMPTY_AGENT: AgentSpec = {
@@ -212,13 +217,7 @@ export function AgentEditorPage() {
     });
   }
 
-  function toggleAllowedTool(toolId: string, checked: boolean) {
-    const allToolIds = (capabilities?.tools ?? []).map((tool) => tool.id);
-    updateField(
-      "allowed_tools",
-      nextAllowedTools(spec.allowed_tools, allToolIds, toolId, checked),
-    );
-  }
+  const reasoningMode = reasoningEffortMode(spec.reasoning_effort);
 
   const configurablePlugins = (capabilities?.plugins ?? []).filter(
     (plugin) => plugin.config_schemas.length > 0,
@@ -305,6 +304,7 @@ export function AgentEditorPage() {
               capabilities={capabilities}
               isNew={isNew}
               updateField={updateField}
+              reasoningMode={reasoningMode}
             />
           )}
 
@@ -312,7 +312,7 @@ export function AgentEditorPage() {
             <ToolsPanel
               spec={spec}
               capabilities={capabilities}
-              toggleAllowedTool={toggleAllowedTool}
+              updateField={updateField}
             />
           )}
 
@@ -429,11 +429,13 @@ function BasicsPanel({
   capabilities,
   isNew,
   updateField,
+  reasoningMode,
 }: {
   spec: AgentSpec;
   capabilities: Capabilities | null;
   isNew: boolean;
   updateField: <K extends keyof AgentSpec>(key: K, value: AgentSpec[K]) => void;
+  reasoningMode: ReturnType<typeof reasoningEffortMode>;
 }) {
   return (
     <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
@@ -487,6 +489,79 @@ function BasicsPanel({
             className="w-full rounded-xl border border-slate-300 px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-slate-500"
           />
         </Field>
+        <Field label="Reasoning effort">
+          <div className="flex flex-wrap items-center gap-2">
+            <select
+              value={
+                reasoningMode.kind === "default"
+                  ? "__default__"
+                  : reasoningMode.kind === "preset"
+                    ? reasoningMode.value
+                    : "__custom__"
+              }
+              onChange={(event) => {
+                const choice = event.target.value;
+                if (choice === "__default__") {
+                  updateField(
+                    "reasoning_effort",
+                    reasoningEffortValue({ kind: "default" }) as
+                      | string
+                      | number
+                      | null
+                      | undefined,
+                  );
+                  return;
+                }
+                if (choice === "__custom__") {
+                  updateField(
+                    "reasoning_effort",
+                    reasoningEffortValue({
+                      kind: "custom",
+                      value:
+                        reasoningMode.kind === "custom"
+                          ? reasoningMode.value
+                          : "",
+                    }) as string | number | null | undefined,
+                  );
+                  return;
+                }
+                updateField(
+                  "reasoning_effort",
+                  reasoningEffortValue({
+                    kind: "preset",
+                    value: choice as (typeof REASONING_EFFORT_PRESETS)[number],
+                  }) as string | number | null | undefined,
+                );
+              }}
+              className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-slate-500"
+            >
+              <option value="__default__">Provider default</option>
+              {REASONING_EFFORT_PRESETS.map((preset) => (
+                <option key={preset} value={preset}>
+                  {preset}
+                </option>
+              ))}
+              <option value="__custom__">Custom…</option>
+            </select>
+            {reasoningMode.kind === "custom" ? (
+              <input
+                type="text"
+                value={reasoningMode.value}
+                onChange={(event) =>
+                  updateField(
+                    "reasoning_effort",
+                    reasoningEffortValue({
+                      kind: "custom",
+                      value: event.target.value,
+                    }) as string | number | null | undefined,
+                  )
+                }
+                placeholder="e.g. 1, 2, ultra"
+                className="w-32 rounded-xl border border-slate-300 px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-slate-500"
+              />
+            ) : null}
+          </div>
+        </Field>
       </div>
 
       <div className="mt-4">
@@ -509,11 +584,11 @@ function BasicsPanel({
 function ToolsPanel({
   spec,
   capabilities,
-  toggleAllowedTool,
+  updateField,
 }: {
   spec: AgentSpec;
   capabilities: Capabilities | null;
-  toggleAllowedTool: (toolId: string, checked: boolean) => void;
+  updateField: <K extends keyof AgentSpec>(key: K, value: AgentSpec[K]) => void;
 }) {
   if (!capabilities || capabilities.tools.length === 0) {
     return (
@@ -524,39 +599,24 @@ function ToolsPanel({
     );
   }
   return (
-    <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-      <h3 className="text-lg font-semibold text-slate-950">Allowed Tools</h3>
-      <p className="mt-2 text-sm text-slate-500">
-        Leaving every tool selected keeps the default runtime behavior.
-      </p>
-      <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-3">
-        {capabilities.tools.map((tool) => {
-          const checked = isToolAllowed(spec.allowed_tools, tool.id);
-          return (
-            <label
-              key={tool.id}
-              className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-700"
-            >
-              <div className="flex items-start gap-3">
-                <input
-                  type="checkbox"
-                  checked={checked}
-                  onChange={(event) =>
-                    toggleAllowedTool(tool.id, event.target.checked)
-                  }
-                />
-                <div>
-                  <div className="font-mono text-slate-900">{tool.id}</div>
-                  <div className="mt-1 text-slate-500">
-                    {tool.description || tool.name}
-                  </div>
-                </div>
-              </div>
-            </label>
-          );
-        })}
-      </div>
-    </section>
+    <>
+      <ToolSelector
+        title="Allowed Tools"
+        description='"All tools" is the default — every published tool is exposed. Switch to Custom to restrict the agent to a specific subset.'
+        tools={capabilities.tools}
+        value={spec.allowed_tools}
+        onChange={(next) => updateField("allowed_tools", next)}
+        variant="include"
+      />
+      <ToolSelector
+        title="Excluded Tools"
+        description="Excluded tools are removed from the effective allow-list, even if they appear in 'All tools'. Useful for keeping a tool published to other agents but blocking it here."
+        tools={capabilities.tools}
+        value={spec.excluded_tools}
+        onChange={(next) => updateField("excluded_tools", next)}
+        variant="exclude"
+      />
+    </>
   );
 }
 
