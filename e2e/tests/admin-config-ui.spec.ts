@@ -35,8 +35,8 @@ async function gotoEditorTab(
   name: 'Basics' | 'Tools' | 'Plugins' | 'Delegates' | 'Advanced',
 ) {
   await page
-    .getByRole('navigation', { name: 'Editor sections' })
-    .getByRole('button', { name })
+    .getByRole('tablist', { name: 'Editor sections' })
+    .getByRole('tab', { name })
     .click();
 }
 

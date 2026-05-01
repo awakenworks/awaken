@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Link,
   useNavigate,
@@ -298,46 +298,53 @@ export function AgentEditorPage() {
 
       <div className="grid gap-6 px-6 py-6 md:px-8 xl:grid-cols-[minmax(0,1fr),24rem]">
         <div className="space-y-6">
-          {activeTab === "basics" && (
-            <BasicsPanel
-              spec={spec}
-              capabilities={capabilities}
-              isNew={isNew}
-              updateField={updateField}
-              reasoningMode={reasoningMode}
-            />
-          )}
-
-          {activeTab === "tools" && (
-            <ToolsPanel
-              spec={spec}
-              capabilities={capabilities}
-              updateField={updateField}
-            />
-          )}
-
-          {activeTab === "plugins" && (
-            <PluginsPanel
-              spec={spec}
-              capabilities={capabilities}
-              configurablePlugins={configurablePlugins}
-              visiblePluginSchemas={visiblePluginSchemas}
-              activePluginConfig={activePluginConfig}
-              setActivePluginConfig={setActivePluginConfig}
-              togglePlugin={togglePlugin}
-              updateSection={updateSection}
-            />
-          )}
-
-          {activeTab === "delegates" && (
-            <DelegatesPanel
-              spec={spec}
-              capabilities={capabilities}
-              toggleDelegate={toggleDelegate}
-            />
-          )}
-
-          {activeTab === "advanced" && <AdvancedPanel spec={spec} />}
+          {AGENT_EDITOR_TABS.map((tab) => (
+            <div
+              key={tab.id}
+              role="tabpanel"
+              id={`panel-${tab.id}`}
+              aria-labelledby={`tab-${tab.id}`}
+              tabIndex={0}
+              hidden={activeTab !== tab.id}
+            >
+              {tab.id === "basics" && (
+                <BasicsPanel
+                  spec={spec}
+                  capabilities={capabilities}
+                  isNew={isNew}
+                  updateField={updateField}
+                  reasoningMode={reasoningMode}
+                />
+              )}
+              {tab.id === "tools" && (
+                <ToolsPanel
+                  spec={spec}
+                  capabilities={capabilities}
+                  updateField={updateField}
+                />
+              )}
+              {tab.id === "plugins" && (
+                <PluginsPanel
+                  spec={spec}
+                  capabilities={capabilities}
+                  configurablePlugins={configurablePlugins}
+                  visiblePluginSchemas={visiblePluginSchemas}
+                  activePluginConfig={activePluginConfig}
+                  setActivePluginConfig={setActivePluginConfig}
+                  togglePlugin={togglePlugin}
+                  updateSection={updateSection}
+                />
+              )}
+              {tab.id === "delegates" && (
+                <DelegatesPanel
+                  spec={spec}
+                  capabilities={capabilities}
+                  toggleDelegate={toggleDelegate}
+                />
+              )}
+              {tab.id === "advanced" && <AdvancedPanel spec={spec} />}
+            </div>
+          ))}
         </div>
 
         <AgentPreviewPanel draft={spec} />
@@ -363,6 +370,30 @@ function StickyEditorHeader({
   activeTab: AgentEditorTabId;
   onTabChange: (next: AgentEditorTabId) => void;
 }) {
+  const tabRefs = useRef<(HTMLButtonElement | null)[]>([]);
+
+  function handleKeyDown(event: React.KeyboardEvent, index: number) {
+    const count = AGENT_EDITOR_TABS.length;
+    let nextIndex: number | null = null;
+
+    if (event.key === "ArrowRight") {
+      nextIndex = (index + 1) % count;
+    } else if (event.key === "ArrowLeft") {
+      nextIndex = (index - 1 + count) % count;
+    } else if (event.key === "Home") {
+      nextIndex = 0;
+    } else if (event.key === "End") {
+      nextIndex = count - 1;
+    }
+
+    if (nextIndex !== null) {
+      event.preventDefault();
+      const nextTab = AGENT_EDITOR_TABS[nextIndex];
+      onTabChange(nextTab.id);
+      tabRefs.current[nextIndex]?.focus();
+    }
+  }
+
   return (
     <div className="sticky top-0 z-30 border-b border-slate-200 bg-white/95 px-6 pt-6 backdrop-blur md:px-8">
       <div className="flex flex-wrap items-center justify-between gap-4">
@@ -396,18 +427,28 @@ function StickyEditorHeader({
         </button>
       </div>
 
-      <nav
+      <div
+        role="tablist"
         aria-label="Editor sections"
+        aria-orientation="horizontal"
         className="mt-4 flex gap-1 overflow-x-auto"
       >
-        {AGENT_EDITOR_TABS.map((tab) => {
+        {AGENT_EDITOR_TABS.map((tab, index) => {
           const active = tab.id === activeTab;
           return (
             <button
               key={tab.id}
+              ref={(el) => {
+                tabRefs.current[index] = el;
+              }}
               type="button"
+              role="tab"
+              id={`tab-${tab.id}`}
+              aria-selected={active}
+              aria-controls={`panel-${tab.id}`}
+              tabIndex={active ? 0 : -1}
               onClick={() => onTabChange(tab.id)}
-              aria-current={active ? "page" : undefined}
+              onKeyDown={(event) => handleKeyDown(event, index)}
               className={[
                 "shrink-0 rounded-t-lg border-b-2 px-4 py-3 text-sm font-medium transition",
                 active
@@ -419,7 +460,7 @@ function StickyEditorHeader({
             </button>
           );
         })}
-      </nav>
+      </div>
     </div>
   );
 }
