@@ -10,6 +10,7 @@ import {
   toolFailureRate,
   type AgentRuntimeSnapshot,
   type HistogramBucket,
+  type ToolRuntimeStats,
 } from "./agent-stats";
 import { BACKEND_URL } from "./config-api";
 
@@ -38,6 +39,23 @@ function makeSnapshot(
     handoffs: 0,
     delegations: 0,
     tool_calls_by_tool: [],
+    ...overrides,
+  };
+}
+
+function makeToolStats(overrides: Partial<ToolRuntimeStats> = {}): ToolRuntimeStats {
+  return {
+    tool: "search",
+    call_count: 0,
+    failure_count: 0,
+    total_duration_ms: 0,
+    avg_duration_ms: 0,
+    min_duration_ms: 0,
+    max_duration_ms: 0,
+    p50_duration_ms: 0,
+    p95_duration_ms: 0,
+    p99_duration_ms: 0,
+    duration_histogram: [],
     ...overrides,
   };
 }
@@ -231,20 +249,16 @@ describe("toolFailureRate", () => {
   it("aggregates calls and failures across all tools", () => {
     const snap = makeSnapshot({
       tool_calls_by_tool: [
-        {
+        makeToolStats({
           tool: "search",
           call_count: 8,
           failure_count: 1,
-          total_duration_ms: 0,
-          avg_duration_ms: 0,
-        },
-        {
+        }),
+        makeToolStats({
           tool: "write",
           call_count: 2,
           failure_count: 1,
-          total_duration_ms: 0,
-          avg_duration_ms: 0,
-        },
+        }),
       ],
     });
     expect(toolFailureRate(snap)).toBeCloseTo(0.2);
