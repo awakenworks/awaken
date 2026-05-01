@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   configApi,
   type ProviderRecord,
@@ -6,6 +6,42 @@ import {
 } from "@/lib/config-api";
 import { useCrudPage } from "@/lib/use-crud-page";
 import { Field, ModeButton } from "@/components/form-components";
+import {
+  ListSearchBar,
+  PageSizeSelect,
+  Pagination,
+  SortableHeader,
+  type SortableColumn,
+} from "@/components/list-controls";
+import {
+  compareBoolean,
+  compareString,
+  DEFAULT_PAGE_SIZE,
+  filterBySearch,
+  paginate,
+  sortItems,
+  toggleSort,
+  type PageSize,
+  type SortConfig,
+  type SortState,
+} from "@/lib/list-view";
+
+type ProviderSortKey = "id" | "adapter" | "base_url" | "has_api_key";
+
+const SORT_CONFIG: SortConfig<ProviderRecord, ProviderSortKey> = {
+  id: (a, b) => compareString(a.id, b.id),
+  adapter: (a, b) => compareString(a.adapter, b.adapter),
+  base_url: (a, b) => compareString(a.base_url, b.base_url),
+  has_api_key: (a, b) => compareBoolean(a.has_api_key, b.has_api_key),
+};
+
+const COLUMNS: SortableColumn<ProviderSortKey>[] = [
+  { key: "id", label: "ID" },
+  { key: "adapter", label: "Adapter" },
+  { key: "base_url", label: "Base URL" },
+  { key: "has_api_key", label: "API Key" },
+  { key: null, label: "Actions" },
+];
 
 const FALLBACK_ADAPTERS = [
   "anthropic",
@@ -78,6 +114,36 @@ export function ProvidersPage() {
     return Array.from(options).sort((left, right) => left.localeCompare(right));
   }, [crud.draft?.adapter, serverAdapters]);
 
+  const [search, setSearch] = useState("");
+  const [sort, setSort] = useState<SortState<ProviderSortKey> | null>({
+    key: "id",
+    direction: "asc",
+  });
+  const [pageSize, setPageSize] = useState<PageSize>(DEFAULT_PAGE_SIZE);
+  const [page, setPage] = useState(1);
+
+  const filtered = useMemo(
+    () =>
+      filterBySearch(crud.items, search, (provider) => [
+        provider.id,
+        provider.adapter,
+        provider.base_url,
+      ]),
+    [crud.items, search],
+  );
+  const sorted = useMemo(
+    () => sortItems(filtered, sort, SORT_CONFIG),
+    [filtered, sort],
+  );
+  const view = useMemo(
+    () => paginate(sorted, { page, pageSize, totalItems: sorted.length }),
+    [sorted, page, pageSize],
+  );
+
+  useEffect(() => {
+    if (view.page !== page) setPage(view.page);
+  }, [view.page, page]);
+
   function startCreate() {
     crud.startNew({ ...EMPTY_PROVIDER });
     setApiKeyMode("replace");
@@ -112,12 +178,6 @@ export function ProvidersPage() {
           New Provider
         </button>
       </div>
-
-      {crud.error ? (
-        <div className="mb-4 rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
-          {crud.error}
-        </div>
-      ) : null}
 
       {crud.draft ? (
         <section className="mb-6 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
@@ -265,6 +325,24 @@ export function ProvidersPage() {
         </section>
       ) : null}
 
+      <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
+        <ListSearchBar
+          value={search}
+          onChange={(next) => {
+            setSearch(next);
+            setPage(1);
+          }}
+          placeholder="Search by id, adapter, base url…"
+        />
+        <PageSizeSelect
+          value={pageSize}
+          onChange={(next) => {
+            setPageSize(next);
+            setPage(1);
+          }}
+        />
+      </div>
+
       <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
         {crud.loading ? (
           <div className="px-5 py-6 text-sm text-slate-500">
@@ -274,53 +352,65 @@ export function ProvidersPage() {
           <div className="px-5 py-6 text-sm text-slate-500">
             No managed providers yet.
           </div>
+        ) : view.items.length === 0 ? (
+          <div className="px-5 py-6 text-sm text-slate-500">
+            No providers match the current filter.
+          </div>
         ) : (
-          <table className="min-w-full">
-            <thead className="bg-slate-50 text-left text-xs uppercase tracking-wide text-slate-500">
-              <tr>
-                <th className="px-5 py-3">ID</th>
-                <th className="px-5 py-3">Adapter</th>
-                <th className="px-5 py-3">Base URL</th>
-                <th className="px-5 py-3">API Key</th>
-                <th className="px-5 py-3">Actions</th>
-              </tr>
-            </thead>
-            <tbody>
-              {crud.items.map((provider) => (
-                <tr
-                  key={provider.id}
-                  className="border-t border-slate-200 text-sm text-slate-700"
-                >
-                  <td className="px-5 py-4 font-mono text-slate-950">{provider.id}</td>
-                  <td className="px-5 py-4">{provider.adapter}</td>
-                  <td className="px-5 py-4 text-slate-500">
-                    {provider.base_url ?? "Default"}
-                  </td>
-                  <td className="px-5 py-4 text-slate-500">
-                    {provider.has_api_key ? "Stored" : "Environment / none"}
-                  </td>
-                  <td className="px-5 py-4">
-                    <div className="flex gap-4">
-                      <button
-                        type="button"
-                        onClick={() => startEdit(provider)}
-                        className="font-medium text-slate-700 transition hover:text-slate-950"
-                      >
-                        Edit
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => void crud.handleDelete(provider.id)}
-                        className="font-medium text-rose-600 transition hover:text-rose-700"
-                      >
-                        Delete
-                      </button>
-                    </div>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+          <>
+            <table className="min-w-full">
+              <SortableHeader
+                columns={COLUMNS}
+                sort={sort}
+                onSort={(key) => setSort((current) => toggleSort(current, key))}
+              />
+              <tbody>
+                {view.items.map((provider) => (
+                  <tr
+                    key={provider.id}
+                    className="border-t border-slate-200 text-sm text-slate-700"
+                  >
+                    <td className="px-5 py-4 font-mono text-slate-950">{provider.id}</td>
+                    <td className="px-5 py-4">{provider.adapter}</td>
+                    <td className="px-5 py-4 text-slate-500">
+                      {provider.base_url ?? "Default"}
+                    </td>
+                    <td className="px-5 py-4 text-slate-500">
+                      {provider.has_api_key ? "Stored" : "Environment / none"}
+                    </td>
+                    <td className="px-5 py-4">
+                      <div className="flex gap-4">
+                        <button
+                          type="button"
+                          onClick={() => startEdit(provider)}
+                          className="font-medium text-slate-700 transition hover:text-slate-950"
+                        >
+                          Edit
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => void crud.handleDelete(provider.id)}
+                          className="font-medium text-rose-600 transition hover:text-rose-700"
+                        >
+                          Delete
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            {view.pageCount > 1 || view.totalItems > pageSize ? (
+              <Pagination
+                page={view.page}
+                pageCount={view.pageCount}
+                startIndex={view.startIndex}
+                endIndex={view.endIndex}
+                totalItems={view.totalItems}
+                onPageChange={setPage}
+              />
+            ) : null}
+          </>
         )}
       </div>
     </div>

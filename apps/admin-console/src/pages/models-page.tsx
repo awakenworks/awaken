@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   type ModelBindingSpec,
   type ProviderRecord,
@@ -6,6 +6,24 @@ import {
 } from "@/lib/config-api";
 import { useCrudPage } from "@/lib/use-crud-page";
 import { Field } from "@/components/form-components";
+import {
+  ListSearchBar,
+  PageSizeSelect,
+  Pagination,
+  SortableHeader,
+  type SortableColumn,
+} from "@/components/list-controls";
+import {
+  compareString,
+  DEFAULT_PAGE_SIZE,
+  filterBySearch,
+  paginate,
+  sortItems,
+  toggleSort,
+  type PageSize,
+  type SortConfig,
+  type SortState,
+} from "@/lib/list-view";
 
 const EMPTY_MODEL: ModelBindingSpec = {
   id: "",
@@ -18,12 +36,35 @@ const auxiliaryLoaders = () =>
     .list<ProviderRecord>("providers")
     .then((response) => response.items.map((provider) => provider.id));
 
+type ModelSortKey = "id" | "provider_id" | "upstream_model";
+
+const SORT_CONFIG: SortConfig<ModelBindingSpec, ModelSortKey> = {
+  id: (a, b) => compareString(a.id, b.id),
+  provider_id: (a, b) => compareString(a.provider_id, b.provider_id),
+  upstream_model: (a, b) => compareString(a.upstream_model, b.upstream_model),
+};
+
+const COLUMNS: SortableColumn<ModelSortKey>[] = [
+  { key: "id", label: "ID" },
+  { key: "provider_id", label: "Provider" },
+  { key: "upstream_model", label: "Upstream Model" },
+  { key: null, label: "Actions" },
+];
+
 export function ModelsPage() {
   const crud = useCrudPage<ModelBindingSpec>({
     namespace: "models",
     entityLabel: "model",
     auxiliaryLoaders,
   });
+
+  const [search, setSearch] = useState("");
+  const [sort, setSort] = useState<SortState<ModelSortKey> | null>({
+    key: "id",
+    direction: "asc",
+  });
+  const [pageSize, setPageSize] = useState<PageSize>(DEFAULT_PAGE_SIZE);
+  const [page, setPage] = useState(1);
 
   const providerIds = crud.auxiliaryData as string[];
   const providerOptions = useMemo(() => {
@@ -33,6 +74,35 @@ export function ModelsPage() {
     }
     return Array.from(options).sort((left, right) => left.localeCompare(right));
   }, [crud.draft?.provider_id, providerIds]);
+
+  const filtered = useMemo(
+    () =>
+      filterBySearch(crud.items, search, (model) => [
+        model.id,
+        model.provider_id,
+        model.upstream_model,
+      ]),
+    [crud.items, search],
+  );
+
+  const sorted = useMemo(
+    () => sortItems(filtered, sort, SORT_CONFIG),
+    [filtered, sort],
+  );
+
+  const view = useMemo(
+    () =>
+      paginate(sorted, {
+        page,
+        pageSize,
+        totalItems: sorted.length,
+      }),
+    [sorted, page, pageSize],
+  );
+
+  useEffect(() => {
+    if (view.page !== page) setPage(view.page);
+  }, [view.page, page]);
 
   return (
     <div className="mx-auto max-w-5xl p-6 md:p-8">
@@ -51,12 +121,6 @@ export function ModelsPage() {
           New Model
         </button>
       </div>
-
-      {crud.error ? (
-        <div className="mb-4 rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
-          {crud.error}
-        </div>
-      ) : null}
 
       {crud.draft ? (
         <section className="mb-6 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
@@ -131,6 +195,24 @@ export function ModelsPage() {
         </section>
       ) : null}
 
+      <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
+        <ListSearchBar
+          value={search}
+          onChange={(next) => {
+            setSearch(next);
+            setPage(1);
+          }}
+          placeholder="Search by id, provider, upstream…"
+        />
+        <PageSizeSelect
+          value={pageSize}
+          onChange={(next) => {
+            setPageSize(next);
+            setPage(1);
+          }}
+        />
+      </div>
+
       <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
         {crud.loading ? (
           <div className="px-5 py-6 text-sm text-slate-500">Loading models...</div>
@@ -138,49 +220,62 @@ export function ModelsPage() {
           <div className="px-5 py-6 text-sm text-slate-500">
             No managed models yet.
           </div>
+        ) : view.items.length === 0 ? (
+          <div className="px-5 py-6 text-sm text-slate-500">
+            No models match the current filter.
+          </div>
         ) : (
-          <table className="min-w-full">
-            <thead className="bg-slate-50 text-left text-xs uppercase tracking-wide text-slate-500">
-              <tr>
-                <th className="px-5 py-3">ID</th>
-                <th className="px-5 py-3">Provider</th>
-                <th className="px-5 py-3">Upstream Model</th>
-                <th className="px-5 py-3">Actions</th>
-              </tr>
-            </thead>
-            <tbody>
-              {crud.items.map((model) => (
-                <tr
-                  key={model.id}
-                  className="border-t border-slate-200 text-sm text-slate-700"
-                >
-                  <td className="px-5 py-4 font-mono text-slate-950">{model.id}</td>
-                  <td className="px-5 py-4">{model.provider_id}</td>
-                  <td className="px-5 py-4 text-slate-500">
-                    {model.upstream_model}
-                  </td>
-                  <td className="px-5 py-4">
-                    <div className="flex gap-4">
-                      <button
-                        type="button"
-                        onClick={() => crud.startEdit(model)}
-                        className="font-medium text-slate-700 transition hover:text-slate-950"
-                      >
-                        Edit
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => void crud.handleDelete(model.id)}
-                        className="font-medium text-rose-600 transition hover:text-rose-700"
-                      >
-                        Delete
-                      </button>
-                    </div>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+          <>
+            <table className="min-w-full">
+              <SortableHeader
+                columns={COLUMNS}
+                sort={sort}
+                onSort={(key) => setSort((current) => toggleSort(current, key))}
+              />
+              <tbody>
+                {view.items.map((model) => (
+                  <tr
+                    key={model.id}
+                    className="border-t border-slate-200 text-sm text-slate-700"
+                  >
+                    <td className="px-5 py-4 font-mono text-slate-950">{model.id}</td>
+                    <td className="px-5 py-4">{model.provider_id}</td>
+                    <td className="px-5 py-4 text-slate-500">
+                      {model.upstream_model}
+                    </td>
+                    <td className="px-5 py-4">
+                      <div className="flex gap-4">
+                        <button
+                          type="button"
+                          onClick={() => crud.startEdit(model)}
+                          className="font-medium text-slate-700 transition hover:text-slate-950"
+                        >
+                          Edit
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => void crud.handleDelete(model.id)}
+                          className="font-medium text-rose-600 transition hover:text-rose-700"
+                        >
+                          Delete
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            {view.pageCount > 1 || view.totalItems > pageSize ? (
+              <Pagination
+                page={view.page}
+                pageCount={view.pageCount}
+                startIndex={view.startIndex}
+                endIndex={view.endIndex}
+                totalItems={view.totalItems}
+                onPageChange={setPage}
+              />
+            ) : null}
+          </>
         )}
       </div>
     </div>

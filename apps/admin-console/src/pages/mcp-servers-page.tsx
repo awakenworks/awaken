@@ -1,4 +1,4 @@
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   type McpRestartPolicy,
   type McpServerRecord,
@@ -7,12 +7,53 @@ import {
 import { useCrudPage } from "@/lib/use-crud-page";
 import { Field, ModeButton } from "@/components/form-components";
 import {
+  ListSearchBar,
+  PageSizeSelect,
+  Pagination,
+  SortableHeader,
+  type SortableColumn,
+} from "@/components/list-controls";
+import {
+  compareString,
+  DEFAULT_PAGE_SIZE,
+  filterBySearch,
+  paginate,
+  sortItems,
+  toggleSort,
+  type PageSize,
+  type SortConfig,
+  type SortState,
+} from "@/lib/list-view";
+import {
   parseJsonObject,
   parseLineList,
   parseStringRecord,
   stringifyJsonObject,
   stringifyLineList,
 } from "@/lib/config-form-helpers";
+
+type McpSortKey = "id" | "transport" | "endpoint";
+
+function endpointFor(server: McpServerRecord): string {
+  if (server.transport === "stdio") {
+    return [server.command, ...(server.args ?? [])].filter(Boolean).join(" ");
+  }
+  return server.url ?? "";
+}
+
+const SORT_CONFIG: SortConfig<McpServerRecord, McpSortKey> = {
+  id: (a, b) => compareString(a.id, b.id),
+  transport: (a, b) => compareString(a.transport, b.transport),
+  endpoint: (a, b) => compareString(endpointFor(a), endpointFor(b)),
+};
+
+const COLUMNS: SortableColumn<McpSortKey>[] = [
+  { key: "id", label: "ID" },
+  { key: "transport", label: "Transport" },
+  { key: "endpoint", label: "Endpoint" },
+  { key: null, label: "Environment" },
+  { key: null, label: "Actions" },
+];
 
 type EnvMode = "preserve" | "replace" | "clear";
 
@@ -71,6 +112,37 @@ export function McpServersPage() {
     prepareSave,
   });
 
+  const [search, setSearch] = useState("");
+  const [sort, setSort] = useState<SortState<McpSortKey> | null>({
+    key: "id",
+    direction: "asc",
+  });
+  const [pageSize, setPageSize] = useState<PageSize>(DEFAULT_PAGE_SIZE);
+  const [page, setPage] = useState(1);
+
+  const filtered = useMemo(
+    () =>
+      filterBySearch(crud.items, search, (server) => [
+        server.id,
+        server.transport,
+        endpointFor(server),
+        ...(server.env_keys ?? []),
+      ]),
+    [crud.items, search],
+  );
+  const sorted = useMemo(
+    () => sortItems(filtered, sort, SORT_CONFIG),
+    [filtered, sort],
+  );
+  const view = useMemo(
+    () => paginate(sorted, { page, pageSize, totalItems: sorted.length }),
+    [sorted, page, pageSize],
+  );
+
+  useEffect(() => {
+    if (view.page !== page) setPage(view.page);
+  }, [view.page, page]);
+
   function startCreate() {
     crud.startNew({
       ...EMPTY_SERVER,
@@ -119,12 +191,6 @@ export function McpServersPage() {
           New MCP Server
         </button>
       </div>
-
-      {crud.error ? (
-        <div className="mb-4 rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
-          {crud.error}
-        </div>
-      ) : null}
 
       {crud.draft ? (
         <section className="mb-6 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
@@ -432,6 +498,24 @@ export function McpServersPage() {
         </section>
       ) : null}
 
+      <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
+        <ListSearchBar
+          value={search}
+          onChange={(next) => {
+            setSearch(next);
+            setPage(1);
+          }}
+          placeholder="Search by id, transport, endpoint, env key…"
+        />
+        <PageSizeSelect
+          value={pageSize}
+          onChange={(next) => {
+            setPageSize(next);
+            setPage(1);
+          }}
+        />
+      </div>
+
       <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
         {crud.loading ? (
           <div className="px-5 py-6 text-sm text-slate-500">
@@ -441,57 +525,67 @@ export function McpServersPage() {
           <div className="px-5 py-6 text-sm text-slate-500">
             No managed MCP servers yet.
           </div>
+        ) : view.items.length === 0 ? (
+          <div className="px-5 py-6 text-sm text-slate-500">
+            No MCP servers match the current filter.
+          </div>
         ) : (
-          <table className="min-w-full">
-            <thead className="bg-slate-50 text-left text-xs uppercase tracking-wide text-slate-500">
-              <tr>
-                <th className="px-5 py-3">ID</th>
-                <th className="px-5 py-3">Transport</th>
-                <th className="px-5 py-3">Endpoint</th>
-                <th className="px-5 py-3">Environment</th>
-                <th className="px-5 py-3">Actions</th>
-              </tr>
-            </thead>
-            <tbody>
-              {crud.items.map((server) => (
-                <tr
-                  key={server.id}
-                  className="border-t border-slate-200 text-sm text-slate-700"
-                >
-                  <td className="px-5 py-4 font-mono text-slate-950">{server.id}</td>
-                  <td className="px-5 py-4">{server.transport}</td>
-                  <td className="px-5 py-4 text-slate-500">
-                    {server.transport === "stdio"
-                      ? [server.command, ...(server.args ?? [])].filter(Boolean).join(" ")
-                      : server.url ?? "Unconfigured"}
-                  </td>
-                  <td className="px-5 py-4 text-slate-500">
-                    {server.has_env
-                      ? (server.env_keys ?? []).join(", ") || "Stored"
-                      : "None"}
-                  </td>
-                  <td className="px-5 py-4">
-                    <div className="flex gap-4">
-                      <button
-                        type="button"
-                        onClick={() => startEdit(server)}
-                        className="font-medium text-slate-700 transition hover:text-slate-950"
-                      >
-                        Edit
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => void crud.handleDelete(server.id)}
-                        className="font-medium text-rose-600 transition hover:text-rose-700"
-                      >
-                        Delete
-                      </button>
-                    </div>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+          <>
+            <table className="min-w-full">
+              <SortableHeader
+                columns={COLUMNS}
+                sort={sort}
+                onSort={(key) => setSort((current) => toggleSort(current, key))}
+              />
+              <tbody>
+                {view.items.map((server) => (
+                  <tr
+                    key={server.id}
+                    className="border-t border-slate-200 text-sm text-slate-700"
+                  >
+                    <td className="px-5 py-4 font-mono text-slate-950">{server.id}</td>
+                    <td className="px-5 py-4">{server.transport}</td>
+                    <td className="px-5 py-4 text-slate-500">
+                      {endpointFor(server) || "Unconfigured"}
+                    </td>
+                    <td className="px-5 py-4 text-slate-500">
+                      {server.has_env
+                        ? (server.env_keys ?? []).join(", ") || "Stored"
+                        : "None"}
+                    </td>
+                    <td className="px-5 py-4">
+                      <div className="flex gap-4">
+                        <button
+                          type="button"
+                          onClick={() => startEdit(server)}
+                          className="font-medium text-slate-700 transition hover:text-slate-950"
+                        >
+                          Edit
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => void crud.handleDelete(server.id)}
+                          className="font-medium text-rose-600 transition hover:text-rose-700"
+                        >
+                          Delete
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            {view.pageCount > 1 || view.totalItems > pageSize ? (
+              <Pagination
+                page={view.page}
+                pageCount={view.pageCount}
+                startIndex={view.startIndex}
+                endIndex={view.endIndex}
+                totalItems={view.totalItems}
+                onPageChange={setPage}
+              />
+            ) : null}
+          </>
         )}
       </div>
     </div>
