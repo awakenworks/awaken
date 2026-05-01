@@ -7,6 +7,7 @@ import {
   expireToasts,
   MAX_VISIBLE_TOASTS,
   nextExpiryDelay,
+  type AppendResult,
   type Toast,
 } from "./toast-queue";
 
@@ -61,7 +62,9 @@ describe("appendToast", () => {
   it("appends to the tail when below the cap", () => {
     const a = makeToast({ id: "a" });
     const b = makeToast({ id: "b" });
-    expect(appendToast([a], b)).toEqual([a, b]);
+    const result = appendToast([a], b);
+    expect(result.queue).toEqual([a, b]);
+    expect(result.displaced).toBe(0);
   });
 
   it("evicts the oldest toast when the cap is exceeded", () => {
@@ -69,10 +72,33 @@ describe("appendToast", () => {
       makeToast({ id: `t${idx}` }),
     );
     const incoming = makeToast({ id: "new" });
-    const next = appendToast(queue, incoming);
+    const { queue: next, displaced } = appendToast(queue, incoming);
     expect(next).toHaveLength(MAX_VISIBLE_TOASTS);
     expect(next[0].id).toBe("t1");
     expect(next[next.length - 1].id).toBe("new");
+    expect(displaced).toBe(1);
+  });
+
+  it("displaced is 0 when no eviction occurs", () => {
+    const result = appendToast([], makeToast({ id: "a" }));
+    expect(result.displaced).toBe(0);
+  });
+
+  it("accumulates displaced across multiple evictions", () => {
+    const queue = Array.from({ length: MAX_VISIBLE_TOASTS }, (_, idx) =>
+      makeToast({ id: `t${idx}` }),
+    );
+    // First eviction: displaced goes from 0 to 1
+    const r1 = appendToast(queue, makeToast({ id: "new1" }));
+    expect(r1.displaced).toBe(1);
+    // Second eviction: pass displaced=1 forward
+    const r2 = appendToast(r1.queue, makeToast({ id: "new2" }), r1.displaced);
+    expect(r2.displaced).toBe(2);
+  });
+
+  it("carries over a non-zero currentDisplaced when no eviction occurs", () => {
+    const result: AppendResult = appendToast([], makeToast({ id: "x" }), 3);
+    expect(result.displaced).toBe(3);
   });
 });
 

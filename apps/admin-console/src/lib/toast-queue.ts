@@ -39,11 +39,25 @@ export function createToast(input: ToastInput, id: string, now: number): Toast {
   };
 }
 
-export function appendToast(queue: Toast[], toast: Toast): Toast[] {
+export interface AppendResult {
+  queue: Toast[];
+  displaced: number;
+}
+
+export function appendToast(
+  queue: Toast[],
+  toast: Toast,
+  currentDisplaced = 0,
+): AppendResult {
   const next = [...queue, toast];
-  return next.length > MAX_VISIBLE_TOASTS
-    ? next.slice(next.length - MAX_VISIBLE_TOASTS)
-    : next;
+  if (next.length > MAX_VISIBLE_TOASTS) {
+    const evicted = next.length - MAX_VISIBLE_TOASTS;
+    return {
+      queue: next.slice(evicted),
+      displaced: currentDisplaced + evicted,
+    };
+  }
+  return { queue: next, displaced: currentDisplaced };
 }
 
 export function dismissToast(queue: Toast[], id: string): Toast[] {

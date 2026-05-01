@@ -4,8 +4,9 @@ import {
   useContext,
   useEffect,
   useMemo,
+  useReducer,
   useRef,
-  useState,
+  type KeyboardEvent,
   type ReactNode,
 } from "react";
 import {
@@ -35,18 +36,58 @@ function nextToastId(): string {
   return `toast-${counter}-${Date.now().toString(36)}`;
 }
 
+// ---------------------------------------------------------------------------
+// Reducer — pure state machine; StrictMode-safe (no side-effects in updater)
+// ---------------------------------------------------------------------------
+
+interface ToastState {
+  toasts: Toast[];
+  displaced: number;
+}
+
+type ToastAction =
+  | { kind: "push"; toast: Toast }
+  | { kind: "dismiss"; id: string }
+  | { kind: "clearDisplaced" }
+  | { kind: "expire"; now: number };
+
+function toastReducer(state: ToastState, action: ToastAction): ToastState {
+  switch (action.kind) {
+    case "push": {
+      const result = appendToast(state.toasts, action.toast, state.displaced);
+      return { toasts: result.queue, displaced: result.displaced };
+    }
+    case "dismiss": {
+      // Leave displaced unchanged — those earlier toasts are not retrievable.
+      return { ...state, toasts: dismissToast(state.toasts, action.id) };
+    }
+    case "clearDisplaced": {
+      return { ...state, displaced: 0 };
+    }
+    case "expire": {
+      return { ...state, toasts: expireToasts(state.toasts, action.now) };
+    }
+  }
+}
+
+const INITIAL_STATE: ToastState = { toasts: [], displaced: 0 };
+
 export function ToastProvider({ children }: { children: ReactNode }) {
-  const [toasts, setToasts] = useState<Toast[]>([]);
+  const [{ toasts, displaced }, dispatch] = useReducer(toastReducer, INITIAL_STATE);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const dismiss = useCallback((id: string) => {
-    setToasts((current) => dismissToast(current, id));
+    dispatch({ kind: "dismiss", id });
+  }, []);
+
+  const clearDisplaced = useCallback(() => {
+    dispatch({ kind: "clearDisplaced" });
   }, []);
 
   const push = useCallback((input: ToastInput): string => {
     const id = nextToastId();
     const toast = createToast(input, id, Date.now());
-    setToasts((current) => appendToast(current, toast));
+    dispatch({ kind: "push", toast });
     return id;
   }, []);
 
@@ -76,7 +117,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
     }
 
     timerRef.current = setTimeout(() => {
-      setToasts((current) => expireToasts(current, Date.now()));
+      dispatch({ kind: "expire", now: Date.now() });
     }, Math.max(delay, 50));
 
     return () => {
@@ -95,7 +136,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
   return (
     <ToastContext.Provider value={value}>
       {children}
-      <ToastViewport toasts={toasts} onDismiss={dismiss} />
+      <ToastViewport toasts={toasts} displaced={displaced} onDismiss={dismiss} onClearDisplaced={clearDisplaced} />
     </ToastContext.Provider>
   );
 }
@@ -110,18 +151,35 @@ export function useToast(): ToastContextValue {
 
 function ToastViewport({
   toasts,
+  displaced,
   onDismiss,
+  onClearDisplaced,
 }: {
   toasts: Toast[];
+  displaced: number;
   onDismiss: (id: string) => void;
+  onClearDisplaced: () => void;
 }) {
-  if (toasts.length === 0) return null;
+  if (toasts.length === 0 && displaced === 0) return null;
   return (
     <div
       role="status"
       aria-live="polite"
       className="pointer-events-none fixed bottom-4 right-4 z-50 flex max-w-sm flex-col gap-2"
     >
+      {displaced > 0 && (
+        <div className="pointer-events-auto flex items-center justify-between rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs text-slate-500 shadow">
+          <span>+ {displaced} earlier</span>
+          <button
+            type="button"
+            aria-label="Dismiss earlier notifications"
+            onClick={onClearDisplaced}
+            className="ml-3 rounded px-1 text-slate-400 transition hover:text-slate-700"
+          >
+            ×
+          </button>
+        </div>
+      )}
       {toasts.map((toast) => (
         <ToastCard key={toast.id} toast={toast} onDismiss={onDismiss} />
       ))}
@@ -188,6 +246,13 @@ function ToastCard({
           type="button"
           aria-label="Dismiss"
           onClick={() => onDismiss(toast.id)}
+          onKeyDown={(e: KeyboardEvent<HTMLButtonElement>) => {
+            if (e.key === "Escape") {
+              e.preventDefault();
+              e.stopPropagation();
+              onDismiss(toast.id);
+            }
+          }}
           className="rounded-md px-1.5 text-sm text-slate-400 transition hover:text-slate-700"
         >
           ×
