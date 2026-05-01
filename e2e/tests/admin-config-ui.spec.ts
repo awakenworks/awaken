@@ -30,7 +30,18 @@ function textDeltas(events: any[]): string {
     .join('');
 }
 
+async function gotoEditorTab(
+  page: import('@playwright/test').Page,
+  name: 'Basics' | 'Tools' | 'Plugins' | 'Delegates' | 'Advanced',
+) {
+  await page
+    .getByRole('navigation', { name: 'Editor sections' })
+    .getByRole('button', { name })
+    .click();
+}
+
 async function selectPlugin(page: import('@playwright/test').Page, pluginId: string) {
+  await gotoEditorTab(page, 'Plugins');
   const pluginsSection = page
     .locator('section')
     .filter({ has: page.getByRole('heading', { name: 'Plugins' }) })
@@ -42,6 +53,18 @@ async function selectPlugin(page: import('@playwright/test').Page, pluginId: str
     .getByRole('checkbox')
     .first()
     .check();
+}
+
+/// Match the toast emitted by the editor on a successful create. The
+/// admin console replaced the earlier inline "Agent created." banner
+/// with a per-record toast like `Agent "ui-permission-…" created`.
+function expectAgentCreatedToast(
+  page: import('@playwright/test').Page,
+  agentId: string,
+) {
+  return page.getByRole('alert').filter({
+    hasText: new RegExp(`Agent\\s+"${agentId.replace(/[.*+?^${}()|[\\]\\\\]/g, '\\\\$&')}"\\s+created`),
+  });
 }
 
 async function createProviderViaUi(
@@ -119,7 +142,6 @@ test.describe('admin config UI', () => {
       .getByLabel('System prompt')
       .fill('Use the scripted tool directives when the user provides one.');
     await selectPlugin(page, 'permission');
-    await expect(page.locator('pre')).not.toContainText('deferred_tools');
 
     await page.getByRole('button', { name: /Permissions/ }).click();
     const pluginsSection = page
@@ -130,10 +152,13 @@ test.describe('admin config UI', () => {
       .getByRole('button', { name: /^Deny/ })
       .first()
       .evaluate((element) => (element as HTMLButtonElement).click());
+
+    await gotoEditorTab(page, 'Advanced');
     await expect(page.locator('pre')).toContainText('"default_behavior": "deny"');
+    await expect(page.locator('pre')).not.toContainText('deferred_tools');
 
     await page.getByRole('button', { name: 'Save' }).click();
-    await expect(page.getByText('Agent created.')).toBeVisible();
+    await expect(expectAgentCreatedToast(page, agentId)).toBeVisible();
 
     const response = await request.post(`${BACKEND_URL}/v1/runs`, {
       data: {
@@ -163,17 +188,19 @@ test.describe('admin config UI', () => {
     await selectPlugin(page, 'ext-deferred-tools');
 
     await page.getByRole('button', { name: /Deferred Tools/ }).first().click();
-    await expect(page.locator('pre')).toContainText('"deferred_tools"');
 
     const pluginsSection = page
       .locator('section')
       .filter({ has: page.getByRole('heading', { name: 'Plugins' }) })
       .first();
     await pluginsSection.getByLabel('beta_overhead').fill('0');
+
+    await gotoEditorTab(page, 'Advanced');
+    await expect(page.locator('pre')).toContainText('"deferred_tools"');
     await expect(page.locator('pre')).toContainText('"beta_overhead": 0');
 
     await page.getByRole('button', { name: 'Save' }).click();
-    await expect(page.getByText('Agent created.')).toBeVisible();
+    await expect(expectAgentCreatedToast(page, agentId)).toBeVisible();
 
     const agentResponse = await request.get(
       `${BACKEND_URL}/v1/config/agents/${encodeURIComponent(agentId)}`,
@@ -243,7 +270,7 @@ test.describe('admin config UI', () => {
       .getByLabel('System prompt')
       .fill('Reply with exactly "bigmodel-ui-ok" and no other text.');
     await page.getByRole('button', { name: 'Save' }).click();
-    await expect(page.getByText('Agent created.')).toBeVisible();
+    await expect(expectAgentCreatedToast(page, agentId)).toBeVisible();
 
     const runResponse = await request.post(`${BACKEND_URL}/v1/runs`, {
       data: {
