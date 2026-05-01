@@ -1,3 +1,8 @@
+import {
+  hasUnauthorizedHandler,
+  requestUnauthorizedRetry,
+} from "./auth-interceptor";
+
 export const BACKEND_URL =
   import.meta.env.VITE_BACKEND_URL ?? "http://127.0.0.1:38080";
 
@@ -156,7 +161,14 @@ async function readResponseBody(response: Response): Promise<unknown> {
 }
 
 async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(url, withAdminAuth(init));
+  let response = await fetch(url, withAdminAuth(init));
+  if (response.status === 401 && hasUnauthorizedHandler()) {
+    const refreshed = await requestUnauthorizedRetry();
+    if (refreshed && refreshed.trim().length > 0) {
+      response = await fetch(url, withAdminAuth(init, refreshed.trim()));
+    }
+  }
+
   const detail = await readResponseBody(response);
 
   if (!response.ok) {
@@ -170,7 +182,11 @@ async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {
   return detail as T;
 }
 
-function adminBearerToken(): string | undefined {
+function adminBearerToken(override?: string): string | undefined {
+  if (typeof override === "string" && override.trim().length > 0) {
+    return override.trim();
+  }
+
   const envToken = import.meta.env.VITE_ADMIN_BEARER_TOKEN;
   if (typeof envToken === "string" && envToken.trim().length > 0) {
     return envToken.trim();
@@ -183,16 +199,14 @@ function adminBearerToken(): string | undefined {
   return stored?.trim() || undefined;
 }
 
-function withAdminAuth(init?: RequestInit): RequestInit | undefined {
-  const token = adminBearerToken();
+function withAdminAuth(init?: RequestInit, override?: string): RequestInit | undefined {
+  const token = adminBearerToken(override);
   if (!token) {
     return init;
   }
 
   const headers = new Headers(init?.headers);
-  if (!headers.has("authorization")) {
-    headers.set("authorization", `Bearer ${token}`);
-  }
+  headers.set("authorization", `Bearer ${token}`);
   return {
     ...init,
     headers,
