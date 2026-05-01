@@ -292,4 +292,41 @@ test.describe('admin config UI', () => {
     ).not.toBe('error');
     expect(textDeltas(events).toLowerCase()).toContain('bigmodel-ui-ok');
   });
+
+  test('unsaved-changes guard intercepts in-app navigation', async ({ page }) => {
+    const agentId = `ui-guard-${suffix()}`;
+
+    await page.goto('/agents/new');
+    await page.getByLabel('Agent ID').fill(agentId);
+    await page.getByLabel(/System prompt/).fill('halfway through editing');
+
+    // Sticky header surfaces the dirty state; assert the badge appears
+    // so we know the editor agrees there are unsaved changes.
+    await expect(
+      page.getByText('Unsaved changes', { exact: true }),
+    ).toBeVisible();
+
+    // First attempt: click "Back to agents" then keep editing — the
+    // dialog should appear and the URL must stay on /agents/new.
+    await page.getByRole('link', { name: 'Back to agents' }).click();
+    const dialog = page.getByRole('dialog', {
+      name: /Discard unsaved changes/,
+    });
+    await expect(dialog).toBeVisible();
+    await dialog.getByRole('button', { name: 'Keep editing' }).click();
+    await expect(dialog).toBeHidden();
+    await expect(page).toHaveURL(/\/agents\/new$/);
+    await expect(page.getByLabel('Agent ID')).toHaveValue(agentId);
+
+    // Second attempt: click again, this time discard.
+    await page.getByRole('link', { name: 'Back to agents' }).click();
+    const discardDialog = page.getByRole('dialog', {
+      name: /Discard unsaved changes/,
+    });
+    await expect(discardDialog).toBeVisible();
+    await discardDialog
+      .getByRole('button', { name: 'Discard changes' })
+      .click();
+    await expect(page).toHaveURL(/\/agents$/);
+  });
 });
