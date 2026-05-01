@@ -1,10 +1,32 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { type SkillInfo, configApi } from "@/lib/config-api";
+import { useToast } from "@/components/toast-provider";
+import {
+  DEFAULT_SKILLS_FILTER,
+  filterSkills,
+  type ContextFilter,
+  type InvocableFilter,
+  type SkillsFilterState,
+} from "@/lib/skills-filter";
+
+const INVOCABLE_OPTIONS: Array<{ value: InvocableFilter; label: string }> = [
+  { value: "any", label: "Any caller" },
+  { value: "user", label: "User callable" },
+  { value: "model", label: "Model callable" },
+  { value: "internal", label: "Internal only" },
+];
+
+const CONTEXT_OPTIONS: Array<{ value: ContextFilter; label: string }> = [
+  { value: "any", label: "Any context" },
+  { value: "inline", label: "Inline" },
+  { value: "fork", label: "Fork" },
+];
 
 export function SkillsPage() {
+  const toast = useToast();
   const [skills, setSkills] = useState<SkillInfo[]>([]);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const [filter, setFilter] = useState<SkillsFilterState>(DEFAULT_SKILLS_FILTER);
 
   useEffect(() => {
     let cancelled = false;
@@ -15,11 +37,10 @@ export function SkillsPage() {
         const capabilities = await configApi.capabilities();
         if (!cancelled) {
           setSkills(capabilities.skills);
-          setError(null);
         }
       } catch (loadError) {
         if (!cancelled) {
-          setError(
+          toast.error(
             loadError instanceof Error ? loadError.message : String(loadError),
           );
           setSkills([]);
@@ -36,7 +57,12 @@ export function SkillsPage() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [toast]);
+
+  const visibleSkills = useMemo(
+    () => filterSkills(skills, filter),
+    [skills, filter],
+  );
 
   return (
     <div className="mx-auto max-w-6xl p-6 md:p-8">
@@ -54,11 +80,61 @@ export function SkillsPage() {
         </p>
       </header>
 
-      {error ? (
-        <div className="mb-4 rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
-          {error}
-        </div>
-      ) : null}
+      <section className="mb-4 flex flex-wrap items-end gap-3 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+        <label className="block w-full max-w-sm">
+          <span className="sr-only">Search skills</span>
+          <input
+            type="search"
+            value={filter.search}
+            onChange={(event) =>
+              setFilter((current) => ({ ...current, search: event.target.value }))
+            }
+            placeholder="Search by id, name, description, tool, path…"
+            className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-slate-500"
+          />
+        </label>
+        <label className="text-xs text-slate-500">
+          <span className="mr-2">Caller</span>
+          <select
+            value={filter.invocable}
+            onChange={(event) =>
+              setFilter((current) => ({
+                ...current,
+                invocable: event.target.value as InvocableFilter,
+              }))
+            }
+            className="rounded-md border border-slate-300 bg-white px-2 py-1 text-xs text-slate-700 outline-none focus:border-slate-500"
+          >
+            {INVOCABLE_OPTIONS.map((option) => (
+              <option key={option.value} value={option.value}>
+                {option.label}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="text-xs text-slate-500">
+          <span className="mr-2">Context</span>
+          <select
+            value={filter.context}
+            onChange={(event) =>
+              setFilter((current) => ({
+                ...current,
+                context: event.target.value as ContextFilter,
+              }))
+            }
+            className="rounded-md border border-slate-300 bg-white px-2 py-1 text-xs text-slate-700 outline-none focus:border-slate-500"
+          >
+            {CONTEXT_OPTIONS.map((option) => (
+              <option key={option.value} value={option.value}>
+                {option.label}
+              </option>
+            ))}
+          </select>
+        </label>
+        <span className="ml-auto text-xs text-slate-500">
+          {visibleSkills.length} of {skills.length} shown
+        </span>
+      </section>
 
       {loading ? (
         <div className="rounded-2xl border border-slate-200 bg-white p-6 text-sm text-slate-500 shadow-sm">
@@ -68,9 +144,13 @@ export function SkillsPage() {
         <div className="rounded-2xl border border-slate-200 bg-white p-6 text-sm text-slate-500 shadow-sm">
           No skills are currently registered.
         </div>
+      ) : visibleSkills.length === 0 ? (
+        <div className="rounded-2xl border border-slate-200 bg-white p-6 text-sm text-slate-500 shadow-sm">
+          No skills match the current filter.
+        </div>
       ) : (
         <div className="grid gap-4 lg:grid-cols-2">
-          {skills.map((skill) => (
+          {visibleSkills.map((skill) => (
             <article
               key={skill.id}
               className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm"

@@ -13,6 +13,20 @@ import {
   type ParseIssue,
   type ReplayReport,
 } from "@/lib/eval-reports";
+import {
+  DEFAULT_FIXTURE_FILTER,
+  filterFixtures,
+  type FixtureFilterState,
+  type FixtureStatusFilter,
+} from "@/lib/eval-reports-filter";
+
+const STATUS_OPTIONS: Array<{ value: FixtureStatusFilter; label: string }> = [
+  { value: "all", label: "All fixtures" },
+  { value: "passed", label: "Passing" },
+  { value: "failed", label: "Failing" },
+  { value: "regressions", label: "Regressions" },
+  { value: "fixed", label: "Newly fixed" },
+];
 
 type FileSlot = {
   name: string;
@@ -24,6 +38,9 @@ export function EvalReportsPage() {
   const [report, setReport] = useState<FileSlot | null>(null);
   const [baseline, setBaseline] = useState<FileSlot | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [fixtureFilter, setFixtureFilter] = useState<FixtureFilterState>(
+    DEFAULT_FIXTURE_FILTER,
+  );
 
   async function readFile(
     event: ChangeEvent<HTMLInputElement>,
@@ -55,6 +72,11 @@ export function EvalReportsPage() {
     if (!diff) return new Map<string, DiffEntry>();
     return new Map(diff.entries.map((e) => [e.fixture_id, e]));
   }, [diff]);
+
+  const visibleFixtures = useMemo(() => {
+    if (!report) return [] as ReplayReport[];
+    return filterFixtures(report.reports, fixtureFilter, diffByFixture);
+  }, [report, fixtureFilter, diffByFixture]);
 
   const perAgentRows = useMemo(
     () => (report ? aggregateToolCallsByAgent(report.reports) : []),
@@ -179,7 +201,54 @@ export function EvalReportsPage() {
             <ParseIssuesPanel issues={baseline.issues} forBaseline />
           )}
 
-          <section className="mt-6 rounded-2xl border border-slate-200 bg-white shadow-sm">
+          <section className="mt-6 flex flex-wrap items-center gap-3 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+            <label className="text-xs text-slate-500">
+              <span className="mr-2">Show</span>
+              <select
+                value={fixtureFilter.status}
+                onChange={(event) =>
+                  setFixtureFilter((current) => ({
+                    ...current,
+                    status: event.target.value as FixtureStatusFilter,
+                  }))
+                }
+                className="rounded-md border border-slate-300 bg-white px-2 py-1 text-xs text-slate-700 outline-none focus:border-slate-500"
+              >
+                {STATUS_OPTIONS.map((option) => (
+                  <option
+                    key={option.value}
+                    value={option.value}
+                    disabled={
+                      (option.value === "regressions" || option.value === "fixed") &&
+                      !diff
+                    }
+                  >
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="block w-full max-w-sm">
+              <span className="sr-only">Search fixtures</span>
+              <input
+                type="search"
+                value={fixtureFilter.search}
+                onChange={(event) =>
+                  setFixtureFilter((current) => ({
+                    ...current,
+                    search: event.target.value,
+                  }))
+                }
+                placeholder="Search by fixture id…"
+                className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-slate-500"
+              />
+            </label>
+            <span className="ml-auto text-xs text-slate-500">
+              {visibleFixtures.length} of {report.reports.length} shown
+            </span>
+          </section>
+
+          <section className="mt-3 rounded-2xl border border-slate-200 bg-white shadow-sm">
             <table className="min-w-full text-sm">
               <thead className="bg-slate-50 text-left text-xs uppercase tracking-wide text-slate-500">
                 <tr>
@@ -201,8 +270,17 @@ export function EvalReportsPage() {
                       The report contained no fixtures.
                     </td>
                   </tr>
+                ) : visibleFixtures.length === 0 ? (
+                  <tr>
+                    <td
+                      colSpan={diff ? 6 : 5}
+                      className="px-4 py-6 text-center text-sm text-slate-500"
+                    >
+                      No fixtures match the current filter.
+                    </td>
+                  </tr>
                 ) : (
-                  report.reports.map((r) => (
+                  visibleFixtures.map((r) => (
                     <FixtureRow
                       key={r.fixture_id}
                       report={r}
