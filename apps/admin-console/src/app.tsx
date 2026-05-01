@@ -1,5 +1,11 @@
 import { type ReactNode, Suspense, lazy } from "react";
-import { Navigate, Route, Routes } from "react-router";
+import {
+  Navigate,
+  Route,
+  Routes,
+  createBrowserRouter,
+  createRoutesFromElements,
+} from "react-router";
 
 const AdminLayout = lazy(async () => {
   const module = await import("./components/admin-layout");
@@ -56,9 +62,12 @@ const AgentDashboardPage = lazy(async () => {
   return { default: module.AgentDashboardPage };
 });
 
-export function App() {
+/// Routes are declared once and reused via the data router so that v7
+/// hooks like `useBlocker` work. `<Routes>` (kept exported for tests
+/// that prefer the legacy router) renders the same structure.
+function appRoutes() {
   return (
-    <Routes>
+    <>
       <Route
         path="/"
         element={
@@ -149,8 +158,14 @@ export function App() {
         />
       </Route>
       <Route path="*" element={<Navigate to="/" replace />} />
-    </Routes>
+    </>
   );
+}
+
+export const router = createBrowserRouter(createRoutesFromElements(appRoutes()));
+
+export function App() {
+  return <Routes>{appRoutes()}</Routes>;
 }
 
 function RouteLoader({ children }: { children: ReactNode }) {
