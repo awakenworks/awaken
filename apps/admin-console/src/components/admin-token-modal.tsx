@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
+import { useFocusTrap } from "./focus-trap";
 
 export interface AdminTokenModalProps {
   open: boolean;
@@ -19,19 +20,19 @@ export function AdminTokenModal({
 }: AdminTokenModalProps) {
   const [draft, setDraft] = useState(initialToken);
   const inputRef = useRef<HTMLInputElement>(null);
+  const backdropRef = useRef<HTMLDivElement>(null);
+  const mouseDownOnBackdropRef = useRef(false);
+
+  useFocusTrap(open, backdropRef, { initialFocus: inputRef });
 
   useEffect(() => {
     if (open) {
       setDraft(initialToken);
+      // Select existing text so the user can immediately type a replacement.
+      // Focus is moved by useFocusTrap; select() runs after it settles.
+      inputRef.current?.select();
     }
   }, [open, initialToken]);
-
-  useEffect(() => {
-    if (open && inputRef.current) {
-      inputRef.current.focus();
-      inputRef.current.select();
-    }
-  }, [open]);
 
   useEffect(() => {
     if (!open) return;
@@ -53,14 +54,22 @@ export function AdminTokenModal({
 
   return (
     <div
+      ref={backdropRef}
       role="dialog"
       aria-modal="true"
       aria-labelledby="admin-token-modal-title"
       className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/40 px-4"
       onMouseDown={(event) => {
-        if (event.target === event.currentTarget) {
+        mouseDownOnBackdropRef.current = event.target === event.currentTarget;
+      }}
+      onMouseUp={(event) => {
+        if (
+          mouseDownOnBackdropRef.current &&
+          event.target === event.currentTarget
+        ) {
           onCancel();
         }
+        mouseDownOnBackdropRef.current = false;
       }}
     >
       <form

@@ -3,11 +3,11 @@ import {
   useCallback,
   useContext,
   useEffect,
-  useMemo,
   useRef,
   useState,
   type ReactNode,
 } from "react";
+import { useFocusTrap } from "./focus-trap";
 
 export type ConfirmTone = "neutral" | "destructive";
 
@@ -30,6 +30,10 @@ interface PendingState extends ConfirmRequest {
 export function ConfirmDialogProvider({ children }: { children: ReactNode }) {
   const [pending, setPending] = useState<PendingState | null>(null);
   const confirmButtonRef = useRef<HTMLButtonElement>(null);
+  const dialogRef = useRef<HTMLDivElement>(null);
+  const mouseDownOnBackdropRef = useRef(false);
+
+  useFocusTrap(pending !== null, dialogRef, { initialFocus: confirmButtonRef });
 
   const confirm = useCallback<ConfirmFn>((request) => {
     return new Promise<boolean>((resolve) => {
@@ -48,7 +52,6 @@ export function ConfirmDialogProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     if (!pending) return;
-    confirmButtonRef.current?.focus();
 
     function onKey(event: KeyboardEvent) {
       if (event.key === "Escape") {
@@ -65,14 +68,22 @@ export function ConfirmDialogProvider({ children }: { children: ReactNode }) {
       {children}
       {pending ? (
         <div
+          ref={dialogRef}
           role="dialog"
           aria-modal="true"
           aria-labelledby="confirm-dialog-title"
           className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/40 px-4"
           onMouseDown={(event) => {
-            if (event.target === event.currentTarget) {
+            mouseDownOnBackdropRef.current = event.target === event.currentTarget;
+          }}
+          onMouseUp={(event) => {
+            if (
+              mouseDownOnBackdropRef.current &&
+              event.target === event.currentTarget
+            ) {
               respond(false);
             }
+            mouseDownOnBackdropRef.current = false;
           }}
         >
           <div className="w-full max-w-md rounded-2xl border border-slate-200 bg-white p-6 shadow-2xl">
