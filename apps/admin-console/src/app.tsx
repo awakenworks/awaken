@@ -65,7 +65,7 @@ const AgentDashboardPage = lazy(async () => {
 /// Routes are declared once and reused via the data router so that v7
 /// hooks like `useBlocker` work. `<Routes>` (kept exported for tests
 /// that prefer the legacy router) renders the same structure.
-function appRoutes() {
+export function appRoutes() {
   return (
     <>
       <Route
