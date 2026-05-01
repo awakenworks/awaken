@@ -7,6 +7,47 @@ Format follows [Keep a Changelog](https://keepachangelog.com/). Versions use [Se
 
 Development work lands here before the next versioned release.
 
+### Added
+
+- Admin Console toast notification queue (`ToastProvider`/`useToast`) and admin
+  bearer-token modal (`AdminTokenModal`) for setting and rotating the
+  `awaken.adminToken` stored in `localStorage`. The sidebar shows a live
+  connection / auth status indicator.
+- Admin Console confirm dialog (`ConfirmDialogProvider`/`useConfirmDialog`)
+  replaces `window.confirm` for delete actions, and a router-level unsaved-
+  changes guard (`useUnsavedChangesGuard`) blocks navigation and `beforeunload`
+  while the agent editor has unsaved edits.
+- Client-side search, header-click sort, and 10/20/50/100 pagination on every
+  Admin Console catalog page (Agents, Models, Providers, MCP Servers); shared
+  helpers in `lib/list-view.ts` and `components/list-controls.tsx`.
+- Tabbed agent editor (Basics / Tools / Plugins / Delegates / Advanced) with a
+  sticky header bar that surfaces the Save button and an "Unsaved changes" /
+  "Up to date" badge; the active tab is mirrored via `?tab=` so it survives
+  page reloads.
+- Grouped tool selector (`ToolSelector`) with explicit `All tools` / `Custom`
+  modes, in-group search, select-all / clear-group affordances, and source
+  grouping (built-in / `plugin:*` / `mcp:*`).
+- UI surface for the previously-hidden `excluded_tools` and `reasoning_effort`
+  fields on `AgentSpec`. `reasoning_effort` exposes the `low` / `medium` /
+  `high` presets plus a custom override.
+- Skills page filters by caller (`user_invocable` / `model_invocable` /
+  internal) and execution context (`inline` / `fork`); Eval Reports page adds
+  a status filter (`passed` / `failed` / `regressions` / `fixed`) and per-
+  fixture search.
+- AI Assistant chat now renders streamed `tool-*` and `dynamic-tool` parts as
+  collapsible cards with status, input, output, and error payloads instead of
+  silently dropping them.
+- 401 responses from the backend automatically prompt for a fresh admin token
+  and replay the original request once the user submits.
+
+### Changed
+
+- Admin Console bootstrap migrated from `<BrowserRouter>` to
+  `createBrowserRouter` + `<RouterProvider>`. `useBlocker` (used by the
+  unsaved-changes guard) requires the data router; the legacy router crashed
+  the agent editor with an invariant. `appRoutes()` is exported so tests can
+  mount the same route tree under `createMemoryRouter`.
+
 ## [0.4.0] - 2026-04-27
 
 This release adopts the `awaken` crate name on crates.io. Versions 0.1–0.3 of
