@@ -66,7 +66,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   }, []);
 
+  const didMountRef = useRef(false);
   useEffect(() => {
+    if (didMountRef.current) return;
+    didMountRef.current = true;
     void probe();
   }, [probe]);
 
