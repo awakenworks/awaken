@@ -1,13 +1,16 @@
 import { useEffect, useState } from "react";
 import { Link, useNavigate } from "react-router";
 import { type AgentSpec, configApi } from "@/lib/config-api";
+import { useConfirmDialog } from "@/components/confirm-dialog";
+import { useToast } from "@/components/toast-provider";
 import { adminRoutes } from "@/lib/routes";
 
 export function AgentsPage() {
   const navigate = useNavigate();
+  const toast = useToast();
+  const confirmDialog = useConfirmDialog();
   const [agents, setAgents] = useState<AgentSpec[]>([]);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -18,11 +21,10 @@ export function AgentsPage() {
         const response = await configApi.list<AgentSpec>("agents");
         if (!cancelled) {
           setAgents(response.items);
-          setError(null);
         }
       } catch (loadError) {
         if (!cancelled) {
-          setError(
+          toast.error(
             loadError instanceof Error ? loadError.message : String(loadError),
           );
           setAgents([]);
@@ -39,19 +41,30 @@ export function AgentsPage() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [toast]);
 
   async function handleDelete(id: string) {
-    if (!confirm(`Delete agent "${id}"?`)) {
+    const accepted = await confirmDialog({
+      title: "Delete agent?",
+      description: (
+        <>
+          This permanently removes <span className="font-mono">{id}</span> from
+          the runtime catalog.
+        </>
+      ),
+      confirmLabel: "Delete",
+      tone: "destructive",
+    });
+    if (!accepted) {
       return;
     }
 
     try {
       await configApi.delete("agents", id);
       setAgents((current) => current.filter((agent) => agent.id !== id));
-      setError(null);
+      toast.success(`Agent "${id}" deleted`);
     } catch (deleteError) {
-      setError(
+      toast.error(
         deleteError instanceof Error ? deleteError.message : String(deleteError),
       );
     }
@@ -73,12 +86,6 @@ export function AgentsPage() {
           New Agent
         </Link>
       </div>
-
-      {error ? (
-        <div className="mb-4 rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
-          {error}
-        </div>
-      ) : null}
 
       <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
         {loading ? (

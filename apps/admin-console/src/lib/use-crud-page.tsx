@@ -1,5 +1,7 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { configApi } from "@/lib/config-api";
+import { useToast } from "@/components/toast-provider";
+import { useConfirmDialog } from "@/components/confirm-dialog";
 
 export interface CrudPageOptions<TRecord extends { id: string }, TSpec = TRecord> {
   /** API namespace used for list/create/update/delete calls. */
@@ -37,6 +39,11 @@ export interface CrudPageState<TRecord extends { id: string }> {
 
 function toErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function capitalize(value: string): string {
+  if (value.length === 0) return value;
+  return value[0].toUpperCase() + value.slice(1);
 }
 
 export interface CrudPageLoadResult<TRecord extends { id: string }> {
@@ -87,6 +94,8 @@ export function useCrudPage<TRecord extends { id: string }, TSpec = TRecord>(
   options: CrudPageOptions<TRecord, TSpec>,
 ): CrudPageState<TRecord> {
   const { namespace, entityLabel, prepareSave, auxiliaryLoaders } = options;
+  const toast = useToast();
+  const confirmDialog = useConfirmDialog();
 
   const [items, setItems] = useState<TRecord[]>([]);
   const [draft, setDraft] = useState<TRecord | null>(null);
@@ -98,6 +107,14 @@ export function useCrudPage<TRecord extends { id: string }, TSpec = TRecord>(
 
   const isEditingExisting = editingId !== null;
 
+  const reportError = useCallback(
+    (message: string) => {
+      setError(message);
+      toast.error(message);
+    },
+    [toast],
+  );
+
   useEffect(() => {
     let cancelled = false;
 
@@ -108,11 +125,15 @@ export function useCrudPage<TRecord extends { id: string }, TSpec = TRecord>(
         if (!cancelled) {
           setItems(result.items);
           setAuxiliaryData(result.auxiliaryData);
-          setError(result.auxiliaryError);
+          if (result.auxiliaryError) {
+            reportError(result.auxiliaryError);
+          } else {
+            setError(null);
+          }
         }
       } catch (loadError) {
         if (!cancelled) {
-          setError(toErrorMessage(loadError));
+          reportError(toErrorMessage(loadError));
           setItems([]);
         }
       } finally {
@@ -167,6 +188,7 @@ export function useCrudPage<TRecord extends { id: string }, TSpec = TRecord>(
         setItems((current) =>
           current.map((item) => (item.id === editingId ? updated : item)),
         );
+        toast.success(`${capitalize(entityLabel)} "${editingId}" saved`);
       } else {
         const created = await configApi.create<TSpec, TRecord>(namespace, payload);
         setItems((current) =>
@@ -174,21 +196,33 @@ export function useCrudPage<TRecord extends { id: string }, TSpec = TRecord>(
             (left, right) => left.id.localeCompare(right.id),
           ),
         );
+        toast.success(`${capitalize(entityLabel)} "${created.id}" created`);
       }
       setDraft(null);
       setEditingId(null);
       setError(null);
     } catch (saveError) {
-      setError(toErrorMessage(saveError));
+      reportError(toErrorMessage(saveError));
     } finally {
       setSaving(false);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [draft, editingId, namespace, prepareSave]);
+  }, [draft, editingId, namespace, prepareSave, entityLabel, toast, reportError]);
 
   const handleDelete = useCallback(
     async (id: string) => {
-      if (!confirm(`Delete ${entityLabel} "${id}"?`)) {
+      const confirmed = await confirmDialog({
+        title: `Delete ${entityLabel}?`,
+        description: (
+          <>
+            This permanently removes <span className="font-mono">{id}</span> from
+            the runtime catalog.
+          </>
+        ),
+        confirmLabel: "Delete",
+        tone: "destructive",
+      });
+      if (!confirmed) {
         return;
       }
 
@@ -196,11 +230,12 @@ export function useCrudPage<TRecord extends { id: string }, TSpec = TRecord>(
         await configApi.delete(namespace, id);
         setItems((current) => current.filter((item) => item.id !== id));
         setError(null);
+        toast.success(`${capitalize(entityLabel)} "${id}" deleted`);
       } catch (deleteError) {
-        setError(toErrorMessage(deleteError));
+        reportError(toErrorMessage(deleteError));
       }
     },
-    [namespace, entityLabel],
+    [namespace, entityLabel, confirmDialog, toast, reportError],
   );
 
   return {

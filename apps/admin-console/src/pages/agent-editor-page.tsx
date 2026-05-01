@@ -1,9 +1,11 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router";
 import { type AgentSpec, type Capabilities, configApi } from "@/lib/config-api";
 import { Field } from "@/components/form-components";
 import { AgentPreviewPanel } from "@/components/agent-preview-panel";
 import { PluginConfigWorkspace } from "@/components/plugin-config-workspace";
+import { useToast } from "@/components/toast-provider";
+import { useUnsavedChangesGuard } from "@/components/unsaved-changes-guard";
 import { isToolAllowed, nextAllowedTools } from "@/lib/agent-tool-selection";
 import { pluginConfigEntryKey, pluginDisplayName } from "@/lib/plugin-config";
 import { adminRoutes } from "@/lib/routes";
@@ -25,12 +27,28 @@ export function AgentEditorPage() {
   const isNew = id === "new";
 
   const [spec, setSpec] = useState<AgentSpec>({ ...EMPTY_AGENT });
+  const [savedSpec, setSavedSpec] = useState<AgentSpec | null>(null);
   const [capabilities, setCapabilities] = useState<Capabilities | null>(null);
   const [loading, setLoading] = useState(!isNew);
   const [saving, setSaving] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [success, setSuccess] = useState<string | null>(null);
   const [activePluginConfig, setActivePluginConfig] = useState<string | null>(null);
+  const toast = useToast();
+
+  const isDirty = useMemo(() => {
+    if (saving) return false;
+    if (isNew) {
+      return (
+        spec.id.trim().length > 0 ||
+        spec.system_prompt.length > 0 ||
+        spec.model_id.length > 0 ||
+        (spec.plugin_ids?.length ?? 0) > 0
+      );
+    }
+    if (!savedSpec) return false;
+    return JSON.stringify(spec) !== JSON.stringify(savedSpec);
+  }, [spec, savedSpec, isNew, saving]);
+
+  useUnsavedChangesGuard({ enabled: isDirty });
 
   useEffect(() => {
     let cancelled = false;
@@ -43,7 +61,7 @@ export function AgentEditorPage() {
         }
       } catch (loadError) {
         if (!cancelled) {
-          setError(
+          toast.error(
             loadError instanceof Error ? loadError.message : String(loadError),
           );
         }
@@ -60,17 +78,20 @@ export function AgentEditorPage() {
       try {
         const nextSpec = await configApi.get<AgentSpec>("agents", id);
         if (!cancelled) {
-          setSpec({
+          const hydrated = {
             sections: {},
             plugin_ids: [],
             delegates: [],
             ...nextSpec,
-          });
-          setError(null);
+          };
+          setSpec(hydrated);
+          setSavedSpec(hydrated);
         }
       } catch (loadError) {
         if (!cancelled) {
-          setError(loadError instanceof Error ? loadError.message : String(loadError));
+          toast.error(
+            loadError instanceof Error ? loadError.message : String(loadError),
+          );
         }
       } finally {
         if (!cancelled) {
@@ -88,7 +109,6 @@ export function AgentEditorPage() {
 
   async function handleSave() {
     setSaving(true);
-    setSuccess(null);
     try {
       const payload = {
         ...spec,
@@ -101,7 +121,8 @@ export function AgentEditorPage() {
           "agents",
           payload,
         );
-        setSuccess("Agent created.");
+        setSavedSpec(created);
+        toast.success(`Agent "${created.id}" created`);
         navigate(adminRoutes.agent(created.id), { replace: true });
       } else {
         const updated = await configApi.update<typeof payload, AgentSpec>(
@@ -110,11 +131,13 @@ export function AgentEditorPage() {
           payload,
         );
         setSpec(updated);
-        setSuccess("Agent saved.");
+        setSavedSpec(updated);
+        toast.success(`Agent "${updated.id}" saved`);
       }
-      setError(null);
     } catch (saveError) {
-      setError(saveError instanceof Error ? saveError.message : String(saveError));
+      toast.error(
+        saveError instanceof Error ? saveError.message : String(saveError),
+      );
     } finally {
       setSaving(false);
     }
@@ -268,18 +291,6 @@ export function AgentEditorPage() {
           {saving ? "Saving..." : "Save"}
         </button>
       </div>
-
-      {error ? (
-        <div className="mb-4 rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
-          {error}
-        </div>
-      ) : null}
-
-      {success ? (
-        <div className="mb-4 rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-700">
-          {success}
-        </div>
-      ) : null}
 
       <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr),24rem]">
         <div>
