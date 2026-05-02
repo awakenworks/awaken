@@ -102,10 +102,16 @@ impl<'a> ConfigService<'a> {
             .filter_map(|id| {
                 registries.tools.get_tool(&id).map(|tool| {
                     let descriptor = tool.descriptor();
+                    // First-pass classifier: derive source from tool id prefix.
+                    // MCP tools follow "mcp__{server}__{tool}"; plugin tools use
+                    // arbitrary ids registered by plugins. If the registry gains
+                    // explicit source tracking, replace this with that.
+                    let source = classify_tool_source(&descriptor.id);
                     json!({
                         "id": descriptor.id,
                         "name": descriptor.name,
                         "description": descriptor.description,
+                        "source": source,
                     })
                 })
             })
@@ -537,6 +543,20 @@ impl<'a> ConfigService<'a> {
         }
         Ok(())
     }
+}
+
+/// Classify a tool's source from its id.
+///
+/// MCP tools registered by `awaken-ext-mcp` follow `mcp__{server}__{tool}`.
+/// The global registry currently holds only built-in tools, but the classifier
+/// is written defensively so it still works if MCP tools are ever surfaced here.
+fn classify_tool_source(id: &str) -> Value {
+    if let Some(rest) = id.strip_prefix("mcp__") {
+        // Extract server id: the segment between the two `__` delimiters.
+        let server = rest.split("__").next().unwrap_or(rest);
+        return json!({ "kind": "mcp", "id": server });
+    }
+    json!({ "kind": "builtin" })
 }
 
 fn map_runtime_error(error: ConfigRuntimeError) -> ConfigServiceError {

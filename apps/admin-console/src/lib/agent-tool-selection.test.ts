@@ -9,6 +9,7 @@ import {
   setGroupSelection,
   toolSelectionMode,
   toolSourceFor,
+  type ApiToolSource,
 } from "./agent-tool-selection";
 
 describe("agent tool selection", () => {
@@ -94,6 +95,42 @@ describe("toolSourceFor", () => {
       key: "builtin",
     });
   });
+
+  it("uses explicit mcp source from backend over id inference", () => {
+    const apiSource: ApiToolSource = { kind: "mcp", id: "weather" };
+    expect(toolSourceFor("mcp__weather__forecast", apiSource)).toMatchObject({
+      kind: "mcp",
+      key: "mcp:weather",
+      label: "MCP · weather",
+    });
+  });
+
+  it("uses explicit plugin source from backend over id inference", () => {
+    const apiSource: ApiToolSource = { kind: "plugin", id: "reminder" };
+    expect(toolSourceFor("some-tool-id", apiSource)).toMatchObject({
+      kind: "plugin",
+      key: "plugin:reminder",
+      label: "Plugin · reminder",
+    });
+  });
+
+  it("uses explicit builtin source from backend", () => {
+    const apiSource: ApiToolSource = { kind: "builtin" };
+    expect(toolSourceFor("Bash", apiSource)).toMatchObject({
+      kind: "builtin",
+      key: "builtin",
+      label: "Built-in",
+    });
+  });
+
+  it("handles mcp source with no id gracefully", () => {
+    const apiSource: ApiToolSource = { kind: "mcp" };
+    expect(toolSourceFor("mcp__x__y", apiSource)).toMatchObject({
+      kind: "mcp",
+      label: "MCP",
+      key: "mcp:",
+    });
+  });
 });
 
 describe("groupToolsBySource", () => {
@@ -119,6 +156,22 @@ describe("groupToolsBySource", () => {
       "mcp:weather/forecast",
       "mcp:weather/now",
     ]);
+  });
+
+  it("uses explicit source field when present, ignoring id prefix", () => {
+    const groups = groupToolsBySource([
+      { id: "mcp__weather__forecast", source: { kind: "mcp" as const, id: "weather" } },
+      { id: "some-tool", source: { kind: "plugin" as const, id: "reminder" } },
+      { id: "Bash", source: { kind: "builtin" as const } },
+    ]);
+    expect(groups.map((g) => g.source.key)).toEqual([
+      "builtin",
+      "plugin:reminder",
+      "mcp:weather",
+    ]);
+    expect(groups[0].tools.map((t) => t.id)).toEqual(["Bash"]);
+    expect(groups[1].tools.map((t) => t.id)).toEqual(["some-tool"]);
+    expect(groups[2].tools.map((t) => t.id)).toEqual(["mcp__weather__forecast"]);
   });
 });
 
