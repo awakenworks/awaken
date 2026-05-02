@@ -73,6 +73,20 @@ pub struct McpServerStatusSnapshot {
     pub last_error: Option<String>,
     /// Tools discovered during the most recent successful catalog refresh.
     pub tools: Vec<McpServerToolEntry>,
+    /// Streak of failed health attempts since the last success. Resets to 0
+    /// after a successful discovery or RPC call.
+    pub consecutive_failures: u64,
+    /// Wall-clock time of the most recent connect/discovery/RPC attempt
+    /// against this server, if any has run yet.
+    pub last_attempt_at: Option<SystemTime>,
+    /// Wall-clock time of the most recent successful contact with this
+    /// server, if any.
+    pub last_success_at: Option<SystemTime>,
+    /// True while the server is mid-reconnect; false otherwise.
+    pub reconnecting: bool,
+    /// True after the manager has given up reconnecting. The server is
+    /// staying offline until manual restart.
+    pub permanently_failed: bool,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -1572,6 +1586,11 @@ impl McpToolRegistryManager {
             connected,
             last_error,
             tools,
+            consecutive_failures: slot.health.consecutive_failures,
+            last_attempt_at: slot.health.last_attempt_at,
+            last_success_at: slot.health.last_success_at,
+            reconnecting: slot.health.reconnecting,
+            permanently_failed: slot.health.permanently_failed,
         })
     }
 
