@@ -4,11 +4,123 @@ import {
   BACKEND_URL,
   ConfigApiError,
   configApi,
+  type RestoreResponse,
 } from "./config-api";
 import {
   __resetAuthInterceptorForTesting,
   setUnauthorizedHandler,
 } from "./auth-interceptor";
+
+describe("restoreConfig", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("encodes namespace and id with special chars in the URL", async () => {
+    const fetchSpy = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify({ id: "my-agent", version: "v2" }),
+    });
+    vi.stubGlobal("fetch", fetchSpy);
+
+    await configApi.restoreConfig("agents", "alpha/beta", "evt-123");
+
+    const calledUrl: string = fetchSpy.mock.calls[0][0] as string;
+    expect(calledUrl).toBe(
+      `${BACKEND_URL}/v1/config/agents/alpha%2Fbeta/restore`,
+    );
+  });
+
+  it("encodes namespace with special chars", async () => {
+    const fetchSpy = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify({}),
+    });
+    vi.stubGlobal("fetch", fetchSpy);
+
+    await configApi.restoreConfig("my/ns", "simple-id", "evt-456");
+
+    const calledUrl: string = fetchSpy.mock.calls[0][0] as string;
+    expect(calledUrl).toBe(
+      `${BACKEND_URL}/v1/config/my%2Fns/simple-id/restore`,
+    );
+  });
+
+  it("sends version in the POST body", async () => {
+    const fetchSpy = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify({ id: "agent-1" }),
+    });
+    vi.stubGlobal("fetch", fetchSpy);
+
+    await configApi.restoreConfig("agents", "agent-1", "evt-789");
+
+    const init: RequestInit = fetchSpy.mock.calls[0][1] as RequestInit;
+    expect(init.method).toBe("POST");
+    expect(init.body).toBe(JSON.stringify({ version: "evt-789" }));
+  });
+
+  it("returns the parsed response on success", async () => {
+    const payload = { id: "agent-1", model_id: "gpt-4" };
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify(payload),
+    }));
+
+    const result: RestoreResponse = await configApi.restoreConfig("agents", "agent-1", "evt-1");
+    expect(result).toEqual(payload);
+  });
+
+  it("throws ConfigApiError with detail string for 404 with reason", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({
+      ok: false,
+      status: 404,
+      text: async () => JSON.stringify({ error: "not found", reason: "version missing" }),
+    }));
+
+    await expect(
+      configApi.restoreConfig("agents", "agent-1", "bad-version"),
+    ).rejects.toMatchObject({
+      name: "ConfigApiError",
+      status: 404,
+    });
+  });
+
+  it("throws ConfigApiError for 422 with resolver message", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({
+      ok: false,
+      status: 422,
+      text: async () => JSON.stringify({ error: "validation failed" }),
+    }));
+
+    await expect(
+      configApi.restoreConfig("agents", "agent-1", "evt-1"),
+    ).rejects.toMatchObject({
+      name: "ConfigApiError",
+      status: 422,
+      message: "validation failed",
+    });
+  });
+
+  it("throws ConfigApiError for 503 audit log not configured", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({
+      ok: false,
+      status: 503,
+      text: async () => JSON.stringify({ error: "service unavailable" }),
+    }));
+
+    await expect(
+      configApi.restoreConfig("agents", "agent-1", "evt-1"),
+    ).rejects.toMatchObject({
+      name: "ConfigApiError",
+      status: 503,
+    });
+  });
+});
 
 describe("configUrl encoding", () => {
   it("encodes config ids via the list endpoint", async () => {

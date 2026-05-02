@@ -121,6 +121,8 @@ export interface Capabilities {
   }>;
 }
 
+export type RestoreResponse = Record<string, unknown>;
+
 export interface ListResponse<T> {
   namespace: string;
   items: T[];
@@ -318,4 +320,14 @@ export const configApi = {
       throw err;
     }
   },
+
+  restoreConfig: (namespace: string, id: string, version: string) =>
+    fetchJson<RestoreResponse>(
+      `${BACKEND_URL}/v1/config/${encodeURIComponent(namespace)}/${encodeURIComponent(id)}/restore`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ version }),
+      },
+    ),
 };
