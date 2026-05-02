@@ -2,6 +2,7 @@ import { useState } from "react";
 import { ConfigApiError, configApi } from "@/lib/config-api";
 import {
   formatActor,
+  isAgentActor,
   summarizeChange,
   type AuditAction,
   type AuditEvent,
@@ -270,16 +271,28 @@ function AuditRow({
 }) {
   const actor = formatActor(event.actor);
   const ts = new Date(event.ts);
+  const fromAgent = isAgentActor(event.actor);
 
   return (
-    <tr className="hover:bg-soft">
+    <tr
+      className={
+        fromAgent ? "border-l-2 border-agent-stripe bg-agent-tint hover:bg-agent-tint/80" : "hover:bg-soft"
+      }
+    >
       <td className="px-4 py-3 font-mono text-xs text-fg">
         {ts.toLocaleString()}
       </td>
       <td className="px-4 py-3 text-sm text-fg">
         <span className="font-mono text-xs">{actor.hash}</span>
         {actor.label && (
-          <span className="ml-1 text-fg-soft">/{actor.label}</span>
+          <span
+            className={[
+              "ml-1",
+              fromAgent ? "font-medium text-agent-fg" : "text-fg-soft",
+            ].join(" ")}
+          >
+            /{actor.label}
+          </span>
         )}
       </td>
       <td className="px-4 py-3">

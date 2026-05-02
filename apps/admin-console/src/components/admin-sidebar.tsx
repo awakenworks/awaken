@@ -11,14 +11,29 @@ const STATUS_DOT: Record<"ok" | "warn" | "error" | "neutral", string> = {
   neutral: "bg-fg-faint",
 };
 
-export function AdminSidebar() {
+export function AdminSidebar({
+  drawerOpen = false,
+  onCloseDrawer,
+}: {
+  drawerOpen?: boolean;
+  onCloseDrawer?: () => void;
+} = {}) {
   const { status, openTokenModal } = useAuth();
   const description = describeAuthStatus(status);
   const dotClass = STATUS_DOT[description.tone];
   const health = useNavHealth(status === "ok");
 
   return (
-    <aside className="flex flex-col bg-chrome-bg text-chrome-fg md:min-h-screen md:w-72 md:border-r md:border-chrome-line">
+    <aside
+      data-open={drawerOpen ? "true" : "false"}
+      className={[
+        // Mobile: fixed drawer that slides in from left when [data-open=true]
+        "fixed inset-y-0 left-0 z-40 flex w-72 flex-col bg-chrome-bg text-chrome-fg shadow-overlay transition-transform duration-fast",
+        "data-[open=false]:-translate-x-full data-[open=true]:translate-x-0",
+        // Desktop: static sidebar, no drawer behavior
+        "md:static md:translate-x-0 md:min-h-screen md:border-r md:border-chrome-line md:shadow-none md:data-[open=false]:translate-x-0",
+      ].join(" ")}
+    >
       <div className="border-b border-chrome-line px-6 py-6">
         <p className="text-[11px] font-medium uppercase tracking-[0.18em] text-chrome-eyebrow">
           Awaken Control Plane
@@ -47,16 +62,16 @@ export function AdminSidebar() {
         </button>
       </div>
 
-      <nav className="grid grid-cols-2 gap-1 px-4 py-4 sm:grid-cols-3 md:flex md:flex-1 md:flex-col md:space-y-4 md:px-3 md:py-5">
+      <nav className="flex flex-1 flex-col space-y-4 px-3 py-5">
         {navGroups.map((group) => (
-          <div key={group.label} className="md:contents">
+          <div key={group.label} className="contents">
             <div
               aria-hidden
-              className="hidden px-3 pb-1 text-[10px] font-medium uppercase tracking-[0.18em] text-chrome-fg-muted md:block"
+              className="px-3 pb-1 text-[10px] font-medium uppercase tracking-eyebrow text-chrome-fg-muted"
             >
               {group.label}
             </div>
-            <div className="md:flex md:flex-col md:gap-0.5">
+            <div className="flex flex-col gap-0.5">
               {group.items.map((item) => (
                 <SidebarLink
                   key={item.id}
@@ -69,7 +84,7 @@ export function AdminSidebar() {
         ))}
       </nav>
 
-      <div className="hidden border-t border-chrome-line px-5 py-3 text-[10px] font-mono text-chrome-fg-muted md:block">
+      <div className="border-t border-chrome-line px-5 py-3 text-[10px] font-mono text-chrome-fg-muted">
         v0.4.0 · 9-phase loop
       </div>
     </aside>

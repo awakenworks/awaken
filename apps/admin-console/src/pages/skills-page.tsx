@@ -1,8 +1,10 @@
 import { useEffect, useMemo, useState } from "react";
 import { type SkillInfo, configApi } from "@/lib/config-api";
 import { useToast } from "@/components/toast-provider";
+import { EmptyState } from "@/components/ui/empty-state";
 import { PageHeader } from "@/components/ui/page-header";
 import { Pill } from "@/components/ui/pill";
+import { SkeletonBlock } from "@/components/ui/skeleton";
 import {
   filterSkills,
   type ContextFilter,
@@ -126,17 +128,20 @@ export function SkillsPage() {
       </section>
 
       {loading ? (
-        <div className="rounded-md border border-line bg-surface p-6 text-sm text-fg-soft shadow-card">
-          Loading skill registry...
+        <div className="grid gap-4 lg:grid-cols-2">
+          <SkillCardSkeleton />
+          <SkillCardSkeleton />
         </div>
       ) : skills.length === 0 ? (
-        <div className="rounded-md border border-line bg-surface p-6 text-sm text-fg-soft shadow-card">
-          No skills are currently registered.
-        </div>
+        <EmptyState
+          title="No skills registered"
+          description="Skills are registered programmatically by the runtime via the SkillRegistry trait. Drop a markdown file under ./skills/ or call AgentRuntimeBuilder::with_skill() to populate this list."
+        />
       ) : visibleSkills.length === 0 ? (
-        <div className="rounded-md border border-line bg-surface p-6 text-sm text-fg-soft shadow-card">
-          No skills match the current filter.
-        </div>
+        <EmptyState
+          title="No skills match the current filter"
+          description="Try clearing the search box or switching the Caller / Context dropdowns back to 'Any'."
+        />
       ) : (
         <div className="grid gap-4 lg:grid-cols-2">
           {visibleSkills.map((skill) => (
@@ -276,5 +281,21 @@ function SectionLabel({ label }: { label: string }) {
     <div className="text-[11px] font-medium uppercase tracking-[0.18em] text-fg-faint">
       {label}
     </div>
+  );
+}
+
+function SkillCardSkeleton() {
+  return (
+    <article className="rounded-md border border-line bg-surface p-5 shadow-card">
+      <SkeletonBlock height="14px" width="38%" />
+      <div className="mt-2">
+        <SkeletonBlock height="22px" width="55%" />
+      </div>
+      <div className="mt-4 space-y-2">
+        <SkeletonBlock height="12px" width="92%" />
+        <SkeletonBlock height="12px" width="85%" />
+        <SkeletonBlock height="12px" width="60%" />
+      </div>
+    </article>
   );
 }

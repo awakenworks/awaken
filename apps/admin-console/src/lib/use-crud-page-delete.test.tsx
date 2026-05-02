@@ -94,13 +94,15 @@ describe("useCrudPage handleDelete 409 → force flow", () => {
       fireEvent.click(confirmBtn!);
     });
 
-    // Second dialog: "Still delete?" with used_by list
+    // Second dialog: "Still delete?" with used_by list. The list now groups
+    // by namespace so "models" appears as a header and "model-a" as a chip.
     expect(screen.getByText(/Still delete\?/)).toBeTruthy();
-    expect(screen.getByText(/models\/model-a/)).toBeTruthy();
+    expect(screen.getByText(/^models$/)).toBeTruthy();
+    expect(screen.getByText("model-a")).toBeTruthy();
 
-    // Confirm force delete
+    // Confirm force delete (button, not the inline strong text in body)
     await act(async () => {
-      fireEvent.click(screen.getByText("Force delete"));
+      fireEvent.click(screen.getByRole("button", { name: "Force delete" }));
     });
 
     // delete called twice: first without force, then with force

@@ -185,44 +185,56 @@ export function PermissionConfigEditor({
                     type="button"
                     onClick={() => setActiveRuleIndex(index)}
                     className={[
-                      "w-full rounded-2xl border px-4 py-3 text-left transition",
+                      "group flex w-full items-stretch gap-2 rounded-md border px-3 py-2.5 text-left transition-colors",
                       isActive
-                        ? "border-fg-strong bg-fg-strong text-bg shadow-sm"
+                        ? "border-fg-strong bg-fg-strong text-bg shadow-card"
                         : "border-line bg-surface text-fg-strong hover:border-line-strong",
                     ].join(" ")}
                   >
-                    <div className="flex items-center justify-between gap-3">
-                      <div className="text-sm font-semibold">
-                        {rule.tool.trim() || `Rule ${index + 1}`}
+                    <span
+                      aria-hidden
+                      title="Reorder via Move up / Move down on the right pane"
+                      className={[
+                        "mt-0.5 select-none font-mono text-xs leading-none",
+                        isActive ? "text-fg-faint" : "text-fg-faint group-hover:text-fg-soft",
+                      ].join(" ")}
+                    >
+                      ⋮⋮
+                    </span>
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="flex items-baseline gap-2 min-w-0">
+                          <span
+                            className={[
+                              "font-mono text-[10px]",
+                              isActive ? "text-fg-faint" : "text-fg-faint",
+                            ].join(" ")}
+                          >
+                            #{String(index + 1).padStart(2, "0")}
+                          </span>
+                          <span className="truncate font-mono text-sm">
+                            {rule.tool.trim() || "(any tool)"}
+                          </span>
+                        </div>
+                        <span
+                          className={[
+                            "shrink-0 rounded-pill px-2 py-0.5 text-[10px] font-medium uppercase tracking-eyebrow",
+                            isActive
+                              ? "bg-fg text-bg"
+                              : permissionBehaviorPill(rule.behavior),
+                          ].join(" ")}
+                        >
+                          {permissionBehaviorLabel(rule.behavior)}
+                        </span>
                       </div>
-                      <span
+                      <div
                         className={[
-                          "rounded-full px-2 py-0.5 text-[11px] font-medium",
-                          isActive
-                            ? "bg-fg text-bg"
-                            : permissionBehaviorPill(rule.behavior),
+                          "mt-1 text-[11px]",
+                          isActive ? "text-fg-faint" : "text-fg-soft",
                         ].join(" ")}
                       >
-                        {permissionBehaviorLabel(rule.behavior)}
-                      </span>
-                    </div>
-                    <div
-                      className={[
-                        "mt-2 text-xs",
-                        isActive ? "text-fg-faint" : "text-fg-soft",
-                      ].join(" ")}
-                    >
-                      {rule.tool.trim()
-                        ? `Pattern: ${rule.tool}`
-                        : "Matches any tool that reaches this rule."}
-                    </div>
-                    <div
-                      className={[
-                        "mt-2 text-xs font-medium",
-                        isActive ? "text-fg-faint" : "text-fg-soft",
-                      ].join(" ")}
-                    >
-                      Scope: {permissionScopeLabel(rule.scope)}
+                        Scope · {permissionScopeLabel(rule.scope)}
+                      </div>
                     </div>
                   </button>
                 );

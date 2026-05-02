@@ -8,6 +8,8 @@ import {
 import { adminRoutes } from "@/lib/routes";
 import { useCrudPage } from "@/lib/use-crud-page";
 import { Field } from "@/components/form-components";
+import { EmptyState } from "@/components/ui/empty-state";
+import { SkeletonRows } from "@/components/ui/skeleton";
 import {
   ListSearchBar,
   PageSizeSelect,
@@ -221,17 +223,21 @@ export function ModelsPage() {
         />
       </div>
 
-      <div className="overflow-hidden rounded-2xl border border-line bg-surface shadow-sm">
-        {crud.loading ? (
-          <div className="px-5 py-6 text-sm text-fg-soft">Loading models...</div>
-        ) : crud.items.length === 0 ? (
-          <div className="px-5 py-6 text-sm text-fg-soft">
-            No managed models yet.
-          </div>
-        ) : view.items.length === 0 ? (
-          <div className="px-5 py-6 text-sm text-fg-soft">
-            No models match the current filter.
-          </div>
+      <div className="overflow-x-auto rounded-md border border-line bg-surface shadow-card">
+        {!crud.loading && crud.items.length === 0 ? (
+          <EmptyState
+            title="No managed models yet"
+            description="Bind a provider to an upstream model name to make it usable by agents."
+            actions={
+              <button
+                type="button"
+                onClick={() => crud.startNew({ ...EMPTY_MODEL })}
+                className="inline-flex h-9 items-center rounded-md bg-fg-strong px-4 text-sm font-medium text-bg transition-colors hover:bg-fg"
+              >
+                + New Model
+              </button>
+            }
+          />
         ) : (
           <>
             <table className="min-w-full">
@@ -243,7 +249,15 @@ export function ModelsPage() {
                 }
               />
               <tbody>
-                {view.items.map((model) => (
+                {crud.loading && <SkeletonRows rows={4} cols={COLUMNS.length} />}
+                {!crud.loading && view.items.length === 0 && (
+                  <tr>
+                    <td colSpan={COLUMNS.length} className="px-5 py-8 text-center text-sm text-fg-soft">
+                      No models match the current filter.
+                    </td>
+                  </tr>
+                )}
+                {!crud.loading && view.items.map((model) => (
                   <tr
                     key={model.id}
                     className="border-t border-line text-sm text-fg"

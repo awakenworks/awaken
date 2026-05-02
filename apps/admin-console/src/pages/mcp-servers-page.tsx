@@ -9,7 +9,10 @@ import {
 import { useCrudPage } from "@/lib/use-crud-page";
 import { useConfirmDialog } from "@/components/confirm-dialog";
 import { useToast } from "@/components/toast-provider";
-import { Field, ModeButton } from "@/components/form-components";
+import { Field } from "@/components/form-components";
+import { EmptyState } from "@/components/ui/empty-state";
+import { SecretField, SecretStatusPill } from "@/components/ui/secret-field";
+import { SkeletonRows } from "@/components/ui/skeleton";
 import {
   ListSearchBar,
   PageSizeSelect,
@@ -397,54 +400,55 @@ export function McpServersPage() {
               />
             </Field>
 
-            <div className="rounded-xl border border-line bg-soft p-4">
-              <div className="flex flex-wrap items-center justify-between gap-3">
-                <div>
-                  <h4 className="text-sm font-semibold text-fg-strong">
-                    Environment JSON
-                  </h4>
-                  <p className="mt-1 text-sm text-fg-soft">
-                    {crud.isEditingExisting && crud.draft.has_env
-                      ? `Existing keys: ${(crud.draft.env_keys ?? []).join(", ") || "stored"}`
-                      : "Provide a JSON object of environment variables."}
-                  </p>
-                </div>
-                {crud.isEditingExisting ? (
-                  <div className="flex flex-wrap gap-2">
-                    <ModeButton
-                      active={envMode === "preserve"}
-                      onClick={() => setEnvMode("preserve")}
-                      label="Keep current"
-                    />
-                    <ModeButton
-                      active={envMode === "replace"}
-                      onClick={() => setEnvMode("replace")}
-                      label="Replace"
-                    />
-                    <ModeButton
-                      active={envMode === "clear"}
-                      onClick={() => setEnvMode("clear")}
-                      label="Clear"
-                    />
-                  </div>
-                ) : null}
-              </div>
-
-              {envMode === "replace" ? (
-                <textarea
-                  value={envDraft}
-                  onChange={(event) => setEnvDraft(event.target.value)}
-                  rows={8}
-                  className="mt-4 w-full rounded-xl border border-line-strong px-3 py-2 font-mono text-sm text-fg-strong outline-none transition focus:border-line-strong"
-                />
-              ) : (
-                <div className="mt-4 rounded-xl border border-dashed border-line-strong px-3 py-4 text-sm text-fg-soft">
-                  {envMode === "clear"
-                    ? "Saving will remove all stored environment variables."
-                    : "Saving will preserve the current environment variables."}
-                </div>
-              )}
-            </div>
+            <SecretField
+              mode={envMode === "preserve" ? "keep" : envMode}
+              onModeChange={(next) =>
+                setEnvMode(next === "keep" ? "preserve" : next)
+              }
+              currentlyHasValue={Boolean(crud.isEditingExisting && crud.draft.has_env)}
+              statusPill={
+                crud.draft.has_env ? (
+                  <SecretStatusPill
+                    state={envMode === "clear" ? "will-clear" : "stored"}
+                  />
+                ) : (
+                  <SecretStatusPill state="no-value" />
+                )
+              }
+              labels={{
+                title: `MCP env${crud.draft.id ? ` — ${crud.draft.id}` : ""}`,
+                description:
+                  crud.isEditingExisting && crud.draft.has_env
+                    ? `Stored keys: ${(crud.draft.env_keys ?? []).join(", ") || "(opaque)"}. Three-mode JSON editor mirrors the API-key pattern but accepts a flat object literal.`
+                    : "Provide a flat JSON object of environment variables.",
+                replaceLabel: "Replace JSON",
+                clearLabel: "Clear env",
+                keepBody: (
+                  <>
+                    <strong>Existing env is preserved.</strong>{" "}
+                    <span>Save will not touch the stored variables.</span>
+                  </>
+                ),
+                clearBody: (
+                  <>
+                    <strong>All env variables will be removed on save.</strong>{" "}
+                    <span>The MCP process will start with no inherited env.</span>
+                  </>
+                ),
+              }}
+              hint={
+                <>
+                  Must parse as a flat <code className="font-mono">{`{[k]: string}`}</code> object. Validation runs on save; invalid JSON surfaces a 400 error from the server.
+                </>
+              }
+            >
+              <textarea
+                value={envDraft}
+                onChange={(event) => setEnvDraft(event.target.value)}
+                rows={8}
+                className="w-full rounded-md border border-line-strong bg-surface px-3 py-2 font-mono text-sm text-fg-strong outline-none transition-colors focus:border-link"
+              />
+            </SecretField>
           </div>
 
           <section className="mt-5 rounded-xl border border-line bg-soft p-4">
@@ -583,6 +587,8 @@ export function McpServersPage() {
                 />
               </Field>
             </div>
+
+            <RestartScheduleHint policy={crud.draft.restart_policy} />
           </section>
 
           {crud.isEditingExisting && crud.draft ? (
@@ -626,19 +632,21 @@ export function McpServersPage() {
         />
       </div>
 
-      <div className="overflow-hidden rounded-2xl border border-line bg-surface shadow-sm">
-        {crud.loading ? (
-          <div className="px-5 py-6 text-sm text-fg-soft">
-            Loading MCP servers...
-          </div>
-        ) : crud.items.length === 0 ? (
-          <div className="px-5 py-6 text-sm text-fg-soft">
-            No managed MCP servers yet.
-          </div>
-        ) : view.items.length === 0 ? (
-          <div className="px-5 py-6 text-sm text-fg-soft">
-            No MCP servers match the current filter.
-          </div>
+      <div className="overflow-x-auto rounded-md border border-line bg-surface shadow-card">
+        {!crud.loading && crud.items.length === 0 ? (
+          <EmptyState
+            title="No managed MCP servers yet"
+            description="MCP servers expose external tools (databases, APIs, files) to your agents. Configure transport, environment, and restart policy here."
+            actions={
+              <button
+                type="button"
+                onClick={startCreate}
+                className="inline-flex h-9 items-center rounded-md bg-fg-strong px-4 text-sm font-medium text-bg transition-colors hover:bg-fg"
+              >
+                + New MCP Server
+              </button>
+            }
+          />
         ) : (
           <>
             <table className="min-w-full">
@@ -650,7 +658,15 @@ export function McpServersPage() {
                 }
               />
               <tbody>
-                {view.items.map((server) => (
+                {crud.loading && <SkeletonRows rows={3} cols={COLUMNS.length} />}
+                {!crud.loading && view.items.length === 0 && (
+                  <tr>
+                    <td colSpan={COLUMNS.length} className="px-5 py-8 text-center text-sm text-fg-soft">
+                      No MCP servers match the current filter.
+                    </td>
+                  </tr>
+                )}
+                {!crud.loading && view.items.map((server) => (
                   <tr
                     key={server.id}
                     className="border-t border-line text-sm text-fg"
@@ -852,4 +868,60 @@ function StatusStat({
       <div className={valueClass}>{value}</div>
     </div>
   );
+}
+
+function RestartScheduleHint({
+  policy,
+}: {
+  policy: McpRestartPolicy | undefined;
+}) {
+  if (!policy?.enabled) {
+    return (
+      <p className="mt-3 text-xs text-fg-faint">
+        Auto-restart is off. The server stays down on crash and waits for a
+        manual restart.
+      </p>
+    );
+  }
+  const initial = Math.max(0, Number(policy.delay_ms ?? 0));
+  const multiplier = Math.max(1, Number(policy.backoff_multiplier ?? 1));
+  const cap = Math.max(initial, Number(policy.max_delay_ms ?? initial));
+  const max = Math.max(0, Number(policy.max_attempts ?? 0));
+  const slots = max > 0 ? Math.min(max, 5) : 5;
+  const schedule: string[] = [];
+  let cur = initial;
+  for (let i = 0; i < slots; i++) {
+    schedule.push(formatBackoffMs(cur));
+    cur = Math.min(cap, cur * multiplier);
+  }
+  return (
+    <p className="mt-3 text-xs text-fg-soft">
+      <span className="font-medium text-fg">Computed schedule:</span>{" "}
+      {schedule.map((s, i) => (
+        <span key={i}>
+          {i > 0 && <span className="text-fg-faint"> → </span>}
+          <span className="font-mono text-fg-strong">{s}</span>
+        </span>
+      ))}
+      {max > slots && (
+        <span className="ml-1 text-fg-faint">
+          (… capped at {formatBackoffMs(cap)})
+        </span>
+      )}
+      <span className="ml-1 text-fg-faint">
+        {max > 0
+          ? `· gives up after attempt ${max}`
+          : `· retries forever (no max attempts)`}
+      </span>
+    </p>
+  );
+}
+
+function formatBackoffMs(ms: number): string {
+  if (ms < 1000) return `${Math.round(ms)}ms`;
+  if (ms < 60_000) {
+    const s = ms / 1000;
+    return Number.isInteger(s) ? `${s}s` : `${s.toFixed(1)}s`;
+  }
+  return `${(ms / 60_000).toFixed(1)}m`;
 }

@@ -90,6 +90,22 @@ const config: Config = {
         ease: "var(--aw-ease)",
         "ease-out": "var(--aw-ease-out)",
       },
+      letterSpacing: {
+        // Design v2 role-based tracking (em-units, lighter than the
+        // teams-inherited px values).
+        eyebrow: "var(--aw-tracking-eyebrow)",
+        "tight-em": "var(--aw-tracking-tight-em)",
+        "section-em": "var(--aw-tracking-section-em)",
+        "heading-em": "var(--aw-tracking-heading-em)",
+        "title-em": "var(--aw-tracking-title-em)",
+        "display-em": "var(--aw-tracking-display-em)",
+        "hero-em": "var(--aw-tracking-hero-em)",
+      },
+      fontSize: {
+        "fs-title": ["var(--aw-fs-title)", { letterSpacing: "var(--aw-tracking-title-em)" }],
+        "fs-display": ["var(--aw-fs-display)", { letterSpacing: "var(--aw-tracking-display-em)" }],
+        "fs-hero": ["var(--aw-fs-hero)", { letterSpacing: "var(--aw-tracking-hero-em)" }],
+      },
     },
   },
   plugins: [],

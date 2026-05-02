@@ -10,6 +10,7 @@ import {
   configApi,
 } from "@/lib/config-api";
 import {
+  isAgentActor,
   type AuditEvent,
   type AuditPage,
 } from "@/lib/audit-log";
@@ -470,15 +471,23 @@ function FeatureDisabledNotice({
 function ActivityRow({ event }: { event: AuditEvent }) {
   const tone = ACTION_TONE[event.action] ?? "neutral";
   const dotClass = TONE_DOT[tone];
+  const fromAgent = isAgentActor(event.actor);
   return (
-    <li className="flex items-start gap-3">
+    <li
+      className={[
+        "flex items-start gap-3 rounded-md border-l-2 px-2 py-1",
+        fromAgent
+          ? "border-agent-stripe bg-agent-tint"
+          : "border-transparent",
+      ].join(" ")}
+    >
       <span aria-hidden className={`mt-1.5 inline-block h-2 w-2 shrink-0 rounded-pill ${dotClass}`} />
       <div className="min-w-0 flex-1">
-        <div className="text-sm text-fg">
+        <div className={`text-sm ${fromAgent ? "text-agent-fg" : "text-fg"}`}>
           <span className="font-medium text-fg-strong">{event.action}</span>{" "}
           <span className="font-mono text-fg-soft">{event.resource}</span>
         </div>
-        <div className="mt-0.5 text-xs text-fg-faint">
+        <div className={`mt-0.5 text-xs ${fromAgent ? "text-agent-fg/80" : "text-fg-faint"}`}>
           {event.actor || "system"} · {formatRelativeTime(Date.parse(event.ts))}
         </div>
       </div>
