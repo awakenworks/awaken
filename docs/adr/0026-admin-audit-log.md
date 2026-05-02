@@ -1,6 +1,6 @@
 # ADR-0026: Admin Audit Log
 
-- **Status**: 📐 Proposed
+- **Status**: ✅ Accepted
 - **Date**: 2026-05-02
 - **Depends on**: ADR-0023
 
