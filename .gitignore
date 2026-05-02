@@ -36,4 +36,6 @@ docs/book/mermaid-init.js
 
 # Screenshots
 *.png
+# ...except checked-in documentation assets.
+!docs/assets/**/*.png
 coverage_err.log

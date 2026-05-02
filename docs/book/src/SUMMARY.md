@@ -49,6 +49,7 @@
 - [Testing Strategy](./how-to/testing-strategy.md)
 - [Use Shared State](./how-to/use-shared-state.md)
 - [Recover Streaming LLMs](./how-to/recover-streaming-llms.md)
+- [Use the Admin Console](./how-to/use-admin-console.md)
 
 # Reference
 
@@ -58,6 +59,7 @@
 - [Effects](./reference/effects.md)
 - [Events](./reference/events.md)
 - [HTTP API](./reference/http-api.md)
+- [Admin Console](./reference/admin-console.md)
 - [Config](./reference/config.md)
 - [Provider and Model Configuration](./reference/provider-model-config.md)
 - [Errors](./reference/errors.md)

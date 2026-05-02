@@ -210,6 +210,30 @@ import { CopilotKit } from "@copilotkit/react-core";
 
 Wire a `ConfigStore` into `AppState` to manage agents, models, providers, and MCP servers through `/v1/config/*`. Use the [configuration-driven tuning guide](https://awakenworks.github.io/awaken/how-to/configure-agent-behavior.html) to tune providers, model bindings, tools, and plugin sections. The Admin Console in [`apps/admin-console`](./apps/admin-console/) uses the same API and reads `VITE_BACKEND_URL` for the server base URL.
 
+The console is a React 19 SPA with a "Lucid Control" design language — dark
+chrome sidebar, warm light work surface, geometric state indicators, real
+data only (no fake placeholders). Token system is a vendored Style Dictionary
+v4 pipeline parity-checked against the Oversight family.
+
+<table>
+  <tr>
+    <td width="33%"><a href="./docs/assets/admin-console/01-dashboard.png"><img src="./docs/assets/admin-console/01-dashboard.png" alt="Dashboard with reference graph, health card, audit timeline, system info" /></a></td>
+    <td width="33%"><a href="./docs/assets/admin-console/02-agent-editor.png"><img src="./docs/assets/admin-console/02-agent-editor.png" alt="Agent editor with visible tabs, sticky save bar, draft preview" /></a></td>
+    <td width="33%"><a href="./docs/assets/admin-console/03-agents-list.png"><img src="./docs/assets/admin-console/03-agents-list.png" alt="Agents list with filter chips, plugin pills, runtime stats column" /></a></td>
+  </tr>
+  <tr>
+    <td align="center"><sub><b>Dashboard</b><br/>Reference graph · Health · Activity · System</sub></td>
+    <td align="center"><sub><b>Agent Editor</b><br/>Tabbed UI · Validate · Save & Publish · Live preview</sub></td>
+    <td align="center"><sub><b>Agents</b><br/>Filter chips · Plugin pills · 503 friendly notice</sub></td>
+  </tr>
+</table>
+
+**⌘K command palette** — search agents, tools, navigation, and actions from anywhere:
+
+![Command palette demo](./docs/assets/admin-console/cmdk.gif)
+
+📺 Full surface tour: [Admin Console reference](./docs/book/src/reference/admin-console.md) · operator user manual: [Use the Admin Console](./docs/book/src/how-to/use-admin-console.md).
+
 ## Built-in plugins
 
 The facade `full` feature pulls in the plugins below. Use

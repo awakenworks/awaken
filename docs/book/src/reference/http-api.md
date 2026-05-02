@@ -12,7 +12,12 @@ and `crates/awaken-server/src/config_routes.rs`.
 |---|---|---|
 | `GET` | `/health` | Readiness probe. Checks store connectivity and returns `200` or `503` |
 | `GET` | `/health/live` | Liveness probe. Always returns `200 OK` |
+| `GET` | `/v1/system/info` | Server identity for the admin console: `{version, uptime_seconds, config_store_enabled, audit_log_enabled, runtime_stats_enabled}` |
 | `GET` | `/metrics` | Prometheus scrape endpoint |
+
+`GET /v1/system/info` is the admin-console "System" card source. It does not
+reveal concrete store backends — embedders that want to expose those should
+add a separate route on top of their own `AppState`.
 
 ## Threads
 
@@ -54,6 +59,66 @@ queueing, and `resume_open_run` continues a resumable waiting run.
 | `POST` | `/v1/runs/:id/cancel` | Cancel a run by run ID |
 | `POST` | `/v1/runs/:id/decision` | Submit a HITL decision by run ID |
 
+## Agent runtime stats
+
+These return rolling-window snapshots from the
+`RuntimeStatsRegistry` published by the observability plugin. Both routes
+return `503 {"error":"runtime_stats registry not configured"}` when the
+embedder has not wired one — the admin console treats this as a feature
+flag and shows a friendly notice.
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/v1/agents/:id/runtime-stats?window=` | Per-agent snapshot. `window` is optional (`1h`, `24h`, `7d`, `<n>s`); unset returns the registry's full retained window |
+| `GET` | `/v1/agents/runtime-stats` | One snapshot per known agent: `{ "agents": AgentRuntimeSnapshot[] }` |
+
+`AgentRuntimeSnapshot` shape (Rust source: `awaken_ext_observability::AgentRuntimeSnapshot`):
+
+```jsonc
+{
+  "agent_id": "research",
+  "window_seconds": 86400,
+  "bucket_window_seconds": 3600,
+  "bucket_count": 24,
+  "inference_count": 12,
+  "error_count": 0,
+  "input_tokens": 4180,
+  "output_tokens": 980,
+  "avg_inference_duration_ms": 480.5,
+  "min_inference_duration_ms": 110,
+  "max_inference_duration_ms": 1820,
+  "p50_inference_duration_ms": 410,
+  "p95_inference_duration_ms": 1410,
+  "p99_inference_duration_ms": 1810,
+  "inference_duration_histogram": [
+    { "upper_bound_ms": 100, "count": 0 },
+    { "upper_bound_ms": 250, "count": 1 }
+    /* ... */
+  ],
+  "suspensions": 0,
+  "handoffs": 0,
+  "delegations": 0,
+  "tool_calls_by_tool": [
+    {
+      "tool": "search",
+      "call_count": 7,
+      "failure_count": 0,
+      "total_duration_ms": 2840,
+      "avg_duration_ms": 405.7,
+      "min_duration_ms": 110,
+      "max_duration_ms": 920,
+      "p50_duration_ms": 380,
+      "p95_duration_ms": 880,
+      "p99_duration_ms": 920
+    }
+  ]
+}
+```
+
+`inference_duration_histogram` is a *value distribution* (latency in ms),
+not a time series. Use the `window` query parameter for coarse time
+filtering.
+
 ## Config and capabilities
 
 These endpoints are exposed by `config_routes()`. Read and schema routes require
@@ -67,12 +132,18 @@ with `config management API not enabled`.
 | `GET` | `/v1/capabilities` | List registered agents, tools, plugins, models, providers, and config namespaces |
 | `GET` | `/v1/config/:namespace` | List entries in a config namespace |
 | `POST` | `/v1/config/:namespace` | Create an entry; the body must contain `"id"` |
+| `POST` | `/v1/config/:namespace/validate?id=` | Dry-run validate. Runs the same `prepare_body` + schema check as `create`/`update` but does **not** persist or apply. Returns `{"ok":true,"normalized":{...}}` on success, the same `400`/`409` errors as a real save on failure. The optional `?id=` query lets callers validate an update without going through `:id` in the path. |
 | `GET` | `/v1/config/:namespace/:id` | Get one config entry |
 | `PUT` | `/v1/config/:namespace/:id` | Replace a config entry |
-| `DELETE` | `/v1/config/:namespace/:id` | Delete a config entry |
+| `DELETE` | `/v1/config/:namespace/:id` | Delete a config entry. `?force=true` bypasses the dependency check (and audits the override). Returns `409` with `{"error":"...","used_by":[...]}` when other records depend on this one |
+| `POST` | `/v1/config/:namespace/:id/restore` | Restore a previous version. Body: `{"version": "<event-id>"}` — the audit-event id of the version to roll back to. Emits a fresh audit event of type `restore` with `restored_from = <event-id>` |
 | `GET` | `/v1/config/:namespace/$schema` | Return the JSON Schema for a namespace |
 | `GET` | `/v1/agents` | Convenience alias for `/v1/config/agents` |
 | `GET` | `/v1/agents/:id` | Convenience alias for `/v1/config/agents/:id` |
+| `POST` | `/v1/providers/:id/test` | Probe an existing provider. Returns `{"ok": bool, "latency_ms": number, "error"?: string}`. The admin console wires this both into the editor and as a per-row "Test" button on the providers list |
+| `GET` | `/v1/mcp-servers/:id/status` | See [MCP server status](#mcp-server-status) below |
+| `POST` | `/v1/mcp-servers/:id/restart` | Reconnect a managed MCP server. `202` on success; emits an audit `restart` event |
+| `GET` | `/v1/audit-log?…` | Query admin audit events. Returns `{"items": AuditEvent[], "next_cursor": string?}`. `503 {"error":"audit log is not configured"}` when audit logging is off. See [Admin audit log](#admin-audit-log) |
 
 `GET /v1/capabilities` includes each registered plugin's `config_schemas`.
 The admin console uses this field to render agent-level plugin config forms and
@@ -86,6 +157,50 @@ Current built-in namespaces:
 - `models`
 - `providers`
 - `mcp-servers`
+
+### MCP server status
+
+```jsonc
+{
+  "connected": true,
+  "last_error": null,                  // string when last health attempt failed
+  "tools": [
+    { "name": "search", "description": "Search the web." }
+  ],
+  "consecutive_failures": 0,           // streak since last success
+  "last_attempt_at": 1777708820,       // unix seconds, null until first probe
+  "last_success_at": 1777708820,       // unix seconds, null until first success
+  "reconnecting": false,
+  "permanently_failed": false          // true once the manager has given up
+}
+```
+
+`consecutive_failures` + `last_success_at` are surfaced from the existing
+`McpRefreshHealth` budget. There is no separate "errors in last 24h"
+counter — the health budget is the source of truth.
+
+### Admin audit log
+
+`AuditEvent`:
+
+```jsonc
+{
+  "id": "01HXJK...",                   // ULID
+  "ts": "2026-05-02T07:58:14.900Z",    // RFC 3339
+  "actor": "<sha256-prefix>",          // SHA-256 of bearer token, optionally
+                                       // suffixed with the X-Awaken-Actor label
+  "action": "create" | "update" | "delete" | "restart" | "publish" | "restore",
+  "resource": "agents/research",       // "<namespace>/<id>"
+  "before": { /* spec snapshot */ },
+  "after":  { /* spec snapshot */ },
+  "ip": "127.0.0.1",
+  "request_id": null,
+  "restored_from": null                // event id this restore is rolling back to
+}
+```
+
+Filters: `?resource=`, `?action=`, `?actor=`, `?since=`, `?until=`,
+`?limit=` (clamped to `[1, 1000]`), `?cursor=` for pagination.
 
 ## AI SDK v6 routes
 
