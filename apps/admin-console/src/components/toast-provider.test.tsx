@@ -1,7 +1,9 @@
 // @vitest-environment jsdom
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, render, screen, act, fireEvent } from "@testing-library/react";
+import { StrictMode } from "react";
 import { ToastProvider, useToast } from "./toast-provider";
+import { DEFAULT_DURATIONS_MS, MAX_VISIBLE_TOASTS } from "@/lib/toast-queue";
 
 afterEach(() => {
   cleanup();
@@ -134,5 +136,180 @@ describe("ToastProvider — displaced count semantics", () => {
     });
 
     expect(screen.queryByText(/earlier/)).toBeNull();
+  });
+});
+
+describe("ToastProvider — timer-based auto-dismiss", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  function SuccessApp() {
+    const { push } = useToast();
+    return (
+      <button
+        type="button"
+        data-testid="push-btn"
+        onClick={() => push({ tone: "success", message: "Auto-dismiss me" })}
+      >
+        Push
+      </button>
+    );
+  }
+
+  it("auto-dismisses a success toast after DEFAULT_DURATIONS_MS.success", () => {
+    render(
+      <ToastProvider>
+        <SuccessApp />
+      </ToastProvider>,
+    );
+
+    act(() => {
+      fireEvent.click(screen.getByTestId("push-btn"));
+    });
+
+    expect(screen.getByRole("alert")).toBeTruthy();
+
+    act(() => {
+      vi.advanceTimersByTime(DEFAULT_DURATIONS_MS.success + 100);
+    });
+
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("error toast (durationMs:0) persists after 60 seconds", () => {
+    function ErrorApp() {
+      const { push } = useToast();
+      return (
+        <button
+          type="button"
+          data-testid="push-btn"
+          onClick={() => push({ tone: "error", message: "Sticky error", durationMs: 0 })}
+        >
+          Push
+        </button>
+      );
+    }
+
+    render(
+      <ToastProvider>
+        <ErrorApp />
+      </ToastProvider>,
+    );
+
+    act(() => {
+      fireEvent.click(screen.getByTestId("push-btn"));
+    });
+
+    expect(screen.getByRole("alert")).toBeTruthy();
+
+    act(() => {
+      vi.advanceTimersByTime(60_000);
+    });
+
+    expect(screen.getByRole("alert")).toBeTruthy();
+  });
+});
+
+describe("ToastProvider — MAX_VISIBLE_TOASTS cap", () => {
+  function MultiPushApp() {
+    const { push } = useToast();
+    return (
+      <button
+        type="button"
+        data-testid="push-btn"
+        onClick={() => {
+          for (let i = 1; i <= MAX_VISIBLE_TOASTS + 1; i++) {
+            push({ tone: "info", message: `Toast ${i}`, durationMs: 0 });
+          }
+        }}
+      >
+        Push all
+      </button>
+    );
+  }
+
+  it("shows only MAX_VISIBLE_TOASTS cards and displaced chip for the excess", () => {
+    render(
+      <ToastProvider>
+        <MultiPushApp />
+      </ToastProvider>,
+    );
+
+    act(() => {
+      fireEvent.click(screen.getByTestId("push-btn"));
+    });
+
+    const alerts = screen.getAllByRole("alert");
+    expect(alerts).toHaveLength(MAX_VISIBLE_TOASTS);
+    expect(screen.getByText(`+ 1 earlier`)).toBeTruthy();
+  });
+});
+
+describe("ToastProvider — StrictMode double-mount timer safety", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("does not leave stale timers after unmount under StrictMode", () => {
+    function SuccessApp() {
+      const { push } = useToast();
+      return (
+        <button
+          type="button"
+          data-testid="push-btn"
+          onClick={() => push({ tone: "success", message: "StrictMode toast" })}
+        >
+          Push
+        </button>
+      );
+    }
+
+    const { unmount } = render(
+      <StrictMode>
+        <ToastProvider>
+          <SuccessApp />
+        </ToastProvider>
+      </StrictMode>,
+    );
+
+    act(() => {
+      fireEvent.click(screen.getByTestId("push-btn"));
+    });
+
+    unmount();
+
+    // After unmount the cleanup should have cancelled all timers
+    expect(vi.getTimerCount()).toBe(0);
+
+    // Advancing time should not fire any callbacks (no stale timers)
+    act(() => {
+      vi.advanceTimersByTime(DEFAULT_DURATIONS_MS.success * 2);
+    });
+
+    expect(vi.getTimerCount()).toBe(0);
+  });
+});
+
+describe("ToastProvider — useToast outside provider", () => {
+  it("throws when useToast is called outside <ToastProvider>", () => {
+    const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    function Naked() {
+      useToast();
+      return null;
+    }
+
+    expect(() => render(<Naked />)).toThrow(/useToast must be used inside/i);
+
+    consoleSpy.mockRestore();
   });
 });
