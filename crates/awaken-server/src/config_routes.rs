@@ -16,7 +16,7 @@ use crate::app::AppState;
 use crate::routes::ApiError;
 use crate::services::audit_log::{AuditQuery, AuditQueryError};
 use crate::services::config_service::{
-    ConfigNamespace, ConfigService, ConfigServiceError, ProviderTestResult,
+    ConfigNamespace, ConfigService, ConfigServiceError, ProviderTestResult, RestoreError,
 };
 
 #[derive(Deserialize)]
@@ -42,6 +42,7 @@ pub fn config_routes() -> Router<AppState> {
             "/v1/config/:namespace/:id",
             get(get_config).put(put_config).delete(delete_config),
         )
+        .route("/v1/config/:namespace/:id/restore", post(restore_config))
         .route("/v1/config/:namespace/$schema", get(get_schema))
         .route("/v1/agents", get(list_agents))
         .route("/v1/agents/:id", get(get_agent))
@@ -203,6 +204,68 @@ async fn delete_config(
         )
             .into_response(),
         Err(e) => ConfigRouteError::Api(map_service_error(e)).into_response(),
+    }
+}
+
+/// Body accepted by `POST /v1/config/:namespace/:id/restore`.
+#[derive(Deserialize)]
+struct RestoreBody {
+    version: String,
+}
+
+async fn restore_config(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path((namespace, id)): Path<(String, String)>,
+    Json(body): Json<RestoreBody>,
+) -> Response {
+    if let Err(err) = ensure_admin_auth(&state, &headers) {
+        return err.into_response();
+    }
+    let namespace = match ConfigNamespace::parse(&namespace) {
+        Ok(ns) => ns,
+        Err(e) => return ConfigRouteError::Api(map_service_error(e)).into_response(),
+    };
+    let service = match ConfigService::new(&state) {
+        Ok(s) => s,
+        Err(e) => return ConfigRouteError::Api(map_service_error(e)).into_response(),
+    };
+    match service
+        .restore(namespace, &id, &body.version, &headers)
+        .await
+    {
+        Ok(result) => Json(result).into_response(),
+        Err(RestoreError::VersionNotFound) => (
+            StatusCode::NOT_FOUND,
+            Json(json!({"error": "version not found", "reason": "unknown"})),
+        )
+            .into_response(),
+        Err(RestoreError::AuditNotConfigured) => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({"error": "audit log is not configured"})),
+        )
+            .into_response(),
+        Err(RestoreError::ResourceMismatch { .. }) => (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(json!({"error": "cross-resource restore not allowed"})),
+        )
+            .into_response(),
+        Err(RestoreError::NotRestorable) | Err(RestoreError::NoPayload(_)) => (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(json!({"error": "this event type is not restorable"})),
+        )
+            .into_response(),
+        Err(RestoreError::Service(ConfigServiceError::InvalidPayload(msg))) => (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(json!({"error": msg})),
+        )
+            .into_response(),
+        Err(RestoreError::Service(e)) => {
+            ConfigRouteError::Api(map_service_error(e)).into_response()
+        }
+        Err(RestoreError::Storage(e)) => {
+            ConfigRouteError::Api(ApiError::Internal(e.to_string())).into_response()
+        }
     }
 }
 
