@@ -148,6 +148,26 @@ describe("summarizeChange", () => {
     );
     expect(result).toContain("old_field");
   });
+
+  it("returns restored from <prefix> for restore event", () => {
+    const event: AuditEvent = {
+      ...makeEvent("restore"),
+      restored_from: "01JXYZ12345678abcdef",
+    };
+    expect(summarizeChange(event)).toBe("restored from 01JXYZ12");
+  });
+
+  it("returns restored from unknown for restore event with null restored_from", () => {
+    const event: AuditEvent = {
+      ...makeEvent("restore"),
+      restored_from: null,
+    };
+    expect(summarizeChange(event)).toBe("restored from unknown");
+  });
+
+  it("returns restored from unknown for restore event with no restored_from", () => {
+    expect(summarizeChange(makeEvent("restore"))).toBe("restored from unknown");
+  });
 });
 
 // ---------------------------------------------------------------------------

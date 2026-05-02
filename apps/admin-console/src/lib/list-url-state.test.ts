@@ -6,6 +6,8 @@ import {
   writeSkillsFilter,
   readFixtureFilter,
   writeFixtureFilter,
+  readAuditFilter,
+  writeAuditFilter,
   type ListState,
 } from "./list-url-state";
 import { DEFAULT_PAGE_SIZE } from "./list-view";
@@ -307,5 +309,34 @@ describe("writeFixtureFilter", () => {
     const written = writeFixtureFilter(p(""), original);
     const recovered = readFixtureFilter(written);
     expect(recovered).toEqual(original);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// readAuditFilter / writeAuditFilter — restore action round-trip
+// ---------------------------------------------------------------------------
+
+describe("readAuditFilter", () => {
+  it("deserialises ?action=restore correctly", () => {
+    const state = readAuditFilter(p("action=restore"));
+    expect(state.action).toBe("restore");
+  });
+
+  it("rejects unknown action and falls back to empty string", () => {
+    const state = readAuditFilter(p("action=bogus"));
+    expect(state.action).toBe("");
+  });
+
+  it("round-trips restore action through write/read", () => {
+    const written = writeAuditFilter(p(""), {
+      since: "",
+      until: "",
+      action: "restore",
+      resource: "",
+      actor: "",
+    });
+    expect(written.get("action")).toBe("restore");
+    const recovered = readAuditFilter(written);
+    expect(recovered.action).toBe("restore");
   });
 });

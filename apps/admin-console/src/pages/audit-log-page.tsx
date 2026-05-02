@@ -16,6 +16,7 @@ const ACTION_OPTIONS: Array<{ value: AuditAction | ""; label: string }> = [
   { value: "delete", label: "Delete" },
   { value: "restart", label: "Restart" },
   { value: "publish", label: "Publish" },
+  { value: "restore", label: "Restore" },
 ];
 
 const ACTION_BADGE: Record<AuditAction, string> = {
@@ -24,6 +25,7 @@ const ACTION_BADGE: Record<AuditAction, string> = {
   delete: "bg-rose-100 text-rose-800",
   restart: "bg-amber-100 text-amber-800",
   publish: "bg-violet-100 text-violet-800",
+  restore: "bg-purple-100 text-purple-800",
 };
 
 export function AuditLogPage() {
