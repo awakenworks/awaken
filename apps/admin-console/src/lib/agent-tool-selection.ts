@@ -63,7 +63,32 @@ export interface ToolSource {
   key: string;
 }
 
-export function toolSourceFor(toolId: string): ToolSource {
+/// Backend-supplied source descriptor (from `/v1/capabilities`).
+export interface ApiToolSource {
+  kind: "builtin" | "plugin" | "mcp";
+  id?: string;
+}
+
+/// Derive a ToolSource from a backend-supplied source descriptor when present,
+/// falling back to id-prefix inference for tools without an explicit source.
+export function toolSourceFor(
+  toolId: string,
+  apiSource?: ApiToolSource,
+): ToolSource {
+  if (apiSource) {
+    if (apiSource.kind === "mcp") {
+      const server = apiSource.id ?? "";
+      const label = server.length > 0 ? `MCP · ${server}` : "MCP";
+      return { kind: "mcp", label, key: `mcp:${server}` };
+    }
+    if (apiSource.kind === "plugin") {
+      const plugin = apiSource.id ?? "";
+      const label = plugin.length > 0 ? `Plugin · ${plugin}` : "Plugin";
+      return { kind: "plugin", label, key: `plugin:${plugin}` };
+    }
+    return { kind: "builtin", label: "Built-in", key: "builtin" };
+  }
+  // Fallback: infer from id prefix (legacy / tools without explicit source).
   if (toolId.startsWith("mcp:")) {
     const remainder = toolId.slice(4);
     const slash = remainder.indexOf("/");
@@ -86,12 +111,12 @@ export interface ToolGroup<TTool> {
   tools: TTool[];
 }
 
-export function groupToolsBySource<TTool extends { id: string }>(
+export function groupToolsBySource<TTool extends { id: string; source?: ApiToolSource }>(
   tools: TTool[],
 ): ToolGroup<TTool>[] {
   const buckets = new Map<string, ToolGroup<TTool>>();
   for (const tool of tools) {
-    const source = toolSourceFor(tool.id);
+    const source = toolSourceFor(tool.id, tool.source);
     let bucket = buckets.get(source.key);
     if (!bucket) {
       bucket = { source, tools: [] };

@@ -103,6 +103,7 @@ export interface ToolInfo {
   id: string;
   name: string;
   description: string;
+  source?: { kind: "builtin" | "plugin" | "mcp"; id?: string };
 }
 
 export interface Capabilities {
