@@ -87,11 +87,8 @@ const EMPTY_SERVER: McpServerRecord = {
   restart_policy: { ...DEFAULT_RESTART_POLICY },
 };
 
-type McpServerStatus = {
-  connected: boolean;
-  last_error?: string | null;
-  tools: Array<{ name: string; description?: string | null }>;
-};
+import type { McpServerStatusResponse } from "@/lib/config-api";
+type McpServerStatus = McpServerStatusResponse;
 
 function StatusBadge({ status }: { status: McpServerStatus | null | undefined }) {
   if (status === undefined) {
@@ -770,8 +767,37 @@ function LiveStatusSection({
         <StatusStat label="State" value={stateLabel} tone={stateTone} />
         <StatusStat label="Handshake" value={handshake} mono />
         <StatusStat label="Tools" value={String(toolCount)} mono />
-        <StatusStat label="Restart" value={restartHint} />
+        <StatusStat
+          label={status && status.consecutive_failures > 0 ? "Failures (since last ok)" : "Restart"}
+          value={
+            status && status.consecutive_failures > 0
+              ? `${status.consecutive_failures}${status.permanently_failed ? " · gave up" : status.reconnecting ? " · retrying" : ""}`
+              : restartHint
+          }
+          tone={
+            status && status.permanently_failed
+              ? "error"
+              : status && status.consecutive_failures > 0
+                ? "warn"
+                : "neutral"
+          }
+        />
       </div>
+
+      {status && (status.last_attempt_at || status.last_success_at) && (
+        <div className="mt-2 flex flex-wrap gap-x-4 text-[11px] text-fg-faint">
+          {status.last_attempt_at && (
+            <span>
+              last attempt {formatRelativeTime(status.last_attempt_at)}
+            </span>
+          )}
+          {status.last_success_at && (
+            <span>
+              last success {formatRelativeTime(status.last_success_at)}
+            </span>
+          )}
+        </div>
+      )}
 
       {status?.last_error && (
         <p className="mt-3 rounded-md border border-tone-error/30 bg-tone-error/10 px-3 py-2 font-mono text-xs text-tone-error">

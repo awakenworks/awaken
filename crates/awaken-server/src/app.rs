@@ -337,6 +337,9 @@ pub struct AppState {
     pub runtime_stats: Option<Arc<RuntimeStatsRegistry>>,
     /// Optional audit logger.  When `Some`, admin mutations emit events.
     pub audit_log: Option<Arc<AuditLogger>>,
+    /// Wall-clock instant the AppState was constructed.  Used by
+    /// `/v1/system/info` to report uptime.
+    pub started_at: Instant,
 }
 
 impl AppState {
@@ -361,6 +364,7 @@ impl AppState {
             mcp_http: Arc::new(crate::protocols::mcp::http::McpHttpState::new()),
             runtime_stats: None,
             audit_log: None,
+            started_at: Instant::now(),
         }
     }
 

@@ -256,6 +256,32 @@ impl<'a> ConfigService<'a> {
             .transpose()
     }
 
+    /// Dry-run validation. Runs the same `prepare_body` + `validate_payload`
+    /// pass that `create` / `update` perform, but does **not** touch the
+    /// config store and does **not** apply the resulting snapshot to the
+    /// running runtime. Useful for the admin console's "Validate before save"
+    /// affordance.
+    ///
+    /// Returns the normalized body (with id, timestamps, and namespace-specific
+    /// rewrites applied) so callers can preview exactly what would be persisted.
+    pub async fn validate(
+        &self,
+        namespace: ConfigNamespace,
+        path_id: Option<&str>,
+        body: Value,
+    ) -> Result<Value, ConfigServiceError> {
+        let (id, normalized) = self.prepare_body(namespace, path_id, body).await?;
+        if let Some(path_id) = path_id
+            && path_id != id
+        {
+            return Err(ConfigServiceError::InvalidPayload(format!(
+                "path id '{path_id}' does not match body id '{id}'"
+            )));
+        }
+        self.validate_payload(namespace, &normalized)?;
+        Ok(normalized)
+    }
+
     pub async fn create(
         &self,
         namespace: ConfigNamespace,

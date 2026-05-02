@@ -125,6 +125,7 @@ fn health_routes() -> Router<AppState> {
     Router::new()
         .route("/health", get(health_ready))
         .route("/health/live", get(health_live))
+        .route("/v1/system/info", get(system_info))
 }
 
 fn thread_routes() -> Router<AppState> {
@@ -239,6 +240,27 @@ async fn list_agents_runtime_stats(State(state): State<AppState>) -> Response {
 #[tracing::instrument]
 async fn health_live() -> impl IntoResponse {
     StatusCode::OK
+}
+
+/// `GET /v1/system/info` — flat snapshot of server identity for the admin
+/// console System card. Returns the crate version, seconds since process
+/// start, and which optional subsystems are wired in.
+///
+/// Concrete store backend names are intentionally NOT exposed: the
+/// `&dyn Trait` lookup only yields the trait name, not the impl, so any
+/// string would mislead. Embedders that need to expose the concrete backend
+/// can decorate `AppState` with their own field and a separate route.
+#[tracing::instrument(skip(state))]
+async fn system_info(State(state): State<AppState>) -> Response {
+    let uptime_secs = state.started_at.elapsed().as_secs();
+    Json(json!({
+        "version": env!("CARGO_PKG_VERSION"),
+        "uptime_seconds": uptime_secs,
+        "config_store_enabled": state.config_store.is_some(),
+        "audit_log_enabled": state.audit_log.is_some(),
+        "runtime_stats_enabled": state.runtime_stats.is_some(),
+    }))
+    .into_response()
 }
 
 /// Readiness probe — checks that critical dependencies are reachable.
@@ -1597,6 +1619,28 @@ mod tests {
                 .unwrap();
             let resp = app.oneshot(req).await.unwrap();
             assert_eq!(resp.status(), StatusCode::OK);
+        }
+
+        #[tokio::test]
+        async fn system_info_returns_real_fields() {
+            let state = make_app_state();
+            let app = build_router(&state).with_state(state);
+
+            let req = axum::http::Request::builder()
+                .uri("/v1/system/info")
+                .body(axum::body::Body::empty())
+                .unwrap();
+            let resp = app.oneshot(req).await.unwrap();
+            assert_eq!(resp.status(), StatusCode::OK);
+
+            let body = resp.into_body().collect().await.unwrap().to_bytes();
+            let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+            assert_eq!(json["version"], env!("CARGO_PKG_VERSION"));
+            assert!(json["uptime_seconds"].is_u64());
+            // make_app_state() does not wire any optional subsystem.
+            assert_eq!(json["config_store_enabled"], false);
+            assert_eq!(json["audit_log_enabled"], false);
+            assert_eq!(json["runtime_stats_enabled"], false);
         }
 
         #[tokio::test]

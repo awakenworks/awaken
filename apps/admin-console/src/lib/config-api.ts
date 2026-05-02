@@ -121,6 +121,29 @@ export interface Capabilities {
   }>;
 }
 
+/** Wire-format mirror of `GET /v1/mcp-servers/:id/status` response. */
+export interface McpServerStatusResponse {
+  connected: boolean;
+  last_error?: string | null;
+  tools: Array<{ name: string; description?: string | null }>;
+  consecutive_failures: number;
+  /** Unix seconds, omitted when no attempt yet. */
+  last_attempt_at?: number | null;
+  /** Unix seconds, omitted when never succeeded. */
+  last_success_at?: number | null;
+  reconnecting: boolean;
+  permanently_failed: boolean;
+}
+
+/** Wire-format mirror of `GET /v1/system/info` response. */
+export interface SystemInfo {
+  version: string;
+  uptime_seconds: number;
+  config_store_enabled: boolean;
+  audit_log_enabled: boolean;
+  runtime_stats_enabled: boolean;
+}
+
 /** Wire-format mirror of Rust `awaken_ext_observability::AgentRuntimeSnapshot`. */
 export interface AgentRuntimeSnapshot {
   agent_id: string;
@@ -334,11 +357,29 @@ export const configApi = {
     ),
 
   mcpStatus: (id: string) =>
-    fetchJson<{
-      connected: boolean;
-      last_error?: string | null;
-      tools: Array<{ name: string; description?: string | null }>;
-    }>(`${BACKEND_URL}/v1/mcp-servers/${encodeURIComponent(id)}/status`),
+    fetchJson<McpServerStatusResponse>(
+      `${BACKEND_URL}/v1/mcp-servers/${encodeURIComponent(id)}/status`,
+    ),
+
+  /** Server identity + uptime + which optional subsystems are wired. */
+  systemInfo: () =>
+    fetchJson<SystemInfo>(`${BACKEND_URL}/v1/system/info`),
+
+  /** Dry-run validate. Backend runs the same prepare+validate path as
+   *  create/update but does NOT persist or apply. Returns the normalized
+   *  payload (timestamps, derived fields) on success; throws ConfigApiError
+   *  with the same shape as a real save on failure. */
+  validateConfig: <TBody>(namespace: string, body: TBody, opts?: { id?: string }) => {
+    const qs = opts?.id ? `?id=${encodeURIComponent(opts.id)}` : "";
+    return fetchJson<{ ok: boolean; normalized: unknown }>(
+      `${BACKEND_URL}/v1/config/${encodeURIComponent(namespace)}/validate${qs}`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+      },
+    );
+  },
 
   /** All-agents runtime stats. Backed by `/v1/agents/runtime-stats`, which
    *  returns `{ "agents": AgentRuntimeSnapshot[] }`. Returns `null` if the

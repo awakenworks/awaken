@@ -6,6 +6,7 @@ import {
   type McpServerRecord,
   type ProviderRecord,
   type ModelBindingSpec,
+  type SystemInfo,
   configApi,
 } from "@/lib/config-api";
 import {
@@ -32,6 +33,7 @@ type DashboardData = {
   agents: AgentSpec[];
   auditPage: AuditPage | null;
   auditDisabled: boolean;
+  systemInfo: SystemInfo | null;
 };
 
 export function DashboardPage() {
@@ -51,14 +53,16 @@ export function DashboardPage() {
             }
             throw err;
           });
-        const [capabilities, mcp, providers, models, agents, audit] = await Promise.all([
-          configApi.capabilities(),
-          configApi.list<McpServerRecord>("mcp-servers"),
-          configApi.list<ProviderRecord>("providers"),
-          configApi.list<ModelBindingSpec>("models"),
-          configApi.list<AgentSpec>("agents"),
-          auditPromise,
-        ]);
+        const [capabilities, mcp, providers, models, agents, audit, systemInfo] =
+          await Promise.all([
+            configApi.capabilities(),
+            configApi.list<McpServerRecord>("mcp-servers"),
+            configApi.list<ProviderRecord>("providers"),
+            configApi.list<ModelBindingSpec>("models"),
+            configApi.list<AgentSpec>("agents"),
+            auditPromise,
+            configApi.systemInfo().catch(() => null),
+          ]);
         if (!cancelled) {
           setData({
             capabilities,
@@ -68,6 +72,7 @@ export function DashboardPage() {
             agents: agents.items,
             auditPage: audit.page,
             auditDisabled: audit.disabled,
+            systemInfo,
           });
           setError(null);
         }
@@ -86,7 +91,16 @@ export function DashboardPage() {
   if (error) return <PageError message={error} />;
   if (!data) return <PageLoading />;
 
-  const { capabilities, mcpServers, providers, models, agents, auditPage, auditDisabled } = data;
+  const {
+    capabilities,
+    mcpServers,
+    providers,
+    models,
+    agents,
+    auditPage,
+    auditDisabled,
+    systemInfo,
+  } = data;
 
   return (
     <div className="mx-auto max-w-6xl p-6 md:p-8">
@@ -127,6 +141,12 @@ export function DashboardPage() {
         <HealthCard providers={providers} mcpServers={mcpServers} />
         <ActivityTimeline auditPage={auditPage} disabled={auditDisabled} />
       </section>
+
+      {systemInfo && (
+        <section className="mt-6">
+          <SystemCard info={systemInfo} />
+        </section>
+      )}
 
       <section className="mt-6 grid gap-6 lg:grid-cols-2">
         <div className="rounded-md border border-line bg-surface p-5 shadow-card">
@@ -312,6 +332,74 @@ function HealthCard({
       </div>
     </div>
   );
+}
+
+function SystemCard({ info }: { info: SystemInfo }) {
+  return (
+    <div className="rounded-md border border-line bg-surface p-5 shadow-card">
+      <Eyebrow>System</Eyebrow>
+      <div className="mt-3 grid gap-3 md:grid-cols-3 xl:grid-cols-5">
+        <SystemStat label="Version" value={info.version} mono />
+        <SystemStat label="Uptime" value={formatUptime(info.uptime_seconds)} />
+        <SystemStat
+          label="Config store"
+          value={info.config_store_enabled ? "wired" : "none"}
+          tone={info.config_store_enabled ? "success" : "neutral"}
+        />
+        <SystemStat
+          label="Audit log"
+          value={info.audit_log_enabled ? "on" : "off"}
+          tone={info.audit_log_enabled ? "success" : "neutral"}
+        />
+        <SystemStat
+          label="Runtime stats"
+          value={info.runtime_stats_enabled ? "on" : "off"}
+          tone={info.runtime_stats_enabled ? "success" : "neutral"}
+        />
+      </div>
+    </div>
+  );
+}
+
+function SystemStat({
+  label,
+  value,
+  mono = false,
+  tone = "neutral",
+}: {
+  label: string;
+  value: string;
+  mono?: boolean;
+  tone?: "success" | "neutral";
+}) {
+  return (
+    <div className="rounded-md border border-line bg-soft px-3 py-2">
+      <div className="text-[10px] font-medium uppercase tracking-[0.18em] text-fg-faint">
+        {label}
+      </div>
+      <div
+        className={[
+          "mt-1 text-sm font-semibold",
+          mono ? "font-mono" : "",
+          tone === "success" ? "text-tone-success" : "text-fg-strong",
+        ]
+          .join(" ")
+          .trim()}
+      >
+        {value}
+      </div>
+    </div>
+  );
+}
+
+function formatUptime(seconds: number): string {
+  if (seconds < 60) return `${seconds}s`;
+  const m = Math.floor(seconds / 60);
+  if (m < 60) return `${m}m`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h}h ${m % 60}m`;
+  const d = Math.floor(h / 24);
+  return `${d}d ${h % 24}h`;
 }
 
 function ActivityTimeline({

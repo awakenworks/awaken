@@ -371,6 +371,7 @@ export function AgentEditorPage() {
         isDirty={isDirty}
         isNew={isNew}
         saving={saving}
+        spec={spec}
         onSave={() => void handleSave()}
       />
     </div>
@@ -381,14 +382,34 @@ function EditorSaveBar({
   isDirty,
   isNew,
   saving,
+  spec,
   onSave,
 }: {
   isDirty: boolean;
   isNew: boolean;
   saving: boolean;
+  spec: AgentSpec;
   onSave: () => void;
 }) {
+  const toast = useToast();
+  const [validating, setValidating] = useState(false);
+
   if (!isDirty && !isNew) return null;
+
+  async function handleValidate() {
+    setValidating(true);
+    try {
+      await configApi.validateConfig("agents", spec, isNew ? undefined : { id: spec.id });
+      toast.success("Validation passed — payload is safe to publish.");
+    } catch (err) {
+      toast.error(
+        `Validation failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    } finally {
+      setValidating(false);
+    }
+  }
+
   return (
     <div className="sticky bottom-0 z-20 mx-6 mb-4 rounded-md border border-line bg-surface px-4 py-3 shadow-card-lift md:mx-8">
       <div className="flex flex-wrap items-center gap-3">
@@ -406,8 +427,16 @@ function EditorSaveBar({
         <div className="ml-auto flex items-center gap-2">
           <button
             type="button"
+            onClick={() => void handleValidate()}
+            disabled={validating || saving}
+            className="inline-flex h-9 items-center rounded-md border border-line-strong bg-surface px-3 text-sm font-medium text-fg transition-colors hover:bg-soft disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            {validating ? "Validating…" : "Validate"}
+          </button>
+          <button
+            type="button"
             onClick={onSave}
-            disabled={saving}
+            disabled={saving || validating}
             className="inline-flex h-9 items-center rounded-md bg-fg-strong px-4 text-sm font-medium text-bg transition-colors hover:bg-fg disabled:cursor-not-allowed disabled:opacity-60"
           >
             {saving ? "Saving…" : isNew ? "Save & Publish" : "Save"}

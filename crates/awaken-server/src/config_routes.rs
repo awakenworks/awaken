@@ -38,6 +38,7 @@ pub fn config_routes() -> Router<AppState> {
             "/v1/config/:namespace",
             get(list_config).post(create_config),
         )
+        .route("/v1/config/:namespace/validate", post(validate_config))
         .route(
             "/v1/config/:namespace/:id",
             get(get_config).put(put_config).delete(delete_config),
@@ -134,6 +135,34 @@ async fn create_config(
         .await
         .map_err(map_service_error)?;
     Ok((StatusCode::CREATED, Json(created)))
+}
+
+#[derive(Deserialize, Default)]
+struct ValidateParams {
+    /// Optional id from query string when validating an update without
+    /// going through `:id` in the path. The body must still carry an `id`.
+    #[serde(default)]
+    id: Option<String>,
+}
+
+async fn validate_config(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(namespace): Path<String>,
+    Query(params): Query<ValidateParams>,
+    Json(body): Json<Value>,
+) -> Result<impl IntoResponse, ConfigRouteError> {
+    ensure_admin_auth(&state, &headers)?;
+    let namespace = ConfigNamespace::parse(&namespace).map_err(map_service_error)?;
+    let service = ConfigService::new(&state).map_err(map_service_error)?;
+    let normalized = service
+        .validate(namespace, params.id.as_deref(), body)
+        .await
+        .map_err(map_service_error)?;
+    Ok(Json(json!({
+        "ok": true,
+        "normalized": normalized,
+    })))
 }
 
 async fn get_config(
@@ -309,7 +338,18 @@ async fn get_mcp_server_status(
             "name": t.name,
             "description": t.description,
         })).collect::<Vec<_>>(),
+        "consecutive_failures": status.consecutive_failures,
+        "last_attempt_at": status.last_attempt_at.and_then(systime_to_secs),
+        "last_success_at": status.last_success_at.and_then(systime_to_secs),
+        "reconnecting": status.reconnecting,
+        "permanently_failed": status.permanently_failed,
     })))
+}
+
+fn systime_to_secs(t: std::time::SystemTime) -> Option<u64> {
+    t.duration_since(std::time::UNIX_EPOCH)
+        .ok()
+        .map(|d| d.as_secs())
 }
 
 async fn post_mcp_server_restart(
@@ -676,6 +716,54 @@ mod tests {
                 serde_json::from_slice(&bytes).unwrap_or(Value::Null)
             };
             (status, body)
+        }
+
+        async fn validate_record(
+            app: &axum::Router,
+            namespace: &str,
+            body: &str,
+        ) -> (StatusCode, Value) {
+            let req = Request::builder()
+                .method("POST")
+                .uri(format!("/v1/config/{namespace}/validate"))
+                .header("content-type", "application/json")
+                .body(Body::from(body.to_string()))
+                .unwrap();
+            let resp = app.clone().oneshot(req).await.unwrap();
+            let status = resp.status();
+            let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+            let body: Value = if bytes.is_empty() {
+                Value::Null
+            } else {
+                serde_json::from_slice(&bytes).unwrap_or(Value::Null)
+            };
+            (status, body)
+        }
+
+        #[tokio::test]
+        async fn validate_returns_normalized_payload_without_persisting() {
+            let app = build_test_app().await;
+            let (status, body) =
+                validate_record(&app, "providers", r#"{"id":"draft-prov","adapter":"stub"}"#).await;
+            assert_eq!(status, StatusCode::OK);
+            assert_eq!(body["ok"], Value::Bool(true));
+            assert_eq!(body["normalized"]["id"], Value::String("draft-prov".into()));
+            assert!(body["normalized"]["created_at"].is_number());
+            // Confirm nothing was persisted: GET should 404.
+            let get_req = Request::builder()
+                .method("GET")
+                .uri("/v1/config/providers/draft-prov")
+                .body(Body::empty())
+                .unwrap();
+            let get_resp = app.clone().oneshot(get_req).await.unwrap();
+            assert_eq!(get_resp.status(), StatusCode::NOT_FOUND);
+        }
+
+        #[tokio::test]
+        async fn validate_rejects_missing_id() {
+            let app = build_test_app().await;
+            let (status, _) = validate_record(&app, "providers", r#"{"adapter":"stub"}"#).await;
+            assert_eq!(status, StatusCode::BAD_REQUEST);
         }
 
         #[tokio::test]
