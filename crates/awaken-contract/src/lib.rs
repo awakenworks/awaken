@@ -84,3 +84,6 @@ pub use cancellation::{CancellationHandle, CancellationToken};
 
 // ── periodic refresh ──
 pub use periodic_refresh::PeriodicRefresher;
+
+// ── audit log ──
+pub use contract::audit_log::{AuditAction, AuditEvent};
