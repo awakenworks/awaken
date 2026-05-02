@@ -13,15 +13,13 @@ import {
 import {
   compareNumber,
   compareString,
-  DEFAULT_PAGE_SIZE,
   filterBySearch,
   paginate,
   sortItems,
   toggleSort,
-  type PageSize,
   type SortConfig,
-  type SortState,
 } from "@/lib/list-view";
+import { useListUrlState } from "@/lib/list-url-state";
 import { adminRoutes } from "@/lib/routes";
 
 type AgentSortKey = "id" | "model_id" | "plugin_count";
@@ -40,19 +38,19 @@ const COLUMNS: SortableColumn<AgentSortKey>[] = [
   { key: null, label: "Actions" },
 ];
 
+const LIST_OPTIONS = {
+  validSortKeys: ["id", "model_id", "plugin_count"] as const,
+  defaultSort: { key: "id" as AgentSortKey, direction: "asc" as const },
+} as const;
+
 export function AgentsPage() {
   const navigate = useNavigate();
   const toast = useToast();
   const confirmDialog = useConfirmDialog();
   const [agents, setAgents] = useState<AgentSpec[]>([]);
   const [loading, setLoading] = useState(true);
-  const [search, setSearch] = useState("");
-  const [sort, setSort] = useState<SortState<AgentSortKey> | null>({
-    key: "id",
-    direction: "asc",
-  });
-  const [pageSize, setPageSize] = useState<PageSize>(DEFAULT_PAGE_SIZE);
-  const [page, setPage] = useState(1);
+
+  const { search, sort, pageSize, page, apply: applyListState } = useListUrlState<AgentSortKey>(LIST_OPTIONS);
 
   useEffect(() => {
     let cancelled = false;
@@ -112,8 +110,9 @@ export function AgentsPage() {
 
   useEffect(() => {
     if (view.page !== page) {
-      setPage(view.page);
+      applyListState({ page: view.page });
     }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [view.page, page]);
 
   async function handleDelete(id: string) {
@@ -163,18 +162,12 @@ export function AgentsPage() {
       <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
         <ListSearchBar
           value={search}
-          onChange={(next) => {
-            setSearch(next);
-            setPage(1);
-          }}
+          onChange={(next) => applyListState({ search: next, page: 1 })}
           placeholder="Search by id, model, or plugin…"
         />
         <PageSizeSelect
           value={pageSize}
-          onChange={(next) => {
-            setPageSize(next);
-            setPage(1);
-          }}
+          onChange={(next) => applyListState({ pageSize: next, page: 1 })}
         />
       </div>
 
@@ -195,7 +188,9 @@ export function AgentsPage() {
               <SortableHeader
                 columns={COLUMNS}
                 sort={sort}
-                onSort={(key) => setSort((current) => toggleSort(current, key))}
+                onSort={(key) =>
+                  applyListState({ sort: toggleSort(sort, key), page: 1 })
+                }
               />
               <tbody>
                 {view.items.map((agent) => (
@@ -232,7 +227,7 @@ export function AgentsPage() {
                 startIndex={view.startIndex}
                 endIndex={view.endIndex}
                 totalItems={view.totalItems}
-                onPageChange={setPage}
+                onPageChange={(p) => applyListState({ page: p })}
               />
             ) : null}
           </>

@@ -99,6 +99,46 @@ describe("router smoke", () => {
   });
 });
 
+describe("agents-page URL state", () => {
+  it("reads search, sort direction, and page size from the URL on initial render", async () => {
+    // Override the fetch stub to return proper list responses for config endpoints,
+    // so agents-page's configApi.list() gets { items: [] } rather than crashing.
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string) => ({
+        ok: true,
+        status: 200,
+        text: async () => {
+          if (String(url).includes("/v1/config/")) {
+            return JSON.stringify({ items: [], total: 0 });
+          }
+          return JSON.stringify({
+            agents: [],
+            tools: [],
+            plugins: [],
+            skills: [],
+            models: [],
+            providers: [],
+            namespaces: [],
+          });
+        },
+      })),
+    );
+
+    renderRoute("/agents?q=foo&sort=model_id&dir=desc&size=50&page=2");
+    // Wait for the page to mount.
+    expect(
+      await screen.findByRole("heading", { level: 2, name: "Agents" }),
+    ).toBeDefined();
+    // The search bar input should reflect the URL param (aria-label from sr-only span).
+    const searchInput = screen.getByRole("searchbox");
+    expect((searchInput as HTMLInputElement).value).toBe("foo");
+    // The page-size selector should show 50.
+    const sizeSelect = await screen.findByDisplayValue("50");
+    expect(sizeSelect).toBeDefined();
+  });
+});
+
 describe("provider wiring", () => {
   it("AuthProvider exposes the connected backend URL via the layout", async () => {
     renderRoute("/");

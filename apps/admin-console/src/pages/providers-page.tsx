@@ -16,15 +16,13 @@ import {
 import {
   compareBoolean,
   compareString,
-  DEFAULT_PAGE_SIZE,
   filterBySearch,
   paginate,
   sortItems,
   toggleSort,
-  type PageSize,
   type SortConfig,
-  type SortState,
 } from "@/lib/list-view";
+import { useListUrlState } from "@/lib/list-url-state";
 
 type ProviderSortKey = "id" | "adapter" | "base_url" | "has_api_key";
 
@@ -70,6 +68,11 @@ const EMPTY_PROVIDER: ProviderRecord = {
   timeout_secs: 300,
 };
 
+const LIST_OPTIONS = {
+  validSortKeys: ["id", "adapter", "base_url", "has_api_key"] as const,
+  defaultSort: { key: "id" as ProviderSortKey, direction: "asc" as const },
+} as const;
+
 export function ProvidersPage() {
   const [apiKeyMode, setApiKeyMode] = useState<ApiKeyMode>("replace");
   const [apiKeyDraft, setApiKeyDraft] = useState("");
@@ -114,13 +117,7 @@ export function ProvidersPage() {
     return Array.from(options).sort((left, right) => left.localeCompare(right));
   }, [crud.draft?.adapter, serverAdapters]);
 
-  const [search, setSearch] = useState("");
-  const [sort, setSort] = useState<SortState<ProviderSortKey> | null>({
-    key: "id",
-    direction: "asc",
-  });
-  const [pageSize, setPageSize] = useState<PageSize>(DEFAULT_PAGE_SIZE);
-  const [page, setPage] = useState(1);
+  const { search, sort, pageSize, page, apply: applyListState } = useListUrlState<ProviderSortKey>(LIST_OPTIONS);
 
   const filtered = useMemo(
     () =>
@@ -141,7 +138,8 @@ export function ProvidersPage() {
   );
 
   useEffect(() => {
-    if (view.page !== page) setPage(view.page);
+    if (view.page !== page) applyListState({ page: view.page });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [view.page, page]);
 
   function startCreate() {
@@ -328,18 +326,12 @@ export function ProvidersPage() {
       <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
         <ListSearchBar
           value={search}
-          onChange={(next) => {
-            setSearch(next);
-            setPage(1);
-          }}
+          onChange={(next) => applyListState({ search: next, page: 1 })}
           placeholder="Search by id, adapter, base url…"
         />
         <PageSizeSelect
           value={pageSize}
-          onChange={(next) => {
-            setPageSize(next);
-            setPage(1);
-          }}
+          onChange={(next) => applyListState({ pageSize: next, page: 1 })}
         />
       </div>
 
@@ -362,7 +354,9 @@ export function ProvidersPage() {
               <SortableHeader
                 columns={COLUMNS}
                 sort={sort}
-                onSort={(key) => setSort((current) => toggleSort(current, key))}
+                onSort={(key) =>
+                  applyListState({ sort: toggleSort(sort, key), page: 1 })
+                }
               />
               <tbody>
                 {view.items.map((provider) => (
@@ -407,7 +401,7 @@ export function ProvidersPage() {
                 startIndex={view.startIndex}
                 endIndex={view.endIndex}
                 totalItems={view.totalItems}
-                onPageChange={setPage}
+                onPageChange={(p) => applyListState({ page: p })}
               />
             ) : null}
           </>

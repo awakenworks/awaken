@@ -14,11 +14,10 @@ import {
   type ReplayReport,
 } from "@/lib/eval-reports";
 import {
-  DEFAULT_FIXTURE_FILTER,
   filterFixtures,
-  type FixtureFilterState,
   type FixtureStatusFilter,
 } from "@/lib/eval-reports-filter";
+import { useFixtureFilterUrlState } from "@/lib/list-url-state";
 
 const STATUS_OPTIONS: Array<{ value: FixtureStatusFilter; label: string }> = [
   { value: "all", label: "All fixtures" },
@@ -38,9 +37,8 @@ export function EvalReportsPage() {
   const [report, setReport] = useState<FileSlot | null>(null);
   const [baseline, setBaseline] = useState<FileSlot | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [fixtureFilter, setFixtureFilter] = useState<FixtureFilterState>(
-    DEFAULT_FIXTURE_FILTER,
-  );
+
+  const { apply: applyFixtureFilter, ...fixtureFilter } = useFixtureFilterUrlState();
 
   async function readFile(
     event: ChangeEvent<HTMLInputElement>,
@@ -207,10 +205,9 @@ export function EvalReportsPage() {
               <select
                 value={fixtureFilter.status}
                 onChange={(event) =>
-                  setFixtureFilter((current) => ({
-                    ...current,
+                  applyFixtureFilter({
                     status: event.target.value as FixtureStatusFilter,
-                  }))
+                  })
                 }
                 className="rounded-md border border-slate-300 bg-white px-2 py-1 text-xs text-slate-700 outline-none focus:border-slate-500"
               >
@@ -234,10 +231,7 @@ export function EvalReportsPage() {
                 type="search"
                 value={fixtureFilter.search}
                 onChange={(event) =>
-                  setFixtureFilter((current) => ({
-                    ...current,
-                    search: event.target.value,
-                  }))
+                  applyFixtureFilter({ search: event.target.value })
                 }
                 placeholder="Search by fixture id…"
                 className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-slate-500"

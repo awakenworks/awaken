@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo } from "react";
 import {
   type ModelBindingSpec,
   type ProviderRecord,
@@ -15,15 +15,13 @@ import {
 } from "@/components/list-controls";
 import {
   compareString,
-  DEFAULT_PAGE_SIZE,
   filterBySearch,
   paginate,
   sortItems,
   toggleSort,
-  type PageSize,
   type SortConfig,
-  type SortState,
 } from "@/lib/list-view";
+import { useListUrlState } from "@/lib/list-url-state";
 
 const EMPTY_MODEL: ModelBindingSpec = {
   id: "",
@@ -51,6 +49,11 @@ const COLUMNS: SortableColumn<ModelSortKey>[] = [
   { key: null, label: "Actions" },
 ];
 
+const LIST_OPTIONS = {
+  validSortKeys: ["id", "provider_id", "upstream_model"] as const,
+  defaultSort: { key: "id" as ModelSortKey, direction: "asc" as const },
+} as const;
+
 export function ModelsPage() {
   const crud = useCrudPage<ModelBindingSpec>({
     namespace: "models",
@@ -58,13 +61,7 @@ export function ModelsPage() {
     auxiliaryLoaders,
   });
 
-  const [search, setSearch] = useState("");
-  const [sort, setSort] = useState<SortState<ModelSortKey> | null>({
-    key: "id",
-    direction: "asc",
-  });
-  const [pageSize, setPageSize] = useState<PageSize>(DEFAULT_PAGE_SIZE);
-  const [page, setPage] = useState(1);
+  const { search, sort, pageSize, page, apply: applyListState } = useListUrlState<ModelSortKey>(LIST_OPTIONS);
 
   const providerIds = crud.auxiliaryData as string[];
   const providerOptions = useMemo(() => {
@@ -101,7 +98,8 @@ export function ModelsPage() {
   );
 
   useEffect(() => {
-    if (view.page !== page) setPage(view.page);
+    if (view.page !== page) applyListState({ page: view.page });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [view.page, page]);
 
   return (
@@ -198,18 +196,12 @@ export function ModelsPage() {
       <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
         <ListSearchBar
           value={search}
-          onChange={(next) => {
-            setSearch(next);
-            setPage(1);
-          }}
+          onChange={(next) => applyListState({ search: next, page: 1 })}
           placeholder="Search by id, provider, upstream…"
         />
         <PageSizeSelect
           value={pageSize}
-          onChange={(next) => {
-            setPageSize(next);
-            setPage(1);
-          }}
+          onChange={(next) => applyListState({ pageSize: next, page: 1 })}
         />
       </div>
 
@@ -230,7 +222,9 @@ export function ModelsPage() {
               <SortableHeader
                 columns={COLUMNS}
                 sort={sort}
-                onSort={(key) => setSort((current) => toggleSort(current, key))}
+                onSort={(key) =>
+                  applyListState({ sort: toggleSort(sort, key), page: 1 })
+                }
               />
               <tbody>
                 {view.items.map((model) => (
@@ -272,7 +266,7 @@ export function ModelsPage() {
                 startIndex={view.startIndex}
                 endIndex={view.endIndex}
                 totalItems={view.totalItems}
-                onPageChange={setPage}
+                onPageChange={(p) => applyListState({ page: p })}
               />
             ) : null}
           </>

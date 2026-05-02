@@ -2,12 +2,11 @@ import { useEffect, useMemo, useState } from "react";
 import { type SkillInfo, configApi } from "@/lib/config-api";
 import { useToast } from "@/components/toast-provider";
 import {
-  DEFAULT_SKILLS_FILTER,
   filterSkills,
   type ContextFilter,
   type InvocableFilter,
-  type SkillsFilterState,
 } from "@/lib/skills-filter";
+import { useSkillsFilterUrlState } from "@/lib/list-url-state";
 
 const INVOCABLE_OPTIONS: Array<{ value: InvocableFilter; label: string }> = [
   { value: "any", label: "Any caller" },
@@ -26,7 +25,8 @@ export function SkillsPage() {
   const toast = useToast();
   const [skills, setSkills] = useState<SkillInfo[]>([]);
   const [loading, setLoading] = useState(true);
-  const [filter, setFilter] = useState<SkillsFilterState>(DEFAULT_SKILLS_FILTER);
+
+  const { apply: applyFilter, ...filter } = useSkillsFilterUrlState();
 
   useEffect(() => {
     let cancelled = false;
@@ -87,7 +87,7 @@ export function SkillsPage() {
             type="search"
             value={filter.search}
             onChange={(event) =>
-              setFilter((current) => ({ ...current, search: event.target.value }))
+              applyFilter({ search: event.target.value })
             }
             placeholder="Search by id, name, description, tool, path…"
             className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-slate-500"
@@ -98,10 +98,7 @@ export function SkillsPage() {
           <select
             value={filter.invocable}
             onChange={(event) =>
-              setFilter((current) => ({
-                ...current,
-                invocable: event.target.value as InvocableFilter,
-              }))
+              applyFilter({ invocable: event.target.value as InvocableFilter })
             }
             className="rounded-md border border-slate-300 bg-white px-2 py-1 text-xs text-slate-700 outline-none focus:border-slate-500"
           >
@@ -117,10 +114,7 @@ export function SkillsPage() {
           <select
             value={filter.context}
             onChange={(event) =>
-              setFilter((current) => ({
-                ...current,
-                context: event.target.value as ContextFilter,
-              }))
+              applyFilter({ context: event.target.value as ContextFilter })
             }
             className="rounded-md border border-slate-300 bg-white px-2 py-1 text-xs text-slate-700 outline-none focus:border-slate-500"
           >
