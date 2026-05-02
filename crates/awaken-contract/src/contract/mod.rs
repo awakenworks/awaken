@@ -1,4 +1,5 @@
 pub mod active_agent;
+pub mod audit_log;
 pub mod bundle;
 pub mod config_store;
 pub mod content;
