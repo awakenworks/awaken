@@ -50,6 +50,13 @@ impl ConfigNamespace {
     }
 }
 
+/// A record that depends on the resource being deleted.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct DependentRef {
+    pub namespace: &'static str,
+    pub id: String,
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum ConfigServiceError {
     #[error("config management API not enabled")]
@@ -68,6 +75,8 @@ pub enum ConfigServiceError {
     Serialization(String),
     #[error("runtime apply failed: {0}")]
     Apply(String),
+    #[error("blocked: {used_by:?} record(s) depend on this resource")]
+    Blocked { used_by: Vec<DependentRef> },
     #[error("storage error: {0}")]
     Storage(#[from] StorageError),
 }
@@ -250,6 +259,7 @@ impl<'a> ConfigService<'a> {
         &self,
         namespace: ConfigNamespace,
         id: &str,
+        force: bool,
     ) -> Result<(), ConfigServiceError> {
         let manager = self.runtime_manager()?;
         let _apply_guard = manager.lock_apply().await;
@@ -260,6 +270,13 @@ impl<'a> ConfigService<'a> {
             .ok_or_else(|| {
                 ConfigServiceError::NotFound(format!("{}/{}", namespace.as_str(), id))
             })?;
+
+        if !force {
+            let blockers = self.find_dependents(namespace, id).await?;
+            if !blockers.is_empty() {
+                return Err(ConfigServiceError::Blocked { used_by: blockers });
+            }
+        }
 
         self.store.delete(namespace.as_str(), id).await?;
         let apply_result = manager
@@ -272,6 +289,55 @@ impl<'a> ConfigService<'a> {
             return Err(error);
         }
         Ok(())
+    }
+
+    /// Return all records in other namespaces that reference `id` in `namespace`.
+    ///
+    /// - Providers: scans models for `provider_id == id`
+    /// - Models: scans agents for `model_id == id`
+    /// - Agents / McpServers: leaf nodes, no dependents
+    async fn find_dependents(
+        &self,
+        namespace: ConfigNamespace,
+        id: &str,
+    ) -> Result<Vec<DependentRef>, ConfigServiceError> {
+        match namespace {
+            ConfigNamespace::Providers => {
+                let models = self.store.list("models", 0, usize::MAX).await?;
+                let refs = models
+                    .into_iter()
+                    .filter(|(_, value)| {
+                        value
+                            .get("provider_id")
+                            .and_then(Value::as_str)
+                            .is_some_and(|pid| pid == id)
+                    })
+                    .map(|(model_id, _)| DependentRef {
+                        namespace: "models",
+                        id: model_id,
+                    })
+                    .collect();
+                Ok(refs)
+            }
+            ConfigNamespace::Models => {
+                let agents = self.store.list("agents", 0, usize::MAX).await?;
+                let refs = agents
+                    .into_iter()
+                    .filter(|(_, value)| {
+                        value
+                            .get("model_id")
+                            .and_then(Value::as_str)
+                            .is_some_and(|mid| mid == id)
+                    })
+                    .map(|(agent_id, _)| DependentRef {
+                        namespace: "agents",
+                        id: agent_id,
+                    })
+                    .collect();
+                Ok(refs)
+            }
+            ConfigNamespace::Agents | ConfigNamespace::McpServers => Ok(vec![]),
+        }
     }
 
     fn runtime_manager(
@@ -948,5 +1014,162 @@ mod tests {
             .await
             .expect_err("missing manager should reject writes");
         assert!(matches!(error, ConfigServiceError::NotEnabled));
+    }
+
+    // ── find_dependents / blocked delete tests ──────────────────────────────
+
+    #[tokio::test]
+    async fn find_dependents_provider_returns_referencing_models() {
+        let config_store = Arc::new(awaken_stores::InMemoryStore::new());
+        let (state, _manager) = build_state(config_store.clone()).await;
+        let service = ConfigService::new(&state).expect("config service");
+
+        // Create a model that references provider "bootstrap"
+        service
+            .create(
+                ConfigNamespace::Models,
+                json!({
+                    "id": "model-ref-bootstrap",
+                    "provider_id": "bootstrap",
+                    "upstream_model": "gpt-4"
+                }),
+            )
+            .await
+            .expect("create model");
+
+        let dependents = service
+            .find_dependents(ConfigNamespace::Providers, "bootstrap")
+            .await
+            .expect("find_dependents");
+
+        assert_eq!(dependents.len(), 2, "bootstrap model + model-ref-bootstrap");
+        let ids: Vec<&str> = dependents.iter().map(|d| d.id.as_str()).collect();
+        assert!(ids.contains(&"model-ref-bootstrap"));
+        for d in &dependents {
+            assert_eq!(d.namespace, "models");
+        }
+    }
+
+    #[tokio::test]
+    async fn find_dependents_model_returns_referencing_agents() {
+        let config_store = Arc::new(awaken_stores::InMemoryStore::new());
+        let (state, _manager) = build_state(config_store.clone()).await;
+        let service = ConfigService::new(&state).expect("config service");
+
+        // Create an agent referencing the bootstrap model
+        service
+            .create(
+                ConfigNamespace::Agents,
+                json!({
+                    "id": "agent-ref-bootstrap",
+                    "model_id": "bootstrap",
+                    "system_prompt": "test",
+                    "max_rounds": 1
+                }),
+            )
+            .await
+            .expect("create agent");
+
+        let dependents = service
+            .find_dependents(ConfigNamespace::Models, "bootstrap")
+            .await
+            .expect("find_dependents");
+
+        assert!(!dependents.is_empty());
+        let ids: Vec<&str> = dependents.iter().map(|d| d.id.as_str()).collect();
+        assert!(ids.contains(&"agent-ref-bootstrap"));
+        for d in &dependents {
+            assert_eq!(d.namespace, "agents");
+        }
+    }
+
+    #[tokio::test]
+    async fn find_dependents_agents_and_mcp_servers_are_leaf_nodes() {
+        let config_store = Arc::new(awaken_stores::InMemoryStore::new());
+        let (state, _manager) = build_state(config_store.clone()).await;
+        let service = ConfigService::new(&state).expect("config service");
+
+        let agent_deps = service
+            .find_dependents(ConfigNamespace::Agents, "any-agent")
+            .await
+            .expect("find_dependents agents");
+        assert!(agent_deps.is_empty());
+
+        let mcp_deps = service
+            .find_dependents(ConfigNamespace::McpServers, "any-mcp")
+            .await
+            .expect("find_dependents mcp-servers");
+        assert!(mcp_deps.is_empty());
+    }
+
+    #[tokio::test]
+    async fn delete_without_force_returns_blocked_when_dependents_exist() {
+        let config_store = Arc::new(awaken_stores::InMemoryStore::new());
+        let (state, _manager) = build_state(config_store.clone()).await;
+        let service = ConfigService::new(&state).expect("config service");
+
+        // Create a second provider and a model referencing it
+        service
+            .create(
+                ConfigNamespace::Providers,
+                json!({ "id": "prov-b", "adapter": "stub" }),
+            )
+            .await
+            .expect("create provider-b");
+
+        service
+            .create(
+                ConfigNamespace::Models,
+                json!({
+                    "id": "model-b",
+                    "provider_id": "prov-b",
+                    "upstream_model": "gpt-4"
+                }),
+            )
+            .await
+            .expect("create model-b");
+
+        let err = service
+            .delete(ConfigNamespace::Providers, "prov-b", false)
+            .await
+            .expect_err("should be blocked");
+
+        assert!(
+            matches!(err, ConfigServiceError::Blocked { ref used_by } if !used_by.is_empty()),
+            "expected Blocked error"
+        );
+    }
+
+    #[tokio::test]
+    async fn delete_with_force_removes_despite_dependents() {
+        let config_store = Arc::new(awaken_stores::InMemoryStore::new());
+        let (state, _manager) = build_state(config_store.clone()).await;
+        let service = ConfigService::new(&state).expect("config service");
+
+        service
+            .create(
+                ConfigNamespace::Providers,
+                json!({ "id": "prov-c", "adapter": "stub" }),
+            )
+            .await
+            .expect("create provider-c");
+
+        service
+            .create(
+                ConfigNamespace::Models,
+                json!({
+                    "id": "model-c",
+                    "provider_id": "prov-c",
+                    "upstream_model": "gpt-4"
+                }),
+            )
+            .await
+            .expect("create model-c");
+
+        // Force delete should succeed even with dependents
+        service
+            .delete(ConfigNamespace::Providers, "prov-c", true)
+            .await
+            .expect("force delete should succeed");
     }
 }

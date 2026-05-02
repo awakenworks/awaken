@@ -6,6 +6,12 @@ use axum::{Json, Router};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
+#[derive(Deserialize, Default)]
+struct DeleteParams {
+    #[serde(default)]
+    force: bool,
+}
+
 use crate::app::AppState;
 use crate::routes::ApiError;
 use crate::services::config_service::{ConfigNamespace, ConfigService, ConfigServiceError};
@@ -166,15 +172,31 @@ async fn delete_config(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path((namespace, id)): Path<(String, String)>,
-) -> Result<impl IntoResponse, ConfigRouteError> {
-    ensure_admin_auth(&state, &headers)?;
-    let namespace = ConfigNamespace::parse(&namespace).map_err(map_service_error)?;
-    let service = ConfigService::new(&state).map_err(map_service_error)?;
-    service
-        .delete(namespace, &id)
-        .await
-        .map_err(map_service_error)?;
-    Ok(StatusCode::NO_CONTENT)
+    Query(params): Query<DeleteParams>,
+) -> Response {
+    if let Err(err) = ensure_admin_auth(&state, &headers) {
+        return err.into_response();
+    }
+    let namespace = match ConfigNamespace::parse(&namespace) {
+        Ok(ns) => ns,
+        Err(e) => return ConfigRouteError::Api(map_service_error(e)).into_response(),
+    };
+    let service = match ConfigService::new(&state) {
+        Ok(s) => s,
+        Err(e) => return ConfigRouteError::Api(map_service_error(e)).into_response(),
+    };
+    match service.delete(namespace, &id, params.force).await {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(ConfigServiceError::Blocked { used_by }) => (
+            StatusCode::CONFLICT,
+            Json(json!({
+                "error": "cannot delete: other records depend on this resource",
+                "used_by": used_by,
+            })),
+        )
+            .into_response(),
+        Err(e) => ConfigRouteError::Api(map_service_error(e)).into_response(),
+    }
 }
 
 #[derive(Debug)]
@@ -251,6 +273,8 @@ fn map_service_error(error: ConfigServiceError) -> ApiError {
         ConfigServiceError::Serialization(_)
         | ConfigServiceError::Apply(_)
         | ConfigServiceError::Storage(_) => ApiError::Internal(error.to_string()),
+        // Blocked is matched inline in delete_config before reaching this function.
+        ConfigServiceError::Blocked { .. } => ApiError::Conflict(error.to_string()),
     }
 }
 
@@ -291,5 +315,254 @@ mod tests {
             HeaderValue::from_static("Bearer secret"),
         );
         assert!(ensure_admin_auth_for_token(Some(&expected), &headers).is_ok());
+    }
+
+    // ── delete 409 / force integration tests ──────────────────────────────
+
+    mod delete_integration {
+        use std::sync::Arc;
+
+        use async_trait::async_trait;
+        use awaken_contract::contract::executor::{
+            InferenceExecutionError, InferenceRequest, LlmExecutor,
+        };
+        use awaken_contract::contract::inference::{StopReason, StreamResult, TokenUsage};
+        use awaken_contract::{AgentSpec, ModelBindingSpec, ProviderSpec};
+        use awaken_runtime::builder::AgentRuntimeBuilder;
+        use awaken_runtime::registry::traits::ModelBinding;
+        use axum::body::Body;
+        use axum::http::{Request, StatusCode};
+        use http_body_util::BodyExt;
+        use serde_json::Value;
+        use tower::ServiceExt;
+
+        use crate::app::{AppState, ServerConfig};
+        use crate::mailbox::{Mailbox, MailboxConfig};
+        use crate::routes::build_router;
+        use crate::services::config_runtime::{ConfigRuntimeManager, ProviderExecutorFactory};
+        use crate::services::config_service::ConfigNamespace;
+
+        struct ImmediateExecutor;
+
+        #[async_trait]
+        impl LlmExecutor for ImmediateExecutor {
+            async fn execute(
+                &self,
+                _request: InferenceRequest,
+            ) -> Result<StreamResult, InferenceExecutionError> {
+                Ok(StreamResult {
+                    content: vec![],
+                    tool_calls: vec![],
+                    usage: Some(TokenUsage::default()),
+                    stop_reason: Some(StopReason::EndTurn),
+                    has_incomplete_tool_calls: false,
+                })
+            }
+
+            fn name(&self) -> &str {
+                "immediate"
+            }
+        }
+
+        struct TestProviderFactory;
+
+        impl ProviderExecutorFactory for TestProviderFactory {
+            fn build(
+                &self,
+                spec: &ProviderSpec,
+            ) -> Result<Arc<dyn LlmExecutor>, crate::services::config_runtime::ConfigRuntimeError>
+            {
+                if spec.adapter.eq_ignore_ascii_case("stub") {
+                    return Ok(Arc::new(ImmediateExecutor));
+                }
+                Err(
+                    crate::services::config_runtime::ConfigRuntimeError::UnsupportedProviderAdapter(
+                        spec.adapter.clone(),
+                    ),
+                )
+            }
+        }
+
+        fn bootstrap_agent() -> AgentSpec {
+            AgentSpec {
+                id: "bootstrap".into(),
+                model_id: "bootstrap".into(),
+                system_prompt: "bootstrap".into(),
+                max_rounds: 1,
+                ..Default::default()
+            }
+        }
+
+        async fn build_test_app() -> axum::Router {
+            let config_store = Arc::new(awaken_stores::InMemoryStore::new());
+            let thread_store = Arc::new(awaken_stores::InMemoryStore::new());
+            let runtime = Arc::new(
+                AgentRuntimeBuilder::new()
+                    .with_provider("bootstrap", Arc::new(ImmediateExecutor))
+                    .with_model_binding(
+                        "bootstrap",
+                        ModelBinding {
+                            provider_id: "bootstrap".into(),
+                            upstream_model: "bootstrap-model".into(),
+                        },
+                    )
+                    .with_agent_spec(bootstrap_agent())
+                    .with_thread_run_store(thread_store.clone())
+                    .build()
+                    .expect("build runtime"),
+            );
+
+            let manager = Arc::new(
+                ConfigRuntimeManager::new(runtime.clone(), config_store.clone())
+                    .expect("config runtime manager")
+                    .with_provider_factory(Arc::new(TestProviderFactory)),
+            );
+            manager
+                .bootstrap_if_empty(
+                    &[ProviderSpec {
+                        id: "bootstrap".into(),
+                        adapter: "stub".into(),
+                        ..Default::default()
+                    }],
+                    &[ModelBindingSpec {
+                        id: "bootstrap".into(),
+                        provider_id: "bootstrap".into(),
+                        upstream_model: "bootstrap-model".into(),
+                        created_at: None,
+                        updated_at: None,
+                    }],
+                    &[bootstrap_agent()],
+                    &[],
+                )
+                .await
+                .expect("bootstrap config store");
+            manager.apply().await.expect("publish config");
+
+            let resolver = runtime.resolver_arc();
+            let mailbox = Arc::new(Mailbox::new(
+                runtime.clone(),
+                Arc::new(awaken_stores::InMemoryMailboxStore::new()),
+                thread_store.clone(),
+                "route-test".into(),
+                MailboxConfig::default(),
+            ));
+            let state = AppState::new(
+                runtime,
+                mailbox,
+                thread_store,
+                resolver,
+                ServerConfig::default(),
+            )
+            .with_config_store(config_store)
+            .with_config_runtime_manager(manager);
+
+            build_router(&state).with_state(state)
+        }
+
+        async fn create_record(app: &axum::Router, namespace: &str, body: &str) -> StatusCode {
+            let req = Request::builder()
+                .method("POST")
+                .uri(format!("/v1/config/{namespace}"))
+                .header("content-type", "application/json")
+                .body(Body::from(body.to_string()))
+                .unwrap();
+            app.clone().oneshot(req).await.unwrap().status()
+        }
+
+        async fn delete_record(
+            app: &axum::Router,
+            namespace: &str,
+            id: &str,
+            force: bool,
+        ) -> (StatusCode, Value) {
+            let uri = if force {
+                format!("/v1/config/{namespace}/{id}?force=true")
+            } else {
+                format!("/v1/config/{namespace}/{id}")
+            };
+            let req = Request::builder()
+                .method("DELETE")
+                .uri(uri)
+                .body(Body::empty())
+                .unwrap();
+            let resp = app.clone().oneshot(req).await.unwrap();
+            let status = resp.status();
+            let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+            let body: Value = if bytes.is_empty() {
+                Value::Null
+            } else {
+                serde_json::from_slice(&bytes).unwrap_or(Value::Null)
+            };
+            (status, body)
+        }
+
+        #[tokio::test]
+        async fn delete_provider_with_referencing_model_returns_409_with_used_by() {
+            let app = build_test_app().await;
+
+            // Create a new provider and a model referencing it
+            assert_eq!(
+                create_record(&app, "providers", r#"{"id":"prov-x","adapter":"stub"}"#).await,
+                StatusCode::CREATED
+            );
+            assert_eq!(
+                create_record(
+                    &app,
+                    "models",
+                    r#"{"id":"model-x","provider_id":"prov-x","upstream_model":"gpt-4"}"#
+                )
+                .await,
+                StatusCode::CREATED
+            );
+
+            let (status, body) = delete_record(&app, "providers", "prov-x", false).await;
+            assert_eq!(status, StatusCode::CONFLICT);
+            let used_by = body["used_by"].as_array().expect("used_by array");
+            assert!(!used_by.is_empty());
+            assert!(used_by.iter().any(|r| r["id"] == "model-x"));
+        }
+
+        #[tokio::test]
+        async fn delete_provider_with_force_true_succeeds_despite_dependents() {
+            let app = build_test_app().await;
+
+            assert_eq!(
+                create_record(&app, "providers", r#"{"id":"prov-y","adapter":"stub"}"#).await,
+                StatusCode::CREATED
+            );
+            assert_eq!(
+                create_record(
+                    &app,
+                    "models",
+                    r#"{"id":"model-y","provider_id":"prov-y","upstream_model":"gpt-4"}"#
+                )
+                .await,
+                StatusCode::CREATED
+            );
+
+            let (status, _) = delete_record(&app, "providers", "prov-y", true).await;
+            assert_eq!(status, StatusCode::NO_CONTENT);
+        }
+
+        #[tokio::test]
+        async fn delete_agent_is_always_unblocked() {
+            let app = build_test_app().await;
+
+            // Bootstrap agent is a leaf — should delete without blocker
+            // (bootstrap is a leaf, no dependents)
+            // Create a standalone agent
+            assert_eq!(
+                create_record(
+                    &app,
+                    "agents",
+                    r#"{"id":"agent-leaf","model_id":"bootstrap","system_prompt":"hi","max_rounds":1}"#
+                )
+                .await,
+                StatusCode::CREATED
+            );
+
+            let (status, _) = delete_record(&app, "agents", "agent-leaf", false).await;
+            assert_eq!(status, StatusCode::NO_CONTENT);
+        }
     }
 }

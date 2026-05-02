@@ -275,8 +275,12 @@ export const configApi = {
       body: JSON.stringify(body),
     }),
 
-  delete: (namespace: string, id: string) =>
-    fetchJson<void>(configUrl(namespace, id), { method: "DELETE" }),
+  delete: (namespace: string, id: string, options?: { force?: boolean }) => {
+    const url = options?.force
+      ? `${configUrl(namespace, id)}?force=true`
+      : configUrl(namespace, id);
+    return fetchJson<void>(url, { method: "DELETE" });
+  },
 
   capabilities: async () =>
     normalizeCapabilities(

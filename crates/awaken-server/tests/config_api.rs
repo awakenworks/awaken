@@ -1541,13 +1541,34 @@ async fn put_rejects_path_and_body_id_mismatch() {
 }
 
 #[tokio::test]
-async fn delete_rolls_back_when_runtime_apply_would_break_graph() {
+async fn delete_provider_with_dependents_returns_409() {
     let app = make_app().await;
 
+    // bootstrap provider is referenced by bootstrap model — should be blocked
     let (status, body) = request_json(
         &app.router,
         Method::DELETE,
         "/v1/config/providers/bootstrap",
+        None,
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::CONFLICT);
+    let used_by = body["used_by"].as_array().expect("used_by array");
+    assert!(!used_by.is_empty(), "should report dependent models");
+}
+
+#[tokio::test]
+async fn delete_rolls_back_when_runtime_apply_would_break_graph() {
+    let app = make_app().await;
+
+    // With force=true, the dependency check is bypassed and the runtime apply
+    // is attempted.  Removing the bootstrap provider while the bootstrap model
+    // still references it breaks the runtime graph → 400 + rollback.
+    let (status, body) = request_json(
+        &app.router,
+        Method::DELETE,
+        "/v1/config/providers/bootstrap?force=true",
         None,
     )
     .await;

@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useState } from "react";
-import { configApi } from "@/lib/config-api";
+import { ConfigApiError, configApi } from "@/lib/config-api";
 import { useToast } from "@/components/toast-provider";
 import { useConfirmDialog } from "@/components/confirm-dialog";
+import { UsedByList } from "@/components/used-by-list";
 
 export interface CrudPageOptions<TRecord extends { id: string }, TSpec = TRecord> {
   /** API namespace used for list/create/update/delete calls. */
@@ -232,7 +233,35 @@ export function useCrudPage<TRecord extends { id: string }, TSpec = TRecord>(
         setError(null);
         toast.success(`${capitalize(entityLabel)} "${id}" deleted`);
       } catch (deleteError) {
-        reportError(toErrorMessage(deleteError));
+        if (
+          deleteError instanceof ConfigApiError &&
+          deleteError.status === 409 &&
+          deleteError.detail !== null &&
+          typeof deleteError.detail === "object" &&
+          "used_by" in deleteError.detail &&
+          Array.isArray((deleteError.detail as Record<string, unknown>).used_by)
+        ) {
+          const usedBy = (
+            deleteError.detail as { used_by: Array<{ namespace: string; id: string }> }
+          ).used_by;
+          const force = await confirmDialog({
+            title: "Still delete?",
+            description: <UsedByList items={usedBy} />,
+            confirmLabel: "Force delete",
+            tone: "destructive",
+          });
+          if (!force) return;
+          try {
+            await configApi.delete(namespace, id, { force: true });
+            setItems((current) => current.filter((item) => item.id !== id));
+            setError(null);
+            toast.success(`${capitalize(entityLabel)} "${id}" deleted`);
+          } catch (forceError) {
+            reportError(toErrorMessage(forceError));
+          }
+        } else {
+          reportError(toErrorMessage(deleteError));
+        }
       }
     },
     [namespace, entityLabel, confirmDialog, toast, reportError],
