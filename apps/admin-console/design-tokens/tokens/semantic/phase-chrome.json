@@ -1,0 +1,23 @@
+{
+  "aw": {
+    "phase": {
+      "resolve":  { "$value": "{color.phase.resolve}",  "$type": "color" },
+      "prepare":  { "$value": "{color.phase.prepare}",  "$type": "color" },
+      "prompt":   { "$value": "{color.phase.prompt}",   "$type": "color" },
+      "stream":   { "$value": "{color.phase.stream}",   "$type": "color" },
+      "gate":     { "$value": "{color.phase.gate}",     "$type": "color" },
+      "tool":     { "$value": "{color.phase.tool}",     "$type": "color" },
+      "commit":   { "$value": "{color.phase.commit}",   "$type": "color" },
+      "events":   { "$value": "{color.phase.events}",   "$type": "color" },
+      "finalize": { "$value": "{color.phase.finalize}", "$type": "color" }
+    },
+    "chrome": {
+      "bg":       { "$value": "{color.chrome.bg}",       "$type": "color" },
+      "bg-2":     { "$value": "{color.chrome.bg-2}",     "$type": "color" },
+      "line":     { "$value": "{color.chrome.line}",     "$type": "color" },
+      "fg":       { "$value": "{color.chrome.fg}",       "$type": "color" },
+      "fg-muted": { "$value": "{color.chrome.fg-muted}", "$type": "color" },
+      "eyebrow":  { "$value": "{color.chrome.eyebrow}",  "$type": "color" }
+    }
+  }
+}
