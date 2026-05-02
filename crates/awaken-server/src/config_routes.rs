@@ -14,6 +14,7 @@ struct DeleteParams {
 
 use crate::app::AppState;
 use crate::routes::ApiError;
+use crate::services::audit_log::AuditQuery;
 use crate::services::config_service::{
     ConfigNamespace, ConfigService, ConfigServiceError, ProviderTestResult,
 };
@@ -47,6 +48,7 @@ pub fn config_routes() -> Router<AppState> {
         .route("/v1/providers/:id/test", post(test_provider_connection))
         .route("/v1/mcp-servers/:id/status", get(get_mcp_server_status))
         .route("/v1/mcp-servers/:id/restart", post(post_mcp_server_restart))
+        .route("/v1/audit-log", get(list_audit_log))
 }
 
 async fn get_capabilities(
@@ -276,6 +278,26 @@ async fn post_mcp_server_restart(
     })?;
 
     Ok(StatusCode::ACCEPTED)
+}
+
+async fn list_audit_log(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(query): Query<AuditQuery>,
+) -> Result<impl IntoResponse, ConfigRouteError> {
+    ensure_admin_auth(&state, &headers)?;
+    let audit = state.audit_log.as_ref().ok_or_else(|| {
+        ConfigRouteError::Api(ApiError::ServiceUnavailable(
+            "audit log is not configured".into(),
+        ))
+    })?;
+    let mut effective_query = query;
+    effective_query.limit = effective_query.limit.min(1000).max(1);
+    let page = audit
+        .query(effective_query)
+        .await
+        .map_err(|e| ConfigRouteError::Api(ApiError::Internal(e.to_string())))?;
+    Ok(Json(page))
 }
 
 #[derive(Debug)]
