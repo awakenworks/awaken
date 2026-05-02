@@ -558,7 +558,9 @@ dependencies = [
  "awaken-runtime",
  "awaken-stores",
  "axum",
+ "base64 0.22.1",
  "bytes",
+ "chrono",
  "futures",
  "genai",
  "http-body-util",
@@ -571,6 +573,7 @@ dependencies = [
  "schemars 1.2.1",
  "serde",
  "serde_json",
+ "sha2",
  "sqlx",
  "tempfile",
  "testcontainers",
@@ -581,6 +584,7 @@ dependencies = [
  "tower",
  "tower-http",
  "tracing",
+ "ulid",
  "uuid",
 ]
 
@@ -869,8 +873,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c673075a2e0e5f4a1dde27ce9dee1ea4558c7ffe648f576438a20ca1d2acc4b0"
 dependencies = [
  "iana-time-zone",
+ "js-sys",
  "num-traits",
  "serde",
+ "wasm-bindgen",
  "windows-link",
 ]
 
@@ -4885,6 +4891,16 @@ name = "typenum"
 version = "1.19.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "562d481066bde0658276a35467c4af00bdc6ee726305698a55b86e61d7ad82bb"
+
+[[package]]
+name = "ulid"
+version = "1.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "470dbf6591da1b39d43c14523b2b469c86879a53e8b758c8e090a470fe7b1fbe"
+dependencies = [
+ "rand 0.9.2",
+ "web-time",
+]
 
 [[package]]
 name = "unarray"
