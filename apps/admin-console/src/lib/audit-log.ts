@@ -91,8 +91,5 @@ export function summarizeChange(event: AuditEvent): string {
       return "Restarted";
     case "publish":
       return "Published";
-    case "restore":
-      // handled by the early-return guard above; unreachable but keeps switch exhaustive
-      return `restored from ${event.restored_from?.slice(0, 8) ?? "unknown"}`;
   }
 }
