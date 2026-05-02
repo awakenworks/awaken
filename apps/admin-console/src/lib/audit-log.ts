@@ -1,4 +1,4 @@
-export type AuditAction = "create" | "update" | "delete" | "restart" | "publish";
+export type AuditAction = "create" | "update" | "delete" | "restart" | "publish" | "restore";
 
 export interface AuditEvent {
   id: string;
@@ -10,6 +10,7 @@ export interface AuditEvent {
   after?: Record<string, unknown> | null;
   ip?: string | null;
   request_id?: string | null;
+  restored_from?: string | null;
 }
 
 export interface AuditQuery {
@@ -55,6 +56,11 @@ export function formatActor(actor: string): { hash: string; label: string | null
 
 /** Short human-readable summary for the change column of an audit table row. */
 export function summarizeChange(event: AuditEvent): string {
+  if (event.action === "restore") {
+    const sourcePrefix = event.restored_from?.slice(0, 8) ?? "unknown";
+    return `restored from ${sourcePrefix}`;
+  }
+
   const hasBefore = event.before != null;
   const hasAfter = event.after != null;
 
@@ -85,5 +91,8 @@ export function summarizeChange(event: AuditEvent): string {
       return "Restarted";
     case "publish":
       return "Published";
+    case "restore":
+      // handled by the early-return guard above; unreachable but keeps switch exhaustive
+      return `restored from ${event.restored_from?.slice(0, 8) ?? "unknown"}`;
   }
 }

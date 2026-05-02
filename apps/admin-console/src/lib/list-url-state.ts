@@ -356,6 +356,7 @@ const VALID_AUDIT_ACTIONS: readonly AuditAction[] = [
   "delete",
   "restart",
   "publish",
+  "restore",
 ];
 
 export function readAuditFilter(params: URLSearchParams): AuditFilterState {

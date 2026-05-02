@@ -852,6 +852,7 @@ const ACTION_BADGE: Record<string, string> = {
   delete: "bg-rose-100 text-rose-800",
   restart: "bg-amber-100 text-amber-800",
   publish: "bg-violet-100 text-violet-800",
+  restore: "bg-purple-100 text-purple-800",
 };
 
 function HistoryPanel({
