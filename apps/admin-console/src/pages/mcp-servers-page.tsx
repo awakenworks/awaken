@@ -3,8 +3,11 @@ import {
   type McpRestartPolicy,
   type McpServerRecord,
   type McpServerSpec,
+  configApi,
 } from "@/lib/config-api";
 import { useCrudPage } from "@/lib/use-crud-page";
+import { useConfirmDialog } from "@/components/confirm-dialog";
+import { useToast } from "@/components/toast-provider";
 import { Field, ModeButton } from "@/components/form-components";
 import {
   ListSearchBar,
@@ -54,6 +57,7 @@ const COLUMNS: SortableColumn<McpSortKey>[] = [
   { key: "endpoint", label: "Endpoint" },
   { key: null, label: "Environment" },
   { key: "updated_at", label: "Last modified" },
+  { key: null, label: "Status" },
   { key: null, label: "Actions" },
 ];
 
@@ -81,11 +85,39 @@ const EMPTY_SERVER: McpServerRecord = {
   restart_policy: { ...DEFAULT_RESTART_POLICY },
 };
 
+type McpServerStatus = {
+  connected: boolean;
+  last_error?: string | null;
+  tools: Array<{ name: string; description?: string | null }>;
+};
+
+function StatusBadge({ status }: { status: McpServerStatus | null | undefined }) {
+  if (status === undefined) {
+    return <span className="inline-block h-2 w-2 rounded-full bg-slate-300" title="Loading status..." />;
+  }
+  if (status === null) {
+    return <span className="inline-block h-2 w-2 rounded-full bg-slate-300" title="Status unavailable" />;
+  }
+  if (status.connected) {
+    return <span className="inline-block h-2 w-2 rounded-full bg-green-500" title="Connected" />;
+  }
+  return (
+    <span
+      className="inline-block h-2 w-2 rounded-full bg-red-500"
+      title={status.last_error ? `Error: ${status.last_error}` : "Disconnected"}
+    />
+  );
+}
+
 export function McpServersPage() {
   const [argsDraft, setArgsDraft] = useState("");
   const [configDraft, setConfigDraft] = useState("{}");
   const [envDraft, setEnvDraft] = useState("{}");
   const [envMode, setEnvMode] = useState<EnvMode>("replace");
+  const [statuses, setStatuses] = useState<Record<string, McpServerStatus | null>>({});
+  const [restarting, setRestarting] = useState(false);
+  const confirm = useConfirmDialog();
+  const toast = useToast();
 
   const prepareSave = useCallback(
     (draft: McpServerRecord): McpServerSpec => {
@@ -120,6 +152,54 @@ export function McpServersPage() {
   });
 
   const { search, sort, pageSize, page, apply: applyListState } = useListUrlState<McpSortKey>(LIST_OPTIONS);
+
+  // Fetch live status for all loaded servers in parallel.
+  useEffect(() => {
+    if (crud.items.length === 0) return;
+    const ids = crud.items.map((s) => s.id);
+    // Initialise to undefined (loading) for unknown ids.
+    setStatuses((prev) => {
+      const next = { ...prev };
+      for (const id of ids) {
+        if (!(id in next)) next[id] = undefined as unknown as null;
+      }
+      return next;
+    });
+    void Promise.allSettled(
+      ids.map((id) =>
+        configApi.mcpStatus(id).then(
+          (s) => setStatuses((prev) => ({ ...prev, [id]: s })),
+          () => setStatuses((prev) => ({ ...prev, [id]: null })),
+        ),
+      ),
+    );
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [crud.items.length]);
+
+  async function handleRestart(id: string) {
+    const ok = await confirm({
+      title: "Restart MCP server?",
+      description: `This will immediately reconnect "${id}". In-flight tool calls may be interrupted.`,
+      confirmLabel: "Restart",
+    });
+    if (!ok) return;
+    setRestarting(true);
+    try {
+      await configApi.mcpRestart(id);
+      toast.push({ message: `MCP server "${id}" restart triggered.`, tone: "success" });
+      // Re-fetch status after restart.
+      try {
+        const s = await configApi.mcpStatus(id);
+        setStatuses((prev) => ({ ...prev, [id]: s }));
+      } catch {
+        setStatuses((prev) => ({ ...prev, [id]: null }));
+      }
+    } catch (err) {
+      toast.push({ message: `Restart failed: ${err instanceof Error ? err.message : String(err)}`, tone: "error" });
+    } finally {
+      setRestarting(false);
+    }
+  }
 
   const filtered = useMemo(
     () =>
@@ -480,6 +560,45 @@ export function McpServersPage() {
             </div>
           </section>
 
+          {crud.isEditingExisting && crud.draft ? (
+            <section className="mt-5 rounded-xl border border-slate-200 bg-slate-50 p-4">
+              <div className="flex items-center justify-between gap-4">
+                <div className="flex items-center gap-2">
+                  <StatusBadge status={statuses[crud.draft.id]} />
+                  <h4 className="text-sm font-semibold text-slate-900">Live Status</h4>
+                  {statuses[crud.draft.id]?.last_error ? (
+                    <span className="text-xs text-red-600">{statuses[crud.draft.id]?.last_error}</span>
+                  ) : null}
+                </div>
+                <button
+                  type="button"
+                  disabled={restarting}
+                  onClick={() => void handleRestart(crud.draft!.id)}
+                  className="rounded-xl border border-slate-300 px-3 py-1.5 text-sm font-medium text-slate-700 transition hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {restarting ? "Restarting..." : "Restart"}
+                </button>
+              </div>
+              {statuses[crud.draft.id]?.tools && statuses[crud.draft.id]!.tools.length > 0 ? (
+                <div className="mt-3">
+                  <p className="mb-1.5 text-xs font-medium uppercase tracking-wide text-slate-500">
+                    Discovered tools ({statuses[crud.draft.id]!.tools.length})
+                  </p>
+                  <ul className="space-y-1">
+                    {statuses[crud.draft.id]!.tools.map((tool) => (
+                      <li key={tool.name} className="flex flex-col">
+                        <span className="font-mono text-xs text-slate-800">{tool.name}</span>
+                        {tool.description ? (
+                          <span className="text-xs text-slate-500">{tool.description}</span>
+                        ) : null}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              ) : null}
+            </section>
+          ) : null}
+
           <div className="mt-5 flex gap-3">
             <button
               type="button"
@@ -553,6 +672,9 @@ export function McpServersPage() {
                     </td>
                     <td className="px-5 py-4 text-slate-500">
                       {formatRelativeTime(server.updated_at)}
+                    </td>
+                    <td className="px-5 py-4">
+                      <StatusBadge status={statuses[server.id]} />
                     </td>
                     <td className="px-5 py-4">
                       <div className="flex gap-4">

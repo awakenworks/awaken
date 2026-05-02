@@ -12,7 +12,9 @@ use awaken_contract::{
     AgentSpec, McpRestartPolicy, McpServerSpec, McpTransportKind, ModelBindingSpec,
     PeriodicRefresher, ProviderSpec,
 };
-use awaken_ext_mcp::{McpServerConnectionConfig, McpToolRegistry, McpToolRegistryManager};
+use awaken_ext_mcp::{
+    McpServerConnectionConfig, McpServerStatusSnapshot, McpToolRegistry, McpToolRegistryManager,
+};
 use awaken_runtime::engine::GenaiExecutor;
 use awaken_runtime::registry::BackendRegistry;
 use awaken_runtime::registry::memory::{
@@ -181,6 +183,8 @@ pub trait ManagedMcpRegistry: Send + Sync {
     fn periodic_refresh_running(&self) -> bool;
     fn start_periodic_refresh(&self, interval: Duration) -> Result<(), ConfigRuntimeError>;
     async fn stop_periodic_refresh(&self) -> bool;
+    fn server_status(&self, server_name: &str) -> Option<McpServerStatusSnapshot>;
+    async fn reconnect(&self, server_name: &str) -> Result<(), ConfigRuntimeError>;
 }
 
 #[async_trait]
@@ -218,6 +222,17 @@ impl ManagedMcpRegistry for RealManagedMcpRegistry {
 
     async fn stop_periodic_refresh(&self) -> bool {
         self.manager.stop_periodic_refresh().await
+    }
+
+    fn server_status(&self, server_name: &str) -> Option<McpServerStatusSnapshot> {
+        self.manager.server_status_snapshot(server_name).ok()
+    }
+
+    async fn reconnect(&self, server_name: &str) -> Result<(), ConfigRuntimeError> {
+        self.manager
+            .reconnect(server_name)
+            .await
+            .map_err(|e| ConfigRuntimeError::InvalidConfig(e.to_string()))
     }
 }
 
@@ -504,6 +519,35 @@ impl ConfigRuntimeManager {
 
     pub fn periodic_refresh_running(&self) -> bool {
         self.periodic_refresh.is_running()
+    }
+
+    /// Return the live status snapshot for a managed MCP server.
+    ///
+    /// Returns `None` when no MCP registry is active (i.e. the runtime has no
+    /// MCP servers configured) or the server name is unknown to the registry.
+    pub fn mcp_server_status(&self, server_name: &str) -> Option<McpServerStatusSnapshot> {
+        self.active_mcp_registry
+            .lock()
+            .as_ref()
+            .and_then(|active| active.handle.server_status(server_name))
+    }
+
+    /// Trigger an immediate reconnect for the named MCP server.
+    ///
+    /// Returns an error when no MCP registry is active or the server name is
+    /// unknown.
+    pub async fn mcp_server_reconnect(&self, server_name: &str) -> Result<(), ConfigRuntimeError> {
+        let handle = self
+            .active_mcp_registry
+            .lock()
+            .as_ref()
+            .map(|active| Arc::clone(&active.handle));
+        match handle {
+            Some(h) => h.reconnect(server_name).await,
+            None => Err(ConfigRuntimeError::InvalidConfig(
+                "no MCP registry is active".to_string(),
+            )),
+        }
     }
 
     async fn publish(&self, managed: ManagedConfigSnapshot) -> Result<u64, ConfigRuntimeError> {

@@ -45,6 +45,8 @@ pub fn config_routes() -> Router<AppState> {
         .route("/v1/agents", get(list_agents))
         .route("/v1/agents/:id", get(get_agent))
         .route("/v1/providers/:id/test", post(test_provider_connection))
+        .route("/v1/mcp-servers/:id/status", get(get_mcp_server_status))
+        .route("/v1/mcp-servers/:id/restart", post(post_mcp_server_restart))
 }
 
 async fn get_capabilities(
@@ -214,6 +216,66 @@ async fn test_provider_connection(
         .await
         .map_err(map_service_error)?;
     Ok(Json(result))
+}
+
+async fn get_mcp_server_status(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> Result<impl IntoResponse, ConfigRouteError> {
+    ensure_admin_auth(&state, &headers)?;
+
+    // 503 when no MCP runtime is configured.
+    let manager = state.config_runtime_manager.as_ref().ok_or_else(|| {
+        ConfigRouteError::Api(ApiError::ServiceUnavailable(
+            "MCP runtime is not configured".into(),
+        ))
+    })?;
+
+    // 404 when the id is unknown to the active registry.
+    let status = manager
+        .mcp_server_status(&id)
+        .ok_or_else(|| ConfigRouteError::Api(ApiError::NotFound(format!("mcp-server/{id}"))))?;
+
+    Ok(Json(json!({
+        "connected": status.connected,
+        "last_error": status.last_error,
+        "tools": status.tools.iter().map(|t| json!({
+            "name": t.name,
+            "description": t.description,
+        })).collect::<Vec<_>>(),
+    })))
+}
+
+async fn post_mcp_server_restart(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> Result<impl IntoResponse, ConfigRouteError> {
+    ensure_admin_auth(&state, &headers)?;
+
+    // 503 when no MCP runtime is configured.
+    let manager = state.config_runtime_manager.as_ref().ok_or_else(|| {
+        ConfigRouteError::Api(ApiError::ServiceUnavailable(
+            "MCP runtime is not configured".into(),
+        ))
+    })?;
+
+    manager.mcp_server_reconnect(&id).await.map_err(|e| {
+        // Map unknown-server errors (surfaced as InvalidConfig wrapping UnknownServer) to 404.
+        let msg = e.to_string();
+        if msg.contains("unknown server") || msg.contains("no MCP registry is active") {
+            if msg.contains("no MCP registry") {
+                ConfigRouteError::Api(ApiError::ServiceUnavailable(msg))
+            } else {
+                ConfigRouteError::Api(ApiError::NotFound(format!("mcp-server/{id}")))
+            }
+        } else {
+            ConfigRouteError::Api(ApiError::Internal(msg))
+        }
+    })?;
+
+    Ok(StatusCode::ACCEPTED)
 }
 
 #[derive(Debug)]

@@ -292,4 +292,16 @@ export const configApi = {
       `${BACKEND_URL}/v1/providers/${encodeURIComponent(id)}/test`,
       { method: "POST" },
     ),
+
+  mcpStatus: (id: string) =>
+    fetchJson<{
+      connected: boolean;
+      last_error?: string | null;
+      tools: Array<{ name: string; description?: string | null }>;
+    }>(`${BACKEND_URL}/v1/mcp-servers/${encodeURIComponent(id)}/status`),
+
+  mcpRestart: (id: string) =>
+    fetchJson<void>(`${BACKEND_URL}/v1/mcp-servers/${encodeURIComponent(id)}/restart`, {
+      method: "POST",
+    }),
 };

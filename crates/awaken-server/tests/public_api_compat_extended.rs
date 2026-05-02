@@ -215,6 +215,7 @@ fn api_error_exhaustive_match_keeps_0_2_variants() {
             ApiError::ThreadNotFound(_) => "thread_not_found",
             ApiError::RunNotFound(_) => "run_not_found",
             ApiError::Internal(_) => "internal",
+            ApiError::ServiceUnavailable(_) => "service_unavailable",
         }
     }
     assert_eq!(label(ApiError::NotFound("x".into())), "not_found");

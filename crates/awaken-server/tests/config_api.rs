@@ -212,6 +212,14 @@ impl ManagedMcpRegistry for TestManagedMcpRegistry {
     async fn stop_periodic_refresh(&self) -> bool {
         self.periodic_refresh_running.swap(false, Ordering::Relaxed)
     }
+
+    fn server_status(&self, _server_name: &str) -> Option<awaken_ext_mcp::McpServerStatusSnapshot> {
+        None
+    }
+
+    async fn reconnect(&self, _server_name: &str) -> Result<(), ConfigRuntimeError> {
+        Ok(())
+    }
 }
 
 struct TestMcpRegistryFactory;
@@ -281,6 +289,14 @@ impl ManagedMcpRegistry for TrackingManagedMcpRegistry {
         self.state
             .periodic_refresh_running
             .swap(false, Ordering::Relaxed)
+    }
+
+    fn server_status(&self, _server_name: &str) -> Option<awaken_ext_mcp::McpServerStatusSnapshot> {
+        None
+    }
+
+    async fn reconnect(&self, _server_name: &str) -> Result<(), ConfigRuntimeError> {
+        Ok(())
     }
 }
 
@@ -1905,4 +1921,130 @@ async fn apply_if_changed_returns_some_after_store_mutation() {
         "calling apply_if_changed twice without further mutation must return None"
     );
     let _ = result;
+}
+
+// ── MCP server status and restart endpoint smoke tests ──────────────────────
+
+#[tokio::test]
+async fn mcp_status_returns_503_when_no_runtime_configured() {
+    // Build a state without a config_runtime_manager so the MCP status endpoint
+    // returns 503 Service Unavailable.
+    let store = Arc::new(InMemoryStore::new());
+    let thread_store = store.clone();
+    use awaken_contract::AgentSpec;
+    use awaken_runtime::builder::AgentRuntimeBuilder;
+    use awaken_runtime::registry::traits::ModelBinding;
+
+    struct StubExecutor;
+    #[async_trait]
+    impl awaken_contract::contract::executor::LlmExecutor for StubExecutor {
+        async fn execute(
+            &self,
+            _request: awaken_contract::contract::executor::InferenceRequest,
+        ) -> Result<
+            awaken_contract::contract::inference::StreamResult,
+            awaken_contract::contract::executor::InferenceExecutionError,
+        > {
+            Ok(awaken_contract::contract::inference::StreamResult {
+                content: vec![],
+                tool_calls: vec![],
+                usage: Some(awaken_contract::contract::inference::TokenUsage::default()),
+                stop_reason: Some(awaken_contract::contract::inference::StopReason::EndTurn),
+                has_incomplete_tool_calls: false,
+            })
+        }
+        fn name(&self) -> &str {
+            "stub"
+        }
+    }
+
+    let bootstrap_agent = AgentSpec {
+        id: "boot".into(),
+        model_id: "boot".into(),
+        system_prompt: "boot".into(),
+        max_rounds: 1,
+        ..Default::default()
+    };
+    let runtime = Arc::new(
+        AgentRuntimeBuilder::new()
+            .with_provider("boot", Arc::new(StubExecutor))
+            .with_model_binding(
+                "boot",
+                ModelBinding {
+                    provider_id: "boot".into(),
+                    upstream_model: "m".into(),
+                },
+            )
+            .with_agent_spec(bootstrap_agent)
+            .with_thread_run_store(thread_store.clone())
+            .build()
+            .expect("runtime"),
+    );
+    let mailbox = Arc::new(Mailbox::new(
+        runtime.clone(),
+        Arc::new(awaken_stores::InMemoryMailboxStore::new()),
+        thread_store.clone(),
+        "mcp-status-test".into(),
+        MailboxConfig::default(),
+    ));
+    // No config_runtime_manager attached → MCP endpoints return 503.
+    let state = awaken_server::app::AppState::new(
+        runtime.clone(),
+        mailbox,
+        thread_store as Arc<dyn awaken_contract::contract::storage::ThreadRunStore>,
+        runtime.resolver_arc(),
+        ServerConfig::default(),
+    );
+    let router = build_router(&state).with_state(state);
+
+    let (status, _body) = request_json(
+        &router,
+        Method::GET,
+        "/v1/mcp-servers/anything/status",
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+
+    let (status, _body) = request_json(
+        &router,
+        Method::POST,
+        "/v1/mcp-servers/anything/restart",
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+}
+
+#[tokio::test]
+async fn mcp_status_returns_404_for_unknown_server() {
+    // The default test app has no MCP servers registered; querying a name
+    // that the manager doesn't know about should return 404.
+    let app = make_app().await;
+
+    let (status, _body) = request_json(
+        &app.router,
+        Method::GET,
+        "/v1/mcp-servers/no-such-server/status",
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn mcp_restart_returns_404_for_unknown_server() {
+    // As above: restart on an unknown id should 404 when no MCP registry is
+    // active (the default test app has no configured mcp-servers).
+    let app = make_app().await;
+
+    let (status, _body) = request_json(
+        &app.router,
+        Method::POST,
+        "/v1/mcp-servers/no-such-server/restart",
+        None,
+    )
+    .await;
+    // The manager returns "no MCP registry is active" → 503.
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
 }

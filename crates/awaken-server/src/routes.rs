@@ -37,6 +37,7 @@ pub enum ApiError {
     ThreadNotFound(String),
     RunNotFound(String),
     Internal(String),
+    ServiceUnavailable(String),
 }
 
 impl IntoResponse for ApiError {
@@ -50,6 +51,7 @@ impl IntoResponse for ApiError {
             }
             ApiError::RunNotFound(id) => (StatusCode::NOT_FOUND, format!("run not found: {id}")),
             ApiError::Internal(msg) => (StatusCode::INTERNAL_SERVER_ERROR, msg),
+            ApiError::ServiceUnavailable(msg) => (StatusCode::SERVICE_UNAVAILABLE, msg),
         };
         (status, Json(json!({"error": message}))).into_response()
     }

@@ -54,6 +54,27 @@ pub struct McpRefreshHealth {
     pub permanently_failed: bool,
 }
 
+/// Per-tool entry returned by [`McpToolRegistryManager::server_status_snapshot`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct McpServerToolEntry {
+    pub name: String,
+    pub description: Option<String>,
+}
+
+/// Snapshot of a single MCP server's runtime status.
+///
+/// Returned by [`McpToolRegistryManager::server_status_snapshot`] and exposed
+/// via the `GET /v1/mcp-servers/:id/status` admin endpoint.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct McpServerStatusSnapshot {
+    /// Whether the server's lifecycle is currently [`McpServerLifecycle::Connected`].
+    pub connected: bool,
+    /// Last error recorded by the health-tracking subsystem, if any.
+    pub last_error: Option<String>,
+    /// Tools discovered during the most recent successful catalog refresh.
+    pub tools: Vec<McpServerToolEntry>,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 struct McpHealthBudget {
     last_attempt_at: Option<SystemTime>,
@@ -390,7 +411,7 @@ struct McpServerRuntime {
 
 #[derive(Clone, Default)]
 struct McpPublishedCatalog {
-    _tool_defs: Vec<McpToolDefinition>,
+    tool_defs: Vec<McpToolDefinition>,
     tools: PublishedTools,
 }
 
@@ -863,10 +884,7 @@ async fn discover_catalog_from_lease(
         &tool_defs,
         runtime.transport_type,
     )?;
-    Ok(McpPublishedCatalog {
-        _tool_defs: tool_defs,
-        tools,
-    })
+    Ok(McpPublishedCatalog { tool_defs, tools })
 }
 
 fn apply_catalog_if_current(
@@ -1521,6 +1539,40 @@ impl McpToolRegistryManager {
         let servers = read_lock(&self.state.servers);
         let index = find_server_index(&servers, server_name)?;
         Ok(servers[index].health.clone())
+    }
+
+    /// Return a status snapshot for the named server, including connection state and
+    /// the most recently discovered tool list.
+    ///
+    /// Returns [`McpError::UnknownServer`] when `server_name` is not registered.
+    pub fn server_status_snapshot(
+        &self,
+        server_name: &str,
+    ) -> Result<McpServerStatusSnapshot, McpError> {
+        let servers = read_lock(&self.state.servers);
+        let index = find_server_index(&servers, server_name)?;
+        let slot = &servers[index];
+        let connected = slot.lifecycle == McpServerLifecycle::Connected;
+        let last_error = slot.health.last_error.clone();
+        let tools = slot
+            .published_snapshot
+            .as_ref()
+            .map(|snap| {
+                snap.catalog
+                    .tool_defs
+                    .iter()
+                    .map(|def| McpServerToolEntry {
+                        name: def.name.clone(),
+                        description: def.description.clone(),
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        Ok(McpServerStatusSnapshot {
+            connected,
+            last_error,
+            tools,
+        })
     }
 
     pub fn servers(&self) -> Vec<(String, TransportTypeId)> {
@@ -2419,7 +2471,7 @@ mod tests {
             published_snapshot: Some(McpPublishedSnapshot {
                 generation: 1,
                 catalog: McpPublishedCatalog {
-                    _tool_defs: vec![MockTransport::tool_def("echo")],
+                    tool_defs: vec![MockTransport::tool_def("echo")],
                     tools: HashMap::new(),
                 },
             }),
