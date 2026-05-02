@@ -17,6 +17,7 @@ import {
   type FixtureFilterState,
   type FixtureStatusFilter,
 } from "./eval-reports-filter";
+import { type AuditAction } from "./audit-log";
 
 // ---------------------------------------------------------------------------
 // Generic list state (search + sort + pagination)
@@ -322,6 +323,107 @@ export function useFixtureFilterUrlState(): FixtureFilterUrlState {
     setSearchParams(
       (prev) =>
         writeFixtureFilter(prev, { ...readFixtureFilter(prev), ...patch }),
+      { replace: true },
+    );
+  }
+
+  return { ...filter, apply };
+}
+
+// ---------------------------------------------------------------------------
+// Audit log filter URL helpers
+// ---------------------------------------------------------------------------
+
+export interface AuditFilterState {
+  since: string;
+  until: string;
+  action: AuditAction | "";
+  resource: string;
+  actor: string;
+}
+
+export const DEFAULT_AUDIT_FILTER: AuditFilterState = {
+  since: "",
+  until: "",
+  action: "",
+  resource: "",
+  actor: "",
+};
+
+const VALID_AUDIT_ACTIONS: readonly AuditAction[] = [
+  "create",
+  "update",
+  "delete",
+  "restart",
+  "publish",
+];
+
+export function readAuditFilter(params: URLSearchParams): AuditFilterState {
+  const since = params.get("since") ?? DEFAULT_AUDIT_FILTER.since;
+  const until = params.get("until") ?? DEFAULT_AUDIT_FILTER.until;
+  const resource = params.get("resource") ?? DEFAULT_AUDIT_FILTER.resource;
+  const actor = params.get("actor") ?? DEFAULT_AUDIT_FILTER.actor;
+
+  const actionRaw = params.get("action");
+  const action: AuditAction | "" =
+    actionRaw !== null && VALID_AUDIT_ACTIONS.includes(actionRaw as AuditAction)
+      ? (actionRaw as AuditAction)
+      : DEFAULT_AUDIT_FILTER.action;
+
+  return { since, until, action, resource, actor };
+}
+
+export function writeAuditFilter(
+  params: URLSearchParams,
+  state: AuditFilterState,
+): URLSearchParams {
+  const next = new URLSearchParams(params.toString());
+
+  if (state.since) {
+    next.set("since", state.since);
+  } else {
+    next.delete("since");
+  }
+
+  if (state.until) {
+    next.set("until", state.until);
+  } else {
+    next.delete("until");
+  }
+
+  if (state.action) {
+    next.set("action", state.action);
+  } else {
+    next.delete("action");
+  }
+
+  if (state.resource) {
+    next.set("resource", state.resource);
+  } else {
+    next.delete("resource");
+  }
+
+  if (state.actor) {
+    next.set("actor", state.actor);
+  } else {
+    next.delete("actor");
+  }
+
+  return next;
+}
+
+export interface AuditFilterUrlState extends AuditFilterState {
+  apply: (patch: Partial<AuditFilterState>) => void;
+}
+
+export function useAuditFilterUrlState(): AuditFilterUrlState {
+  const [searchParams, setSearchParams] = useSearchParams();
+
+  const filter = useMemo(() => readAuditFilter(searchParams), [searchParams]);
+
+  function apply(patch: Partial<AuditFilterState>) {
+    setSearchParams(
+      (prev) => writeAuditFilter(prev, { ...readAuditFilter(prev), ...patch }),
       { replace: true },
     );
   }

@@ -2,6 +2,7 @@ import {
   hasUnauthorizedHandler,
   requestUnauthorizedRetry,
 } from "./auth-interceptor";
+import { type AuditPage, type AuditQuery, buildAuditQueryString } from "./audit-log";
 
 export const BACKEND_URL =
   import.meta.env.VITE_BACKEND_URL ?? "http://127.0.0.1:38080";
@@ -304,4 +305,17 @@ export const configApi = {
     fetchJson<void>(`${BACKEND_URL}/v1/mcp-servers/${encodeURIComponent(id)}/restart`, {
       method: "POST",
     }),
+
+  auditLog: async (query: AuditQuery): Promise<AuditPage> => {
+    const qs = buildAuditQueryString(query).toString();
+    const url = `${BACKEND_URL}/v1/audit-log${qs ? `?${qs}` : ""}`;
+    try {
+      return await fetchJson<AuditPage>(url);
+    } catch (err) {
+      if (err instanceof ConfigApiError && err.status === 503) {
+        throw new ConfigApiError(503, "audit log not configured");
+      }
+      throw err;
+    }
+  },
 };
