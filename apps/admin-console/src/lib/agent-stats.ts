@@ -60,12 +60,28 @@ export type AgentRuntimeStatsResult =
 
 const REGISTRY_DISABLED_HINT = "runtime_stats registry not configured";
 
+export type FetchAgentRuntimeStatsOptions = {
+  /** Optional window string forwarded as `?window=`, e.g. `"1h"`, `"7d"`. */
+  window?: string;
+};
+
 /// Fetch the rolling-window snapshot for a single agent.
 export async function fetchAgentRuntimeStats(
   agentId: string,
+  options?: FetchAgentRuntimeStatsOptions | typeof fetch,
   fetchImpl: typeof fetch = globalThis.fetch,
 ): Promise<AgentRuntimeStatsResult> {
-  const url = `${BACKEND_URL}/v1/agents/${encodeURIComponent(agentId)}/runtime-stats`;
+  // Back-compat: second param used to be `fetchImpl` directly.
+  let opts: FetchAgentRuntimeStatsOptions = {};
+  if (typeof options === "function") {
+    fetchImpl = options;
+  } else if (options != null) {
+    opts = options;
+  }
+  let url = `${BACKEND_URL}/v1/agents/${encodeURIComponent(agentId)}/runtime-stats`;
+  if (opts.window) {
+    url += `?window=${encodeURIComponent(opts.window)}`;
+  }
   const resp = await fetchImpl(url);
   if (resp.status === 503) {
     return { kind: "registry_disabled" };

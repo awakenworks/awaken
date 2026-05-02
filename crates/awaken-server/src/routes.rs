@@ -11,6 +11,7 @@ use serde_json::{Value, json};
 
 use awaken_contract::contract::message::Message;
 use awaken_contract::contract::storage::{ChildThreadDeleteStrategy, StorageError};
+use awaken_ext_observability::runtime_stats::parse_window_str;
 
 use crate::app::AppState;
 use crate::config_routes::config_routes;
@@ -162,13 +163,25 @@ fn run_routes() -> Router<AppState> {
 
 // ── Agent runtime-stats endpoints ───────────────────────────────────
 
+/// Query params for `GET /v1/agents/:id/runtime-stats`.
+#[derive(Debug, Deserialize, Default)]
+struct RuntimeStatsQuery {
+    /// Optional time window, e.g. `1h`, `24h`, `7d`, `3600s`, `90`.
+    window: Option<String>,
+}
+
 /// `GET /v1/agents/:id/runtime-stats` — return the agent's rolling-window
 /// snapshot, or 404 when the agent has not been seen by the registry, or
 /// 503 when the registry is not configured on this server.
+///
+/// Accepts an optional `?window=` query parameter (e.g. `1h`, `24h`, `7d`)
+/// to restrict the snapshot to a shorter sub-window of the registry's full
+/// history.  An invalid format returns 400.
 #[tracing::instrument(skip(state))]
 async fn get_agent_runtime_stats(
     State(state): State<AppState>,
     Path(id): Path<String>,
+    Query(params): Query<RuntimeStatsQuery>,
 ) -> Response {
     let Some(registry) = state.runtime_stats.as_ref() else {
         return (
@@ -177,7 +190,18 @@ async fn get_agent_runtime_stats(
         )
             .into_response();
     };
-    match registry.snapshot_for(&id) {
+
+    let window = match params.window.as_deref() {
+        None => None,
+        Some(s) => match parse_window_str(s) {
+            Ok(d) => Some(d),
+            Err(msg) => {
+                return (StatusCode::BAD_REQUEST, Json(json!({ "error": msg }))).into_response();
+            }
+        },
+    };
+
+    match registry.snapshot_for_window(&id, window) {
         Some(snapshot) => Json(snapshot).into_response(),
         None => (
             StatusCode::NOT_FOUND,

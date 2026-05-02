@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Link, useParams } from "react-router";
+import { Link, useParams, useSearchParams } from "react-router";
 import {
   errorRate,
   fetchAgentRuntimeStats,
@@ -13,8 +13,18 @@ import {
 } from "@/lib/agent-stats";
 import { adminRoutes } from "@/lib/routes";
 
+const WINDOW_OPTIONS = [
+  { label: "Default", value: "" },
+  { label: "1h", value: "1h" },
+  { label: "6h", value: "6h" },
+  { label: "24h", value: "24h" },
+  { label: "7d", value: "7d" },
+] as const;
+
 export function AgentDashboardPage() {
   const { id } = useParams<{ id: string }>();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const windowParam = searchParams.get("window") ?? "";
   const [result, setResult] = useState<AgentRuntimeStatsResult | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [reloadKey, setReloadKey] = useState(0);
@@ -24,7 +34,8 @@ export function AgentDashboardPage() {
     let cancelled = false;
     setResult(null);
     setError(null);
-    void fetchAgentRuntimeStats(id)
+    const opts = windowParam ? { window: windowParam } : undefined;
+    void fetchAgentRuntimeStats(id, opts)
       .then((r) => {
         if (!cancelled) setResult(r);
       })
@@ -36,7 +47,7 @@ export function AgentDashboardPage() {
     return () => {
       cancelled = true;
     };
-  }, [id, reloadKey]);
+  }, [id, windowParam, reloadKey]);
 
   if (!id) {
     return <Shell title="Agent Dashboard">Missing agent id.</Shell>;
@@ -91,22 +102,58 @@ export function AgentDashboardPage() {
 
   return (
     <Shell title={`Dashboard · ${snapshot.agent_id}`}>
-      <p className="-mt-4 mb-6 text-sm text-slate-500">
-        Rolling-window snapshot for the last{" "}
-        <span className="font-mono">{formatWindow(snapshot.window_seconds)}</span>{" "}
-        ({snapshot.bucket_count} buckets ×{" "}
-        <span className="font-mono">
-          {formatWindow(snapshot.bucket_window_seconds)}
-        </span>
-        ).{" "}
+      <div className="-mt-4 mb-6 flex flex-wrap items-center gap-3">
+        <p className="text-sm text-slate-500">
+          Rolling-window snapshot for the last{" "}
+          <span className="font-mono">{formatWindow(snapshot.window_seconds)}</span>{" "}
+          ({snapshot.bucket_count} buckets ×{" "}
+          <span className="font-mono">
+            {formatWindow(snapshot.bucket_window_seconds)}
+          </span>
+          ).
+        </p>
+        <div className="flex items-center gap-2">
+          <label
+            htmlFor="window-picker"
+            className="text-xs text-slate-500"
+          >
+            Window:
+          </label>
+          <select
+            id="window-picker"
+            value={windowParam}
+            onChange={(e) => {
+              const val = e.target.value;
+              setSearchParams(
+                (prev) => {
+                  const next = new URLSearchParams(prev);
+                  if (val) {
+                    next.set("window", val);
+                  } else {
+                    next.delete("window");
+                  }
+                  return next;
+                },
+                { replace: true },
+              );
+            }}
+            className="rounded-md border border-slate-200 bg-white px-2 py-1 text-xs text-slate-700 shadow-sm"
+          >
+            {WINDOW_OPTIONS.map((opt) => (
+              <option key={opt.value} value={opt.value}>
+                {opt.label}
+              </option>
+            ))}
+          </select>
+        </div>
         <button
           type="button"
           onClick={() => setReloadKey((k) => k + 1)}
-          className="ml-2 rounded-md border border-slate-200 bg-white px-2 py-1 text-xs text-slate-600 hover:bg-slate-50"
+          className="rounded-md border border-slate-200 bg-white px-2 py-1 text-xs text-slate-600 hover:bg-slate-50"
         >
           Refresh
         </button>
-      </p>
+      </div>
 
       <Section title="Runtime health">
         <StatGrid>

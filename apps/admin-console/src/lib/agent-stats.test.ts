@@ -119,6 +119,30 @@ describe("fetchAgentRuntimeStats", () => {
     );
   });
 
+  it("appends ?window= when options.window is provided", async () => {
+    const fetchSpy = vi.fn().mockResolvedValue(jsonResponse(makeSnapshot()));
+    await fetchAgentRuntimeStats("alpha", { window: "1h" }, fetchSpy);
+    expect(fetchSpy).toHaveBeenCalledWith(
+      `${BACKEND_URL}/v1/agents/alpha/runtime-stats?window=1h`,
+    );
+  });
+
+  it("omits ?window= when options.window is absent", async () => {
+    const fetchSpy = vi.fn().mockResolvedValue(jsonResponse(makeSnapshot()));
+    await fetchAgentRuntimeStats("alpha", {}, fetchSpy);
+    expect(fetchSpy).toHaveBeenCalledWith(
+      `${BACKEND_URL}/v1/agents/alpha/runtime-stats`,
+    );
+  });
+
+  it("remains backward-compatible when second arg is a fetch function", async () => {
+    const fetchSpy = vi.fn().mockResolvedValue(jsonResponse(makeSnapshot()));
+    await fetchAgentRuntimeStats("alpha", fetchSpy);
+    expect(fetchSpy).toHaveBeenCalledWith(
+      `${BACKEND_URL}/v1/agents/alpha/runtime-stats`,
+    );
+  });
+
   it("returns ok when server responds with 200", async () => {
     const snap = makeSnapshot({ agent_id: "x", inference_count: 7 });
     const fetchSpy = vi.fn().mockResolvedValue(jsonResponse(snap));

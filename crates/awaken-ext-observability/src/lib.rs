@@ -9,7 +9,7 @@ mod metrics;
 mod persistent;
 mod plugin;
 mod prometheus;
-mod runtime_stats;
+pub mod runtime_stats;
 mod sink;
 mod stats;
 mod wiring;

@@ -67,6 +67,7 @@ struct AgentBuckets {
     buckets: VecDeque<Bucket>,
 }
 
+#[derive(Clone)]
 struct Bucket {
     /// Monotonic instant the bucket opened.
     opened_at: Instant,
@@ -86,6 +87,7 @@ struct Bucket {
     tools: HashMap<String, ToolBucket>,
 }
 
+#[derive(Clone)]
 struct ToolBucket {
     call_count: u64,
     failure_count: u64,
@@ -158,9 +160,58 @@ impl RuntimeStatsRegistry {
     /// Aggregate every retained bucket for `agent_id` into a single
     /// snapshot.  Returns `None` when the agent is unknown.
     pub fn snapshot_for(&self, agent_id: &str) -> Option<AgentRuntimeSnapshot> {
+        self.snapshot_for_window(agent_id, None)
+    }
+
+    /// Aggregate the last `window` worth of buckets for `agent_id`.
+    ///
+    /// * `window = None` — aggregate all retained buckets (same as
+    ///   [`snapshot_for`]).
+    /// * `window = Some(d)` — consume only the trailing
+    ///   `n = ceil(d / bucket_window)` buckets, clamped to `[1,
+    ///   bucket_count]`.  The returned `window_seconds` reflects the
+    ///   actual span covered by those `n` buckets.
+    ///
+    /// Returns `None` when the agent is unknown.
+    pub fn snapshot_for_window(
+        &self,
+        agent_id: &str,
+        window: Option<Duration>,
+    ) -> Option<AgentRuntimeSnapshot> {
         let inner = self.inner.lock();
         let agent = inner.agents.get(agent_id)?;
-        Some(self.snapshot_from_buckets(agent_id, &agent.buckets))
+        let buckets = match window {
+            None => return Some(self.snapshot_from_buckets(agent_id, &agent.buckets)),
+            Some(d) => {
+                let n = ((d.as_nanos() + self.bucket_window.as_nanos() - 1)
+                    / self.bucket_window.as_nanos())
+                .max(1)
+                .min(self.bucket_count as u128) as usize;
+                let skip = agent.buckets.len().saturating_sub(n);
+                let slice: VecDeque<_> = agent.buckets.iter().skip(skip).cloned().collect();
+                slice
+            }
+        };
+        Some(self.snapshot_from_window_buckets(agent_id, &buckets, window))
+    }
+
+    /// Like `snapshot_from_buckets` but overrides `window_seconds` to
+    /// reflect the requested window rather than the registry maximum.
+    fn snapshot_from_window_buckets(
+        &self,
+        agent_id: &str,
+        buckets: &VecDeque<Bucket>,
+        window: Option<Duration>,
+    ) -> AgentRuntimeSnapshot {
+        let mut snap = self.snapshot_from_buckets(agent_id, buckets);
+        if let Some(d) = window {
+            let n = ((d.as_nanos() + self.bucket_window.as_nanos() - 1)
+                / self.bucket_window.as_nanos())
+            .max(1)
+            .min(self.bucket_count as u128) as usize;
+            snap.window_seconds = (self.bucket_window * n as u32).as_secs();
+        }
+        snap
     }
 
     fn snapshot_from_buckets(
@@ -504,6 +555,45 @@ pub struct ToolRuntimeStats {
     /// samples were recorded.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub duration_histogram: Vec<HistogramBucket>,
+}
+
+// ---------------------------------------------------------------------------
+// Window string parser  (`1h`, `24h`, `7d`, `3600`, `90s`, etc.)
+// ---------------------------------------------------------------------------
+
+/// Parse a `window` query-string value into a [`Duration`].
+///
+/// Accepted formats:
+/// - `<n>s` — seconds
+/// - `<n>m` — minutes
+/// - `<n>h` — hours
+/// - `<n>d` — days
+/// - `<n>`  — bare integer → seconds
+///
+/// Returns `Err(String)` with a human-readable explanation on invalid input.
+pub fn parse_window_str(s: &str) -> Result<Duration, String> {
+    let s = s.trim();
+    if s.is_empty() {
+        return Err("window value is empty".into());
+    }
+    let (digits, multiplier) = if let Some(d) = s.strip_suffix('s') {
+        (d, 1u64)
+    } else if let Some(d) = s.strip_suffix('m') {
+        (d, 60)
+    } else if let Some(d) = s.strip_suffix('h') {
+        (d, 3600)
+    } else if let Some(d) = s.strip_suffix('d') {
+        (d, 86400)
+    } else {
+        (s, 1u64)
+    };
+    let n: u64 = digits
+        .parse()
+        .map_err(|_| format!("invalid window format {s:?}: expected <n>[s|m|h|d]"))?;
+    if n == 0 {
+        return Err(format!("window {s:?} must be greater than zero"));
+    }
+    Ok(Duration::from_secs(n * multiplier))
 }
 
 // ---------------------------------------------------------------------------
@@ -1058,6 +1148,129 @@ mod tests {
         r.record(&MetricsEvent::Tool(tool("a", "search", 1, false)));
         let snap = r.snapshot_for("a").unwrap();
         assert!(!snap.tool_calls_by_tool[0].duration_histogram.is_empty());
+    }
+
+    // ── parse_window_str ───────────────────────────────────────────
+
+    #[test]
+    fn parse_window_str_seconds_suffix() {
+        assert_eq!(parse_window_str("30s").unwrap(), Duration::from_secs(30));
+    }
+
+    #[test]
+    fn parse_window_str_minutes_suffix() {
+        assert_eq!(parse_window_str("5m").unwrap(), Duration::from_secs(300));
+    }
+
+    #[test]
+    fn parse_window_str_hours_suffix() {
+        assert_eq!(parse_window_str("1h").unwrap(), Duration::from_secs(3600));
+        assert_eq!(
+            parse_window_str("24h").unwrap(),
+            Duration::from_secs(24 * 3600)
+        );
+    }
+
+    #[test]
+    fn parse_window_str_days_suffix() {
+        assert_eq!(
+            parse_window_str("7d").unwrap(),
+            Duration::from_secs(7 * 86400)
+        );
+    }
+
+    #[test]
+    fn parse_window_str_bare_integer_treated_as_seconds() {
+        assert_eq!(parse_window_str("3600").unwrap(), Duration::from_secs(3600));
+    }
+
+    #[test]
+    fn parse_window_str_rejects_unknown_suffix() {
+        assert!(parse_window_str("5x").is_err());
+        assert!(parse_window_str("foo").is_err());
+    }
+
+    #[test]
+    fn parse_window_str_rejects_zero() {
+        assert!(parse_window_str("0h").is_err());
+        assert!(parse_window_str("0").is_err());
+    }
+
+    #[test]
+    fn parse_window_str_rejects_empty() {
+        assert!(parse_window_str("").is_err());
+    }
+
+    // ── snapshot_for_window ────────────────────────────────────────
+
+    /// Build a registry with `bucket_count` buckets of `bucket_window`
+    /// each, filling each bucket with one inference of the given
+    /// `token_input` so we can verify which buckets were selected by
+    /// counting `input_tokens` in the snapshot.
+    fn fixture_registry(bucket_window_ms: u64, bucket_count: usize) -> RuntimeStatsRegistry {
+        RuntimeStatsRegistry::with_window(Duration::from_millis(bucket_window_ms), bucket_count)
+    }
+
+    #[test]
+    fn snapshot_for_window_none_returns_all_buckets() {
+        let r = fixture_registry(1, 4);
+        // Push 4 inferences into the same (single) bucket (no sleep needed).
+        for i in 0..4u32 {
+            r.record(&MetricsEvent::Inference(inference(
+                "a", i as i32, 0, 1, false,
+            )));
+        }
+        let snap_all = r.snapshot_for("a").unwrap();
+        let snap_win = r.snapshot_for_window("a", None).unwrap();
+        assert_eq!(snap_all.inference_count, snap_win.inference_count);
+        assert_eq!(snap_all.window_seconds, snap_win.window_seconds);
+    }
+
+    #[test]
+    fn snapshot_for_window_small_window_selects_fewer_buckets() {
+        // 3 buckets × 10 ms each.  We inject one inference per bucket by
+        // sleeping between them so the registry rolls forward.
+        let r = RuntimeStatsRegistry::with_window(Duration::from_millis(20), 3);
+        // Bucket 1
+        r.record(&MetricsEvent::Inference(inference("a", 10, 0, 1, false)));
+        std::thread::sleep(Duration::from_millis(25));
+        // Bucket 2
+        r.record(&MetricsEvent::Inference(inference("a", 20, 0, 1, false)));
+        std::thread::sleep(Duration::from_millis(25));
+        // Bucket 3
+        r.record(&MetricsEvent::Inference(inference("a", 30, 0, 1, false)));
+
+        // Request only 1 bucket_window (20 ms) → should see only the last bucket.
+        let snap = r
+            .snapshot_for_window("a", Some(Duration::from_millis(20)))
+            .unwrap();
+        // Only last bucket: input_tokens == 30.
+        assert_eq!(snap.input_tokens, 30, "expected only the last bucket");
+        assert_eq!(snap.inference_count, 1);
+        // window_seconds should reflect 1 × bucket_window.
+        assert_eq!(snap.window_seconds, r.bucket_window().as_secs());
+    }
+
+    #[test]
+    fn snapshot_for_window_larger_than_total_returns_all() {
+        let r = RuntimeStatsRegistry::with_window(Duration::from_millis(20), 3);
+        r.record(&MetricsEvent::Inference(inference("a", 5, 0, 1, false)));
+        // Ask for 10 days — way beyond 3 × 20 ms.
+        let snap = r
+            .snapshot_for_window("a", Some(Duration::from_secs(864_000)))
+            .unwrap();
+        assert_eq!(snap.input_tokens, 5);
+        // window_seconds clamped to bucket_count × bucket_window.
+        assert_eq!(snap.window_seconds, r.window().as_secs());
+    }
+
+    #[test]
+    fn snapshot_for_window_unknown_agent_returns_none() {
+        let r = RuntimeStatsRegistry::new();
+        assert!(
+            r.snapshot_for_window("ghost", Some(Duration::from_secs(3600)))
+                .is_none()
+        );
     }
 
     // ── thread-safety smoke ────────────────────────────────────────
