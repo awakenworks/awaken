@@ -56,6 +56,7 @@ export function AgentEditorPage() {
   const [loading, setLoading] = useState(!isNew);
   const [saving, setSaving] = useState(false);
   const [activePluginConfig, setActivePluginConfig] = useState<string | null>(null);
+  const [historyRefreshKey, setHistoryRefreshKey] = useState(0);
   const toast = useToast();
 
   const isDirty = useMemo(() => {
@@ -157,6 +158,7 @@ export function AgentEditorPage() {
         setSpec(updated);
         setSavedSpec(updated);
         toast.success(`Agent "${updated.id}" saved`);
+        setHistoryRefreshKey((k) => k + 1);
       }
     } catch (saveError) {
       toast.error(
@@ -349,9 +351,11 @@ export function AgentEditorPage() {
                 <HistoryPanel
                   spec={spec}
                   isNew={isNew}
+                  refreshKey={historyRefreshKey}
                   onSpecRestored={(updated) => {
                     setSpec(updated);
                     setSavedSpec(updated);
+                    setHistoryRefreshKey((k) => k + 1);
                   }}
                 />
               )}
@@ -858,10 +862,12 @@ const ACTION_BADGE: Record<string, string> = {
 function HistoryPanel({
   spec,
   isNew,
+  refreshKey,
   onSpecRestored,
 }: {
   spec: AgentSpec;
   isNew: boolean;
+  refreshKey: number;
   onSpecRestored: (updated: AgentSpec) => void;
 }) {
   const toast = useToast();
@@ -888,7 +894,10 @@ function HistoryPanel({
 
   useEffect(() => {
     void load();
-  }, [load]);
+    // refreshKey is intentionally included: bumping it triggers a re-fetch
+    // after a successful save or restore without causing a re-render loop.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [load, refreshKey]);
 
   async function handleRestore(event: AuditEvent) {
     const targetSpec = event.action === "delete" ? event.before : event.after;

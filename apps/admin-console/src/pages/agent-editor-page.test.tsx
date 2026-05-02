@@ -271,3 +271,103 @@ describe("agent editor History tab", () => {
     await screen.findByText("hash1");
   });
 });
+
+describe("agent editor History tab auto-refresh after Save", () => {
+  it("re-fetches history after a successful save", async () => {
+    let auditCallCount = 0;
+    const newEvent = {
+      id: "evt-new001",
+      ts: "2026-01-02T00:00:00Z",
+      actor: "hash2/dev",
+      action: "update",
+      resource: "agents/refresh-agent",
+      before: { id: "refresh-agent", model_id: "m1", system_prompt: "old", max_rounds: 8 },
+      after: { id: "refresh-agent", model_id: "m1", system_prompt: "new", max_rounds: 8 },
+    };
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string, init?: RequestInit) => {
+        const u = String(url);
+        if (u.includes("/v1/capabilities")) {
+          return {
+            ok: true,
+            status: 200,
+            text: async () =>
+              JSON.stringify({
+                agents: [],
+                tools: [],
+                plugins: [],
+                skills: [],
+                models: [],
+                providers: [],
+                namespaces: [],
+              }),
+          };
+        }
+        if (u.includes("/v1/config/agents/refresh-agent") && !u.includes("audit") && init?.method === "PUT") {
+          return {
+            ok: true,
+            status: 200,
+            text: async () =>
+              JSON.stringify({
+                id: "refresh-agent",
+                model_id: "m1",
+                system_prompt: "new",
+                max_rounds: 8,
+              }),
+          };
+        }
+        if (u.includes("/v1/config/agents/refresh-agent") && !u.includes("audit")) {
+          return {
+            ok: true,
+            status: 200,
+            text: async () =>
+              JSON.stringify({
+                id: "refresh-agent",
+                model_id: "m1",
+                system_prompt: "old",
+                max_rounds: 8,
+              }),
+          };
+        }
+        if (u.includes("/v1/audit-log")) {
+          auditCallCount += 1;
+          const items = auditCallCount >= 2 ? [newEvent] : [];
+          return {
+            ok: true,
+            status: 200,
+            text: async () => JSON.stringify({ items }),
+          };
+        }
+        return { ok: false, status: 404, text: async () => "" };
+      }),
+    );
+
+    renderEditorRoute("/agents/refresh-agent");
+    await screen.findByText(/Edit refresh-agent/i);
+
+    // Switch to History — first audit fetch (returns 0 events)
+    const historyTab = screen.getByRole("tab", { name: "History" });
+    fireEvent.click(historyTab);
+    await screen.findByText(/No history yet/i);
+
+    // Switch to Basics, make the form dirty, then save
+    const basicsTab = screen.getByRole("tab", { name: "Basics" });
+    fireEvent.click(basicsTab);
+    await screen.findByLabelText("Agent ID");
+
+    // Modify system prompt to mark the form as dirty
+    const promptTextarea = screen.getByRole("textbox", { name: /system prompt/i });
+    fireEvent.change(promptTextarea, { target: { value: "new" } });
+
+    const saveButton = screen.getByRole("button", { name: /^save$/i });
+    fireEvent.click(saveButton);
+
+    // Switch back to History — should trigger second audit fetch (returns 1 event)
+    fireEvent.click(historyTab);
+    await screen.findByText("hash2");
+
+    expect(auditCallCount).toBeGreaterThanOrEqual(2);
+  });
+});
