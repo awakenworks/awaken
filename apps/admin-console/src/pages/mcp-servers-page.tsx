@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { Link } from "react-router";
 import {
   type McpRestartPolicy,
   type McpServerRecord,
@@ -27,6 +28,7 @@ import {
 } from "@/lib/list-view";
 import { useListUrlState } from "@/lib/list-url-state";
 import { formatRelativeTime } from "@/lib/format-time";
+import { adminRoutes } from "@/lib/routes";
 import {
   parseJsonObject,
   parseLineList,
@@ -276,9 +278,19 @@ export function McpServersPage() {
 
       {crud.draft ? (
         <section className="mb-6 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-          <h3 className="text-lg font-semibold text-slate-950">
-            {crud.isEditingExisting ? "Edit MCP server" : "Create MCP server"}
-          </h3>
+          <div className="flex items-center justify-between">
+            <h3 className="text-lg font-semibold text-slate-950">
+              {crud.isEditingExisting ? "Edit MCP server" : "Create MCP server"}
+            </h3>
+            {crud.isEditingExisting && crud.draft.id && (
+              <Link
+                to={adminRoutes.auditLogForResource(`mcp-servers/${crud.draft.id}`)}
+                className="text-sm font-medium text-slate-500 transition hover:text-slate-700"
+              >
+                History
+              </Link>
+            )}
+          </div>
 
           <div className="mt-4 grid gap-4 md:grid-cols-2">
             <Field label="Server ID">

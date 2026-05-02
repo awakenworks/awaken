@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Link } from "react-router";
 import {
   ConfigApiError,
   configApi,
@@ -8,6 +9,7 @@ import {
 import { useToast } from "@/components/toast-provider";
 import { useCrudPage } from "@/lib/use-crud-page";
 import { Field, ModeButton } from "@/components/form-components";
+import { adminRoutes } from "@/lib/routes";
 import {
   ListSearchBar,
   PageSizeSelect,
@@ -223,9 +225,19 @@ export function ProvidersPage() {
 
       {crud.draft ? (
         <section className="mb-6 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-          <h3 className="text-lg font-semibold text-slate-950">
-            {crud.isEditingExisting ? "Edit provider" : "Create provider"}
-          </h3>
+          <div className="flex items-center justify-between">
+            <h3 className="text-lg font-semibold text-slate-950">
+              {crud.isEditingExisting ? "Edit provider" : "Create provider"}
+            </h3>
+            {crud.isEditingExisting && crud.draft.id && (
+              <Link
+                to={adminRoutes.auditLogForResource(`providers/${crud.draft.id}`)}
+                className="text-sm font-medium text-slate-500 transition hover:text-slate-700"
+              >
+                History
+              </Link>
+            )}
+          </div>
 
           <div className="mt-4 grid gap-4 md:grid-cols-2">
             <Field label="Provider ID">

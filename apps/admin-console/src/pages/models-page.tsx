@@ -1,9 +1,11 @@
 import { useEffect, useMemo } from "react";
+import { Link } from "react-router";
 import {
   type ModelBindingSpec,
   type ProviderRecord,
   configApi,
 } from "@/lib/config-api";
+import { adminRoutes } from "@/lib/routes";
 import { useCrudPage } from "@/lib/use-crud-page";
 import { Field } from "@/components/form-components";
 import {
@@ -126,9 +128,19 @@ export function ModelsPage() {
 
       {crud.draft ? (
         <section className="mb-6 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-          <h3 className="text-lg font-semibold text-slate-950">
-            {crud.isEditingExisting ? "Edit model" : "Create model"}
-          </h3>
+          <div className="flex items-center justify-between">
+            <h3 className="text-lg font-semibold text-slate-950">
+              {crud.isEditingExisting ? "Edit model" : "Create model"}
+            </h3>
+            {crud.isEditingExisting && crud.draft.id && (
+              <Link
+                to={adminRoutes.auditLogForResource(`models/${crud.draft.id}`)}
+                className="text-sm font-medium text-slate-500 transition hover:text-slate-700"
+              >
+                History
+              </Link>
+            )}
+          </div>
           <div className="mt-4 grid gap-4 md:grid-cols-3">
             <Field label="Model ID">
               <input

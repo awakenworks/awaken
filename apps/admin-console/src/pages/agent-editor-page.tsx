@@ -398,12 +398,22 @@ function StickyEditorHeader({
     <div className="sticky top-0 z-30 border-b border-slate-200 bg-white/95 px-6 pt-6 backdrop-blur md:px-8">
       <div className="flex flex-wrap items-center justify-between gap-4">
         <div className="min-w-0">
-          <Link
-            to={adminRoutes.agents}
-            className="text-sm font-medium text-slate-500 transition hover:text-slate-700"
-          >
-            Back to agents
-          </Link>
+          <div className="flex items-center gap-4">
+            <Link
+              to={adminRoutes.agents}
+              className="text-sm font-medium text-slate-500 transition hover:text-slate-700"
+            >
+              Back to agents
+            </Link>
+            {!isNew && agentId && (
+              <Link
+                to={adminRoutes.auditLogForResource(`agents/${agentId}`)}
+                className="text-sm font-medium text-slate-500 transition hover:text-slate-700"
+              >
+                History
+              </Link>
+            )}
+          </div>
           <h2 className="mt-2 flex flex-wrap items-center gap-3 text-3xl font-semibold text-slate-950">
             <span>{isNew ? "New Agent" : `Edit ${agentId}`}</span>
             {isDirty ? (
