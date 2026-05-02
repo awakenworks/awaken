@@ -306,7 +306,7 @@ async fn list_audit_log(
         ))
     })?;
     let mut effective_query = query;
-    effective_query.limit = effective_query.limit.min(1000).max(1);
+    effective_query.limit = effective_query.limit.clamp(1, 1000);
     let page = audit
         .query(effective_query)
         .await

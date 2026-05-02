@@ -122,8 +122,7 @@ impl AuditLogger {
 
     /// Query audit events with optional filters and keyset pagination.
     pub async fn query(&self, filter: AuditQuery) -> Result<AuditPage, StorageError> {
-        let limit = filter.limit.min(1000).max(1);
-        let effective_limit = limit;
+        let effective_limit = filter.limit.clamp(1, 1000);
 
         // Decode cursor to get the last-seen id (exclusive upper bound).
         let cursor_id = filter.cursor.as_deref().and_then(decode_cursor);
@@ -138,42 +137,38 @@ impl AuditLogger {
             .filter_map(|(id, value)| {
                 // Cursor: only include entries with id < cursor_id (older pages).
                 // We're serving newest-first so we reverse later.
-                if let Some(ref cid) = cursor_id {
-                    if id.as_str() >= cid.as_str() {
-                        return None;
-                    }
+                if cursor_id.as_deref().is_some_and(|cid| id.as_str() >= cid) {
+                    return None;
                 }
                 serde_json::from_value::<AuditEvent>(value).ok()
             })
             .filter(|event| {
-                if let Some(ref since) = filter.since {
-                    if let Ok(ts) = event.ts.parse::<DateTime<Utc>>() {
-                        if ts < *since {
-                            return false;
-                        }
-                    }
+                if let Some(ref since) = filter.since
+                    && let Ok(ts) = event.ts.parse::<DateTime<Utc>>()
+                    && ts < *since
+                {
+                    return false;
                 }
-                if let Some(ref until) = filter.until {
-                    if let Ok(ts) = event.ts.parse::<DateTime<Utc>>() {
-                        if ts >= *until {
-                            return false;
-                        }
-                    }
+                if let Some(ref until) = filter.until
+                    && let Ok(ts) = event.ts.parse::<DateTime<Utc>>()
+                    && ts >= *until
+                {
+                    return false;
                 }
-                if let Some(ref action) = filter.action {
-                    if &event.action != action {
-                        return false;
-                    }
+                if let Some(ref action) = filter.action
+                    && &event.action != action
+                {
+                    return false;
                 }
-                if let Some(ref resource) = filter.resource {
-                    if &event.resource != resource {
-                        return false;
-                    }
+                if let Some(ref resource) = filter.resource
+                    && &event.resource != resource
+                {
+                    return false;
                 }
-                if let Some(ref actor) = filter.actor {
-                    if !event.actor.starts_with(actor.as_str()) {
-                        return false;
-                    }
+                if let Some(ref actor) = filter.actor
+                    && !event.actor.starts_with(actor.as_str())
+                {
+                    return false;
                 }
                 true
             })
