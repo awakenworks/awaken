@@ -89,15 +89,15 @@ export function EvalReportsPage() {
   return (
     <div className="mx-auto max-w-6xl p-6 md:p-8">
       <header className="mb-8">
-        <p className="text-sm font-medium uppercase tracking-[0.2em] text-slate-500">
+        <p className="text-sm font-medium uppercase tracking-[0.2em] text-fg-soft">
           Replay Forensics
         </p>
-        <h2 className="mt-2 text-3xl font-semibold text-slate-950">
+        <h2 className="mt-2 text-3xl font-semibold text-fg-strong">
           Eval Reports
         </h2>
-        <p className="mt-2 max-w-2xl text-sm text-slate-600">
+        <p className="mt-2 max-w-2xl text-sm text-fg-soft">
           Drop in an NDJSON report produced by{" "}
-          <code className="rounded bg-slate-100 px-1.5 py-0.5 font-mono text-xs">
+          <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs">
             awaken-eval replay
           </code>
           . Optionally pair it with a baseline to surface regressions before
@@ -122,7 +122,7 @@ export function EvalReportsPage() {
       </section>
 
       {error && (
-        <div className="mt-6 rounded-2xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-700 shadow-sm">
+        <div className="mt-6 rounded-2xl border border-tone-error/30 bg-tone-error/10 p-4 text-sm text-tone-error shadow-sm">
           {error}
         </div>
       )}
@@ -158,17 +158,17 @@ export function EvalReportsPage() {
           )}
 
           {diff && (
-            <section className="mt-6 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+            <section className="mt-6 rounded-2xl border border-line bg-surface p-5 shadow-sm">
               <div className="flex items-center justify-between">
-                <h3 className="text-lg font-semibold text-slate-900">
+                <h3 className="text-lg font-semibold text-fg-strong">
                   Baseline diff
                 </h3>
                 <span
                   className={[
                     "rounded-full px-3 py-1 text-xs font-semibold uppercase tracking-wide",
                     diff.isClean
-                      ? "bg-emerald-100 text-emerald-800"
-                      : "bg-rose-100 text-rose-800",
+                      ? "bg-tone-success/15 text-tone-success"
+                      : "bg-tone-error/15 text-tone-error",
                   ].join(" ")}
                 >
                   {diff.isClean ? "Clean" : "Blocking"}
@@ -199,32 +199,33 @@ export function EvalReportsPage() {
             <ParseIssuesPanel issues={baseline.issues} forBaseline />
           )}
 
-          <section className="mt-6 flex flex-wrap items-center gap-3 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
-            <label className="text-xs text-slate-500">
-              <span className="mr-2">Show</span>
-              <select
-                value={fixtureFilter.status}
-                onChange={(event) =>
-                  applyFixtureFilter({
-                    status: event.target.value as FixtureStatusFilter,
-                  })
-                }
-                className="rounded-md border border-slate-300 bg-white px-2 py-1 text-xs text-slate-700 outline-none focus:border-slate-500"
-              >
-                {STATUS_OPTIONS.map((option) => (
-                  <option
+          <section className="mt-6 flex flex-wrap items-center gap-3 rounded-md border border-line bg-surface p-4 shadow-card">
+            <div role="tablist" aria-label="Fixture status filter" className="flex flex-wrap gap-1 border-b border-line">
+              {STATUS_OPTIONS.map((option) => {
+                const active = fixtureFilter.status === option.value;
+                const disabled =
+                  (option.value === "regressions" || option.value === "fixed") && !diff;
+                return (
+                  <button
                     key={option.value}
-                    value={option.value}
-                    disabled={
-                      (option.value === "regressions" || option.value === "fixed") &&
-                      !diff
-                    }
+                    type="button"
+                    role="tab"
+                    aria-selected={active}
+                    disabled={disabled}
+                    onClick={() => applyFixtureFilter({ status: option.value })}
+                    className={[
+                      "border-b-2 px-3 py-2 text-xs font-medium transition-colors",
+                      active
+                        ? "border-fg-strong text-fg-strong"
+                        : "border-transparent text-fg-soft hover:text-fg",
+                      disabled ? "cursor-not-allowed opacity-40" : "",
+                    ].join(" ")}
                   >
                     {option.label}
-                  </option>
-                ))}
-              </select>
-            </label>
+                  </button>
+                );
+              })}
+            </div>
             <label className="block w-full max-w-sm">
               <span className="sr-only">Search fixtures</span>
               <input
@@ -234,17 +235,17 @@ export function EvalReportsPage() {
                   applyFixtureFilter({ search: event.target.value })
                 }
                 placeholder="Search by fixture id…"
-                className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-slate-500"
+                className="w-full rounded-xl border border-line-strong bg-surface px-3 py-2 text-sm text-fg-strong outline-none transition focus:border-line-strong"
               />
             </label>
-            <span className="ml-auto text-xs text-slate-500">
+            <span className="ml-auto text-xs text-fg-soft">
               {visibleFixtures.length} of {report.reports.length} shown
             </span>
           </section>
 
-          <section className="mt-3 rounded-2xl border border-slate-200 bg-white shadow-sm">
+          <section className="mt-3 rounded-2xl border border-line bg-surface shadow-sm">
             <table className="min-w-full text-sm">
-              <thead className="bg-slate-50 text-left text-xs uppercase tracking-wide text-slate-500">
+              <thead className="bg-soft text-left text-xs uppercase tracking-wide text-fg-soft">
                 <tr>
                   <th className="px-4 py-3">Fixture</th>
                   <th className="px-4 py-3">Status</th>
@@ -254,12 +255,12 @@ export function EvalReportsPage() {
                   {diff && <th className="px-4 py-3">vs baseline</th>}
                 </tr>
               </thead>
-              <tbody className="divide-y divide-slate-200">
+              <tbody className="divide-y divide-line">
                 {report.reports.length === 0 ? (
                   <tr>
                     <td
                       colSpan={diff ? 6 : 5}
-                      className="px-4 py-6 text-center text-sm text-slate-500"
+                      className="px-4 py-6 text-center text-sm text-fg-soft"
                     >
                       The report contained no fixtures.
                     </td>
@@ -268,7 +269,7 @@ export function EvalReportsPage() {
                   <tr>
                     <td
                       colSpan={diff ? 6 : 5}
-                      className="px-4 py-6 text-center text-sm text-slate-500"
+                      className="px-4 py-6 text-center text-sm text-fg-soft"
                     >
                       No fixtures match the current filter.
                     </td>
@@ -306,17 +307,17 @@ function FileDrop({
   required?: boolean;
 }) {
   return (
-    <label className="flex flex-col rounded-2xl border border-dashed border-slate-300 bg-white p-5 shadow-sm transition hover:border-slate-400">
+    <label className="flex flex-col rounded-2xl border border-dashed border-line-strong bg-surface p-5 shadow-sm transition hover:border-line-strong">
       <div className="flex items-center justify-between">
-        <span className="text-sm font-semibold text-slate-700">
+        <span className="text-sm font-semibold text-fg">
           {label}
-          {required ? <span className="ml-1 text-rose-600">*</span> : null}
+          {required ? <span className="ml-1 text-tone-error">*</span> : null}
         </span>
         {slot && (
           <button
             type="button"
             onClick={onClear}
-            className="rounded-md border border-slate-200 px-2 py-1 text-xs text-slate-500 hover:bg-slate-50"
+            className="rounded-md border border-line px-2 py-1 text-xs text-fg-soft hover:bg-soft"
           >
             Clear
           </button>
@@ -326,20 +327,20 @@ function FileDrop({
         type="file"
         accept=".ndjson,.json,.txt,application/json,text/plain"
         onChange={onChange}
-        className="mt-3 block w-full text-sm text-slate-500 file:mr-3 file:rounded-md file:border-0 file:bg-slate-900 file:px-3 file:py-2 file:text-xs file:font-semibold file:uppercase file:tracking-wide file:text-white hover:file:bg-slate-800"
+        className="mt-3 block w-full text-sm text-fg-soft file:mr-3 file:rounded-md file:border-0 file:bg-fg-strong file:px-3 file:py-2 file:text-xs file:font-semibold file:uppercase file:tracking-wide file:text-bg hover:file:bg-fg"
       />
       {slot ? (
-        <div className="mt-3 text-xs text-slate-500">
+        <div className="mt-3 text-xs text-fg-soft">
           <span className="font-mono">{slot.name}</span> · {slot.reports.length}{" "}
           fixture(s){" "}
           {slot.issues.length > 0 && (
-            <span className="text-amber-600">
+            <span className="text-tone-warn">
               · {slot.issues.length} parse issue(s)
             </span>
           )}
         </div>
       ) : (
-        <p className="mt-3 text-xs text-slate-400">
+        <p className="mt-3 text-xs text-fg-faint">
           Pick an NDJSON file or drop one onto this card.
         </p>
       )}
@@ -358,25 +359,25 @@ function StatCard({
 }) {
   const toneClass =
     tone === "positive"
-      ? "text-emerald-700"
+      ? "text-tone-success"
       : tone === "negative"
-        ? "text-rose-700"
-        : "text-slate-950";
+        ? "text-tone-error"
+        : "text-fg-strong";
   return (
-    <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+    <div className="rounded-2xl border border-line bg-surface p-5 shadow-sm">
       <div className={`text-3xl font-semibold ${toneClass}`}>{value}</div>
-      <div className="mt-2 text-sm text-slate-500">{label}</div>
+      <div className="mt-2 text-sm text-fg-soft">{label}</div>
     </div>
   );
 }
 
 function DiffStat({ label, value }: { label: string; value: number }) {
   return (
-    <div className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2">
-      <div className="font-mono text-base font-semibold text-slate-900">
+    <div className="rounded-xl border border-line bg-soft px-3 py-2">
+      <div className="font-mono text-base font-semibold text-fg-strong">
         {value}
       </div>
-      <div className="text-xs uppercase tracking-wide text-slate-500">
+      <div className="text-xs uppercase tracking-wide text-fg-soft">
         {label}
       </div>
     </div>
@@ -393,8 +394,8 @@ function FixtureRow({
   hasDiff: boolean;
 }) {
   return (
-    <tr className="hover:bg-slate-50">
-      <td className="px-4 py-3 font-mono text-sm text-slate-900">
+    <tr className="hover:bg-soft">
+      <td className="px-4 py-3 font-mono text-sm text-fg-strong">
         {report.fixture_id}
       </td>
       <td className="px-4 py-3">
@@ -402,16 +403,16 @@ function FixtureRow({
           className={[
             "inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium",
             report.passed
-              ? "bg-emerald-100 text-emerald-800"
-              : "bg-rose-100 text-rose-800",
+              ? "bg-tone-success/15 text-tone-success"
+              : "bg-tone-error/15 text-tone-error",
           ].join(" ")}
         >
           {report.passed ? "passed" : "failed"}
         </span>
       </td>
-      <td className="px-4 py-3 text-sm text-slate-700">
+      <td className="px-4 py-3 text-sm text-fg">
         {report.failures.length === 0 ? (
-          <span className="text-slate-400">—</span>
+          <span className="text-fg-faint">—</span>
         ) : (
           <ul className="space-y-1">
             {report.failures.map((failure, idx) => (
@@ -420,29 +421,29 @@ function FixtureRow({
           </ul>
         )}
       </td>
-      <td className="px-4 py-3 font-mono text-xs text-slate-600">
+      <td className="px-4 py-3 font-mono text-xs text-fg-soft">
         {report.total_input_tokens}/{report.total_output_tokens}
       </td>
-      <td className="px-4 py-3 font-mono text-xs text-slate-600">
+      <td className="px-4 py-3 font-mono text-xs text-fg-soft">
         {report.session_duration_ms} ms
       </td>
       {hasDiff && (
-        <td className="px-4 py-3 text-sm text-slate-700">
+        <td className="px-4 py-3 text-sm text-fg">
           {diff ? (
             <span
               className={[
                 "inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium",
                 isBlockingDiff(diff)
-                  ? "bg-rose-100 text-rose-800"
+                  ? "bg-tone-error/15 text-tone-error"
                   : diff.kind === "fixed"
-                    ? "bg-emerald-100 text-emerald-800"
-                    : "bg-slate-100 text-slate-700",
+                    ? "bg-tone-success/15 text-tone-success"
+                    : "bg-muted text-fg",
               ].join(" ")}
             >
               {describeDiffEntry(diff)}
             </span>
           ) : (
-            <span className="text-slate-400">—</span>
+            <span className="text-fg-faint">—</span>
           )}
         </td>
       )}
@@ -452,17 +453,17 @@ function FixtureRow({
 
 function PerAgentToolPanel({ rows }: { rows: AgentToolAggregate[] }) {
   return (
-    <section className="mt-6 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+    <section className="mt-6 rounded-2xl border border-line bg-surface p-5 shadow-sm">
       <div className="flex items-center justify-between">
-        <h3 className="text-lg font-semibold text-slate-900">
+        <h3 className="text-lg font-semibold text-fg-strong">
           Tool calls by agent
         </h3>
-        <span className="text-sm text-slate-500">
+        <span className="text-sm text-fg-soft">
           {rows.length} (agent, tool) pair(s)
         </span>
       </div>
       <table className="mt-4 min-w-full text-sm">
-        <thead className="text-left text-xs uppercase tracking-wide text-slate-500">
+        <thead className="text-left text-xs uppercase tracking-wide text-fg-soft">
           <tr>
             <th className="px-2 py-2">Agent</th>
             <th className="px-2 py-2">Tool</th>
@@ -472,34 +473,34 @@ function PerAgentToolPanel({ rows }: { rows: AgentToolAggregate[] }) {
             <th className="px-2 py-2 text-right">Fixtures</th>
           </tr>
         </thead>
-        <tbody className="divide-y divide-slate-200">
+        <tbody className="divide-y divide-line">
           {rows.map((row) => (
             <tr
               key={`${row.agent_id}::${row.tool}`}
-              className="hover:bg-slate-50"
+              className="hover:bg-soft"
             >
-              <td className="px-2 py-2 font-mono text-xs text-slate-900">
+              <td className="px-2 py-2 font-mono text-xs text-fg-strong">
                 {row.agent_id || (
-                  <span className="italic text-slate-400">(unset)</span>
+                  <span className="italic text-fg-faint">(unset)</span>
                 )}
               </td>
-              <td className="px-2 py-2 font-mono text-xs text-slate-900">
+              <td className="px-2 py-2 font-mono text-xs text-fg-strong">
                 {row.tool}
               </td>
-              <td className="px-2 py-2 text-right font-mono text-xs text-slate-700">
+              <td className="px-2 py-2 text-right font-mono text-xs text-fg">
                 {row.call_count}
               </td>
-              <td className="px-2 py-2 text-right font-mono text-xs text-slate-700">
+              <td className="px-2 py-2 text-right font-mono text-xs text-fg">
                 {row.failure_count > 0 ? (
-                  <span className="text-rose-700">{row.failure_count}</span>
+                  <span className="text-tone-error">{row.failure_count}</span>
                 ) : (
                   row.failure_count
                 )}
               </td>
-              <td className="px-2 py-2 text-right font-mono text-xs text-slate-700">
+              <td className="px-2 py-2 text-right font-mono text-xs text-fg">
                 {row.total_duration_ms}
               </td>
-              <td className="px-2 py-2 text-right font-mono text-xs text-slate-700">
+              <td className="px-2 py-2 text-right font-mono text-xs text-fg">
                 {row.fixture_count}
               </td>
             </tr>
@@ -518,14 +519,14 @@ function ParseIssuesPanel({
   forBaseline?: boolean;
 }) {
   return (
-    <section className="mt-6 rounded-2xl border border-amber-200 bg-amber-50 p-5 shadow-sm">
-      <h3 className="text-sm font-semibold text-amber-900">
+    <section className="mt-6 rounded-2xl border border-tone-warn/35 bg-tone-warn/10 p-5 shadow-sm">
+      <h3 className="text-sm font-semibold text-tone-warn">
         {forBaseline
           ? "Baseline parse issues"
           : "Report parse issues"}{" "}
         ({issues.length})
       </h3>
-      <ul className="mt-3 space-y-2 text-xs text-amber-900">
+      <ul className="mt-3 space-y-2 text-xs text-tone-warn">
         {issues.slice(0, 25).map((issue) => (
           <li key={issue.line}>
             <span className="font-mono">line {issue.line}:</span>{" "}

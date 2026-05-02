@@ -3,6 +3,7 @@ import { Link, useLocation } from "react-router";
 import { resolveBreadcrumbs } from "@/lib/nav";
 import { maskAdminToken } from "@/lib/admin-token";
 import { describeAuthStatus, useAuth } from "./auth-provider";
+import { useCommandPalette } from "./command-palette";
 
 const STATUS_DOT: Record<"ok" | "warn" | "error" | "neutral", string> = {
   ok: "bg-state-done",
@@ -17,6 +18,7 @@ export function AdminTopbar() {
   const { token, status, openTokenModal } = useAuth();
   const description = describeAuthStatus(status);
   const dotClass = STATUS_DOT[description.tone];
+  const palette = useCommandPalette();
 
   return (
     <header className="sticky top-0 z-20 flex h-14 items-center gap-4 border-b border-line bg-canvas/80 px-6 backdrop-blur">
@@ -56,9 +58,9 @@ export function AdminTopbar() {
       <div className="flex items-center gap-2">
         <button
           type="button"
-          aria-label="Open command palette (coming soon)"
-          disabled
-          className="hidden h-9 items-center gap-2 rounded-md border border-line bg-soft px-3 text-xs text-fg-soft transition-colors hover:border-line-strong disabled:cursor-not-allowed disabled:opacity-60 md:inline-flex"
+          aria-label="Open command palette"
+          onClick={palette.open}
+          className="hidden h-9 items-center gap-2 rounded-md border border-line bg-soft px-3 text-xs text-fg-soft transition-colors hover:border-line-strong md:inline-flex"
         >
           <span>Search agents, tools, runs…</span>
           <span className="flex items-center gap-1 text-fg-faint">

@@ -46,11 +46,11 @@ export function AssistantPage() {
 
   return (
     <div className="flex h-full flex-col">
-      <header className="border-b border-slate-200 bg-white px-6 py-4">
-        <h2 className="text-lg font-semibold text-slate-900">
+      <header className="border-b border-line bg-surface px-6 py-4">
+        <h2 className="text-lg font-semibold text-fg-strong">
           AI Config Assistant
         </h2>
-        <p className="mt-1 text-sm text-slate-500">
+        <p className="mt-1 text-sm text-fg-soft">
           Describe the agent you want to create or modify. The assistant will
           generate configurations, suggest plugins, and validate settings.
         </p>
@@ -58,7 +58,7 @@ export function AssistantPage() {
 
       <div ref={scrollRef} className="flex-1 space-y-4 overflow-auto p-6">
         {messages.length === 0 && (
-          <div className="mt-12 space-y-3 text-center text-slate-400">
+          <div className="mt-12 space-y-3 text-center text-fg-faint">
             <p className="text-lg">
               What kind of agent would you like to build?
             </p>
@@ -68,7 +68,7 @@ export function AssistantPage() {
                   key={s}
                   type="button"
                   onClick={() => setInput(s)}
-                  className="rounded-full bg-slate-100 px-3 py-1.5 text-sm text-slate-700 hover:bg-slate-200"
+                  className="rounded-full bg-muted px-3 py-1.5 text-sm text-fg hover:bg-muted"
                 >
                   {s}
                 </button>
@@ -89,8 +89,8 @@ export function AssistantPage() {
               <div
                 className={`max-w-[80%] space-y-2 rounded-lg px-4 py-2 text-sm ${
                   isUser
-                    ? "bg-cyan-700 text-white"
-                    : "bg-white text-slate-800 shadow"
+                    ? "bg-cyan-700 text-bg"
+                    : "bg-surface text-fg shadow"
                 }`}
               >
                 {view.blocks.map((block) => (
@@ -103,7 +103,7 @@ export function AssistantPage() {
 
         {status === "streaming" && (
           <div className="flex justify-start">
-            <div className="animate-pulse rounded-lg bg-white px-4 py-2 text-sm text-slate-400 shadow">
+            <div className="animate-pulse rounded-lg bg-surface px-4 py-2 text-sm text-fg-faint shadow">
               Thinking...
             </div>
           </div>
@@ -112,18 +112,18 @@ export function AssistantPage() {
 
       <form
         onSubmit={handleSubmit}
-        className="flex gap-3 border-t border-slate-200 bg-white px-6 py-3"
+        className="flex gap-3 border-t border-line bg-surface px-6 py-3"
       >
         <input
           value={input}
           onChange={(e) => setInput(e.target.value)}
           placeholder="Describe your agent or ask about config..."
-          className="flex-1 rounded-lg border border-slate-300 px-4 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-cyan-600"
+          className="flex-1 rounded-lg border border-line-strong px-4 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-cyan-600"
         />
         <button
           type="submit"
           disabled={status === "streaming" || !input.trim()}
-          className="rounded-lg bg-cyan-700 px-4 py-2 text-sm text-white hover:bg-cyan-600 disabled:opacity-50"
+          className="rounded-lg bg-cyan-700 px-4 py-2 text-sm text-bg hover:bg-cyan-600 disabled:opacity-50"
         >
           Send
         </button>
@@ -141,7 +141,7 @@ function BlockView({ block, isUser }: { block: AssistantBlock; isUser: boolean }
         <div
           className={[
             "rounded-md px-3 py-2 text-xs italic leading-5",
-            isUser ? "bg-cyan-800 text-cyan-50" : "bg-slate-50 text-slate-600",
+            isUser ? "bg-cyan-800 text-cyan-50" : "bg-soft text-fg-soft",
           ].join(" ")}
         >
           <div className="text-[10px] font-semibold uppercase tracking-wide opacity-70">
@@ -152,7 +152,7 @@ function BlockView({ block, isUser }: { block: AssistantBlock; isUser: boolean }
       );
     case "step-start":
       return (
-        <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">
+        <div className="text-[10px] font-semibold uppercase tracking-wide text-fg-faint">
           ── new step ──
         </div>
       );
@@ -163,7 +163,7 @@ function BlockView({ block, isUser }: { block: AssistantBlock; isUser: boolean }
         <div
           className={[
             "rounded-md px-2 py-1 text-[11px] font-mono",
-            isUser ? "bg-cyan-800 text-cyan-100" : "bg-slate-100 text-slate-500",
+            isUser ? "bg-cyan-800 text-cyan-100" : "bg-muted text-fg-soft",
           ].join(" ")}
         >
           [unrendered: {block.type || "unknown"}]
@@ -173,10 +173,10 @@ function BlockView({ block, isUser }: { block: AssistantBlock; isUser: boolean }
 }
 
 const TONE_CLASS: Record<AssistantBlockTone, string> = {
-  info: "bg-slate-100 text-slate-700",
-  success: "bg-emerald-100 text-emerald-800",
-  warn: "bg-amber-100 text-amber-800",
-  error: "bg-rose-100 text-rose-800",
+  info: "bg-muted text-fg",
+  success: "bg-tone-success/15 text-tone-success",
+  warn: "bg-tone-warn/15 text-tone-warn",
+  error: "bg-tone-error/15 text-tone-error",
 };
 
 function ToolCallView({
@@ -188,7 +188,7 @@ function ToolCallView({
   const inputPreview = previewPayload(block.input);
   const outputPreview = previewPayload(block.output);
   return (
-    <details className="group rounded-md border border-slate-200 bg-slate-50 text-slate-800 open:bg-white">
+    <details className="group rounded-md border border-line bg-soft text-fg open:bg-surface">
       <summary className="flex cursor-pointer flex-wrap items-center gap-2 px-3 py-2 text-xs">
         <span className="font-semibold">🛠</span>
         <span className="font-mono">{block.toolName}</span>
@@ -200,11 +200,11 @@ function ToolCallView({
         >
           {description.label}
         </span>
-        <span className="ml-auto text-[10px] text-slate-400 group-open:hidden">
+        <span className="ml-auto text-[10px] text-fg-faint group-open:hidden">
           click to expand
         </span>
       </summary>
-      <div className="space-y-2 border-t border-slate-200 px-3 py-2">
+      <div className="space-y-2 border-t border-line px-3 py-2">
         {inputPreview ? (
           <PayloadPanel label="Input" payload={inputPreview} />
         ) : null}
@@ -238,7 +238,7 @@ function PayloadPanel({
       >
         {label}
       </div>
-      <pre className="mt-1 max-h-72 overflow-auto rounded-md bg-slate-950 px-3 py-2 text-[11px] leading-5 text-slate-100">
+      <pre className="mt-1 max-h-72 overflow-auto rounded-md bg-fg-strong px-3 py-2 text-[11px] leading-5 text-bg">
         {payload}
       </pre>
     </div>

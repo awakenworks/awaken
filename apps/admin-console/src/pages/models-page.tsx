@@ -112,30 +112,30 @@ export function ModelsPage() {
     <div className="mx-auto max-w-5xl p-6 md:p-8">
       <div className="mb-6 flex items-center justify-between gap-4">
         <div>
-          <p className="text-sm font-medium uppercase tracking-[0.2em] text-slate-500">
+          <p className="text-sm font-medium uppercase tracking-[0.2em] text-fg-soft">
             Runtime Catalog
           </p>
-          <h2 className="mt-2 text-3xl font-semibold text-slate-950">Models</h2>
+          <h2 className="mt-2 text-3xl font-semibold text-fg-strong">Models</h2>
         </div>
         <button
           type="button"
           onClick={() => crud.startNew({ ...EMPTY_MODEL })}
-          className="rounded-xl bg-slate-950 px-4 py-2 text-sm font-medium text-white transition hover:bg-slate-800"
+          className="rounded-xl bg-fg-strong px-4 py-2 text-sm font-medium text-white transition hover:bg-fg"
         >
           New Model
         </button>
       </div>
 
       {crud.draft ? (
-        <section className="mb-6 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+        <section className="mb-6 rounded-2xl border border-line bg-surface p-5 shadow-sm">
           <div className="flex items-center justify-between">
-            <h3 className="text-lg font-semibold text-slate-950">
+            <h3 className="text-lg font-semibold text-fg-strong">
               {crud.isEditingExisting ? "Edit model" : "Create model"}
             </h3>
             {crud.isEditingExisting && crud.draft.id && (
               <Link
                 to={adminRoutes.auditLogForResource(`models/${crud.draft.id}`)}
-                className="text-sm font-medium text-slate-500 transition hover:text-slate-700"
+                className="text-sm font-medium text-fg-soft transition hover:text-fg"
               >
                 History
               </Link>
@@ -151,7 +151,7 @@ export function ModelsPage() {
                     current ? { ...current, id: event.target.value } : current,
                   )
                 }
-                className="w-full rounded-xl border border-slate-300 px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-slate-500 disabled:bg-slate-100 disabled:text-slate-500"
+                className="w-full rounded-xl border border-line-strong px-3 py-2 text-sm text-fg-strong outline-none transition focus:border-line-strong disabled:bg-muted disabled:text-fg-soft"
               />
             </Field>
             <Field label="Provider ID">
@@ -164,7 +164,7 @@ export function ModelsPage() {
                       : current,
                   )
                 }
-                className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-slate-500"
+                className="w-full rounded-xl border border-line-strong bg-surface px-3 py-2 text-sm text-fg-strong outline-none transition focus:border-line-strong"
               >
                 <option value="">Select a provider</option>
                 {providerOptions.map((providerId) => (
@@ -184,7 +184,7 @@ export function ModelsPage() {
                       : current,
                   )
                 }
-                className="w-full rounded-xl border border-slate-300 px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-slate-500"
+                className="w-full rounded-xl border border-line-strong px-3 py-2 text-sm text-fg-strong outline-none transition focus:border-line-strong"
               />
             </Field>
           </div>
@@ -194,14 +194,14 @@ export function ModelsPage() {
               type="button"
               onClick={() => void crud.handleSave()}
               disabled={crud.saving}
-              className="rounded-xl bg-slate-950 px-4 py-2 text-sm font-medium text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-60"
+              className="rounded-xl bg-fg-strong px-4 py-2 text-sm font-medium text-white transition hover:bg-fg disabled:cursor-not-allowed disabled:opacity-60"
             >
               {crud.saving ? "Saving..." : "Save"}
             </button>
             <button
               type="button"
               onClick={crud.cancelEdit}
-              className="rounded-xl border border-slate-300 px-4 py-2 text-sm font-medium text-slate-700 transition hover:bg-slate-50"
+              className="rounded-xl border border-line-strong px-4 py-2 text-sm font-medium text-fg transition hover:bg-soft"
             >
               Cancel
             </button>
@@ -221,15 +221,15 @@ export function ModelsPage() {
         />
       </div>
 
-      <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
+      <div className="overflow-hidden rounded-2xl border border-line bg-surface shadow-sm">
         {crud.loading ? (
-          <div className="px-5 py-6 text-sm text-slate-500">Loading models...</div>
+          <div className="px-5 py-6 text-sm text-fg-soft">Loading models...</div>
         ) : crud.items.length === 0 ? (
-          <div className="px-5 py-6 text-sm text-slate-500">
+          <div className="px-5 py-6 text-sm text-fg-soft">
             No managed models yet.
           </div>
         ) : view.items.length === 0 ? (
-          <div className="px-5 py-6 text-sm text-slate-500">
+          <div className="px-5 py-6 text-sm text-fg-soft">
             No models match the current filter.
           </div>
         ) : (
@@ -246,14 +246,14 @@ export function ModelsPage() {
                 {view.items.map((model) => (
                   <tr
                     key={model.id}
-                    className="border-t border-slate-200 text-sm text-slate-700"
+                    className="border-t border-line text-sm text-fg"
                   >
-                    <td className="px-5 py-4 font-mono text-slate-950">{model.id}</td>
+                    <td className="px-5 py-4 font-mono text-fg-strong">{model.id}</td>
                     <td className="px-5 py-4">{model.provider_id}</td>
-                    <td className="px-5 py-4 text-slate-500">
+                    <td className="px-5 py-4 text-fg-soft">
                       {model.upstream_model}
                     </td>
-                    <td className="px-5 py-4 text-slate-500">
+                    <td className="px-5 py-4 text-fg-soft">
                       {formatRelativeTime(model.updated_at)}
                     </td>
                     <td className="px-5 py-4">
@@ -261,14 +261,14 @@ export function ModelsPage() {
                         <button
                           type="button"
                           onClick={() => crud.startEdit(model)}
-                          className="font-medium text-slate-700 transition hover:text-slate-950"
+                          className="font-medium text-fg transition hover:text-fg-strong"
                         >
                           Edit
                         </button>
                         <button
                           type="button"
                           onClick={() => void crud.handleDelete(model.id)}
-                          className="font-medium text-rose-600 transition hover:text-rose-700"
+                          className="font-medium text-tone-error transition hover:text-tone-error"
                         >
                           Delete
                         </button>

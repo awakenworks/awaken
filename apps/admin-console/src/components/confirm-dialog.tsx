@@ -72,7 +72,7 @@ export function ConfirmDialogProvider({ children }: { children: ReactNode }) {
           role="dialog"
           aria-modal="true"
           aria-labelledby="confirm-dialog-title"
-          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/40 px-4"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-fg-strong/40 px-4"
           onMouseDown={(event) => {
             mouseDownOnBackdropRef.current = event.target === event.currentTarget;
           }}
@@ -86,15 +86,15 @@ export function ConfirmDialogProvider({ children }: { children: ReactNode }) {
             mouseDownOnBackdropRef.current = false;
           }}
         >
-          <div className="w-full max-w-md rounded-2xl border border-slate-200 bg-white p-6 shadow-2xl">
+          <div className="w-full max-w-md rounded-2xl border border-line bg-surface p-6 shadow-2xl">
             <h2
               id="confirm-dialog-title"
-              className="text-lg font-semibold text-slate-950"
+              className="text-lg font-semibold text-fg-strong"
             >
               {pending.title}
             </h2>
             {pending.description ? (
-              <div className="mt-2 text-sm leading-6 text-slate-600">
+              <div className="mt-2 text-sm leading-6 text-fg-soft">
                 {pending.description}
               </div>
             ) : null}
@@ -102,7 +102,7 @@ export function ConfirmDialogProvider({ children }: { children: ReactNode }) {
               <button
                 type="button"
                 onClick={() => respond(false)}
-                className="rounded-xl border border-slate-300 px-4 py-2 text-sm font-medium text-slate-700 transition hover:bg-slate-50"
+                className="rounded-xl border border-line-strong px-4 py-2 text-sm font-medium text-fg transition hover:bg-soft"
               >
                 {pending.cancelLabel ?? "Cancel"}
               </button>
@@ -112,8 +112,8 @@ export function ConfirmDialogProvider({ children }: { children: ReactNode }) {
                 onClick={() => respond(true)}
                 className={
                   pending.tone === "destructive"
-                    ? "rounded-xl bg-rose-600 px-4 py-2 text-sm font-medium text-white transition hover:bg-rose-700"
-                    : "rounded-xl bg-slate-950 px-4 py-2 text-sm font-medium text-white transition hover:bg-slate-800"
+                    ? "rounded-xl bg-tone-error px-4 py-2 text-sm font-medium text-bg transition hover:bg-tone-error/80"
+                    : "rounded-xl bg-fg-strong px-4 py-2 text-sm font-medium text-bg transition hover:bg-fg"
                 }
               >
                 {pending.confirmLabel ?? "Confirm"}

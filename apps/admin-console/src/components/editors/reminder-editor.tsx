@@ -96,7 +96,7 @@ export function ReminderConfigEditor({
   return (
     <div className="space-y-5">
       <div className="grid gap-4 xl:grid-cols-[18rem,minmax(0,1fr)]">
-        <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+        <div className="rounded-2xl border border-line bg-soft p-4">
           <SectionLabel label="Reminder Summary" />
           <div className="mt-3 grid gap-3 sm:grid-cols-2 xl:grid-cols-1">
             <MetricCard
@@ -112,9 +112,9 @@ export function ReminderConfigEditor({
           </div>
         </div>
 
-        <div className="rounded-2xl border border-slate-200 bg-white p-4">
+        <div className="rounded-2xl border border-line bg-surface p-4">
           <SectionLabel label="How Reminder Rules Work" />
-          <p className="mt-2 text-sm leading-6 text-slate-500">
+          <p className="mt-2 text-sm leading-6 text-fg-soft">
             Each rule watches a tool result, then injects a contextual reminder
             into the selected target. Use narrow tool patterns and specific
             output matchers so reminders stay relevant.
@@ -140,11 +140,11 @@ export function ReminderConfigEditor({
       </div>
 
       <div className="grid gap-5 xl:grid-cols-[18rem,minmax(0,1fr)]">
-        <aside className="space-y-3 rounded-2xl border border-slate-200 bg-slate-50 p-4">
+        <aside className="space-y-3 rounded-2xl border border-line bg-soft p-4">
           <div className="flex items-start justify-between gap-3">
             <div>
               <SectionLabel label="Reminder Rules" />
-              <p className="mt-2 text-sm leading-6 text-slate-500">
+              <p className="mt-2 text-sm leading-6 text-fg-soft">
                 Each rule couples a tool-output matcher with the reminder that
                 should be injected.
               </p>
@@ -152,7 +152,7 @@ export function ReminderConfigEditor({
             <button
               type="button"
               onClick={addRule}
-              className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-700 transition hover:border-slate-400 hover:bg-slate-100"
+              className="rounded-xl border border-line-strong bg-surface px-3 py-2 text-sm font-medium text-fg transition hover:border-line-strong hover:bg-muted"
             >
               Add reminder
             </button>
@@ -172,8 +172,8 @@ export function ReminderConfigEditor({
                     className={[
                       "w-full rounded-2xl border px-4 py-3 text-left transition",
                       isActive
-                        ? "border-slate-900 bg-slate-900 text-white shadow-sm"
-                        : "border-slate-200 bg-white text-slate-900 hover:border-slate-300",
+                        ? "border-fg-strong bg-fg-strong text-white shadow-sm"
+                        : "border-line bg-surface text-fg-strong hover:border-line-strong",
                     ].join(" ")}
                   >
                     <div className="flex items-center justify-between gap-3">
@@ -183,7 +183,7 @@ export function ReminderConfigEditor({
                       <span
                         className={[
                           "rounded-full px-2 py-0.5 text-[11px] font-medium",
-                          isActive ? "bg-slate-700 text-slate-100" : "bg-cyan-100 text-cyan-700",
+                          isActive ? "bg-fg text-bg" : "bg-tone-info/15 text-tone-info",
                         ].join(" ")}
                       >
                         {reminderModeShortLabel(rule.mode)}
@@ -192,7 +192,7 @@ export function ReminderConfigEditor({
                     <div
                       className={[
                         "mt-2 text-xs",
-                        isActive ? "text-slate-300" : "text-slate-500",
+                        isActive ? "text-fg-faint" : "text-fg-soft",
                       ].join(" ")}
                     >
                       {rule.tool.trim() ? `Tool: ${rule.tool}` : "Applies to any tool"}
@@ -200,7 +200,7 @@ export function ReminderConfigEditor({
                     <div
                       className={[
                         "mt-2 text-xs font-medium",
-                        isActive ? "text-slate-300" : "text-slate-500",
+                        isActive ? "text-fg-faint" : "text-fg-soft",
                       ].join(" ")}
                     >
                       Target: {reminderTargetLabel(rule.target)}
@@ -213,13 +213,13 @@ export function ReminderConfigEditor({
         </aside>
 
         {activeRule ? (
-          <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+          <div className="rounded-2xl border border-line bg-surface p-5 shadow-sm">
             <div className="flex flex-wrap items-start justify-between gap-3">
               <div>
-                <h6 className="text-lg font-semibold text-slate-950">
+                <h6 className="text-lg font-semibold text-fg-strong">
                   {activeRule.name.trim() || `Reminder ${activeRuleIndex! + 1}`}
                 </h6>
-                <p className="mt-1 text-sm leading-6 text-slate-500">
+                <p className="mt-1 text-sm leading-6 text-fg-soft">
                   Model the trigger first, then define the reminder payload and
                   where it should be injected.
                 </p>
@@ -229,7 +229,7 @@ export function ReminderConfigEditor({
                   type="button"
                   disabled={activeRuleIndex === 0}
                   onClick={() => moveRule(activeRuleIndex!, -1)}
-                  className="rounded-xl border border-slate-300 px-3 py-2 text-sm font-medium text-slate-700 transition hover:border-slate-400 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
+                  className="rounded-xl border border-line-strong px-3 py-2 text-sm font-medium text-fg transition hover:border-line-strong hover:bg-soft disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   Move up
                 </button>
@@ -237,14 +237,14 @@ export function ReminderConfigEditor({
                   type="button"
                   disabled={activeRuleIndex === config.rules.length - 1}
                   onClick={() => moveRule(activeRuleIndex!, 1)}
-                  className="rounded-xl border border-slate-300 px-3 py-2 text-sm font-medium text-slate-700 transition hover:border-slate-400 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
+                  className="rounded-xl border border-line-strong px-3 py-2 text-sm font-medium text-fg transition hover:border-line-strong hover:bg-soft disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   Move down
                 </button>
                 <button
                   type="button"
                   onClick={() => removeRule(activeRuleIndex!)}
-                  className="rounded-xl border border-rose-200 px-3 py-2 text-sm font-medium text-rose-700 transition hover:bg-rose-50"
+                  className="rounded-xl border border-tone-error/30 px-3 py-2 text-sm font-medium text-tone-error transition hover:bg-tone-error/10"
                 >
                   Remove
                 </button>
@@ -263,7 +263,7 @@ export function ReminderConfigEditor({
                     })
                   }
                   placeholder="weather-travel-hint"
-                  className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-slate-500"
+                  className="w-full rounded-xl border border-line-strong bg-surface px-3 py-2 text-sm text-fg-strong outline-none transition focus:border-line-strong"
                 />
               </Field>
               <Field label="Tool pattern">
@@ -277,14 +277,14 @@ export function ReminderConfigEditor({
                     })
                   }
                   placeholder="get_weather"
-                  className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-slate-500"
+                  className="w-full rounded-xl border border-line-strong bg-surface px-3 py-2 text-sm text-fg-strong outline-none transition focus:border-line-strong"
                 />
               </Field>
             </div>
 
-            <div className="mt-5 rounded-2xl border border-slate-200 bg-slate-50 p-4">
+            <div className="mt-5 rounded-2xl border border-line bg-soft p-4">
               <SectionLabel label="Trigger" />
-              <p className="mt-2 text-sm leading-6 text-slate-500">
+              <p className="mt-2 text-sm leading-6 text-fg-soft">
                 Decide which part of the tool result must match before the
                 reminder fires.
               </p>
@@ -390,7 +390,7 @@ export function ReminderConfigEditor({
                         })
                       }
                       placeholder="*permission denied*"
-                      className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-slate-500"
+                      className="w-full rounded-xl border border-line-strong bg-surface px-3 py-2 text-sm text-fg-strong outline-none transition focus:border-line-strong"
                     />
                   </Field>
                 </div>
@@ -409,7 +409,7 @@ export function ReminderConfigEditor({
                           fields: [...activeRule.fields, createReminderField()],
                         })
                       }
-                      className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-700 transition hover:border-slate-400 hover:bg-slate-100"
+                      className="rounded-xl border border-line-strong bg-surface px-3 py-2 text-sm font-medium text-fg transition hover:border-line-strong hover:bg-muted"
                     >
                       Add field condition
                     </button>
@@ -421,7 +421,7 @@ export function ReminderConfigEditor({
                       {activeRule.fields.map((field, fieldIndex) => (
                         <div
                           key={`reminder-field-${activeRuleIndex}-${fieldIndex}`}
-                          className="grid gap-3 rounded-2xl border border-slate-200 bg-white p-3 lg:grid-cols-[minmax(0,1.1fr),12rem,minmax(0,1fr),auto]"
+                          className="grid gap-3 rounded-2xl border border-line bg-surface p-3 lg:grid-cols-[minmax(0,1.1fr),12rem,minmax(0,1fr),auto]"
                         >
                           <Field label="Path">
                             <input
@@ -438,7 +438,7 @@ export function ReminderConfigEditor({
                                 })
                               }
                               placeholder="error.code"
-                              className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-slate-500"
+                              className="w-full rounded-xl border border-line-strong bg-surface px-3 py-2 text-sm text-fg-strong outline-none transition focus:border-line-strong"
                             />
                           </Field>
                           <Field label="Operation">
@@ -457,7 +457,7 @@ export function ReminderConfigEditor({
                                   ),
                                 })
                               }
-                              className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-slate-500"
+                              className="w-full rounded-xl border border-line-strong bg-surface px-3 py-2 text-sm text-fg-strong outline-none transition focus:border-line-strong"
                             >
                               <option value="glob">Glob</option>
                               <option value="exact">Exact</option>
@@ -482,7 +482,7 @@ export function ReminderConfigEditor({
                                 })
                               }
                               placeholder="403"
-                              className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-slate-500"
+                              className="w-full rounded-xl border border-line-strong bg-surface px-3 py-2 text-sm text-fg-strong outline-none transition focus:border-line-strong"
                             />
                           </Field>
                           <div className="flex items-end">
@@ -496,7 +496,7 @@ export function ReminderConfigEditor({
                                   ),
                                 })
                               }
-                              className="rounded-xl border border-rose-200 px-3 py-2 text-sm font-medium text-rose-700 transition hover:bg-rose-50"
+                              className="rounded-xl border border-tone-error/30 px-3 py-2 text-sm font-medium text-tone-error transition hover:bg-tone-error/10"
                             >
                               Remove
                             </button>
@@ -509,10 +509,10 @@ export function ReminderConfigEditor({
               ) : null}
             </div>
 
-            <div className="mt-5 rounded-2xl border border-slate-200 bg-white">
-              <div className="border-b border-slate-200 px-4 py-4">
+            <div className="mt-5 rounded-2xl border border-line bg-surface">
+              <div className="border-b border-line px-4 py-4">
                 <SectionLabel label="Injected Reminder" />
-                <p className="mt-2 text-sm leading-6 text-slate-500">
+                <p className="mt-2 text-sm leading-6 text-fg-soft">
                   Configure where the reminder goes and what message should be
                   added when this rule matches.
                 </p>
@@ -563,7 +563,7 @@ export function ReminderConfigEditor({
                         })
                       }
                       rows={5}
-                      className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-slate-500"
+                      className="w-full rounded-xl border border-line-strong bg-surface px-3 py-2 text-sm text-fg-strong outline-none transition focus:border-line-strong"
                     />
                   </Field>
                   <Field label="Cooldown turns">
@@ -577,7 +577,7 @@ export function ReminderConfigEditor({
                           cooldown_turns: Number(event.target.value) || 0,
                         })
                       }
-                      className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-slate-500"
+                      className="w-full rounded-xl border border-line-strong bg-surface px-3 py-2 text-sm text-fg-strong outline-none transition focus:border-line-strong"
                     />
                   </Field>
                 </div>

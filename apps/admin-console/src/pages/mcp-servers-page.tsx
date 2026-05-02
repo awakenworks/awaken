@@ -95,17 +95,23 @@ type McpServerStatus = {
 
 function StatusBadge({ status }: { status: McpServerStatus | null | undefined }) {
   if (status === undefined) {
-    return <span className="inline-block h-2 w-2 rounded-full bg-slate-300" title="Loading status..." />;
+    return (
+      <span className="inline-block h-2 w-2 rounded-pill bg-fg-faint" title="Loading status..." />
+    );
   }
   if (status === null) {
-    return <span className="inline-block h-2 w-2 rounded-full bg-slate-300" title="Status unavailable" />;
+    return (
+      <span className="inline-block h-2 w-2 rounded-pill bg-fg-faint" title="Status unavailable" />
+    );
   }
   if (status.connected) {
-    return <span className="inline-block h-2 w-2 rounded-full bg-green-500" title="Connected" />;
+    return (
+      <span className="inline-block h-2 w-2 rounded-pill bg-state-done" title="Connected" />
+    );
   }
   return (
     <span
-      className="inline-block h-2 w-2 rounded-full bg-red-500"
+      className="inline-block h-2 w-2 rounded-pill bg-state-blocked"
       title={status.last_error ? `Error: ${status.last_error}` : "Disconnected"}
     />
   );
@@ -260,32 +266,32 @@ export function McpServersPage() {
     <div className="mx-auto max-w-6xl p-6 md:p-8">
       <div className="mb-6 flex items-center justify-between gap-4">
         <div>
-          <p className="text-sm font-medium uppercase tracking-[0.2em] text-slate-500">
+          <p className="text-sm font-medium uppercase tracking-[0.2em] text-fg-soft">
             Runtime Catalog
           </p>
-          <h2 className="mt-2 text-3xl font-semibold text-slate-950">
+          <h2 className="mt-2 text-3xl font-semibold text-fg-strong">
             MCP Servers
           </h2>
         </div>
         <button
           type="button"
           onClick={startCreate}
-          className="rounded-xl bg-slate-950 px-4 py-2 text-sm font-medium text-white transition hover:bg-slate-800"
+          className="rounded-xl bg-fg-strong px-4 py-2 text-sm font-medium text-bg transition hover:bg-fg"
         >
           New MCP Server
         </button>
       </div>
 
       {crud.draft ? (
-        <section className="mb-6 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+        <section className="mb-6 rounded-2xl border border-line bg-surface p-5 shadow-sm">
           <div className="flex items-center justify-between">
-            <h3 className="text-lg font-semibold text-slate-950">
+            <h3 className="text-lg font-semibold text-fg-strong">
               {crud.isEditingExisting ? "Edit MCP server" : "Create MCP server"}
             </h3>
             {crud.isEditingExisting && crud.draft.id && (
               <Link
                 to={adminRoutes.auditLogForResource(`mcp-servers/${crud.draft.id}`)}
-                className="text-sm font-medium text-slate-500 transition hover:text-slate-700"
+                className="text-sm font-medium text-fg-soft transition hover:text-fg"
               >
                 History
               </Link>
@@ -302,7 +308,7 @@ export function McpServersPage() {
                     current ? { ...current, id: event.target.value } : current,
                   )
                 }
-                className="w-full rounded-xl border border-slate-300 px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-slate-500 disabled:bg-slate-100 disabled:text-slate-500"
+                className="w-full rounded-xl border border-line-strong px-3 py-2 text-sm text-fg-strong outline-none transition focus:border-line-strong disabled:bg-muted disabled:text-fg-soft"
               />
             </Field>
 
@@ -319,7 +325,7 @@ export function McpServersPage() {
                       : current,
                   )
                 }
-                className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-slate-500"
+                className="w-full rounded-xl border border-line-strong bg-surface px-3 py-2 text-sm text-fg-strong outline-none transition focus:border-line-strong"
               >
                 <option value="stdio">stdio</option>
                 <option value="http">http</option>
@@ -338,7 +344,7 @@ export function McpServersPage() {
                           : current,
                       )
                     }
-                    className="w-full rounded-xl border border-slate-300 px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-slate-500"
+                    className="w-full rounded-xl border border-line-strong px-3 py-2 text-sm text-fg-strong outline-none transition focus:border-line-strong"
                   />
                 </Field>
                 <Field label="Arguments (one per line)">
@@ -346,7 +352,7 @@ export function McpServersPage() {
                     value={argsDraft}
                     onChange={(event) => setArgsDraft(event.target.value)}
                     rows={5}
-                    className="w-full rounded-xl border border-slate-300 px-3 py-2 font-mono text-sm text-slate-900 outline-none transition focus:border-slate-500"
+                    className="w-full rounded-xl border border-line-strong px-3 py-2 font-mono text-sm text-fg-strong outline-none transition focus:border-line-strong"
                   />
                 </Field>
               </>
@@ -359,7 +365,7 @@ export function McpServersPage() {
                       current ? { ...current, url: event.target.value } : current,
                     )
                   }
-                  className="w-full rounded-xl border border-slate-300 px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-slate-500"
+                  className="w-full rounded-xl border border-line-strong px-3 py-2 text-sm text-fg-strong outline-none transition focus:border-line-strong"
                 />
               </Field>
             )}
@@ -379,7 +385,7 @@ export function McpServersPage() {
                       : current,
                   )
                 }
-                className="w-full rounded-xl border border-slate-300 px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-slate-500"
+                className="w-full rounded-xl border border-line-strong px-3 py-2 text-sm text-fg-strong outline-none transition focus:border-line-strong"
               />
             </Field>
           </div>
@@ -390,17 +396,17 @@ export function McpServersPage() {
                 value={configDraft}
                 onChange={(event) => setConfigDraft(event.target.value)}
                 rows={8}
-                className="w-full rounded-xl border border-slate-300 px-3 py-2 font-mono text-sm text-slate-900 outline-none transition focus:border-slate-500"
+                className="w-full rounded-xl border border-line-strong px-3 py-2 font-mono text-sm text-fg-strong outline-none transition focus:border-line-strong"
               />
             </Field>
 
-            <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+            <div className="rounded-xl border border-line bg-soft p-4">
               <div className="flex flex-wrap items-center justify-between gap-3">
                 <div>
-                  <h4 className="text-sm font-semibold text-slate-900">
+                  <h4 className="text-sm font-semibold text-fg-strong">
                     Environment JSON
                   </h4>
-                  <p className="mt-1 text-sm text-slate-500">
+                  <p className="mt-1 text-sm text-fg-soft">
                     {crud.isEditingExisting && crud.draft.has_env
                       ? `Existing keys: ${(crud.draft.env_keys ?? []).join(", ") || "stored"}`
                       : "Provide a JSON object of environment variables."}
@@ -432,10 +438,10 @@ export function McpServersPage() {
                   value={envDraft}
                   onChange={(event) => setEnvDraft(event.target.value)}
                   rows={8}
-                  className="mt-4 w-full rounded-xl border border-slate-300 px-3 py-2 font-mono text-sm text-slate-900 outline-none transition focus:border-slate-500"
+                  className="mt-4 w-full rounded-xl border border-line-strong px-3 py-2 font-mono text-sm text-fg-strong outline-none transition focus:border-line-strong"
                 />
               ) : (
-                <div className="mt-4 rounded-xl border border-dashed border-slate-300 px-3 py-4 text-sm text-slate-500">
+                <div className="mt-4 rounded-xl border border-dashed border-line-strong px-3 py-4 text-sm text-fg-soft">
                   {envMode === "clear"
                     ? "Saving will remove all stored environment variables."
                     : "Saving will preserve the current environment variables."}
@@ -444,15 +450,15 @@ export function McpServersPage() {
             </div>
           </div>
 
-          <section className="mt-5 rounded-xl border border-slate-200 bg-slate-50 p-4">
+          <section className="mt-5 rounded-xl border border-line bg-soft p-4">
             <div className="flex items-center justify-between gap-4">
               <div>
-                <h4 className="text-sm font-semibold text-slate-900">Restart Policy</h4>
-                <p className="mt-1 text-sm text-slate-500">
+                <h4 className="text-sm font-semibold text-fg-strong">Restart Policy</h4>
+                <p className="mt-1 text-sm text-fg-soft">
                   Controls automatic reconnection when the server becomes unavailable.
                 </p>
               </div>
-              <label className="flex items-center gap-2 text-sm font-medium text-slate-700">
+              <label className="flex items-center gap-2 text-sm font-medium text-fg">
                 <input
                   type="checkbox"
                   checked={Boolean(crud.draft.restart_policy?.enabled)}
@@ -475,11 +481,18 @@ export function McpServersPage() {
               </label>
             </div>
 
-            <div className="mt-4 grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+            <div
+              className={[
+                "mt-4 grid gap-4 md:grid-cols-2 xl:grid-cols-4 transition-opacity",
+                crud.draft.restart_policy?.enabled ? "" : "opacity-50",
+              ].join(" ")}
+              aria-disabled={!crud.draft.restart_policy?.enabled}
+            >
               <Field label="Max attempts">
                 <input
                   type="number"
                   min={0}
+                  disabled={!crud.draft.restart_policy?.enabled}
                   value={String(crud.draft.restart_policy?.max_attempts ?? "")}
                   onChange={(event) =>
                     crud.setDraft((current) =>
@@ -498,13 +511,14 @@ export function McpServersPage() {
                         : current,
                     )
                   }
-                  className="w-full rounded-xl border border-slate-300 px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-slate-500"
+                  className="w-full rounded-xl border border-line-strong px-3 py-2 text-sm text-fg-strong outline-none transition focus:border-line-strong"
                 />
               </Field>
               <Field label="Delay (ms)">
                 <input
                   type="number"
                   min={0}
+                  disabled={!crud.draft.restart_policy?.enabled}
                   value={Number(crud.draft.restart_policy?.delay_ms ?? 1000)}
                   onChange={(event) =>
                     crud.setDraft((current) =>
@@ -520,7 +534,7 @@ export function McpServersPage() {
                         : current,
                     )
                   }
-                  className="w-full rounded-xl border border-slate-300 px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-slate-500"
+                  className="w-full rounded-xl border border-line-strong px-3 py-2 text-sm text-fg-strong outline-none transition focus:border-line-strong"
                 />
               </Field>
               <Field label="Backoff multiplier">
@@ -528,6 +542,7 @@ export function McpServersPage() {
                   type="number"
                   min={1}
                   step="0.1"
+                  disabled={!crud.draft.restart_policy?.enabled}
                   value={Number(crud.draft.restart_policy?.backoff_multiplier ?? 2)}
                   onChange={(event) =>
                     crud.setDraft((current) =>
@@ -544,13 +559,14 @@ export function McpServersPage() {
                         : current,
                     )
                   }
-                  className="w-full rounded-xl border border-slate-300 px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-slate-500"
+                  className="w-full rounded-xl border border-line-strong px-3 py-2 text-sm text-fg-strong outline-none transition focus:border-line-strong"
                 />
               </Field>
               <Field label="Max delay (ms)">
                 <input
                   type="number"
                   min={0}
+                  disabled={!crud.draft.restart_policy?.enabled}
                   value={Number(crud.draft.restart_policy?.max_delay_ms ?? 30000)}
                   onChange={(event) =>
                     crud.setDraft((current) =>
@@ -566,49 +582,19 @@ export function McpServersPage() {
                         : current,
                     )
                   }
-                  className="w-full rounded-xl border border-slate-300 px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-slate-500"
+                  className="w-full rounded-xl border border-line-strong px-3 py-2 text-sm text-fg-strong outline-none transition focus:border-line-strong"
                 />
               </Field>
             </div>
           </section>
 
           {crud.isEditingExisting && crud.draft ? (
-            <section className="mt-5 rounded-xl border border-slate-200 bg-slate-50 p-4">
-              <div className="flex items-center justify-between gap-4">
-                <div className="flex items-center gap-2">
-                  <StatusBadge status={statuses[crud.draft.id]} />
-                  <h4 className="text-sm font-semibold text-slate-900">Live Status</h4>
-                  {statuses[crud.draft.id]?.last_error ? (
-                    <span className="text-xs text-red-600">{statuses[crud.draft.id]?.last_error}</span>
-                  ) : null}
-                </div>
-                <button
-                  type="button"
-                  disabled={restarting}
-                  onClick={() => void handleRestart(crud.draft!.id)}
-                  className="rounded-xl border border-slate-300 px-3 py-1.5 text-sm font-medium text-slate-700 transition hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-60"
-                >
-                  {restarting ? "Restarting..." : "Restart"}
-                </button>
-              </div>
-              {statuses[crud.draft.id]?.tools && statuses[crud.draft.id]!.tools.length > 0 ? (
-                <div className="mt-3">
-                  <p className="mb-1.5 text-xs font-medium uppercase tracking-wide text-slate-500">
-                    Discovered tools ({statuses[crud.draft.id]!.tools.length})
-                  </p>
-                  <ul className="space-y-1">
-                    {statuses[crud.draft.id]!.tools.map((tool) => (
-                      <li key={tool.name} className="flex flex-col">
-                        <span className="font-mono text-xs text-slate-800">{tool.name}</span>
-                        {tool.description ? (
-                          <span className="text-xs text-slate-500">{tool.description}</span>
-                        ) : null}
-                      </li>
-                    ))}
-                  </ul>
-                </div>
-              ) : null}
-            </section>
+            <LiveStatusSection
+              draft={crud.draft}
+              status={statuses[crud.draft.id]}
+              restarting={restarting}
+              onRestart={() => void handleRestart(crud.draft!.id)}
+            />
           ) : null}
 
           <div className="mt-5 flex gap-3">
@@ -616,14 +602,14 @@ export function McpServersPage() {
               type="button"
               onClick={() => void crud.handleSave()}
               disabled={crud.saving}
-              className="rounded-xl bg-slate-950 px-4 py-2 text-sm font-medium text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-60"
+              className="rounded-xl bg-fg-strong px-4 py-2 text-sm font-medium text-bg transition hover:bg-fg disabled:cursor-not-allowed disabled:opacity-60"
             >
               {crud.saving ? "Saving..." : "Save"}
             </button>
             <button
               type="button"
               onClick={crud.cancelEdit}
-              className="rounded-xl border border-slate-300 px-4 py-2 text-sm font-medium text-slate-700 transition hover:bg-slate-50"
+              className="rounded-xl border border-line-strong px-4 py-2 text-sm font-medium text-fg transition hover:bg-soft"
             >
               Cancel
             </button>
@@ -643,17 +629,17 @@ export function McpServersPage() {
         />
       </div>
 
-      <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
+      <div className="overflow-hidden rounded-2xl border border-line bg-surface shadow-sm">
         {crud.loading ? (
-          <div className="px-5 py-6 text-sm text-slate-500">
+          <div className="px-5 py-6 text-sm text-fg-soft">
             Loading MCP servers...
           </div>
         ) : crud.items.length === 0 ? (
-          <div className="px-5 py-6 text-sm text-slate-500">
+          <div className="px-5 py-6 text-sm text-fg-soft">
             No managed MCP servers yet.
           </div>
         ) : view.items.length === 0 ? (
-          <div className="px-5 py-6 text-sm text-slate-500">
+          <div className="px-5 py-6 text-sm text-fg-soft">
             No MCP servers match the current filter.
           </div>
         ) : (
@@ -670,19 +656,19 @@ export function McpServersPage() {
                 {view.items.map((server) => (
                   <tr
                     key={server.id}
-                    className="border-t border-slate-200 text-sm text-slate-700"
+                    className="border-t border-line text-sm text-fg"
                   >
-                    <td className="px-5 py-4 font-mono text-slate-950">{server.id}</td>
+                    <td className="px-5 py-4 font-mono text-fg-strong">{server.id}</td>
                     <td className="px-5 py-4">{server.transport}</td>
-                    <td className="px-5 py-4 text-slate-500">
+                    <td className="px-5 py-4 text-fg-soft">
                       {endpointFor(server) || "Unconfigured"}
                     </td>
-                    <td className="px-5 py-4 text-slate-500">
+                    <td className="px-5 py-4 text-fg-soft">
                       {server.has_env
                         ? (server.env_keys ?? []).join(", ") || "Stored"
                         : "None"}
                     </td>
-                    <td className="px-5 py-4 text-slate-500">
+                    <td className="px-5 py-4 text-fg-soft">
                       {formatRelativeTime(server.updated_at)}
                     </td>
                     <td className="px-5 py-4">
@@ -693,14 +679,14 @@ export function McpServersPage() {
                         <button
                           type="button"
                           onClick={() => startEdit(server)}
-                          className="font-medium text-slate-700 transition hover:text-slate-950"
+                          className="font-medium text-fg transition hover:text-fg-strong"
                         >
                           Edit
                         </button>
                         <button
                           type="button"
                           onClick={() => void crud.handleDelete(server.id)}
-                          className="font-medium text-rose-600 transition hover:text-rose-700"
+                          className="font-medium text-tone-error transition hover:text-tone-error"
                         >
                           Delete
                         </button>
@@ -723,6 +709,121 @@ export function McpServersPage() {
           </>
         )}
       </div>
+    </div>
+  );
+}
+
+
+function LiveStatusSection({
+  draft,
+  status,
+  restarting,
+  onRestart,
+}: {
+  draft: McpServerRecord;
+  status: McpServerStatus | null | undefined;
+  restarting: boolean;
+  onRestart: () => void;
+}) {
+  const stateLabel =
+    status === undefined
+      ? "Loading…"
+      : status === null
+        ? "Unavailable"
+        : status.connected
+          ? "Connected"
+          : "Disconnected";
+  const stateTone: "success" | "neutral" | "error" =
+    status === undefined || status === null
+      ? "neutral"
+      : status.connected
+        ? "success"
+        : "error";
+  const handshake = status === undefined || status === null
+    ? "—"
+    : status.connected
+      ? "ok"
+      : "—";
+  const toolCount = status?.tools?.length ?? 0;
+  const restartHint = draft.restart_policy?.enabled
+    ? `auto · max ${draft.restart_policy?.max_attempts ?? "∞"}`
+    : "manual only";
+
+  return (
+    <section className="mt-5 rounded-md border border-line bg-soft p-4">
+      <div className="flex items-center justify-between gap-4">
+        <div className="flex items-center gap-2">
+          <StatusBadge status={status} />
+          <h4 className="text-sm font-semibold text-fg-strong">Live Status</h4>
+        </div>
+        <button
+          type="button"
+          disabled={restarting}
+          onClick={onRestart}
+          className="rounded-md border border-line-strong px-3 py-1.5 text-xs font-medium text-fg transition-colors hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60"
+        >
+          {restarting ? "Restarting…" : "Restart"}
+        </button>
+      </div>
+
+      <div className="mt-3 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+        <StatusStat label="State" value={stateLabel} tone={stateTone} />
+        <StatusStat label="Handshake" value={handshake} mono />
+        <StatusStat label="Tools" value={String(toolCount)} mono />
+        <StatusStat label="Restart" value={restartHint} />
+      </div>
+
+      {status?.last_error && (
+        <p className="mt-3 rounded-md border border-tone-error/30 bg-tone-error/10 px-3 py-2 font-mono text-xs text-tone-error">
+          {status.last_error}
+        </p>
+      )}
+
+      {toolCount > 0 && status?.tools && (
+        <div className="mt-4 overflow-hidden rounded-md border border-line bg-surface">
+          <p className="border-b border-line bg-soft px-3 py-2 text-[11px] font-medium uppercase tracking-[0.18em] text-fg-faint">
+            Exposed tools ({toolCount})
+          </p>
+          <table className="w-full">
+            <tbody>
+              {status.tools.map((tool) => (
+                <tr key={tool.name} className="border-t border-line text-sm first:border-t-0">
+                  <td className="w-1/3 px-3 py-2 font-mono text-xs text-fg-strong">{tool.name}</td>
+                  <td className="px-3 py-2 text-xs text-fg-soft">
+                    {tool.description ?? "—"}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </section>
+  );
+}
+
+function StatusStat({
+  label,
+  value,
+  tone = "neutral",
+  mono = false,
+}: {
+  label: string;
+  value: string;
+  tone?: "success" | "neutral" | "error" | "warn";
+  mono?: boolean;
+}) {
+  const valueClass = [
+    "mt-1 text-sm font-semibold",
+    mono ? "font-mono" : "",
+    tone === "success" ? "text-tone-success" : tone === "error" ? "text-tone-error" : tone === "warn" ? "text-tone-warn" : "text-fg-strong",
+  ]
+    .join(" ")
+    .trim();
+  return (
+    <div className="rounded-md border border-line bg-surface px-3 py-2">
+      <div className="text-[10px] font-medium uppercase tracking-[0.18em] text-fg-faint">{label}</div>
+      <div className={valueClass}>{value}</div>
     </div>
   );
 }

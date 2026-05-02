@@ -23,7 +23,7 @@ export function ListSearchBar({
         value={value}
         onChange={(event) => onChange(event.target.value)}
         placeholder={placeholder}
-        className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-slate-500"
+        className="w-full rounded-xl border border-line-strong bg-surface px-3 py-2 text-sm text-fg-strong outline-none transition focus:border-line-strong"
       />
     </label>
   );
@@ -37,12 +37,12 @@ export function PageSizeSelect({
   onChange: (next: PageSize) => void;
 }) {
   return (
-    <label className="flex items-center gap-2 text-xs text-slate-500">
+    <label className="flex items-center gap-2 text-xs text-fg-soft">
       <span>Rows per page</span>
       <select
         value={value}
         onChange={(event) => onChange(Number(event.target.value) as PageSize)}
-        className="rounded-md border border-slate-300 bg-white px-2 py-1 text-xs text-slate-700 outline-none focus:border-slate-500"
+        className="rounded-md border border-line-strong bg-surface px-2 py-1 text-xs text-fg outline-none focus:border-line-strong"
       >
         {PAGE_SIZE_OPTIONS.map((size) => (
           <option key={size} value={size}>
@@ -72,7 +72,7 @@ export function Pagination({
   const disablePrev = page <= 1;
   const disableNext = page >= pageCount;
   return (
-    <div className="flex items-center justify-between gap-3 border-t border-slate-200 bg-slate-50 px-4 py-2 text-xs text-slate-500">
+    <div className="flex items-center justify-between gap-3 border-t border-line bg-soft px-4 py-2 text-xs text-fg-soft">
       <span>
         {totalItems === 0
           ? "0 results"
@@ -83,18 +83,18 @@ export function Pagination({
           type="button"
           onClick={() => onPageChange(page - 1)}
           disabled={disablePrev}
-          className="rounded-md border border-slate-300 bg-white px-2 py-1 font-medium text-slate-600 transition hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50"
+          className="rounded-md border border-line-strong bg-surface px-2 py-1 font-medium text-fg-soft transition hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
         >
           ‹ Prev
         </button>
-        <span className="font-mono text-slate-600">
+        <span className="font-mono text-fg-soft">
           {page}/{pageCount}
         </span>
         <button
           type="button"
           onClick={() => onPageChange(page + 1)}
           disabled={disableNext}
-          className="rounded-md border border-slate-300 bg-white px-2 py-1 font-medium text-slate-600 transition hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50"
+          className="rounded-md border border-line-strong bg-surface px-2 py-1 font-medium text-fg-soft transition hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
         >
           Next ›
         </button>
@@ -120,7 +120,7 @@ export function SortableHeader<TKey extends string>({
   onSort: (key: TKey) => void;
 }) {
   return (
-    <thead className="bg-slate-50 text-left text-xs uppercase tracking-wide text-slate-500">
+    <thead className="bg-soft text-left text-xs uppercase tracking-wide text-fg-soft">
       <tr>
         {columns.map((column, idx) => {
           const align = column.align === "right" ? "text-right" : "text-left";
@@ -140,7 +140,7 @@ export function SortableHeader<TKey extends string>({
                 onClick={() => onSort(column.key as TKey)}
                 className={[
                   "inline-flex items-center gap-1 font-semibold uppercase tracking-wide transition",
-                  active ? "text-slate-900" : "text-slate-500 hover:text-slate-700",
+                  active ? "text-fg-strong" : "text-fg-soft hover:text-fg",
                 ].join(" ")}
                 aria-sort={ariaSort(active, sort?.direction)}
               >
@@ -175,13 +175,13 @@ function SortIndicator({
 }) {
   if (!active) {
     return (
-      <span aria-hidden className="text-slate-300">
+      <span aria-hidden className="text-fg-faint">
         ↕
       </span>
     );
   }
   return (
-    <span aria-hidden className="text-slate-700">
+    <span aria-hidden className="text-fg">
       {direction === "asc" ? "▲" : "▼"}
     </span>
   );

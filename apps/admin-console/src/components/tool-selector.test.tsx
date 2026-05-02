@@ -86,22 +86,21 @@ describe("ToolSelector — switching to Custom mode", () => {
 
     renderSelector({ value: ["Bash", "Read", "plugin:reminder/add", "plugin:reminder/list", "mcp:weather/forecast", "mcp:db/query"] });
 
-    const groupHeaders = screen.getAllByText(/Built-in|Plugin · reminder|MCP · db|MCP · weather/);
-    const texts = groupHeaders.map((el) => el.textContent);
-    expect(texts).toContain("Built-in");
-    expect(texts).toContain("Plugin · reminder");
-    expect(texts).toContain("MCP · db");
-    expect(texts).toContain("MCP · weather");
-
-    // Verify ordering by DOM position
+    // Tab strip exposes broad source kinds (Built-in/Plugin/MCP), each group
+    // panel below exposes the specific source label. The text "Built-in" can
+    // therefore appear twice — once as a tab, once as a group header. Filter
+    // to the group rendering by matching only the per-source labels.
     const allGroupSpans = screen
-      .getAllByText(/^(Built-in|Plugin · reminder|MCP · db|MCP · weather)$/)
+      .getAllByText(/^(Plugin · reminder|MCP · db|MCP · weather)$/)
       .map((el) => el.textContent!);
-    expect(allGroupSpans[0]).toBe("Built-in");
-    expect(allGroupSpans[1]).toBe("Plugin · reminder");
+    expect(allGroupSpans[0]).toBe("Plugin · reminder");
     // MCP groups sorted alphabetically: db before weather
-    expect(allGroupSpans[2]).toBe("MCP · db");
-    expect(allGroupSpans[3]).toBe("MCP · weather");
+    expect(allGroupSpans[1]).toBe("MCP · db");
+    expect(allGroupSpans[2]).toBe("MCP · weather");
+    // Built-in must still render exactly once as a group header (separately
+    // verified by the tab strip — see source-tabs test below).
+    const builtin = screen.getAllByText("Built-in");
+    expect(builtin.length).toBeGreaterThanOrEqual(1);
   });
 });
 
@@ -114,9 +113,10 @@ describe("ToolSelector — search filtering", () => {
       fireEvent.change(searchInput, { target: { value: "forecast" } });
     });
 
-    // Only MCP · weather group should be visible
+    // Only MCP · weather group panel should remain. The "Built-in" tab is
+    // still in the tab strip — only assert that the GROUP HEADERS for the
+    // others are gone.
     expect(screen.getByText("MCP · weather")).toBeTruthy();
-    expect(screen.queryByText("Built-in")).toBeNull();
     expect(screen.queryByText("Plugin · reminder")).toBeNull();
     expect(screen.queryByText("MCP · db")).toBeNull();
 

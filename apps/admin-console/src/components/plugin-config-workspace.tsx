@@ -39,7 +39,7 @@ export function PluginConfigWorkspace({
 }: PluginConfigWorkspaceProps) {
   if (entries.length === 0) {
     return (
-      <div className="mt-4 rounded-2xl border border-dashed border-slate-200 px-4 py-3 text-sm text-slate-500">
+      <div className="mt-4 rounded-2xl border border-dashed border-line px-4 py-3 text-sm text-fg-soft">
         Select a configurable plugin to edit its agent-level settings.
       </div>
     );
@@ -73,8 +73,8 @@ export function PluginConfigWorkspace({
               className={[
                 "w-full rounded-2xl border px-4 py-3 text-left transition",
                 isActive
-                  ? "border-slate-900 bg-slate-900 text-white shadow-sm"
-                  : "border-slate-200 bg-white text-slate-900 hover:border-slate-300 hover:bg-slate-50",
+                  ? "border-fg-strong bg-fg-strong text-bg shadow-sm"
+                  : "border-line bg-surface text-fg-strong hover:border-line-strong hover:bg-soft",
               ].join(" ")}
             >
               <div className="flex flex-wrap items-center gap-2">
@@ -84,7 +84,7 @@ export function PluginConfigWorkspace({
               <div
                 className={[
                   "mt-1 text-sm",
-                  isActive ? "text-slate-200" : "text-slate-500",
+                  isActive ? "text-fg-faint" : "text-fg-soft",
                 ].join(" ")}
               >
                 {schemaTitle(entry.schema.schema) ?? entry.schema.key}
@@ -92,7 +92,7 @@ export function PluginConfigWorkspace({
               <div
                 className={[
                   "mt-2 text-xs",
-                  isActive ? "text-slate-300" : "text-slate-500",
+                  isActive ? "text-fg-faint" : "text-fg-soft",
                 ].join(" ")}
               >
                 {pluginConfigDisplaySummary(
@@ -107,10 +107,10 @@ export function PluginConfigWorkspace({
       </aside>
 
       {activeEntry ? (
-        <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-          <div className="mb-4 border-b border-slate-200 pb-4">
+        <div className="rounded-2xl border border-line bg-surface p-5 shadow-sm">
+          <div className="mb-4 border-b border-line pb-4">
             <div className="flex flex-wrap items-center gap-2">
-              <h5 className="text-lg font-semibold text-slate-950">
+              <h5 className="text-lg font-semibold text-fg-strong">
                 {pluginDisplayName(activeEntry.plugin.id)}
               </h5>
               <Pill label={activeEntry.schema.key} />
@@ -118,16 +118,16 @@ export function PluginConfigWorkspace({
                 <Pill label="plugin disabled" tone="amber" />
               ) : null}
             </div>
-            <div className="mt-1 text-sm text-slate-500">
+            <div className="mt-1 text-sm text-fg-soft">
               {schemaTitle(activeEntry.schema.schema) ?? activeEntry.schema.key}
             </div>
             {schemaDescription(activeEntry.schema.schema) ? (
-              <p className="mt-2 text-sm leading-6 text-slate-600">
+              <p className="mt-2 text-sm leading-6 text-fg-soft">
                 {schemaDescription(activeEntry.schema.schema)}
               </p>
             ) : null}
             {!activeEntry.selected ? (
-              <div className="mt-3 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-700">
+              <div className="mt-3 rounded-xl border border-tone-warn/35 bg-tone-warn/10 px-3 py-2 text-sm text-tone-warn">
                 {activeEntry.hasStoredConfig
                   ? `This section is still stored on the agent, but it only takes effect after re-enabling \`${activeEntry.plugin.id}\`.`
                   : `You can preconfigure this section now. It will only take effect after enabling \`${activeEntry.plugin.id}\`.`}
@@ -144,7 +144,7 @@ export function PluginConfigWorkspace({
           />
         </div>
       ) : (
-        <div className="rounded-2xl border border-dashed border-slate-200 bg-white p-5 text-sm text-slate-500">
+        <div className="rounded-2xl border border-dashed border-line bg-surface p-5 text-sm text-fg-soft">
           Select a plugin configuration section to edit it.
         </div>
       )}

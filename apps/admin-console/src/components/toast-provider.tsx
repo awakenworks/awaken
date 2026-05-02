@@ -168,13 +168,13 @@ function ToastViewport({
       className="pointer-events-none fixed bottom-4 right-4 z-50 flex max-w-sm flex-col gap-2"
     >
       {displaced > 0 && (
-        <div className="pointer-events-auto flex items-center justify-between rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs text-slate-500 shadow">
+        <div className="pointer-events-auto flex items-center justify-between rounded-xl border border-line bg-surface px-3 py-1.5 text-xs text-fg-soft shadow">
           <span>+ {displaced} earlier</span>
           <button
             type="button"
             aria-label="Dismiss earlier notifications"
             onClick={onClearDisplaced}
-            className="ml-3 rounded px-1 text-slate-400 transition hover:text-slate-700"
+            className="ml-3 rounded px-1 text-fg-faint transition hover:text-fg"
           >
             ×
           </button>
@@ -192,18 +192,18 @@ const TONE_STYLES: Record<
   { container: string; badge: string; label: string }
 > = {
   success: {
-    container: "border-emerald-200 bg-emerald-50 text-emerald-900",
-    badge: "bg-emerald-200 text-emerald-900",
+    container: "border-tone-success/30 bg-tone-success/10 text-tone-success",
+    badge: "bg-tone-success/20 text-tone-success",
     label: "Success",
   },
   error: {
-    container: "border-rose-200 bg-rose-50 text-rose-900",
-    badge: "bg-rose-200 text-rose-900",
+    container: "border-tone-error/30 bg-tone-error/10 text-tone-error",
+    badge: "bg-tone-error/20 text-tone-error",
     label: "Error",
   },
   info: {
-    container: "border-slate-200 bg-white text-slate-900",
-    badge: "bg-slate-200 text-slate-900",
+    container: "border-line bg-surface text-fg-strong",
+    badge: "bg-muted text-fg-strong",
     label: "Info",
   },
 };
@@ -237,7 +237,7 @@ function ToastCard({
         <div className="min-w-0 flex-1">
           <div className="text-sm font-semibold leading-5">{toast.message}</div>
           {toast.detail ? (
-            <div className="mt-1 break-words text-xs leading-5 text-slate-700">
+            <div className="mt-1 break-words text-xs leading-5 text-fg">
               {toast.detail}
             </div>
           ) : null}
@@ -253,7 +253,7 @@ function ToastCard({
               onDismiss(toast.id);
             }
           }}
-          className="rounded-md px-1.5 text-sm text-slate-400 transition hover:text-slate-700"
+          className="rounded-md px-1.5 text-sm text-fg-faint transition hover:text-fg"
         >
           ×
         </button>

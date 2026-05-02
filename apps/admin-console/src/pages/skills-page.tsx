@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
 import { type SkillInfo, configApi } from "@/lib/config-api";
 import { useToast } from "@/components/toast-provider";
+import { PageHeader } from "@/components/ui/page-header";
+import { Pill } from "@/components/ui/pill";
 import {
   filterSkills,
   type ContextFilter,
@@ -66,21 +68,14 @@ export function SkillsPage() {
 
   return (
     <div className="mx-auto max-w-6xl p-6 md:p-8">
-      <header className="mb-6">
-        <p className="text-sm font-medium uppercase tracking-[0.2em] text-slate-500">
-          Runtime Catalog
-        </p>
-        <h2 className="mt-2 text-3xl font-semibold text-slate-950">
-          Skill Registry
-        </h2>
-        <p className="mt-2 max-w-3xl text-sm text-slate-600">
-          This registry is a live snapshot of the skills currently attached to
-          the runtime. It is read-only here because skills are not stored in the
-          managed config namespaces.
-        </p>
-      </header>
+      <PageHeader
+        eyebrow="Observe"
+        title="Skill Registry"
+        count={skills.length}
+        description="Live snapshot of skills attached to the runtime. Read-only — skills are not stored in the managed config namespaces."
+      />
 
-      <section className="mb-4 flex flex-wrap items-end gap-3 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+      <section className="mb-4 flex flex-wrap items-end gap-3 rounded-md border border-line bg-surface p-4 shadow-card">
         <label className="block w-full max-w-sm">
           <span className="sr-only">Search skills</span>
           <input
@@ -90,17 +85,17 @@ export function SkillsPage() {
               applyFilter({ search: event.target.value })
             }
             placeholder="Search by id, name, description, tool, path…"
-            className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-slate-500"
+            className="w-full rounded-md border border-line-strong bg-surface px-3 py-2 text-sm text-fg-strong outline-none transition focus:border-line-strong"
           />
         </label>
-        <label className="text-xs text-slate-500">
+        <label className="text-xs text-fg-soft">
           <span className="mr-2">Caller</span>
           <select
             value={filter.invocable}
             onChange={(event) =>
               applyFilter({ invocable: event.target.value as InvocableFilter })
             }
-            className="rounded-md border border-slate-300 bg-white px-2 py-1 text-xs text-slate-700 outline-none focus:border-slate-500"
+            className="rounded-md border border-line-strong bg-surface px-2 py-1 text-xs text-fg outline-none focus:border-line-strong"
           >
             {INVOCABLE_OPTIONS.map((option) => (
               <option key={option.value} value={option.value}>
@@ -109,14 +104,14 @@ export function SkillsPage() {
             ))}
           </select>
         </label>
-        <label className="text-xs text-slate-500">
+        <label className="text-xs text-fg-soft">
           <span className="mr-2">Context</span>
           <select
             value={filter.context}
             onChange={(event) =>
               applyFilter({ context: event.target.value as ContextFilter })
             }
-            className="rounded-md border border-slate-300 bg-white px-2 py-1 text-xs text-slate-700 outline-none focus:border-slate-500"
+            className="rounded-md border border-line-strong bg-surface px-2 py-1 text-xs text-fg outline-none focus:border-line-strong"
           >
             {CONTEXT_OPTIONS.map((option) => (
               <option key={option.value} value={option.value}>
@@ -125,137 +120,27 @@ export function SkillsPage() {
             ))}
           </select>
         </label>
-        <span className="ml-auto text-xs text-slate-500">
+        <span className="ml-auto text-xs text-fg-soft">
           {visibleSkills.length} of {skills.length} shown
         </span>
       </section>
 
       {loading ? (
-        <div className="rounded-2xl border border-slate-200 bg-white p-6 text-sm text-slate-500 shadow-sm">
+        <div className="rounded-md border border-line bg-surface p-6 text-sm text-fg-soft shadow-card">
           Loading skill registry...
         </div>
       ) : skills.length === 0 ? (
-        <div className="rounded-2xl border border-slate-200 bg-white p-6 text-sm text-slate-500 shadow-sm">
+        <div className="rounded-md border border-line bg-surface p-6 text-sm text-fg-soft shadow-card">
           No skills are currently registered.
         </div>
       ) : visibleSkills.length === 0 ? (
-        <div className="rounded-2xl border border-slate-200 bg-white p-6 text-sm text-slate-500 shadow-sm">
+        <div className="rounded-md border border-line bg-surface p-6 text-sm text-fg-soft shadow-card">
           No skills match the current filter.
         </div>
       ) : (
         <div className="grid gap-4 lg:grid-cols-2">
           {visibleSkills.map((skill) => (
-            <article
-              key={skill.id}
-              className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm"
-            >
-              <div className="flex flex-wrap items-start justify-between gap-3">
-                <div>
-                  <div className="font-mono text-sm text-slate-500">{skill.id}</div>
-                  <h3 className="mt-1 text-xl font-semibold text-slate-950">
-                    {skill.name}
-                  </h3>
-                </div>
-                <div className="flex flex-wrap gap-2 text-xs font-medium">
-                  <Badge label={skill.context} />
-                  <Badge
-                    label={skill.user_invocable ? "user callable" : "user hidden"}
-                  />
-                  <Badge
-                    label={skill.model_invocable ? "model callable" : "model hidden"}
-                  />
-                </div>
-              </div>
-
-              <p className="mt-4 text-sm leading-6 text-slate-700">
-                {skill.description}
-              </p>
-
-              {skill.when_to_use ? (
-                <section className="mt-4">
-                  <SectionLabel label="When To Use" />
-                  <p className="mt-1 text-sm leading-6 text-slate-600">
-                    {skill.when_to_use}
-                  </p>
-                </section>
-              ) : null}
-
-              <div className="mt-4 grid gap-4 sm:grid-cols-2">
-                <section>
-                  <SectionLabel label="Allowed Tools" />
-                  {skill.allowed_tools.length === 0 ? (
-                    <p className="mt-1 text-sm text-slate-500">No explicit tool filter.</p>
-                  ) : (
-                    <div className="mt-2 flex flex-wrap gap-2">
-                      {skill.allowed_tools.map((toolId) => (
-                        <code
-                          key={toolId}
-                          className="rounded-full bg-slate-100 px-2.5 py-1 text-xs text-slate-700"
-                        >
-                          {toolId}
-                        </code>
-                      ))}
-                    </div>
-                  )}
-                </section>
-
-                <section>
-                  <SectionLabel label="Activation" />
-                  <dl className="mt-1 space-y-1 text-sm text-slate-600">
-                    <div>
-                      <dt className="inline font-medium text-slate-700">Hint:</dt>{" "}
-                      <dd className="inline">
-                        {skill.argument_hint?.trim() || "None"}
-                      </dd>
-                    </div>
-                    <div>
-                      <dt className="inline font-medium text-slate-700">Model override:</dt>{" "}
-                      <dd className="inline">
-                        {skill.model_override?.trim() || "None"}
-                      </dd>
-                    </div>
-                    <div>
-                      <dt className="inline font-medium text-slate-700">Paths:</dt>{" "}
-                      <dd className="inline">
-                        {skill.paths.length > 0 ? skill.paths.join(", ") : "Unscoped"}
-                      </dd>
-                    </div>
-                  </dl>
-                </section>
-              </div>
-
-              <section className="mt-4">
-                <SectionLabel label="Arguments" />
-                {skill.arguments.length === 0 ? (
-                  <p className="mt-1 text-sm text-slate-500">
-                    No formal arguments declared.
-                  </p>
-                ) : (
-                  <ul className="mt-2 space-y-2">
-                    {skill.arguments.map((argument) => (
-                      <li
-                        key={argument.name}
-                        className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2"
-                      >
-                        <div className="flex flex-wrap items-center gap-2">
-                          <code className="text-sm text-slate-900">{argument.name}</code>
-                          {argument.required ? (
-                            <Badge label="required" subtle />
-                          ) : (
-                            <Badge label="optional" subtle />
-                          )}
-                        </div>
-                        {argument.description ? (
-                          <p className="mt-1 text-sm text-slate-600">
-                            {argument.description}
-                          </p>
-                        ) : null}
-                      </li>
-                    ))}
-                  </ul>
-                )}
-              </section>
-            </article>
+            <SkillCard key={skill.id} skill={skill} />
           ))}
         </div>
       )}
@@ -263,25 +148,133 @@ export function SkillsPage() {
   );
 }
 
-function SectionLabel({ label }: { label: string }) {
+function SkillCard({ skill }: { skill: SkillInfo }) {
   return (
-    <div className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">
-      {label}
-    </div>
+    <article className="rounded-md border border-line bg-surface p-5 shadow-card">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <div className="font-mono text-sm text-fg-soft">{skill.id}</div>
+          <h3 className="mt-1 text-xl font-semibold text-fg-strong">
+            {skill.name}
+          </h3>
+        </div>
+        <div className="flex flex-wrap gap-2 text-xs">
+          <Pill tone="info">{skill.context}</Pill>
+          {skill.user_invocable && <Pill tone="neutral">user</Pill>}
+          {skill.model_invocable && <Pill tone="agent">model</Pill>}
+        </div>
+      </div>
+
+      <p className="mt-4 text-sm leading-6 text-fg">{skill.description}</p>
+
+      {skill.when_to_use ? (
+        <section className="mt-4">
+          <SectionLabel label="When to use (activation hint)" />
+          <p className="mt-1 text-sm leading-6 text-fg-soft">{skill.when_to_use}</p>
+        </section>
+      ) : null}
+
+      <div className="mt-4 grid gap-4 sm:grid-cols-2">
+        <section>
+          <SectionLabel label="Allowed tools" />
+          {skill.allowed_tools.length === 0 ? (
+            <p className="mt-1 text-sm text-fg-soft">No explicit tool filter.</p>
+          ) : (
+            <div className="mt-2 flex flex-wrap gap-1.5">
+              {skill.allowed_tools.map((toolId) => (
+                <Pill key={toolId} tone="neutral">
+                  <span className="font-mono">{toolId}</span>
+                </Pill>
+              ))}
+            </div>
+          )}
+        </section>
+
+        <section>
+          <SectionLabel label="Source paths" />
+          {skill.paths.length === 0 ? (
+            <p className="mt-1 text-sm text-fg-soft">Unscoped (any path).</p>
+          ) : (
+            <ul className="mt-2 space-y-0.5 font-mono text-xs text-fg">
+              {skill.paths.map((p) => (
+                <li key={p}>{p}</li>
+              ))}
+            </ul>
+          )}
+        </section>
+      </div>
+
+      <section className="mt-4">
+        <SectionLabel label="Arguments" />
+        {skill.arguments.length === 0 ? (
+          <p className="mt-1 text-sm text-fg-soft">
+            No formal arguments declared.
+          </p>
+        ) : (
+          <ul className="mt-2 space-y-2">
+            {skill.arguments.map((argument) => (
+              <li
+                key={argument.name}
+                className="rounded-md border border-line bg-soft px-3 py-2"
+              >
+                <div className="flex flex-wrap items-center gap-2">
+                  <code className="text-sm text-fg-strong">{argument.name}</code>
+                  <Pill tone={argument.required ? "warn" : "neutral"}>
+                    {argument.required ? "required" : "optional"}
+                  </Pill>
+                </div>
+                {argument.description ? (
+                  <p className="mt-1 text-sm text-fg-soft">
+                    {argument.description}
+                  </p>
+                ) : null}
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
+
+      <section className="mt-4">
+        <SectionLabel label="What the LLM sees (prompt-injection preview)" />
+        <pre className="mt-2 max-h-48 overflow-auto rounded-md border border-line bg-fg-strong px-3 py-2 font-mono text-[11px] leading-5 text-bg">
+          {renderInjectionPreview(skill)}
+        </pre>
+      </section>
+    </article>
   );
 }
 
-function Badge({ label, subtle = false }: { label: string; subtle?: boolean }) {
+function renderInjectionPreview(skill: SkillInfo): string {
+  const lines: string[] = [];
+  lines.push(`# Skill: ${skill.name}`);
+  lines.push(`Identifier: ${skill.id}`);
+  lines.push(`Context: ${skill.context}`);
+  lines.push("");
+  lines.push(skill.description);
+  if (skill.when_to_use) {
+    lines.push("");
+    lines.push(`When to use: ${skill.when_to_use}`);
+  }
+  if (skill.arguments.length > 0) {
+    lines.push("");
+    lines.push("Arguments:");
+    for (const a of skill.arguments) {
+      lines.push(
+        `  - ${a.name}${a.required ? " (required)" : ""}${a.description ? `: ${a.description}` : ""}`,
+      );
+    }
+  }
+  if (skill.allowed_tools.length > 0) {
+    lines.push("");
+    lines.push(`Allowed tools: ${skill.allowed_tools.join(", ")}`);
+  }
+  return lines.join("\n");
+}
+
+function SectionLabel({ label }: { label: string }) {
   return (
-    <span
-      className={[
-        "rounded-full px-2.5 py-1",
-        subtle
-          ? "bg-slate-100 text-slate-600"
-          : "bg-[#f4efe6] text-slate-700",
-      ].join(" ")}
-    >
+    <div className="text-[11px] font-medium uppercase tracking-[0.18em] text-fg-faint">
       {label}
-    </span>
+    </div>
   );
 }

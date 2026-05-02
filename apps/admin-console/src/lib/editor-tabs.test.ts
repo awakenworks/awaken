@@ -54,6 +54,48 @@ describe("readTabFromSearch", () => {
   });
 });
 
+describe("tab badges", () => {
+  const empty = {
+    id: "x",
+    model_id: "m",
+    system_prompt: "",
+  } as const;
+  function badge(id: string, spec: Parameters<NonNullable<(typeof AGENT_EDITOR_TABS)[number]["badge"]>>[0]) {
+    const tab = AGENT_EDITOR_TABS.find((t) => t.id === id);
+    return tab?.badge?.(spec) ?? null;
+  }
+
+  it("Tools badge: null when no allowed/excluded", () => {
+    expect(badge("tools", { ...empty })).toBeNull();
+  });
+
+  it("Tools badge: allowed count alone", () => {
+    expect(badge("tools", { ...empty, allowed_tools: ["a", "b", "c"] })).toBe("3");
+  });
+
+  it("Tools badge: includes excluded count when present", () => {
+    expect(
+      badge("tools", { ...empty, allowed_tools: ["a", "b"], excluded_tools: ["x"] }),
+    ).toBe("2·−1");
+  });
+
+  it("Plugins badge: count when set", () => {
+    expect(badge("plugins", { ...empty, plugin_ids: ["p1", "p2"] })).toBe("2");
+    expect(badge("plugins", { ...empty })).toBeNull();
+  });
+
+  it("Delegates badge: count when set", () => {
+    expect(badge("delegates", { ...empty, delegates: ["d1"] })).toBe("1");
+    expect(badge("delegates", { ...empty })).toBeNull();
+  });
+
+  it("Basics + Advanced + History have no badge function", () => {
+    expect(AGENT_EDITOR_TABS.find((t) => t.id === "basics")?.badge).toBeUndefined();
+    expect(AGENT_EDITOR_TABS.find((t) => t.id === "advanced")?.badge).toBeUndefined();
+    expect(AGENT_EDITOR_TABS.find((t) => t.id === "history")?.badge).toBeUndefined();
+  });
+});
+
 describe("writeTabToSearch", () => {
   it("removes the parameter when writing the default tab", () => {
     expect(

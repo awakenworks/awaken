@@ -64,7 +64,7 @@ export function AgentDashboardPage() {
   if (!result) {
     return (
       <Shell title={`Dashboard · ${id}`}>
-        <div className="rounded-2xl border border-slate-200 bg-white p-6 text-sm text-slate-500 shadow-sm">
+        <div className="rounded-2xl border border-line bg-surface p-6 text-sm text-fg-soft shadow-sm">
           Loading runtime stats…
         </div>
       </Shell>
@@ -103,7 +103,7 @@ export function AgentDashboardPage() {
   return (
     <Shell title={`Dashboard · ${snapshot.agent_id}`}>
       <div className="-mt-4 mb-6 flex flex-wrap items-center gap-3">
-        <p className="text-sm text-slate-500">
+        <p className="text-sm text-fg-soft">
           Rolling-window snapshot for the last{" "}
           <span className="font-mono">{formatWindow(snapshot.window_seconds)}</span>{" "}
           ({snapshot.bucket_count} buckets ×{" "}
@@ -115,7 +115,7 @@ export function AgentDashboardPage() {
         <div className="flex items-center gap-2">
           <label
             htmlFor="window-picker"
-            className="text-xs text-slate-500"
+            className="text-xs text-fg-soft"
           >
             Window:
           </label>
@@ -137,7 +137,7 @@ export function AgentDashboardPage() {
                 { replace: true },
               );
             }}
-            className="rounded-md border border-slate-200 bg-white px-2 py-1 text-xs text-slate-700 shadow-sm"
+            className="rounded-md border border-line bg-surface px-2 py-1 text-xs text-fg shadow-sm"
           >
             {WINDOW_OPTIONS.map((opt) => (
               <option key={opt.value} value={opt.value}>
@@ -149,7 +149,7 @@ export function AgentDashboardPage() {
         <button
           type="button"
           onClick={() => setReloadKey((k) => k + 1)}
-          className="rounded-md border border-slate-200 bg-white px-2 py-1 text-xs text-slate-600 hover:bg-slate-50"
+          className="rounded-md border border-line bg-surface px-2 py-1 text-xs text-fg-soft hover:bg-soft"
         >
           Refresh
         </button>
@@ -218,13 +218,13 @@ export function AgentDashboardPage() {
 
       <Section title="Tools">
         {snapshot.tool_calls_by_tool.length === 0 ? (
-          <div className="rounded-2xl border border-slate-200 bg-white p-5 text-sm text-slate-500 shadow-sm">
+          <div className="rounded-2xl border border-line bg-surface p-5 text-sm text-fg-soft shadow-sm">
             No tool invocations recorded in the current window.
           </div>
         ) : (
-          <div className="overflow-auto rounded-2xl border border-slate-200 bg-white shadow-sm">
+          <div className="overflow-auto rounded-2xl border border-line bg-surface shadow-sm">
             <table className="min-w-full text-sm">
-              <thead className="bg-slate-50 text-left text-xs uppercase tracking-wide text-slate-500">
+              <thead className="bg-soft text-left text-xs uppercase tracking-wide text-fg-soft">
                 <tr>
                   <th className="px-3 py-3">Tool</th>
                   <th className="px-3 py-3 text-right">Calls</th>
@@ -237,10 +237,10 @@ export function AgentDashboardPage() {
                   <th className="px-3 py-3 text-right">Max</th>
                 </tr>
               </thead>
-              <tbody className="divide-y divide-slate-200">
+              <tbody className="divide-y divide-line">
                 {snapshot.tool_calls_by_tool.map((row) => (
-                  <tr key={row.tool} className="hover:bg-slate-50">
-                    <td className="px-3 py-3 font-mono text-xs text-slate-900">
+                  <tr key={row.tool} className="hover:bg-soft">
+                    <td className="px-3 py-3 font-mono text-xs text-fg-strong">
                       {row.tool}
                     </td>
                     <td className="px-3 py-3 text-right font-mono text-xs">
@@ -248,7 +248,7 @@ export function AgentDashboardPage() {
                     </td>
                     <td className="px-3 py-3 text-right font-mono text-xs">
                       {row.failure_count > 0 ? (
-                        <span className="text-rose-700">
+                        <span className="text-tone-error">
                           {row.failure_count}
                         </span>
                       ) : (
@@ -291,12 +291,12 @@ export function AgentDashboardPage() {
               .map((t) => (
                 <div
                   key={t.tool}
-                  className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm"
+                  className="rounded-2xl border border-line bg-surface p-5 shadow-sm"
                 >
-                  <h4 className="font-mono text-sm font-semibold text-slate-900">
+                  <h4 className="font-mono text-sm font-semibold text-fg-strong">
                     {t.tool}
                   </h4>
-                  <p className="text-xs text-slate-500">
+                  <p className="text-xs text-fg-soft">
                     {t.call_count} call(s) · p95 {t.p95_duration_ms} ms
                   </p>
                   <div className="mt-3">
@@ -313,7 +313,7 @@ export function AgentDashboardPage() {
           <li>
             <Link
               to={adminRoutes.agent(snapshot.agent_id)}
-              className="inline-flex items-center rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700 shadow-sm hover:bg-slate-50"
+              className="inline-flex items-center rounded-lg border border-line bg-surface px-3 py-2 text-sm text-fg shadow-sm hover:bg-soft"
             >
               Edit configuration
             </Link>
@@ -321,7 +321,7 @@ export function AgentDashboardPage() {
           <li>
             <Link
               to={adminRoutes.evalReports}
-              className="inline-flex items-center rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700 shadow-sm hover:bg-slate-50"
+              className="inline-flex items-center rounded-lg border border-line bg-surface px-3 py-2 text-sm text-fg shadow-sm hover:bg-soft"
             >
               Eval reports
             </Link>
@@ -344,10 +344,10 @@ function Shell({
   return (
     <div className="mx-auto max-w-6xl p-6 md:p-8">
       <header className="mb-8">
-        <p className="text-sm font-medium uppercase tracking-[0.2em] text-slate-500">
+        <p className="text-sm font-medium uppercase tracking-[0.2em] text-fg-soft">
           Agent Dashboard
         </p>
-        <h2 className="mt-2 text-3xl font-semibold text-slate-950">{title}</h2>
+        <h2 className="mt-2 text-3xl font-semibold text-fg-strong">{title}</h2>
       </header>
       {children}
     </div>
@@ -363,7 +363,7 @@ function Section({
 }) {
   return (
     <section className="mt-8">
-      <h3 className="mb-3 text-lg font-semibold text-slate-900">{title}</h3>
+      <h3 className="mb-3 text-lg font-semibold text-fg-strong">{title}</h3>
       {children}
     </section>
   );
@@ -386,30 +386,30 @@ function StatCard({
 }) {
   const toneClass =
     tone === "positive"
-      ? "text-emerald-700"
+      ? "text-tone-success"
       : tone === "negative"
-        ? "text-rose-700"
-        : "text-slate-950";
+        ? "text-tone-error"
+        : "text-fg-strong";
   return (
-    <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+    <div className="rounded-2xl border border-line bg-surface p-5 shadow-sm">
       <div className={`text-3xl font-semibold ${toneClass}`}>{value}</div>
-      <div className="mt-2 text-sm text-slate-500">{label}</div>
+      <div className="mt-2 text-sm text-fg-soft">{label}</div>
     </div>
   );
 }
 
 function RegistryDisabledPanel({ onReload }: { onReload: () => void }) {
   return (
-    <div className="rounded-2xl border border-amber-200 bg-amber-50 p-6 text-sm text-amber-900 shadow-sm">
+    <div className="rounded-2xl border border-tone-warn/35 bg-tone-warn/10 p-6 text-sm text-tone-warn shadow-sm">
       <h3 className="text-base font-semibold">Runtime stats not configured</h3>
       <p className="mt-2">
         The server is not running with a{" "}
-        <code className="rounded bg-amber-100 px-1.5 py-0.5 font-mono text-xs">
+        <code className="rounded bg-tone-warn/15 px-1.5 py-0.5 font-mono text-xs">
           RuntimeStatsRegistry
         </code>{" "}
         attached to its <code className="font-mono">AppState</code>. Embedders
         opt in by calling{" "}
-        <code className="rounded bg-amber-100 px-1.5 py-0.5 font-mono text-xs">
+        <code className="rounded bg-tone-warn/15 px-1.5 py-0.5 font-mono text-xs">
           state.with_runtime_stats(registry)
         </code>{" "}
         and wiring the same registry into the agent runtime's observability
@@ -418,7 +418,7 @@ function RegistryDisabledPanel({ onReload }: { onReload: () => void }) {
       <button
         type="button"
         onClick={onReload}
-        className="mt-3 rounded-md border border-amber-300 bg-white px-3 py-1.5 text-xs font-medium hover:bg-amber-100"
+        className="mt-3 rounded-md border border-tone-warn/35 bg-surface px-3 py-1.5 text-xs font-medium hover:bg-tone-warn/15"
       >
         Retry
       </button>
@@ -434,8 +434,8 @@ function NotYetSeenPanel({
   onReload: () => void;
 }) {
   return (
-    <div className="rounded-2xl border border-slate-200 bg-white p-6 text-sm text-slate-700 shadow-sm">
-      <h3 className="text-base font-semibold text-slate-900">
+    <div className="rounded-2xl border border-line bg-surface p-6 text-sm text-fg shadow-sm">
+      <h3 className="text-base font-semibold text-fg-strong">
         No runtime activity yet
       </h3>
       <p className="mt-2">
@@ -446,7 +446,7 @@ function NotYetSeenPanel({
       <button
         type="button"
         onClick={onReload}
-        className="mt-3 rounded-md border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium hover:bg-slate-50"
+        className="mt-3 rounded-md border border-line bg-surface px-3 py-1.5 text-xs font-medium hover:bg-soft"
       >
         Refresh
       </button>
@@ -463,8 +463,8 @@ function HistogramPanel({
 }) {
   const max = maxHistogramCount(buckets);
   const containerClass = compact
-    ? "rounded-xl bg-slate-50 p-3"
-    : "rounded-2xl border border-slate-200 bg-white p-5 shadow-sm";
+    ? "rounded-xl bg-soft p-3"
+    : "rounded-2xl border border-line bg-surface p-5 shadow-sm";
   return (
     <div className={containerClass}>
       <ul className="space-y-1.5">
@@ -476,17 +476,17 @@ function HistogramPanel({
               key={`${idx}-${b.upper_bound_ms ?? "inf"}`}
               className="flex items-center gap-3 text-xs"
             >
-              <span className="w-24 shrink-0 text-right font-mono text-slate-500">
+              <span className="w-24 shrink-0 text-right font-mono text-fg-soft">
                 {label}
               </span>
-              <div className="relative flex-1 overflow-hidden rounded bg-slate-100">
+              <div className="relative flex-1 overflow-hidden rounded bg-muted">
                 <div
-                  className="h-3 rounded bg-slate-700 transition-[width]"
+                  className="h-3 rounded bg-fg transition-[width]"
                   style={{ width: `${widthPct}%` }}
                   aria-hidden
                 />
               </div>
-              <span className="w-12 shrink-0 text-right font-mono text-slate-700">
+              <span className="w-12 shrink-0 text-right font-mono text-fg">
                 {b.count}
               </span>
             </li>
@@ -499,7 +499,7 @@ function HistogramPanel({
 
 function ErrorPanel({ message }: { message: string }) {
   return (
-    <div className="rounded-2xl border border-rose-200 bg-rose-50 p-6 text-sm text-rose-700 shadow-sm">
+    <div className="rounded-2xl border border-tone-error/30 bg-tone-error/10 p-6 text-sm text-tone-error shadow-sm">
       {message}
     </div>
   );

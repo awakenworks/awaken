@@ -209,30 +209,30 @@ export function ProvidersPage() {
     <div className="mx-auto max-w-6xl p-6 md:p-8">
       <div className="mb-6 flex items-center justify-between gap-4">
         <div>
-          <p className="text-sm font-medium uppercase tracking-[0.2em] text-slate-500">
+          <p className="text-sm font-medium uppercase tracking-[0.2em] text-fg-soft">
             Runtime Catalog
           </p>
-          <h2 className="mt-2 text-3xl font-semibold text-slate-950">Providers</h2>
+          <h2 className="mt-2 text-3xl font-semibold text-fg-strong">Providers</h2>
         </div>
         <button
           type="button"
           onClick={startCreate}
-          className="rounded-xl bg-slate-950 px-4 py-2 text-sm font-medium text-white transition hover:bg-slate-800"
+          className="rounded-xl bg-fg-strong px-4 py-2 text-sm font-medium text-white transition hover:bg-fg"
         >
           New Provider
         </button>
       </div>
 
       {crud.draft ? (
-        <section className="mb-6 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+        <section className="mb-6 rounded-2xl border border-line bg-surface p-5 shadow-sm">
           <div className="flex items-center justify-between">
-            <h3 className="text-lg font-semibold text-slate-950">
+            <h3 className="text-lg font-semibold text-fg-strong">
               {crud.isEditingExisting ? "Edit provider" : "Create provider"}
             </h3>
             {crud.isEditingExisting && crud.draft.id && (
               <Link
                 to={adminRoutes.auditLogForResource(`providers/${crud.draft.id}`)}
-                className="text-sm font-medium text-slate-500 transition hover:text-slate-700"
+                className="text-sm font-medium text-fg-soft transition hover:text-fg"
               >
                 History
               </Link>
@@ -249,7 +249,7 @@ export function ProvidersPage() {
                     current ? { ...current, id: event.target.value } : current,
                   )
                 }
-                className="w-full rounded-xl border border-slate-300 px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-slate-500 disabled:bg-slate-100 disabled:text-slate-500"
+                className="w-full rounded-xl border border-line-strong px-3 py-2 text-sm text-fg-strong outline-none transition focus:border-line-strong disabled:bg-muted disabled:text-fg-soft"
               />
             </Field>
 
@@ -261,7 +261,7 @@ export function ProvidersPage() {
                     current ? { ...current, adapter: event.target.value } : current,
                   )
                 }
-                className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-slate-500"
+                className="w-full rounded-xl border border-line-strong bg-surface px-3 py-2 text-sm text-fg-strong outline-none transition focus:border-line-strong"
               >
                 {adapterOptions.map((adapter) => (
                   <option key={adapter} value={adapter}>
@@ -284,7 +284,7 @@ export function ProvidersPage() {
                       : current,
                   )
                 }
-                className="w-full rounded-xl border border-slate-300 px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-slate-500"
+                className="w-full rounded-xl border border-line-strong px-3 py-2 text-sm text-fg-strong outline-none transition focus:border-line-strong"
               />
             </Field>
 
@@ -303,16 +303,16 @@ export function ProvidersPage() {
                       : current,
                   )
                 }
-                className="w-full rounded-xl border border-slate-300 px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-slate-500"
+                className="w-full rounded-xl border border-line-strong px-3 py-2 text-sm text-fg-strong outline-none transition focus:border-line-strong"
               />
             </Field>
           </div>
 
-          <section className="mt-5 rounded-xl border border-slate-200 bg-slate-50 p-4">
+          <section className="mt-5 rounded-xl border border-line bg-soft p-4">
             <div className="flex flex-wrap items-center justify-between gap-3">
               <div>
-                <h4 className="text-sm font-semibold text-slate-900">API Key</h4>
-                <p className="mt-1 text-sm text-slate-500">
+                <h4 className="text-sm font-semibold text-fg-strong">API Key</h4>
+                <p className="mt-1 text-sm text-fg-soft">
                   {crud.isEditingExisting
                     ? crud.draft.has_api_key
                       ? "A key is currently stored. Keep it, replace it, or clear it."
@@ -348,10 +348,10 @@ export function ProvidersPage() {
                 type="password"
                 value={apiKeyDraft}
                 onChange={(event) => setApiKeyDraft(event.target.value)}
-                className="mt-4 w-full rounded-xl border border-slate-300 px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-slate-500"
+                className="mt-4 w-full rounded-xl border border-line-strong px-3 py-2 text-sm text-fg-strong outline-none transition focus:border-line-strong"
               />
             ) : (
-              <div className="mt-4 text-sm text-slate-500">
+              <div className="mt-4 text-sm text-fg-soft">
                 {apiKeyMode === "clear"
                   ? "Saving will remove the stored API key."
                   : "Saving will preserve the current key state."}
@@ -364,14 +364,14 @@ export function ProvidersPage() {
               type="button"
               onClick={() => void handleSave()}
               disabled={crud.saving}
-              className="rounded-xl bg-slate-950 px-4 py-2 text-sm font-medium text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-60"
+              className="rounded-xl bg-fg-strong px-4 py-2 text-sm font-medium text-white transition hover:bg-fg disabled:cursor-not-allowed disabled:opacity-60"
             >
               {crud.saving ? "Saving..." : "Save"}
             </button>
             <button
               type="button"
               onClick={crud.cancelEdit}
-              className="rounded-xl border border-slate-300 px-4 py-2 text-sm font-medium text-slate-700 transition hover:bg-slate-50"
+              className="rounded-xl border border-line-strong px-4 py-2 text-sm font-medium text-fg transition hover:bg-soft"
             >
               Cancel
             </button>
@@ -380,7 +380,7 @@ export function ProvidersPage() {
                 type="button"
                 onClick={() => void handleTestConnection()}
                 disabled={testing}
-                className="rounded-xl border border-slate-300 px-4 py-2 text-sm font-medium text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
+                className="rounded-xl border border-line-strong px-4 py-2 text-sm font-medium text-fg transition hover:bg-soft disabled:cursor-not-allowed disabled:opacity-60"
               >
                 {testing ? "Testing..." : "Test connection"}
               </button>
@@ -391,8 +391,8 @@ export function ProvidersPage() {
             <div
               className={`mt-3 flex items-center gap-2 rounded-xl border px-4 py-2 text-sm ${
                 testStatus.ok
-                  ? "border-emerald-200 bg-emerald-50 text-emerald-700"
-                  : "border-rose-200 bg-rose-50 text-rose-700"
+                  ? "border-tone-success/30 bg-tone-success/10 text-tone-success"
+                  : "border-tone-error/30 bg-tone-error/10 text-tone-error"
               }`}
             >
               <span className="font-medium">
@@ -420,17 +420,17 @@ export function ProvidersPage() {
         />
       </div>
 
-      <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
+      <div className="overflow-hidden rounded-2xl border border-line bg-surface shadow-sm">
         {crud.loading ? (
-          <div className="px-5 py-6 text-sm text-slate-500">
+          <div className="px-5 py-6 text-sm text-fg-soft">
             Loading providers...
           </div>
         ) : crud.items.length === 0 ? (
-          <div className="px-5 py-6 text-sm text-slate-500">
+          <div className="px-5 py-6 text-sm text-fg-soft">
             No managed providers yet.
           </div>
         ) : view.items.length === 0 ? (
-          <div className="px-5 py-6 text-sm text-slate-500">
+          <div className="px-5 py-6 text-sm text-fg-soft">
             No providers match the current filter.
           </div>
         ) : (
@@ -447,17 +447,17 @@ export function ProvidersPage() {
                 {view.items.map((provider) => (
                   <tr
                     key={provider.id}
-                    className="border-t border-slate-200 text-sm text-slate-700"
+                    className="border-t border-line text-sm text-fg"
                   >
-                    <td className="px-5 py-4 font-mono text-slate-950">{provider.id}</td>
+                    <td className="px-5 py-4 font-mono text-fg-strong">{provider.id}</td>
                     <td className="px-5 py-4">{provider.adapter}</td>
-                    <td className="px-5 py-4 text-slate-500">
+                    <td className="px-5 py-4 text-fg-soft">
                       {provider.base_url ?? "Default"}
                     </td>
-                    <td className="px-5 py-4 text-slate-500">
+                    <td className="px-5 py-4 text-fg-soft">
                       {provider.has_api_key ? "Stored" : "Environment / none"}
                     </td>
-                    <td className="px-5 py-4 text-slate-500">
+                    <td className="px-5 py-4 text-fg-soft">
                       {formatRelativeTime(provider.updated_at)}
                     </td>
                     <td className="px-5 py-4">
@@ -465,14 +465,14 @@ export function ProvidersPage() {
                         <button
                           type="button"
                           onClick={() => startEdit(provider)}
-                          className="font-medium text-slate-700 transition hover:text-slate-950"
+                          className="font-medium text-fg transition hover:text-fg-strong"
                         >
                           Edit
                         </button>
                         <button
                           type="button"
                           onClick={() => void crud.handleDelete(provider.id)}
-                          className="font-medium text-rose-600 transition hover:text-rose-700"
+                          className="font-medium text-tone-error transition hover:text-tone-error"
                         >
                           Delete
                         </button>

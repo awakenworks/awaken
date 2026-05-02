@@ -9,7 +9,7 @@ export function Field({
 }) {
   return (
     <label className="block">
-      <span className="mb-1.5 block text-sm font-medium text-slate-600">{label}</span>
+      <span className="mb-1.5 block text-sm font-medium text-fg-soft">{label}</span>
       {children}
     </label>
   );
@@ -31,8 +31,8 @@ export function ModeButton({
       className={[
         "rounded-full px-3 py-1.5 text-xs font-medium transition",
         active
-          ? "bg-slate-950 text-white"
-          : "border border-slate-300 bg-white text-slate-700 hover:bg-slate-100",
+          ? "bg-fg-strong text-bg"
+          : "border border-line-strong bg-surface text-fg hover:bg-muted",
       ].join(" ")}
     >
       {label}
@@ -41,12 +41,12 @@ export function ModeButton({
 }
 
 export function Hint({ children }: { children: ReactNode }) {
-  return <div className="text-sm leading-6 text-slate-500">{children}</div>;
+  return <div className="text-sm leading-6 text-fg-soft">{children}</div>;
 }
 
 export function SectionLabel({ label }: { label: string }) {
   return (
-    <div className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">
+    <div className="text-xs font-semibold uppercase tracking-[0.18em] text-fg-soft">
       {label}
     </div>
   );
@@ -62,7 +62,7 @@ export function EmptyState({
   return (
     <div
       className={[
-        "rounded-2xl border border-dashed border-slate-200 text-sm text-slate-500",
+        "rounded-2xl border border-dashed border-line text-sm text-fg-soft",
         compact ? "px-4 py-3" : "mt-4 px-4 py-5",
       ].join(" ")}
     >
@@ -81,12 +81,12 @@ export function MetricCard({
   detail: string;
 }) {
   return (
-    <div className="rounded-2xl border border-slate-200 bg-white p-4">
-      <div className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">
+    <div className="rounded-2xl border border-line bg-surface p-4">
+      <div className="text-xs font-semibold uppercase tracking-[0.18em] text-fg-soft">
         {label}
       </div>
-      <div className="mt-2 text-lg font-semibold text-slate-950">{value}</div>
-      <div className="mt-1 text-sm leading-6 text-slate-500">{detail}</div>
+      <div className="mt-2 text-lg font-semibold text-fg-strong">{value}</div>
+      <div className="mt-1 text-sm leading-6 text-fg-soft">{detail}</div>
     </div>
   );
 }
@@ -103,11 +103,11 @@ export function Pill({
   const palette =
     tone === "amber"
       ? active
-        ? "bg-amber-200 text-amber-950"
-        : "bg-amber-100 text-amber-700"
+        ? "bg-tone-warn/20 text-tone-warn"
+        : "bg-tone-warn/15 text-tone-warn"
       : active
-        ? "bg-slate-700 text-slate-100"
-        : "bg-slate-200 text-slate-600";
+        ? "bg-fg text-bg"
+        : "bg-muted text-fg-soft";
   return (
     <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${palette}`}>
       {label}
@@ -142,15 +142,15 @@ export function ChoiceGrid<T extends string>({
             className={[
               "rounded-2xl border px-3 py-3 text-left transition",
               selected
-                ? "border-slate-900 bg-slate-900 text-white shadow-sm"
-                : "border-slate-200 bg-white text-slate-900 hover:border-slate-300 hover:bg-slate-50",
+                ? "border-fg-strong bg-fg-strong text-bg shadow-sm"
+                : "border-line bg-surface text-fg-strong hover:border-line-strong hover:bg-soft",
             ].join(" ")}
           >
             <div className="text-sm font-semibold">{option.label}</div>
             <div
               className={[
                 "mt-1 text-xs leading-5",
-                selected ? "text-slate-300" : "text-slate-500",
+                selected ? "text-fg-faint" : "text-fg-soft",
               ].join(" ")}
             >
               {option.description}

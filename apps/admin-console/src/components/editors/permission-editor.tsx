@@ -96,7 +96,7 @@ export function PermissionConfigEditor({
   return (
     <div className="space-y-5">
       <div className="grid gap-4 xl:grid-cols-[18rem,minmax(0,1fr)]">
-        <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+        <div className="rounded-2xl border border-line bg-soft p-4">
           <SectionLabel label="Policy Summary" />
           <div className="mt-3 grid gap-3 sm:grid-cols-2 xl:grid-cols-1">
             <MetricCard
@@ -112,9 +112,9 @@ export function PermissionConfigEditor({
           </div>
         </div>
 
-        <div className="rounded-2xl border border-slate-200 bg-white p-4">
+        <div className="rounded-2xl border border-line bg-surface p-4">
           <SectionLabel label="Default Decision" />
-          <p className="mt-2 text-sm leading-6 text-slate-500">
+          <p className="mt-2 text-sm leading-6 text-fg-soft">
             This becomes the fallback policy when none of the explicit rules
             below match the tool call.
           </p>
@@ -155,11 +155,11 @@ export function PermissionConfigEditor({
       </div>
 
       <div className="grid gap-5 xl:grid-cols-[18rem,minmax(0,1fr)]">
-        <aside className="space-y-3 rounded-2xl border border-slate-200 bg-slate-50 p-4">
+        <aside className="space-y-3 rounded-2xl border border-line bg-soft p-4">
           <div className="flex items-start justify-between gap-3">
             <div>
               <SectionLabel label="Permission Rules" />
-              <p className="mt-2 text-sm leading-6 text-slate-500">
+              <p className="mt-2 text-sm leading-6 text-fg-soft">
                 Match tool names or patterns like `Bash(npm *)` or
                 `mcp__github__*`.
               </p>
@@ -167,7 +167,7 @@ export function PermissionConfigEditor({
             <button
               type="button"
               onClick={addRule}
-              className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-700 transition hover:border-slate-400 hover:bg-slate-100"
+              className="rounded-xl border border-line-strong bg-surface px-3 py-2 text-sm font-medium text-fg transition hover:border-line-strong hover:bg-muted"
             >
               Add rule
             </button>
@@ -187,8 +187,8 @@ export function PermissionConfigEditor({
                     className={[
                       "w-full rounded-2xl border px-4 py-3 text-left transition",
                       isActive
-                        ? "border-slate-900 bg-slate-900 text-white shadow-sm"
-                        : "border-slate-200 bg-white text-slate-900 hover:border-slate-300",
+                        ? "border-fg-strong bg-fg-strong text-bg shadow-sm"
+                        : "border-line bg-surface text-fg-strong hover:border-line-strong",
                     ].join(" ")}
                   >
                     <div className="flex items-center justify-between gap-3">
@@ -199,7 +199,7 @@ export function PermissionConfigEditor({
                         className={[
                           "rounded-full px-2 py-0.5 text-[11px] font-medium",
                           isActive
-                            ? "bg-slate-700 text-slate-100"
+                            ? "bg-fg text-bg"
                             : permissionBehaviorPill(rule.behavior),
                         ].join(" ")}
                       >
@@ -209,7 +209,7 @@ export function PermissionConfigEditor({
                     <div
                       className={[
                         "mt-2 text-xs",
-                        isActive ? "text-slate-300" : "text-slate-500",
+                        isActive ? "text-fg-faint" : "text-fg-soft",
                       ].join(" ")}
                     >
                       {rule.tool.trim()
@@ -219,7 +219,7 @@ export function PermissionConfigEditor({
                     <div
                       className={[
                         "mt-2 text-xs font-medium",
-                        isActive ? "text-slate-300" : "text-slate-500",
+                        isActive ? "text-fg-faint" : "text-fg-soft",
                       ].join(" ")}
                     >
                       Scope: {permissionScopeLabel(rule.scope)}
@@ -232,13 +232,13 @@ export function PermissionConfigEditor({
         </aside>
 
         {activeRule ? (
-          <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+          <div className="rounded-2xl border border-line bg-surface p-5 shadow-sm">
             <div className="flex flex-wrap items-start justify-between gap-3">
               <div>
-                <h6 className="text-lg font-semibold text-slate-950">
+                <h6 className="text-lg font-semibold text-fg-strong">
                   {activeRule.tool.trim() || `Rule ${activeRuleIndex! + 1}`}
                 </h6>
-                <p className="mt-1 text-sm leading-6 text-slate-500">
+                <p className="mt-1 text-sm leading-6 text-fg-soft">
                   Reorder rules to make precedence explicit. The first matching
                   rule decides what happens.
                 </p>
@@ -248,7 +248,7 @@ export function PermissionConfigEditor({
                   type="button"
                   disabled={activeRuleIndex === 0}
                   onClick={() => moveRule(activeRuleIndex!, -1)}
-                  className="rounded-xl border border-slate-300 px-3 py-2 text-sm font-medium text-slate-700 transition hover:border-slate-400 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
+                  className="rounded-xl border border-line-strong px-3 py-2 text-sm font-medium text-fg transition hover:border-line-strong hover:bg-soft disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   Move up
                 </button>
@@ -256,14 +256,14 @@ export function PermissionConfigEditor({
                   type="button"
                   disabled={activeRuleIndex === config.rules.length - 1}
                   onClick={() => moveRule(activeRuleIndex!, 1)}
-                  className="rounded-xl border border-slate-300 px-3 py-2 text-sm font-medium text-slate-700 transition hover:border-slate-400 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
+                  className="rounded-xl border border-line-strong px-3 py-2 text-sm font-medium text-fg transition hover:border-line-strong hover:bg-soft disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   Move down
                 </button>
                 <button
                   type="button"
                   onClick={() => removeRule(activeRuleIndex!)}
-                  className="rounded-xl border border-rose-200 px-3 py-2 text-sm font-medium text-rose-700 transition hover:bg-rose-50"
+                  className="rounded-xl border border-tone-error/30 px-3 py-2 text-sm font-medium text-tone-error transition hover:bg-tone-error/10"
                 >
                   Remove
                 </button>
@@ -282,17 +282,17 @@ export function PermissionConfigEditor({
                     })
                   }
                   placeholder="Bash(npm *)"
-                  className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-slate-500"
+                  className="w-full rounded-xl border border-line-strong bg-surface px-3 py-2 text-sm text-fg-strong outline-none transition focus:border-line-strong"
                 />
               </Field>
-              <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+              <div className="rounded-2xl border border-line bg-soft p-4">
                 <SectionLabel label="Match Preview" />
-                <div className="mt-3 text-sm text-slate-700">
+                <div className="mt-3 text-sm text-fg">
                   {activeRule.tool.trim()
                     ? activeRule.tool
                     : "Any tool that reaches this rule"}
                 </div>
-                <div className="mt-2 text-xs leading-6 text-slate-500">
+                <div className="mt-2 text-xs leading-6 text-fg-soft">
                   Common examples: `Bash(npm *)`, `Edit(src/**)`,
                   `mcp__github__*`.
                 </div>
@@ -414,10 +414,10 @@ function permissionScopeLabel(scope: PermissionRuleConfig["scope"]): string {
 function permissionBehaviorPill(behavior: PermissionBehavior): string {
   switch (behavior) {
     case "allow":
-      return "bg-emerald-100 text-emerald-700";
+      return "bg-tone-success/15 text-tone-success";
     case "ask":
-      return "bg-amber-100 text-amber-700";
+      return "bg-tone-warn/15 text-tone-warn";
     case "deny":
-      return "bg-rose-100 text-rose-700";
+      return "bg-tone-error/15 text-tone-error";
   }
 }

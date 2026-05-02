@@ -1,3 +1,5 @@
+import type { AgentSpec } from "./config-api";
+
 export type AgentEditorTabId =
   | "basics"
   | "tools"
@@ -10,14 +12,43 @@ export interface AgentEditorTab {
   id: AgentEditorTabId;
   label: string;
   description: string;
+  /** Returns a badge string (e.g. "23" or "•") for the tab tab. Empty
+   *  string / null means no badge. */
+  badge?: (spec: AgentSpec) => string | null;
 }
 
 export const AGENT_EDITOR_TABS: readonly AgentEditorTab[] = [
   { id: "basics", label: "Basics", description: "Identity, model, prompt, limits." },
-  { id: "tools", label: "Tools", description: "Allowed and excluded tools." },
-  { id: "plugins", label: "Plugins", description: "Enabled plugins and their config." },
-  { id: "delegates", label: "Delegates", description: "Agents this one can delegate to." },
-  { id: "advanced", label: "Advanced", description: "Raw JSON preview." },
+  {
+    id: "tools",
+    label: "Tools",
+    description: "Allowed and excluded tools.",
+    badge: (spec) => {
+      const allowed = spec.allowed_tools?.length ?? 0;
+      const excluded = spec.excluded_tools?.length ?? 0;
+      if (allowed === 0 && excluded === 0) return null;
+      return excluded > 0 ? `${allowed}·−${excluded}` : String(allowed);
+    },
+  },
+  {
+    id: "plugins",
+    label: "Plugins",
+    description: "Enabled plugins and their config.",
+    badge: (spec) =>
+      spec.plugin_ids && spec.plugin_ids.length > 0
+        ? String(spec.plugin_ids.length)
+        : null,
+  },
+  {
+    id: "delegates",
+    label: "Delegates",
+    description: "Agents this one can delegate to.",
+    badge: (spec) =>
+      spec.delegates && spec.delegates.length > 0
+        ? String(spec.delegates.length)
+        : null,
+  },
+  { id: "advanced", label: "Advanced", description: "Reasoning, limits, raw JSON." },
   { id: "history", label: "History", description: "Audit history and restore." },
 ];
 
