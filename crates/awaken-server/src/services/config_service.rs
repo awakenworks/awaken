@@ -1,12 +1,15 @@
 use std::sync::Arc;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
+use awaken_contract::AuditAction;
 use awaken_contract::contract::config_store::ConfigStore;
 use awaken_contract::contract::storage::StorageError;
 use awaken_contract::{AgentSpec, McpServerSpec, ModelBindingSpec, ProviderSpec};
+use axum::http::HeaderMap;
 use serde_json::{Map, Value, json};
 
 use crate::app::AppState;
+use crate::services::audit_log::AuditLogger;
 
 use super::config_runtime::{ConfigRuntimeError, build_genai_provider_executor};
 
@@ -93,6 +96,7 @@ pub struct ProviderTestResult {
 pub struct ConfigService<'a> {
     state: &'a AppState,
     store: Arc<dyn ConfigStore>,
+    audit: Option<Arc<AuditLogger>>,
 }
 
 impl<'a> ConfigService<'a> {
@@ -101,7 +105,11 @@ impl<'a> ConfigService<'a> {
             .config_store
             .clone()
             .ok_or(ConfigServiceError::NotEnabled)?;
-        Ok(Self { state, store })
+        Ok(Self {
+            state,
+            store,
+            audit: state.audit_log.clone(),
+        })
     }
 
     pub async fn capabilities(&self) -> Result<Value, ConfigServiceError> {
@@ -228,6 +236,7 @@ impl<'a> ConfigService<'a> {
         &self,
         namespace: ConfigNamespace,
         body: Value,
+        headers: &HeaderMap,
     ) -> Result<Value, ConfigServiceError> {
         let manager = self.runtime_manager()?;
         let _apply_guard = manager.lock_apply().await;
@@ -240,8 +249,18 @@ impl<'a> ConfigService<'a> {
             )));
         }
 
-        self.persist_and_apply_locked(manager.as_ref(), namespace, &id, None, body)
-            .await
+        let result = self
+            .persist_and_apply_locked(manager.as_ref(), namespace, &id, None, body.clone())
+            .await?;
+
+        if let Some(audit) = &self.audit {
+            let resource = format!("{}/{}", namespace.as_str(), id);
+            audit
+                .emit(AuditAction::Create, &resource, None, Some(body), headers)
+                .await;
+        }
+
+        Ok(result)
     }
 
     pub async fn update(
@@ -249,6 +268,7 @@ impl<'a> ConfigService<'a> {
         namespace: ConfigNamespace,
         id: &str,
         body: Value,
+        headers: &HeaderMap,
     ) -> Result<Value, ConfigServiceError> {
         let manager = self.runtime_manager()?;
         let _apply_guard = manager.lock_apply().await;
@@ -260,8 +280,30 @@ impl<'a> ConfigService<'a> {
         }
 
         let previous = self.store.get(namespace.as_str(), id).await?;
-        self.persist_and_apply_locked(manager.as_ref(), namespace, id, previous, body)
-            .await
+        let result = self
+            .persist_and_apply_locked(
+                manager.as_ref(),
+                namespace,
+                id,
+                previous.clone(),
+                body.clone(),
+            )
+            .await?;
+
+        if let Some(audit) = &self.audit {
+            let resource = format!("{}/{}", namespace.as_str(), id);
+            audit
+                .emit(
+                    AuditAction::Update,
+                    &resource,
+                    previous,
+                    Some(body),
+                    headers,
+                )
+                .await;
+        }
+
+        Ok(result)
     }
 
     pub async fn delete(
@@ -269,6 +311,7 @@ impl<'a> ConfigService<'a> {
         namespace: ConfigNamespace,
         id: &str,
         force: bool,
+        headers: &HeaderMap,
     ) -> Result<(), ConfigServiceError> {
         let manager = self.runtime_manager()?;
         let _apply_guard = manager.lock_apply().await;
@@ -297,6 +340,20 @@ impl<'a> ConfigService<'a> {
             self.store.put(namespace.as_str(), id, &previous).await?;
             return Err(error);
         }
+
+        if let Some(audit) = &self.audit {
+            let resource = format!("{}/{}", namespace.as_str(), id);
+            audit
+                .emit(
+                    AuditAction::Delete,
+                    &resource,
+                    Some(previous),
+                    None,
+                    headers,
+                )
+                .await;
+        }
+
         Ok(())
     }
 
@@ -975,6 +1032,7 @@ mod tests {
                             "id": "serialized",
                             "adapter": "stub"
                         }),
+                        &axum::http::HeaderMap::new(),
                     )
                     .await
             }
@@ -1058,6 +1116,7 @@ mod tests {
                     "id": "missing-manager",
                     "adapter": "stub"
                 }),
+                &axum::http::HeaderMap::new(),
             )
             .await
             .expect_err("missing manager should reject writes");
@@ -1081,6 +1140,7 @@ mod tests {
                     "provider_id": "bootstrap",
                     "upstream_model": "gpt-4"
                 }),
+                &axum::http::HeaderMap::new(),
             )
             .await
             .expect("create model");
@@ -1114,6 +1174,7 @@ mod tests {
                     "system_prompt": "test",
                     "max_rounds": 1
                 }),
+                &axum::http::HeaderMap::new(),
             )
             .await
             .expect("create agent");
@@ -1161,6 +1222,7 @@ mod tests {
             .create(
                 ConfigNamespace::Providers,
                 json!({ "id": "prov-b", "adapter": "stub" }),
+                &axum::http::HeaderMap::new(),
             )
             .await
             .expect("create provider-b");
@@ -1173,12 +1235,18 @@ mod tests {
                     "provider_id": "prov-b",
                     "upstream_model": "gpt-4"
                 }),
+                &axum::http::HeaderMap::new(),
             )
             .await
             .expect("create model-b");
 
         let err = service
-            .delete(ConfigNamespace::Providers, "prov-b", false)
+            .delete(
+                ConfigNamespace::Providers,
+                "prov-b",
+                false,
+                &axum::http::HeaderMap::new(),
+            )
             .await
             .expect_err("should be blocked");
 
@@ -1198,6 +1266,7 @@ mod tests {
             .create(
                 ConfigNamespace::Providers,
                 json!({ "id": "prov-c", "adapter": "stub" }),
+                &axum::http::HeaderMap::new(),
             )
             .await
             .expect("create provider-c");
@@ -1210,14 +1279,176 @@ mod tests {
                     "provider_id": "prov-c",
                     "upstream_model": "gpt-4"
                 }),
+                &axum::http::HeaderMap::new(),
             )
             .await
             .expect("create model-c");
 
         // Force delete should succeed even with dependents
         service
-            .delete(ConfigNamespace::Providers, "prov-c", true)
+            .delete(
+                ConfigNamespace::Providers,
+                "prov-c",
+                true,
+                &axum::http::HeaderMap::new(),
+            )
             .await
             .expect("force delete should succeed");
+    }
+
+    // ── audit integration tests ────────────────────────────────────────────
+
+    mod audit_integration {
+        use std::sync::Arc;
+
+        use awaken_contract::AuditAction;
+        use axum::http::HeaderMap;
+        use serde_json::json;
+
+        use crate::services::audit_log::{AUDIT_NAMESPACE, AuditLogger, AuditQuery};
+        use crate::services::config_service::{ConfigNamespace, ConfigService};
+
+        use super::build_state;
+
+        #[tokio::test]
+        async fn create_emits_audit_create_event() {
+            let config_store = Arc::new(awaken_stores::InMemoryStore::new());
+            let (state, _manager) = build_state(config_store.clone()).await;
+            let audit_logger = Arc::new(AuditLogger::new(config_store.clone()));
+            let state = state.with_audit_log(audit_logger.clone());
+
+            let service = ConfigService::new(&state).expect("service");
+            service
+                .create(
+                    ConfigNamespace::Providers,
+                    json!({ "id": "audit-prov", "adapter": "stub" }),
+                    &HeaderMap::new(),
+                )
+                .await
+                .expect("create");
+
+            let page = audit_logger.query(AuditQuery::default()).await.unwrap();
+            assert_eq!(page.items.len(), 1);
+            assert_eq!(page.items[0].action, AuditAction::Create);
+            assert_eq!(page.items[0].resource, "providers/audit-prov");
+            assert!(page.items[0].before.is_none());
+            assert!(page.items[0].after.is_some());
+        }
+
+        #[tokio::test]
+        async fn update_emits_audit_update_event_with_before_after() {
+            let config_store = Arc::new(awaken_stores::InMemoryStore::new());
+            let (state, _manager) = build_state(config_store.clone()).await;
+            let audit_logger = Arc::new(AuditLogger::new(config_store.clone()));
+            let state = state.with_audit_log(audit_logger.clone());
+
+            let service = ConfigService::new(&state).expect("service");
+            service
+                .create(
+                    ConfigNamespace::Agents,
+                    json!({ "id": "upd-agent", "model_id": "bootstrap", "system_prompt": "v1", "max_rounds": 1 }),
+                    &HeaderMap::new(),
+                )
+                .await
+                .expect("create");
+
+            service
+                .update(
+                    ConfigNamespace::Agents,
+                    "upd-agent",
+                    json!({ "id": "upd-agent", "model_id": "bootstrap", "system_prompt": "v2", "max_rounds": 1 }),
+                    &HeaderMap::new(),
+                )
+                .await
+                .expect("update");
+
+            let page = audit_logger
+                .query(AuditQuery {
+                    action: Some(AuditAction::Update),
+                    ..Default::default()
+                })
+                .await
+                .unwrap();
+            assert_eq!(page.items.len(), 1);
+            assert_eq!(page.items[0].action, AuditAction::Update);
+            assert!(page.items[0].before.is_some(), "before must be set");
+            assert!(page.items[0].after.is_some(), "after must be set");
+        }
+
+        #[tokio::test]
+        async fn delete_emits_audit_delete_event_with_before() {
+            let config_store = Arc::new(awaken_stores::InMemoryStore::new());
+            let (state, _manager) = build_state(config_store.clone()).await;
+            let audit_logger = Arc::new(AuditLogger::new(config_store.clone()));
+            let state = state.with_audit_log(audit_logger.clone());
+
+            let service = ConfigService::new(&state).expect("service");
+            service
+                .create(
+                    ConfigNamespace::Agents,
+                    json!({ "id": "del-agent", "model_id": "bootstrap", "system_prompt": "hi", "max_rounds": 1 }),
+                    &HeaderMap::new(),
+                )
+                .await
+                .expect("create");
+
+            service
+                .delete(
+                    ConfigNamespace::Agents,
+                    "del-agent",
+                    false,
+                    &HeaderMap::new(),
+                )
+                .await
+                .expect("delete");
+
+            // Only the Delete event should be in audit (create is there too but filter by Delete).
+            let page = audit_logger
+                .query(AuditQuery {
+                    action: Some(AuditAction::Delete),
+                    ..Default::default()
+                })
+                .await
+                .unwrap();
+            assert_eq!(page.items.len(), 1);
+            assert_eq!(page.items[0].action, AuditAction::Delete);
+            assert!(
+                page.items[0].before.is_some(),
+                "before must contain deleted payload"
+            );
+            assert!(
+                page.items[0].after.is_none(),
+                "after must be None for delete"
+            );
+        }
+
+        #[tokio::test]
+        async fn config_write_succeeds_even_when_audit_store_separate_and_no_logger() {
+            // Verify that without an audit logger, create still succeeds.
+            let config_store = Arc::new(awaken_stores::InMemoryStore::new());
+            let (state, _manager) = build_state(config_store.clone()).await;
+            // No audit_log attached.
+
+            let service = ConfigService::new(&state).expect("service");
+            service
+                .create(
+                    ConfigNamespace::Agents,
+                    json!({ "id": "no-audit-agent", "model_id": "bootstrap", "system_prompt": "hi", "max_rounds": 1 }),
+                    &HeaderMap::new(),
+                )
+                .await
+                .expect("create without audit should succeed");
+
+            // Confirm no audit entries exist.
+            let audit_entries = awaken_contract::contract::config_store::ConfigStore::list(
+                config_store.as_ref(),
+                AUDIT_NAMESPACE,
+                0,
+                usize::MAX,
+            )
+            .await
+            .unwrap();
+            assert!(audit_entries.is_empty());
+        }
     }
 }

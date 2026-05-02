@@ -127,7 +127,7 @@ async fn create_config(
     let namespace = ConfigNamespace::parse(&namespace).map_err(map_service_error)?;
     let service = ConfigService::new(&state).map_err(map_service_error)?;
     let created = service
-        .create(namespace, body)
+        .create(namespace, body, &headers)
         .await
         .map_err(map_service_error)?;
     Ok((StatusCode::CREATED, Json(created)))
@@ -167,7 +167,7 @@ async fn put_config(
     let namespace = ConfigNamespace::parse(&namespace).map_err(map_service_error)?;
     let service = ConfigService::new(&state).map_err(map_service_error)?;
     let updated = service
-        .update(namespace, &id, body)
+        .update(namespace, &id, body, &headers)
         .await
         .map_err(map_service_error)?;
     Ok(Json(updated))
@@ -190,7 +190,7 @@ async fn delete_config(
         Ok(s) => s,
         Err(e) => return ConfigRouteError::Api(map_service_error(e)).into_response(),
     };
-    match service.delete(namespace, &id, params.force).await {
+    match service.delete(namespace, &id, params.force, &headers).await {
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
         Err(ConfigServiceError::Blocked { used_by }) => (
             StatusCode::CONFLICT,

@@ -13,6 +13,7 @@ use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 
 use crate::mailbox::{Mailbox, MailboxLifecycleConfig};
+use crate::services::audit_log::AuditLogger;
 use crate::transport::replay_buffer::EventReplayBuffer;
 
 pub type ReplayBufferEntry = (Arc<EventReplayBuffer>, Instant);
@@ -285,6 +286,8 @@ pub struct AppState {
     /// `/v1/agents/:id/runtime-stats`.  When `None`, the endpoint returns
     /// 503 so embedders can opt out.
     pub runtime_stats: Option<Arc<RuntimeStatsRegistry>>,
+    /// Optional audit logger.  When `Some`, admin mutations emit events.
+    pub audit_log: Option<Arc<AuditLogger>>,
 }
 
 impl AppState {
@@ -308,6 +311,7 @@ impl AppState {
             replay_buffers: Arc::new(Mutex::new(HashMap::new())),
             mcp_http: Arc::new(crate::protocols::mcp::http::McpHttpState::new()),
             runtime_stats: None,
+            audit_log: None,
         }
     }
 
@@ -366,6 +370,16 @@ impl AppState {
     /// environment variable overrides.
     pub fn admin_api_config(&self) -> AdminApiConfig {
         admin_api_config(self)
+    }
+
+    /// Enable the audit logger.  When a `config_store` is already attached and
+    /// `audit_log_enabled` is `true` in [`AdminApiConfig`], pass an
+    /// `AuditLogger` constructed from that store.  This method is an explicit
+    /// opt-in; existing embedders are unaffected unless they call it.
+    #[must_use]
+    pub fn with_audit_log(mut self, logger: Arc<AuditLogger>) -> Self {
+        self.audit_log = Some(logger);
+        self
     }
 
     /// Insert a replay buffer for the given key, tracking creation time.
