@@ -105,6 +105,7 @@ impl AuditLogger {
             after,
             ip,
             request_id,
+            restored_from: None,
         };
 
         let value = match serde_json::to_value(&event) {
@@ -127,6 +128,68 @@ impl AuditLogger {
             .and_then(|v| v.as_str().map(str::to_string))
             .unwrap_or_else(|| "unknown".to_string());
         metrics::counter!("awaken_audit_events_total", "action" => action_label).increment(1);
+    }
+
+    /// Look up a single audit event by its ULID id.
+    ///
+    /// Returns `Ok(None)` when the event is not found (either never existed or was pruned).
+    pub async fn get_event(&self, id: &str) -> Result<Option<AuditEvent>, StorageError> {
+        let value = self.store.get(AUDIT_NAMESPACE, id).await?;
+        Ok(value.and_then(|v| serde_json::from_value::<AuditEvent>(v).ok()))
+    }
+
+    /// Emit a restore audit event with the `restored_from` field set.
+    ///
+    /// Best-effort — same semantics as [`AuditLogger::emit`].
+    pub async fn emit_restore(
+        &self,
+        resource: &str,
+        before: Option<Value>,
+        after: Option<Value>,
+        restored_from: String,
+        headers: &HeaderMap,
+    ) {
+        let id = ulid::Ulid::new().to_string();
+        let ts = Utc::now().to_rfc3339();
+        let actor = derive_actor(headers);
+        let ip = extract_client_ip(headers);
+        let request_id = headers
+            .get("x-request-id")
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_string);
+
+        let before = before.map(redact_secrets);
+        let after = after.map(redact_secrets);
+
+        let event = AuditEvent {
+            id: id.clone(),
+            ts,
+            actor,
+            action: AuditAction::Restore,
+            resource: resource.to_string(),
+            before,
+            after,
+            ip,
+            request_id,
+            restored_from: Some(restored_from),
+        };
+
+        let value = match serde_json::to_value(&event) {
+            Ok(v) => v,
+            Err(error) => {
+                tracing::warn!(error = %error, "audit: failed to serialize restore event");
+                metrics::counter!("awaken_audit_write_failures_total").increment(1);
+                return;
+            }
+        };
+
+        if let Err(error) = self.store.put(AUDIT_NAMESPACE, &id, &value).await {
+            tracing::warn!(error = %error, "audit: failed to write restore event");
+            metrics::counter!("awaken_audit_write_failures_total").increment(1);
+            return;
+        }
+
+        metrics::counter!("awaken_audit_events_total", "action" => "restore").increment(1);
     }
 
     /// Query audit events with optional filters and keyset pagination.
