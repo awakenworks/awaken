@@ -117,10 +117,31 @@ pub struct AdminApiConfig {
     /// `false` to keep the HTTP surface free of those endpoints entirely.
     #[serde(default = "default_expose_config_routes")]
     pub expose_config_routes: bool,
+    /// Whether the audit log is enabled. Defaults to `true`.
+    #[serde(default = "default_audit_log_enabled")]
+    pub audit_log_enabled: bool,
+    /// Retention window for audit events in days. Default 90 days.
+    #[serde(default = "default_audit_retention_days")]
+    pub audit_retention_days: u32,
+    /// Interval in seconds between audit retention sweeps. Default 3600 (1 hour).
+    #[serde(default = "default_audit_sweep_interval_secs")]
+    pub audit_sweep_interval_secs: u64,
 }
 
 const fn default_expose_config_routes() -> bool {
     true
+}
+
+const fn default_audit_log_enabled() -> bool {
+    true
+}
+
+const fn default_audit_retention_days() -> u32 {
+    90
+}
+
+const fn default_audit_sweep_interval_secs() -> u64 {
+    3600
 }
 
 impl Default for AdminApiConfig {
@@ -129,6 +150,9 @@ impl Default for AdminApiConfig {
             bearer_token: None,
             cors_allowed_origins: default_admin_cors_allowed_origins(),
             expose_config_routes: default_expose_config_routes(),
+            audit_log_enabled: default_audit_log_enabled(),
+            audit_retention_days: default_audit_retention_days(),
+            audit_sweep_interval_secs: default_audit_sweep_interval_secs(),
         }
     }
 }
@@ -380,6 +404,45 @@ impl AppState {
     pub fn with_audit_log(mut self, logger: Arc<AuditLogger>) -> Self {
         self.audit_log = Some(logger);
         self
+    }
+
+    /// Builder convenience: create an `AuditLogger` from the already-attached
+    /// `config_store` (if any) and the effective `AdminApiConfig` settings.
+    ///
+    /// If `audit_log_enabled` is `false` or no config store is attached, this
+    /// is a no-op.  Also spawns the background retention sweeper task.
+    #[must_use]
+    pub fn with_audit_log_from_config(self) -> Self {
+        let admin_config = admin_api_config(&self);
+        if !admin_config.audit_log_enabled {
+            return self;
+        }
+        let Some(store) = self.config_store.clone() else {
+            return self;
+        };
+        let logger = Arc::new(AuditLogger::new(store));
+        let logger_for_sweeper = logger.clone();
+        let retention_days = admin_config.audit_retention_days;
+        let sweep_interval_secs = admin_config.audit_sweep_interval_secs;
+        // Spawn retention sweeper (fire-and-forget; leaked on shutdown, acceptable for v1).
+        tokio::spawn(async move {
+            let interval = std::time::Duration::from_secs(sweep_interval_secs.max(1));
+            loop {
+                tokio::time::sleep(interval).await;
+                let cutoff = chrono::Utc::now() - chrono::Duration::days(retention_days as i64);
+                match logger_for_sweeper.prune_before(cutoff).await {
+                    Ok(pruned) => {
+                        if pruned > 0 {
+                            tracing::info!(pruned, "audit retention sweep complete");
+                        }
+                    }
+                    Err(error) => {
+                        tracing::warn!(error = %error, "audit retention sweep failed");
+                    }
+                }
+            }
+        });
+        self.with_audit_log(logger)
     }
 
     /// Insert a replay buffer for the given key, tracking creation time.

@@ -277,6 +277,20 @@ async fn post_mcp_server_restart(
         }
     })?;
 
+    // Emit audit event after successful restart.
+    if let Some(audit) = &state.audit_log {
+        let resource = format!("mcp-servers/{id}");
+        audit
+            .emit(
+                awaken_contract::AuditAction::Restart,
+                &resource,
+                None,
+                None,
+                &headers,
+            )
+            .await;
+    }
+
     Ok(StatusCode::ACCEPTED)
 }
 
