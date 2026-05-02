@@ -205,6 +205,26 @@ export function ProvidersPage() {
     setApiKeyDraft("");
   }
 
+  const [rowTestingId, setRowTestingId] = useState<string | null>(null);
+
+  async function handleRowTest(providerId: string) {
+    setRowTestingId(providerId);
+    try {
+      const result = await configApi.testProvider(providerId);
+      if (result.ok) {
+        toast.success(`${providerId} OK · ${result.latency_ms}ms`);
+      } else {
+        toast.error(`${providerId}: ${result.error ?? "test failed"}`);
+      }
+    } catch (err) {
+      toast.error(
+        `${providerId}: ${err instanceof Error ? err.message : "test failed"}`,
+      );
+    } finally {
+      setRowTestingId((current) => (current === providerId ? null : current));
+    }
+  }
+
   return (
     <div className="mx-auto max-w-6xl p-6 md:p-8">
       <div className="mb-6 flex items-center justify-between gap-4">
@@ -464,15 +484,23 @@ export function ProvidersPage() {
                       <div className="flex gap-4">
                         <button
                           type="button"
+                          onClick={() => void handleRowTest(provider.id)}
+                          disabled={rowTestingId === provider.id}
+                          className="font-medium text-link transition-colors hover:text-link-hover disabled:cursor-not-allowed disabled:opacity-60"
+                        >
+                          {rowTestingId === provider.id ? "Testing…" : "Test"}
+                        </button>
+                        <button
+                          type="button"
                           onClick={() => startEdit(provider)}
-                          className="font-medium text-fg transition hover:text-fg-strong"
+                          className="font-medium text-fg transition-colors hover:text-fg-strong"
                         >
                           Edit
                         </button>
                         <button
                           type="button"
                           onClick={() => void crud.handleDelete(provider.id)}
-                          className="font-medium text-tone-error transition hover:text-tone-error"
+                          className="font-medium text-tone-error transition-colors hover:text-tone-error"
                         >
                           Delete
                         </button>

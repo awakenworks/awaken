@@ -12,6 +12,7 @@ import {
   type AuditEvent,
   type AuditPage,
 } from "@/lib/audit-log";
+import { ConfigApiError } from "@/lib/config-api";
 import { adminRoutes } from "@/lib/routes";
 import { formatRelativeTime } from "@/lib/format-time";
 import { PageHeader } from "@/components/ui/page-header";
@@ -30,33 +31,33 @@ type DashboardData = {
   models: ModelBindingSpec[];
   agents: AgentSpec[];
   auditPage: AuditPage | null;
+  auditDisabled: boolean;
 };
-
-type TimeRange = "15m" | "1h" | "24h" | "7d";
-
-const RANGE_OPTIONS: { id: TimeRange; label: string }[] = [
-  { id: "15m", label: "15m" },
-  { id: "1h", label: "1h" },
-  { id: "24h", label: "24h" },
-  { id: "7d", label: "7d" },
-];
 
 export function DashboardPage() {
   const [data, setData] = useState<DashboardData | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [range, setRange] = useState<TimeRange>("24h");
 
   useEffect(() => {
     let cancelled = false;
     async function load() {
       try {
+        const auditPromise = configApi
+          .auditLog({ limit: 12 })
+          .then((page) => ({ page, disabled: false }))
+          .catch((err) => {
+            if (err instanceof ConfigApiError && err.status === 503) {
+              return { page: null, disabled: true };
+            }
+            throw err;
+          });
         const [capabilities, mcp, providers, models, agents, audit] = await Promise.all([
           configApi.capabilities(),
           configApi.list<McpServerRecord>("mcp-servers"),
           configApi.list<ProviderRecord>("providers"),
           configApi.list<ModelBindingSpec>("models"),
           configApi.list<AgentSpec>("agents"),
-          configApi.auditLog({ limit: 12 }).catch(() => null),
+          auditPromise,
         ]);
         if (!cancelled) {
           setData({
@@ -65,7 +66,8 @@ export function DashboardPage() {
             providers: providers.items,
             models: models.items,
             agents: agents.items,
-            auditPage: audit,
+            auditPage: audit.page,
+            auditDisabled: audit.disabled,
           });
           setError(null);
         }
@@ -84,7 +86,7 @@ export function DashboardPage() {
   if (error) return <PageError message={error} />;
   if (!data) return <PageLoading />;
 
-  const { capabilities, mcpServers, providers, models, agents, auditPage } = data;
+  const { capabilities, mcpServers, providers, models, agents, auditPage, auditDisabled } = data;
 
   return (
     <div className="mx-auto max-w-6xl p-6 md:p-8">
@@ -92,30 +94,6 @@ export function DashboardPage() {
         eyebrow="Observe"
         title="Dashboard"
         description="The counts below reflect the currently published runtime snapshot, not just what is stored on disk."
-        actions={
-          <div role="tablist" aria-label="Time range" className="flex rounded-md border border-line bg-soft p-0.5 text-xs">
-            {RANGE_OPTIONS.map((opt) => {
-              const active = opt.id === range;
-              return (
-                <button
-                  key={opt.id}
-                  type="button"
-                  role="tab"
-                  aria-selected={active}
-                  onClick={() => setRange(opt.id)}
-                  className={[
-                    "h-7 rounded px-2 font-medium transition-colors",
-                    active
-                      ? "bg-surface text-fg-strong shadow-card"
-                      : "text-fg-soft hover:text-fg",
-                  ].join(" ")}
-                >
-                  {opt.label}
-                </button>
-              );
-            })}
-          </div>
-        }
       />
 
       <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-6">
@@ -147,7 +125,7 @@ export function DashboardPage() {
 
       <section className="mt-6 grid gap-6 lg:grid-cols-2">
         <HealthCard providers={providers} mcpServers={mcpServers} />
-        <ActivityTimeline auditPage={auditPage} />
+        <ActivityTimeline auditPage={auditPage} disabled={auditDisabled} />
       </section>
 
       <section className="mt-6 grid gap-6 lg:grid-cols-2">
@@ -336,27 +314,67 @@ function HealthCard({
   );
 }
 
-function ActivityTimeline({ auditPage }: { auditPage: AuditPage | null }) {
+function ActivityTimeline({
+  auditPage,
+  disabled,
+}: {
+  auditPage: AuditPage | null;
+  disabled: boolean;
+}) {
   return (
     <div className="rounded-md border border-line bg-surface p-5 shadow-card">
       <div className="flex items-center justify-between">
         <h3 className="text-lg font-semibold text-fg-strong">Recent activity</h3>
-        <Link
-          to={adminRoutes.auditLog}
-          className="text-xs font-medium text-link transition-colors hover:text-link-hover"
-        >
-          View all →
-        </Link>
+        {!disabled && (
+          <Link
+            to={adminRoutes.auditLog}
+            className="text-xs font-medium text-link transition-colors hover:text-link-hover"
+          >
+            View all →
+          </Link>
+        )}
       </div>
-      {!auditPage || auditPage.events.length === 0 ? (
-        <p className="mt-4 text-sm text-fg-soft">No recent activity.</p>
+      {disabled ? (
+        <FeatureDisabledNotice
+          title="Audit log is disabled on this server"
+          configHint="set AdminApiConfig.audit_log_enabled = true in the server config"
+          docsUrl="docs/architecture/admin-audit-log.md"
+        />
+      ) : !auditPage || auditPage.items.length === 0 ? (
+        <p className="mt-4 text-sm text-fg-soft">No recent activity yet.</p>
       ) : (
         <ol className="mt-4 space-y-3">
-          {auditPage.events.slice(0, 8).map((event) => (
+          {auditPage.items.slice(0, 8).map((event) => (
             <ActivityRow key={event.id} event={event} />
           ))}
         </ol>
       )}
+    </div>
+  );
+}
+
+function FeatureDisabledNotice({
+  title,
+  configHint,
+  docsUrl,
+}: {
+  title: string;
+  configHint: string;
+  docsUrl?: string;
+}) {
+  return (
+    <div className="mt-4 rounded-md border border-tone-warn/30 bg-tone-warn/10 px-3 py-3 text-sm">
+      <div className="font-medium text-fg-strong">{title}</div>
+      <div className="mt-1 text-xs text-fg-soft">
+        To enable, <span className="font-mono">{configHint}</span>
+        {docsUrl && (
+          <>
+            {" "}
+            (see <span className="font-mono">{docsUrl}</span>)
+          </>
+        )}
+        .
+      </div>
     </div>
   );
 }
@@ -373,7 +391,7 @@ function ActivityRow({ event }: { event: AuditEvent }) {
           <span className="font-mono text-fg-soft">{event.resource}</span>
         </div>
         <div className="mt-0.5 text-xs text-fg-faint">
-          {event.actor ?? "system"} · {formatRelativeTime(Math.floor(event.ts_ms / 1000))}
+          {event.actor || "system"} · {formatRelativeTime(Date.parse(event.ts))}
         </div>
       </div>
     </li>

@@ -53,16 +53,10 @@ export function useNavHealth(enabled: boolean): NavHealthMap {
 
 function deriveMcpHealth(items: McpServerRecord[] | undefined): NavHealth {
   if (!items) return NEUTRAL;
-  if (items.length === 0) return { count: 0, tone: "neutral" };
-  const disabled = items.filter((s) => !s.enabled).length;
-  if (disabled > 0) {
-    return {
-      count: items.length,
-      tone: "warn",
-      hint: `${disabled} server${disabled === 1 ? "" : "s"} disabled`,
-    };
-  }
-  return { count: items.length, tone: "ok" };
+  // The list payload doesn't carry a real "connected?" signal — that requires
+  // a per-server /v1/mcp-servers/:id/status probe. Show count only here, no
+  // synthetic tone.
+  return { count: items.length, tone: "neutral" };
 }
 
 function deriveProviderHealth(items: ProviderRecord[] | undefined): NavHealth {

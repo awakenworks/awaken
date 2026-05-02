@@ -121,6 +121,43 @@ export interface Capabilities {
   }>;
 }
 
+/** Wire-format mirror of Rust `awaken_ext_observability::AgentRuntimeSnapshot`. */
+export interface AgentRuntimeSnapshot {
+  agent_id: string;
+  window_seconds: number;
+  bucket_window_seconds: number;
+  bucket_count: number;
+  inference_count: number;
+  error_count: number;
+  input_tokens: number;
+  output_tokens: number;
+  avg_inference_duration_ms: number;
+  min_inference_duration_ms: number;
+  max_inference_duration_ms: number;
+  p50_inference_duration_ms: number;
+  p95_inference_duration_ms: number;
+  p99_inference_duration_ms: number;
+  inference_duration_histogram?: Array<{
+    upper_bound_ms: number | null;
+    count: number;
+  }>;
+  suspensions: number;
+  handoffs: number;
+  delegations: number;
+  tool_calls_by_tool: Array<{
+    tool: string;
+    call_count: number;
+    failure_count: number;
+    total_duration_ms: number;
+    avg_duration_ms: number;
+    min_duration_ms: number;
+    max_duration_ms: number;
+    p50_duration_ms: number;
+    p95_duration_ms: number;
+    p99_duration_ms: number;
+  }>;
+}
+
 export type RestoreResponse = Record<string, unknown>;
 
 export interface ListResponse<T> {
@@ -302,6 +339,20 @@ export const configApi = {
       last_error?: string | null;
       tools: Array<{ name: string; description?: string | null }>;
     }>(`${BACKEND_URL}/v1/mcp-servers/${encodeURIComponent(id)}/status`),
+
+  /** All-agents runtime stats. Backed by `/v1/agents/runtime-stats`, which
+   *  returns `{ "agents": AgentRuntimeSnapshot[] }`. Returns `null` if the
+   *  observability registry isn't installed (HTTP 503). */
+  agentsRuntimeStats: async (): Promise<{ agents: AgentRuntimeSnapshot[] } | null> => {
+    try {
+      return await fetchJson<{ agents: AgentRuntimeSnapshot[] }>(
+        `${BACKEND_URL}/v1/agents/runtime-stats`,
+      );
+    } catch (err) {
+      if (err instanceof ConfigApiError && err.status === 503) return null;
+      throw err;
+    }
+  },
 
   mcpRestart: (id: string) =>
     fetchJson<void>(`${BACKEND_URL}/v1/mcp-servers/${encodeURIComponent(id)}/restart`, {

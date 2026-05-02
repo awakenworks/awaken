@@ -14,6 +14,12 @@ export function formatRelativeTime(ms: number | undefined | null): string {
     return "—";
   }
 
+  // Auto-detect seconds vs. milliseconds. Anything under 10^11 is necessarily
+  // seconds (10^11 ms = year 5138; 10^11 s = year 5138 ad too, but agent
+  // updated_at on the wire is Unix seconds ~1.7e9 which is always below
+  // the threshold). This lets list pages pass `updated_at` directly.
+  if (ms > 0 && ms < 1e11) ms = ms * 1000;
+
   const now = Date.now();
   const diffMs = now - ms;
   const diffSecs = Math.floor(diffMs / 1000);

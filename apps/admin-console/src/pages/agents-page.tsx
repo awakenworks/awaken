@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link, useNavigate } from "react-router";
-import { type AgentSpec, configApi } from "@/lib/config-api";
+import { type AgentRuntimeSnapshot, type AgentSpec, configApi } from "@/lib/config-api";
 import { useConfirmDialog } from "@/components/confirm-dialog";
 import { useToast } from "@/components/toast-provider";
 import {
@@ -15,7 +15,6 @@ import { FilterBar, FilterChip } from "@/components/ui/filter-bar";
 import { PageHeader } from "@/components/ui/page-header";
 import { Pill, PillStack } from "@/components/ui/pill";
 import { SkeletonRows } from "@/components/ui/skeleton";
-import { Sparkline } from "@/components/ui/sparkline";
 import {
   compareNumber,
   compareString,
@@ -54,26 +53,9 @@ const COLUMNS: SortableColumn<AgentSortKey>[] = [
   { key: "model_id", label: "Model" },
   { key: "plugin_count", label: "Plugins" },
   { key: "updated_at", label: "Last modified" },
-  { key: null, label: "Activity" },
+  { key: null, label: "Inferences (24h)" },
   { key: null, label: "Actions" },
 ];
-
-/** Stable per-id pseudo-activity sparkline samples until run history is wired
- *  to the runtime feed. Hashing the id keeps the silhouette consistent across
- *  re-renders so the table doesn't shimmer. */
-function activitySamples(id: string): number[] {
-  let h = 2166136261;
-  for (let i = 0; i < id.length; i++) {
-    h ^= id.charCodeAt(i);
-    h = Math.imul(h, 16777619);
-  }
-  const samples: number[] = [];
-  for (let i = 0; i < 12; i++) {
-    h = Math.imul(h ^ (h >>> 13), 1274126177);
-    samples.push((h >>> 0) % 16);
-  }
-  return samples;
-}
 
 const LIST_OPTIONS = {
   validSortKeys: ["id", "model_id", "plugin_count", "updated_at"] as const,
@@ -89,6 +71,10 @@ export function AgentsPage() {
   const [modelFilter, setModelFilter] = useState<string>("any");
   const [pluginFilter, setPluginFilter] = useState<string>("any");
   const [modifiedRange, setModifiedRange] = useState<ModifiedRange>("any");
+  const [runtimeStats, setRuntimeStats] = useState<
+    Map<string, AgentRuntimeSnapshot> | null
+  >(null);
+  const [runtimeUnavailable, setRuntimeUnavailable] = useState(false);
 
   const { search, sort, pageSize, page, apply: applyListState } =
     useListUrlState<AgentSortKey>(LIST_OPTIONS);
@@ -116,6 +102,33 @@ export function AgentsPage() {
       cancelled = true;
     };
   }, [toast]);
+
+  useEffect(() => {
+    let cancelled = false;
+    void configApi
+      .agentsRuntimeStats()
+      .then((res) => {
+        if (cancelled) return;
+        if (!res) {
+          setRuntimeStats(new Map());
+          setRuntimeUnavailable(true);
+          return;
+        }
+        const map = new Map<string, AgentRuntimeSnapshot>();
+        for (const snap of res.agents) map.set(snap.agent_id, snap);
+        setRuntimeStats(map);
+        setRuntimeUnavailable(false);
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setRuntimeStats(new Map());
+          setRuntimeUnavailable(false);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const modelOptions = useMemo(() => {
     const set = new Set<string>();
@@ -278,6 +291,15 @@ export function AgentsPage() {
         />
       )}
 
+      {runtimeUnavailable && (
+        <div className="mb-3 rounded-md border border-tone-warn/30 bg-tone-warn/10 px-3 py-2 text-xs text-fg-soft">
+          <span className="font-medium text-fg-strong">Runtime stats disabled.</span>{" "}
+          The "Inferences (24h)" column shows <span className="font-mono">n/a</span> because the server
+          has no <span className="font-mono">RuntimeStatsRegistry</span> installed (install the
+          observability plugin or wire <span className="font-mono">AppState::with_runtime_stats</span>).
+        </div>
+      )}
+
       <div className="overflow-hidden rounded-lg border border-line bg-surface shadow-card">
         {noAgentsAtAll ? (
           <EmptyState
@@ -334,8 +356,12 @@ export function AgentsPage() {
                     <td className="px-5 py-4 text-fg-soft">
                       {formatRelativeTime(agent.updated_at)}
                     </td>
-                    <td className="px-5 py-4">
-                      <Sparkline values={activitySamples(agent.id)} ariaLabel={`recent activity for ${agent.id}`} />
+                    <td className="px-5 py-4 font-mono text-fg">
+                      <InferenceCount
+                        snapshot={runtimeStats?.get(agent.id)}
+                        loading={runtimeStats === null}
+                        unavailable={runtimeUnavailable}
+                      />
                     </td>
                     <td className="px-5 py-4">
                       <div className="flex items-center gap-3">
@@ -374,6 +400,50 @@ export function AgentsPage() {
           />
         )}
       </div>
+    </div>
+  );
+}
+
+function InferenceCount({
+  snapshot,
+  loading,
+  unavailable,
+}: {
+  snapshot: AgentRuntimeSnapshot | undefined;
+  loading: boolean;
+  unavailable: boolean;
+}) {
+  if (loading) return <span className="text-fg-faint">…</span>;
+  if (unavailable) {
+    return (
+      <span className="text-fg-faint" title="Runtime stats registry not configured on the server">
+        n/a
+      </span>
+    );
+  }
+  if (!snapshot) return <span className="text-fg-faint">—</span>;
+  const hasErrors = snapshot.error_count > 0;
+  const hasInferences = snapshot.inference_count > 0;
+  return (
+    <div className="flex flex-col gap-0.5">
+      <div className="inline-flex items-baseline gap-2">
+        <span className="font-semibold text-fg-strong">
+          {snapshot.inference_count}
+        </span>
+        {hasErrors && (
+          <span
+            className="text-xs text-tone-error"
+            title={`${snapshot.error_count} error${snapshot.error_count === 1 ? "" : "s"}`}
+          >
+            · {snapshot.error_count} err
+          </span>
+        )}
+      </div>
+      {hasInferences && snapshot.p95_inference_duration_ms > 0 && (
+        <div className="text-[11px] text-fg-faint">
+          p95 {snapshot.p95_inference_duration_ms}ms
+        </div>
+      )}
     </div>
   );
 }

@@ -81,4 +81,12 @@ describe("formatRelativeTime", () => {
     const result = formatRelativeTime(new Date("2026-04-20T00:00:00.000Z").getTime());
     expect(result).toBe("Apr 20, 2026");
   });
+
+  it("auto-detects Unix seconds and treats them as ms × 1000", () => {
+    vi.setSystemTime(NOW);
+    // updated_at on the wire is Unix seconds — passing it directly should
+    // still produce a relative string, not "Jan 1970".
+    const fiveMinAgoSec = Math.floor(NOW / 1000) - 5 * 60;
+    expect(formatRelativeTime(fiveMinAgoSec)).toBe("5m ago");
+  });
 });
