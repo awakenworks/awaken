@@ -1,0 +1,79 @@
+{
+  "color": {
+    "slate": {
+      "app":         { "$value": "oklch(99.2% 0.003 80)",  "$type": "color", "$description": "Page background — warm white" },
+      "canvas":      { "$value": "oklch(98.0% 0.004 75)",  "$type": "color", "$description": "Canvas behind cards" },
+      "surface":     { "$value": "oklch(100% 0 0)",        "$type": "color", "$description": "Card / elevated surface" },
+      "subtle":      { "$value": "oklch(96.5% 0.005 80)",  "$type": "color", "$description": "Zebra rows, table head" },
+      "muted":       { "$value": "oklch(94.5% 0.006 80)",  "$type": "color", "$description": "Code, kbd" },
+      "line":        { "$value": "oklch(91.5% 0.006 80)",  "$type": "color", "$description": "Hairline border" },
+      "line-strong": { "$value": "oklch(86.0% 0.008 80)",  "$type": "color" },
+      "fg":          { "$value": "oklch(18.0% 0.020 260)", "$type": "color", "$description": "Primary text" },
+      "fg-strong":   { "$value": "oklch(12.0% 0.020 260)", "$type": "color", "$description": "H1 / numerals" },
+      "fg-muted":    { "$value": "oklch(48.0% 0.010 260)", "$type": "color", "$description": "Secondary text" },
+      "fg-faint":    { "$value": "oklch(62.0% 0.008 260)", "$type": "color", "$description": "Meta / captions" }
+    },
+    "slate-dark": {
+      "app":         { "$value": "oklch(15.0% 0.018 250)", "$type": "color" },
+      "canvas":      { "$value": "oklch(13.5% 0.018 250)", "$type": "color" },
+      "surface":     { "$value": "oklch(19.0% 0.018 250)", "$type": "color" },
+      "subtle":      { "$value": "oklch(17.0% 0.018 250)", "$type": "color" },
+      "muted":       { "$value": "oklch(22.5% 0.020 250)", "$type": "color" },
+      "line":        { "$value": "oklch(28.0% 0.020 250)", "$type": "color" },
+      "line-strong": { "$value": "oklch(36.0% 0.022 250)", "$type": "color" },
+      "fg":          { "$value": "oklch(94.0% 0.008 250)", "$type": "color" },
+      "fg-strong":   { "$value": "oklch(98.5% 0.005 80)",  "$type": "color" },
+      "fg-muted":    { "$value": "oklch(72.0% 0.012 250)", "$type": "color" },
+      "fg-faint":    { "$value": "oklch(58.0% 0.014 250)", "$type": "color" }
+    },
+    "indigo": {
+      "accent":      { "$value": "oklch(58.0% 0.135 250)", "$type": "color", "$description": "Primary action — indigo" },
+      "soft":        { "$value": "oklch(94.0% 0.035 250)", "$type": "color" },
+      "fg":          { "$value": "oklch(98.0% 0.010 250)", "$type": "color" }
+    },
+    "indigo-dark": {
+      "accent":      { "$value": "oklch(70.0% 0.150 240)", "$type": "color" },
+      "soft":        { "$value": "oklch(28.0% 0.080 250)", "$type": "color" },
+      "fg":          { "$value": "oklch(98% 0.005 240)",   "$type": "color" }
+    },
+    "blue": {
+      "link":        { "$value": "oklch(54.0% 0.180 240)",        "$type": "color", "$description": "A11y blue — independent of accent so focus rings stay blue if accent shifts hue" },
+      "link-hover":  { "$value": "oklch(46.0% 0.190 240)",        "$type": "color" },
+      "focus":       { "$value": "oklch(60.0% 0.180 240)",        "$type": "color" },
+      "focus-soft":  { "$value": "oklch(60.0% 0.180 240 / 0.18)", "$type": "color" }
+    },
+    "violet": {
+      "agent":        { "$value": "oklch(58.0% 0.135 270)", "$type": "color", "$description": "Agent identity — shared with teams (--os-agent uses #7c5cff which is OKLCH ≈ this value)" },
+      "agent-dark":   { "$value": "oklch(70.0% 0.150 270)", "$type": "color" },
+      "tint":         { "$value": "oklch(96.0% 0.030 270)", "$type": "color", "$description": "Row wash for AI-touched rows" },
+      "tint-dark":    { "$value": "oklch(28.0% 0.060 270)", "$type": "color" },
+      "stripe":       { "$value": "oklch(58.0% 0.135 270)", "$type": "color", "$description": "Active/pending agent left band" },
+      "fg":           { "$value": "oklch(38.0% 0.140 270)", "$type": "color", "$description": "Text inside agent-tint" },
+      "fg-dark":      { "$value": "oklch(78.0% 0.120 270)", "$type": "color" }
+    },
+    "tone": {
+      "info":         { "$value": "oklch(60.0% 0.110 240)", "$type": "color", "$description": "Shared with teams (parity-checked)" },
+      "info-dark":    { "$value": "oklch(74.0% 0.140 240)", "$type": "color" },
+      "warn":         { "$value": "oklch(70.0% 0.135 78)",  "$type": "color", "$description": "Shared with teams (parity-checked)" },
+      "warn-dark":    { "$value": "oklch(82.0% 0.150 78)",  "$type": "color" },
+      "error":        { "$value": "oklch(58.0% 0.180 25)",  "$type": "color", "$description": "Shared with teams (parity-checked)" },
+      "error-dark":   { "$value": "oklch(70.0% 0.180 25)",  "$type": "color" },
+      "success":      { "$value": "oklch(60.0% 0.120 150)", "$type": "color", "$description": "Shared with teams (parity-checked)" },
+      "success-dark": { "$value": "oklch(74.0% 0.130 150)", "$type": "color" }
+    },
+    "state": {
+      "backlog":       { "$value": "oklch(62.0% 0.008 260)", "$type": "color" },
+      "backlog-dark":  { "$value": "oklch(58.0% 0.014 250)", "$type": "color" },
+      "progress":      { "$value": "oklch(74.0% 0.135 78)",  "$type": "color", "$description": "In-progress amber ring (Linear-ish)" },
+      "progress-dark": { "$value": "oklch(82.0% 0.150 78)",  "$type": "color" },
+      "review":        { "$value": "oklch(60.0% 0.150 250)", "$type": "color", "$description": "Awaiting sign-off — indigo wedge" },
+      "review-dark":   { "$value": "oklch(72.0% 0.150 250)", "$type": "color" },
+      "done":          { "$value": "oklch(64.0% 0.130 150)", "$type": "color", "$description": "Completed — solid green disc" },
+      "done-dark":     { "$value": "oklch(74.0% 0.130 150)", "$type": "color" },
+      "blocked":       { "$value": "oklch(60.0% 0.180 28)",  "$type": "color" },
+      "blocked-dark":  { "$value": "oklch(70.0% 0.180 28)",  "$type": "color" },
+      "paused":        { "$value": "oklch(70.0% 0.090 80)",  "$type": "color", "$description": "On-hold — desaturated amber to read 'frozen'" },
+      "paused-dark":   { "$value": "oklch(78.0% 0.080 80)",  "$type": "color" }
+    }
+  }
+}

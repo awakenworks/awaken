@@ -1,15 +1,25 @@
+@import "./styles/generated/tokens.css";
+@import "./styles/generated/tokens-dark.css";
+@import "./styles/generated/tokens-auto-dark.css";
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
 :root {
   color-scheme: light;
-  font-family: "IBM Plex Sans", "Avenir Next", "Segoe UI", sans-serif;
-  background:
-    radial-gradient(circle at top left, rgba(242, 180, 97, 0.16), transparent 28%),
-    radial-gradient(circle at top right, rgba(14, 165, 233, 0.12), transparent 32%),
-    linear-gradient(180deg, #f7f3eb 0%, #eef3f7 52%, #f3f5f7 100%);
-  color: #162033;
+  font-family: var(--aw-font-sans);
+  background: var(--aw-bg);
+  color: var(--aw-text);
+  letter-spacing: var(--aw-tracking-base);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+  font-feature-settings: "liga" 1, "calt" 1;
+}
+
+[data-theme="dark"] {
+  color-scheme: dark;
 }
 
 * {
@@ -24,6 +34,8 @@ body,
 
 body {
   margin: 0;
+  background: var(--aw-bg);
+  color: var(--aw-text);
 }
 
 button,
@@ -33,11 +45,30 @@ textarea {
   font: inherit;
 }
 
+code,
+kbd,
+pre,
+samp {
+  font-family: var(--aw-font-mono);
+  font-feature-settings: "liga" 1;
+}
+
 a {
   color: inherit;
   text-decoration: none;
 }
 
 ::selection {
-  background: rgba(14, 116, 144, 0.18);
+  background: var(--aw-accent-soft);
+  color: var(--aw-text-strong);
+}
+
+:focus {
+  outline: none;
+}
+
+:focus-visible {
+  outline: 2px solid var(--aw-focus);
+  outline-offset: 2px;
+  border-radius: var(--aw-radius-sm);
 }

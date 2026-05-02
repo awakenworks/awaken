@@ -1,0 +1,11 @@
+{
+  "aw": {
+    "shadow-1":            { "$value": "0 1px 0 oklch(100% 0 0 / 0.6) inset, 0 1px 2px oklch(20% 0.02 260 / 0.04)",                "$type": "shadow", "$description": "Legacy 3-tier shadow (back-compat with design artboards)" },
+    "shadow-2":            { "$value": "0 1px 0 oklch(100% 0 0 / 0.6) inset, 0 6px 18px oklch(20% 0.02 260 / 0.06)",               "$type": "shadow" },
+    "shadow-pop":          { "$value": "0 12px 32px oklch(20% 0.02 260 / 0.10)",                                                   "$type": "shadow" },
+    "shadow-card":         { "$value": "0 0 0 1px oklch(20% 0.02 260 / 0.06), 0 1px 2px oklch(20% 0.02 260 / 0.04)",               "$type": "shadow", "$description": "Vercel-style shadow-as-border (4-tier)" },
+    "shadow-card-lift":    { "$value": "0 0 0 1px oklch(20% 0.02 260 / 0.08), 0 4px 12px oklch(20% 0.02 260 / 0.06)",              "$type": "shadow" },
+    "shadow-overlay":      { "$value": "0 0 0 1px oklch(20% 0.02 260 / 0.10), 0 24px 60px oklch(20% 0.02 260 / 0.18)",             "$type": "shadow" },
+    "focus-ring":          { "$value": "0 0 0 3px oklch(60.0% 0.180 240 / 0.18)",                                                  "$type": "shadow", "$description": "Functional blue focus ring" }
+  }
+}

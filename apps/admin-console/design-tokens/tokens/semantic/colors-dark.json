@@ -1,0 +1,53 @@
+{
+  "aw": {
+    "bg":          { "$value": "{color.slate-dark.app}",     "$type": "color" },
+    "bg-canvas":   { "$value": "{color.slate-dark.canvas}",  "$type": "color" },
+    "bg-elevated": { "$value": "{color.slate-dark.surface}", "$type": "color" },
+    "bg-soft":     { "$value": "{color.slate-dark.subtle}",  "$type": "color" },
+    "bg-muted":    { "$value": "{color.slate-dark.muted}",   "$type": "color" },
+    "bg-hover":    { "$value": "{color.slate-dark.subtle}",  "$type": "color" },
+    "bg-pressed":  { "$value": "{color.slate-dark.muted}",   "$type": "color" },
+
+    "text":        { "$value": "{color.slate-dark.fg}",        "$type": "color" },
+    "text-strong": { "$value": "{color.slate-dark.fg-strong}", "$type": "color" },
+    "text-soft":   { "$value": "{color.slate-dark.fg-muted}",  "$type": "color" },
+    "text-faint":  { "$value": "{color.slate-dark.fg-faint}",  "$type": "color" },
+
+    "border":        { "$value": "{color.slate-dark.line}",        "$type": "color" },
+    "border-strong": { "$value": "{color.slate-dark.line-strong}", "$type": "color" },
+
+    "accent":      { "$value": "{color.indigo-dark.accent}", "$type": "color" },
+    "accent-soft": { "$value": "{color.indigo-dark.soft}",   "$type": "color" },
+    "accent-text": { "$value": "{color.indigo-dark.fg}",     "$type": "color" },
+
+    "link":       { "$value": "{color.blue.link-hover}",          "$type": "color" },
+    "link-hover": { "$value": "{color.blue.focus}",               "$type": "color" },
+    "focus":      { "$value": "{color.blue.focus}",               "$type": "color" },
+    "focus-soft": { "$value": "oklch(60.0% 0.180 240 / 0.32)",    "$type": "color" },
+
+    "success":    { "$value": "{color.tone.success-dark}", "$type": "color" },
+    "warning":    { "$value": "{color.tone.warn-dark}",    "$type": "color" },
+    "danger":     { "$value": "{color.tone.error-dark}",   "$type": "color" },
+
+    "tone": {
+      "info":    { "$value": "{color.tone.info-dark}",    "$type": "color" },
+      "warn":    { "$value": "{color.tone.warn-dark}",    "$type": "color" },
+      "error":   { "$value": "{color.tone.error-dark}",   "$type": "color" },
+      "success": { "$value": "{color.tone.success-dark}", "$type": "color" }
+    },
+
+    "state": {
+      "backlog":  { "$value": "{color.state.backlog-dark}",  "$type": "color" },
+      "progress": { "$value": "{color.state.progress-dark}", "$type": "color" },
+      "review":   { "$value": "{color.state.review-dark}",   "$type": "color" },
+      "done":     { "$value": "{color.state.done-dark}",     "$type": "color" },
+      "blocked":  { "$value": "{color.state.blocked-dark}",  "$type": "color" },
+      "paused":   { "$value": "{color.state.paused-dark}",   "$type": "color" }
+    },
+
+    "agent":        { "$value": "{color.violet.agent-dark}", "$type": "color" },
+    "agent-tint":   { "$value": "{color.violet.tint-dark}",  "$type": "color" },
+    "agent-stripe": { "$value": "{color.violet.agent-dark}", "$type": "color" },
+    "agent-fg":     { "$value": "{color.violet.fg-dark}",    "$type": "color" }
+  }
+}
