@@ -1141,6 +1141,16 @@ Always greet the user warmly and ask how you can help today.
             as Arc<dyn SkillCatalogProvider>,
     );
 
+    let state = if let Ok(token) = std::env::var("AWAKEN_ADMIN_BEARER_TOKEN") {
+        if !token.is_empty() {
+            state.with_admin_api_bearer_token(token)
+        } else {
+            state
+        }
+    } else {
+        state
+    };
+
     let mut app = build_router(&state).with_state(state);
 
     if config.enable_cors {

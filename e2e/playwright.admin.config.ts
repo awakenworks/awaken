@@ -4,6 +4,8 @@ const adminStorageDir =
   process.env.AWAKEN_E2E_ADMIN_STORAGE_DIR ??
   `./target/e2e-admin-sessions/${Date.now()}-${process.pid}`;
 
+export const TEST_ADMIN_TOKEN = 'test-bearer-abc';
+
 export default defineConfig({
   testDir: './tests',
   testMatch: /admin-config-ui\.spec\.ts/,
@@ -15,7 +17,7 @@ export default defineConfig({
   },
   webServer: [
     {
-      command: `AWAKEN_STORAGE_DIR=${adminStorageDir} cargo run -p ai-sdk-starter-agent`,
+      command: `AWAKEN_STORAGE_DIR=${adminStorageDir} AWAKEN_ADMIN_BEARER_TOKEN=${TEST_ADMIN_TOKEN} cargo run -p ai-sdk-starter-agent`,
       cwd: '..',
       port: 38080,
       timeout: 120_000,

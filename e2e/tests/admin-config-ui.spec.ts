@@ -1,4 +1,5 @@
 import { expect, test } from '@playwright/test';
+import { TEST_ADMIN_TOKEN } from '../playwright.admin.config';
 
 const BACKEND_URL = process.env.AWAKEN_BACKEND_URL ?? 'http://127.0.0.1:38080';
 const BIGMODEL_BASE_URL =
@@ -110,8 +111,16 @@ async function createModelViaUi(
 }
 
 test.describe('admin config UI', () => {
+  test.beforeEach(async ({ page }) => {
+    await page.addInitScript((token) => {
+      localStorage.setItem('awaken.adminToken', token);
+    }, TEST_ADMIN_TOKEN);
+  });
+
   test('exposes every registered configurable plugin in capabilities', async ({ request }) => {
-    const response = await request.get(`${BACKEND_URL}/v1/capabilities`);
+    const response = await request.get(`${BACKEND_URL}/v1/capabilities`, {
+      headers: { Authorization: `Bearer ${TEST_ADMIN_TOKEN}` },
+    });
     expect(response.ok()).toBeTruthy();
 
     const capabilities = await response.json();
@@ -204,6 +213,7 @@ test.describe('admin config UI', () => {
 
     const agentResponse = await request.get(
       `${BACKEND_URL}/v1/config/agents/${encodeURIComponent(agentId)}`,
+      { headers: { Authorization: `Bearer ${TEST_ADMIN_TOKEN}` } },
     );
     expect(agentResponse.ok()).toBeTruthy();
     const agent = await agentResponse.json();
@@ -251,6 +261,7 @@ test.describe('admin config UI', () => {
 
     const providerResponse = await request.get(
       `${BACKEND_URL}/v1/config/providers/${encodeURIComponent(providerId)}`,
+      { headers: { Authorization: `Bearer ${TEST_ADMIN_TOKEN}` } },
     );
     expect(providerResponse.ok()).toBeTruthy();
     const provider = await providerResponse.json();
@@ -291,6 +302,36 @@ test.describe('admin config UI', () => {
       `BigModel provider returned an error termination: ${termination}`,
     ).not.toBe('error');
     expect(textDeltas(events).toLowerCase()).toContain('bigmodel-ui-ok');
+  });
+
+  test('401 prompts admin token modal and retries the original request', async ({ page }) => {
+    // Start with no token so the backend returns 401 and triggers the modal.
+    await page.addInitScript(() => {
+      localStorage.removeItem('awaken.adminToken');
+    });
+
+    const agentListResponsePromise = page.waitForResponse(
+      (response) =>
+        response.url().includes('/v1/config/agents') && response.status() !== 401,
+    );
+
+    await page.goto('/agents');
+
+    // The 401 should trigger the admin token modal.
+    const modal = page.getByRole('dialog', { name: /Admin token required/ });
+    await expect(modal).toBeVisible();
+
+    // Fill in the correct token and save.
+    await modal.locator('input[type="password"]').fill(TEST_ADMIN_TOKEN);
+    await modal.getByRole('button', { name: 'Save' }).click();
+
+    // Modal closes and the retry succeeds.
+    await expect(modal).toBeHidden();
+    const agentListResponse = await agentListResponsePromise;
+    expect(agentListResponse.ok()).toBeTruthy();
+
+    // Clean up so subsequent tests start without this token in localStorage.
+    await page.evaluate(() => localStorage.removeItem('awaken.adminToken'));
   });
 
   test('unsaved-changes guard intercepts in-app navigation', async ({ page }) => {
