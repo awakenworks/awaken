@@ -347,3 +347,15 @@ async fn returns_503_when_audit_not_configured() {
     let (status, _body) = get_audit_log(&app, "").await;
     assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
 }
+
+#[tokio::test]
+async fn malformed_cursor_returns_400() {
+    let app = build_test_app_with_audit(None).await;
+    let (status, body) = get_audit_log(&app, "cursor=not-base64-!!!").await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "body: {body}");
+    assert_eq!(
+        body["error"].as_str(),
+        Some("invalid cursor"),
+        "body must contain error: invalid cursor"
+    );
+}

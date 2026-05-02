@@ -14,7 +14,7 @@ struct DeleteParams {
 
 use crate::app::AppState;
 use crate::routes::ApiError;
-use crate::services::audit_log::AuditQuery;
+use crate::services::audit_log::{AuditQuery, AuditQueryError};
 use crate::services::config_service::{
     ConfigNamespace, ConfigService, ConfigServiceError, ProviderTestResult,
 };
@@ -307,10 +307,14 @@ async fn list_audit_log(
     })?;
     let mut effective_query = query;
     effective_query.limit = effective_query.limit.clamp(1, 1000);
-    let page = audit
-        .query(effective_query)
-        .await
-        .map_err(|e| ConfigRouteError::Api(ApiError::Internal(e.to_string())))?;
+    let page = audit.query(effective_query).await.map_err(|e| match e {
+        AuditQueryError::InvalidCursor => {
+            ConfigRouteError::Api(ApiError::BadRequest("invalid cursor".into()))
+        }
+        AuditQueryError::Storage(storage_err) => {
+            ConfigRouteError::Api(ApiError::Internal(storage_err.to_string()))
+        }
+    })?;
     Ok(Json(page))
 }
 

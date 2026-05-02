@@ -253,12 +253,15 @@ impl<'a> ConfigService<'a> {
             .persist_and_apply_locked(manager.as_ref(), namespace, &id, None, body.clone())
             .await?;
 
-        if let Some(audit) = &self.audit {
-            let resource = format!("{}/{}", namespace.as_str(), id);
-            audit
-                .emit(AuditAction::Create, &resource, None, Some(body), headers)
-                .await;
-        }
+        self.emit_audit(
+            AuditAction::Create,
+            namespace,
+            &id,
+            None,
+            Some(body),
+            headers,
+        )
+        .await;
 
         Ok(result)
     }
@@ -290,18 +293,15 @@ impl<'a> ConfigService<'a> {
             )
             .await?;
 
-        if let Some(audit) = &self.audit {
-            let resource = format!("{}/{}", namespace.as_str(), id);
-            audit
-                .emit(
-                    AuditAction::Update,
-                    &resource,
-                    previous,
-                    Some(body),
-                    headers,
-                )
-                .await;
-        }
+        self.emit_audit(
+            AuditAction::Update,
+            namespace,
+            id,
+            previous,
+            Some(body),
+            headers,
+        )
+        .await;
 
         Ok(result)
     }
@@ -341,18 +341,15 @@ impl<'a> ConfigService<'a> {
             return Err(error);
         }
 
-        if let Some(audit) = &self.audit {
-            let resource = format!("{}/{}", namespace.as_str(), id);
-            audit
-                .emit(
-                    AuditAction::Delete,
-                    &resource,
-                    Some(previous),
-                    None,
-                    headers,
-                )
-                .await;
-        }
+        self.emit_audit(
+            AuditAction::Delete,
+            namespace,
+            id,
+            Some(previous),
+            None,
+            headers,
+        )
+        .await;
 
         Ok(())
     }
@@ -404,6 +401,23 @@ impl<'a> ConfigService<'a> {
             }
             ConfigNamespace::Agents | ConfigNamespace::McpServers => Ok(vec![]),
         }
+    }
+
+    /// Emit an audit event if an audit logger is configured.
+    ///
+    /// Best-effort: the call is fire-and-forget (matching the `AuditLogger::emit` contract).
+    async fn emit_audit(
+        &self,
+        action: AuditAction,
+        namespace: ConfigNamespace,
+        id: &str,
+        before: Option<Value>,
+        after: Option<Value>,
+        headers: &HeaderMap,
+    ) {
+        let Some(audit) = &self.audit else { return };
+        let resource = format!("{}/{}", namespace.as_str(), id);
+        audit.emit(action, &resource, before, after, headers).await;
     }
 
     fn runtime_manager(

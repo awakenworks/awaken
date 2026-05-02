@@ -124,6 +124,10 @@ pub struct AdminApiConfig {
     #[serde(default = "default_audit_retention_days")]
     pub audit_retention_days: u32,
     /// Interval in seconds between audit retention sweeps. Default 3600 (1 hour).
+    ///
+    /// A value of `0` is treated as misconfiguration: the server will warn and
+    /// clamp to 60 seconds. Values between 1 and 9 emit a warning but are
+    /// respected as the operator may have a specific reason.
     #[serde(default = "default_audit_sweep_interval_secs")]
     pub audit_sweep_interval_secs: u64,
 }
@@ -142,6 +146,27 @@ const fn default_audit_retention_days() -> u32 {
 
 const fn default_audit_sweep_interval_secs() -> u64 {
     3600
+}
+
+/// Compute the effective sweep interval, emitting warnings for suspicious values.
+///
+/// - `0` → warn and clamp to 60 s (implicit floor).
+/// - `1..=9` → warn (respected as-is; operator may have a real reason).
+pub fn effective_sweep_interval(secs: u64) -> std::time::Duration {
+    if secs == 0 {
+        tracing::warn!(
+            audit_sweep_interval_secs = secs,
+            "audit sweep interval is 0 — clamping to 60 s to avoid a tight spin loop"
+        );
+        return std::time::Duration::from_secs(60);
+    }
+    if secs < 10 {
+        tracing::warn!(
+            audit_sweep_interval_secs = secs,
+            "audit sweep interval is very small; consider a value >= 10 s"
+        );
+    }
+    std::time::Duration::from_secs(secs)
 }
 
 impl Default for AdminApiConfig {
@@ -423,10 +448,10 @@ impl AppState {
         let logger = Arc::new(AuditLogger::new(store));
         let logger_for_sweeper = logger.clone();
         let retention_days = admin_config.audit_retention_days;
-        let sweep_interval_secs = admin_config.audit_sweep_interval_secs;
+        let sweep_interval = effective_sweep_interval(admin_config.audit_sweep_interval_secs);
         // Spawn retention sweeper (fire-and-forget; leaked on shutdown, acceptable for v1).
         tokio::spawn(async move {
-            let interval = std::time::Duration::from_secs(sweep_interval_secs.max(1));
+            let interval = sweep_interval;
             loop {
                 tokio::time::sleep(interval).await;
                 let cutoff = chrono::Utc::now() - chrono::Duration::days(retention_days as i64);
@@ -918,5 +943,30 @@ mod tests {
         assert_eq!(map.lock().len(), 1);
         assert!(map.lock().get("recent-run").is_some());
         assert!(map.lock().get("old-run").is_none());
+    }
+
+    // ── effective_sweep_interval ────────────────────────────────────────────
+
+    #[test]
+    fn sweep_interval_zero_clamps_to_60s() {
+        let duration = effective_sweep_interval(0);
+        assert_eq!(
+            duration,
+            std::time::Duration::from_secs(60),
+            "zero sweep interval must clamp to 60 s"
+        );
+    }
+
+    #[test]
+    fn sweep_interval_normal_value_is_respected() {
+        let duration = effective_sweep_interval(3600);
+        assert_eq!(duration, std::time::Duration::from_secs(3600));
+    }
+
+    #[test]
+    fn sweep_interval_small_nonzero_is_respected() {
+        // Values 1–9 should warn but still be used as-is.
+        let duration = effective_sweep_interval(5);
+        assert_eq!(duration, std::time::Duration::from_secs(5));
     }
 }

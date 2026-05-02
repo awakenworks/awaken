@@ -54,6 +54,15 @@ pub struct AuditPage {
     pub next_cursor: Option<String>,
 }
 
+/// Error returned by [`AuditLogger::query`].
+#[derive(Debug, thiserror::Error)]
+pub enum AuditQueryError {
+    #[error("invalid cursor")]
+    InvalidCursor,
+    #[error("storage error: {0}")]
+    Storage(#[from] StorageError),
+}
+
 /// Stateless service that records and queries audit events.
 pub struct AuditLogger {
     store: Arc<dyn ConfigStore>,
@@ -121,15 +130,26 @@ impl AuditLogger {
     }
 
     /// Query audit events with optional filters and keyset pagination.
-    pub async fn query(&self, filter: AuditQuery) -> Result<AuditPage, StorageError> {
+    ///
+    /// Returns `Err` if `filter.cursor` is present but not valid base64.
+    pub async fn query(&self, filter: AuditQuery) -> Result<AuditPage, AuditQueryError> {
         let effective_limit = filter.limit.clamp(1, 1000);
 
         // Decode cursor to get the last-seen id (exclusive upper bound).
-        let cursor_id = filter.cursor.as_deref().and_then(decode_cursor);
+        let cursor_id = filter
+            .cursor
+            .as_deref()
+            .map(decode_cursor)
+            .transpose()
+            .map_err(|_| AuditQueryError::InvalidCursor)?;
 
         // Fetch all entries in the namespace (sorted ascending by ULID).
         // Linear scan per ADR D3 footnote.
-        let all = self.store.list(AUDIT_NAMESPACE, 0, usize::MAX).await?;
+        let all = self
+            .store
+            .list(AUDIT_NAMESPACE, 0, usize::MAX)
+            .await
+            .map_err(AuditQueryError::Storage)?;
 
         // Deserialize and filter.
         let mut events: Vec<AuditEvent> = all
@@ -297,10 +317,11 @@ fn encode_cursor(id: &str) -> String {
     base64::Engine::encode(&base64::engine::general_purpose::URL_SAFE_NO_PAD, id)
 }
 
-fn decode_cursor(cursor: &str) -> Option<String> {
+fn decode_cursor(cursor: &str) -> Result<String, ()> {
     base64::Engine::decode(&base64::engine::general_purpose::URL_SAFE_NO_PAD, cursor)
         .ok()
         .and_then(|bytes| String::from_utf8(bytes).ok())
+        .ok_or(())
 }
 
 #[cfg(test)]
