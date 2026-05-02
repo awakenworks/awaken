@@ -20,12 +20,16 @@ export interface AgentSpec {
   excluded_tools?: string[];
   delegates?: string[];
   reasoning_effort?: string | number | null;
+  created_at?: number;
+  updated_at?: number;
 }
 
 export interface ModelBindingSpec {
   id: string;
   provider_id: string;
   upstream_model: string;
+  created_at?: number;
+  updated_at?: number;
 }
 
 export interface ProviderSpec {
@@ -34,6 +38,8 @@ export interface ProviderSpec {
   api_key?: string;
   base_url?: string;
   timeout_secs?: number;
+  created_at?: number;
+  updated_at?: number;
 }
 
 export interface ProviderRecord extends Omit<ProviderSpec, "api_key"> {
@@ -58,6 +64,8 @@ export interface McpServerSpec {
   timeout_secs?: number;
   env?: Record<string, string>;
   restart_policy?: McpRestartPolicy;
+  created_at?: number;
+  updated_at?: number;
 }
 
 export interface McpServerRecord extends Omit<McpServerSpec, "env"> {

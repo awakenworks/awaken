@@ -68,6 +68,8 @@ impl ResolvedAgent {
             delegates: Vec::new(),
             sections: Default::default(),
             registry: None,
+            created_at: None,
+            updated_at: None,
         });
         Self {
             spec,

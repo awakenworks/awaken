@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use awaken_contract::contract::config_store::ConfigStore;
 use awaken_contract::contract::storage::StorageError;
@@ -340,6 +341,35 @@ impl<'a> ConfigService<'a> {
                     .await?;
             }
             ConfigNamespace::Agents | ConfigNamespace::Models => {}
+        }
+
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
+
+        if path_id.is_none() {
+            // Create: set both timestamps.
+            object.insert("created_at".into(), Value::Number(now.into()));
+            object.insert("updated_at".into(), Value::Number(now.into()));
+        } else {
+            // Update: preserve existing created_at if present; always refresh updated_at.
+            if !object.contains_key("created_at") {
+                if let Ok(Some(existing)) = self.store.get(namespace.as_str(), &id).await {
+                    if let Some(existing_created_at) = existing
+                        .as_object()
+                        .and_then(|obj| obj.get("created_at"))
+                        .cloned()
+                    {
+                        object.insert("created_at".into(), existing_created_at);
+                    } else {
+                        object.insert("created_at".into(), Value::Number(now.into()));
+                    }
+                } else {
+                    object.insert("created_at".into(), Value::Number(now.into()));
+                }
+            }
+            object.insert("updated_at".into(), Value::Number(now.into()));
         }
 
         Ok((id, Value::Object(object)))
@@ -728,6 +758,8 @@ mod tests {
                     id: "bootstrap".into(),
                     provider_id: "bootstrap".into(),
                     upstream_model: "bootstrap-model".into(),
+                    created_at: None,
+                    updated_at: None,
                 }],
                 &[bootstrap_agent()],
                 &[],

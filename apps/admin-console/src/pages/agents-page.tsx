@@ -21,25 +21,28 @@ import {
 } from "@/lib/list-view";
 import { useListUrlState } from "@/lib/list-url-state";
 import { adminRoutes } from "@/lib/routes";
+import { formatRelativeTime } from "@/lib/format-time";
 
-type AgentSortKey = "id" | "model_id" | "plugin_count";
+type AgentSortKey = "id" | "model_id" | "plugin_count" | "updated_at";
 
 const SORT_CONFIG: SortConfig<AgentSpec, AgentSortKey> = {
   id: (a, b) => compareString(a.id, b.id),
   model_id: (a, b) => compareString(a.model_id, b.model_id),
   plugin_count: (a, b) =>
     compareNumber(a.plugin_ids?.length ?? 0, b.plugin_ids?.length ?? 0),
+  updated_at: (a, b) => compareNumber(a.updated_at ?? 0, b.updated_at ?? 0),
 };
 
 const COLUMNS: SortableColumn<AgentSortKey>[] = [
   { key: "id", label: "ID" },
   { key: "model_id", label: "Model" },
   { key: "plugin_count", label: "Plugins" },
+  { key: "updated_at", label: "Last modified" },
   { key: null, label: "Actions" },
 ];
 
 const LIST_OPTIONS = {
-  validSortKeys: ["id", "model_id", "plugin_count"] as const,
+  validSortKeys: ["id", "model_id", "plugin_count", "updated_at"] as const,
   defaultSort: { key: "id" as AgentSortKey, direction: "asc" as const },
 } as const;
 
@@ -203,6 +206,9 @@ export function AgentsPage() {
                     <td className="px-5 py-4">{agent.model_id}</td>
                     <td className="px-5 py-4 text-slate-500">
                       {(agent.plugin_ids ?? []).join(", ") || "None"}
+                    </td>
+                    <td className="px-5 py-4 text-slate-500">
+                      {formatRelativeTime(agent.updated_at)}
                     </td>
                     <td className="px-5 py-4">
                       <button

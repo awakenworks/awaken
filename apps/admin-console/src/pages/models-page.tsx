@@ -14,6 +14,7 @@ import {
   type SortableColumn,
 } from "@/components/list-controls";
 import {
+  compareNumber,
   compareString,
   filterBySearch,
   paginate,
@@ -22,6 +23,7 @@ import {
   type SortConfig,
 } from "@/lib/list-view";
 import { useListUrlState } from "@/lib/list-url-state";
+import { formatRelativeTime } from "@/lib/format-time";
 
 const EMPTY_MODEL: ModelBindingSpec = {
   id: "",
@@ -34,23 +36,25 @@ const auxiliaryLoaders = () =>
     .list<ProviderRecord>("providers")
     .then((response) => response.items.map((provider) => provider.id));
 
-type ModelSortKey = "id" | "provider_id" | "upstream_model";
+type ModelSortKey = "id" | "provider_id" | "upstream_model" | "updated_at";
 
 const SORT_CONFIG: SortConfig<ModelBindingSpec, ModelSortKey> = {
   id: (a, b) => compareString(a.id, b.id),
   provider_id: (a, b) => compareString(a.provider_id, b.provider_id),
   upstream_model: (a, b) => compareString(a.upstream_model, b.upstream_model),
+  updated_at: (a, b) => compareNumber(a.updated_at ?? 0, b.updated_at ?? 0),
 };
 
 const COLUMNS: SortableColumn<ModelSortKey>[] = [
   { key: "id", label: "ID" },
   { key: "provider_id", label: "Provider" },
   { key: "upstream_model", label: "Upstream Model" },
+  { key: "updated_at", label: "Last modified" },
   { key: null, label: "Actions" },
 ];
 
 const LIST_OPTIONS = {
-  validSortKeys: ["id", "provider_id", "upstream_model"] as const,
+  validSortKeys: ["id", "provider_id", "upstream_model", "updated_at"] as const,
   defaultSort: { key: "id" as ModelSortKey, direction: "asc" as const },
 } as const;
 
@@ -236,6 +240,9 @@ export function ModelsPage() {
                     <td className="px-5 py-4">{model.provider_id}</td>
                     <td className="px-5 py-4 text-slate-500">
                       {model.upstream_model}
+                    </td>
+                    <td className="px-5 py-4 text-slate-500">
+                      {formatRelativeTime(model.updated_at)}
                     </td>
                     <td className="px-5 py-4">
                       <div className="flex gap-4">

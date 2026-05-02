@@ -846,6 +846,8 @@ Deterministic compatibility directives:\n\
         id: DEFAULT_MODEL_ID.into(),
         provider_id: DEFAULT_PROVIDER_ID.into(),
         upstream_model: args.model.clone(),
+        created_at: None,
+        updated_at: None,
     };
     let executor = provider_factory
         .build(&default_provider)

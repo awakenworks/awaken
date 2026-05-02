@@ -130,6 +130,8 @@ mod tests {
             id: "default".into(),
             provider_id: "openai".into(),
             upstream_model: "gpt-4o-mini".into(),
+            created_at: None,
+            updated_at: None,
         };
 
         let binding = ModelBinding::from(&spec);

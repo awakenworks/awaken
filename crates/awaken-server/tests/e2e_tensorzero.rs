@@ -472,6 +472,8 @@ async fn tz_router_provider_compiles_smoke() {
         )),
         timeout_secs: 60,
         adapter_options: Default::default(),
+        created_at: None,
+        updated_at: None,
     };
     let executor =
         build_genai_provider_executor(&provider_spec).expect("genai executor builds for TZ");
@@ -752,6 +754,8 @@ mod helper_tests {
             base_url: Some("http://127.0.0.1:3000/openai/v1/".into()),
             timeout_secs: 30,
             adapter_options: Default::default(),
+            created_at: None,
+            updated_at: None,
         };
         let _executor = build_genai_provider_executor(&spec)
             .expect("genai executor builds for TensorZero base URL");
@@ -766,6 +770,8 @@ mod helper_tests {
             base_url: Some("http://127.0.0.1:3000/openai/v1".into()),
             timeout_secs: 30,
             adapter_options: Default::default(),
+            created_at: None,
+            updated_at: None,
         };
         let _executor = build_genai_provider_executor(&spec)
             .expect("base URL without trailing slash should build");
@@ -783,6 +789,8 @@ mod helper_tests {
             base_url: Some("http://127.0.0.1:3000/openai/v1/".into()),
             timeout_secs: 30,
             adapter_options: Default::default(),
+            created_at: None,
+            updated_at: None,
         };
         let executor = build_genai_provider_executor(&spec).expect("executor");
         let store = Arc::new(InMemoryStore::new());

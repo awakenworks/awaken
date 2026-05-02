@@ -14,6 +14,7 @@ import {
   type SortableColumn,
 } from "@/components/list-controls";
 import {
+  compareNumber,
   compareString,
   filterBySearch,
   paginate,
@@ -22,6 +23,7 @@ import {
   type SortConfig,
 } from "@/lib/list-view";
 import { useListUrlState } from "@/lib/list-url-state";
+import { formatRelativeTime } from "@/lib/format-time";
 import {
   parseJsonObject,
   parseLineList,
@@ -30,7 +32,7 @@ import {
   stringifyLineList,
 } from "@/lib/config-form-helpers";
 
-type McpSortKey = "id" | "transport" | "endpoint";
+type McpSortKey = "id" | "transport" | "endpoint" | "updated_at";
 
 function endpointFor(server: McpServerRecord): string {
   if (server.transport === "stdio") {
@@ -43,6 +45,7 @@ const SORT_CONFIG: SortConfig<McpServerRecord, McpSortKey> = {
   id: (a, b) => compareString(a.id, b.id),
   transport: (a, b) => compareString(a.transport, b.transport),
   endpoint: (a, b) => compareString(endpointFor(a), endpointFor(b)),
+  updated_at: (a, b) => compareNumber(a.updated_at ?? 0, b.updated_at ?? 0),
 };
 
 const COLUMNS: SortableColumn<McpSortKey>[] = [
@@ -50,11 +53,12 @@ const COLUMNS: SortableColumn<McpSortKey>[] = [
   { key: "transport", label: "Transport" },
   { key: "endpoint", label: "Endpoint" },
   { key: null, label: "Environment" },
+  { key: "updated_at", label: "Last modified" },
   { key: null, label: "Actions" },
 ];
 
 const LIST_OPTIONS = {
-  validSortKeys: ["id", "transport", "endpoint"] as const,
+  validSortKeys: ["id", "transport", "endpoint", "updated_at"] as const,
   defaultSort: { key: "id" as McpSortKey, direction: "asc" as const },
 } as const;
 
@@ -546,6 +550,9 @@ export function McpServersPage() {
                       {server.has_env
                         ? (server.env_keys ?? []).join(", ") || "Stored"
                         : "None"}
+                    </td>
+                    <td className="px-5 py-4 text-slate-500">
+                      {formatRelativeTime(server.updated_at)}
                     </td>
                     <td className="px-5 py-4">
                       <div className="flex gap-4">

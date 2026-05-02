@@ -15,6 +15,7 @@ import {
 } from "@/components/list-controls";
 import {
   compareBoolean,
+  compareNumber,
   compareString,
   filterBySearch,
   paginate,
@@ -23,14 +24,16 @@ import {
   type SortConfig,
 } from "@/lib/list-view";
 import { useListUrlState } from "@/lib/list-url-state";
+import { formatRelativeTime } from "@/lib/format-time";
 
-type ProviderSortKey = "id" | "adapter" | "base_url" | "has_api_key";
+type ProviderSortKey = "id" | "adapter" | "base_url" | "has_api_key" | "updated_at";
 
 const SORT_CONFIG: SortConfig<ProviderRecord, ProviderSortKey> = {
   id: (a, b) => compareString(a.id, b.id),
   adapter: (a, b) => compareString(a.adapter, b.adapter),
   base_url: (a, b) => compareString(a.base_url, b.base_url),
   has_api_key: (a, b) => compareBoolean(a.has_api_key, b.has_api_key),
+  updated_at: (a, b) => compareNumber(a.updated_at ?? 0, b.updated_at ?? 0),
 };
 
 const COLUMNS: SortableColumn<ProviderSortKey>[] = [
@@ -38,6 +41,7 @@ const COLUMNS: SortableColumn<ProviderSortKey>[] = [
   { key: "adapter", label: "Adapter" },
   { key: "base_url", label: "Base URL" },
   { key: "has_api_key", label: "API Key" },
+  { key: "updated_at", label: "Last modified" },
   { key: null, label: "Actions" },
 ];
 
@@ -69,7 +73,7 @@ const EMPTY_PROVIDER: ProviderRecord = {
 };
 
 const LIST_OPTIONS = {
-  validSortKeys: ["id", "adapter", "base_url", "has_api_key"] as const,
+  validSortKeys: ["id", "adapter", "base_url", "has_api_key", "updated_at"] as const,
   defaultSort: { key: "id" as ProviderSortKey, direction: "asc" as const },
 } as const;
 
@@ -371,6 +375,9 @@ export function ProvidersPage() {
                     </td>
                     <td className="px-5 py-4 text-slate-500">
                       {provider.has_api_key ? "Stored" : "Environment / none"}
+                    </td>
+                    <td className="px-5 py-4 text-slate-500">
+                      {formatRelativeTime(provider.updated_at)}
                     </td>
                     <td className="px-5 py-4">
                       <div className="flex gap-4">

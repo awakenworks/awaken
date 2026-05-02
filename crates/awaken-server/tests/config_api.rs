@@ -542,6 +542,8 @@ async fn make_runtime_manager_custom(
         id: "bootstrap".into(),
         provider_id: "bootstrap".into(),
         upstream_model: "bootstrap-model".into(),
+        created_at: None,
+        updated_at: None,
     };
     let bootstrap_agent = agent_spec("bootstrap", "bootstrap");
 
@@ -1736,6 +1738,8 @@ async fn change_listener_coalesces_event_bursts_within_min_apply_interval() {
         id: "bootstrap".into(),
         provider_id: "bootstrap".into(),
         upstream_model: "bootstrap-model".into(),
+        created_at: None,
+        updated_at: None,
     };
     let bootstrap_agent = agent_spec("bootstrap", "bootstrap");
 

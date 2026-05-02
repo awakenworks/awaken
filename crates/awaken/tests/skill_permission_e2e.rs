@@ -304,6 +304,8 @@ fn make_agent_spec_deny_all_with_extra_allowed_tools(extra_allowed_tools: &[&str
             }),
         )]),
         registry: None,
+        created_at: None,
+        updated_at: None,
     }
 }
 

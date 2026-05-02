@@ -111,6 +111,12 @@ pub struct AgentSpec {
     /// `None` for locally defined agents; `Some("cloud")` for agents from the "cloud" registry.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub registry: Option<String>,
+    /// Creation timestamp in epoch milliseconds. Set by the config API on first write.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created_at: Option<u64>,
+    /// Last-modified timestamp in epoch milliseconds. Updated by the config API on every write.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub updated_at: Option<u64>,
 }
 
 /// Remote backend authentication configuration.
@@ -264,6 +270,12 @@ pub struct ModelBindingSpec {
     pub provider_id: String,
     /// Actual model name sent to the upstream provider.
     pub upstream_model: String,
+    /// Creation timestamp in epoch milliseconds. Set by the config API on first write.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created_at: Option<u64>,
+    /// Last-modified timestamp in epoch milliseconds. Updated by the config API on every write.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub updated_at: Option<u64>,
 }
 
 // ---------------------------------------------------------------------------
@@ -308,6 +320,12 @@ pub struct ProviderSpec {
     /// build time.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub adapter_options: BTreeMap<String, Value>,
+    /// Creation timestamp in epoch milliseconds. Set by the config API on first write.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created_at: Option<u64>,
+    /// Last-modified timestamp in epoch milliseconds. Updated by the config API on every write.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub updated_at: Option<u64>,
 }
 
 /// Treat an absent field, JSON `null`, or `""` as `None`. Used by spec types
@@ -413,6 +431,12 @@ pub struct McpServerSpec {
     /// Restart policy for reconnecting failed servers.
     #[serde(default)]
     pub restart_policy: McpRestartPolicy,
+    /// Creation timestamp in epoch milliseconds. Set by the config API on first write.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created_at: Option<u64>,
+    /// Last-modified timestamp in epoch milliseconds. Updated by the config API on every write.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub updated_at: Option<u64>,
 }
 
 fn default_mcp_timeout_secs() -> u64 {
@@ -431,6 +455,8 @@ impl Default for McpServerSpec {
             timeout_secs: default_mcp_timeout_secs(),
             env: BTreeMap::new(),
             restart_policy: McpRestartPolicy::default(),
+            created_at: None,
+            updated_at: None,
         }
     }
 }
@@ -444,6 +470,8 @@ impl Default for ProviderSpec {
             base_url: None,
             timeout_secs: default_provider_timeout_secs(),
             adapter_options: BTreeMap::new(),
+            created_at: None,
+            updated_at: None,
         }
     }
 }
@@ -466,6 +494,8 @@ impl Default for AgentSpec {
             delegates: Vec::new(),
             sections: HashMap::new(),
             registry: None,
+            created_at: None,
+            updated_at: None,
         }
     }
 }
@@ -651,6 +681,8 @@ mod tests {
             id: "default".into(),
             provider_id: "openai".into(),
             upstream_model: "gpt-4o-mini".into(),
+            created_at: None,
+            updated_at: None,
         };
 
         let encoded = serde_json::to_value(&canonical).unwrap();
