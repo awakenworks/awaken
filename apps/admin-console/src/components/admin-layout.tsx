@@ -13,6 +13,7 @@ const navItems = [
   { path: adminRoutes.mcpServers, label: "MCP Servers" },
   { path: adminRoutes.assistant, label: "AI Assistant" },
   { path: adminRoutes.evalReports, label: "Eval Reports" },
+  { path: adminRoutes.auditLog, label: "Audit Log" },
 ];
 
 const STATUS_TONE_CLASS = {
