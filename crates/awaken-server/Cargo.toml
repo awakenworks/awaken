@@ -46,6 +46,12 @@ schemars = { workspace = true }
 # MCP server
 mcp = { package = "model-context-protocol", version = "0.2", default-features = false, features = ["server", "client"] }
 
+# Audit log
+ulid = "1"
+sha2 = "0.10"
+base64 = "0.22"
+chrono = { version = "0.4", features = ["serde"] }
+
 # Metrics / observability
 metrics = "0.24"
 metrics-exporter-prometheus = "0.16"
