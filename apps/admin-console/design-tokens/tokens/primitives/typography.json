@@ -20,7 +20,11 @@
         "xl":      { "$value": "24px", "$type": "dimension" },
         "2xl":     { "$value": "32px", "$type": "dimension" },
         "display": { "$value": "40px", "$type": "dimension" },
-        "hero":    { "$value": "56px", "$type": "dimension" }
+        "hero":    { "$value": "56px", "$type": "dimension" },
+
+        "title":      { "$value": "30px", "$type": "dimension", "$description": "Awaken add — design role 'title' (page H1)" },
+        "section":    { "$value": "14px", "$type": "dimension", "$description": "Awaken add — design role 'section' (subsection heading)" },
+        "heading":    { "$value": "20px", "$type": "dimension", "$description": "Awaken add — design role 'heading' (sm heading, alias of lg)" }
       }
     },
     "weight": {
@@ -44,7 +48,15 @@
       "base":    { "$value": "-0.1px",  "$type": "dimension" },
       "tight":   { "$value": "-0.3px",  "$type": "dimension" },
       "mono":    { "$value": "0.01em",  "$type": "dimension" },
-      "caps":    { "$value": "0.08em",  "$type": "dimension" }
+      "caps":    { "$value": "0.08em",  "$type": "dimension" },
+
+      "hero-em":    { "$value": "-0.040em", "$type": "dimension", "$description": "Awaken add — design v2 hero (em-based)" },
+      "display-em": { "$value": "-0.030em", "$type": "dimension", "$description": "Awaken add — design v2 display" },
+      "title-em":   { "$value": "-0.022em", "$type": "dimension", "$description": "Awaken add — design v2 title (page H1)" },
+      "heading-em": { "$value": "-0.015em", "$type": "dimension", "$description": "Awaken add — design v2 heading (17-20px headings)" },
+      "section-em": { "$value": "-0.008em", "$type": "dimension", "$description": "Awaken add — design v2 section heading" },
+      "tight-em":   { "$value": "-0.003em", "$type": "dimension", "$description": "Awaken add — design v2 tight (table column header)" },
+      "eyebrow":    { "$value": "0.180em",  "$type": "dimension", "$description": "Awaken add — design v2 eyebrow (uppercase tracking)" }
     }
   }
 }

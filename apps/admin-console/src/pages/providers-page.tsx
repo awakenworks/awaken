@@ -8,7 +8,10 @@ import {
 } from "@/lib/config-api";
 import { useToast } from "@/components/toast-provider";
 import { useCrudPage } from "@/lib/use-crud-page";
-import { Field, ModeButton } from "@/components/form-components";
+import { Field } from "@/components/form-components";
+import { EmptyState } from "@/components/ui/empty-state";
+import { SecretField, SecretStatusPill } from "@/components/ui/secret-field";
+import { SkeletonRows } from "@/components/ui/skeleton";
 import { adminRoutes } from "@/lib/routes";
 import {
   ListSearchBar,
@@ -328,56 +331,66 @@ export function ProvidersPage() {
             </Field>
           </div>
 
-          <section className="mt-5 rounded-xl border border-line bg-soft p-4">
-            <div className="flex flex-wrap items-center justify-between gap-3">
-              <div>
-                <h4 className="text-sm font-semibold text-fg-strong">API Key</h4>
-                <p className="mt-1 text-sm text-fg-soft">
-                  {crud.isEditingExisting
-                    ? crud.draft.has_api_key
-                      ? "A key is currently stored. Keep it, replace it, or clear it."
-                      : "No stored key. Requests will fall back to the adapter environment variable."
-                    : "Optional. Leave empty to use the adapter environment variable."}
-                </p>
-              </div>
-              <div className="flex flex-wrap gap-2">
-                {crud.isEditingExisting ? (
+          <div className="mt-5">
+            <SecretField
+              mode={apiKeyMode === "preserve" ? "keep" : apiKeyMode}
+              onModeChange={(next) =>
+                setApiKeyMode(next === "keep" ? "preserve" : next)
+              }
+              currentlyHasValue={Boolean(crud.isEditingExisting && crud.draft.has_api_key)}
+              statusPill={
+                crud.draft.has_api_key ? (
+                  <SecretStatusPill
+                    state={apiKeyMode === "clear" ? "will-clear" : "stored"}
+                  />
+                ) : crud.isEditingExisting ? (
+                  <SecretStatusPill state="no-value" />
+                ) : (
+                  <SecretStatusPill
+                    state={apiKeyDraft.trim().length > 0 ? "will-set" : "no-value"}
+                  />
+                )
+              }
+              labels={{
+                title: `API key${crud.draft.id ? ` — ${crud.draft.id}` : ""}`,
+                description: crud.isEditingExisting
+                  ? "Default mode is Keep — the existing key never goes over the wire while you edit other fields."
+                  : "Optional. Leave empty to fall back to the adapter's environment variable.",
+                replaceLabel: "Set new key",
+                clearLabel: "Clear key",
+                keepBody: (
                   <>
-                    <ModeButton
-                      active={apiKeyMode === "preserve"}
-                      onClick={() => setApiKeyMode("preserve")}
-                      label="Keep current"
-                    />
-                    <ModeButton
-                      active={apiKeyMode === "replace"}
-                      onClick={() => setApiKeyMode("replace")}
-                      label="Set new key"
-                    />
-                    <ModeButton
-                      active={apiKeyMode === "clear"}
-                      onClick={() => setApiKeyMode("clear")}
-                      label="Clear key"
-                    />
+                    <strong>Existing key is preserved.</strong>{" "}
+                    <span>
+                      Save will not modify the secret; other fields update normally.
+                    </span>
                   </>
-                ) : null}
-              </div>
-            </div>
-
-            {apiKeyMode === "replace" ? (
+                ),
+                clearBody: (
+                  <>
+                    <strong>Credential will be removed on save.</strong>{" "}
+                    <span>
+                      Subsequent calls fall back to the adapter's host environment variable, or fail if none is present.
+                    </span>
+                  </>
+                ),
+              }}
+              hint={
+                <>
+                  Stored encrypted at rest. Submitting saves the new value and rotates the runtime client; in-flight requests continue with the prior key.
+                </>
+              }
+            >
               <input
                 type="password"
+                autoComplete="off"
                 value={apiKeyDraft}
                 onChange={(event) => setApiKeyDraft(event.target.value)}
-                className="mt-4 w-full rounded-xl border border-line-strong px-3 py-2 text-sm text-fg-strong outline-none transition focus:border-line-strong"
+                placeholder={crud.isEditingExisting ? "sk-…" : "Optional API key"}
+                className="w-full rounded-md border border-line-strong bg-surface px-3 py-2 font-mono text-sm text-fg-strong outline-none transition-colors focus:border-link"
               />
-            ) : (
-              <div className="mt-4 text-sm text-fg-soft">
-                {apiKeyMode === "clear"
-                  ? "Saving will remove the stored API key."
-                  : "Saving will preserve the current key state."}
-              </div>
-            )}
-          </section>
+            </SecretField>
+          </div>
 
           <div className="mt-5 flex flex-wrap items-center gap-3">
             <button
@@ -440,19 +453,21 @@ export function ProvidersPage() {
         />
       </div>
 
-      <div className="overflow-hidden rounded-2xl border border-line bg-surface shadow-sm">
-        {crud.loading ? (
-          <div className="px-5 py-6 text-sm text-fg-soft">
-            Loading providers...
-          </div>
-        ) : crud.items.length === 0 ? (
-          <div className="px-5 py-6 text-sm text-fg-soft">
-            No managed providers yet.
-          </div>
-        ) : view.items.length === 0 ? (
-          <div className="px-5 py-6 text-sm text-fg-soft">
-            No providers match the current filter.
-          </div>
+      <div className="overflow-x-auto rounded-md border border-line bg-surface shadow-card">
+        {!crud.loading && crud.items.length === 0 ? (
+          <EmptyState
+            title="No managed providers yet"
+            description="A provider connects Awaken to an LLM API. Configure the adapter and credentials, then bind models on top."
+            actions={
+              <button
+                type="button"
+                onClick={startCreate}
+                className="inline-flex h-9 items-center rounded-md bg-fg-strong px-4 text-sm font-medium text-bg transition-colors hover:bg-fg"
+              >
+                + New Provider
+              </button>
+            }
+          />
         ) : (
           <>
             <table className="min-w-full">
@@ -464,7 +479,15 @@ export function ProvidersPage() {
                 }
               />
               <tbody>
-                {view.items.map((provider) => (
+                {crud.loading && <SkeletonRows rows={4} cols={COLUMNS.length} />}
+                {!crud.loading && view.items.length === 0 && (
+                  <tr>
+                    <td colSpan={COLUMNS.length} className="px-5 py-8 text-center text-sm text-fg-soft">
+                      No providers match the current filter.
+                    </td>
+                  </tr>
+                )}
+                {!crud.loading && view.items.map((provider) => (
                   <tr
                     key={provider.id}
                     className="border-t border-line text-sm text-fg"

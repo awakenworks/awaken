@@ -30,7 +30,9 @@ use awaken_ext_deferred_tools::DeferredToolsPlugin;
 use awaken_ext_generative_ui::{
     A2uiPlugin, A2uiPromptConfig, A2uiPromptConfigKey, json_render, openui,
 };
-use awaken_ext_observability::{InMemorySink, ObservabilityPlugin};
+use awaken_ext_observability::{
+    CompositeSink, InMemorySink, MetricsSink, ObservabilityPlugin, RuntimeStatsRegistry,
+};
 use awaken_ext_permission::{
     PermissionConfigKey, PermissionPlugin, PermissionRuleEntry, PermissionRulesConfig,
     ToolPermissionBehavior,
@@ -1023,8 +1025,16 @@ Deterministic compatibility directives:\n\
         Arc::new(StopConditionPlugin::new(budget_policies)) as Arc<dyn Plugin>,
     );
 
-    // Observability plugin (in-memory sink for demo)
-    let observability = ObservabilityPlugin::new(InMemorySink::new())
+    // Observability plugin: wire RuntimeStatsRegistry as a sink so
+    // `/v1/agents/runtime-stats` returns real data, plus an in-memory sink
+    // for the demo. The same `Arc<RuntimeStatsRegistry>` is later attached
+    // to AppState so the HTTP handler shares the inner state.
+    let runtime_stats = Arc::new(RuntimeStatsRegistry::new());
+    let composite_sink = CompositeSink::new(vec![
+        Arc::new(InMemorySink::new()) as Arc<dyn MetricsSink>,
+        runtime_stats.clone() as Arc<dyn MetricsSink>,
+    ]);
+    let observability = ObservabilityPlugin::new(composite_sink)
         .with_model(&args.model)
         .with_provider("default");
     builder = builder.with_plugin("observability", Arc::new(observability) as Arc<dyn Plugin>);
@@ -1138,6 +1148,8 @@ Always greet the user warmly and ask how you can help today.
     )
     .with_config_store(config_store)
     .with_config_runtime_manager(config_runtime_manager)
+    .with_runtime_stats(runtime_stats)
+    .with_audit_log_from_config()
     .with_skill_catalog_provider(
         Arc::new(RegistryBackedSkillCatalogProvider::new(skill_registry))
             as Arc<dyn SkillCatalogProvider>,

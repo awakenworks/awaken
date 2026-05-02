@@ -9,7 +9,7 @@ export function Eyebrow({
 }) {
   return (
     <p
-      className={`text-[11px] font-medium uppercase tracking-[0.18em] text-fg-faint ${className}`.trim()}
+      className={`text-[11px] font-medium uppercase tracking-eyebrow text-fg-faint ${className}`.trim()}
     >
       {children}
     </p>

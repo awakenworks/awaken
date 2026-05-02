@@ -54,6 +54,18 @@ export function formatActor(actor: string): { hash: string; label: string | null
   return { hash: actor.slice(0, slash), label: actor.slice(slash + 1) };
 }
 
+/** Heuristic: actor label looks like an agent id when present and not an
+ *  email address. Used to apply the agent-identity tint across audit log,
+ *  activity timeline, and assistant chat. */
+export function isAgentActor(actor: string | null | undefined): boolean {
+  if (!actor) return false;
+  const { label } = formatActor(actor);
+  if (!label) return false;
+  if (label.includes("@")) return false;
+  if (label === "system") return false;
+  return true;
+}
+
 /** Short human-readable summary for the change column of an audit table row. */
 export function summarizeChange(event: AuditEvent): string {
   if (event.action === "restore") {

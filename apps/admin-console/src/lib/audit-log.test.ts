@@ -88,6 +88,39 @@ describe("formatActor", () => {
 });
 
 // ---------------------------------------------------------------------------
+// isAgentActor
+// ---------------------------------------------------------------------------
+
+import { isAgentActor } from "./audit-log";
+
+describe("isAgentActor", () => {
+  it("returns false when actor is null/empty/missing", () => {
+    expect(isAgentActor(null)).toBe(false);
+    expect(isAgentActor(undefined)).toBe(false);
+    expect(isAgentActor("")).toBe(false);
+  });
+
+  it("returns false when no label is present (raw bearer hash)", () => {
+    expect(isAgentActor("abc123def456789a")).toBe(false);
+  });
+
+  it("returns false when label looks like an email (human user)", () => {
+    expect(isAgentActor("abc123/dje@local")).toBe(false);
+    expect(isAgentActor("abc123/ops@example.com")).toBe(false);
+  });
+
+  it('returns false when label is "system"', () => {
+    expect(isAgentActor("abc123/system")).toBe(false);
+  });
+
+  it("returns true when label looks like an agent id (kebab/snake case, no @)", () => {
+    expect(isAgentActor("abc123/research-assistant")).toBe(true);
+    expect(isAgentActor("abc123/code_reviewer")).toBe(true);
+    expect(isAgentActor("abc123/agent-42")).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // summarizeChange
 // ---------------------------------------------------------------------------
 

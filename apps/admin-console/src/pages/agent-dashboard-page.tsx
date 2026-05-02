@@ -75,6 +75,7 @@ export function AgentDashboardPage() {
     return (
       <Shell title={`Dashboard · ${id}`}>
         <RegistryDisabledPanel onReload={() => setReloadKey((k) => k + 1)} />
+        <QuickActionsSection agentId={id} />
       </Shell>
     );
   }
@@ -86,6 +87,7 @@ export function AgentDashboardPage() {
           agentId={result.agent_id}
           onReload={() => setReloadKey((k) => k + 1)}
         />
+        <QuickActionsSection agentId={result.agent_id} />
       </Shell>
     );
   }
@@ -94,6 +96,7 @@ export function AgentDashboardPage() {
     return (
       <Shell title={`Dashboard · ${id}`}>
         <ErrorPanel message={`HTTP ${result.status}: ${result.message}`} />
+        <QuickActionsSection agentId={id} />
       </Shell>
     );
   }
@@ -308,27 +311,57 @@ export function AgentDashboardPage() {
         </Section>
       )}
 
-      <Section title="Quick actions">
-        <ul className="flex flex-wrap gap-3">
-          <li>
-            <Link
-              to={adminRoutes.agent(snapshot.agent_id)}
-              className="inline-flex items-center rounded-lg border border-line bg-surface px-3 py-2 text-sm text-fg shadow-sm hover:bg-soft"
-            >
-              Edit configuration
-            </Link>
-          </li>
-          <li>
-            <Link
-              to={adminRoutes.evalReports}
-              className="inline-flex items-center rounded-lg border border-line bg-surface px-3 py-2 text-sm text-fg shadow-sm hover:bg-soft"
-            >
-              Eval reports
-            </Link>
-          </li>
-        </ul>
-      </Section>
+      <QuickActionsSection agentId={snapshot.agent_id} />
     </Shell>
+  );
+}
+
+function QuickActionsSection({ agentId }: { agentId: string }) {
+  return (
+    <Section title="Quick actions">
+      <ul className="flex flex-wrap gap-3">
+        <li>
+          <Link
+            to={adminRoutes.agent(agentId)}
+            className="inline-flex items-center rounded-md border border-line bg-surface px-3 py-2 text-sm text-fg shadow-card transition-colors hover:bg-soft"
+          >
+            Edit configuration
+          </Link>
+        </li>
+        <li>
+          <Link
+            to={`${adminRoutes.agent(agentId)}?tab=plugins`}
+            className="inline-flex items-center rounded-md border border-line bg-surface px-3 py-2 text-sm text-fg shadow-card transition-colors hover:bg-soft"
+          >
+            Permission rules
+          </Link>
+        </li>
+        <li>
+          <Link
+            to={adminRoutes.mcpServers}
+            className="inline-flex items-center rounded-md border border-line bg-surface px-3 py-2 text-sm text-fg shadow-card transition-colors hover:bg-soft"
+          >
+            MCP servers
+          </Link>
+        </li>
+        <li>
+          <Link
+            to={adminRoutes.evalReports}
+            className="inline-flex items-center rounded-md border border-line bg-surface px-3 py-2 text-sm text-fg shadow-card transition-colors hover:bg-soft"
+          >
+            Eval reports
+          </Link>
+        </li>
+        <li>
+          <Link
+            to={adminRoutes.auditLogForResource(`agents/${agentId}`)}
+            className="inline-flex items-center rounded-md border border-line bg-surface px-3 py-2 text-sm text-fg shadow-card transition-colors hover:bg-soft"
+          >
+            Audit history
+          </Link>
+        </li>
+      </ul>
+    </Section>
   );
 }
 

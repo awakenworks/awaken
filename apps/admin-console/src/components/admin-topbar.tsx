@@ -12,7 +12,11 @@ const STATUS_DOT: Record<"ok" | "warn" | "error" | "neutral", string> = {
   neutral: "bg-fg-faint",
 };
 
-export function AdminTopbar() {
+export function AdminTopbar({
+  onOpenDrawer,
+}: {
+  onOpenDrawer?: () => void;
+} = {}) {
   const { pathname } = useLocation();
   const crumbs = resolveBreadcrumbs(pathname);
   const { token, status, openTokenModal } = useAuth();
@@ -21,7 +25,29 @@ export function AdminTopbar() {
   const palette = useCommandPalette();
 
   return (
-    <header className="sticky top-0 z-20 flex h-14 items-center gap-4 border-b border-line bg-canvas/80 px-6 backdrop-blur">
+    <header className="sticky top-0 z-20 flex h-14 items-center gap-4 border-b border-line bg-canvas/80 px-4 backdrop-blur md:px-6">
+      {onOpenDrawer && (
+        <button
+          type="button"
+          aria-label="Open menu"
+          onClick={onOpenDrawer}
+          className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-md text-fg-soft transition-colors hover:bg-soft md:hidden"
+        >
+          <svg
+            aria-hidden
+            viewBox="0 0 24 24"
+            className="h-5 w-5"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+          >
+            <line x1="4" y1="6" x2="20" y2="6" />
+            <line x1="4" y1="12" x2="20" y2="12" />
+            <line x1="4" y1="18" x2="20" y2="18" />
+          </svg>
+        </button>
+      )}
       <nav aria-label="Breadcrumb" className="flex min-w-0 flex-1 items-center gap-2 text-sm text-fg-soft">
         {crumbs.map((crumb, idx) => {
           const isLast = idx === crumbs.length - 1;

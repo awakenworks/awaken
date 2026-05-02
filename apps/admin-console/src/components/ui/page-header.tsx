@@ -19,7 +19,7 @@ export function PageHeader({
       <div className="min-w-0">
         {eyebrow && <Eyebrow>{eyebrow}</Eyebrow>}
         <div className="mt-2 flex items-baseline gap-3">
-          <h2 className="text-3xl font-semibold tracking-tight text-fg-strong">
+          <h2 className="text-3xl font-semibold tracking-title-em text-fg-strong">
             {title}
           </h2>
           {count !== undefined && (

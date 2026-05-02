@@ -75,6 +75,38 @@ function pick(node: Json, path: string[]): Json {
   return cur;
 }
 
+/** Recursively assert that every leaf in `theirs` is present and equal in
+ *  `ours`. Extra keys in `ours` are allowed — Awaken can add design-role
+ *  tokens (e.g. tracking-eyebrow) without breaking parity. */
+function assertSuperset(ours: Json, theirs: Json, path: string[] = []): void {
+  if (theirs === null || typeof theirs !== "object" || Array.isArray(theirs)) {
+    if (
+      JSON.stringify(stripDescriptions(ours)) !==
+      JSON.stringify(stripDescriptions(theirs))
+    ) {
+      throw new Error(
+        `parity drift at ${path.join(".") || "<root>"}: ours=${JSON.stringify(ours)} theirs=${JSON.stringify(theirs)}`,
+      );
+    }
+    return;
+  }
+  if (ours === null || typeof ours !== "object" || Array.isArray(ours)) {
+    throw new Error(
+      `parity drift at ${path.join(".") || "<root>"}: ours is not an object`,
+    );
+  }
+  const ourMap = ours as Record<string, Json>;
+  const theirMap = theirs as Record<string, Json>;
+  for (const key of Object.keys(theirMap)) {
+    if (!(key in ourMap)) {
+      throw new Error(
+        `parity drift at ${[...path, key].join(".")}: missing in ours`,
+      );
+    }
+    assertSuperset(ourMap[key], theirMap[key], [...path, key]);
+  }
+}
+
 const teamsCheckedOut = existsSync(theirs);
 
 describe.skipIf(!teamsCheckedOut)("design-tokens parity vs teams", () => {
@@ -83,11 +115,13 @@ describe.skipIf(!teamsCheckedOut)("design-tokens parity vs teams", () => {
   });
 
   for (const file of SHARED_FILES) {
-    it(`${file} matches teams (after os→aw rename)`, () => {
-      const ourJson = stripDescriptions(readJson(resolve(ours, file)));
-      const theirJson = stripDescriptions(readJson(resolve(theirs, file)));
+    it(`${file} is a superset of teams (after os→aw rename)`, () => {
+      const ourJson = readJson(resolve(ours, file));
+      const theirJson = readJson(resolve(theirs, file));
       const theirRenamed = rename(theirJson, "os", "aw");
-      expect(ourJson).toEqual(theirRenamed);
+      // Awaken may ADD design-role tokens on top of teams' baseline;
+      // this asserts every teams leaf survives unchanged in ours.
+      expect(() => assertSuperset(ourJson, theirRenamed)).not.toThrow();
     });
   }
 
