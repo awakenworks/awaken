@@ -3,7 +3,8 @@ export type AgentEditorTabId =
   | "tools"
   | "plugins"
   | "delegates"
-  | "advanced";
+  | "advanced"
+  | "history";
 
 export interface AgentEditorTab {
   id: AgentEditorTabId;
@@ -17,6 +18,7 @@ export const AGENT_EDITOR_TABS: readonly AgentEditorTab[] = [
   { id: "plugins", label: "Plugins", description: "Enabled plugins and their config." },
   { id: "delegates", label: "Delegates", description: "Agents this one can delegate to." },
   { id: "advanced", label: "Advanced", description: "Raw JSON preview." },
+  { id: "history", label: "History", description: "Audit history and restore." },
 ];
 
 export const DEFAULT_AGENT_EDITOR_TAB: AgentEditorTabId = "basics";

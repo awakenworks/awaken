@@ -23,6 +23,7 @@ describe("isAgentEditorTab", () => {
   it("accepts known tab ids", () => {
     expect(isAgentEditorTab("basics")).toBe(true);
     expect(isAgentEditorTab("advanced")).toBe(true);
+    expect(isAgentEditorTab("history")).toBe(true);
   });
 
   it("rejects everything else", () => {

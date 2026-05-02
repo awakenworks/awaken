@@ -73,7 +73,7 @@ describe("agent editor tab ARIA semantics", () => {
     await screen.findByLabelText("Agent ID");
 
     const tabs = screen.getAllByRole("tab");
-    expect(tabs.length).toBe(5);
+    expect(tabs.length).toBe(6);
 
     // "basics" is the default active tab
     const basicsTab = screen.getByRole("tab", { name: "Basics" });
@@ -145,9 +145,9 @@ describe("agent editor tab keyboard navigation", () => {
     basicsTab.focus();
     fireEvent.keyDown(basicsTab, { key: "ArrowLeft" });
 
-    const advancedTab = screen.getByRole("tab", { name: "Advanced" });
-    expect(document.activeElement).toBe(advancedTab);
-    expect(advancedTab.getAttribute("aria-selected")).toBe("true");
+    const historyTab = screen.getByRole("tab", { name: "History" });
+    expect(document.activeElement).toBe(historyTab);
+    expect(historyTab.getAttribute("aria-selected")).toBe("true");
   });
 
   it("Home key jumps to the first tab", async () => {
@@ -173,23 +173,101 @@ describe("agent editor tab keyboard navigation", () => {
     basicsTab.focus();
     fireEvent.keyDown(basicsTab, { key: "End" });
 
-    const advancedTab = screen.getByRole("tab", { name: "Advanced" });
-    expect(document.activeElement).toBe(advancedTab);
-    expect(advancedTab.getAttribute("aria-selected")).toBe("true");
+    const historyTab = screen.getByRole("tab", { name: "History" });
+    expect(document.activeElement).toBe(historyTab);
+    expect(historyTab.getAttribute("aria-selected")).toBe("true");
   });
 
   it("ArrowRight wraps from last tab to first tab", async () => {
     renderEditorRoute("/agents/new");
     await screen.findByLabelText("Agent ID");
 
-    // Click Advanced tab to make it active
-    const advancedTab = screen.getByRole("tab", { name: "Advanced" });
-    fireEvent.click(advancedTab);
-    advancedTab.focus();
-    fireEvent.keyDown(advancedTab, { key: "ArrowRight" });
+    // Click History tab to make it active
+    const historyTab = screen.getByRole("tab", { name: "History" });
+    fireEvent.click(historyTab);
+    historyTab.focus();
+    fireEvent.keyDown(historyTab, { key: "ArrowRight" });
 
     const basicsTab = screen.getByRole("tab", { name: "Basics" });
     expect(document.activeElement).toBe(basicsTab);
     expect(basicsTab.getAttribute("aria-selected")).toBe("true");
+  });
+});
+
+describe("agent editor History tab", () => {
+  it("shows 'Save first' empty state for new agents", async () => {
+    renderEditorRoute("/agents/new");
+    await screen.findByLabelText("Agent ID");
+
+    const historyTab = screen.getByRole("tab", { name: "History" });
+    fireEvent.click(historyTab);
+
+    await screen.findByText(/Save the agent first to see its history/i);
+  });
+
+  it("renders audit list rows when auditLog returns events for an existing agent", async () => {
+    const auditEvents = [
+      {
+        id: "evt-abc123",
+        ts: "2026-01-01T00:00:00Z",
+        actor: "hash1/admin",
+        action: "update",
+        resource: "agents/existing-agent",
+        before: { id: "existing-agent", model_id: "old-model", system_prompt: "", max_rounds: 8 },
+        after: { id: "existing-agent", model_id: "new-model", system_prompt: "", max_rounds: 8 },
+      },
+    ];
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string) => {
+        if (String(url).includes("/v1/capabilities")) {
+          return {
+            ok: true,
+            status: 200,
+            text: async () =>
+              JSON.stringify({
+                agents: [],
+                tools: [],
+                plugins: [],
+                skills: [],
+                models: [],
+                providers: [],
+                namespaces: [],
+              }),
+          };
+        }
+        if (String(url).includes("/v1/config/agents/existing-agent") && !String(url).includes("audit")) {
+          return {
+            ok: true,
+            status: 200,
+            text: async () =>
+              JSON.stringify({
+                id: "existing-agent",
+                model_id: "new-model",
+                system_prompt: "",
+                max_rounds: 8,
+              }),
+          };
+        }
+        if (String(url).includes("/v1/audit-log")) {
+          return {
+            ok: true,
+            status: 200,
+            text: async () => JSON.stringify({ items: auditEvents, next_cursor: undefined }),
+          };
+        }
+        return { ok: false, status: 404, text: async () => "" };
+      }),
+    );
+
+    renderEditorRoute("/agents/existing-agent");
+    await screen.findByText(/Edit existing-agent/i);
+
+    const historyTab = screen.getByRole("tab", { name: "History" });
+    fireEvent.click(historyTab);
+
+    // Wait for the audit row to appear (actor hash)
+    await screen.findByText("hash1");
   });
 });

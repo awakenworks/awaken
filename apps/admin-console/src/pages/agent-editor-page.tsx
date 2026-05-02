@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Link,
   useNavigate,
@@ -6,11 +6,13 @@ import {
   useSearchParams,
 } from "react-router";
 import { type AgentSpec, type Capabilities, configApi } from "@/lib/config-api";
+import { type AuditEvent, type AuditPage, formatActor, summarizeChange } from "@/lib/audit-log";
 import { Field } from "@/components/form-components";
 import { AgentPreviewPanel } from "@/components/agent-preview-panel";
 import { PluginConfigWorkspace } from "@/components/plugin-config-workspace";
 import { ToolSelector } from "@/components/tool-selector";
 import { useToast } from "@/components/toast-provider";
+import { useConfirmDialog } from "@/components/confirm-dialog";
 import { useUnsavedChangesGuard } from "@/components/unsaved-changes-guard";
 import {
   AGENT_EDITOR_TABS,
@@ -343,6 +345,16 @@ export function AgentEditorPage() {
                 />
               )}
               {tab.id === "advanced" && <AdvancedPanel spec={spec} />}
+              {tab.id === "history" && (
+                <HistoryPanel
+                  spec={spec}
+                  isNew={isNew}
+                  onSpecRestored={(updated) => {
+                    setSpec(updated);
+                    setSavedSpec(updated);
+                  }}
+                />
+              )}
             </div>
           ))}
         </div>
@@ -831,5 +843,283 @@ function AdvancedPanel({ spec }: { spec: AgentSpec }) {
         {JSON.stringify(spec, null, 2)}
       </pre>
     </section>
+  );
+}
+
+const ACTION_BADGE: Record<string, string> = {
+  create: "bg-emerald-100 text-emerald-800",
+  update: "bg-blue-100 text-blue-800",
+  delete: "bg-rose-100 text-rose-800",
+  restart: "bg-amber-100 text-amber-800",
+  publish: "bg-violet-100 text-violet-800",
+};
+
+function HistoryPanel({
+  spec,
+  isNew,
+  onSpecRestored,
+}: {
+  spec: AgentSpec;
+  isNew: boolean;
+  onSpecRestored: (updated: AgentSpec) => void;
+}) {
+  const toast = useToast();
+  const confirm = useConfirmDialog();
+  const [page, setPage] = useState<AuditPage | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [selectedEvent, setSelectedEvent] = useState<AuditEvent | null>(null);
+  const [restoring, setRestoring] = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    if (isNew || !spec.id) return;
+    setLoading(true);
+    setError(null);
+    try {
+      const result = await configApi.auditLog({ resource: `agents/${spec.id}`, limit: 50 });
+      setPage(result);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setLoading(false);
+    }
+  }, [isNew, spec.id]);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  async function handleRestore(event: AuditEvent) {
+    const targetSpec = event.action === "delete" ? event.before : event.after;
+    const confirmed = await confirm({
+      title: "Restore agent to this version?",
+      description: (
+        <div className="space-y-3">
+          <p className="text-xs text-slate-500">
+            Restoring will overwrite the current agent configuration with the version from this event.
+          </p>
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <p className="mb-1 text-xs font-medium uppercase tracking-wide text-slate-500">Current</p>
+              <pre className="max-h-48 overflow-auto rounded-xl border border-slate-200 bg-slate-50 p-2 text-xs text-slate-800">
+                {JSON.stringify(spec, null, 2)}
+              </pre>
+            </div>
+            <div>
+              <p className="mb-1 text-xs font-medium uppercase tracking-wide text-slate-500">This version</p>
+              <pre className="max-h-48 overflow-auto rounded-xl border border-slate-200 bg-slate-50 p-2 text-xs text-slate-800">
+                {targetSpec != null ? JSON.stringify(targetSpec, null, 2) : "—"}
+              </pre>
+            </div>
+          </div>
+        </div>
+      ),
+      confirmLabel: "Restore",
+      tone: "destructive",
+    });
+
+    if (!confirmed) return;
+
+    setRestoring(event.id);
+    try {
+      await configApi.restoreConfig("agents", spec.id, event.id);
+      const shortId = event.id.slice(0, 8);
+      toast.success(`Agent restored to version ${shortId}`);
+      const refreshed = await configApi.get<AgentSpec>("agents", spec.id);
+      const hydrated: AgentSpec = { sections: {}, plugin_ids: [], delegates: [], ...refreshed };
+      onSpecRestored(hydrated);
+      void load();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : String(err));
+    } finally {
+      setRestoring(null);
+    }
+  }
+
+  if (isNew || !spec.id) {
+    return (
+      <section className="rounded-2xl border border-dashed border-slate-200 bg-white p-6 text-center text-sm text-slate-500 shadow-sm">
+        Save the agent first to see its history.
+      </section>
+    );
+  }
+
+  return (
+    <section className="rounded-2xl border border-slate-200 bg-white shadow-sm">
+      <div className="flex items-center justify-between border-b border-slate-200 px-5 py-4">
+        <h3 className="text-lg font-semibold text-slate-950">History</h3>
+        <button
+          type="button"
+          onClick={() => void load()}
+          disabled={loading}
+          className="text-xs font-medium text-slate-500 transition hover:text-slate-900 disabled:opacity-60"
+        >
+          {loading ? "Loading…" : "Refresh"}
+        </button>
+      </div>
+
+      {error && (
+        <div className="px-5 py-3 text-sm text-rose-700">{error}</div>
+      )}
+
+      {!error && page && (
+        <table className="min-w-full text-sm">
+          <thead className="bg-slate-50 text-left text-xs uppercase tracking-wide text-slate-500">
+            <tr>
+              <th className="px-4 py-3">Time</th>
+              <th className="px-4 py-3">Actor</th>
+              <th className="px-4 py-3">Action</th>
+              <th className="px-4 py-3">Change</th>
+              <th className="px-4 py-3"></th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-slate-200">
+            {page.items.length === 0 ? (
+              <tr>
+                <td colSpan={5} className="px-4 py-8 text-center text-sm text-slate-500">
+                  No history yet.
+                </td>
+              </tr>
+            ) : (
+              page.items.map((event) => {
+                const actor = formatActor(event.actor);
+                const ts = new Date(event.ts);
+                return (
+                  <tr key={event.id} className="hover:bg-slate-50">
+                    <td className="px-4 py-3 font-mono text-xs text-slate-700">
+                      {ts.toLocaleString()}
+                    </td>
+                    <td className="px-4 py-3 text-sm text-slate-700">
+                      <span className="font-mono text-xs">{actor.hash}</span>
+                      {actor.label && (
+                        <span className="ml-1 text-slate-500">/{actor.label}</span>
+                      )}
+                    </td>
+                    <td className="px-4 py-3">
+                      <span
+                        className={[
+                          "inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium",
+                          ACTION_BADGE[event.action] ?? "bg-slate-100 text-slate-700",
+                        ].join(" ")}
+                      >
+                        {event.action}
+                      </span>
+                    </td>
+                    <td className="max-w-xs truncate px-4 py-3 text-xs text-slate-600">
+                      {summarizeChange(event)}
+                    </td>
+                    <td className="px-4 py-3">
+                      <div className="flex items-center gap-3">
+                        <button
+                          type="button"
+                          onClick={() => setSelectedEvent(event)}
+                          className="text-xs font-medium text-slate-500 transition hover:text-slate-900"
+                        >
+                          View
+                        </button>
+                        {event.action !== "restart" && (
+                          <button
+                            type="button"
+                            onClick={() => void handleRestore(event)}
+                            disabled={restoring === event.id}
+                            className="text-xs font-medium text-rose-600 transition hover:text-rose-800 disabled:opacity-60"
+                          >
+                            {restoring === event.id ? "Restoring…" : "Restore"}
+                          </button>
+                        )}
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })
+            )}
+          </tbody>
+        </table>
+      )}
+
+      {selectedEvent && (
+        <HistoryEventPanel event={selectedEvent} onClose={() => setSelectedEvent(null)} />
+      )}
+    </section>
+  );
+}
+
+function HistoryEventPanel({
+  event,
+  onClose,
+}: {
+  event: AuditEvent;
+  onClose: () => void;
+}) {
+  const actor = formatActor(event.actor);
+  return (
+    <div
+      role="dialog"
+      aria-modal="true"
+      aria-label="Audit event details"
+      className="fixed inset-0 z-50 flex items-start justify-end bg-black/30"
+      onClick={(e) => {
+        if (e.target === e.currentTarget) onClose();
+      }}
+    >
+      <div className="flex h-full w-full max-w-2xl flex-col overflow-y-auto bg-white shadow-2xl md:max-w-xl">
+        <div className="flex items-center justify-between border-b border-slate-200 px-6 py-4">
+          <h3 className="text-base font-semibold text-slate-900">Audit event</h3>
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded-md px-2 py-1 text-sm text-slate-500 hover:bg-slate-100"
+          >
+            Close
+          </button>
+        </div>
+
+        <dl className="grid gap-3 px-6 py-4 text-sm">
+          <div className="flex items-baseline gap-3">
+            <dt className="w-24 shrink-0 text-xs font-medium text-slate-500">ID</dt>
+            <dd className="min-w-0 font-mono text-xs text-slate-900">{event.id}</dd>
+          </div>
+          <div className="flex items-baseline gap-3">
+            <dt className="w-24 shrink-0 text-xs font-medium text-slate-500">Time</dt>
+            <dd className="min-w-0 font-mono text-xs text-slate-900">{event.ts}</dd>
+          </div>
+          <div className="flex items-baseline gap-3">
+            <dt className="w-24 shrink-0 text-xs font-medium text-slate-500">Actor</dt>
+            <dd className="min-w-0 text-slate-900">
+              <span className="font-mono text-xs">{actor.hash}</span>
+              {actor.label && <span className="ml-1 text-slate-500">/{actor.label}</span>}
+            </dd>
+          </div>
+          <div className="flex items-baseline gap-3">
+            <dt className="w-24 shrink-0 text-xs font-medium text-slate-500">Action</dt>
+            <dd className="min-w-0">
+              <span
+                className={[
+                  "inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium",
+                  ACTION_BADGE[event.action] ?? "bg-slate-100 text-slate-700",
+                ].join(" ")}
+              >
+                {event.action}
+              </span>
+            </dd>
+          </div>
+        </dl>
+
+        <div className="grid gap-4 px-6 pb-6 md:grid-cols-2">
+          <div>
+            <p className="mb-2 text-xs font-medium uppercase tracking-wide text-slate-500">Before</p>
+            <pre className="overflow-auto rounded-xl border border-slate-200 bg-slate-50 p-3 text-xs leading-relaxed text-slate-800">
+              {event.before != null ? JSON.stringify(event.before, null, 2) : "—"}
+            </pre>
+          </div>
+          <div>
+            <p className="mb-2 text-xs font-medium uppercase tracking-wide text-slate-500">After</p>
+            <pre className="overflow-auto rounded-xl border border-slate-200 bg-slate-50 p-3 text-xs leading-relaxed text-slate-800">
+              {event.after != null ? JSON.stringify(event.after, null, 2) : "—"}
+            </pre>
+          </div>
+        </div>
+      </div>
+    </div>
   );
 }
