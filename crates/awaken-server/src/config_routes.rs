@@ -1,7 +1,7 @@
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
-use axum::routing::get;
+use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -14,7 +14,9 @@ struct DeleteParams {
 
 use crate::app::AppState;
 use crate::routes::ApiError;
-use crate::services::config_service::{ConfigNamespace, ConfigService, ConfigServiceError};
+use crate::services::config_service::{
+    ConfigNamespace, ConfigService, ConfigServiceError, ProviderTestResult,
+};
 
 #[derive(Deserialize)]
 struct ListParams {
@@ -42,6 +44,7 @@ pub fn config_routes() -> Router<AppState> {
         .route("/v1/config/:namespace/$schema", get(get_schema))
         .route("/v1/agents", get(list_agents))
         .route("/v1/agents/:id", get(get_agent))
+        .route("/v1/providers/:id/test", post(test_provider_connection))
 }
 
 async fn get_capabilities(
@@ -197,6 +200,20 @@ async fn delete_config(
             .into_response(),
         Err(e) => ConfigRouteError::Api(map_service_error(e)).into_response(),
     }
+}
+
+async fn test_provider_connection(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> Result<impl IntoResponse, ConfigRouteError> {
+    ensure_admin_auth(&state, &headers)?;
+    let service = ConfigService::new(&state).map_err(map_service_error)?;
+    let result: ProviderTestResult = service
+        .test_provider(&id)
+        .await
+        .map_err(map_service_error)?;
+    Ok(Json(result))
 }
 
 #[derive(Debug)]
@@ -563,6 +580,109 @@ mod tests {
 
             let (status, _) = delete_record(&app, "agents", "agent-leaf", false).await;
             assert_eq!(status, StatusCode::NO_CONTENT);
+        }
+
+        async fn test_provider(app: &axum::Router, id: &str) -> (StatusCode, Value) {
+            let req = Request::builder()
+                .method("POST")
+                .uri(format!("/v1/providers/{id}/test"))
+                .body(Body::empty())
+                .unwrap();
+            let resp = app.clone().oneshot(req).await.unwrap();
+            let status = resp.status();
+            let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+            let body: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
+            (status, body)
+        }
+
+        #[tokio::test]
+        async fn test_provider_existing_openai_spec_returns_200_with_result() {
+            // The bootstrap provider has adapter "stub" which is not a valid
+            // genai adapter, so build_genai_provider_executor returns an error
+            // and ok=false. The route still returns HTTP 200 — the ok field
+            // inside the body conveys the probe outcome.
+            let app = build_test_app().await;
+            let (status, body) = test_provider(&app, "bootstrap").await;
+            assert_eq!(status, StatusCode::OK, "body: {body}");
+            // The response must contain ok and latency_ms regardless of outcome.
+            assert!(body.get("ok").is_some(), "must have ok field");
+            assert!(
+                body["latency_ms"].is_number(),
+                "expected latency_ms to be a number"
+            );
+        }
+
+        #[tokio::test]
+        async fn test_provider_with_valid_genai_adapter_returns_ok_true() {
+            // Create a provider with a genai-supported adapter via the route.
+            // TestProviderFactory accepts any adapter for apply so we override it
+            // in the test state. Instead, we can create the spec directly in the
+            // config store and bypass the apply path.
+            let config_store = Arc::new(awaken_stores::InMemoryStore::new());
+            let thread_store = Arc::new(awaken_stores::InMemoryStore::new());
+            let runtime = Arc::new(
+                AgentRuntimeBuilder::new()
+                    .with_provider("bootstrap", Arc::new(ImmediateExecutor))
+                    .with_model_binding(
+                        "bootstrap",
+                        ModelBinding {
+                            provider_id: "bootstrap".into(),
+                            upstream_model: "bootstrap-model".into(),
+                        },
+                    )
+                    .with_agent_spec(bootstrap_agent())
+                    .with_thread_run_store(thread_store.clone())
+                    .build()
+                    .expect("build runtime"),
+            );
+            // Use GenaiProviderExecutorFactory so we can create openai providers.
+            let manager = Arc::new(
+                crate::services::config_runtime::ConfigRuntimeManager::new(
+                    runtime.clone(),
+                    config_store.clone(),
+                )
+                .expect("manager"),
+            );
+            // Write an openai provider directly into the store (skip apply).
+            awaken_contract::contract::config_store::ConfigStore::put(
+                config_store.as_ref(),
+                "providers",
+                "prov-openai",
+                &serde_json::json!({ "id": "prov-openai", "adapter": "openai" }),
+            )
+            .await
+            .expect("put provider");
+
+            let resolver = runtime.resolver_arc();
+            let mailbox = Arc::new(Mailbox::new(
+                runtime.clone(),
+                Arc::new(awaken_stores::InMemoryMailboxStore::new()),
+                thread_store.clone(),
+                "route-test-2".into(),
+                MailboxConfig::default(),
+            ));
+            let state = AppState::new(
+                runtime,
+                mailbox,
+                thread_store,
+                resolver,
+                ServerConfig::default(),
+            )
+            .with_config_store(config_store)
+            .with_config_runtime_manager(manager);
+            let app = build_router(&state).with_state(state);
+
+            let (status, body) = test_provider(&app, "prov-openai").await;
+            assert_eq!(status, StatusCode::OK, "body: {body}");
+            assert_eq!(body["ok"], true, "expected ok=true for openai adapter");
+            assert!(body.get("error").is_none(), "should have no error field");
+        }
+
+        #[tokio::test]
+        async fn test_provider_missing_id_returns_404() {
+            let app = build_test_app().await;
+            let (status, _body) = test_provider(&app, "no-such-provider").await;
+            assert_eq!(status, StatusCode::NOT_FOUND);
         }
     }
 }

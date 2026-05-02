@@ -1,5 +1,5 @@
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use awaken_contract::contract::config_store::ConfigStore;
 use awaken_contract::contract::storage::StorageError;
@@ -8,7 +8,7 @@ use serde_json::{Map, Value, json};
 
 use crate::app::AppState;
 
-use super::config_runtime::ConfigRuntimeError;
+use super::config_runtime::{ConfigRuntimeError, build_genai_provider_executor};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConfigNamespace {
@@ -79,6 +79,15 @@ pub enum ConfigServiceError {
     Blocked { used_by: Vec<DependentRef> },
     #[error("storage error: {0}")]
     Storage(#[from] StorageError),
+}
+
+/// Result returned by the provider test endpoint.
+#[derive(Debug, serde::Serialize)]
+pub struct ProviderTestResult {
+    pub ok: bool,
+    pub latency_ms: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
 }
 
 pub struct ConfigService<'a> {
@@ -579,6 +588,45 @@ impl<'a> ConfigService<'a> {
                 Ok(Value::Object(object))
             }
             ConfigNamespace::Agents | ConfigNamespace::Models => Ok(value),
+        }
+    }
+
+    /// Test whether a stored provider config is usable.
+    ///
+    /// Strategy (construction-only probe): load the stored `ProviderSpec` and
+    /// attempt to build a genai client from it via
+    /// `build_genai_provider_executor`. A successful build proves that the
+    /// adapter name is recognised and the credentials are syntactically valid
+    /// (e.g. not an obviously empty key when one is expected). It does **not**
+    /// make a live network call, so it catches misconfiguration but not
+    /// unreachable hosts or revoked keys. A live-chat probe would require a
+    /// full runtime context and async stream handling that is disproportionate
+    /// for a health-check endpoint, so the construction-only approach is used.
+    pub async fn test_provider(&self, id: &str) -> Result<ProviderTestResult, ConfigServiceError> {
+        let raw = self
+            .store
+            .get(ConfigNamespace::Providers.as_str(), id)
+            .await?
+            .ok_or_else(|| ConfigServiceError::NotFound(format!("providers/{id}")))?;
+
+        let spec: ProviderSpec = serde_json::from_value(raw)
+            .map_err(|e| ConfigServiceError::InvalidPayload(e.to_string()))?;
+
+        let start = Instant::now();
+        let result = build_genai_provider_executor(&spec);
+        let latency_ms = start.elapsed().as_millis() as u64;
+
+        match result {
+            Ok(_) => Ok(ProviderTestResult {
+                ok: true,
+                latency_ms,
+                error: None,
+            }),
+            Err(e) => Ok(ProviderTestResult {
+                ok: false,
+                latency_ms,
+                error: Some(e.to_string()),
+            }),
         }
     }
 

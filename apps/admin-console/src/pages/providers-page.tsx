@@ -1,9 +1,11 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
+  ConfigApiError,
   configApi,
   type ProviderRecord,
   type ProviderSpec,
 } from "@/lib/config-api";
+import { useToast } from "@/components/toast-provider";
 import { useCrudPage } from "@/lib/use-crud-page";
 import { Field, ModeButton } from "@/components/form-components";
 import {
@@ -77,9 +79,20 @@ const LIST_OPTIONS = {
   defaultSort: { key: "id" as ProviderSortKey, direction: "asc" as const },
 } as const;
 
+interface TestStatus {
+  ok: boolean;
+  latency_ms: number;
+  error?: string;
+  testedAt: number;
+}
+
 export function ProvidersPage() {
   const [apiKeyMode, setApiKeyMode] = useState<ApiKeyMode>("replace");
   const [apiKeyDraft, setApiKeyDraft] = useState("");
+  const [testing, setTesting] = useState(false);
+  const [testStatus, setTestStatus] = useState<TestStatus | null>(null);
+  const toast = useToast();
+  const testingIdRef = useRef<string | null>(null);
 
   const prepareSave = useCallback(
     (draft: ProviderRecord): ProviderSpec => {
@@ -150,12 +163,39 @@ export function ProvidersPage() {
     crud.startNew({ ...EMPTY_PROVIDER });
     setApiKeyMode("replace");
     setApiKeyDraft("");
+    setTestStatus(null);
   }
 
   function startEdit(provider: ProviderRecord) {
     crud.startEdit(provider);
     setApiKeyMode("preserve");
     setApiKeyDraft("");
+    setTestStatus(null);
+  }
+
+  async function handleTestConnection() {
+    if (!crud.draft || !crud.isEditingExisting) return;
+    const id = crud.draft.id;
+    testingIdRef.current = id;
+    setTesting(true);
+    try {
+      const result = await configApi.testProvider(id);
+      if (testingIdRef.current !== id) return;
+      setTestStatus({ ...result, testedAt: Date.now() });
+      if (result.ok) {
+        toast.success(`Provider OK (${result.latency_ms}ms)`);
+      } else {
+        toast.error(result.error ?? "Provider test failed");
+      }
+    } catch (err) {
+      if (testingIdRef.current !== id) return;
+      const message =
+        err instanceof ConfigApiError ? err.message : "Provider test failed";
+      setTestStatus({ ok: false, latency_ms: 0, error: message, testedAt: Date.now() });
+      toast.error(message);
+    } finally {
+      if (testingIdRef.current === id) setTesting(false);
+    }
   }
 
   async function handleSave() {
@@ -307,7 +347,7 @@ export function ProvidersPage() {
             )}
           </section>
 
-          <div className="mt-5 flex gap-3">
+          <div className="mt-5 flex flex-wrap items-center gap-3">
             <button
               type="button"
               onClick={() => void handleSave()}
@@ -323,7 +363,36 @@ export function ProvidersPage() {
             >
               Cancel
             </button>
+            {crud.isEditingExisting ? (
+              <button
+                type="button"
+                onClick={() => void handleTestConnection()}
+                disabled={testing}
+                className="rounded-xl border border-slate-300 px-4 py-2 text-sm font-medium text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {testing ? "Testing..." : "Test connection"}
+              </button>
+            ) : null}
           </div>
+
+          {testStatus !== null ? (
+            <div
+              className={`mt-3 flex items-center gap-2 rounded-xl border px-4 py-2 text-sm ${
+                testStatus.ok
+                  ? "border-emerald-200 bg-emerald-50 text-emerald-700"
+                  : "border-rose-200 bg-rose-50 text-rose-700"
+              }`}
+            >
+              <span className="font-medium">
+                {testStatus.ok
+                  ? `OK — ${testStatus.latency_ms}ms`
+                  : `Failed${testStatus.error ? `: ${testStatus.error}` : ""}`}
+              </span>
+              <span className="ml-auto text-xs opacity-60">
+                {new Date(testStatus.testedAt).toLocaleTimeString()}
+              </span>
+            </div>
+          ) : null}
         </section>
       ) : null}
 

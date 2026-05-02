@@ -286,4 +286,10 @@ export const configApi = {
     normalizeCapabilities(
       await fetchJson<Capabilities>(`${BACKEND_URL}/v1/capabilities`),
     ),
+
+  testProvider: (id: string) =>
+    fetchJson<{ ok: boolean; latency_ms: number; error?: string }>(
+      `${BACKEND_URL}/v1/providers/${encodeURIComponent(id)}/test`,
+      { method: "POST" },
+    ),
 };
