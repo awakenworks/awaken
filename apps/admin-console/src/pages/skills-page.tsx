@@ -70,12 +70,7 @@ export function SkillsPage() {
 
   return (
     <div className="mx-auto max-w-6xl p-6 md:p-8">
-      <PageHeader
-        eyebrow="Observe"
-        title="Skill Registry"
-        count={skills.length}
-        description="Live snapshot of skills attached to the runtime. Read-only — skills are not stored in the managed config namespaces."
-      />
+      <PageHeader title="Skill Registry" count={skills.length} />
 
       <section className="mb-4 flex flex-wrap items-end gap-3 rounded-md border border-line bg-surface p-4 shadow-card">
         <label className="block w-full max-w-sm">
@@ -134,13 +129,13 @@ export function SkillsPage() {
         </div>
       ) : skills.length === 0 ? (
         <EmptyState
-          title="No skills registered"
-          description="Skills are registered programmatically by the runtime via the SkillRegistry trait. Drop a markdown file under ./skills/ or call AgentRuntimeBuilder::with_skill() to populate this list."
+          title="0 skills"
+          description="Register via SkillRegistry trait or AgentRuntimeBuilder::with_skill()."
         />
       ) : visibleSkills.length === 0 ? (
         <EmptyState
-          title="No skills match the current filter"
-          description="Try clearing the search box or switching the Caller / Context dropdowns back to 'Any'."
+          title="No matches"
+          description="Clear filters to see all skills."
         />
       ) : (
         <div className="grid gap-4 lg:grid-cols-2">
@@ -158,15 +153,27 @@ function SkillCard({ skill }: { skill: SkillInfo }) {
     <article className="rounded-md border border-line bg-surface p-5 shadow-card">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <div className="font-mono text-sm text-fg-soft">{skill.id}</div>
-          <h3 className="mt-1 text-xl font-semibold text-fg-strong">
+          {skill.id !== skill.name && (
+            <div className="font-mono text-sm text-fg-soft">{skill.id}</div>
+          )}
+          <h3 className={skill.id !== skill.name ? "mt-1 text-xl font-semibold text-fg-strong" : "text-xl font-semibold text-fg-strong"}>
             {skill.name}
           </h3>
         </div>
         <div className="flex flex-wrap gap-2 text-xs">
-          <Pill tone="info">{skill.context}</Pill>
-          {skill.user_invocable && <Pill tone="neutral">user</Pill>}
-          {skill.model_invocable && <Pill tone="agent">model</Pill>}
+          <Pill tone="info" title={`Context: ${skill.context}`}>
+            {skill.context}
+          </Pill>
+          {skill.user_invocable && (
+            <Pill tone="neutral" title="Users can invoke this skill from the chat surface">
+              user
+            </Pill>
+          )}
+          {skill.model_invocable && (
+            <Pill tone="agent" title="Model can autonomously invoke this skill">
+              model
+            </Pill>
+          )}
         </div>
       </div>
 
@@ -241,7 +248,7 @@ function SkillCard({ skill }: { skill: SkillInfo }) {
 
       <section className="mt-4">
         <SectionLabel label="What the LLM sees (prompt-injection preview)" />
-        <pre className="mt-2 max-h-48 overflow-auto rounded-md border border-line bg-fg-strong px-3 py-2 font-mono text-[11px] leading-5 text-bg">
+        <pre className="mt-2 max-h-48 overflow-auto rounded-md border border-line bg-code-bg px-3 py-2 font-mono text-[11px] leading-5 text-code-fg">
           {renderInjectionPreview(skill)}
         </pre>
       </section>

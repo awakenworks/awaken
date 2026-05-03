@@ -19,7 +19,7 @@ describe("Button", () => {
 
   it("variant adds class hooks", () => {
     const { rerender } = render(<Button variant="primary">x</Button>);
-    expect(screen.getByRole("button").className).toMatch(/bg-fg-strong/);
+    expect(screen.getByRole("button").className).toMatch(/bg-accent/);
     rerender(<Button variant="danger">x</Button>);
     expect(screen.getByRole("button").className).toMatch(/bg-tone-error/);
   });

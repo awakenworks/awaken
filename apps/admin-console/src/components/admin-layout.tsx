@@ -32,7 +32,7 @@ export function AdminLayout() {
             type="button"
             aria-label="Close menu"
             onClick={() => setDrawerOpen(false)}
-            className="fixed inset-0 z-30 bg-fg-strong/40 backdrop-blur-sm md:hidden"
+            className="fixed inset-0 z-30 bg-overlay backdrop-blur-sm md:hidden"
           />
         )}
         <div className="flex min-w-0 flex-1 flex-col">

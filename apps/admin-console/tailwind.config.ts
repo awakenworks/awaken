@@ -35,6 +35,10 @@ const config: Config = {
         "agent-stripe": "var(--aw-agent-stripe)",
         "agent-fg": "var(--aw-agent-fg)",
 
+        "code-bg": "var(--aw-code-bg)",
+        "code-fg": "var(--aw-code-fg)",
+        overlay: "var(--aw-overlay)",
+
         "state-backlog": "var(--aw-state-backlog)",
         "state-progress": "var(--aw-state-progress)",
         "state-review": "var(--aw-state-review)",
@@ -56,13 +60,6 @@ const config: Config = {
         "phase-commit": "var(--aw-phase-commit)",
         "phase-events": "var(--aw-phase-events)",
         "phase-finalize": "var(--aw-phase-finalize)",
-
-        "chrome-bg": "var(--aw-chrome-bg)",
-        "chrome-bg-2": "var(--aw-chrome-bg-2)",
-        "chrome-line": "var(--aw-chrome-line)",
-        "chrome-fg": "var(--aw-chrome-fg)",
-        "chrome-fg-muted": "var(--aw-chrome-fg-muted)",
-        "chrome-eyebrow": "var(--aw-chrome-eyebrow)",
       },
       borderRadius: {
         sm: "var(--aw-radius-sm)",

@@ -15,7 +15,7 @@ export function EmptyState({
 }) {
   return (
     <div
-      className={`flex flex-col items-center gap-3 rounded-lg border border-dashed border-line bg-canvas px-8 py-12 text-center ${className}`.trim()}
+      className={`flex flex-col items-center gap-3 rounded-lg border border-line bg-canvas px-8 py-12 text-center ${className}`.trim()}
     >
       {icon && (
         <div aria-hidden className="text-fg-faint">

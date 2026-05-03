@@ -14,14 +14,17 @@ const TONE_CLASS: Record<PillTone, string> = {
 export function Pill({
   tone = "neutral",
   className = "",
+  title,
   children,
 }: {
   tone?: PillTone;
   className?: string;
+  title?: string;
   children: ReactNode;
 }) {
   return (
     <span
+      title={title}
       className={`inline-flex h-[22px] items-center gap-1.5 rounded-pill border px-2 text-xs font-medium ${TONE_CLASS[tone]} ${className}`.trim()}
     >
       {children}

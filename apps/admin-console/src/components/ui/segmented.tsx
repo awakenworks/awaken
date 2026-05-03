@@ -50,7 +50,7 @@ export function SegmentedControl<V extends string>({
               className={[
                 "inline-block h-1.5 w-1.5 rounded-pill border",
                 active
-                  ? "border-fg-strong bg-fg-strong"
+                  ? "border-accent bg-accent"
                   : "border-line-strong bg-transparent",
               ].join(" ")}
             />

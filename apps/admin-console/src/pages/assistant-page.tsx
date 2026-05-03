@@ -238,7 +238,7 @@ function PayloadPanel({
       >
         {label}
       </div>
-      <pre className="mt-1 max-h-72 overflow-auto rounded-md bg-fg-strong px-3 py-2 text-[11px] leading-5 text-bg">
+      <pre className="mt-1 max-h-72 overflow-auto rounded-md bg-code-bg px-3 py-2 text-[11px] leading-5 text-code-fg">
         {payload}
       </pre>
     </div>

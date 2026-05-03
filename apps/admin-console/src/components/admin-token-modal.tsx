@@ -58,7 +58,7 @@ export function AdminTokenModal({
       role="dialog"
       aria-modal="true"
       aria-labelledby="admin-token-modal-title"
-      className="fixed inset-0 z-50 flex items-center justify-center bg-fg-strong/40 px-4"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-overlay px-4"
       onMouseDown={(event) => {
         mouseDownOnBackdropRef.current = event.target === event.currentTarget;
       }}
@@ -74,7 +74,7 @@ export function AdminTokenModal({
     >
       <form
         onSubmit={handleSubmit}
-        className="w-full max-w-md rounded-2xl border border-line bg-surface p-6 shadow-2xl"
+        className="w-full max-w-md rounded-md border border-line bg-surface p-6 shadow-2xl"
       >
         <h2
           id="admin-token-modal-title"
@@ -115,7 +115,7 @@ export function AdminTokenModal({
           <button
             type="submit"
             disabled={draft.trim().length === 0}
-            className="rounded-xl bg-fg-strong px-4 py-2 text-sm font-medium text-white transition hover:bg-fg disabled:cursor-not-allowed disabled:opacity-60"
+            className="rounded-xl bg-accent px-4 py-2 text-sm font-medium text-accent-text transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
           >
             Save
           </button>

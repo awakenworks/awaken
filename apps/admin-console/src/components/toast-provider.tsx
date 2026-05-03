@@ -221,7 +221,7 @@ function ToastCard({
       role="alert"
       data-testid={`toast-${toast.tone}`}
       className={[
-        "pointer-events-auto rounded-2xl border p-4 shadow-lg",
+        "pointer-events-auto rounded-md border p-4 shadow-lg",
         styles.container,
       ].join(" ")}
     >

@@ -59,57 +59,42 @@ export function AgentPreviewPanel({ draft }: AgentPreviewPanelProps) {
   }
 
   return (
-    <aside className="rounded-3xl border border-line bg-surface p-5 shadow-sm xl:sticky xl:top-6">
-      <div className="flex items-start justify-between gap-3">
-        <div>
-          <p className="text-xs font-semibold uppercase tracking-[0.22em] text-cyan-700">
-            Draft Preview
-          </p>
-          <h3 className="mt-2 text-xl font-semibold text-fg-strong">Talk To This Agent</h3>
-        </div>
+    <aside className="rounded-md border border-line bg-surface p-4 shadow-sm xl:sticky xl:top-6">
+      <div className="flex items-baseline justify-between gap-3">
+        <h3 className="text-sm font-semibold text-fg-strong">
+          Sandbox <span className="font-normal text-fg-soft">runs against current draft</span>
+        </h3>
         <button
           type="button"
           onClick={handleReset}
-          className="rounded-xl border border-line-strong px-3 py-2 text-sm font-medium text-fg transition hover:border-line-strong hover:bg-soft"
+          className="text-xs font-medium text-fg-soft transition hover:text-fg-strong"
         >
-          New Session
+          Reset
         </button>
       </div>
 
-      <p className="mt-3 text-sm leading-6 text-fg-soft">
-        Each message runs against the current draft in the editor, including unsaved
-        plugin settings and prompt changes.
-      </p>
-
-      <div className="mt-4 rounded-2xl bg-fg-strong px-4 py-3 text-xs text-fg-faint">
-        <div className="flex items-center justify-between gap-3">
-          <span className="uppercase tracking-[0.18em] text-fg-faint">Preview Agent</span>
-          <span className="rounded-full bg-fg px-2 py-0.5 text-[11px] text-fg-faint">
-            {previewDraft.id}
-          </span>
-        </div>
-        <div className="mt-2 break-all text-bg">
-          model={previewDraft.model_id || "unassigned"}
-        </div>
+      <div className="mt-3 rounded-md bg-code-bg px-3 py-2 font-mono text-[11px] leading-5 text-code-fg">
+        <span className="text-code-fg/70">id=</span>{previewDraft.id}{" "}
+        <span className="text-code-fg/70">model=</span>{previewDraft.model_id || "unassigned"}
       </div>
 
       {blockedReason ? (
-        <div className="mt-4 rounded-2xl border border-tone-warn/35 bg-tone-warn/10 px-4 py-3 text-sm text-tone-warn">
+        <div className="mt-4 rounded-md border border-tone-warn/35 bg-tone-warn/10 px-4 py-3 text-sm text-tone-warn">
           {blockedReason}
         </div>
       ) : null}
 
       {error ? (
-        <div className="mt-4 rounded-2xl border border-tone-error/30 bg-tone-error/10 px-4 py-3 text-sm text-tone-error">
+        <div className="mt-4 rounded-md border border-tone-error/30 bg-tone-error/10 px-4 py-3 text-sm text-tone-error">
           {error.message}
         </div>
       ) : null}
 
-      <div className="mt-4 flex min-h-[26rem] flex-col overflow-hidden rounded-3xl border border-line bg-soft">
+      <div className="mt-4 flex min-h-[26rem] flex-col overflow-hidden rounded-lg border border-line bg-soft">
         <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4">
           {messages.length === 0 ? (
-            <div className="rounded-2xl border border-dashed border-line bg-surface px-4 py-5 text-sm text-fg-soft">
-              Start a conversation to validate the draft agent behavior before publishing.
+            <div className="flex h-full items-center justify-center text-center text-xs text-fg-faint">
+              No messages yet — send one below to validate the draft.
             </div>
           ) : (
             <div className="space-y-3">
@@ -123,9 +108,9 @@ export function AgentPreviewPanel({ draft }: AgentPreviewPanelProps) {
                   <div
                     key={message.id}
                     className={[
-                      "max-w-[92%] rounded-2xl px-4 py-3 text-sm leading-6 shadow-sm",
+                      "max-w-[92%] rounded-md px-4 py-3 text-sm leading-6 shadow-sm",
                       isUser
-                        ? "ml-auto bg-fg-strong text-white"
+                        ? "ml-auto bg-accent text-accent-text"
                         : "bg-surface text-fg",
                     ].join(" ")}
                   >
@@ -142,7 +127,7 @@ export function AgentPreviewPanel({ draft }: AgentPreviewPanelProps) {
                 );
               })}
               {busy ? (
-                <div className="max-w-[92%] rounded-2xl bg-surface px-4 py-3 text-sm text-fg-soft shadow-sm">
+                <div className="max-w-[92%] rounded-md bg-surface px-4 py-3 text-sm text-fg-soft shadow-sm">
                   Agent is thinking...
                 </div>
               ) : null}
@@ -159,17 +144,20 @@ export function AgentPreviewPanel({ draft }: AgentPreviewPanelProps) {
             onChange={(event) => setInput(event.target.value)}
             rows={4}
             disabled={Boolean(blockedReason) || busy}
-            placeholder="Ask the draft agent to solve something, call a tool, or explain its next step..."
-            className="w-full rounded-2xl border border-line-strong bg-surface px-4 py-3 text-sm text-fg-strong outline-none transition focus:border-line-strong disabled:bg-muted disabled:text-fg-soft"
+            placeholder="Type a message…"
+            className="w-full rounded-md border border-line-strong bg-surface px-4 py-3 text-sm text-fg-strong outline-none transition focus:border-line-strong disabled:bg-muted disabled:text-fg-soft"
           />
           <div className="mt-3 flex items-center justify-between gap-3">
-            <div className="text-xs text-fg-soft">
-              Session ID: <span className="font-mono">{sessionId}</span>
+            <div
+              title={`Session ID: ${sessionId}`}
+              className="font-mono text-[10px] text-fg-faint"
+            >
+              session · {sessionId.slice(-8)}
             </div>
             <button
               type="submit"
               disabled={Boolean(blockedReason) || busy || input.trim().length === 0}
-              className="rounded-xl bg-fg-strong px-4 py-2 text-sm font-medium text-white transition hover:bg-fg disabled:cursor-not-allowed disabled:opacity-60"
+              className="rounded-xl bg-accent px-4 py-2 text-sm font-medium text-accent-text transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
             >
               {busy ? "Running..." : "Send"}
             </button>

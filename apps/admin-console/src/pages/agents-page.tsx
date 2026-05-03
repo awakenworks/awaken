@@ -233,14 +233,12 @@ export function AgentsPage() {
   return (
     <div className="mx-auto max-w-6xl p-6 md:p-8">
       <PageHeader
-        eyebrow="Configure"
         title="Agents"
         count={agents.length}
-        description="Compose runtime-safe agent specs that pin a model, plugin set, and tool whitelist."
         actions={
           <Link
             to={adminRoutes.agentNew}
-            className="inline-flex h-9 items-center rounded-md bg-fg-strong px-3 text-sm font-medium text-bg transition-colors hover:bg-fg"
+            className="inline-flex h-9 items-center rounded-md bg-accent px-3 text-sm font-medium text-accent-text transition-colors hover:opacity-90"
           >
             + New Agent
           </Link>
@@ -303,12 +301,12 @@ export function AgentsPage() {
       <div className="overflow-hidden rounded-lg border border-line bg-surface shadow-card">
         {noAgentsAtAll ? (
           <EmptyState
-            title="No managed agents yet"
-            description="Agents pair a model with a plugin recipe. Start by cloning the runtime defaults or scratch-building a new spec."
+            title="0 agents"
+            description="An agent pins a model + plugin set + tool whitelist."
             actions={
               <Link
                 to={adminRoutes.agentNew}
-                className="inline-flex h-9 items-center rounded-md bg-fg-strong px-4 text-sm font-medium text-bg transition-colors hover:bg-fg"
+                className="inline-flex h-9 items-center rounded-md bg-accent px-4 text-sm font-medium text-accent-text transition-colors hover:opacity-90"
               >
                 + New Agent
               </Link>
@@ -341,9 +339,6 @@ export function AgentsPage() {
                   >
                     <td className="px-5 py-4">
                       <div className="font-medium text-fg-strong">{agent.id}</div>
-                      <div className="font-mono text-xs text-fg-faint">
-                        agt_{agent.id.slice(0, 8)}
-                      </div>
                     </td>
                     <td className="px-5 py-4 font-mono text-fg">{agent.model_id}</td>
                     <td className="px-5 py-4">

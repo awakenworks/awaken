@@ -281,7 +281,7 @@ export function AgentEditorPage() {
   if (loading) {
     return (
       <div className="mx-auto max-w-6xl p-6 md:p-8">
-        <div className="rounded-2xl border border-line bg-surface p-6 text-sm text-fg-soft shadow-sm">
+        <div className="rounded-md border border-line bg-surface p-6 text-sm text-fg-soft shadow-sm">
           Loading agent...
         </div>
       </div>
@@ -451,7 +451,7 @@ function EditorSaveBar({
               type="button"
               onClick={onSave}
               disabled={saving || validating}
-              className="inline-flex h-9 items-center rounded-md bg-fg-strong px-4 text-sm font-medium text-bg transition-colors hover:bg-fg disabled:cursor-not-allowed disabled:opacity-60"
+              className="inline-flex h-9 items-center rounded-md bg-accent px-4 text-sm font-medium text-accent-text transition-colors hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
             >
               {saving ? "Saving…" : isNew ? "Save & Publish" : "Save"}
             </button>
@@ -481,7 +481,7 @@ function DiffModal({
       role="dialog"
       aria-modal="true"
       aria-label="Diff vs published"
-      className="fixed inset-0 z-50 flex items-center justify-center bg-fg-strong/40 px-4 backdrop-blur-sm"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-overlay px-4 backdrop-blur-sm"
       onClick={onClose}
     >
       <div
@@ -642,17 +642,21 @@ function StickyEditorHeader({
     <div className="sticky top-0 z-30 border-b border-line bg-surface/95 px-6 pt-6 backdrop-blur md:px-8">
       <div className="flex flex-wrap items-center justify-between gap-4">
         <div className="min-w-0">
-          <div className="flex items-center gap-4">
+          <div className="flex items-center gap-2">
             <Link
               to={adminRoutes.agents}
-              className="text-sm font-medium text-fg-soft transition hover:text-fg"
+              aria-label="Back to agents"
+              title="Back to agents"
+              className="inline-flex h-7 w-7 items-center justify-center rounded-md text-fg-soft transition hover:bg-soft hover:text-fg"
             >
-              Back to agents
+              <svg aria-hidden viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M15 18l-6-6 6-6" />
+              </svg>
             </Link>
             {!isNew && agentId && (
               <Link
                 to={adminRoutes.auditLogForResource(`agents/${agentId}`)}
-                className="text-sm font-medium text-fg-soft transition hover:text-fg"
+                className="rounded-md border border-line-strong bg-surface px-2.5 py-1 text-xs font-medium text-fg-soft transition hover:bg-soft hover:text-fg"
               >
                 History
               </Link>
@@ -676,7 +680,7 @@ function StickyEditorHeader({
             type="button"
             onClick={onSave}
             disabled={saving}
-            className="rounded-xl bg-fg-strong px-4 py-2 text-sm font-medium text-bg transition hover:bg-fg disabled:cursor-not-allowed disabled:opacity-60"
+            className="rounded-xl bg-accent px-4 py-2 text-sm font-medium text-accent-text transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
           >
             Save
           </button>
@@ -747,7 +751,7 @@ function BasicsPanel({
   reasoningMode: ReturnType<typeof reasoningEffortMode>;
 }) {
   return (
-    <section className="rounded-2xl border border-line bg-surface p-5 shadow-sm">
+    <section className="rounded-md border border-line bg-surface p-5 shadow-sm">
       <h3 className="text-lg font-semibold text-fg-strong">Basics</h3>
       <div className="mt-4 grid gap-4 md:grid-cols-2">
         <Field label="Agent ID">
@@ -879,12 +883,9 @@ function BasicsPanel({
             value={String(spec.system_prompt ?? "")}
             onChange={(event) => updateField("system_prompt", event.target.value)}
             rows={8}
-            className="w-full rounded-xl border border-line-strong px-3 py-2 font-mono text-sm text-fg-strong outline-none transition focus:border-line-strong"
+            className="w-full rounded-xl border border-line-strong bg-surface px-3 py-2 font-mono text-sm text-fg-strong outline-none transition focus:border-line-strong"
           />
         </Field>
-        <p className="mt-1 text-xs text-fg-soft">
-          {String(spec.system_prompt ?? "").length} characters
-        </p>
       </div>
     </section>
   );
@@ -901,7 +902,7 @@ function ToolsPanel({
 }) {
   if (!capabilities || capabilities.tools.length === 0) {
     return (
-      <div className="rounded-2xl border border-dashed border-line bg-surface p-6 text-sm text-fg-soft">
+      <div className="rounded-md border border-dashed border-line bg-surface p-6 text-sm text-fg-soft">
         No tools are currently published. Once plugins or MCP servers register
         tools, they will appear here.
       </div>
@@ -950,13 +951,13 @@ function PluginsPanel({
 }) {
   if (!capabilities || capabilities.plugins.length === 0) {
     return (
-      <div className="rounded-2xl border border-dashed border-line bg-surface p-6 text-sm text-fg-soft">
+      <div className="rounded-md border border-dashed border-line bg-surface p-6 text-sm text-fg-soft">
         No plugins are currently registered.
       </div>
     );
   }
   return (
-    <section className="rounded-2xl border border-line bg-surface p-5 shadow-sm">
+    <section className="rounded-md border border-line bg-surface p-5 shadow-sm">
       <h3 className="text-lg font-semibold text-fg-strong">Plugins</h3>
       <p className="mt-2 text-sm text-fg-soft">
         Enable agent plugins here. Plugins with agent-level settings expose
@@ -1013,7 +1014,7 @@ function PluginsPanel({
       </div>
 
       {configurablePlugins.length === 0 ? (
-        <div className="mt-4 rounded-2xl border border-dashed border-line px-4 py-3 text-sm text-fg-soft">
+        <div className="mt-4 rounded-md border border-dashed border-line px-4 py-3 text-sm text-fg-soft">
           No registered plugins expose agent-level configuration.
         </div>
       ) : (
@@ -1040,14 +1041,14 @@ function DelegatesPanel({
 }) {
   if (!capabilities || capabilities.agents.length === 0) {
     return (
-      <div className="rounded-2xl border border-dashed border-line bg-surface p-6 text-sm text-fg-soft">
+      <div className="rounded-md border border-dashed border-line bg-surface p-6 text-sm text-fg-soft">
         No other agents are registered yet, so this agent cannot delegate.
       </div>
     );
   }
   const selected = spec.delegates ?? [];
   return (
-    <section className="rounded-2xl border border-line bg-surface p-5 shadow-sm">
+    <section className="rounded-md border border-line bg-surface p-5 shadow-sm">
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
           <h3 className="text-lg font-semibold text-fg-strong">Delegates</h3>
@@ -1106,13 +1107,13 @@ function DelegatesPanel({
 
 function AdvancedPanel({ spec }: { spec: AgentSpec }) {
   return (
-    <section className="rounded-2xl border border-line bg-surface p-5 shadow-sm">
+    <section className="rounded-md border border-line bg-surface p-5 shadow-sm">
       <h3 className="text-lg font-semibold text-fg-strong">JSON Preview</h3>
       <p className="mt-2 text-sm text-fg-soft">
         The exact payload that will be PUT to the config API. Useful for sanity
         checking before publish.
       </p>
-      <pre className="mt-4 max-h-[36rem] overflow-auto rounded-xl bg-fg-strong p-4 text-xs text-bg">
+      <pre className="mt-4 max-h-[36rem] overflow-auto rounded-xl bg-code-bg p-4 text-xs text-code-fg">
         {JSON.stringify(spec, null, 2)}
       </pre>
     </section>
@@ -1217,14 +1218,14 @@ function HistoryPanel({
 
   if (isNew || !spec.id) {
     return (
-      <section className="rounded-2xl border border-dashed border-line bg-surface p-6 text-center text-sm text-fg-soft shadow-sm">
+      <section className="rounded-md border border-dashed border-line bg-surface p-6 text-center text-sm text-fg-soft shadow-sm">
         Save the agent first to see its history.
       </section>
     );
   }
 
   return (
-    <section className="rounded-2xl border border-line bg-surface shadow-sm">
+    <section className="rounded-md border border-line bg-surface shadow-sm">
       <div className="flex items-center justify-between border-b border-line px-5 py-4">
         <h3 className="text-lg font-semibold text-fg-strong">History</h3>
         <button

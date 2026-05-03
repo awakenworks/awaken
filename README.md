@@ -210,10 +210,12 @@ import { CopilotKit } from "@copilotkit/react-core";
 
 Wire a `ConfigStore` into `AppState` to manage agents, models, providers, and MCP servers through `/v1/config/*`. Use the [configuration-driven tuning guide](https://awakenworks.github.io/awaken/how-to/configure-agent-behavior.html) to tune providers, model bindings, tools, and plugin sections. The Admin Console in [`apps/admin-console`](./apps/admin-console/) uses the same API and reads `VITE_BACKEND_URL` for the server base URL.
 
-The console is a React 19 SPA with a "Lucid Control" design language — dark
-chrome sidebar, warm light work surface, geometric state indicators, real
-data only (no fake placeholders). Token system is a vendored Style Dictionary
-v4 pipeline parity-checked against the Oversight family.
+The console is a React 19 SPA with a "Lucid Control" design language — unified
+warm-light surface across sidebar and main area, geometric state indicators,
+real data only (no fake placeholders). One-click theme toggle in the topbar
+flips the entire UI to dark mode (or follows system preference). Token system
+is a vendored Style Dictionary v4 pipeline parity-checked against the Oversight
+family.
 
 <table>
   <tr>
@@ -225,6 +227,12 @@ v4 pipeline parity-checked against the Oversight family.
     <td align="center"><sub><b>Dashboard</b><br/>Reference graph · Health · Activity · System</sub></td>
     <td align="center"><sub><b>Agent Editor</b><br/>Tabbed UI · Validate · Save & Publish · Live preview</sub></td>
     <td align="center"><sub><b>Agents</b><br/>Filter chips · Plugin pills · 503 friendly notice</sub></td>
+  </tr>
+  <tr>
+    <td colspan="3"><a href="./docs/assets/admin-console/04-dark-dashboard.png"><img src="./docs/assets/admin-console/04-dark-dashboard.png" alt="Dashboard in dark mode — same content, dark slate canvas, indigo accents adjusted for contrast" /></a></td>
+  </tr>
+  <tr>
+    <td colspan="3" align="center"><sub><b>Dark mode</b> · light/dark/system toggle persists per-browser via localStorage</sub></td>
   </tr>
 </table>
 

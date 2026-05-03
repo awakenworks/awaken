@@ -72,7 +72,7 @@ export function ConfirmDialogProvider({ children }: { children: ReactNode }) {
           role="dialog"
           aria-modal="true"
           aria-labelledby="confirm-dialog-title"
-          className="fixed inset-0 z-50 flex items-center justify-center bg-fg-strong/40 px-4"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-overlay px-4"
           onMouseDown={(event) => {
             mouseDownOnBackdropRef.current = event.target === event.currentTarget;
           }}
@@ -86,7 +86,7 @@ export function ConfirmDialogProvider({ children }: { children: ReactNode }) {
             mouseDownOnBackdropRef.current = false;
           }}
         >
-          <div className="w-full max-w-md rounded-2xl border border-line bg-surface p-6 shadow-2xl">
+          <div className="w-full max-w-md rounded-md border border-line bg-surface p-6 shadow-2xl">
             <h2
               id="confirm-dialog-title"
               className="text-lg font-semibold text-fg-strong"
@@ -113,7 +113,7 @@ export function ConfirmDialogProvider({ children }: { children: ReactNode }) {
                 className={
                   pending.tone === "destructive"
                     ? "rounded-xl bg-tone-error px-4 py-2 text-sm font-medium text-bg transition hover:bg-tone-error/80"
-                    : "rounded-xl bg-fg-strong px-4 py-2 text-sm font-medium text-bg transition hover:bg-fg"
+                    : "rounded-xl bg-accent px-4 py-2 text-sm font-medium text-accent-text transition hover:opacity-90"
                 }
               >
                 {pending.confirmLabel ?? "Confirm"}

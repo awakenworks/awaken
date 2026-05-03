@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { ConfigApiError, configApi } from "@/lib/config-api";
 import {
   formatActor,
@@ -72,6 +72,14 @@ export function AuditLogPage() {
     }
   }
 
+  const initialLoad = useRef(false);
+  useEffect(() => {
+    if (initialLoad.current) return;
+    initialLoad.current = true;
+    void load();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const hasActiveFilters =
     filter.since || filter.until || filter.action || filter.resource || filter.actor;
 
@@ -82,19 +90,17 @@ export function AuditLogPage() {
 
   return (
     <div className="mx-auto max-w-6xl p-6 md:p-8">
-      <header className="mb-8">
-        <p className="text-sm font-medium uppercase tracking-[0.2em] text-fg-soft">
-          Security & Compliance
-        </p>
-        <h2 className="mt-2 text-3xl font-semibold text-fg-strong">Audit Log</h2>
-        <p className="mt-2 max-w-2xl text-sm text-fg-soft">
-          Track create, update, delete, restart, and publish operations on all
-          resources.
-        </p>
+      <header className="mb-4 flex items-baseline gap-3">
+        <h2 className="text-2xl font-semibold tracking-title-em text-fg-strong">Audit Log</h2>
+        {page && (
+          <span aria-hidden className="font-mono text-sm text-fg-faint">
+            {page.items.length}{page.next_cursor ? "+" : ""}
+          </span>
+        )}
       </header>
 
       {notConfigured && (
-        <div className="mb-6 rounded-2xl border border-tone-warn/35 bg-tone-warn/10 p-4 text-sm text-tone-warn shadow-sm">
+        <div className="mb-6 rounded-md border border-tone-warn/35 bg-tone-warn/10 p-4 text-sm text-tone-warn shadow-sm">
           Audit log is not enabled on this server.{" "}
           <a
             href="https://docs.awaken.dev/audit-log"
@@ -109,7 +115,7 @@ export function AuditLogPage() {
       )}
 
       {/* Filter bar */}
-      <section className="mb-4 rounded-2xl border border-line bg-surface p-4 shadow-sm">
+      <section className="mb-4 rounded-md border border-line bg-surface p-4 shadow-sm">
         <div className="flex flex-wrap items-end gap-3">
           <label className="flex flex-col gap-1">
             <span className="text-xs text-fg-soft">Since</span>
@@ -117,7 +123,7 @@ export function AuditLogPage() {
               type="datetime-local"
               value={filter.since}
               onChange={(e) => apply({ since: e.target.value })}
-              className="rounded-xl border border-line-strong px-3 py-2 text-sm text-fg-strong outline-none transition focus:border-line-strong"
+              className="rounded-xl border border-line-strong bg-surface px-3 py-2 text-sm text-fg-strong outline-none transition focus:border-line-strong"
             />
           </label>
 
@@ -127,7 +133,7 @@ export function AuditLogPage() {
               type="datetime-local"
               value={filter.until}
               onChange={(e) => apply({ until: e.target.value })}
-              className="rounded-xl border border-line-strong px-3 py-2 text-sm text-fg-strong outline-none transition focus:border-line-strong"
+              className="rounded-xl border border-line-strong bg-surface px-3 py-2 text-sm text-fg-strong outline-none transition focus:border-line-strong"
             />
           </label>
 
@@ -153,7 +159,7 @@ export function AuditLogPage() {
               value={filter.resource}
               placeholder="e.g. agents/my-agent"
               onChange={(e) => apply({ resource: e.target.value })}
-              className="w-48 rounded-xl border border-line-strong px-3 py-2 text-sm text-fg-strong outline-none transition focus:border-line-strong"
+              className="w-48 rounded-xl border border-line-strong bg-surface px-3 py-2 text-sm text-fg-strong outline-none transition focus:border-line-strong"
             />
           </label>
 
@@ -164,7 +170,7 @@ export function AuditLogPage() {
               value={filter.actor}
               placeholder="hash prefix or label"
               onChange={(e) => apply({ actor: e.target.value })}
-              className="w-44 rounded-xl border border-line-strong px-3 py-2 text-sm text-fg-strong outline-none transition focus:border-line-strong"
+              className="w-44 rounded-xl border border-line-strong bg-surface px-3 py-2 text-sm text-fg-strong outline-none transition focus:border-line-strong"
             />
           </label>
 
@@ -172,7 +178,7 @@ export function AuditLogPage() {
             type="button"
             onClick={() => void load()}
             disabled={loading}
-            className="rounded-xl bg-fg-strong px-4 py-2 text-sm font-medium text-bg transition hover:bg-fg disabled:cursor-not-allowed disabled:opacity-60"
+            className="rounded-xl bg-accent px-4 py-2 text-sm font-medium text-accent-text transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
           >
             {loading ? "Loading…" : "Search"}
           </button>
@@ -194,13 +200,13 @@ export function AuditLogPage() {
       </section>
 
       {error && (
-        <div className="mb-4 rounded-2xl border border-tone-error/30 bg-tone-error/10 p-4 text-sm text-tone-error shadow-sm">
+        <div className="mb-4 rounded-md border border-tone-error/30 bg-tone-error/10 p-4 text-sm text-tone-error shadow-sm">
           {error}
         </div>
       )}
 
       {hasLoaded && !notConfigured && (
-        <section className="rounded-2xl border border-line bg-surface shadow-sm">
+        <section className="rounded-md border border-line bg-surface shadow-sm">
           <table className="min-w-full text-sm">
             <thead className="bg-soft text-left text-xs uppercase tracking-wide text-fg-soft">
               <tr>
@@ -249,9 +255,9 @@ export function AuditLogPage() {
         </section>
       )}
 
-      {!hasLoaded && !loading && !notConfigured && (
-        <div className="rounded-2xl border border-line bg-surface p-8 text-center text-sm text-fg-soft shadow-sm">
-          Set filters and click <strong>Search</strong> to load audit events.
+      {!hasLoaded && loading && !notConfigured && (
+        <div className="rounded-md border border-line bg-surface p-8 text-center text-sm text-fg-soft shadow-sm">
+          Loading audit events…
         </div>
       )}
 
@@ -282,8 +288,8 @@ function AuditRow({
       <td className="px-4 py-3 font-mono text-xs text-fg">
         {ts.toLocaleString()}
       </td>
-      <td className="px-4 py-3 text-sm text-fg">
-        <span className="font-mono text-xs">{actor.hash}</span>
+      <td className="px-4 py-3 text-sm text-fg" title={event.actor}>
+        <span className="font-mono text-xs">{actor.hash.slice(0, 8)}</span>
         {actor.label && (
           <span
             className={[

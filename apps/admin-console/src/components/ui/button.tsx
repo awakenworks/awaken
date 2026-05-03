@@ -5,13 +5,13 @@ export type ButtonSize = "sm" | "md";
 
 const VARIANT: Record<ButtonVariant, string> = {
   primary:
-    "bg-fg-strong text-bg hover:bg-fg disabled:bg-fg-soft",
+    "bg-accent text-accent-text hover:opacity-90 disabled:opacity-60",
   secondary:
     "border border-line-strong bg-surface text-fg hover:bg-soft disabled:opacity-60",
   ghost:
     "bg-transparent text-fg-soft hover:text-fg hover:bg-soft",
   danger:
-    "bg-tone-error text-bg hover:opacity-90 disabled:opacity-60",
+    "bg-tone-error text-white hover:opacity-90 disabled:opacity-60",
   link:
     "bg-transparent text-link hover:text-link-hover underline-offset-2 hover:underline",
 };
@@ -29,11 +29,7 @@ export interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
   iconLeft?: ReactNode;
 }
 
-/**
- * Single source of truth for buttons. Replaces the ad-hoc `<button
- * className="rounded-xl bg-fg-strong px-4 py-2 ...">` repetition that drifted
- * across pages with different paddings, radii, and hover treatments.
- */
+/** Single source of truth for buttons. */
 export const Button = forwardRef<HTMLButtonElement, ButtonProps>(function Button(
   {
     variant = "primary",

@@ -45,6 +45,17 @@ textarea {
   font: inherit;
 }
 
+/* Native pickers (datetime-local, date, time, color) follow the document's
+ * color-scheme so the calendar/clock chrome matches dark mode. */
+input[type="datetime-local"],
+input[type="date"],
+input[type="time"],
+input[type="month"],
+input[type="week"],
+input[type="color"] {
+  color-scheme: inherit;
+}
+
 code,
 kbd,
 pre,

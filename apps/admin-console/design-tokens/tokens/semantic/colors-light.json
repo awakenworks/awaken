@@ -48,6 +48,10 @@
     "agent":        { "$value": "{color.violet.agent}",  "$type": "color" },
     "agent-tint":   { "$value": "{color.violet.tint}",   "$type": "color", "$description": "Row wash for AI-touched rows" },
     "agent-stripe": { "$value": "{color.violet.stripe}", "$type": "color", "$description": "Active agent left band" },
-    "agent-fg":     { "$value": "{color.violet.fg}",     "$type": "color", "$description": "Text inside agent-tint" }
+    "agent-fg":     { "$value": "{color.violet.fg}",     "$type": "color", "$description": "Text inside agent-tint" },
+
+    "code-bg":      { "$value": "oklch(20.0% 0.018 250)", "$type": "color", "$description": "Code/pre block — always dark (terminal aesthetic, theme-invariant)" },
+    "code-fg":      { "$value": "oklch(94.0% 0.005 80)",  "$type": "color", "$description": "Code/pre text — always light (paired with code-bg)" },
+    "overlay":      { "$value": "oklch(15.0% 0 0 / 0.5)", "$type": "color", "$description": "Modal/dialog backdrop scrim" }
   }
 }

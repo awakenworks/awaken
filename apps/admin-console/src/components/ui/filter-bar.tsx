@@ -49,7 +49,7 @@ export function FilterChip<V extends string>({
 }) {
   const current = options.find((o) => o.value === value);
   return (
-    <label className="inline-flex items-center gap-1.5 rounded-pill border border-line bg-bg px-2.5 py-1 text-xs text-fg-soft transition-colors hover:border-line-strong">
+    <label className="inline-flex cursor-pointer items-center gap-1.5 rounded-pill border border-line-strong bg-surface px-2.5 py-1 text-xs text-fg-soft transition-colors hover:bg-soft hover:text-fg">
       <span className="text-fg-faint">{label}</span>
       <span aria-hidden>·</span>
       <select

@@ -96,7 +96,7 @@ export function PermissionConfigEditor({
   return (
     <div className="space-y-5">
       <div className="grid gap-4 xl:grid-cols-[18rem,minmax(0,1fr)]">
-        <div className="rounded-2xl border border-line bg-soft p-4">
+        <div className="rounded-md border border-line bg-soft p-4">
           <SectionLabel label="Policy Summary" />
           <div className="mt-3 grid gap-3 sm:grid-cols-2 xl:grid-cols-1">
             <MetricCard
@@ -112,7 +112,7 @@ export function PermissionConfigEditor({
           </div>
         </div>
 
-        <div className="rounded-2xl border border-line bg-surface p-4">
+        <div className="rounded-md border border-line bg-surface p-4">
           <SectionLabel label="Default Decision" />
           <p className="mt-2 text-sm leading-6 text-fg-soft">
             This becomes the fallback policy when none of the explicit rules
@@ -155,7 +155,7 @@ export function PermissionConfigEditor({
       </div>
 
       <div className="grid gap-5 xl:grid-cols-[18rem,minmax(0,1fr)]">
-        <aside className="space-y-3 rounded-2xl border border-line bg-soft p-4">
+        <aside className="space-y-3 rounded-md border border-line bg-soft p-4">
           <div className="flex items-start justify-between gap-3">
             <div>
               <SectionLabel label="Permission Rules" />
@@ -187,7 +187,7 @@ export function PermissionConfigEditor({
                     className={[
                       "group flex w-full items-stretch gap-2 rounded-md border px-3 py-2.5 text-left transition-colors",
                       isActive
-                        ? "border-fg-strong bg-fg-strong text-bg shadow-card"
+                        ? "border-accent bg-accent text-accent-text shadow-card"
                         : "border-line bg-surface text-fg-strong hover:border-line-strong",
                     ].join(" ")}
                   >
@@ -244,7 +244,7 @@ export function PermissionConfigEditor({
         </aside>
 
         {activeRule ? (
-          <div className="rounded-2xl border border-line bg-surface p-5 shadow-sm">
+          <div className="rounded-md border border-line bg-surface p-5 shadow-sm">
             <div className="flex flex-wrap items-start justify-between gap-3">
               <div>
                 <h6 className="text-lg font-semibold text-fg-strong">
@@ -297,7 +297,7 @@ export function PermissionConfigEditor({
                   className="w-full rounded-xl border border-line-strong bg-surface px-3 py-2 text-sm text-fg-strong outline-none transition focus:border-line-strong"
                 />
               </Field>
-              <div className="rounded-2xl border border-line bg-soft p-4">
+              <div className="rounded-md border border-line bg-soft p-4">
                 <SectionLabel label="Match Preview" />
                 <div className="mt-3 text-sm text-fg">
                   {activeRule.tool.trim()

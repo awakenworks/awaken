@@ -64,7 +64,7 @@ export function AgentDashboardPage() {
   if (!result) {
     return (
       <Shell title={`Dashboard · ${id}`}>
-        <div className="rounded-2xl border border-line bg-surface p-6 text-sm text-fg-soft shadow-sm">
+        <div className="rounded-md border border-line bg-surface p-6 text-sm text-fg-soft shadow-sm">
           Loading runtime stats…
         </div>
       </Shell>
@@ -221,11 +221,11 @@ export function AgentDashboardPage() {
 
       <Section title="Tools">
         {snapshot.tool_calls_by_tool.length === 0 ? (
-          <div className="rounded-2xl border border-line bg-surface p-5 text-sm text-fg-soft shadow-sm">
+          <div className="rounded-md border border-line bg-surface p-5 text-sm text-fg-soft shadow-sm">
             No tool invocations recorded in the current window.
           </div>
         ) : (
-          <div className="overflow-auto rounded-2xl border border-line bg-surface shadow-sm">
+          <div className="overflow-auto rounded-md border border-line bg-surface shadow-sm">
             <table className="min-w-full text-sm">
               <thead className="bg-soft text-left text-xs uppercase tracking-wide text-fg-soft">
                 <tr>
@@ -294,7 +294,7 @@ export function AgentDashboardPage() {
               .map((t) => (
                 <div
                   key={t.tool}
-                  className="rounded-2xl border border-line bg-surface p-5 shadow-sm"
+                  className="rounded-md border border-line bg-surface p-5 shadow-sm"
                 >
                   <h4 className="font-mono text-sm font-semibold text-fg-strong">
                     {t.tool}
@@ -376,11 +376,8 @@ function Shell({
 }) {
   return (
     <div className="mx-auto max-w-6xl p-6 md:p-8">
-      <header className="mb-8">
-        <p className="text-sm font-medium uppercase tracking-[0.2em] text-fg-soft">
-          Agent Dashboard
-        </p>
-        <h2 className="mt-2 text-3xl font-semibold text-fg-strong">{title}</h2>
+      <header className="mb-4">
+        <h2 className="text-2xl font-semibold tracking-title-em text-fg-strong">{title}</h2>
       </header>
       {children}
     </div>
@@ -424,7 +421,7 @@ function StatCard({
         ? "text-tone-error"
         : "text-fg-strong";
   return (
-    <div className="rounded-2xl border border-line bg-surface p-5 shadow-sm">
+    <div className="rounded-md border border-line bg-surface p-5 shadow-sm">
       <div className={`text-3xl font-semibold ${toneClass}`}>{value}</div>
       <div className="mt-2 text-sm text-fg-soft">{label}</div>
     </div>
@@ -433,7 +430,7 @@ function StatCard({
 
 function RegistryDisabledPanel({ onReload }: { onReload: () => void }) {
   return (
-    <div className="rounded-2xl border border-tone-warn/35 bg-tone-warn/10 p-6 text-sm text-tone-warn shadow-sm">
+    <div className="rounded-md border border-tone-warn/35 bg-tone-warn/10 p-6 text-sm text-tone-warn shadow-sm">
       <h3 className="text-base font-semibold">Runtime stats not configured</h3>
       <p className="mt-2">
         The server is not running with a{" "}
@@ -467,7 +464,7 @@ function NotYetSeenPanel({
   onReload: () => void;
 }) {
   return (
-    <div className="rounded-2xl border border-line bg-surface p-6 text-sm text-fg shadow-sm">
+    <div className="rounded-md border border-line bg-surface p-6 text-sm text-fg shadow-sm">
       <h3 className="text-base font-semibold text-fg-strong">
         No runtime activity yet
       </h3>
@@ -497,7 +494,7 @@ function HistogramPanel({
   const max = maxHistogramCount(buckets);
   const containerClass = compact
     ? "rounded-xl bg-soft p-3"
-    : "rounded-2xl border border-line bg-surface p-5 shadow-sm";
+    : "rounded-md border border-line bg-surface p-5 shadow-sm";
   return (
     <div className={containerClass}>
       <ul className="space-y-1.5">
@@ -532,7 +529,7 @@ function HistogramPanel({
 
 function ErrorPanel({ message }: { message: string }) {
   return (
-    <div className="rounded-2xl border border-tone-error/30 bg-tone-error/10 p-6 text-sm text-tone-error shadow-sm">
+    <div className="rounded-md border border-tone-error/30 bg-tone-error/10 p-6 text-sm text-tone-error shadow-sm">
       {message}
     </div>
   );

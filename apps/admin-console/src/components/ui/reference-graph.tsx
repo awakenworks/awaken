@@ -119,8 +119,9 @@ export function ReferenceGraph({
                 key={`e-${idx}`}
                 d={path}
                 fill="none"
-                stroke="var(--aw-border-strong)"
-                strokeWidth={1}
+                stroke="var(--aw-text-soft)"
+                strokeOpacity={0.55}
+                strokeWidth={1.5}
               />
             );
           })}

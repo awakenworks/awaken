@@ -48,6 +48,10 @@
     "agent":        { "$value": "{color.violet.agent-dark}", "$type": "color" },
     "agent-tint":   { "$value": "{color.violet.tint-dark}",  "$type": "color" },
     "agent-stripe": { "$value": "{color.violet.agent-dark}", "$type": "color" },
-    "agent-fg":     { "$value": "{color.violet.fg-dark}",    "$type": "color" }
+    "agent-fg":     { "$value": "{color.violet.fg-dark}",    "$type": "color" },
+
+    "code-bg":      { "$value": "oklch(20.0% 0.018 250)", "$type": "color" },
+    "code-fg":      { "$value": "oklch(94.0% 0.005 80)",  "$type": "color" },
+    "overlay":      { "$value": "oklch(0% 0 0 / 0.65)",   "$type": "color" }
   }
 }

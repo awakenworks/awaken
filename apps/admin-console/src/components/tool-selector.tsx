@@ -102,7 +102,7 @@ export function ToolSelector({
   }
 
   return (
-    <section className="rounded-2xl border border-line bg-surface p-5 shadow-sm">
+    <section className="rounded-md border border-line bg-surface p-5 shadow-sm">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <h3 className="text-lg font-semibold text-fg-strong">{title}</h3>
@@ -178,7 +178,7 @@ export function ToolSelector({
           </div>
 
           {filteredGroups.length === 0 ? (
-            <div className="mt-4 rounded-2xl border border-dashed border-line px-4 py-3 text-sm text-fg-soft">
+            <div className="mt-4 rounded-md border border-dashed border-line px-4 py-3 text-sm text-fg-soft">
               No tools match the current search.
             </div>
           ) : (
@@ -189,7 +189,7 @@ export function ToolSelector({
                 return (
                   <div
                     key={group.source.key}
-                    className="rounded-2xl border border-line bg-soft p-4"
+                    className="rounded-md border border-line bg-soft p-4"
                   >
                     <div className="flex flex-wrap items-center justify-between gap-3">
                       <div className="flex items-center gap-3">
@@ -273,7 +273,7 @@ function ModeRadio({
       className={[
         "min-w-[10rem] cursor-pointer rounded-xl border px-3 py-2 text-sm transition",
         checked
-          ? "border-fg-strong bg-fg-strong text-bg shadow-sm"
+          ? "border-accent bg-accent text-accent-text shadow-sm"
           : "border-line bg-surface text-fg hover:border-line-strong hover:bg-soft",
       ].join(" ")}
     >

@@ -96,7 +96,7 @@ export function ReminderConfigEditor({
   return (
     <div className="space-y-5">
       <div className="grid gap-4 xl:grid-cols-[18rem,minmax(0,1fr)]">
-        <div className="rounded-2xl border border-line bg-soft p-4">
+        <div className="rounded-md border border-line bg-soft p-4">
           <SectionLabel label="Reminder Summary" />
           <div className="mt-3 grid gap-3 sm:grid-cols-2 xl:grid-cols-1">
             <MetricCard
@@ -112,7 +112,7 @@ export function ReminderConfigEditor({
           </div>
         </div>
 
-        <div className="rounded-2xl border border-line bg-surface p-4">
+        <div className="rounded-md border border-line bg-surface p-4">
           <SectionLabel label="How Reminder Rules Work" />
           <p className="mt-2 text-sm leading-6 text-fg-soft">
             Each rule watches a tool result, then injects a contextual reminder
@@ -140,7 +140,7 @@ export function ReminderConfigEditor({
       </div>
 
       <div className="grid gap-5 xl:grid-cols-[18rem,minmax(0,1fr)]">
-        <aside className="space-y-3 rounded-2xl border border-line bg-soft p-4">
+        <aside className="space-y-3 rounded-md border border-line bg-soft p-4">
           <div className="flex items-start justify-between gap-3">
             <div>
               <SectionLabel label="Reminder Rules" />
@@ -170,9 +170,9 @@ export function ReminderConfigEditor({
                     type="button"
                     onClick={() => setActiveRuleIndex(index)}
                     className={[
-                      "w-full rounded-2xl border px-4 py-3 text-left transition",
+                      "w-full rounded-md border px-4 py-3 text-left transition",
                       isActive
-                        ? "border-fg-strong bg-fg-strong text-white shadow-sm"
+                        ? "border-accent bg-accent text-accent-text shadow-sm"
                         : "border-line bg-surface text-fg-strong hover:border-line-strong",
                     ].join(" ")}
                   >
@@ -213,7 +213,7 @@ export function ReminderConfigEditor({
         </aside>
 
         {activeRule ? (
-          <div className="rounded-2xl border border-line bg-surface p-5 shadow-sm">
+          <div className="rounded-md border border-line bg-surface p-5 shadow-sm">
             <div className="flex flex-wrap items-start justify-between gap-3">
               <div>
                 <h6 className="text-lg font-semibold text-fg-strong">
@@ -282,7 +282,7 @@ export function ReminderConfigEditor({
               </Field>
             </div>
 
-            <div className="mt-5 rounded-2xl border border-line bg-soft p-4">
+            <div className="mt-5 rounded-md border border-line bg-soft p-4">
               <SectionLabel label="Trigger" />
               <p className="mt-2 text-sm leading-6 text-fg-soft">
                 Decide which part of the tool result must match before the
@@ -421,7 +421,7 @@ export function ReminderConfigEditor({
                       {activeRule.fields.map((field, fieldIndex) => (
                         <div
                           key={`reminder-field-${activeRuleIndex}-${fieldIndex}`}
-                          className="grid gap-3 rounded-2xl border border-line bg-surface p-3 lg:grid-cols-[minmax(0,1.1fr),12rem,minmax(0,1fr),auto]"
+                          className="grid gap-3 rounded-md border border-line bg-surface p-3 lg:grid-cols-[minmax(0,1.1fr),12rem,minmax(0,1fr),auto]"
                         >
                           <Field label="Path">
                             <input
@@ -509,7 +509,7 @@ export function ReminderConfigEditor({
               ) : null}
             </div>
 
-            <div className="mt-5 rounded-2xl border border-line bg-surface">
+            <div className="mt-5 rounded-md border border-line bg-surface">
               <div className="border-b border-line px-4 py-4">
                 <SectionLabel label="Injected Reminder" />
                 <p className="mt-2 text-sm leading-6 text-fg-soft">

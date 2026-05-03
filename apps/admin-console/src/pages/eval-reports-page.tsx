@@ -88,21 +88,10 @@ export function EvalReportsPage() {
 
   return (
     <div className="mx-auto max-w-6xl p-6 md:p-8">
-      <header className="mb-8">
-        <p className="text-sm font-medium uppercase tracking-[0.2em] text-fg-soft">
-          Replay Forensics
-        </p>
-        <h2 className="mt-2 text-3xl font-semibold text-fg-strong">
+      <header className="mb-4">
+        <h2 className="text-2xl font-semibold tracking-title-em text-fg-strong">
           Eval Reports
         </h2>
-        <p className="mt-2 max-w-2xl text-sm text-fg-soft">
-          Drop in an NDJSON report produced by{" "}
-          <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs">
-            awaken-eval replay
-          </code>
-          . Optionally pair it with a baseline to surface regressions before
-          they ship.
-        </p>
       </header>
 
       <section className="grid gap-4 md:grid-cols-2">
@@ -122,7 +111,7 @@ export function EvalReportsPage() {
       </section>
 
       {error && (
-        <div className="mt-6 rounded-2xl border border-tone-error/30 bg-tone-error/10 p-4 text-sm text-tone-error shadow-sm">
+        <div className="mt-6 rounded-md border border-tone-error/30 bg-tone-error/10 p-4 text-sm text-tone-error shadow-sm">
           {error}
         </div>
       )}
@@ -158,7 +147,7 @@ export function EvalReportsPage() {
           )}
 
           {diff && (
-            <section className="mt-6 rounded-2xl border border-line bg-surface p-5 shadow-sm">
+            <section className="mt-6 rounded-md border border-line bg-surface p-5 shadow-sm">
               <div className="flex items-center justify-between">
                 <h3 className="text-lg font-semibold text-fg-strong">
                   Baseline diff
@@ -243,7 +232,7 @@ export function EvalReportsPage() {
             </span>
           </section>
 
-          <section className="mt-3 rounded-2xl border border-line bg-surface shadow-sm">
+          <section className="mt-3 rounded-md border border-line bg-surface shadow-sm">
             <table className="min-w-full text-sm">
               <thead className="bg-soft text-left text-xs uppercase tracking-wide text-fg-soft">
                 <tr>
@@ -307,7 +296,7 @@ function FileDrop({
   required?: boolean;
 }) {
   return (
-    <label className="flex flex-col rounded-2xl border border-dashed border-line-strong bg-surface p-5 shadow-sm transition hover:border-line-strong">
+    <label className="flex flex-col rounded-md border border-dashed border-line-strong bg-surface p-5 shadow-sm transition hover:border-line-strong">
       <div className="flex items-center justify-between">
         <span className="text-sm font-semibold text-fg">
           {label}
@@ -327,7 +316,7 @@ function FileDrop({
         type="file"
         accept=".ndjson,.json,.txt,application/json,text/plain"
         onChange={onChange}
-        className="mt-3 block w-full text-sm text-fg-soft file:mr-3 file:rounded-md file:border-0 file:bg-fg-strong file:px-3 file:py-2 file:text-xs file:font-semibold file:uppercase file:tracking-wide file:text-bg hover:file:bg-fg"
+        className="mt-3 block w-full text-sm text-fg-soft file:mr-3 file:rounded-md file:border-0 file:bg-accent file:px-3 file:py-2 file:text-xs file:font-semibold file:uppercase file:tracking-wide file:text-accent-text hover:file:opacity-90"
       />
       {slot ? (
         <div className="mt-3 text-xs text-fg-soft">
@@ -364,7 +353,7 @@ function StatCard({
         ? "text-tone-error"
         : "text-fg-strong";
   return (
-    <div className="rounded-2xl border border-line bg-surface p-5 shadow-sm">
+    <div className="rounded-md border border-line bg-surface p-5 shadow-sm">
       <div className={`text-3xl font-semibold ${toneClass}`}>{value}</div>
       <div className="mt-2 text-sm text-fg-soft">{label}</div>
     </div>
@@ -453,7 +442,7 @@ function FixtureRow({
 
 function PerAgentToolPanel({ rows }: { rows: AgentToolAggregate[] }) {
   return (
-    <section className="mt-6 rounded-2xl border border-line bg-surface p-5 shadow-sm">
+    <section className="mt-6 rounded-md border border-line bg-surface p-5 shadow-sm">
       <div className="flex items-center justify-between">
         <h3 className="text-lg font-semibold text-fg-strong">
           Tool calls by agent
@@ -519,7 +508,7 @@ function ParseIssuesPanel({
   forBaseline?: boolean;
 }) {
   return (
-    <section className="mt-6 rounded-2xl border border-tone-warn/35 bg-tone-warn/10 p-5 shadow-sm">
+    <section className="mt-6 rounded-md border border-tone-warn/35 bg-tone-warn/10 p-5 shadow-sm">
       <h3 className="text-sm font-semibold text-tone-warn">
         {forBaseline
           ? "Baseline parse issues"

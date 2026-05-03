@@ -10,6 +10,7 @@ import {
   configApi,
 } from "@/lib/config-api";
 import {
+  formatActor,
   isAgentActor,
   type AuditEvent,
   type AuditPage,
@@ -106,50 +107,53 @@ export function DashboardPage() {
   return (
     <div className="mx-auto max-w-6xl p-6 md:p-8">
       <PageHeader
-        eyebrow="Observe"
         title="Dashboard"
-        description="The counts below reflect the currently published runtime snapshot, not just what is stored on disk."
+        actions={<CountRibbon stats={[
+          { label: "agents", count: agents.length, to: adminRoutes.agents },
+          { label: "skills", count: capabilities.skills.length, to: adminRoutes.skills },
+          { label: "models", count: models.length, to: adminRoutes.models },
+          { label: "providers", count: providers.length, to: adminRoutes.providers },
+          { label: "mcp", count: mcpServers.length, to: adminRoutes.mcpServers },
+          { label: "tools", count: capabilities.tools.length },
+        ]} />}
       />
 
-      <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-6">
-        <StatCard label="Agents" count={agents.length} to={adminRoutes.agents} />
-        <StatCard label="Skills" count={capabilities.skills.length} to={adminRoutes.skills} />
-        <StatCard label="Models" count={models.length} to={adminRoutes.models} />
-        <StatCard label="Providers" count={providers.length} to={adminRoutes.providers} />
-        <StatCard label="MCP Servers" count={mcpServers.length} to={adminRoutes.mcpServers} />
-        <StatCard label="Tools" count={capabilities.tools.length} />
+      <section className="grid gap-4 lg:grid-cols-2">
+        <ActivityTimeline auditPage={auditPage} disabled={auditDisabled} />
+        <HealthCard providers={providers} mcpServers={mcpServers} />
       </section>
 
-      <section className="mt-8 rounded-md border border-line bg-surface p-5 shadow-card">
-        <Eyebrow>Reference graph</Eyebrow>
-        <h3 className="mt-1 text-lg font-semibold text-fg-strong">
-          Agents → Models → Providers
-        </h3>
-        <p className="mt-1 max-w-2xl text-sm text-fg-soft">
-          Each edge is a hard dependency. Deleting a node with inbound edges is
-          gated by a reference check.
-        </p>
-        <div className="mt-5">
+      <section className="mt-4 rounded-md border border-line bg-surface p-4 shadow-card">
+        <div className="flex items-baseline justify-between gap-4">
+          <h3 className="text-sm font-semibold text-fg-strong">
+            Reference graph
+            <span className="ml-2 font-normal text-fg-soft">agents → models → providers</span>
+          </h3>
+        </div>
+        <div className="mt-3">
           <DependencyGraph
             agents={agents}
             models={models}
             providers={providers}
           />
         </div>
-      </section>
-
-      <section className="mt-6 grid gap-6 lg:grid-cols-2">
-        <HealthCard providers={providers} mcpServers={mcpServers} />
-        <ActivityTimeline auditPage={auditPage} disabled={auditDisabled} />
+        {agents.length > 8 && (
+          <div className="mt-3 text-right text-xs text-fg-soft">
+            Showing first 8 of {agents.length.toLocaleString()} agents.{" "}
+            <Link to={adminRoutes.agents} className="font-medium text-link hover:text-link-hover">
+              View all →
+            </Link>
+          </div>
+        )}
       </section>
 
       {systemInfo && (
-        <section className="mt-6">
+        <section className="mt-4">
           <SystemCard info={systemInfo} />
         </section>
       )}
 
-      <section className="mt-6 grid gap-6 lg:grid-cols-2">
+      <section className="mt-4 grid gap-4 lg:grid-cols-2">
         <div className="rounded-md border border-line bg-surface p-5 shadow-card">
           <div className="flex items-center justify-between">
             <h3 className="text-lg font-semibold text-fg-strong">Plugins</h3>
@@ -296,12 +300,10 @@ function HealthCard({
               <li key={p.id} className="flex items-center justify-between gap-3 rounded-md border border-line bg-soft px-3 py-2">
                 <div className="min-w-0">
                   <div className="font-mono text-sm text-fg-strong">{p.id}</div>
-                  <div className="text-xs text-fg-soft">
-                    {p.adapter} {p.has_api_key ? "· key set" : "· no key"}
-                  </div>
+                  <div className="text-xs text-fg-soft">{p.adapter}</div>
                 </div>
                 <Pill tone={p.has_api_key ? "success" : "warn"}>
-                  {p.has_api_key ? "ok" : "no key"}
+                  {p.has_api_key ? "key set" : "no key"}
                 </Pill>
               </li>
             ))}
@@ -339,7 +341,7 @@ function SystemCard({ info }: { info: SystemInfo }) {
   return (
     <div className="rounded-md border border-line bg-surface p-5 shadow-card">
       <Eyebrow>System</Eyebrow>
-      <div className="mt-3 grid gap-3 md:grid-cols-3 xl:grid-cols-5">
+      <div className="mt-3 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
         <SystemStat label="Version" value={info.version} mono />
         <SystemStat label="Uptime" value={formatUptime(info.uptime_seconds)} />
         <SystemStat
@@ -472,6 +474,12 @@ function ActivityRow({ event }: { event: AuditEvent }) {
   const tone = ACTION_TONE[event.action] ?? "neutral";
   const dotClass = TONE_DOT[tone];
   const fromAgent = isAgentActor(event.actor);
+  const actorMeta = formatActor(event.actor || "system");
+  const actorLabel = actorMeta.label
+    ? actorMeta.label
+    : actorMeta.hash === "system"
+      ? "system"
+      : actorMeta.hash.slice(0, 6);
   return (
     <li
       className={[
@@ -487,8 +495,13 @@ function ActivityRow({ event }: { event: AuditEvent }) {
           <span className="font-medium text-fg-strong">{event.action}</span>{" "}
           <span className="font-mono text-fg-soft">{event.resource}</span>
         </div>
-        <div className={`mt-0.5 text-xs ${fromAgent ? "text-agent-fg/80" : "text-fg-faint"}`}>
-          {event.actor || "system"} · {formatRelativeTime(Date.parse(event.ts))}
+        <div
+          title={event.actor || "system"}
+          className={`mt-0.5 text-xs ${fromAgent ? "text-agent-fg/80" : "text-fg-faint"}`}
+        >
+          <span className={fromAgent ? "" : "font-mono"}>{actorLabel}</span>
+          {" · "}
+          {formatRelativeTime(Date.parse(event.ts))}
         </div>
       </div>
     </li>
@@ -512,29 +525,31 @@ const TONE_DOT: Record<"info" | "warn" | "success" | "error" | "neutral", string
   neutral: "bg-fg-faint",
 };
 
-function StatCard({
-  label,
-  count,
-  to,
-}: {
-  label: string;
-  count: number;
-  to?: string;
-}) {
-  const card = (
-    <div className="group relative rounded-md border border-line bg-surface p-5 shadow-card transition-all hover:-translate-y-0.5 hover:shadow-card-lift">
-      <div className="text-3xl font-semibold tracking-tight text-fg-strong">{count}</div>
-      <div className="mt-2 flex items-center justify-between text-sm text-fg-soft">
-        <span>{label}</span>
-        {to && (
-          <span aria-hidden className="text-fg-faint transition-colors group-hover:text-link">
-            ↗
+function CountRibbon({ stats }: { stats: { label: string; count: number; to?: string }[] }) {
+  return (
+    <div className="flex flex-wrap items-center gap-x-4 gap-y-1 font-mono text-xs text-fg-soft">
+      {stats.map((s, idx) => {
+        const inner = (
+          <span className="tabular-nums">
+            <span className="font-semibold text-fg-strong">{s.count.toLocaleString()}</span>{" "}
+            <span className="text-fg-soft">{s.label}</span>
           </span>
-        )}
-      </div>
+        );
+        return (
+          <span key={s.label} className="flex items-center gap-x-4">
+            {idx > 0 && <span aria-hidden className="text-fg-faint">·</span>}
+            {s.to ? (
+              <Link to={s.to} className="transition-colors hover:text-fg-strong">
+                {inner}
+              </Link>
+            ) : (
+              inner
+            )}
+          </span>
+        );
+      })}
     </div>
   );
-  return to ? <Link to={to}>{card}</Link> : card;
 }
 
 function PageLoading() {

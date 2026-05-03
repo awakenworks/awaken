@@ -31,7 +31,7 @@ export function ModeButton({
       className={[
         "rounded-full px-3 py-1.5 text-xs font-medium transition",
         active
-          ? "bg-fg-strong text-bg"
+          ? "bg-accent text-accent-text"
           : "border border-line-strong bg-surface text-fg hover:bg-muted",
       ].join(" ")}
     >
@@ -62,7 +62,7 @@ export function EmptyState({
   return (
     <div
       className={[
-        "rounded-2xl border border-dashed border-line text-sm text-fg-soft",
+        "rounded-md border border-dashed border-line text-sm text-fg-soft",
         compact ? "px-4 py-3" : "mt-4 px-4 py-5",
       ].join(" ")}
     >
@@ -81,7 +81,7 @@ export function MetricCard({
   detail: string;
 }) {
   return (
-    <div className="rounded-2xl border border-line bg-surface p-4">
+    <div className="rounded-md border border-line bg-surface p-4">
       <div className="text-xs font-semibold uppercase tracking-[0.18em] text-fg-soft">
         {label}
       </div>
@@ -140,9 +140,9 @@ export function ChoiceGrid<T extends string>({
             type="button"
             onClick={() => onChange(option.value)}
             className={[
-              "rounded-2xl border px-3 py-3 text-left transition",
+              "rounded-md border px-3 py-3 text-left transition",
               selected
-                ? "border-fg-strong bg-fg-strong text-bg shadow-sm"
+                ? "border-accent bg-accent text-accent-text shadow-sm"
                 : "border-line bg-surface text-fg-strong hover:border-line-strong hover:bg-soft",
             ].join(" ")}
           >

@@ -2,6 +2,7 @@ import { NavLink } from "react-router";
 import { BACKEND_URL } from "@/lib/config-api";
 import { navGroups, type NavBadge, type NavItem } from "@/lib/nav";
 import { HEALTH_TONE_BG, pickHealth, useNavHealth } from "@/lib/use-nav-health";
+import { useSystemInfo } from "@/lib/use-system-info";
 import { describeAuthStatus, useAuth } from "./auth-provider";
 
 const STATUS_DOT: Record<"ok" | "warn" | "error" | "neutral", string> = {
@@ -22,41 +23,42 @@ export function AdminSidebar({
   const description = describeAuthStatus(status);
   const dotClass = STATUS_DOT[description.tone];
   const health = useNavHealth(status === "ok");
+  const sysInfo = useSystemInfo();
 
   return (
     <aside
       data-open={drawerOpen ? "true" : "false"}
       className={[
         // Mobile: fixed drawer that slides in from left when [data-open=true]
-        "fixed inset-y-0 left-0 z-40 flex w-72 flex-col bg-chrome-bg text-chrome-fg shadow-overlay transition-transform duration-fast",
+        "fixed inset-y-0 left-0 z-40 flex w-72 flex-col bg-canvas text-fg shadow-overlay transition-transform duration-fast",
         "data-[open=false]:-translate-x-full data-[open=true]:translate-x-0",
         // Desktop: static sidebar, no drawer behavior
-        "md:static md:translate-x-0 md:min-h-screen md:border-r md:border-chrome-line md:shadow-none md:data-[open=false]:translate-x-0",
+        "md:static md:translate-x-0 md:min-h-screen md:border-r md:border-line md:shadow-none md:data-[open=false]:translate-x-0",
       ].join(" ")}
     >
-      <div className="border-b border-chrome-line px-6 py-6">
-        <p className="text-[11px] font-medium uppercase tracking-[0.18em] text-chrome-eyebrow">
+      <div className="border-b border-line px-6 py-6">
+        <p className="text-[11px] font-medium uppercase tracking-[0.18em] text-fg-soft">
           Awaken Control Plane
         </p>
-        <h1 className="mt-2 text-2xl font-semibold tracking-tight text-white">
+        <h1 className="mt-2 text-2xl font-semibold tracking-tight text-fg-strong">
           Admin Console
         </h1>
 
         <button
           type="button"
           onClick={openTokenModal}
-          className="mt-5 block w-full rounded-md border border-chrome-line/80 bg-chrome-bg-2 p-3 text-left transition-colors hover:border-chrome-line"
+          className="mt-5 block w-full rounded-md border border-line bg-soft p-3 text-left transition-colors hover:border-line-strong"
         >
           <div className="flex items-center justify-between text-[10px] font-medium uppercase tracking-[0.18em]">
-            <span className="text-chrome-fg-muted">Connected Backend</span>
-            <span className="flex items-center gap-1.5 text-chrome-fg-muted">
+            <span className="text-fg-soft">Connected Backend</span>
+            <span className="flex items-center gap-1.5 text-fg-soft">
               <span aria-hidden className={`inline-block h-1.5 w-1.5 rounded-pill ${dotClass}`} />
               <span className="text-[10px] tracking-normal normal-case">
                 {description.label}
               </span>
             </span>
           </div>
-          <div className="mt-1.5 break-all font-mono text-[11px] text-chrome-fg">
+          <div className="mt-1.5 break-all font-mono text-[11px] text-fg">
             {BACKEND_URL}
           </div>
         </button>
@@ -67,7 +69,7 @@ export function AdminSidebar({
           <div key={group.label} className="contents">
             <div
               aria-hidden
-              className="px-3 pb-1 text-[10px] font-medium uppercase tracking-eyebrow text-chrome-fg-muted"
+              className="px-3 pb-1 text-[10px] font-medium uppercase tracking-eyebrow text-fg-soft"
             >
               {group.label}
             </div>
@@ -84,8 +86,8 @@ export function AdminSidebar({
         ))}
       </nav>
 
-      <div className="border-t border-chrome-line px-5 py-3 text-[10px] font-mono text-chrome-fg-muted">
-        v0.4.0 · 9-phase loop
+      <div className="border-t border-line px-5 py-3 text-[10px] font-mono text-fg-soft">
+        v{sysInfo?.version ?? "—"} · 9-phase loop
       </div>
     </aside>
   );
@@ -106,10 +108,10 @@ function SidebarLink({
       end={item.end}
       className={({ isActive }) =>
         [
-          "group flex min-w-0 items-center gap-2 rounded-md px-3 py-2 text-sm transition-colors",
+          "group relative flex min-w-0 items-center gap-2 rounded-md px-3 py-2 text-sm transition-colors",
           isActive
-            ? "bg-chrome-bg-2 text-white"
-            : "text-chrome-fg-muted hover:bg-chrome-bg-2/60 hover:text-chrome-fg",
+            ? "bg-soft text-fg-strong before:absolute before:left-0 before:top-1.5 before:bottom-1.5 before:w-[2px] before:rounded-pill before:bg-accent"
+            : "text-fg-soft hover:bg-soft/60 hover:text-fg",
         ].join(" ")
       }
     >
@@ -122,7 +124,7 @@ function SidebarLink({
         />
       )}
       {typeof health.count === "number" && health.count > 0 && (
-        <span className="rounded bg-chrome-bg-2 px-1.5 font-mono text-[10px] text-chrome-fg-muted group-[.active]:text-chrome-fg">
+        <span className="rounded bg-soft px-1.5 font-mono text-[10px] text-fg-soft group-[.active]:text-fg">
           {health.count}
         </span>
       )}
@@ -141,7 +143,7 @@ function NavBadgePill({ badge }: { badge: NavBadge }) {
     );
   }
   return (
-    <span className="rounded-pill bg-chrome-bg-2 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-chrome-fg-muted">
+    <span className="rounded-pill bg-soft px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-fg-soft">
       ro
     </span>
   );

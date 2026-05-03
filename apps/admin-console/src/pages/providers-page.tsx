@@ -230,24 +230,24 @@ export function ProvidersPage() {
 
   return (
     <div className="mx-auto max-w-6xl p-6 md:p-8">
-      <div className="mb-6 flex items-center justify-between gap-4">
-        <div>
-          <p className="text-sm font-medium uppercase tracking-[0.2em] text-fg-soft">
-            Runtime Catalog
-          </p>
-          <h2 className="mt-2 text-3xl font-semibold text-fg-strong">Providers</h2>
+      <div className="mb-4 flex items-end justify-between gap-4">
+        <div className="flex items-baseline gap-3">
+          <h2 className="text-2xl font-semibold tracking-title-em text-fg-strong">Providers</h2>
+          <span aria-hidden className="font-mono text-sm text-fg-faint">
+            {crud.items.length}
+          </span>
         </div>
         <button
           type="button"
           onClick={startCreate}
-          className="rounded-xl bg-fg-strong px-4 py-2 text-sm font-medium text-white transition hover:bg-fg"
+          className="inline-flex h-9 items-center rounded-md bg-accent px-3 text-sm font-medium text-accent-text transition hover:opacity-90"
         >
           New Provider
         </button>
       </div>
 
       {crud.draft ? (
-        <section className="mb-6 rounded-2xl border border-line bg-surface p-5 shadow-sm">
+        <section className="mb-6 rounded-md border border-line bg-surface p-5 shadow-sm">
           <div className="flex items-center justify-between">
             <h3 className="text-lg font-semibold text-fg-strong">
               {crud.isEditingExisting ? "Edit provider" : "Create provider"}
@@ -397,7 +397,7 @@ export function ProvidersPage() {
               type="button"
               onClick={() => void handleSave()}
               disabled={crud.saving}
-              className="rounded-xl bg-fg-strong px-4 py-2 text-sm font-medium text-white transition hover:bg-fg disabled:cursor-not-allowed disabled:opacity-60"
+              className="rounded-xl bg-accent px-4 py-2 text-sm font-medium text-accent-text transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
             >
               {crud.saving ? "Saving..." : "Save"}
             </button>
@@ -456,13 +456,13 @@ export function ProvidersPage() {
       <div className="overflow-x-auto rounded-md border border-line bg-surface shadow-card">
         {!crud.loading && crud.items.length === 0 ? (
           <EmptyState
-            title="No managed providers yet"
-            description="A provider connects Awaken to an LLM API. Configure the adapter and credentials, then bind models on top."
+            title="0 providers"
+            description="Add an LLM endpoint to bind models against."
             actions={
               <button
                 type="button"
                 onClick={startCreate}
-                className="inline-flex h-9 items-center rounded-md bg-fg-strong px-4 text-sm font-medium text-bg transition-colors hover:bg-fg"
+                className="inline-flex h-9 items-center rounded-md bg-accent px-4 text-sm font-medium text-accent-text transition-colors hover:opacity-90"
               >
                 + New Provider
               </button>
@@ -504,26 +504,26 @@ export function ProvidersPage() {
                       {formatRelativeTime(provider.updated_at)}
                     </td>
                     <td className="px-5 py-4">
-                      <div className="flex gap-4">
+                      <div className="flex gap-4 text-sm">
                         <button
                           type="button"
                           onClick={() => void handleRowTest(provider.id)}
                           disabled={rowTestingId === provider.id}
-                          className="font-medium text-link transition-colors hover:text-link-hover disabled:cursor-not-allowed disabled:opacity-60"
+                          className="font-medium text-fg-soft transition-colors hover:text-fg-strong disabled:cursor-not-allowed disabled:opacity-60"
                         >
                           {rowTestingId === provider.id ? "Testing…" : "Test"}
                         </button>
                         <button
                           type="button"
                           onClick={() => startEdit(provider)}
-                          className="font-medium text-fg transition-colors hover:text-fg-strong"
+                          className="font-medium text-fg-soft transition-colors hover:text-fg-strong"
                         >
                           Edit
                         </button>
                         <button
                           type="button"
                           onClick={() => void crud.handleDelete(provider.id)}
-                          className="font-medium text-tone-error transition-colors hover:text-tone-error"
+                          className="font-medium text-tone-error/80 transition-colors hover:text-tone-error"
                         >
                           Delete
                         </button>

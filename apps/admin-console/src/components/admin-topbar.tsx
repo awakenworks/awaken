@@ -2,6 +2,7 @@ import { Fragment } from "react";
 import { Link, useLocation } from "react-router";
 import { resolveBreadcrumbs } from "@/lib/nav";
 import { maskAdminToken } from "@/lib/admin-token";
+import { useTheme, type ThemeChoice } from "@/lib/use-theme";
 import { describeAuthStatus, useAuth } from "./auth-provider";
 import { useCommandPalette } from "./command-palette";
 
@@ -99,6 +100,8 @@ export function AdminTopbar({
           </span>
         </button>
 
+        <ThemeToggle />
+
         <button
           type="button"
           aria-label="Notifications (coming soon)"
@@ -121,7 +124,7 @@ export function AdminTopbar({
         <button
           type="button"
           onClick={openTokenModal}
-          className="flex items-center gap-3 rounded-md border border-line bg-soft px-3 py-1.5 text-left text-xs text-fg-soft transition-colors hover:border-line-strong"
+          className="flex items-center gap-3 rounded-md border border-line-strong bg-surface px-3 py-1.5 text-left text-xs text-fg-soft transition-colors hover:bg-soft hover:text-fg"
         >
           <span className="flex items-center gap-1.5">
             <span aria-hidden className={`inline-block h-2 w-2 rounded-pill ${dotClass}`} />
@@ -132,5 +135,55 @@ export function AdminTopbar({
         </button>
       </div>
     </header>
+  );
+}
+
+function ThemeToggle() {
+  const { choice, cycle } = useTheme();
+  const label = `Theme: ${describeChoice(choice)} (click to change)`;
+  return (
+    <button
+      type="button"
+      aria-label={label}
+      title={label}
+      onClick={cycle}
+      className="hidden h-9 w-9 items-center justify-center rounded-md border border-line bg-soft text-fg-soft transition-colors hover:border-line-strong hover:text-fg md:inline-flex"
+    >
+      {choice === "light" && <SunIcon />}
+      {choice === "dark" && <MoonIcon />}
+      {choice === "system" && <SystemIcon />}
+    </button>
+  );
+}
+
+function describeChoice(choice: ThemeChoice): string {
+  if (choice === "light") return "light";
+  if (choice === "dark") return "dark";
+  return "system";
+}
+
+function SunIcon() {
+  return (
+    <svg aria-hidden viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+      <circle cx="12" cy="12" r="4" />
+      <path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41" />
+    </svg>
+  );
+}
+
+function MoonIcon() {
+  return (
+    <svg aria-hidden viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M21 12.79A9 9 0 1 1 11.21 3a7 7 0 0 0 9.79 9.79z" />
+    </svg>
+  );
+}
+
+function SystemIcon() {
+  return (
+    <svg aria-hidden viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <rect x="3" y="4" width="18" height="13" rx="2" />
+      <path d="M8 21h8M12 17v4" />
+    </svg>
   );
 }
