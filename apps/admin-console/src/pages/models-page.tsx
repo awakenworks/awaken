@@ -1,4 +1,5 @@
 import { useEffect, useMemo } from "react";
+import { useTranslation } from "react-i18next";
 import { Link } from "react-router";
 import {
   type ModelBindingSpec,
@@ -63,6 +64,7 @@ const LIST_OPTIONS = {
 } as const;
 
 export function ModelsPage() {
+  const { t } = useTranslation();
   const crud = useCrudPage<ModelBindingSpec>({
     namespace: "models",
     entityLabel: "model",
@@ -114,7 +116,7 @@ export function ModelsPage() {
     <div className="mx-auto max-w-5xl p-6 md:p-8">
       <div className="mb-4 flex items-end justify-between gap-4">
         <div className="flex items-baseline gap-3">
-          <h2 className="text-2xl font-semibold tracking-title-em text-fg-strong">Models</h2>
+          <h2 className="text-2xl font-semibold tracking-title-em text-fg-strong">{t("models.title")}</h2>
           <span aria-hidden className="font-mono text-sm text-fg-faint">
             {crud.items.length}
           </span>
@@ -124,7 +126,7 @@ export function ModelsPage() {
           onClick={() => crud.startNew({ ...EMPTY_MODEL })}
           className="inline-flex h-9 items-center rounded-md bg-accent px-3 text-sm font-medium text-accent-text transition hover:opacity-90"
         >
-          New Model
+          {t("models.new")}
         </button>
       </div>
 
@@ -226,15 +228,15 @@ export function ModelsPage() {
       <div className="overflow-x-auto rounded-md border border-line bg-surface shadow-card">
         {!crud.loading && crud.items.length === 0 ? (
           <EmptyState
-            title="0 models"
-            description="Bind a provider to an upstream model id."
+            title={t("models.empty.title")}
+            description={t("models.empty.desc")}
             actions={
               <button
                 type="button"
                 onClick={() => crud.startNew({ ...EMPTY_MODEL })}
                 className="inline-flex h-9 items-center rounded-md bg-accent px-4 text-sm font-medium text-accent-text transition-colors hover:opacity-90"
               >
-                + New Model
+                {t("models.new")}
               </button>
             }
           />

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { Link } from "react-router";
 import {
   ConfigApiError,
@@ -92,6 +93,7 @@ interface TestStatus {
 }
 
 export function ProvidersPage() {
+  const { t } = useTranslation();
   const [apiKeyMode, setApiKeyMode] = useState<ApiKeyMode>("replace");
   const [apiKeyDraft, setApiKeyDraft] = useState("");
   const [testing, setTesting] = useState(false);
@@ -232,7 +234,7 @@ export function ProvidersPage() {
     <div className="mx-auto max-w-6xl p-6 md:p-8">
       <div className="mb-4 flex items-end justify-between gap-4">
         <div className="flex items-baseline gap-3">
-          <h2 className="text-2xl font-semibold tracking-title-em text-fg-strong">Providers</h2>
+          <h2 className="text-2xl font-semibold tracking-title-em text-fg-strong">{t("providers.title")}</h2>
           <span aria-hidden className="font-mono text-sm text-fg-faint">
             {crud.items.length}
           </span>
@@ -242,7 +244,7 @@ export function ProvidersPage() {
           onClick={startCreate}
           className="inline-flex h-9 items-center rounded-md bg-accent px-3 text-sm font-medium text-accent-text transition hover:opacity-90"
         >
-          New Provider
+          {t("providers.new")}
         </button>
       </div>
 
@@ -456,15 +458,15 @@ export function ProvidersPage() {
       <div className="overflow-x-auto rounded-md border border-line bg-surface shadow-card">
         {!crud.loading && crud.items.length === 0 ? (
           <EmptyState
-            title="0 providers"
-            description="Add an LLM endpoint to bind models against."
+            title={t("providers.empty.title")}
+            description={t("providers.empty.desc")}
             actions={
               <button
                 type="button"
                 onClick={startCreate}
                 className="inline-flex h-9 items-center rounded-md bg-accent px-4 text-sm font-medium text-accent-text transition-colors hover:opacity-90"
               >
-                + New Provider
+                {t("providers.new")}
               </button>
             }
           />

@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { ConfigApiError, configApi } from "@/lib/config-api";
 import {
   formatActor,
@@ -30,6 +31,7 @@ const ACTION_BADGE: Record<AuditAction, string> = {
 };
 
 export function AuditLogPage() {
+  const { t } = useTranslation();
   const { apply, ...filter } = useAuditFilterUrlState();
 
   const [page, setPage] = useState<AuditPage | null>(null);
@@ -84,14 +86,12 @@ export function AuditLogPage() {
     filter.since || filter.until || filter.action || filter.resource || filter.actor;
 
   const emptyMessage =
-    hasActiveFilters
-      ? "No audit events match these filters."
-      : "Audit log is empty.";
+    hasActiveFilters ? t("audit.noMatches") : t("audit.empty");
 
   return (
     <div className="mx-auto max-w-6xl p-6 md:p-8">
       <header className="mb-4 flex items-baseline gap-3">
-        <h2 className="text-2xl font-semibold tracking-title-em text-fg-strong">Audit Log</h2>
+        <h2 className="text-2xl font-semibold tracking-title-em text-fg-strong">{t("audit.title")}</h2>
         {page && (
           <span aria-hidden className="font-mono text-sm text-fg-faint">
             {page.items.length}{page.next_cursor ? "+" : ""}
@@ -101,16 +101,7 @@ export function AuditLogPage() {
 
       {notConfigured && (
         <div className="mb-6 rounded-md border border-tone-warn/35 bg-tone-warn/10 p-4 text-sm text-tone-warn shadow-sm">
-          Audit log is not enabled on this server.{" "}
-          <a
-            href="https://docs.awaken.dev/audit-log"
-            target="_blank"
-            rel="noopener noreferrer"
-            className="font-medium underline hover:no-underline"
-          >
-            Learn how to enable it
-          </a>
-          .
+          {t("audit.notConfigured")}
         </div>
       )}
 
@@ -118,7 +109,7 @@ export function AuditLogPage() {
       <section className="mb-4 rounded-md border border-line bg-surface p-4 shadow-sm">
         <div className="flex flex-wrap items-end gap-3">
           <label className="flex flex-col gap-1">
-            <span className="text-xs text-fg-soft">Since</span>
+            <span className="text-xs text-fg-soft">{t("audit.filters.since")}</span>
             <input
               type="datetime-local"
               value={filter.since}
@@ -128,7 +119,7 @@ export function AuditLogPage() {
           </label>
 
           <label className="flex flex-col gap-1">
-            <span className="text-xs text-fg-soft">Until</span>
+            <span className="text-xs text-fg-soft">{t("audit.filters.until")}</span>
             <input
               type="datetime-local"
               value={filter.until}
@@ -138,7 +129,7 @@ export function AuditLogPage() {
           </label>
 
           <label className="flex flex-col gap-1">
-            <span className="text-xs text-fg-soft">Action</span>
+            <span className="text-xs text-fg-soft">{t("audit.filters.action")}</span>
             <select
               value={filter.action}
               onChange={(e) => apply({ action: e.target.value as AuditAction | "" })}
@@ -153,7 +144,7 @@ export function AuditLogPage() {
           </label>
 
           <label className="flex flex-col gap-1">
-            <span className="text-xs text-fg-soft">Resource</span>
+            <span className="text-xs text-fg-soft">{t("audit.filters.resource")}</span>
             <input
               type="text"
               value={filter.resource}
@@ -164,7 +155,7 @@ export function AuditLogPage() {
           </label>
 
           <label className="flex flex-col gap-1">
-            <span className="text-xs text-fg-soft">Actor</span>
+            <span className="text-xs text-fg-soft">{t("audit.filters.actor")}</span>
             <input
               type="text"
               value={filter.actor}
@@ -180,7 +171,7 @@ export function AuditLogPage() {
             disabled={loading}
             className="rounded-xl bg-accent px-4 py-2 text-sm font-medium text-accent-text transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
           >
-            {loading ? "Loading…" : "Search"}
+            {loading ? t("audit.filters.loading") : t("audit.filters.search")}
           </button>
 
           {hasActiveFilters && (
@@ -193,7 +184,7 @@ export function AuditLogPage() {
               }}
               className="rounded-xl border border-line-strong px-4 py-2 text-sm font-medium text-fg transition hover:bg-soft"
             >
-              Clear
+              {t("audit.filters.clear")}
             </button>
           )}
         </div>
@@ -210,11 +201,11 @@ export function AuditLogPage() {
           <table className="min-w-full text-sm">
             <thead className="bg-soft text-left text-xs uppercase tracking-wide text-fg-soft">
               <tr>
-                <th className="px-4 py-3">Time</th>
-                <th className="px-4 py-3">Actor</th>
-                <th className="px-4 py-3">Action</th>
-                <th className="px-4 py-3">Resource</th>
-                <th className="px-4 py-3">Change</th>
+                <th className="px-4 py-3">{t("audit.columns.time")}</th>
+                <th className="px-4 py-3">{t("audit.columns.actor")}</th>
+                <th className="px-4 py-3">{t("audit.columns.action")}</th>
+                <th className="px-4 py-3">{t("audit.columns.resource")}</th>
+                <th className="px-4 py-3">{t("audit.columns.change")}</th>
                 <th className="px-4 py-3"></th>
               </tr>
             </thead>

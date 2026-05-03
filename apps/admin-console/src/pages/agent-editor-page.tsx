@@ -14,6 +14,7 @@ import { ToolSelector } from "@/components/tool-selector";
 import { useToast } from "@/components/toast-provider";
 import { useConfirmDialog } from "@/components/confirm-dialog";
 import { useUnsavedChangesGuard } from "@/components/unsaved-changes-guard";
+import { useTranslation } from "react-i18next";
 import {
   AGENT_EDITOR_TABS,
   type AgentEditorTabId,
@@ -394,6 +395,7 @@ function EditorSaveBar({
   savedSpec: AgentSpec | null;
   onSave: () => void;
 }) {
+  const { t } = useTranslation();
   const toast = useToast();
   const [validating, setValidating] = useState(false);
   const [diffOpen, setDiffOpen] = useState(false);
@@ -421,9 +423,9 @@ function EditorSaveBar({
           <span aria-hidden className="inline-block h-2 w-2 rounded-pill bg-state-progress" />
           <div className="text-sm text-fg">
             {isNew ? (
-              <span className="text-fg-strong">Draft — not yet saved.</span>
+              <span className="text-fg-strong">{t("editor.unsavedChanges")}</span>
             ) : (
-              <span className="text-fg-strong">Unsaved changes</span>
+              <span className="text-fg-strong">{t("editor.unsavedChanges")}</span>
             )}
             <span className="ml-2 text-fg-soft">
               Save will publish to the runtime config.
@@ -436,7 +438,7 @@ function EditorSaveBar({
                 onClick={() => setDiffOpen(true)}
                 className="inline-flex h-9 items-center rounded-md border border-line bg-surface px-3 text-sm font-medium text-fg-soft transition-colors hover:text-fg"
               >
-                Diff vs published
+                {t("editor.diff")}
               </button>
             )}
             <button
@@ -445,7 +447,7 @@ function EditorSaveBar({
               disabled={validating || saving}
               className="inline-flex h-9 items-center rounded-md border border-line-strong bg-surface px-3 text-sm font-medium text-fg transition-colors hover:bg-soft disabled:cursor-not-allowed disabled:opacity-60"
             >
-              {validating ? "Validating…" : "Validate"}
+              {validating ? t("editor.validating") : t("editor.validate")}
             </button>
             <button
               type="button"
@@ -453,7 +455,7 @@ function EditorSaveBar({
               disabled={saving || validating}
               className="inline-flex h-9 items-center rounded-md bg-accent px-4 text-sm font-medium text-accent-text transition-colors hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
             >
-              {saving ? "Saving…" : isNew ? "Save & Publish" : "Save"}
+              {saving ? t("editor.saving") : t("editor.save")}
             </button>
           </div>
         </div>
@@ -614,6 +616,7 @@ function StickyEditorHeader({
   activeTab: AgentEditorTabId;
   onTabChange: (next: AgentEditorTabId) => void;
 }) {
+  const { t } = useTranslation();
   const tabRefs = useRef<(HTMLButtonElement | null)[]>([]);
 
   function handleKeyDown(event: React.KeyboardEvent, index: number) {
@@ -658,19 +661,19 @@ function StickyEditorHeader({
                 to={adminRoutes.auditLogForResource(`agents/${agentId}`)}
                 className="rounded-md border border-line-strong bg-surface px-2.5 py-1 text-xs font-medium text-fg-soft transition hover:bg-soft hover:text-fg"
               >
-                History
+                {t("editor.history")}
               </Link>
             )}
           </div>
           <h2 className="mt-2 flex flex-wrap items-center gap-3 text-3xl font-semibold text-fg-strong">
-            <span>{isNew ? "New Agent" : `Edit ${agentId}`}</span>
+            <span>{isNew ? t("editor.newTitle") : t("editor.editTitle", { id: agentId })}</span>
             {isDirty ? (
               <span className="rounded-full bg-tone-warn/15 px-2 py-0.5 text-xs font-medium uppercase tracking-wide text-tone-warn">
-                Unsaved changes
+                {t("editor.unsavedChanges")}
               </span>
             ) : !isNew ? (
               <span className="rounded-full bg-tone-success/15 px-2 py-0.5 text-xs font-medium uppercase tracking-wide text-tone-success">
-                Up to date
+                {t("editor.upToDate")}
               </span>
             ) : null}
           </h2>
@@ -682,7 +685,7 @@ function StickyEditorHeader({
             disabled={saving}
             className="rounded-xl bg-accent px-4 py-2 text-sm font-medium text-accent-text transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
           >
-            Save
+            {t("editor.save")}
           </button>
         )}
       </div>

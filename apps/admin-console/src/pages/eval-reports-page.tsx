@@ -1,4 +1,6 @@
 import { useMemo, useState, type ChangeEvent } from "react";
+import { useTranslation } from "react-i18next";
+import { TraceDetailPanel } from "@/components/trace-detail-panel";
 import {
   aggregateToolCallsByAgent,
   describeDiffEntry,
@@ -34,9 +36,11 @@ type FileSlot = {
 };
 
 export function EvalReportsPage() {
+  const { t } = useTranslation();
   const [report, setReport] = useState<FileSlot | null>(null);
   const [baseline, setBaseline] = useState<FileSlot | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [trace, setTrace] = useState<ReplayReport | null>(null);
 
   const { apply: applyFixtureFilter, ...fixtureFilter } = useFixtureFilterUrlState();
 
@@ -88,10 +92,13 @@ export function EvalReportsPage() {
 
   return (
     <div className="mx-auto max-w-6xl p-6 md:p-8">
-      <header className="mb-4">
+      <header className="mb-4 flex items-baseline justify-between gap-3">
         <h2 className="text-2xl font-semibold tracking-title-em text-fg-strong">
-          Eval Reports
+          {t("evals.title")}
         </h2>
+        <span className="text-[10px] font-medium uppercase tracking-eyebrow text-fg-soft">
+          {t("evals.modeOffline")}
+        </span>
       </header>
 
       <section className="grid gap-4 md:grid-cols-2">
@@ -270,6 +277,7 @@ export function EvalReportsPage() {
                       report={r}
                       diff={diffByFixture.get(r.fixture_id) ?? null}
                       hasDiff={Boolean(diff)}
+                      onOpenTrace={() => setTrace(r)}
                     />
                   ))
                 )}
@@ -278,6 +286,8 @@ export function EvalReportsPage() {
           </section>
         </>
       )}
+
+      {trace && <TraceDetailPanel report={trace} onClose={() => setTrace(null)} />}
     </div>
   );
 }
@@ -377,13 +387,15 @@ function FixtureRow({
   report,
   diff,
   hasDiff,
+  onOpenTrace,
 }: {
   report: ReplayReport;
   diff: DiffEntry | null;
   hasDiff: boolean;
+  onOpenTrace: () => void;
 }) {
   return (
-    <tr className="hover:bg-soft">
+    <tr className="cursor-pointer hover:bg-soft" onClick={onOpenTrace}>
       <td className="px-4 py-3 font-mono text-sm text-fg-strong">
         {report.fixture_id}
       </td>

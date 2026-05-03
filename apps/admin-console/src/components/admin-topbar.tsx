@@ -1,8 +1,10 @@
 import { Fragment } from "react";
+import { useTranslation } from "react-i18next";
 import { Link, useLocation } from "react-router";
 import { resolveBreadcrumbs } from "@/lib/nav";
 import { maskAdminToken } from "@/lib/admin-token";
 import { useTheme, type ThemeChoice } from "@/lib/use-theme";
+import { setLocale, currentLocale, type Locale } from "@/lib/i18n";
 import { describeAuthStatus, useAuth } from "./auth-provider";
 import { useCommandPalette } from "./command-palette";
 
@@ -18,6 +20,7 @@ export function AdminTopbar({
 }: {
   onOpenDrawer?: () => void;
 } = {}) {
+  const { t } = useTranslation();
   const { pathname } = useLocation();
   const crumbs = resolveBreadcrumbs(pathname);
   const { token, status, openTokenModal } = useAuth();
@@ -52,6 +55,7 @@ export function AdminTopbar({
       <nav aria-label="Breadcrumb" className="flex min-w-0 flex-1 items-center gap-2 text-sm text-fg-soft">
         {crumbs.map((crumb, idx) => {
           const isLast = idx === crumbs.length - 1;
+          const text = crumb.labelKey ? t(crumb.labelKey) : crumb.label;
           return (
             <Fragment key={`${crumb.label}-${idx}`}>
               {idx > 0 && (
@@ -64,7 +68,7 @@ export function AdminTopbar({
                   to={crumb.path}
                   className="rounded px-1 transition-colors hover:text-fg"
                 >
-                  {crumb.label}
+                  {text}
                 </Link>
               ) : (
                 <span
@@ -74,7 +78,7 @@ export function AdminTopbar({
                       : "truncate text-fg-soft"
                   }
                 >
-                  {crumb.label}
+                  {text}
                 </span>
               )}
             </Fragment>
@@ -89,7 +93,7 @@ export function AdminTopbar({
           onClick={palette.open}
           className="hidden h-9 items-center gap-2 rounded-md border border-line bg-soft px-3 text-xs text-fg-soft transition-colors hover:border-line-strong md:inline-flex"
         >
-          <span>Search agents, tools, runs…</span>
+          <span>{t("topbar.palettePlaceholder")}</span>
           <span className="flex items-center gap-1 text-fg-faint">
             <kbd className="rounded border border-line bg-bg px-1.5 py-0.5 font-mono text-[10px]">
               ⌘
@@ -99,6 +103,8 @@ export function AdminTopbar({
             </kbd>
           </span>
         </button>
+
+        <LocaleToggle />
 
         <ThemeToggle />
 
@@ -135,6 +141,23 @@ export function AdminTopbar({
         </button>
       </div>
     </header>
+  );
+}
+
+function LocaleToggle() {
+  const { i18n } = useTranslation();
+  const locale = (i18n.language as Locale) ?? currentLocale();
+  const next: Locale = locale === "zh-CN" ? "en" : "zh-CN";
+  return (
+    <button
+      type="button"
+      aria-label={`Switch language to ${next}`}
+      title={`Switch language to ${next}`}
+      onClick={() => setLocale(next)}
+      className="hidden h-9 items-center justify-center rounded-md border border-line-strong bg-surface px-2.5 text-xs font-medium text-fg-soft transition-colors hover:bg-soft hover:text-fg md:inline-flex"
+    >
+      {locale === "zh-CN" ? "中" : "EN"}
+    </button>
   );
 }
 

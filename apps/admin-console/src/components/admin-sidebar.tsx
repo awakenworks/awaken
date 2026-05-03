@@ -1,3 +1,4 @@
+import { useTranslation } from "react-i18next";
 import { NavLink } from "react-router";
 import { BACKEND_URL } from "@/lib/config-api";
 import { navGroups, type NavBadge, type NavItem } from "@/lib/nav";
@@ -19,6 +20,7 @@ export function AdminSidebar({
   drawerOpen?: boolean;
   onCloseDrawer?: () => void;
 } = {}) {
+  const { t } = useTranslation();
   const { status, openTokenModal } = useAuth();
   const description = describeAuthStatus(status);
   const dotClass = STATUS_DOT[description.tone];
@@ -38,10 +40,10 @@ export function AdminSidebar({
     >
       <div className="border-b border-line px-6 py-6">
         <p className="text-[11px] font-medium uppercase tracking-[0.18em] text-fg-soft">
-          Awaken Control Plane
+          {t("app.eyebrow")}
         </p>
         <h1 className="mt-2 text-2xl font-semibold tracking-tight text-fg-strong">
-          Admin Console
+          {t("app.title")}
         </h1>
 
         <button
@@ -50,7 +52,7 @@ export function AdminSidebar({
           className="mt-5 block w-full rounded-md border border-line bg-soft p-3 text-left transition-colors hover:border-line-strong"
         >
           <div className="flex items-center justify-between text-[10px] font-medium uppercase tracking-[0.18em]">
-            <span className="text-fg-soft">Connected Backend</span>
+            <span className="text-fg-soft">{t("app.connectedBackend")}</span>
             <span className="flex items-center gap-1.5 text-fg-soft">
               <span aria-hidden className={`inline-block h-1.5 w-1.5 rounded-pill ${dotClass}`} />
               <span className="text-[10px] tracking-normal normal-case">
@@ -71,7 +73,7 @@ export function AdminSidebar({
               aria-hidden
               className="px-3 pb-1 text-[10px] font-medium uppercase tracking-eyebrow text-fg-soft"
             >
-              {group.label}
+              {t(group.groupKey)}
             </div>
             <div className="flex flex-col gap-0.5">
               {group.items.map((item) => (
@@ -86,8 +88,30 @@ export function AdminSidebar({
         ))}
       </nav>
 
-      <div className="border-t border-line px-5 py-3 text-[10px] font-mono text-fg-soft">
-        v{sysInfo?.version ?? "—"} · 9-phase loop
+      <div className="border-t border-line px-5 py-3 space-y-1.5 text-[10px] text-fg-soft">
+        <div className="flex items-center gap-2 font-mono">
+          {sysInfo && (
+            <span
+              aria-hidden
+              className="inline-block h-1.5 w-1.5 animate-pulse rounded-pill bg-state-done"
+              title={`uptime ${Math.floor(sysInfo.uptime_seconds / 60)}m`}
+            />
+          )}
+          <span>v{sysInfo?.version ?? "—"} · 9-phase loop</span>
+        </div>
+        <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
+          <span className="inline-flex items-center gap-1">
+            <kbd className="rounded border border-line bg-bg px-1 font-mono text-[9px]">⌘K</kbd>
+            search
+          </span>
+          <span className="text-fg-faint">·</span>
+          <span className="inline-flex items-center gap-1">
+            <kbd className="rounded border border-line bg-bg px-1 font-mono text-[9px]">G</kbd>
+            then
+            <kbd className="rounded border border-line bg-bg px-1 font-mono text-[9px]">A</kbd>
+            agents
+          </span>
+        </div>
       </div>
     </aside>
   );
@@ -100,8 +124,10 @@ function SidebarLink({
   item: NavItem;
   health: { count?: number; tone: "ok" | "warn" | "error" | "neutral"; hint?: string };
 }) {
+  const { t } = useTranslation();
   const showHealth = item.healthSource !== undefined && health.tone !== "neutral";
   const dotBg = HEALTH_TONE_BG[health.tone];
+  const label = item.labelKey ? t(item.labelKey) : item.label;
   return (
     <NavLink
       to={item.path}
@@ -115,10 +141,10 @@ function SidebarLink({
         ].join(" ")
       }
     >
-      <span className="flex-1 truncate">{item.label}</span>
+      <span className="flex-1 truncate">{label}</span>
       {showHealth && (
         <span
-          aria-label={health.hint ?? `${item.label} health: ${health.tone}`}
+          aria-label={health.hint ?? `${label} health: ${health.tone}`}
           title={health.hint}
           className={`inline-block h-1.5 w-1.5 rounded-pill ${dotBg}`}
         />

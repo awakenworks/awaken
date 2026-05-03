@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { Link } from "react-router";
 import {
   type McpRestartPolicy,
@@ -47,6 +48,38 @@ function endpointFor(server: McpServerRecord): string {
     return [server.command, ...(server.args ?? [])].filter(Boolean).join(" ");
   }
   return server.url ?? "";
+}
+
+function EndpointCell({ server }: { server: McpServerRecord }) {
+  const value = endpointFor(server);
+  const [copied, setCopied] = useState(false);
+  const isStdio = server.transport === "stdio";
+  if (!value) return <span className="text-fg-faint">Unconfigured</span>;
+  async function handleCopy() {
+    try {
+      await navigator.clipboard.writeText(isStdio ? `$ ${value}` : value);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1200);
+    } catch {
+      // clipboard API can fail in iframes / non-https — silently noop
+    }
+  }
+  return (
+    <div className="group flex items-center gap-2">
+      <span className="font-mono text-xs text-fg" title={value}>
+        {isStdio && <span className="text-fg-faint">$ </span>}
+        <span className="break-all">{value}</span>
+      </span>
+      <button
+        type="button"
+        onClick={handleCopy}
+        title={copied ? "Copied" : "Copy"}
+        className="rounded border border-line bg-surface px-1.5 py-0.5 text-[10px] font-medium text-fg-soft opacity-0 transition group-hover:opacity-100 hover:bg-soft hover:text-fg"
+      >
+        {copied ? "✓" : "Copy"}
+      </button>
+    </div>
+  );
 }
 
 const SORT_CONFIG: SortConfig<McpServerRecord, McpSortKey> = {
@@ -118,6 +151,7 @@ function StatusBadge({ status }: { status: McpServerStatus | null | undefined })
 }
 
 export function McpServersPage() {
+  const { t } = useTranslation();
   const [argsDraft, setArgsDraft] = useState("");
   const [configDraft, setConfigDraft] = useState("{}");
   const [envDraft, setEnvDraft] = useState("{}");
@@ -266,7 +300,7 @@ export function McpServersPage() {
     <div className="mx-auto max-w-6xl p-6 md:p-8">
       <div className="mb-4 flex items-end justify-between gap-4">
         <div className="flex items-baseline gap-3">
-          <h2 className="text-2xl font-semibold tracking-title-em text-fg-strong">MCP Servers</h2>
+          <h2 className="text-2xl font-semibold tracking-title-em text-fg-strong">{t("mcp.title")}</h2>
           <span aria-hidden className="font-mono text-sm text-fg-faint">
             {crud.items.length}
           </span>
@@ -276,7 +310,7 @@ export function McpServersPage() {
           onClick={startCreate}
           className="inline-flex h-9 items-center rounded-md bg-accent px-3 text-sm font-medium text-accent-text transition hover:opacity-90"
         >
-          New MCP Server
+          {t("mcp.new")}
         </button>
       </div>
 
@@ -633,15 +667,15 @@ export function McpServersPage() {
       <div className="overflow-x-auto rounded-md border border-line bg-surface shadow-card">
         {!crud.loading && crud.items.length === 0 ? (
           <EmptyState
-            title="0 MCP servers"
-            description="External tool sources (databases, APIs, files) for agents."
+            title={t("mcp.empty.title")}
+            description={t("mcp.empty.desc")}
             actions={
               <button
                 type="button"
                 onClick={startCreate}
                 className="inline-flex h-9 items-center rounded-md bg-accent px-4 text-sm font-medium text-accent-text transition-colors hover:opacity-90"
               >
-                + New MCP Server
+                {t("mcp.new")}
               </button>
             }
           />
@@ -671,8 +705,8 @@ export function McpServersPage() {
                   >
                     <td className="px-5 py-4 font-mono text-fg-strong">{server.id}</td>
                     <td className="px-5 py-4">{server.transport}</td>
-                    <td className="px-5 py-4 text-fg-soft">
-                      {endpointFor(server) || "Unconfigured"}
+                    <td className="px-5 py-4">
+                      <EndpointCell server={server} />
                     </td>
                     <td className="px-5 py-4 text-fg-soft">
                       {server.has_env

@@ -1,7 +1,17 @@
 import { describe, expect, it } from "vitest";
-import { navGroups, navIndex, resolveBreadcrumbs } from "./nav";
+import {
+  navGroups,
+  navIndex,
+  resolveBreadcrumbs,
+  type BreadcrumbCrumb,
+} from "./nav";
 
-describe("navGroups", () => {
+/** Drop labelKey from crumbs so tests focus on the resolved literals. */
+function plain(crumbs: BreadcrumbCrumb[]): BreadcrumbCrumb[] {
+  return crumbs.map(({ labelKey: _l, ...rest }) => rest);
+}
+
+describe("navGroups (IA v2.4 — topology layers)", () => {
   it("indexes every nav item by path", () => {
     for (const group of navGroups) {
       for (const item of group.items) {
@@ -12,49 +22,53 @@ describe("navGroups", () => {
     }
   });
 
-  it("groups configure / observe / assistant exhaustively", () => {
+  it("groups follow the agents → resources → infrastructure → observe → assistant order", () => {
     expect(navGroups.map((g) => g.label)).toEqual([
-      "Configure",
+      "Agents",
+      "Resources",
+      "Infrastructure",
       "Observe",
       "Assistant",
     ]);
+  });
+
+  it("Skills sits in Resources, not Observe", () => {
+    expect(navIndex["/skills"].group).toBe("Resources");
+  });
+
+  it("Providers sits in Infrastructure, not Resources", () => {
+    expect(navIndex["/providers"].group).toBe("Infrastructure");
   });
 });
 
 describe("resolveBreadcrumbs", () => {
   it("dashboard → Observe / Dashboard", () => {
-    expect(resolveBreadcrumbs("/")).toEqual([
+    expect(plain(resolveBreadcrumbs("/"))).toEqual([
       { label: "Observe" },
       { label: "Dashboard" },
     ]);
   });
 
-  it("agents list → Configure / Agents", () => {
-    expect(resolveBreadcrumbs("/agents")).toEqual([
-      { label: "Configure" },
-      { label: "Agents" },
-    ]);
+  it("agents list → Agents (group label collapses with page label)", () => {
+    expect(plain(resolveBreadcrumbs("/agents"))).toEqual([{ label: "Agents" }]);
   });
 
-  it("agent new → Configure / Agents (link) / New", () => {
-    expect(resolveBreadcrumbs("/agents/new")).toEqual([
-      { label: "Configure" },
+  it("agent new → Agents (link) / New", () => {
+    expect(plain(resolveBreadcrumbs("/agents/new"))).toEqual([
       { label: "Agents", path: "/agents" },
       { label: "New" },
     ]);
   });
 
-  it("agent detail → Configure / Agents (link) / id", () => {
-    expect(resolveBreadcrumbs("/agents/research-assistant")).toEqual([
-      { label: "Configure" },
+  it("agent detail → Agents (link) / id", () => {
+    expect(plain(resolveBreadcrumbs("/agents/research-assistant"))).toEqual([
       { label: "Agents", path: "/agents" },
       { label: "research-assistant" },
     ]);
   });
 
-  it("agent dashboard → Configure / Agents (link) / id (link) / Dashboard", () => {
-    expect(resolveBreadcrumbs("/agents/research-assistant/dashboard")).toEqual([
-      { label: "Configure" },
+  it("agent dashboard → Agents (link) / id (link) / Dashboard", () => {
+    expect(plain(resolveBreadcrumbs("/agents/research-assistant/dashboard"))).toEqual([
       { label: "Agents", path: "/agents" },
       { label: "research-assistant", path: "/agents/research-assistant" },
       { label: "Dashboard" },
@@ -62,21 +76,34 @@ describe("resolveBreadcrumbs", () => {
   });
 
   it("decodes encoded id segment", () => {
-    expect(resolveBreadcrumbs("/agents/with%20space")).toEqual([
-      { label: "Configure" },
+    expect(plain(resolveBreadcrumbs("/agents/with%20space"))).toEqual([
       { label: "Agents", path: "/agents" },
       { label: "with space" },
     ]);
   });
 
   it("audit log → Observe / Audit Log", () => {
-    expect(resolveBreadcrumbs("/audit-log")).toEqual([
+    expect(plain(resolveBreadcrumbs("/audit-log"))).toEqual([
       { label: "Observe" },
       { label: "Audit Log" },
     ]);
   });
 
+  it("skills → Resources / Skills", () => {
+    expect(plain(resolveBreadcrumbs("/skills"))).toEqual([
+      { label: "Resources" },
+      { label: "Skills" },
+    ]);
+  });
+
+  it("providers → Infrastructure / Providers", () => {
+    expect(plain(resolveBreadcrumbs("/providers"))).toEqual([
+      { label: "Infrastructure" },
+      { label: "Providers" },
+    ]);
+  });
+
   it("unknown path falls back to Admin", () => {
-    expect(resolveBreadcrumbs("/no/such/route")).toEqual([{ label: "Admin" }]);
+    expect(plain(resolveBreadcrumbs("/no/such/route"))).toEqual([{ label: "Admin" }]);
   });
 });

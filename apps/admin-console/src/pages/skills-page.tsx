@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { type SkillInfo, configApi } from "@/lib/config-api";
 import { useToast } from "@/components/toast-provider";
 import { EmptyState } from "@/components/ui/empty-state";
@@ -26,6 +27,7 @@ const CONTEXT_OPTIONS: Array<{ value: ContextFilter; label: string }> = [
 ];
 
 export function SkillsPage() {
+  const { t } = useTranslation();
   const toast = useToast();
   const [skills, setSkills] = useState<SkillInfo[]>([]);
   const [loading, setLoading] = useState(true);
@@ -70,7 +72,7 @@ export function SkillsPage() {
 
   return (
     <div className="mx-auto max-w-6xl p-6 md:p-8">
-      <PageHeader title="Skill Registry" count={skills.length} />
+      <PageHeader title={t("skills.title")} count={skills.length} />
 
       <section className="mb-4 flex flex-wrap items-end gap-3 rounded-md border border-line bg-surface p-4 shadow-card">
         <label className="block w-full max-w-sm">
@@ -129,13 +131,13 @@ export function SkillsPage() {
         </div>
       ) : skills.length === 0 ? (
         <EmptyState
-          title="0 skills"
-          description="Register via SkillRegistry trait or AgentRuntimeBuilder::with_skill()."
+          title={t("skills.empty.title")}
+          description={t("skills.empty.desc")}
         />
       ) : visibleSkills.length === 0 ? (
         <EmptyState
-          title="No matches"
-          description="Clear filters to see all skills."
+          title={t("skills.noMatches.title")}
+          description={t("skills.noMatches.desc")}
         />
       ) : (
         <div className="grid gap-4 lg:grid-cols-2">

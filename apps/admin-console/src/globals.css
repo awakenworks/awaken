@@ -9,6 +9,19 @@
 :root {
   color-scheme: light;
   font-family: var(--aw-font-sans);
+}
+
+/* Chinese: prefer PingFang SC / Microsoft YaHei / Noto Sans CJK SC over the
+ * Inter-led Latin stack so glyphs render natively. JetBrains Mono is kept for
+ * IDs / numerics regardless of locale. */
+:root[data-locale="zh-CN"],
+[data-locale="zh-CN"] {
+  font-family: "PingFang SC", "Microsoft YaHei", "Hiragino Sans GB",
+    "Noto Sans CJK SC", "Source Han Sans SC", var(--aw-font-sans);
+  letter-spacing: 0.005em;
+}
+
+:root {
   background: var(--aw-bg);
   color: var(--aw-text);
   letter-spacing: var(--aw-tracking-base);

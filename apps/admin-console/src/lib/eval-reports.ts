@@ -327,6 +327,56 @@ export function isBlockingDiff(entry: DiffEntry): boolean {
 }
 
 // ---------------------------------------------------------------------------
+// Scorer categorization (per industry consensus: Braintrust/LangSmith/Phoenix)
+// ---------------------------------------------------------------------------
+
+/// Scorer family. Industry consensus splits LLM evals into 4 buckets.
+export type ScorerCategory = "heuristic" | "judge" | "code" | "human";
+
+/// Categorize a failure by the kind of scorer that produced it.
+export function categorizeFailure(failure: Failure): ScorerCategory {
+  if (failure.kind === "judge_below_threshold") return "judge";
+  // Everything else in the current Failure union is a heuristic check
+  // (text presence, tool sequence, budgets). Code/human scorers will
+  // appear when the eval crate exposes them.
+  return "heuristic";
+}
+
+/// Pretty label for scorer category badges.
+export function scorerCategoryLabel(c: ScorerCategory): string {
+  switch (c) {
+    case "judge": return "LLM judge";
+    case "heuristic": return "heuristic";
+    case "code": return "code";
+    case "human": return "human";
+  }
+}
+
+/// Trajectory match — derived from tool_sequence_mismatch failures.
+/// Returns null when the report doesn't carry the relevant signal.
+export function trajectoryMatch(report: ReplayReport): { matched: boolean; expected?: string[]; actual?: string[] } | null {
+  const mismatch = report.failures.find((f) => f.kind === "tool_sequence_mismatch");
+  if (mismatch && mismatch.kind === "tool_sequence_mismatch") {
+    return { matched: false, expected: mismatch.expected, actual: mismatch.actual };
+  }
+  // No mismatch failure but the run had tool calls → trajectory is correct.
+  if (report.tool_count > 0) return { matched: true };
+  return null;
+}
+
+/// Heuristic cost model (USD). Defaults match Anthropic Sonnet-class
+/// pricing as of 2025-01: $3 / Mtok in, $15 / Mtok out. Override via
+/// caller when a more accurate per-model rate is known.
+const DEFAULT_RATE_IN_PER_MTOK = 3;
+const DEFAULT_RATE_OUT_PER_MTOK = 15;
+export function estimateCost(report: ReplayReport, rateIn = DEFAULT_RATE_IN_PER_MTOK, rateOut = DEFAULT_RATE_OUT_PER_MTOK): number {
+  return (
+    (report.total_input_tokens / 1_000_000) * rateIn +
+    (report.total_output_tokens / 1_000_000) * rateOut
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Per-agent tool-call aggregation across the whole report
 // ---------------------------------------------------------------------------
 

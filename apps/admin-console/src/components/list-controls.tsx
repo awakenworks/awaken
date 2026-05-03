@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import { useTranslation } from "react-i18next";
 import {
   PAGE_SIZE_OPTIONS,
   type PageSize,
@@ -36,9 +37,10 @@ export function PageSizeSelect({
   value: PageSize;
   onChange: (next: PageSize) => void;
 }) {
+  const { t } = useTranslation();
   return (
     <label className="flex items-center gap-2 text-xs text-fg-soft">
-      <span>Rows per page</span>
+      <span>{t("common.rowsPerPage")}</span>
       <select
         value={value}
         onChange={(event) => onChange(Number(event.target.value) as PageSize)}

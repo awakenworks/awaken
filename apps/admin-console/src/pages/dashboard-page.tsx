@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { Link } from "react-router";
 import {
   type AgentSpec,
@@ -26,6 +27,11 @@ import {
   type GraphColumn,
   type GraphEdge,
 } from "@/components/ui/reference-graph";
+import {
+  TimeRangeSwitcher,
+  TIME_RANGE_SECONDS,
+  type TimeRange,
+} from "@/components/ui/time-range-switcher";
 
 type DashboardData = {
   capabilities: Capabilities;
@@ -39,15 +45,19 @@ type DashboardData = {
 };
 
 export function DashboardPage() {
+  const { t } = useTranslation();
   const [data, setData] = useState<DashboardData | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [range, setRange] = useState<TimeRange>("24h");
 
   useEffect(() => {
     let cancelled = false;
     async function load() {
       try {
+        const sinceMs = Date.now() - TIME_RANGE_SECONDS[range] * 1000;
+        const since = new Date(sinceMs).toISOString();
         const auditPromise = configApi
-          .auditLog({ limit: 12 })
+          .auditLog({ limit: 50, since })
           .then((page) => ({ page, disabled: false }))
           .catch((err) => {
             if (err instanceof ConfigApiError && err.status === 503) {
@@ -88,7 +98,7 @@ export function DashboardPage() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [range]);
 
   if (error) return <PageError message={error} />;
   if (!data) return <PageLoading />;
@@ -107,15 +117,27 @@ export function DashboardPage() {
   return (
     <div className="mx-auto max-w-6xl p-6 md:p-8">
       <PageHeader
-        title="Dashboard"
-        actions={<CountRibbon stats={[
-          { label: "agents", count: agents.length, to: adminRoutes.agents },
-          { label: "skills", count: capabilities.skills.length, to: adminRoutes.skills },
-          { label: "models", count: models.length, to: adminRoutes.models },
-          { label: "providers", count: providers.length, to: adminRoutes.providers },
-          { label: "mcp", count: mcpServers.length, to: adminRoutes.mcpServers },
-          { label: "tools", count: capabilities.tools.length },
-        ]} />}
+        title={
+          <>
+            {t("dashboard.title")}
+            <span className="ml-3 align-middle text-[10px] font-medium uppercase tracking-eyebrow text-fg-soft">
+              {t("evals.modeProduction")}
+            </span>
+          </>
+        }
+        actions={
+          <div className="flex items-center gap-3">
+            <TimeRangeSwitcher value={range} onChange={setRange} />
+            <CountRibbon stats={[
+              { label: t("dashboard.counters.agents"), count: agents.length, to: adminRoutes.agents },
+              { label: t("dashboard.counters.skills"), count: capabilities.skills.length, to: adminRoutes.skills },
+              { label: t("dashboard.counters.models"), count: models.length, to: adminRoutes.models },
+              { label: t("dashboard.counters.providers"), count: providers.length, to: adminRoutes.providers },
+              { label: t("dashboard.counters.mcp"), count: mcpServers.length, to: adminRoutes.mcpServers },
+              { label: t("dashboard.counters.tools"), count: capabilities.tools.length },
+            ]} />
+          </div>
+        }
       />
 
       <section className="grid gap-4 lg:grid-cols-2">
@@ -126,8 +148,8 @@ export function DashboardPage() {
       <section className="mt-4 rounded-md border border-line bg-surface p-4 shadow-card">
         <div className="flex items-baseline justify-between gap-4">
           <h3 className="text-sm font-semibold text-fg-strong">
-            Reference graph
-            <span className="ml-2 font-normal text-fg-soft">agents → models → providers</span>
+            {t("dashboard.refGraph.title")}
+            <span className="ml-2 font-normal text-fg-soft">{t("dashboard.refGraph.sub")}</span>
           </h3>
         </div>
         <div className="mt-3">
@@ -139,9 +161,9 @@ export function DashboardPage() {
         </div>
         {agents.length > 8 && (
           <div className="mt-3 text-right text-xs text-fg-soft">
-            Showing first 8 of {agents.length.toLocaleString()} agents.{" "}
+            {t("dashboard.refGraph.seeAll", { shown: 8, total: agents.length.toLocaleString() })}{" "}
             <Link to={adminRoutes.agents} className="font-medium text-link hover:text-link-hover">
-              View all →
+              {t("dashboard.refGraph.viewAll")}
             </Link>
           </div>
         )}
@@ -156,13 +178,13 @@ export function DashboardPage() {
       <section className="mt-4 grid gap-4 lg:grid-cols-2">
         <div className="rounded-md border border-line bg-surface p-5 shadow-card">
           <div className="flex items-center justify-between">
-            <h3 className="text-lg font-semibold text-fg-strong">Plugins</h3>
+            <h3 className="text-lg font-semibold text-fg-strong">{t("dashboard.plugins.title")}</h3>
             <span className="text-sm text-fg-soft">
-              {capabilities.plugins.length} registered
+              {t("dashboard.plugins.meta", { count: capabilities.plugins.length })}
             </span>
           </div>
           {capabilities.plugins.length === 0 ? (
-            <p className="mt-4 text-sm text-fg-soft">No plugins registered.</p>
+            <p className="mt-4 text-sm text-fg-soft">{t("dashboard.plugins.noConfig")}</p>
           ) : (
             <ul className="mt-4 space-y-3">
               {capabilities.plugins.map((plugin) => (
@@ -173,10 +195,10 @@ export function DashboardPage() {
                   <div className="font-mono text-sm text-fg-strong">{plugin.id}</div>
                   <div className="mt-1 text-sm text-fg-soft">
                     {plugin.config_schemas.length === 0
-                      ? "No config sections"
-                      : `Config sections: ${plugin.config_schemas
-                          .map((schema) => schema.key)
-                          .join(", ")}`}
+                      ? t("dashboard.plugins.noConfig")
+                      : t("dashboard.plugins.configSections", {
+                          sections: plugin.config_schemas.map((s) => s.key).join(", "),
+                        })}
                   </div>
                 </li>
               ))}
@@ -186,11 +208,11 @@ export function DashboardPage() {
 
         <div className="rounded-md border border-line bg-surface p-5 shadow-card">
           <div className="flex items-center justify-between">
-            <h3 className="text-lg font-semibold text-fg-strong">Published Tools</h3>
-            <span className="text-sm text-fg-soft">{capabilities.tools.length} live</span>
+            <h3 className="text-lg font-semibold text-fg-strong">{t("dashboard.tools.title")}</h3>
+            <span className="text-sm text-fg-soft">{t("dashboard.tools.meta", { count: capabilities.tools.length })}</span>
           </div>
           {capabilities.tools.length === 0 ? (
-            <p className="mt-4 text-sm text-fg-soft">No tools published.</p>
+            <p className="mt-4 text-sm text-fg-soft">{t("dashboard.tools.empty")}</p>
           ) : (
             <ul className="mt-4 max-h-[24rem] space-y-3 overflow-auto">
               {capabilities.tools.map((tool) => (
@@ -281,19 +303,20 @@ function HealthCard({
   providers: ProviderRecord[];
   mcpServers: McpServerRecord[];
 }) {
+  const { t } = useTranslation();
   return (
     <div className="rounded-md border border-line bg-surface p-5 shadow-card">
       <div className="flex items-center justify-between">
-        <h3 className="text-lg font-semibold text-fg-strong">Health</h3>
+        <h3 className="text-lg font-semibold text-fg-strong">{t("dashboard.health.title")}</h3>
         <span className="text-sm text-fg-soft">
-          {providers.length} providers · {mcpServers.length} MCP
+          {t("dashboard.health.meta", { providers: providers.length, mcp: mcpServers.length })}
         </span>
       </div>
 
       <div className="mt-4">
-        <Eyebrow>Providers</Eyebrow>
+        <Eyebrow>{t("dashboard.health.providers")}</Eyebrow>
         {providers.length === 0 ? (
-          <p className="mt-2 text-sm text-fg-soft">No providers configured.</p>
+          <p className="mt-2 text-sm text-fg-soft">{t("dashboard.health.noProviders")}</p>
         ) : (
           <ul className="mt-2 space-y-1.5">
             {providers.map((p) => (
@@ -303,7 +326,7 @@ function HealthCard({
                   <div className="text-xs text-fg-soft">{p.adapter}</div>
                 </div>
                 <Pill tone={p.has_api_key ? "success" : "warn"}>
-                  {p.has_api_key ? "key set" : "no key"}
+                  {p.has_api_key ? t("dashboard.health.keySet") : t("dashboard.health.noKey")}
                 </Pill>
               </li>
             ))}
@@ -312,9 +335,9 @@ function HealthCard({
       </div>
 
       <div className="mt-5">
-        <Eyebrow>MCP servers</Eyebrow>
+        <Eyebrow>{t("dashboard.health.mcpServers")}</Eyebrow>
         {mcpServers.length === 0 ? (
-          <p className="mt-2 text-sm text-fg-soft">No MCP servers configured.</p>
+          <p className="mt-2 text-sm text-fg-soft">{t("dashboard.health.noMcp")}</p>
         ) : (
           <ul className="mt-2 space-y-1.5">
             {mcpServers.map((s) => (
@@ -326,7 +349,7 @@ function HealthCard({
                   </div>
                 </div>
                 <Pill tone={s.restart_policy?.enabled ? "success" : "neutral"}>
-                  {s.restart_policy?.enabled ? "auto-restart" : "manual"}
+                  {s.restart_policy?.enabled ? t("dashboard.health.autoRestart") : t("dashboard.health.manual")}
                 </Pill>
               </li>
             ))}
@@ -338,25 +361,26 @@ function HealthCard({
 }
 
 function SystemCard({ info }: { info: SystemInfo }) {
+  const { t } = useTranslation();
   return (
     <div className="rounded-md border border-line bg-surface p-5 shadow-card">
-      <Eyebrow>System</Eyebrow>
+      <Eyebrow>{t("dashboard.system.title")}</Eyebrow>
       <div className="mt-3 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-        <SystemStat label="Version" value={info.version} mono />
-        <SystemStat label="Uptime" value={formatUptime(info.uptime_seconds)} />
+        <SystemStat label={t("dashboard.system.version")} value={info.version} mono />
+        <SystemStat label={t("dashboard.system.uptime")} value={formatUptime(info.uptime_seconds)} />
         <SystemStat
-          label="Config store"
-          value={info.config_store_enabled ? "wired" : "none"}
+          label={t("dashboard.system.configStore")}
+          value={info.config_store_enabled ? t("dashboard.system.wired") : t("dashboard.system.none")}
           tone={info.config_store_enabled ? "success" : "neutral"}
         />
         <SystemStat
-          label="Audit log"
-          value={info.audit_log_enabled ? "on" : "off"}
+          label={t("dashboard.system.auditLog")}
+          value={info.audit_log_enabled ? t("dashboard.system.on") : t("dashboard.system.off")}
           tone={info.audit_log_enabled ? "success" : "neutral"}
         />
         <SystemStat
-          label="Runtime stats"
-          value={info.runtime_stats_enabled ? "on" : "off"}
+          label={t("dashboard.system.runtimeStats")}
+          value={info.runtime_stats_enabled ? t("dashboard.system.on") : t("dashboard.system.off")}
           tone={info.runtime_stats_enabled ? "success" : "neutral"}
         />
       </div>
@@ -412,16 +436,17 @@ function ActivityTimeline({
   auditPage: AuditPage | null;
   disabled: boolean;
 }) {
+  const { t } = useTranslation();
   return (
     <div className="rounded-md border border-line bg-surface p-5 shadow-card">
       <div className="flex items-center justify-between">
-        <h3 className="text-lg font-semibold text-fg-strong">Recent activity</h3>
+        <h3 className="text-lg font-semibold text-fg-strong">{t("dashboard.activity.title")}</h3>
         {!disabled && (
           <Link
             to={adminRoutes.auditLog}
             className="text-xs font-medium text-link transition-colors hover:text-link-hover"
           >
-            View all →
+            {t("dashboard.activity.viewAll")}
           </Link>
         )}
       </div>

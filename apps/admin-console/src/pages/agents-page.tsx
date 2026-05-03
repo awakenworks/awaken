@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { Link, useNavigate } from "react-router";
 import { type AgentRuntimeSnapshot, type AgentSpec, configApi } from "@/lib/config-api";
 import { useConfirmDialog } from "@/components/confirm-dialog";
@@ -15,6 +16,7 @@ import { FilterBar, FilterChip } from "@/components/ui/filter-bar";
 import { PageHeader } from "@/components/ui/page-header";
 import { Pill, PillStack } from "@/components/ui/pill";
 import { SkeletonRows } from "@/components/ui/skeleton";
+import { Sparkline } from "@/components/ui/sparkline";
 import {
   compareNumber,
   compareString,
@@ -63,6 +65,7 @@ const LIST_OPTIONS = {
 } as const;
 
 export function AgentsPage() {
+  const { t } = useTranslation();
   const navigate = useNavigate();
   const toast = useToast();
   const confirmDialog = useConfirmDialog();
@@ -233,14 +236,14 @@ export function AgentsPage() {
   return (
     <div className="mx-auto max-w-6xl p-6 md:p-8">
       <PageHeader
-        title="Agents"
+        title={t("agents.title")}
         count={agents.length}
         actions={
           <Link
             to={adminRoutes.agentNew}
             className="inline-flex h-9 items-center rounded-md bg-accent px-3 text-sm font-medium text-accent-text transition-colors hover:opacity-90"
           >
-            + New Agent
+            {t("agents.new")}
           </Link>
         }
       />
@@ -249,7 +252,7 @@ export function AgentsPage() {
         <ListSearchBar
           value={search}
           onChange={(next) => applyListState({ search: next, page: 1 })}
-          placeholder="Search by id, model, or plugin…"
+          placeholder={t("agents.searchPh")}
         />
         <PageSizeSelect
           value={pageSize}
@@ -301,14 +304,14 @@ export function AgentsPage() {
       <div className="overflow-hidden rounded-lg border border-line bg-surface shadow-card">
         {noAgentsAtAll ? (
           <EmptyState
-            title="0 agents"
-            description="An agent pins a model + plugin set + tool whitelist."
+            title={t("agents.empty.title")}
+            description={t("agents.empty.desc")}
             actions={
               <Link
                 to={adminRoutes.agentNew}
                 className="inline-flex h-9 items-center rounded-md bg-accent px-4 text-sm font-medium text-accent-text transition-colors hover:opacity-90"
               >
-                + New Agent
+                {t("agents.new")}
               </Link>
             }
           />
@@ -326,7 +329,7 @@ export function AgentsPage() {
               {!loading && noMatches && (
                 <tr>
                   <td colSpan={COLUMNS.length} className="px-5 py-8 text-center text-sm text-fg-soft">
-                    No agents match the current filter.
+                    {t("agents.noMatches")}
                   </td>
                 </tr>
               )}
@@ -365,7 +368,7 @@ export function AgentsPage() {
                           onClick={(e) => e.stopPropagation()}
                           className="text-xs font-medium text-link transition-colors hover:text-link-hover"
                         >
-                          ↗ Dashboard
+                          {t("agents.actions.dashboard")}
                         </Link>
                         <button
                           type="button"
@@ -375,7 +378,7 @@ export function AgentsPage() {
                           }}
                           className="text-xs font-medium text-tone-error transition-colors hover:underline"
                         >
-                          Delete
+                          {t("agents.actions.delete")}
                         </button>
                       </div>
                     </td>
@@ -419,25 +422,38 @@ function InferenceCount({
   if (!snapshot) return <span className="text-fg-faint">—</span>;
   const hasErrors = snapshot.error_count > 0;
   const hasInferences = snapshot.inference_count > 0;
+  // Derive a tiny trend from the latency histogram bucket counts when present.
+  // It's not the literal req-per-bucket but it gives a sense of distribution
+  // shape without needing a per-time-series endpoint.
+  const trend = (snapshot.inference_duration_histogram ?? [])
+    .slice(0, 12)
+    .map((b) => b.count);
   return (
-    <div className="flex flex-col gap-0.5">
-      <div className="inline-flex items-baseline gap-2">
-        <span className="font-semibold text-fg-strong">
-          {snapshot.inference_count}
-        </span>
-        {hasErrors && (
-          <span
-            className="text-xs text-tone-error"
-            title={`${snapshot.error_count} error${snapshot.error_count === 1 ? "" : "s"}`}
-          >
-            · {snapshot.error_count} err
+    <div className="flex items-center gap-3">
+      <div className="flex flex-col gap-0.5">
+        <div className="inline-flex items-baseline gap-2">
+          <span className="font-semibold text-fg-strong">
+            {snapshot.inference_count}
           </span>
+          {hasErrors && (
+            <span
+              className="text-xs text-tone-error"
+              title={`${snapshot.error_count} error${snapshot.error_count === 1 ? "" : "s"}`}
+            >
+              · {snapshot.error_count} err
+            </span>
+          )}
+        </div>
+        {hasInferences && snapshot.p95_inference_duration_ms > 0 && (
+          <div className="text-[11px] text-fg-faint">
+            p95 {snapshot.p95_inference_duration_ms}ms
+          </div>
         )}
       </div>
-      {hasInferences && snapshot.p95_inference_duration_ms > 0 && (
-        <div className="text-[11px] text-fg-faint">
-          p95 {snapshot.p95_inference_duration_ms}ms
-        </div>
+      {hasInferences && trend.length >= 2 && (
+        <span className="text-fg-faint" aria-hidden>
+          <Sparkline values={trend} ariaLabel={`latency distribution sparkline (${trend.length} buckets)`} />
+        </span>
       )}
     </div>
   );

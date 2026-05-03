@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import { useTranslation } from "react-i18next";
 import { Eyebrow } from "./eyebrow";
 
 export function FilterBar({
@@ -10,17 +11,18 @@ export function FilterBar({
   sort?: ReactNode;
   meta?: ReactNode;
 }) {
+  const { t } = useTranslation();
   return (
     <div className="mb-3 flex flex-wrap items-center gap-3 rounded-md border border-line bg-soft px-3 py-2">
       {filters !== undefined && (
         <div className="flex flex-wrap items-center gap-2">
-          <Eyebrow>Filter</Eyebrow>
+          <Eyebrow>{t("common.filter")}</Eyebrow>
           {filters}
         </div>
       )}
       {sort !== undefined && (
         <div className="flex items-center gap-2">
-          <Eyebrow>Sort</Eyebrow>
+          <Eyebrow>{t("common.sort")}</Eyebrow>
           {sort}
         </div>
       )}

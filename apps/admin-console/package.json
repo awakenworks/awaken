@@ -21,8 +21,10 @@
     "@rjsf/utils": "^6.4.2",
     "@rjsf/validator-ajv8": "^6.4.2",
     "ai": "^6.0.79",
+    "i18next": "^26.0.8",
     "react": "19",
     "react-dom": "19",
+    "react-i18next": "^17.0.6",
     "react-router": "^7"
   },
   "devDependencies": {

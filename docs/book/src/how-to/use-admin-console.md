@@ -183,7 +183,7 @@ Without this:
 
 Wire the observability plugin into your `AppState`:
 
-```rust
+```rust,ignore
 use awaken_ext_observability::{ObservabilityPlugin, RuntimeStatsRegistry};
 
 let registry = Arc::new(RuntimeStatsRegistry::new());

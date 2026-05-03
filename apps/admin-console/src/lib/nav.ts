@@ -7,6 +7,8 @@ export interface NavItem {
   id: string;
   path: string;
   label: string;
+  /** i18n translation key for `label`. Render-side calls t(labelKey) when present. */
+  labelKey?: string;
   end?: boolean;
   badge?: NavBadge;
   healthSource?: NavHealthSource;
@@ -17,38 +19,59 @@ export interface NavGroup {
   items: NavItem[];
 }
 
-export const navGroups: NavGroup[] = [
+/**
+ * IA v2.4 — sidebar grouped by topology layer, not by verb.
+ *   Agents (consumer) → Resources (deps: models · mcp · skills) →
+ *   Infrastructure (providers, set once) → Observe (lenses).
+ *
+ * `label` and `groupKey` are i18n translation keys, not literal display text.
+ * Render-side resolves them via t().
+ */
+export interface NavGroupKeyed extends NavGroup {
+  groupKey: string;
+}
+
+export interface NavItemKeyed extends NavItem {
+  labelKey: string;
+}
+
+export const navGroups: (NavGroup & { groupKey: string })[] = [
   {
-    label: "Configure",
+    groupKey: "nav.agents",
+    label: "Agents",
     items: [
-      { id: "agents", path: adminRoutes.agents, label: "Agents" },
-      { id: "models", path: adminRoutes.models, label: "Models" },
-      {
-        id: "providers",
-        path: adminRoutes.providers,
-        label: "Providers",
-        healthSource: "providers",
-      },
-      {
-        id: "mcp-servers",
-        path: adminRoutes.mcpServers,
-        label: "MCP Servers",
-        healthSource: "mcp",
-      },
-    ],
+      { id: "agents", path: adminRoutes.agents, label: "Agents", labelKey: "nav.items.agents" } as NavItemKeyed,
+    ] as NavItem[],
   },
   {
+    groupKey: "nav.resources",
+    label: "Resources",
+    items: [
+      { id: "models", path: adminRoutes.models, label: "Models", labelKey: "nav.items.models" } as NavItemKeyed,
+      { id: "mcp-servers", path: adminRoutes.mcpServers, label: "MCP Servers", healthSource: "mcp", labelKey: "nav.items.mcp" } as NavItemKeyed,
+      { id: "skills", path: adminRoutes.skills, label: "Skills", badge: "ro", labelKey: "nav.items.skills" } as NavItemKeyed,
+    ] as NavItem[],
+  },
+  {
+    groupKey: "nav.infrastructure",
+    label: "Infrastructure",
+    items: [
+      { id: "providers", path: adminRoutes.providers, label: "Providers", healthSource: "providers", labelKey: "nav.items.providers" } as NavItemKeyed,
+    ] as NavItem[],
+  },
+  {
+    groupKey: "nav.observe",
     label: "Observe",
     items: [
-      { id: "dashboard", path: adminRoutes.dashboard, label: "Dashboard", end: true },
-      { id: "audit-log", path: adminRoutes.auditLog, label: "Audit Log" },
-      { id: "eval-reports", path: adminRoutes.evalReports, label: "Eval Reports" },
-      { id: "skills", path: adminRoutes.skills, label: "Skill Registry", badge: "ro" },
-    ],
+      { id: "dashboard", path: adminRoutes.dashboard, label: "Dashboard", end: true, labelKey: "nav.items.dashboard" } as NavItemKeyed,
+      { id: "audit-log", path: adminRoutes.auditLog, label: "Audit Log", labelKey: "nav.items.audit" } as NavItemKeyed,
+      { id: "eval-reports", path: adminRoutes.evalReports, label: "Eval Reports", labelKey: "nav.items.evals" } as NavItemKeyed,
+    ] as NavItem[],
   },
   {
+    groupKey: "nav.assistant",
     label: "Assistant",
-    items: [{ id: "assistant", path: adminRoutes.assistant, label: "AI Assistant" }],
+    items: [{ id: "assistant", path: adminRoutes.assistant, label: "AI Assistant", labelKey: "nav.items.chat" } as NavItemKeyed] as NavItem[],
   },
 ];
 
@@ -61,19 +84,29 @@ for (const group of navGroups) {
 
 export interface BreadcrumbCrumb {
   label: string;
+  /** i18n translation key for `label`. Render-side should call t(labelKey) when present. */
+  labelKey?: string;
   path?: string;
+}
+
+const navIndexKeyed = navIndex as Record<string, NavItem & { group: string; labelKey?: string }>;
+
+function groupLabelByGroupName(name: string): string {
+  for (const g of navGroups) {
+    if (g.label === name) return g.groupKey;
+  }
+  return name;
 }
 
 /** Resolve a route pathname into a breadcrumb chain (Group / Page). */
 export function resolveBreadcrumbs(pathname: string): BreadcrumbCrumb[] {
   if (pathname === adminRoutes.dashboard) {
-    return [{ label: "Observe" }, { label: "Dashboard" }];
+    return [{ label: "Observe", labelKey: "nav.observe" }, { label: "Dashboard", labelKey: "nav.items.dashboard" }];
   }
   if (pathname === adminRoutes.agentNew) {
     return [
-      { label: "Configure" },
-      { label: "Agents", path: adminRoutes.agents },
-      { label: "New" },
+      { label: "Agents", labelKey: "nav.items.agents", path: adminRoutes.agents },
+      { label: "New", labelKey: "common.new" },
     ];
   }
   const agentMatch = pathname.match(/^\/agents\/([^/]+)(?:\/(dashboard))?$/);
@@ -81,15 +114,20 @@ export function resolveBreadcrumbs(pathname: string): BreadcrumbCrumb[] {
     const id = decodeURIComponent(agentMatch[1]);
     const isDashboard = Boolean(agentMatch[2]);
     return [
-      { label: "Configure" },
-      { label: "Agents", path: adminRoutes.agents },
+      { label: "Agents", labelKey: "nav.items.agents", path: adminRoutes.agents },
       isDashboard
         ? { label: id, path: adminRoutes.agent(id) }
         : { label: id },
-      ...(isDashboard ? [{ label: "Dashboard" }] : []),
+      ...(isDashboard ? [{ label: "Dashboard", labelKey: "nav.items.dashboard" }] : []),
     ];
   }
-  const top = navIndex[pathname];
-  if (top) return [{ label: top.group }, { label: top.label }];
+  const top = navIndexKeyed[pathname];
+  if (top) {
+    if (top.group === top.label) return [{ label: top.label, labelKey: top.labelKey }];
+    return [
+      { label: top.group, labelKey: groupLabelByGroupName(top.group) },
+      { label: top.label, labelKey: top.labelKey },
+    ];
+  }
   return [{ label: "Admin" }];
 }

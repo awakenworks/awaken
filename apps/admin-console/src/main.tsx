@@ -5,6 +5,7 @@ import { router } from "./app";
 import { AuthProvider } from "./components/auth-provider";
 import { ConfirmDialogProvider } from "./components/confirm-dialog";
 import { ToastProvider } from "./components/toast-provider";
+import "./lib/i18n";
 import "./globals.css";
 
 createRoot(document.getElementById("root")!).render(
