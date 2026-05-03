@@ -252,7 +252,7 @@ export function ProvidersPage() {
         <section className="mb-6 rounded-md border border-line bg-surface p-5 shadow-sm">
           <div className="flex items-center justify-between">
             <h3 className="text-lg font-semibold text-fg-strong">
-              {crud.isEditingExisting ? "Edit provider" : "Create provider"}
+              {crud.isEditingExisting ? t("providers.formTitle.edit") : t("providers.formTitle.create")}
             </h3>
             {crud.isEditingExisting && crud.draft.id && (
               <Link
@@ -447,7 +447,7 @@ export function ProvidersPage() {
         <ListSearchBar
           value={search}
           onChange={(next) => applyListState({ search: next, page: 1 })}
-          placeholder="Search by id, adapter, base url…"
+          placeholder={t("providers.searchPh")}
         />
         <PageSizeSelect
           value={pageSize}

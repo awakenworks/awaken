@@ -221,6 +221,7 @@ export const en = {
       apiKeyPh: "Optional API key",
       apiKeyExisting: "Replace existing key…",
     },
+    formTitle: { create: "Create provider", edit: "Edit provider" },
   },
   models: {
     title: "Models",
@@ -240,6 +241,7 @@ export const en = {
       upstreamModel: "Upstream Model",
       selectProvider: "Select a provider",
     },
+    formTitle: { create: "Create model", edit: "Edit model" },
   },
   mcp: {
     title: "MCP Servers",
@@ -274,6 +276,7 @@ export const en = {
       backoff: "Backoff multiplier",
       maxDelayMs: "Max delay (ms)",
     },
+    formTitle: { create: "Create MCP server", edit: "Edit MCP server" },
   },
   skills: {
     title: "Skill Registry",

@@ -103,6 +103,22 @@ describe("resolveBreadcrumbs", () => {
     ]);
   });
 
+  it("mcp server detail → Resources / MCP Servers (link) / id", () => {
+    expect(plain(resolveBreadcrumbs("/mcp-servers/github"))).toEqual([
+      { label: "Resources" },
+      { label: "MCP Servers", path: "/mcp-servers" },
+      { label: "github" },
+    ]);
+  });
+
+  it("skill detail → Resources / Skills (link) / id (decoded)", () => {
+    expect(plain(resolveBreadcrumbs("/skills/code%20review"))).toEqual([
+      { label: "Resources" },
+      { label: "Skills", path: "/skills" },
+      { label: "code review" },
+    ]);
+  });
+
   it("unknown path falls back to Admin", () => {
     expect(plain(resolveBreadcrumbs("/no/such/route"))).toEqual([{ label: "Admin" }]);
   });

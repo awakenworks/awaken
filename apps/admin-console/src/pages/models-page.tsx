@@ -134,7 +134,7 @@ export function ModelsPage() {
         <section className="mb-6 rounded-md border border-line bg-surface p-5 shadow-sm">
           <div className="flex items-center justify-between">
             <h3 className="text-lg font-semibold text-fg-strong">
-              {crud.isEditingExisting ? "Edit model" : "Create model"}
+              {crud.isEditingExisting ? t("models.formTitle.edit") : t("models.formTitle.create")}
             </h3>
             {crud.isEditingExisting && crud.draft.id && (
               <Link
@@ -217,7 +217,7 @@ export function ModelsPage() {
         <ListSearchBar
           value={search}
           onChange={(next) => applyListState({ search: next, page: 1 })}
-          placeholder="Search by id, provider, upstream…"
+          placeholder={t("models.searchPh")}
         />
         <PageSizeSelect
           value={pageSize}

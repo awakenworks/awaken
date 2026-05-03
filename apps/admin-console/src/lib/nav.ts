@@ -121,6 +121,22 @@ export function resolveBreadcrumbs(pathname: string): BreadcrumbCrumb[] {
       ...(isDashboard ? [{ label: "Dashboard", labelKey: "nav.items.dashboard" }] : []),
     ];
   }
+  const mcpMatch = pathname.match(/^\/mcp-servers\/([^/]+)$/);
+  if (mcpMatch) {
+    return [
+      { label: "Resources", labelKey: "nav.resources" },
+      { label: "MCP Servers", labelKey: "nav.items.mcp", path: adminRoutes.mcpServers },
+      { label: decodeURIComponent(mcpMatch[1]) },
+    ];
+  }
+  const skillMatch = pathname.match(/^\/skills\/([^/]+)$/);
+  if (skillMatch) {
+    return [
+      { label: "Resources", labelKey: "nav.resources" },
+      { label: "Skills", labelKey: "nav.items.skills", path: adminRoutes.skills },
+      { label: decodeURIComponent(skillMatch[1]) },
+    ];
+  }
   const top = navIndexKeyed[pathname];
   if (top) {
     if (top.group === top.label) return [{ label: top.label, labelKey: top.labelKey }];

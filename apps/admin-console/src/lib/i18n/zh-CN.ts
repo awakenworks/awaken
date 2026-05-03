@@ -220,6 +220,7 @@ export const zhCN: Dict = {
       apiKeyPh: "API 密钥（可选）",
       apiKeyExisting: "替换现有密钥…",
     },
+    formTitle: { create: "新建供应商", edit: "编辑供应商" },
   },
   models: {
     title: "模型",
@@ -239,6 +240,7 @@ export const zhCN: Dict = {
       upstreamModel: "上游模型",
       selectProvider: "请选择供应商",
     },
+    formTitle: { create: "新建模型", edit: "编辑模型" },
   },
   mcp: {
     title: "MCP 服务",
@@ -273,6 +275,7 @@ export const zhCN: Dict = {
       backoff: "退避倍数",
       maxDelayMs: "最大延迟（毫秒）",
     },
+    formTitle: { create: "新建 MCP 服务", edit: "编辑 MCP 服务" },
   },
   skills: {
     title: "技能注册表",
