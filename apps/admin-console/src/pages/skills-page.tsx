@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
+import { Link } from "react-router";
 import { type SkillInfo, configApi } from "@/lib/config-api";
+import { adminRoutes } from "@/lib/routes";
 import { useToast } from "@/components/toast-provider";
 import { EmptyState } from "@/components/ui/empty-state";
 import { PageHeader } from "@/components/ui/page-header";
@@ -159,7 +161,9 @@ function SkillCard({ skill }: { skill: SkillInfo }) {
             <div className="font-mono text-sm text-fg-soft">{skill.id}</div>
           )}
           <h3 className={skill.id !== skill.name ? "mt-1 text-xl font-semibold text-fg-strong" : "text-xl font-semibold text-fg-strong"}>
-            {skill.name}
+            <Link to={adminRoutes.skill(skill.id)} className="hover:underline">
+              {skill.name}
+            </Link>
           </h3>
         </div>
         <div className="flex flex-wrap gap-2 text-xs">

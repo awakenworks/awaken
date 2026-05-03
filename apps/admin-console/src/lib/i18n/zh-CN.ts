@@ -136,6 +136,7 @@ export const zhCN: Dict = {
       loading: "加载中…",
     },
     notConfigured: "服务端未启用审计日志。",
+    exportCsv: "导出 CSV",
   },
   editor: {
     backToList: "返回智能体列表",
@@ -210,6 +211,15 @@ export const zhCN: Dict = {
     },
     searchPh: "按 ID、适配器、Base URL 搜索…",
     keySource: { env: "环境变量", config: "配置", none: "未配置" },
+    fields: {
+      providerId: "供应商 ID",
+      adapter: "适配器",
+      baseUrl: "Base URL",
+      timeout: "超时（秒）",
+      apiKey: "API 密钥",
+      apiKeyPh: "API 密钥（可选）",
+      apiKeyExisting: "替换现有密钥…",
+    },
   },
   models: {
     title: "模型",
@@ -223,6 +233,12 @@ export const zhCN: Dict = {
       actions: "操作",
     },
     searchPh: "按 ID、供应商、上游模型搜索…",
+    fields: {
+      modelId: "模型 ID",
+      providerId: "供应商 ID",
+      upstreamModel: "上游模型",
+      selectProvider: "请选择供应商",
+    },
   },
   mcp: {
     title: "MCP 服务",
@@ -242,6 +258,21 @@ export const zhCN: Dict = {
     failures: "失败次数（自上次成功）",
     lastAttempt: "上次尝试 {{when}}",
     lastSuccess: "上次成功 {{when}}",
+    fields: {
+      serverId: "服务 ID",
+      transport: "传输方式",
+      command: "命令",
+      args: "参数（每行一个）",
+      url: "URL",
+      timeout: "超时（秒）",
+      configJson: "配置 JSON",
+      env: "环境变量",
+      restartPolicy: "重启策略",
+      maxAttempts: "最大尝试次数",
+      delayMs: "延迟（毫秒）",
+      backoff: "退避倍数",
+      maxDelayMs: "最大延迟（毫秒）",
+    },
   },
   skills: {
     title: "技能注册表",

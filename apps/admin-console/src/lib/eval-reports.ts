@@ -224,6 +224,49 @@ export type DiffSummary = {
   isClean: boolean;
 };
 
+/// Compare N runs against the first one (treated as baseline). Returns
+/// per-fixture rows of (id, status[]) where status[i] tells how run i
+/// fared relative to the baseline. Used by the Eval Reports A/B/C view.
+export type MultiBaselineStatus =
+  | "missing"
+  | "passed"
+  | "failed"
+  | "regression"
+  | "fixed";
+
+export interface MultiBaselineRow {
+  fixture_id: string;
+  /** Length matches the runs argument; index 0 is always baseline status. */
+  statuses: MultiBaselineStatus[];
+}
+
+export function diffReportsMulti(
+  runs: { label: string; reports: ReplayReport[] }[],
+): { rows: MultiBaselineRow[]; runs: { label: string }[] } {
+  if (runs.length === 0) return { rows: [], runs: [] };
+  const baseline = runs[0].reports;
+  const baselineMap = new Map(baseline.map((r) => [r.fixture_id, r] as const));
+  const allIds = new Set<string>();
+  for (const run of runs) for (const r of run.reports) allIds.add(r.fixture_id);
+  for (const r of baseline) allIds.add(r.fixture_id);
+
+  const sortedIds = [...allIds].sort((a, b) => a.localeCompare(b));
+  const rows: MultiBaselineRow[] = sortedIds.map((id) => {
+    const baselineReport = baselineMap.get(id);
+    const statuses = runs.map((run, idx) => {
+      const r = run.reports.find((rr) => rr.fixture_id === id);
+      if (!r) return "missing" as MultiBaselineStatus;
+      if (idx === 0) return r.passed ? "passed" : "failed";
+      if (!baselineReport) return r.passed ? "passed" : "failed";
+      if (baselineReport.passed && !r.passed) return "regression";
+      if (!baselineReport.passed && r.passed) return "fixed";
+      return r.passed ? "passed" : "failed";
+    });
+    return { fixture_id: id, statuses };
+  });
+  return { rows, runs: runs.map((r) => ({ label: r.label })) };
+}
+
 export function diffReports(
   baseline: ReplayReport[],
   next: ReplayReport[],

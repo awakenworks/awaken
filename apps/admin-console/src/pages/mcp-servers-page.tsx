@@ -331,7 +331,7 @@ export function McpServersPage() {
           </div>
 
           <div className="mt-4 grid gap-4 md:grid-cols-2">
-            <Field label="Server ID">
+            <Field label={t("mcp.fields.serverId")}>
               <input
                 value={crud.draft.id}
                 disabled={crud.isEditingExisting}
@@ -344,7 +344,7 @@ export function McpServersPage() {
               />
             </Field>
 
-            <Field label="Transport">
+            <Field label={t("mcp.fields.transport")}>
               <select
                 value={crud.draft.transport}
                 onChange={(event) =>
@@ -366,7 +366,7 @@ export function McpServersPage() {
 
             {crud.draft.transport === "stdio" ? (
               <>
-                <Field label="Command">
+                <Field label={t("mcp.fields.command")}>
                   <input
                     value={String(crud.draft.command ?? "")}
                     onChange={(event) =>
@@ -379,7 +379,7 @@ export function McpServersPage() {
                     className="w-full rounded-xl border border-line-strong px-3 py-2 text-sm text-fg-strong outline-none transition focus:border-line-strong"
                   />
                 </Field>
-                <Field label="Arguments (one per line)">
+                <Field label={t("mcp.fields.args")}>
                   <textarea
                     value={argsDraft}
                     onChange={(event) => setArgsDraft(event.target.value)}
@@ -389,7 +389,7 @@ export function McpServersPage() {
                 </Field>
               </>
             ) : (
-              <Field label="URL">
+              <Field label={t("mcp.fields.url")}>
                 <input
                   value={String(crud.draft.url ?? "")}
                   onChange={(event) =>
@@ -402,7 +402,7 @@ export function McpServersPage() {
               </Field>
             )}
 
-            <Field label="Timeout (seconds)">
+            <Field label={t("mcp.fields.timeout")}>
               <input
                 type="number"
                 min={1}
@@ -423,7 +423,7 @@ export function McpServersPage() {
           </div>
 
           <div className="mt-5 grid gap-4 lg:grid-cols-2">
-            <Field label="Config JSON">
+            <Field label={t("mcp.fields.configJson")}>
               <textarea
                 value={configDraft}
                 onChange={(event) => setConfigDraft(event.target.value)}
@@ -521,7 +521,7 @@ export function McpServersPage() {
               ].join(" ")}
               aria-disabled={!crud.draft.restart_policy?.enabled}
             >
-              <Field label="Max attempts">
+              <Field label={t("mcp.fields.maxAttempts")}>
                 <input
                   type="number"
                   min={0}
@@ -547,7 +547,7 @@ export function McpServersPage() {
                   className="w-full rounded-xl border border-line-strong px-3 py-2 text-sm text-fg-strong outline-none transition focus:border-line-strong"
                 />
               </Field>
-              <Field label="Delay (ms)">
+              <Field label={t("mcp.fields.delayMs")}>
                 <input
                   type="number"
                   min={0}
@@ -570,7 +570,7 @@ export function McpServersPage() {
                   className="w-full rounded-xl border border-line-strong px-3 py-2 text-sm text-fg-strong outline-none transition focus:border-line-strong"
                 />
               </Field>
-              <Field label="Backoff multiplier">
+              <Field label={t("mcp.fields.backoff")}>
                 <input
                   type="number"
                   min={1}
@@ -595,7 +595,7 @@ export function McpServersPage() {
                   className="w-full rounded-xl border border-line-strong px-3 py-2 text-sm text-fg-strong outline-none transition focus:border-line-strong"
                 />
               </Field>
-              <Field label="Max delay (ms)">
+              <Field label={t("mcp.fields.maxDelayMs")}>
                 <input
                   type="number"
                   min={0}
@@ -703,7 +703,11 @@ export function McpServersPage() {
                     key={server.id}
                     className="border-t border-line text-sm text-fg"
                   >
-                    <td className="px-5 py-4 font-mono text-fg-strong">{server.id}</td>
+                    <td className="px-5 py-4 font-mono text-fg-strong">
+                      <Link to={adminRoutes.mcpServer(server.id)} className="hover:underline">
+                        {server.id}
+                      </Link>
+                    </td>
                     <td className="px-5 py-4">{server.transport}</td>
                     <td className="px-5 py-4">
                       <EndpointCell server={server} />

@@ -1,6 +1,12 @@
 import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { ConfigApiError, configApi } from "@/lib/config-api";
+
+/** Quote a CSV cell per RFC 4180 (double-quote any cell containing , " or \n). */
+function csvCell(v: string): string {
+  if (/[",\n]/.test(v)) return `"${v.replace(/"/g, '""')}"`;
+  return v;
+}
 import {
   formatActor,
   isAgentActor,
@@ -88,14 +94,49 @@ export function AuditLogPage() {
   const emptyMessage =
     hasActiveFilters ? t("audit.noMatches") : t("audit.empty");
 
+  function handleExportCsv() {
+    if (!page || page.items.length === 0) return;
+    const rows: string[][] = [
+      ["time", "actor", "action", "resource", "summary"],
+      ...page.items.map((e) => [
+        e.ts,
+        e.actor ?? "system",
+        e.action,
+        e.resource,
+        summarizeChange(e),
+      ]),
+    ];
+    const csv = rows.map((r) => r.map(csvCell).join(",")).join("\n") + "\n";
+    const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `audit-log-${new Date().toISOString().slice(0, 10)}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }
+
   return (
     <div className="mx-auto max-w-6xl p-6 md:p-8">
-      <header className="mb-4 flex items-baseline gap-3">
-        <h2 className="text-2xl font-semibold tracking-title-em text-fg-strong">{t("audit.title")}</h2>
-        {page && (
-          <span aria-hidden className="font-mono text-sm text-fg-faint">
-            {page.items.length}{page.next_cursor ? "+" : ""}
-          </span>
+      <header className="mb-4 flex items-baseline justify-between gap-3">
+        <div className="flex items-baseline gap-3">
+          <h2 className="text-2xl font-semibold tracking-title-em text-fg-strong">{t("audit.title")}</h2>
+          {page && (
+            <span aria-hidden className="font-mono text-sm text-fg-faint">
+              {page.items.length}{page.next_cursor ? "+" : ""}
+            </span>
+          )}
+        </div>
+        {page && page.items.length > 0 && (
+          <button
+            type="button"
+            onClick={handleExportCsv}
+            className="inline-flex h-8 items-center gap-1.5 rounded-md border border-line-strong bg-surface px-2.5 text-xs font-medium text-fg-soft transition hover:bg-soft hover:text-fg"
+          >
+            ⤓ {t("audit.exportCsv")}
+          </button>
         )}
       </header>
 

@@ -47,6 +47,16 @@ const McpServersPage = lazy(async () => {
   return { default: module.McpServersPage };
 });
 
+const McpServerDetailPage = lazy(async () => {
+  const module = await import("./pages/mcp-server-detail-page");
+  return { default: module.McpServerDetailPage };
+});
+
+const SkillDetailPage = lazy(async () => {
+  const module = await import("./pages/skill-detail-page");
+  return { default: module.SkillDetailPage };
+});
+
 const AssistantPage = lazy(async () => {
   const module = await import("./pages/assistant-page");
   return { default: module.AssistantPage };
@@ -106,6 +116,14 @@ export function appRoutes() {
           }
         />
         <Route
+          path="skills/:id"
+          element={
+            <RouteLoader>
+              <SkillDetailPage />
+            </RouteLoader>
+          }
+        />
+        <Route
           path="agents/:id"
           element={
             <RouteLoader>
@@ -142,6 +160,14 @@ export function appRoutes() {
           element={
             <RouteLoader>
               <McpServersPage />
+            </RouteLoader>
+          }
+        />
+        <Route
+          path="mcp-servers/:id"
+          element={
+            <RouteLoader>
+              <McpServerDetailPage />
             </RouteLoader>
           }
         />

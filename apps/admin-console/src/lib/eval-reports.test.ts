@@ -4,6 +4,7 @@ import {
   describeDiffEntry,
   describeFailure,
   diffReports,
+  diffReportsMulti,
   hasAnyAgentToolStats,
   isBlockingDiff,
   parseReportsNdjson,
@@ -721,5 +722,84 @@ describe("Rust CLI compatibility", () => {
     expect(result.reports).toHaveLength(1);
     const failure = result.reports[0]?.failures[0];
     expect(failure?.kind).toBe("tool_sequence_mismatch");
+  });
+});
+
+describe("diffReportsMulti (N-way comparison)", () => {
+  function rep(id: string, passed: boolean): ReplayReport {
+    return {
+      fixture_id: id,
+      passed,
+      failures: passed ? [] : [{ kind: "answer_missing_phrase", phrase: "x" }],
+      final_text: "",
+      inference_count: 1,
+      tool_count: 0,
+      tool_failures: 0,
+      total_input_tokens: 0,
+      total_output_tokens: 0,
+      session_duration_ms: 0,
+      elapsed_ms: 0,
+      tool_calls_by_agent: [],
+    };
+  }
+
+  it("returns empty for an empty runs list", () => {
+    const r = diffReportsMulti([]);
+    expect(r.rows).toEqual([]);
+    expect(r.runs).toEqual([]);
+  });
+
+  it("classifies passed/failed in baseline-only mode", () => {
+    const r = diffReportsMulti([
+      { label: "A", reports: [rep("a", true), rep("b", false)] },
+    ]);
+    expect(r.rows.map((x) => x.statuses[0])).toEqual(["passed", "failed"]);
+  });
+
+  it("flags regression when baseline passes but later run fails", () => {
+    const r = diffReportsMulti([
+      { label: "A", reports: [rep("a", true)] },
+      { label: "B", reports: [rep("a", false)] },
+    ]);
+    expect(r.rows[0].statuses).toEqual(["passed", "regression"]);
+  });
+
+  it("flags fixed when baseline fails but later run passes", () => {
+    const r = diffReportsMulti([
+      { label: "A", reports: [rep("a", false)] },
+      { label: "B", reports: [rep("a", true)] },
+    ]);
+    expect(r.rows[0].statuses).toEqual(["failed", "fixed"]);
+  });
+
+  it("marks a fixture missing when not present in a run", () => {
+    const r = diffReportsMulti([
+      { label: "A", reports: [rep("a", true), rep("b", true)] },
+      { label: "B", reports: [rep("a", true)] },
+    ]);
+    const b = r.rows.find((x) => x.fixture_id === "b")!;
+    expect(b.statuses).toEqual(["passed", "missing"]);
+  });
+
+  it("supports 3+ runs in one matrix; later runs always compared to baseline", () => {
+    // baseline (v1) passes → v2 fails → v3 passes again. v3's status is
+    // "passed" (it matches the baseline), not "fixed" (which would require
+    // baseline to have failed).
+    const r = diffReportsMulti([
+      { label: "v1", reports: [rep("a", true)] },
+      { label: "v2", reports: [rep("a", false)] },
+      { label: "v3", reports: [rep("a", true)] },
+    ]);
+    expect(r.rows[0].statuses).toEqual(["passed", "regression", "passed"]);
+    expect(r.runs.map((x) => x.label)).toEqual(["v1", "v2", "v3"]);
+  });
+
+  it("flags 'fixed' on a later run only when baseline failed", () => {
+    const r = diffReportsMulti([
+      { label: "v1", reports: [rep("a", false)] },
+      { label: "v2", reports: [rep("a", false)] },
+      { label: "v3", reports: [rep("a", true)] },
+    ]);
+    expect(r.rows[0].statuses).toEqual(["failed", "failed", "fixed"]);
   });
 });

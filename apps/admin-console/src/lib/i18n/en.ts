@@ -137,6 +137,7 @@ export const en = {
       loading: "Loading…",
     },
     notConfigured: "Audit log is not enabled on this server.",
+    exportCsv: "Export CSV",
   },
   editor: {
     backToList: "Back to agents",
@@ -211,6 +212,15 @@ export const en = {
     },
     searchPh: "Search by id, adapter, base url…",
     keySource: { env: "Environment", config: "Config", none: "none" },
+    fields: {
+      providerId: "Provider ID",
+      adapter: "Adapter",
+      baseUrl: "Base URL",
+      timeout: "Timeout (seconds)",
+      apiKey: "API key",
+      apiKeyPh: "Optional API key",
+      apiKeyExisting: "Replace existing key…",
+    },
   },
   models: {
     title: "Models",
@@ -224,6 +234,12 @@ export const en = {
       actions: "Actions",
     },
     searchPh: "Search by id, provider, upstream…",
+    fields: {
+      modelId: "Model ID",
+      providerId: "Provider ID",
+      upstreamModel: "Upstream Model",
+      selectProvider: "Select a provider",
+    },
   },
   mcp: {
     title: "MCP Servers",
@@ -243,6 +259,21 @@ export const en = {
     failures: "Failures (since last ok)",
     lastAttempt: "last attempt {{when}}",
     lastSuccess: "last success {{when}}",
+    fields: {
+      serverId: "Server ID",
+      transport: "Transport",
+      command: "Command",
+      args: "Arguments (one per line)",
+      url: "URL",
+      timeout: "Timeout (seconds)",
+      configJson: "Config JSON",
+      env: "Environment",
+      restartPolicy: "Restart policy",
+      maxAttempts: "Max attempts",
+      delayMs: "Delay (ms)",
+      backoff: "Backoff multiplier",
+      maxDelayMs: "Max delay (ms)",
+    },
   },
   skills: {
     title: "Skill Registry",

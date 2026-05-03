@@ -224,11 +224,11 @@ export function AgentsPage() {
     plugin_count: "plugins",
     updated_at: "last modified",
   };
-  const sortMeta = (
+  const sortMeta = sort ? (
     <Pill tone="info">
       {sortLabelMap[sort.key]} {sort.direction === "asc" ? "↑" : "↓"}
     </Pill>
-  );
+  ) : null;
 
   const noAgentsAtAll = !loading && agents.length === 0;
   const noMatches = !loading && agents.length > 0 && view.items.length === 0;

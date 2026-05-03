@@ -130,18 +130,34 @@ export function AdminTopbar({
         <button
           type="button"
           onClick={openTokenModal}
-          className="flex items-center gap-3 rounded-md border border-line-strong bg-surface px-3 py-1.5 text-left text-xs text-fg-soft transition-colors hover:bg-soft hover:text-fg"
+          title={token ? `admin · token ${maskAdminToken(token)} ✓` : "Set admin token"}
+          className="flex items-center gap-2 rounded-md border border-line-strong bg-surface px-2 py-1 text-left text-xs text-fg-soft transition-colors hover:bg-soft hover:text-fg"
         >
-          <span className="flex items-center gap-1.5">
-            <span aria-hidden className={`inline-block h-2 w-2 rounded-pill ${dotClass}`} />
-            <span className="hidden sm:inline">{description.label}</span>
+          <span
+            aria-hidden
+            className="inline-flex h-6 w-6 items-center justify-center rounded-pill bg-accent/15 font-mono text-[10px] font-semibold text-accent"
+          >
+            {tokenInitials(token)}
           </span>
-          <span aria-hidden className="hidden h-3 w-px bg-line sm:inline-block" />
-          <span className="hidden font-mono text-fg sm:inline">{maskAdminToken(token)}</span>
+          <span className="hidden flex-col leading-tight sm:flex">
+            <span className="flex items-center gap-1.5 font-medium text-fg">
+              <span aria-hidden className={`inline-block h-1.5 w-1.5 rounded-pill ${dotClass}`} />
+              {description.label}
+            </span>
+            <span className="font-mono text-[10px] text-fg-faint">
+              admin · token ✓ · {maskAdminToken(token)}
+            </span>
+          </span>
         </button>
       </div>
     </header>
   );
+}
+
+function tokenInitials(token: string | null | undefined): string {
+  if (!token) return "—";
+  const s = token.replace(/^Bearer\s+/i, "").trim();
+  return s.slice(0, 2).toUpperCase() || "—";
 }
 
 function LocaleToggle() {

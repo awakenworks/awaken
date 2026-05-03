@@ -146,7 +146,7 @@ export function ModelsPage() {
             )}
           </div>
           <div className="mt-4 grid gap-4 md:grid-cols-3">
-            <Field label="Model ID">
+            <Field label={t("models.fields.modelId")}>
               <input
                 value={crud.draft.id}
                 disabled={crud.isEditingExisting}
@@ -158,7 +158,7 @@ export function ModelsPage() {
                 className="w-full rounded-xl border border-line-strong px-3 py-2 text-sm text-fg-strong outline-none transition focus:border-line-strong disabled:bg-muted disabled:text-fg-soft"
               />
             </Field>
-            <Field label="Provider ID">
+            <Field label={t("models.fields.providerId")}>
               <select
                 value={crud.draft.provider_id}
                 onChange={(event) =>
@@ -170,7 +170,7 @@ export function ModelsPage() {
                 }
                 className="w-full rounded-xl border border-line-strong bg-surface px-3 py-2 text-sm text-fg-strong outline-none transition focus:border-line-strong"
               >
-                <option value="">Select a provider</option>
+                <option value="">{t("models.fields.selectProvider")}</option>
                 {providerOptions.map((providerId) => (
                   <option key={providerId} value={providerId}>
                     {providerId}
@@ -178,7 +178,7 @@ export function ModelsPage() {
                 ))}
               </select>
             </Field>
-            <Field label="Upstream Model">
+            <Field label={t("models.fields.upstreamModel")}>
               <input
                 value={crud.draft.upstream_model}
                 onChange={(event) =>

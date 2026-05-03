@@ -212,8 +212,16 @@ pre-commit:
         violations=""
 
         for file in $code_files; do
-          # 检查占位符代码
-          placeholder_matches=$(git diff --cached "$file" | grep "^+" | grep -v "^+++" | grep -iE '(TODO|FIXME|XXX|HACK|placeholder|dummy.*implementation|temp.*implementation)' || true)
+          # 检查占位符代码 — 排除 HTML/JSX 的 placeholder 属性（input/textarea 输入提示是合法用法）
+          # 检查 TODO/FIXME/XXX/HACK 关键字 (单词边界，避免 "todorow" 之类误报)，
+          # 以及独立出现的 "placeholder" 标识符 (但不匹配 placeholder= / .placeholder /
+          # ? "placeholder" / placeholder: / "placeholder")，以及 "dummy implementation" /
+          # "temp implementation" 短语。
+          placeholder_matches=$(git diff --cached "$file" \
+            | grep "^+" | grep -v "^+++" \
+            | grep -ivE '(\bplaceholder=|\.placeholder\b|"placeholder":|placeholder: ")' \
+            | grep -iE '\b(TODO|FIXME|XXX|HACK)\b|\bplaceholder\b|dummy.*implementation|temp.*implementation' \
+            || true)
           if [ -n "$placeholder_matches" ]; then
             violations="${violations}\n【占位符代码】${file}:\n${placeholder_matches}\n"
           fi

@@ -265,7 +265,7 @@ export function ProvidersPage() {
           </div>
 
           <div className="mt-4 grid gap-4 md:grid-cols-2">
-            <Field label="Provider ID">
+            <Field label={t("providers.fields.providerId")}>
               <input
                 value={crud.draft.id}
                 disabled={crud.isEditingExisting}
@@ -278,7 +278,7 @@ export function ProvidersPage() {
               />
             </Field>
 
-            <Field label="Adapter">
+            <Field label={t("providers.fields.adapter")}>
               <select
                 value={crud.draft.adapter}
                 onChange={(event) =>
@@ -296,7 +296,7 @@ export function ProvidersPage() {
               </select>
             </Field>
 
-            <Field label="Base URL">
+            <Field label={t("providers.fields.baseUrl")}>
               <input
                 value={String(crud.draft.base_url ?? "")}
                 onChange={(event) =>
@@ -313,7 +313,7 @@ export function ProvidersPage() {
               />
             </Field>
 
-            <Field label="Timeout (seconds)">
+            <Field label={t("providers.fields.timeout")}>
               <input
                 type="number"
                 min={1}
