@@ -194,6 +194,27 @@ describe("agent editor tab keyboard navigation", () => {
   });
 });
 
+describe("agent editor save validation", () => {
+  it("blocks Save when required fields are empty and surfaces inline Required errors", async () => {
+    const fetchSpy = stubCapabilitiesFetch();
+    renderEditorRoute("/agents/new");
+    await screen.findByLabelText("Agent ID");
+
+    const saveBtn = screen.getAllByRole("button", { name: /^save$/i })[0];
+    fireEvent.click(saveBtn);
+
+    const alerts = await screen.findAllByRole("alert");
+    expect(alerts.some((node) => /required/i.test(node.textContent ?? ""))).toBe(true);
+
+    // No POST issued — Save was gated client-side.
+    const postCall = fetchSpy.mock.calls.find(([url, init]) => {
+      const method = (init as RequestInit | undefined)?.method?.toUpperCase();
+      return method === "POST" && String(url).includes("/v1/config/agents");
+    });
+    expect(postCall).toBeUndefined();
+  });
+});
+
 describe("agent editor History tab", () => {
   it("shows 'Save first' empty state for new agents", async () => {
     renderEditorRoute("/agents/new");

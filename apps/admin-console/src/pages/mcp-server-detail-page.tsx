@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Link, useNavigate, useParams } from "react-router";
 import {
+  ConfigApiError,
   type AgentSpec,
   type McpServerRecord,
   type McpServerStatusResponse,
@@ -31,6 +32,7 @@ export function McpServerDetailPage() {
   const [status, setStatus] = useState<McpServerStatusResponse | null | undefined>(undefined);
   const [agents, setAgents] = useState<AgentSpec[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [notFound, setNotFound] = useState(false);
   const [restarting, setRestarting] = useState(false);
   const [copied, setCopied] = useState(false);
 
@@ -38,6 +40,7 @@ export function McpServerDetailPage() {
     if (!id) return;
     let cancelled = false;
     setError(null);
+    setNotFound(false);
     void Promise.all([
       configApi.get<McpServerRecord>("mcp-servers", id),
       configApi.mcpStatus(id).catch(() => null),
@@ -50,7 +53,12 @@ export function McpServerDetailPage() {
         setAgents(ag.items);
       })
       .catch((err) => {
-        if (!cancelled) setError(err instanceof Error ? err.message : String(err));
+        if (cancelled) return;
+        if (err instanceof ConfigApiError && err.status === 404) {
+          setNotFound(true);
+          return;
+        }
+        setError(err instanceof Error ? err.message : String(err));
       });
     return () => {
       cancelled = true;
@@ -106,9 +114,29 @@ export function McpServerDetailPage() {
       </div>
     );
   }
+  if (notFound) {
+    return (
+      <div className="mx-auto max-w-5xl p-6 md:p-8">
+        <div className="mb-3 text-xs">
+          <Link to={adminRoutes.mcpServers} className="text-fg-soft hover:text-fg">
+            ← {t("mcp.title")}
+          </Link>
+        </div>
+        <div className="rounded-md border border-line bg-surface p-6 text-sm text-fg-soft shadow-sm">
+          <div className="text-fg-strong">MCP server &ldquo;{id}&rdquo; not found.</div>
+          <div className="mt-1">It may have been removed, or the URL may be wrong.</div>
+        </div>
+      </div>
+    );
+  }
   if (error) {
     return (
       <div className="mx-auto max-w-5xl p-6 md:p-8">
+        <div className="mb-3 text-xs">
+          <Link to={adminRoutes.mcpServers} className="text-fg-soft hover:text-fg">
+            ← {t("mcp.title")}
+          </Link>
+        </div>
         <div className="rounded-md border border-tone-error/30 bg-tone-error/10 p-4 text-sm text-tone-error">
           {error}
         </div>

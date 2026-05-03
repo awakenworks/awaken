@@ -212,6 +212,11 @@ export const en = {
     filter: "Filter",
     actions: "Actions",
   },
+  validation: {
+    required: "Required",
+    fixErrors: "Please fix the highlighted fields before saving.",
+    invalidId: "Use lowercase letters, digits, hyphens or underscores only.",
+  },
   providers: {
     title: "Providers",
     new: "New Provider",

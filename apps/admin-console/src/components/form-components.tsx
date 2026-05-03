@@ -3,14 +3,29 @@ import type { ReactNode } from "react";
 export function Field({
   label,
   children,
+  required = false,
+  error,
 }: {
   label: string;
   children: ReactNode;
+  required?: boolean;
+  error?: string | null;
 }) {
+  // The required marker is rendered via the ::after pseudo-element so it
+  // appears visually without contributing to label.textContent — RTL's
+  // getByLabelText matches on textContent, not accessible name.
+  const labelClassName = required
+    ? "mb-1.5 block text-sm font-medium text-fg-soft after:ml-0.5 after:text-tone-error after:content-['*']"
+    : "mb-1.5 block text-sm font-medium text-fg-soft";
   return (
     <label className="block">
-      <span className="mb-1.5 block text-sm font-medium text-fg-soft">{label}</span>
+      <span className={labelClassName}>{label}</span>
       {children}
+      {error ? (
+        <span role="alert" className="mt-1 block text-xs text-tone-error">
+          {error}
+        </span>
+      ) : null}
     </label>
   );
 }

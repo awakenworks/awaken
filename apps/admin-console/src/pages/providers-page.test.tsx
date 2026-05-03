@@ -156,6 +156,33 @@ describe("ProvidersPage — Test connection button", () => {
     expect(testCall).toBeDefined();
   });
 
+  it("blocks Save when required fields are empty and shows inline Required errors", async () => {
+    const fetchSpy = stubFetch();
+    renderProviders();
+
+    const newButton = await screen.findByRole("button", { name: /new provider/i });
+    fireEvent.click(newButton);
+
+    await screen.findByText(/create provider/i);
+
+    // Clear the Provider ID field (defaults to empty for new) and click Save.
+    const saveBtn = screen.getAllByRole("button", { name: /^save$/i })[0];
+    await act(async () => {
+      fireEvent.click(saveBtn);
+    });
+
+    // "Required" inline error rendered for the empty Provider ID field.
+    const alerts = screen.getAllByRole("alert");
+    expect(alerts.some((node) => /required/i.test(node.textContent ?? ""))).toBe(true);
+
+    // No POST issued — Save was gated client-side.
+    const postCall = fetchSpy.mock.calls.find(([url, init]) => {
+      const method = (init as RequestInit | undefined)?.method?.toUpperCase();
+      return method === "POST" && String(url).includes("/v1/config/providers");
+    });
+    expect(postCall).toBeUndefined();
+  });
+
   it("shows failure status badge when test returns ok=false", async () => {
     stubFetch({ ok: false, latency_ms: 10, error: "unsupported adapter: stub" });
     renderProviders();

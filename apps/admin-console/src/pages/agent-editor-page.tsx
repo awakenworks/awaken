@@ -58,6 +58,8 @@ export function AgentEditorPage() {
   const [saving, setSaving] = useState(false);
   const [activePluginConfig, setActivePluginConfig] = useState<string | null>(null);
   const [historyRefreshKey, setHistoryRefreshKey] = useState(0);
+  const [errors, setErrors] = useState<Partial<Record<"id" | "model_id", string>>>({});
+  const { t } = useTranslation();
   const toast = useToast();
 
   const isDirty = useMemo(() => {
@@ -133,7 +135,25 @@ export function AgentEditorPage() {
     };
   }, [id, isNew]);
 
+  function validateSpec(current: AgentSpec): typeof errors {
+    const next: typeof errors = {};
+    if (isNew && !current.id.trim()) {
+      next.id = t("validation.required");
+    }
+    if (!String(current.model_id ?? "").trim()) {
+      next.model_id = t("validation.required");
+    }
+    return next;
+  }
+
   async function handleSave() {
+    const validationErrors = validateSpec(spec);
+    setErrors(validationErrors);
+    if (Object.keys(validationErrors).length > 0) {
+      toast.error(t("validation.fixErrors"));
+      setActiveTab("basics");
+      return;
+    }
     setSaving(true);
     try {
       const payload = {
@@ -172,6 +192,13 @@ export function AgentEditorPage() {
 
   function updateField<K extends keyof AgentSpec>(key: K, value: AgentSpec[K]) {
     setSpec((current) => ({ ...current, [key]: value }));
+    if (key === "id" || key === "model_id") {
+      setErrors((current) => {
+        if (!current[key as "id" | "model_id"]) return current;
+        const { [key as "id" | "model_id"]: _removed, ...rest } = current;
+        return rest;
+      });
+    }
   }
 
   function togglePlugin(pluginId: string) {
@@ -320,6 +347,7 @@ export function AgentEditorPage() {
                   isNew={isNew}
                   updateField={updateField}
                   reasoningMode={reasoningMode}
+                  errors={errors}
                 />
               )}
               {tab.id === "tools" && (
@@ -746,31 +774,35 @@ function BasicsPanel({
   isNew,
   updateField,
   reasoningMode,
+  errors,
 }: {
   spec: AgentSpec;
   capabilities: Capabilities | null;
   isNew: boolean;
   updateField: <K extends keyof AgentSpec>(key: K, value: AgentSpec[K]) => void;
   reasoningMode: ReturnType<typeof reasoningEffortMode>;
+  errors?: Partial<Record<"id" | "model_id", string>>;
 }) {
   return (
     <section className="rounded-md border border-line bg-surface p-5 shadow-sm">
       <h3 className="text-lg font-semibold text-fg-strong">Basics</h3>
       <div className="mt-4 grid gap-4 md:grid-cols-2">
-        <Field label="Agent ID">
+        <Field label="Agent ID" required={isNew} error={errors?.id}>
           <input
             type="text"
             value={spec.id}
             disabled={!isNew}
+            aria-invalid={Boolean(errors?.id)}
             onChange={(event) => updateField("id", event.target.value)}
-            className="w-full rounded-xl border border-line-strong px-3 py-2 text-sm text-fg-strong outline-none transition focus:border-line-strong disabled:bg-muted disabled:text-fg-soft"
+            className="w-full rounded-xl border border-line-strong px-3 py-2 text-sm text-fg-strong outline-none transition focus:border-line-strong disabled:bg-muted disabled:text-fg-soft aria-[invalid=true]:border-tone-error"
           />
         </Field>
-        <Field label="Model">
+        <Field label="Model" required error={errors?.model_id}>
           <select
             value={String(spec.model_id ?? "")}
+            aria-invalid={Boolean(errors?.model_id)}
             onChange={(event) => updateField("model_id", event.target.value)}
-            className="w-full rounded-xl border border-line-strong bg-surface px-3 py-2 text-sm text-fg-strong outline-none transition focus:border-line-strong"
+            className="w-full rounded-xl border border-line-strong bg-surface px-3 py-2 text-sm text-fg-strong outline-none transition focus:border-line-strong aria-[invalid=true]:border-tone-error"
           >
             <option value="">Select a model</option>
             {(capabilities?.models ?? []).map((model) => (

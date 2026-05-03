@@ -158,6 +158,7 @@ export function McpServersPage() {
   const [envMode, setEnvMode] = useState<EnvMode>("replace");
   const [statuses, setStatuses] = useState<Record<string, McpServerStatus | null>>({});
   const [restarting, setRestarting] = useState(false);
+  const [errors, setErrors] = useState<Partial<Record<"id" | "command" | "url", string>>>({});
   const confirm = useConfirmDialog();
   const toast = useToast();
 
@@ -276,6 +277,7 @@ export function McpServersPage() {
     setConfigDraft("{}");
     setEnvDraft("{}");
     setEnvMode("replace");
+    setErrors({});
   }
 
   function startEdit(server: McpServerRecord) {
@@ -294,6 +296,32 @@ export function McpServersPage() {
     setConfigDraft(stringifyJsonObject(server.config));
     setEnvDraft("{}");
     setEnvMode("preserve");
+    setErrors({});
+  }
+
+  function cancelEdit() {
+    crud.cancelEdit();
+    setErrors({});
+  }
+
+  function validateDraft(draft: McpServerRecord): typeof errors {
+    const next: typeof errors = {};
+    if (!draft.id.trim()) next.id = t("validation.required");
+    if (draft.transport === "stdio" && !String(draft.command ?? "").trim()) {
+      next.command = t("validation.required");
+    }
+    if (draft.transport === "http" && !String(draft.url ?? "").trim()) {
+      next.url = t("validation.required");
+    }
+    return next;
+  }
+
+  async function handleSave() {
+    if (!crud.draft) return;
+    const next = validateDraft(crud.draft);
+    setErrors(next);
+    if (Object.keys(next).length > 0) return;
+    await crud.handleSave();
   }
 
   return (
@@ -331,16 +359,19 @@ export function McpServersPage() {
           </div>
 
           <div className="mt-4 grid gap-4 md:grid-cols-2">
-            <Field label={t("mcp.fields.serverId")}>
+            <Field label={t("mcp.fields.serverId")} required error={errors.id}>
               <input
                 value={crud.draft.id}
                 disabled={crud.isEditingExisting}
-                onChange={(event) =>
+                aria-invalid={Boolean(errors.id)}
+                onChange={(event) => {
+                  const value = event.target.value;
                   crud.setDraft((current) =>
-                    current ? { ...current, id: event.target.value } : current,
-                  )
-                }
-                className="w-full rounded-xl border border-line-strong px-3 py-2 text-sm text-fg-strong outline-none transition focus:border-line-strong disabled:bg-muted disabled:text-fg-soft"
+                    current ? { ...current, id: value } : current,
+                  );
+                  if (errors.id) setErrors((e) => ({ ...e, id: undefined }));
+                }}
+                className="w-full rounded-xl border border-line-strong px-3 py-2 text-sm text-fg-strong outline-none transition focus:border-line-strong disabled:bg-muted disabled:text-fg-soft aria-[invalid=true]:border-tone-error"
               />
             </Field>
 
@@ -366,17 +397,18 @@ export function McpServersPage() {
 
             {crud.draft.transport === "stdio" ? (
               <>
-                <Field label={t("mcp.fields.command")}>
+                <Field label={t("mcp.fields.command")} required error={errors.command}>
                   <input
                     value={String(crud.draft.command ?? "")}
-                    onChange={(event) =>
+                    aria-invalid={Boolean(errors.command)}
+                    onChange={(event) => {
+                      const value = event.target.value;
                       crud.setDraft((current) =>
-                        current
-                          ? { ...current, command: event.target.value }
-                          : current,
-                      )
-                    }
-                    className="w-full rounded-xl border border-line-strong px-3 py-2 text-sm text-fg-strong outline-none transition focus:border-line-strong"
+                        current ? { ...current, command: value } : current,
+                      );
+                      if (errors.command) setErrors((e) => ({ ...e, command: undefined }));
+                    }}
+                    className="w-full rounded-xl border border-line-strong px-3 py-2 text-sm text-fg-strong outline-none transition focus:border-line-strong aria-[invalid=true]:border-tone-error"
                   />
                 </Field>
                 <Field label={t("mcp.fields.args")}>
@@ -389,15 +421,18 @@ export function McpServersPage() {
                 </Field>
               </>
             ) : (
-              <Field label={t("mcp.fields.url")}>
+              <Field label={t("mcp.fields.url")} required error={errors.url}>
                 <input
                   value={String(crud.draft.url ?? "")}
-                  onChange={(event) =>
+                  aria-invalid={Boolean(errors.url)}
+                  onChange={(event) => {
+                    const value = event.target.value;
                     crud.setDraft((current) =>
-                      current ? { ...current, url: event.target.value } : current,
-                    )
-                  }
-                  className="w-full rounded-xl border border-line-strong px-3 py-2 text-sm text-fg-strong outline-none transition focus:border-line-strong"
+                      current ? { ...current, url: value } : current,
+                    );
+                    if (errors.url) setErrors((e) => ({ ...e, url: undefined }));
+                  }}
+                  className="w-full rounded-xl border border-line-strong px-3 py-2 text-sm text-fg-strong outline-none transition focus:border-line-strong aria-[invalid=true]:border-tone-error"
                 />
               </Field>
             )}
@@ -635,7 +670,7 @@ export function McpServersPage() {
           <div className="mt-5 flex gap-3">
             <button
               type="button"
-              onClick={() => void crud.handleSave()}
+              onClick={() => void handleSave()}
               disabled={crud.saving}
               className="rounded-xl bg-accent px-4 py-2 text-sm font-medium text-accent-text transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
             >
@@ -643,7 +678,7 @@ export function McpServersPage() {
             </button>
             <button
               type="button"
-              onClick={crud.cancelEdit}
+              onClick={cancelEdit}
               className="rounded-xl border border-line-strong px-4 py-2 text-sm font-medium text-fg transition hover:bg-soft"
             >
               Cancel

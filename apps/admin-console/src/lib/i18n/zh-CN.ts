@@ -211,6 +211,11 @@ export const zhCN: Dict = {
     filter: "筛选",
     actions: "操作",
   },
+  validation: {
+    required: "必填项",
+    fixErrors: "请先修正标红的字段再保存。",
+    invalidId: "仅允许小写字母、数字、连字符或下划线。",
+  },
   providers: {
     title: "供应商",
     new: "新建供应商",

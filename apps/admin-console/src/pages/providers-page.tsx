@@ -92,12 +92,15 @@ interface TestStatus {
   testedAt: number;
 }
 
+type ProviderFieldErrors = Partial<Record<"id" | "adapter", string>>;
+
 export function ProvidersPage() {
   const { t } = useTranslation();
   const [apiKeyMode, setApiKeyMode] = useState<ApiKeyMode>("replace");
   const [apiKeyDraft, setApiKeyDraft] = useState("");
   const [testing, setTesting] = useState(false);
   const [testStatus, setTestStatus] = useState<TestStatus | null>(null);
+  const [errors, setErrors] = useState<ProviderFieldErrors>({});
   const toast = useToast();
   const testingIdRef = useRef<string | null>(null);
 
@@ -171,6 +174,7 @@ export function ProvidersPage() {
     setApiKeyMode("replace");
     setApiKeyDraft("");
     setTestStatus(null);
+    setErrors({});
   }
 
   function startEdit(provider: ProviderRecord) {
@@ -178,6 +182,19 @@ export function ProvidersPage() {
     setApiKeyMode("preserve");
     setApiKeyDraft("");
     setTestStatus(null);
+    setErrors({});
+  }
+
+  function cancelEdit() {
+    crud.cancelEdit();
+    setErrors({});
+  }
+
+  function validate(draft: ProviderRecord): ProviderFieldErrors {
+    const next: ProviderFieldErrors = {};
+    if (!draft.id.trim()) next.id = t("validation.required");
+    if (!draft.adapter.trim()) next.adapter = t("validation.required");
+    return next;
   }
 
   async function handleTestConnection() {
@@ -206,6 +223,10 @@ export function ProvidersPage() {
   }
 
   async function handleSave() {
+    if (!crud.draft) return;
+    const next = validate(crud.draft);
+    setErrors(next);
+    if (Object.keys(next).length > 0) return;
     await crud.handleSave();
     setApiKeyDraft("");
   }
@@ -265,20 +286,23 @@ export function ProvidersPage() {
           </div>
 
           <div className="mt-4 grid gap-4 md:grid-cols-2">
-            <Field label={t("providers.fields.providerId")}>
+            <Field label={t("providers.fields.providerId")} required error={errors.id}>
               <input
                 value={crud.draft.id}
                 disabled={crud.isEditingExisting}
-                onChange={(event) =>
+                aria-invalid={Boolean(errors.id)}
+                onChange={(event) => {
+                  const value = event.target.value;
                   crud.setDraft((current) =>
-                    current ? { ...current, id: event.target.value } : current,
-                  )
-                }
-                className="w-full rounded-xl border border-line-strong px-3 py-2 text-sm text-fg-strong outline-none transition focus:border-line-strong disabled:bg-muted disabled:text-fg-soft"
+                    current ? { ...current, id: value } : current,
+                  );
+                  if (errors.id) setErrors((e) => ({ ...e, id: undefined }));
+                }}
+                className="w-full rounded-xl border border-line-strong px-3 py-2 text-sm text-fg-strong outline-none transition focus:border-line-strong disabled:bg-muted disabled:text-fg-soft aria-[invalid=true]:border-tone-error"
               />
             </Field>
 
-            <Field label={t("providers.fields.adapter")}>
+            <Field label={t("providers.fields.adapter")} required error={errors.adapter}>
               <select
                 value={crud.draft.adapter}
                 onChange={(event) =>
@@ -405,7 +429,7 @@ export function ProvidersPage() {
             </button>
             <button
               type="button"
-              onClick={crud.cancelEdit}
+              onClick={cancelEdit}
               className="rounded-xl border border-line-strong px-4 py-2 text-sm font-medium text-fg transition hover:bg-soft"
             >
               Cancel

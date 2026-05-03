@@ -130,6 +130,7 @@ export function AdminTopbar({
         <button
           type="button"
           onClick={openTokenModal}
+          aria-label={token ? `Set admin token (currently ${maskAdminToken(token)})` : "Set admin token"}
           title={token ? `admin · token ${maskAdminToken(token)} ✓` : "Set admin token"}
           className="flex items-center gap-2 rounded-md border border-line-strong bg-surface px-2 py-1 text-left text-xs text-fg-soft transition-colors hover:bg-soft hover:text-fg"
         >

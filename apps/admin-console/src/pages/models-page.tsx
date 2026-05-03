@@ -1,4 +1,4 @@
-import { useEffect, useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Link } from "react-router";
 import {
@@ -63,6 +63,8 @@ const LIST_OPTIONS = {
   defaultSort: { key: "id" as ModelSortKey, direction: "asc" as const },
 } as const;
 
+type ModelFieldErrors = Partial<Record<"id" | "provider_id" | "upstream_model", string>>;
+
 export function ModelsPage() {
   const { t } = useTranslation();
   const crud = useCrudPage<ModelBindingSpec>({
@@ -70,6 +72,38 @@ export function ModelsPage() {
     entityLabel: "model",
     auxiliaryLoaders,
   });
+  const [errors, setErrors] = useState<ModelFieldErrors>({});
+
+  function validate(draft: ModelBindingSpec): ModelFieldErrors {
+    const next: ModelFieldErrors = {};
+    if (!draft.id.trim()) next.id = t("validation.required");
+    if (!draft.provider_id.trim()) next.provider_id = t("validation.required");
+    if (!draft.upstream_model.trim()) next.upstream_model = t("validation.required");
+    return next;
+  }
+
+  async function handleSave() {
+    if (!crud.draft) return;
+    const next = validate(crud.draft);
+    setErrors(next);
+    if (Object.keys(next).length > 0) return;
+    await crud.handleSave();
+  }
+
+  function startNewModel() {
+    setErrors({});
+    crud.startNew({ ...EMPTY_MODEL });
+  }
+
+  function startEditModel(model: ModelBindingSpec) {
+    setErrors({});
+    crud.startEdit(model);
+  }
+
+  function cancelEditModel() {
+    setErrors({});
+    crud.cancelEdit();
+  }
 
   const { search, sort, pageSize, page, apply: applyListState } = useListUrlState<ModelSortKey>(LIST_OPTIONS);
 
@@ -123,7 +157,7 @@ export function ModelsPage() {
         </div>
         <button
           type="button"
-          onClick={() => crud.startNew({ ...EMPTY_MODEL })}
+          onClick={startNewModel}
           className="inline-flex h-9 items-center rounded-md bg-accent px-3 text-sm font-medium text-accent-text transition hover:opacity-90"
         >
           {t("models.new")}
@@ -146,29 +180,33 @@ export function ModelsPage() {
             )}
           </div>
           <div className="mt-4 grid gap-4 md:grid-cols-3">
-            <Field label={t("models.fields.modelId")}>
+            <Field label={t("models.fields.modelId")} required error={errors.id}>
               <input
                 value={crud.draft.id}
                 disabled={crud.isEditingExisting}
-                onChange={(event) =>
+                aria-invalid={Boolean(errors.id)}
+                onChange={(event) => {
+                  const value = event.target.value;
                   crud.setDraft((current) =>
-                    current ? { ...current, id: event.target.value } : current,
-                  )
-                }
-                className="w-full rounded-xl border border-line-strong px-3 py-2 text-sm text-fg-strong outline-none transition focus:border-line-strong disabled:bg-muted disabled:text-fg-soft"
+                    current ? { ...current, id: value } : current,
+                  );
+                  if (errors.id) setErrors((e) => ({ ...e, id: undefined }));
+                }}
+                className="w-full rounded-xl border border-line-strong px-3 py-2 text-sm text-fg-strong outline-none transition focus:border-line-strong disabled:bg-muted disabled:text-fg-soft aria-[invalid=true]:border-tone-error"
               />
             </Field>
-            <Field label={t("models.fields.providerId")}>
+            <Field label={t("models.fields.providerId")} required error={errors.provider_id}>
               <select
                 value={crud.draft.provider_id}
-                onChange={(event) =>
+                aria-invalid={Boolean(errors.provider_id)}
+                onChange={(event) => {
+                  const value = event.target.value;
                   crud.setDraft((current) =>
-                    current
-                      ? { ...current, provider_id: event.target.value }
-                      : current,
-                  )
-                }
-                className="w-full rounded-xl border border-line-strong bg-surface px-3 py-2 text-sm text-fg-strong outline-none transition focus:border-line-strong"
+                    current ? { ...current, provider_id: value } : current,
+                  );
+                  if (errors.provider_id) setErrors((e) => ({ ...e, provider_id: undefined }));
+                }}
+                className="w-full rounded-xl border border-line-strong bg-surface px-3 py-2 text-sm text-fg-strong outline-none transition focus:border-line-strong aria-[invalid=true]:border-tone-error"
               >
                 <option value="">{t("models.fields.selectProvider")}</option>
                 {providerOptions.map((providerId) => (
@@ -178,17 +216,18 @@ export function ModelsPage() {
                 ))}
               </select>
             </Field>
-            <Field label={t("models.fields.upstreamModel")}>
+            <Field label={t("models.fields.upstreamModel")} required error={errors.upstream_model}>
               <input
                 value={crud.draft.upstream_model}
-                onChange={(event) =>
+                aria-invalid={Boolean(errors.upstream_model)}
+                onChange={(event) => {
+                  const value = event.target.value;
                   crud.setDraft((current) =>
-                    current
-                      ? { ...current, upstream_model: event.target.value }
-                      : current,
-                  )
-                }
-                className="w-full rounded-xl border border-line-strong px-3 py-2 text-sm text-fg-strong outline-none transition focus:border-line-strong"
+                    current ? { ...current, upstream_model: value } : current,
+                  );
+                  if (errors.upstream_model) setErrors((e) => ({ ...e, upstream_model: undefined }));
+                }}
+                className="w-full rounded-xl border border-line-strong px-3 py-2 text-sm text-fg-strong outline-none transition focus:border-line-strong aria-[invalid=true]:border-tone-error"
               />
             </Field>
           </div>
@@ -196,7 +235,7 @@ export function ModelsPage() {
           <div className="mt-5 flex gap-3">
             <button
               type="button"
-              onClick={() => void crud.handleSave()}
+              onClick={() => void handleSave()}
               disabled={crud.saving}
               className="rounded-xl bg-accent px-4 py-2 text-sm font-medium text-accent-text transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
             >
@@ -204,7 +243,7 @@ export function ModelsPage() {
             </button>
             <button
               type="button"
-              onClick={crud.cancelEdit}
+              onClick={cancelEditModel}
               className="rounded-xl border border-line-strong px-4 py-2 text-sm font-medium text-fg transition hover:bg-soft"
             >
               Cancel
@@ -233,7 +272,7 @@ export function ModelsPage() {
             actions={
               <button
                 type="button"
-                onClick={() => crud.startNew({ ...EMPTY_MODEL })}
+                onClick={startNewModel}
                 className="inline-flex h-9 items-center rounded-md bg-accent px-4 text-sm font-medium text-accent-text transition-colors hover:opacity-90"
               >
                 {t("models.new")}
@@ -276,7 +315,7 @@ export function ModelsPage() {
                       <div className="flex gap-4">
                         <button
                           type="button"
-                          onClick={() => crud.startEdit(model)}
+                          onClick={() => startEditModel(model)}
                           className="font-medium text-fg transition hover:text-fg-strong"
                         >
                           Edit
