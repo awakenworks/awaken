@@ -8,6 +8,7 @@ import {
   useState,
   type ReactNode,
 } from "react";
+import { useTranslation } from "react-i18next";
 import { useNavigate } from "react-router";
 import { configApi, type AgentSpec, type ToolInfo } from "@/lib/config-api";
 import { navGroups } from "@/lib/nav";
@@ -67,6 +68,7 @@ export function CommandPaletteProvider({ children }: { children: ReactNode }) {
 }
 
 function PaletteOverlay({ onClose }: { onClose: () => void }) {
+  const { t } = useTranslation();
   const navigate = useNavigate();
   const inputRef = useRef<HTMLInputElement>(null);
   const [query, setQuery] = useState("");
@@ -92,15 +94,18 @@ function PaletteOverlay({ onClose }: { onClose: () => void }) {
 
   const items: CommandItem[] = useMemo(() => {
     const out: CommandItem[] = [];
+    const goTo = t("cmdk.goToPrefix");
     // Navigation: every nav item.
     for (const group of navGroups) {
       for (const item of group.items) {
+        const itemLabel = item.labelKey ? t(item.labelKey) : item.label;
+        const groupLabel = t(group.groupKey);
         out.push({
           id: `nav:${item.id}`,
-          label: item.label,
-          hint: `Go to ${item.label}`,
-          group: `Go to · ${group.label}`,
-          keywords: `${item.id} ${item.label.toLowerCase()}`,
+          label: itemLabel,
+          hint: t("cmdk.goTo", { name: itemLabel }),
+          group: `${goTo} · ${groupLabel}`,
+          keywords: `${item.id} ${itemLabel.toLowerCase()} ${item.label.toLowerCase()}`,
           action: () => {
             navigate(item.path);
             onClose();
@@ -111,10 +116,10 @@ function PaletteOverlay({ onClose }: { onClose: () => void }) {
     // Quick action.
     out.push({
       id: "action:new-agent",
-      label: "New agent",
-      hint: "Open the editor for a new agent",
-      group: "Actions",
-      keywords: "create agent new",
+      label: t("cmdk.newAgent"),
+      hint: t("cmdk.newAgentHint"),
+      group: t("cmdk.actions"),
+      keywords: "create agent new 新建 智能体",
       action: () => {
         navigate(adminRoutes.agentNew);
         onClose();
@@ -125,8 +130,8 @@ function PaletteOverlay({ onClose }: { onClose: () => void }) {
       out.push({
         id: `agent:${agent.id}`,
         label: agent.id,
-        hint: `Edit ${agent.id} (model: ${agent.model_id})`,
-        group: "Agents",
+        hint: t("cmdk.editAgent", { id: agent.id, model: agent.model_id }),
+        group: t("nav.items.agents"),
         keywords: `${agent.id} ${agent.model_id}`.toLowerCase(),
         action: () => {
           navigate(adminRoutes.agent(agent.id));
@@ -140,7 +145,7 @@ function PaletteOverlay({ onClose }: { onClose: () => void }) {
         id: `tool:${tool.id}`,
         label: tool.id,
         hint: tool.description ?? tool.name,
-        group: "Tools",
+        group: t("dashboard.counters.tools"),
         keywords: `${tool.id} ${tool.name ?? ""} ${tool.description ?? ""}`.toLowerCase(),
         action: () => {
           navigate(adminRoutes.assistant);
@@ -149,7 +154,7 @@ function PaletteOverlay({ onClose }: { onClose: () => void }) {
       });
     }
     return out;
-  }, [agents, tools, navigate, onClose]);
+  }, [agents, tools, navigate, onClose, t]);
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -215,7 +220,7 @@ function PaletteOverlay({ onClose }: { onClose: () => void }) {
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             onKeyDown={handleKeyDown}
-            placeholder="Search agents, tools, navigation, actions…"
+            placeholder={t("cmdk.placeholder")}
             className="flex-1 bg-transparent text-sm text-fg-strong outline-none placeholder:text-fg-faint"
           />
           <kbd className="rounded border border-line bg-soft px-1.5 py-0.5 font-mono text-[10px] text-fg-faint">
@@ -226,7 +231,7 @@ function PaletteOverlay({ onClose }: { onClose: () => void }) {
         <div className="max-h-[60vh] overflow-y-auto">
           {filtered.length === 0 ? (
             <div className="px-6 py-10 text-center text-sm text-fg-soft">
-              No matches.
+              {t("cmdk.noMatches")}
             </div>
           ) : (
             sections.map((section, sIdx) => {
@@ -268,14 +273,14 @@ function PaletteOverlay({ onClose }: { onClose: () => void }) {
           <span>
             <kbd className="rounded border border-line bg-bg px-1 font-mono">↑</kbd>
             <kbd className="ml-0.5 rounded border border-line bg-bg px-1 font-mono">↓</kbd>{" "}
-            navigate
+            {t("cmdk.navigate")}
           </span>
           <span>
             <kbd className="rounded border border-line bg-bg px-1 font-mono">↵</kbd>{" "}
-            open
+            {t("cmdk.open")}
           </span>
           <span className="ml-auto">
-            {filtered.length} result{filtered.length === 1 ? "" : "s"}
+            {t("cmdk.resultCount", { count: filtered.length })}
           </span>
         </div>
       </div>

@@ -47,17 +47,18 @@ export function AuditLogPage() {
   const [selectedEvent, setSelectedEvent] = useState<AuditEvent | null>(null);
   const [hasLoaded, setHasLoaded] = useState(false);
 
-  async function load(cursor?: string) {
+  async function load(cursor?: string, override?: Partial<typeof filter>) {
     setLoading(true);
     setError(null);
     setNotConfigured(false);
+    const f = { ...filter, ...(override ?? {}) };
     try {
       const result = await configApi.auditLog({
-        since: filter.since || undefined,
-        until: filter.until || undefined,
-        action: filter.action || undefined,
-        resource: filter.resource || undefined,
-        actor: filter.actor || undefined,
+        since: f.since || undefined,
+        until: f.until || undefined,
+        action: f.action || undefined,
+        resource: f.resource || undefined,
+        actor: f.actor || undefined,
         cursor,
       });
       if (cursor) {
@@ -219,9 +220,11 @@ export function AuditLogPage() {
             <button
               type="button"
               onClick={() => {
-                apply({ since: "", until: "", action: "", resource: "", actor: "" });
-                setPage(null);
-                setHasLoaded(false);
+                const empty = { since: "", until: "", action: "" as const, resource: "", actor: "" };
+                apply(empty);
+                // Refetch immediately with explicit empties so the table
+                // doesn't go blank waiting for the next render's stale closure.
+                void load(undefined, empty);
               }}
               className="rounded-xl border border-line-strong px-4 py-2 text-sm font-medium text-fg transition hover:bg-soft"
             >

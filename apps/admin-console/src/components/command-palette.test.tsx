@@ -2,6 +2,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, act } from "@testing-library/react";
 import { createMemoryRouter, RouterProvider, createRoutesFromElements, Route, Outlet } from "react-router";
+import "../lib/i18n";
 import { CommandPaletteProvider, useCommandPalette } from "./command-palette";
 
 function HostShell() {
