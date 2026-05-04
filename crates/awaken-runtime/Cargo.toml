@@ -23,19 +23,26 @@ typedmap = { workspace = true }
 uuid = { workspace = true }
 genai = { workspace = true }
 tokio = { workspace = true }
-reqwest = { workspace = true }
+# `form` is required by the credential broker's OAuth token-exchange call
+# (POST application/x-www-form-urlencoded). Workspace default already enables `json`.
+reqwest = { workspace = true, features = ["form"] }
 schemars = { workspace = true }
 jsonschema = { workspace = true }
 parking_lot = { workspace = true }
 metrics = "0.24"
+jsonwebtoken = { version = "10", default-features = false, features = ["use_pem", "rust_crypto"], optional = true }
 
 [features]
-default = ["a2a", "handoff", "background"]
+default = ["a2a", "handoff", "background", "credentials-google"]
 a2a = []
 handoff = []
 background = []
 parallel-tools = []
 test-utils = []
+# Compile the Google OAuth (service-account JWT-Bearer) credential signer.
+# When disabled, providers configured with credentials_kind="service_account_json"
+# will fail at first mint with a clear error.
+credentials-google = ["dep:jsonwebtoken"]
 
 [dev-dependencies]
 awaken-runtime = { path = ".", features = ["test-utils"] }

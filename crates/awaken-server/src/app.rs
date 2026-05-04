@@ -340,6 +340,10 @@ pub struct AppState {
     /// Wall-clock instant the AppState was constructed.  Used by
     /// `/v1/system/info` to report uptime.
     pub started_at: Instant,
+    /// Process-wide credential broker. All provider auth flows through
+    /// this single instance so token caches and metrics are unified
+    /// (vs. each `build_genai_provider_executor` call creating its own).
+    pub credential_broker: Arc<dyn awaken_runtime::credentials::CredentialBroker>,
 }
 
 impl AppState {
@@ -365,7 +369,20 @@ impl AppState {
             runtime_stats: None,
             audit_log: None,
             started_at: Instant::now(),
+            credential_broker: Arc::new(awaken_runtime::credentials::AwakenCredentialBroker::new()),
         }
+    }
+
+    /// Override the credential broker (e.g. inject a test double).
+    /// Call before publishing the AppState; replacing it after the
+    /// runtime is wired will leave existing executors pointing at the
+    /// previous broker.
+    pub fn with_credential_broker(
+        mut self,
+        broker: Arc<dyn awaken_runtime::credentials::CredentialBroker>,
+    ) -> Self {
+        self.credential_broker = broker;
+        self
     }
 
     /// Attach a runtime stats registry. The same `Arc` should already be
