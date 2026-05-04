@@ -99,12 +99,26 @@ interface TestStatus {
   testedAt: number;
 }
 
-type ProviderFieldErrors = Partial<Record<"id" | "adapter", string>>;
+type ProviderFieldErrors = Partial<Record<"id" | "adapter" | "saJson", string>>;
+
+/** Discriminator for `adapter_options.credentials_kind`. */
+type CredentialsKind = "bearer" | "service_account_json";
+
+/** Adapters where Awaken can mint OAuth tokens from a service account. */
+const SERVICE_ACCOUNT_ADAPTERS = new Set(["vertex"]);
+
+function readCredentialsKind(
+  options: Record<string, unknown> | undefined,
+): CredentialsKind {
+  const raw = options?.credentials_kind;
+  return raw === "service_account_json" ? "service_account_json" : "bearer";
+}
 
 export function ProvidersPage() {
   const { t } = useTranslation();
   const [apiKeyMode, setApiKeyMode] = useState<ApiKeyMode>("replace");
   const [apiKeyDraft, setApiKeyDraft] = useState("");
+  const [saJsonDraft, setSaJsonDraft] = useState("");
   const [testing, setTesting] = useState(false);
   const [testStatus, setTestStatus] = useState<TestStatus | null>(null);
   const [errors, setErrors] = useState<ProviderFieldErrors>({});
@@ -118,7 +132,20 @@ export function ProvidersPage() {
         timeout_secs: Number(draft.timeout_secs) || 300,
       };
 
-      if (apiKeyMode === "replace") {
+      const kind = readCredentialsKind(
+        draft.adapter_options as Record<string, unknown> | undefined,
+      );
+
+      if (kind === "service_account_json") {
+        // SA JSON path: api_key carries the JSON content. The Replace/Keep
+        // semantics still apply (admin may want to rotate the JSON without
+        // re-pasting on every edit).
+        if (apiKeyMode === "replace" && saJsonDraft.trim().length > 0) {
+          payload.api_key = saJsonDraft.trim();
+        } else if (apiKeyMode === "clear") {
+          payload.api_key = "";
+        }
+      } else if (apiKeyMode === "replace") {
         if (apiKeyDraft.trim().length > 0) {
           payload.api_key = apiKeyDraft.trim();
         }
@@ -128,7 +155,8 @@ export function ProvidersPage() {
 
       return payload;
     },
-    [apiKeyMode, apiKeyDraft],
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [apiKeyMode, apiKeyDraft, saJsonDraft],
   );
 
   const crud = useCrudPage<ProviderRecord, ProviderSpec>({
@@ -142,6 +170,14 @@ export function ProvidersPage() {
   });
 
   const serverAdapters = crud.auxiliaryData[0] as string[] | undefined;
+
+  // Derived from the draft so it stays in sync when admin switches adapters
+  // or pastes credentials_kind directly into adapter_options.
+  const credentialsKind: CredentialsKind = crud.draft
+    ? readCredentialsKind(crud.draft.adapter_options as Record<string, unknown> | undefined)
+    : "bearer";
+  const adapterSupportsServiceAccount =
+    crud.draft != null && SERVICE_ACCOUNT_ADAPTERS.has(crud.draft.adapter);
 
   const adapterOptions = useMemo(() => {
     const options = new Set(serverAdapters ?? FALLBACK_ADAPTERS);
@@ -180,6 +216,7 @@ export function ProvidersPage() {
     crud.startNew({ ...EMPTY_PROVIDER });
     setApiKeyMode("replace");
     setApiKeyDraft("");
+    setSaJsonDraft("");
     setTestStatus(null);
     setErrors({});
   }
@@ -188,6 +225,7 @@ export function ProvidersPage() {
     crud.startEdit(provider);
     setApiKeyMode("preserve");
     setApiKeyDraft("");
+    setSaJsonDraft("");
     setTestStatus(null);
     setErrors({});
   }
@@ -232,10 +270,29 @@ export function ProvidersPage() {
   async function handleSave() {
     if (!crud.draft) return;
     const next = validate(crud.draft);
+    // Extra: SA JSON shape check (cheap; backend will validate authoritatively)
+    const kind = readCredentialsKind(
+      crud.draft.adapter_options as Record<string, unknown> | undefined,
+    );
+    if (
+      kind === "service_account_json" &&
+      apiKeyMode === "replace" &&
+      saJsonDraft.trim().length > 0
+    ) {
+      try {
+        const parsed = JSON.parse(saJsonDraft.trim()) as Record<string, unknown>;
+        if (typeof parsed.client_email !== "string" || typeof parsed.private_key !== "string") {
+          next.saJson = "JSON must include client_email and private_key";
+        }
+      } catch {
+        next.saJson = "Not valid JSON — paste the full file content from GCP IAM";
+      }
+    }
     setErrors(next);
     if (Object.keys(next).length > 0) return;
     await crud.handleSave();
     setApiKeyDraft("");
+    setSaJsonDraft("");
   }
 
   const [rowTestingId, setRowTestingId] = useState<string | null>(null);
@@ -312,11 +369,26 @@ export function ProvidersPage() {
             <Field label={t("providers.fields.adapter")} required error={errors.adapter}>
               <select
                 value={crud.draft.adapter}
-                onChange={(event) =>
-                  crud.setDraft((current) =>
-                    current ? { ...current, adapter: event.target.value } : current,
-                  )
-                }
+                onChange={(event) => {
+                  const nextAdapter = event.target.value;
+                  // Switching away from a service-account-capable adapter
+                  // resets credentials_kind so the form doesn't end up in
+                  // a state the backend will reject (e.g. service_account_json
+                  // on openai). Reverting to bearer is the safe default.
+                  crud.setDraft((current) => {
+                    if (!current) return current;
+                    const opts = { ...(current.adapter_options ?? {}) };
+                    if (!SERVICE_ACCOUNT_ADAPTERS.has(nextAdapter)) {
+                      delete opts.credentials_kind;
+                    }
+                    return {
+                      ...current,
+                      adapter: nextAdapter,
+                      adapter_options:
+                        Object.keys(opts).length > 0 ? opts : undefined,
+                    };
+                  });
+                }}
                 className="w-full rounded-xl border border-line-strong bg-surface px-3 py-2 text-sm text-fg-strong outline-none transition focus:border-line-strong"
               >
                 {adapterOptions.map((adapter) => (
@@ -326,6 +398,43 @@ export function ProvidersPage() {
                 ))}
               </select>
             </Field>
+
+            {adapterSupportsServiceAccount && (
+              <Field label={t("providers.fields.credentialsKind")}>
+                <select
+                  value={credentialsKind}
+                  onChange={(event) => {
+                    const nextKind = event.target.value as CredentialsKind;
+                    crud.setDraft((current) => {
+                      if (!current) return current;
+                      const opts = { ...(current.adapter_options ?? {}) };
+                      if (nextKind === "bearer") {
+                        delete opts.credentials_kind;
+                      } else {
+                        opts.credentials_kind = nextKind;
+                      }
+                      return {
+                        ...current,
+                        adapter_options:
+                          Object.keys(opts).length > 0 ? opts : undefined,
+                      };
+                    });
+                    // Cross-mode pivot: clear the other field's draft so
+                    // pasting a bearer doesn't leak into the SA JSON
+                    // payload (or vice versa).
+                    setApiKeyDraft("");
+                    setSaJsonDraft("");
+                    setApiKeyMode("replace");
+                  }}
+                  className="w-full rounded-xl border border-line-strong bg-surface px-3 py-2 text-sm text-fg-strong outline-none transition focus:border-line-strong"
+                >
+                  <option value="bearer">{t("providers.credentialsKind.bearer")}</option>
+                  <option value="service_account_json">
+                    {t("providers.credentialsKind.serviceAccountJson")}
+                  </option>
+                </select>
+              </Field>
+            )}
 
             <Field label={t("providers.fields.baseUrl")}>
               <input
@@ -380,20 +489,33 @@ export function ProvidersPage() {
                   <SecretStatusPill state="no-value" />
                 ) : (
                   <SecretStatusPill
-                    state={apiKeyDraft.trim().length > 0 ? "will-set" : "no-value"}
+                    state={
+                      (credentialsKind === "service_account_json"
+                        ? saJsonDraft
+                        : apiKeyDraft
+                      ).trim().length > 0
+                        ? "will-set"
+                        : "no-value"
+                    }
                   />
                 )
               }
               labels={{
-                title: `API key${crud.draft.id ? ` — ${crud.draft.id}` : ""}`,
-                description: crud.isEditingExisting
-                  ? "Default mode is Keep — the existing key never goes over the wire while you edit other fields."
-                  : "Optional. Leave empty to fall back to the adapter's environment variable.",
+                title:
+                  credentialsKind === "service_account_json"
+                    ? `${t("providers.fields.saJson")}${crud.draft.id ? ` — ${crud.draft.id}` : ""}`
+                    : `API key${crud.draft.id ? ` — ${crud.draft.id}` : ""}`,
+                description:
+                  credentialsKind === "service_account_json"
+                    ? t("providers.credentialsKind.serviceAccountJsonHint")
+                    : crud.isEditingExisting
+                      ? "Default mode is Keep — the existing key never goes over the wire while you edit other fields."
+                      : "Optional. Leave empty to fall back to the adapter's environment variable.",
                 replaceLabel: "Set new key",
                 clearLabel: "Clear key",
                 keepBody: (
                   <>
-                    <strong>Existing key is preserved.</strong>{" "}
+                    <strong>Existing credential is preserved.</strong>{" "}
                     <span>
                       Save will not modify the secret; other fields update normally.
                     </span>
@@ -409,19 +531,41 @@ export function ProvidersPage() {
                 ),
               }}
               hint={
-                <>
-                  Stored encrypted at rest. Submitting saves the new value and rotates the runtime client; in-flight requests continue with the prior key.
-                </>
+                credentialsKind === "service_account_json" ? (
+                  <>{t("providers.fields.saJsonHint")}</>
+                ) : (
+                  <>
+                    Stored encrypted at rest. Submitting saves the new value and rotates the runtime client; in-flight requests continue with the prior key.
+                  </>
+                )
               }
             >
-              <input
-                type="password"
-                autoComplete="off"
-                value={apiKeyDraft}
-                onChange={(event) => setApiKeyDraft(event.target.value)}
-                placeholder={crud.isEditingExisting ? "sk-…" : "Optional API key"}
-                className="w-full rounded-md border border-line-strong bg-surface px-3 py-2 font-mono text-sm text-fg-strong outline-none transition-colors focus:border-link"
-              />
+              {credentialsKind === "service_account_json" ? (
+                <div>
+                  <textarea
+                    value={saJsonDraft}
+                    onChange={(event) => setSaJsonDraft(event.target.value)}
+                    rows={8}
+                    placeholder={t("providers.fields.saJsonPh")}
+                    aria-invalid={Boolean(errors.saJson)}
+                    className="w-full rounded-md border border-line-strong bg-surface px-3 py-2 font-mono text-xs text-fg-strong outline-none transition-colors focus:border-link aria-[invalid=true]:border-tone-error"
+                  />
+                  {errors.saJson && (
+                    <span role="alert" className="mt-1 block text-xs text-tone-error">
+                      {errors.saJson}
+                    </span>
+                  )}
+                </div>
+              ) : (
+                <input
+                  type="password"
+                  autoComplete="off"
+                  value={apiKeyDraft}
+                  onChange={(event) => setApiKeyDraft(event.target.value)}
+                  placeholder={crud.isEditingExisting ? "sk-…" : "Optional API key"}
+                  className="w-full rounded-md border border-line-strong bg-surface px-3 py-2 font-mono text-sm text-fg-strong outline-none transition-colors focus:border-link"
+                />
+              )}
             </SecretField>
           </div>
 

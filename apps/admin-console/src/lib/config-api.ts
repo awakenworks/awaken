@@ -39,6 +39,20 @@ export interface ProviderSpec {
   api_key?: string;
   base_url?: string;
   timeout_secs?: number;
+  /**
+   * Adapter-specific extras. Recognised keys:
+   *  - `credentials_kind`: how to interpret `api_key`. One of:
+   *    - `"bearer"` (default) — `api_key` is a static OAuth bearer / API key.
+   *    - `"service_account_json"` — `api_key` is full Google service-account
+   *      JSON content; awaken signs JWTs and mints OAuth tokens automatically.
+   *      Only valid with `adapter: "vertex"`.
+   *  - `scopes`: optional array of OAuth scopes (defaults to
+   *    `["https://www.googleapis.com/auth/cloud-platform"]` for Vertex).
+   *  - `headers`: object of extra HTTP headers per request.
+   *
+   * Unknown keys are silently ignored by the runtime (forward-compat).
+   */
+  adapter_options?: Record<string, unknown>;
   created_at?: number;
   updated_at?: number;
 }
