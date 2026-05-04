@@ -286,6 +286,31 @@ mod tests {
         }
     }
 
+    #[test]
+    fn token_is_near_expiry_when_inside_safety_window() {
+        // SAFETY_WINDOW is 60s — a token expiring in 30s must trigger refresh.
+        let near = Token {
+            bearer: awaken_contract::secret::RedactedString::new("x"),
+            expires_at: std::time::SystemTime::now() + Duration::from_secs(30),
+        };
+        assert!(near.is_near_expiry(SAFETY_WINDOW));
+
+        // A token with plenty of headroom must NOT be near expiry.
+        let fresh = Token {
+            bearer: awaken_contract::secret::RedactedString::new("x"),
+            expires_at: std::time::SystemTime::now() + Duration::from_secs(3600),
+        };
+        assert!(!fresh.is_near_expiry(SAFETY_WINDOW));
+
+        // Already-expired tokens must report near-expiry (the safety_window
+        // check would otherwise fail with a None duration).
+        let stale = Token {
+            bearer: awaken_contract::secret::RedactedString::new("x"),
+            expires_at: std::time::SystemTime::now() - Duration::from_secs(10),
+        };
+        assert!(stale.is_near_expiry(SAFETY_WINDOW));
+    }
+
     #[tokio::test]
     async fn cache_hit_avoids_mint() {
         let broker = AwakenCredentialBroker::new();
