@@ -12,8 +12,10 @@
 
 #![allow(missing_docs)]
 
+pub mod builtin_seed;
 pub mod cancellation;
 pub mod config_loader;
+pub mod config_record;
 pub mod contract;
 mod error;
 pub mod model;
@@ -87,3 +89,9 @@ pub use periodic_refresh::PeriodicRefresher;
 
 // ── audit log ──
 pub use contract::audit_log::{AuditAction, AuditEvent};
+
+// ── config record envelope ──
+pub use config_record::{ConfigRecord, RecordMeta, RecordSource};
+
+// ── builtin seed ──
+pub use builtin_seed::{BuiltinSeedSet, BuiltinSpec};

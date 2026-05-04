@@ -828,6 +828,9 @@ async fn provider_secret_is_redacted_and_preserved_on_update() {
         .await
         .expect("read raw provider")
         .expect("provider should exist");
+    let stored = awaken_contract::ConfigRecord::<serde_json::Value>::from_value(stored)
+        .expect("decode envelope")
+        .spec;
     assert_eq!(stored["api_key"], "top-secret");
     assert_eq!(stored["base_url"], "https://provider.example.test");
 }
@@ -888,6 +891,9 @@ async fn mcp_servers_are_redacted_and_publish_live_tools() {
         .await
         .expect("read raw mcp config")
         .expect("mcp config should exist");
+    let stored = awaken_contract::ConfigRecord::<serde_json::Value>::from_value(stored)
+        .expect("decode envelope")
+        .spec;
     assert_eq!(stored["env"]["TOKEN"], "secret-token");
     assert_eq!(stored["args"], json!(["--updated"]));
 

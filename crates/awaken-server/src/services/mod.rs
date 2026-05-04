@@ -1,4 +1,5 @@
 pub mod audit_log;
+pub mod builtin_seed;
 pub mod config_runtime;
 pub mod config_service;
 pub mod run_control_service;

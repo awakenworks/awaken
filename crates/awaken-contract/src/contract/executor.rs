@@ -136,7 +136,7 @@ impl InterruptSnapshot {
                 continue;
             }
             match serde_json::from_str::<serde_json::Value>(&args_json) {
-                Ok(arguments) if !(arguments.is_null() && !args_json.is_empty()) => {
+                Ok(arguments) if !arguments.is_null() || args_json.is_empty() => {
                     completed.push(ToolCall::new(id, name, arguments));
                 }
                 _ => {

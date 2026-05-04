@@ -1,0 +1,149 @@
+//! Carrier types for binary-supplied built-in specs ("seed").
+//!
+//! At startup a binary may declare a set of specs it wants present in
+//! ConfigStore. The seed protocol (see `awaken_server::services::builtin_seed`)
+//! upserts these idempotently and prunes obsolete builtins, while leaving
+//! user-written entries untouched. This module defines only the data
+//! describing a seed; the protocol lives in `awaken-server`.
+
+use serde::{Deserialize, Serialize};
+
+use crate::registry_spec::{AgentSpec, McpServerSpec, ModelBindingSpec, ProviderSpec};
+
+/// A single spec the binary wants to seed into ConfigStore.
+///
+/// The variant determines the target ConfigStore namespace.
+///
+/// `Agent` is heap-allocated via `Box` because `AgentSpec` is significantly
+/// larger than the other variants.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum BuiltinSpec {
+    Agent(Box<AgentSpec>),
+    Provider(ProviderSpec),
+    Model(ModelBindingSpec),
+    McpServer(McpServerSpec),
+}
+
+impl BuiltinSpec {
+    /// Wrap an `AgentSpec` (heap-allocates per `clippy::large_enum_variant`).
+    pub fn agent(spec: AgentSpec) -> Self {
+        Self::Agent(Box::new(spec))
+    }
+
+    /// Wrap a `ProviderSpec`.
+    pub fn provider(spec: ProviderSpec) -> Self {
+        Self::Provider(spec)
+    }
+
+    /// Wrap a `ModelBindingSpec`.
+    pub fn model(spec: ModelBindingSpec) -> Self {
+        Self::Model(spec)
+    }
+
+    /// Wrap a `McpServerSpec`.
+    pub fn mcp_server(spec: McpServerSpec) -> Self {
+        Self::McpServer(spec)
+    }
+
+    /// ConfigStore namespace this spec belongs to.
+    ///
+    /// Must match the namespace strings used by `ConfigService` /
+    /// `ConfigNamespace::as_str()`.
+    pub fn namespace(&self) -> &'static str {
+        match self {
+            Self::Agent(_) => "agents",
+            Self::Provider(_) => "providers",
+            Self::Model(_) => "models",
+            Self::McpServer(_) => "mcp-servers",
+        }
+    }
+
+    /// ID under which the spec is stored in its namespace.
+    pub fn id(&self) -> &str {
+        match self {
+            Self::Agent(s) => &s.id,
+            Self::Provider(s) => &s.id,
+            Self::Model(s) => &s.id,
+            Self::McpServer(s) => &s.id,
+        }
+    }
+}
+
+/// A complete seed payload: the binary's version tag plus all specs it
+/// wants present.
+///
+/// `binary_version` is compared against existing Builtin records' version
+/// tag to decide whether to refresh them on this boot. Two binaries with
+/// the same version string but different seed contents will trigger the
+/// "same-version edit" path (acceptable for dev loop; production releases
+/// should bump the version string).
+#[derive(Debug, Clone)]
+pub struct BuiltinSeedSet {
+    pub binary_version: String,
+    pub specs: Vec<BuiltinSpec>,
+}
+
+impl BuiltinSeedSet {
+    /// Convenience: an empty seed for a given version (useful in tests
+    /// and for binaries that ship no built-ins).
+    pub fn empty(binary_version: impl Into<String>) -> Self {
+        Self {
+            binary_version: binary_version.into(),
+            specs: Vec::new(),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn constructor_agent_wraps_in_box() {
+        let spec = AgentSpec {
+            id: "a1".to_owned(),
+            model_id: "gpt-4o".to_owned(),
+            system_prompt: "hi".to_owned(),
+            ..Default::default()
+        };
+        assert!(matches!(BuiltinSpec::agent(spec), BuiltinSpec::Agent(_)));
+    }
+
+    #[test]
+    fn constructor_provider_wraps() {
+        let spec = ProviderSpec {
+            id: "p1".to_owned(),
+            adapter: "openai".to_owned(),
+            ..Default::default()
+        };
+        assert!(matches!(
+            BuiltinSpec::provider(spec),
+            BuiltinSpec::Provider(_)
+        ));
+    }
+
+    #[test]
+    fn constructor_model_wraps() {
+        let spec = ModelBindingSpec {
+            id: "m1".to_owned(),
+            provider_id: "openai".to_owned(),
+            upstream_model: "gpt-4o".to_owned(),
+            created_at: None,
+            updated_at: None,
+        };
+        assert!(matches!(BuiltinSpec::model(spec), BuiltinSpec::Model(_)));
+    }
+
+    #[test]
+    fn constructor_mcp_server_wraps() {
+        let spec = McpServerSpec {
+            id: "mcp1".to_owned(),
+            ..Default::default()
+        };
+        assert!(matches!(
+            BuiltinSpec::mcp_server(spec),
+            BuiltinSpec::McpServer(_)
+        ));
+    }
+}
