@@ -4,7 +4,9 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use awaken_contract::AuditAction;
 use awaken_contract::contract::config_store::ConfigStore;
 use awaken_contract::contract::storage::StorageError;
-use awaken_contract::{AgentSpec, McpServerSpec, ModelBindingSpec, ProviderSpec};
+use awaken_contract::{
+    AgentSpec, ConfigRecord, McpServerSpec, ModelBindingSpec, ProviderSpec, RecordMeta,
+};
 use axum::http::HeaderMap;
 use serde_json::{Map, Value, json};
 
@@ -22,6 +24,24 @@ pub enum ConfigNamespace {
 }
 
 impl ConfigNamespace {
+    /// All four managed namespaces in a fixed order.
+    pub const ALL: [Self; 4] = [
+        Self::Agents,
+        Self::Providers,
+        Self::Models,
+        Self::McpServers,
+    ];
+
+    /// Slice over all four namespace variants.
+    pub fn all() -> &'static [Self] {
+        &Self::ALL
+    }
+
+    /// Iterator over the `&'static str` names of all four namespaces.
+    pub fn iter_str() -> impl Iterator<Item = &'static str> + 'static {
+        Self::ALL.iter().copied().map(Self::as_str)
+    }
+
     pub fn parse(value: &str) -> Result<Self, ConfigServiceError> {
         match value {
             "agents" => Ok(Self::Agents),
@@ -241,7 +261,7 @@ impl<'a> ConfigService<'a> {
         let values = self.store.list(namespace.as_str(), offset, limit).await?;
         values
             .into_iter()
-            .map(|(_, value)| self.redact_response(namespace, value))
+            .map(|(_, value)| self.redact_response(namespace, unwrap_spec(value)))
             .collect()
     }
 
@@ -252,7 +272,7 @@ impl<'a> ConfigService<'a> {
     ) -> Result<Option<Value>, ConfigServiceError> {
         let value = self.store.get(namespace.as_str(), id).await?;
         value
-            .map(|value| self.redact_response(namespace, value))
+            .map(|value| self.redact_response(namespace, unwrap_spec(value)))
             .transpose()
     }
 
@@ -347,7 +367,7 @@ impl<'a> ConfigService<'a> {
             AuditAction::Update,
             namespace,
             id,
-            previous,
+            previous.map(unwrap_spec),
             Some(body),
             headers,
         )
@@ -387,7 +407,9 @@ impl<'a> ConfigService<'a> {
             .map(|_| ())
             .map_err(map_runtime_error);
         if let Err(error) = apply_result {
-            self.store.put(namespace.as_str(), id, &previous).await?;
+            let env = ensure_envelope(previous)
+                .map_err(|e| StorageError::Serialization(e.to_string()))?;
+            self.store.put(namespace.as_str(), id, &env).await?;
             return Err(error);
         }
 
@@ -395,7 +417,7 @@ impl<'a> ConfigService<'a> {
             AuditAction::Delete,
             namespace,
             id,
-            Some(previous),
+            Some(unwrap_spec(previous)),
             None,
             headers,
         )
@@ -534,7 +556,7 @@ impl<'a> ConfigService<'a> {
             audit
                 .emit_restore(
                     &resource,
-                    before,
+                    before.map(unwrap_spec),
                     Some(payload),
                     version.to_string(),
                     headers,
@@ -561,8 +583,7 @@ impl<'a> ConfigService<'a> {
                 let refs = models
                     .into_iter()
                     .filter(|(_, value)| {
-                        value
-                            .get("provider_id")
+                        spec_field(&value, "provider_id")
                             .and_then(Value::as_str)
                             .is_some_and(|pid| pid == id)
                     })
@@ -578,8 +599,7 @@ impl<'a> ConfigService<'a> {
                 let refs = agents
                     .into_iter()
                     .filter(|(_, value)| {
-                        value
-                            .get("model_id")
+                        spec_field(&value, "model_id")
                             .and_then(Value::as_str)
                             .is_some_and(|mid| mid == id)
                     })
@@ -630,7 +650,8 @@ impl<'a> ConfigService<'a> {
         body: Value,
     ) -> Result<Value, ConfigServiceError> {
         self.validate_payload(namespace, &body)?;
-        self.store.put(namespace.as_str(), id, &body).await?;
+        let envelope = wrap_user(&body).map_err(|e| StorageError::Serialization(e.to_string()))?;
+        self.store.put(namespace.as_str(), id, &envelope).await?;
 
         let apply_result = manager
             .apply_locked()
@@ -639,7 +660,11 @@ impl<'a> ConfigService<'a> {
             .map_err(map_runtime_error);
         if let Err(error) = apply_result {
             match previous {
-                Some(previous) => self.store.put(namespace.as_str(), id, &previous).await?,
+                Some(previous) => {
+                    let env = ensure_envelope(previous)
+                        .map_err(|e| StorageError::Serialization(e.to_string()))?;
+                    self.store.put(namespace.as_str(), id, &env).await?;
+                }
                 None => self.store.delete(namespace.as_str(), id).await?,
             }
             return Err(error);
@@ -697,9 +722,20 @@ impl<'a> ConfigService<'a> {
             object.insert("updated_at".into(), Value::Number(now.into()));
         } else {
             // Update: preserve existing created_at if present; always refresh updated_at.
+            // The stored value may be either a bare spec or a ConfigRecord envelope
+            // ({"spec": {...}, "meta": {...}}); extract created_at from whichever layer
+            // holds it.
             if !object.contains_key("created_at") {
                 if let Ok(Some(existing)) = self.store.get(namespace.as_str(), &id).await {
-                    if let Some(existing_created_at) = existing
+                    let spec_layer = if existing
+                        .as_object()
+                        .is_some_and(|m| m.contains_key("spec") && m.contains_key("meta"))
+                    {
+                        existing.get("spec").cloned().unwrap_or(existing)
+                    } else {
+                        existing
+                    };
+                    if let Some(existing_created_at) = spec_layer
                         .as_object()
                         .and_then(|obj| obj.get("created_at"))
                         .cloned()
@@ -744,7 +780,17 @@ impl<'a> ConfigService<'a> {
         else {
             return Ok(());
         };
-        let Some(existing_object) = existing.as_object() else {
+        // The stored value may be either a bare spec or a ConfigRecord envelope.
+        // Navigate into spec if needed before accessing fields.
+        let spec_value = if existing
+            .as_object()
+            .is_some_and(|m| m.contains_key("spec") && m.contains_key("meta"))
+        {
+            existing.get("spec").cloned().unwrap_or(existing)
+        } else {
+            existing
+        };
+        let Some(existing_object) = spec_value.as_object() else {
             return Ok(());
         };
         if let Some(existing_key) = existing_object.get("api_key") {
@@ -899,8 +945,9 @@ impl<'a> ConfigService<'a> {
             .await?
             .ok_or_else(|| ConfigServiceError::NotFound(format!("providers/{id}")))?;
 
-        let spec: ProviderSpec = serde_json::from_value(raw)
-            .map_err(|e| ConfigServiceError::InvalidPayload(e.to_string()))?;
+        let spec: ProviderSpec = ConfigRecord::<ProviderSpec>::from_value(raw)
+            .map_err(|e| ConfigServiceError::InvalidPayload(e.to_string()))
+            .map(|r| r.spec)?;
 
         // Construction probe: catches adapter parsing, material parsing,
         // header validation, and any other build-time check. Reuses the
@@ -982,7 +1029,16 @@ impl<'a> ConfigService<'a> {
         else {
             return Ok(());
         };
-        let Some(existing_object) = existing.as_object() else {
+        // The stored value may be either a bare spec or a ConfigRecord envelope.
+        let spec_value = if existing
+            .as_object()
+            .is_some_and(|m| m.contains_key("spec") && m.contains_key("meta"))
+        {
+            existing.get("spec").cloned().unwrap_or(existing)
+        } else {
+            existing
+        };
+        let Some(existing_object) = spec_value.as_object() else {
             return Ok(());
         };
         if let Some(existing_env) = existing_object.get("env") {
@@ -1035,6 +1091,78 @@ where
 {
     serde_json::from_value(value.clone())
         .map_err(|error| ConfigServiceError::InvalidPayload(error.to_string()))
+}
+
+/// Extract the spec from a stored value, unwrapping a ConfigRecord envelope
+/// if present.  Returns the value unchanged for legacy bare-spec entries.
+///
+/// Used to ensure audit `before`/`after` payloads always contain bare specs.
+fn unwrap_spec(value: Value) -> Value {
+    if value
+        .as_object()
+        .is_some_and(|m| m.contains_key("spec") && m.contains_key("meta"))
+    {
+        value.get("spec").cloned().unwrap_or(value)
+    } else {
+        value
+    }
+}
+
+/// Get a field from a stored value, transparently handling both bare spec
+/// and `ConfigRecord` envelope forms.
+fn spec_field<'a>(value: &'a Value, key: &str) -> Option<&'a Value> {
+    if value
+        .as_object()
+        .is_some_and(|m| m.contains_key("spec") && m.contains_key("meta"))
+    {
+        value.get("spec").and_then(|s| s.get(key))
+    } else {
+        value.get(key)
+    }
+}
+
+fn extract_timestamps(spec: &Value) -> (u64, u64) {
+    let created = spec.get("created_at").and_then(Value::as_u64).unwrap_or(0);
+    let updated = spec.get("updated_at").and_then(Value::as_u64).unwrap_or(0);
+    (created, updated)
+}
+
+/// Wrap a bare spec `Value` in a `ConfigRecord` envelope with `RecordSource::User`.
+///
+/// The spec's own `created_at`/`updated_at` are lifted into `RecordMeta` for
+/// provenance. This does **not** modify the spec itself — the spec timestamps
+/// remain authoritative for UI display.
+fn wrap_user(spec: &Value) -> Result<Value, serde_json::Error> {
+    let (created_at, updated_at) = extract_timestamps(spec);
+    let mut meta = RecordMeta::new_user();
+    if created_at != 0 {
+        meta.created_at = created_at;
+    }
+    if updated_at != 0 {
+        meta.updated_at = updated_at;
+    }
+    let record = ConfigRecord {
+        spec: spec.clone(),
+        meta,
+    };
+    record.to_value()
+}
+
+/// If `value` is already a `ConfigRecord` envelope (has both `"spec"` and
+/// `"meta"` keys), return it as-is.  Otherwise wrap it via `wrap_user`.
+///
+/// Used for rollback paths where the value being restored may have been
+/// written by an earlier writer (envelope) or an older binary (bare spec).
+fn ensure_envelope(value: Value) -> Result<Value, serde_json::Error> {
+    if value.is_object()
+        && value
+            .as_object()
+            .is_some_and(|m| m.contains_key("spec") && m.contains_key("meta"))
+    {
+        Ok(value)
+    } else {
+        wrap_user(&value)
+    }
 }
 
 #[cfg(test)]
@@ -1341,10 +1469,15 @@ mod tests {
         let stored = ConfigStore::get(config_store.as_ref(), "providers", "serialized")
             .await
             .expect("read provider after create");
+        // The stored value is now a ConfigRecord envelope; extract id from spec layer.
         assert_eq!(
             stored
                 .as_ref()
-                .and_then(|value| value.get("id"))
+                .and_then(|value| {
+                    // Prefer spec layer for envelope, fall back to bare spec.
+                    value.get("spec").or(Some(value))
+                })
+                .and_then(|spec| spec.get("id"))
                 .and_then(Value::as_str),
             Some("serialized")
         );
@@ -1572,6 +1705,58 @@ mod tests {
             .expect("force delete should succeed");
     }
 
+    // ── ConfigNamespace::all() / iter_str() tests ─────────────────────────
+
+    #[test]
+    fn namespace_all_lists_every_variant() {
+        let all = ConfigNamespace::all();
+        assert_eq!(all.len(), 4, "exactly four namespaces");
+
+        // Each variant must appear exactly once.
+        let has = |v: ConfigNamespace| all.iter().filter(|&&x| x == v).count();
+        assert_eq!(has(ConfigNamespace::Agents), 1);
+        assert_eq!(has(ConfigNamespace::Providers), 1);
+        assert_eq!(has(ConfigNamespace::Models), 1);
+        assert_eq!(has(ConfigNamespace::McpServers), 1);
+    }
+
+    #[test]
+    fn namespace_all_matches_builtin_spec_namespace() {
+        use awaken_contract::{BuiltinSpec, McpServerSpec};
+
+        for &ns in ConfigNamespace::all() {
+            let spec = match ns {
+                ConfigNamespace::Agents => BuiltinSpec::Agent(Box::new(AgentSpec {
+                    id: "x".into(),
+                    model_id: "m".into(),
+                    system_prompt: "s".into(),
+                    ..Default::default()
+                })),
+                ConfigNamespace::Providers => BuiltinSpec::Provider(ProviderSpec {
+                    id: "x".into(),
+                    adapter: "openai".into(),
+                    ..Default::default()
+                }),
+                ConfigNamespace::Models => BuiltinSpec::Model(ModelBindingSpec {
+                    id: "x".into(),
+                    provider_id: "p".into(),
+                    upstream_model: "m".into(),
+                    created_at: None,
+                    updated_at: None,
+                }),
+                ConfigNamespace::McpServers => BuiltinSpec::McpServer(McpServerSpec {
+                    id: "x".into(),
+                    ..Default::default()
+                }),
+            };
+            assert_eq!(
+                spec.namespace(),
+                ns.as_str(),
+                "BuiltinSpec::namespace() drifted from ConfigNamespace::as_str() for {ns:?}"
+            );
+        }
+    }
+
     // ── audit integration tests ────────────────────────────────────────────
 
     mod audit_integration {
@@ -1726,5 +1911,191 @@ mod tests {
             .unwrap();
             assert!(audit_entries.is_empty());
         }
+    }
+
+    // ── ConfigRecord envelope tests ─────────────────────────────────────────
+
+    #[tokio::test]
+    async fn put_emits_envelope_with_user_meta() {
+        let config_store = Arc::new(awaken_stores::InMemoryStore::new());
+        let (state, _manager) = build_state(config_store.clone()).await;
+        let service = ConfigService::new(&state).expect("service");
+
+        service
+            .create(
+                ConfigNamespace::Agents,
+                json!({
+                    "id": "env-agent",
+                    "model_id": "bootstrap",
+                    "system_prompt": "test",
+                    "max_rounds": 1
+                }),
+                &axum::http::HeaderMap::new(),
+            )
+            .await
+            .expect("create agent");
+
+        let raw = awaken_contract::contract::config_store::ConfigStore::get(
+            config_store.as_ref(),
+            "agents",
+            "env-agent",
+        )
+        .await
+        .expect("store read")
+        .expect("entry present");
+
+        let obj = raw.as_object().expect("must be JSON object");
+        assert!(
+            obj.contains_key("spec"),
+            "stored value must have 'spec' key"
+        );
+        assert!(
+            obj.contains_key("meta"),
+            "stored value must have 'meta' key"
+        );
+
+        let meta = &raw["meta"];
+        assert_eq!(
+            meta["source"]["kind"].as_str(),
+            Some("user"),
+            "source.kind must be 'user'"
+        );
+        assert_ne!(
+            meta["created_at"].as_u64(),
+            Some(0),
+            "created_at must be non-zero"
+        );
+    }
+
+    #[tokio::test]
+    async fn put_existing_envelope_preserves_created_at() {
+        let config_store = Arc::new(awaken_stores::InMemoryStore::new());
+        let (state, _manager) = build_state(config_store.clone()).await;
+        let service = ConfigService::new(&state).expect("service");
+
+        service
+            .create(
+                ConfigNamespace::Agents,
+                json!({
+                    "id": "ts-agent",
+                    "model_id": "bootstrap",
+                    "system_prompt": "v1",
+                    "max_rounds": 1
+                }),
+                &axum::http::HeaderMap::new(),
+            )
+            .await
+            .expect("create agent");
+
+        // Read back created_at from envelope
+        let first = awaken_contract::contract::config_store::ConfigStore::get(
+            config_store.as_ref(),
+            "agents",
+            "ts-agent",
+        )
+        .await
+        .expect("read")
+        .expect("present");
+        let created_at_1 = first["meta"]["created_at"].as_u64().expect("created_at");
+
+        // Sleep briefly so updated_at will differ
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+
+        service
+            .update(
+                ConfigNamespace::Agents,
+                "ts-agent",
+                json!({
+                    "id": "ts-agent",
+                    "model_id": "bootstrap",
+                    "system_prompt": "v2",
+                    "max_rounds": 1
+                }),
+                &axum::http::HeaderMap::new(),
+            )
+            .await
+            .expect("update agent");
+
+        let second = awaken_contract::contract::config_store::ConfigStore::get(
+            config_store.as_ref(),
+            "agents",
+            "ts-agent",
+        )
+        .await
+        .expect("read")
+        .expect("present");
+
+        let created_at_2 = second["meta"]["created_at"]
+            .as_u64()
+            .expect("created_at after update");
+        let updated_at_2 = second["meta"]["updated_at"]
+            .as_u64()
+            .expect("updated_at after update");
+
+        assert_eq!(
+            created_at_1, created_at_2,
+            "created_at must be preserved across updates"
+        );
+        assert!(
+            updated_at_2 >= created_at_2,
+            "updated_at must be >= created_at after update"
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "requires force-apply-failure hook not yet available in test harness"]
+    async fn delete_rollback_re_emits_envelope() {
+        // This test requires a way to configure the runtime manager to fail
+        // apply() after delete so we can observe the rollback path writing an
+        // envelope. The current test harness has no such hook. When that
+        // infrastructure is added, verify that the rolled-back store entry has
+        // both "spec" and "meta" keys.
+        panic!("test infrastructure for force-apply-failure not yet available")
+    }
+
+    #[tokio::test]
+    async fn audit_payload_is_bare_spec_not_envelope() {
+        use crate::services::audit_log::{AuditLogger, AuditQuery};
+
+        let config_store = Arc::new(awaken_stores::InMemoryStore::new());
+        let (state, _manager) = build_state(config_store.clone()).await;
+        let audit_logger = Arc::new(AuditLogger::new(config_store.clone()));
+        let state = state.with_audit_log(audit_logger.clone());
+
+        let service = ConfigService::new(&state).expect("service");
+        service
+            .create(
+                ConfigNamespace::Agents,
+                json!({
+                    "id": "audit-env-agent",
+                    "model_id": "bootstrap",
+                    "system_prompt": "audit test",
+                    "max_rounds": 1
+                }),
+                &axum::http::HeaderMap::new(),
+            )
+            .await
+            .expect("create");
+
+        let page = audit_logger
+            .query(AuditQuery::default())
+            .await
+            .expect("query");
+        assert_eq!(page.items.len(), 1);
+
+        let after = page.items[0].after.as_ref().expect("after must be present");
+        let after_obj = after.as_object().expect("after must be JSON object");
+        assert!(
+            !after_obj.contains_key("meta"),
+            "audit 'after' must not contain 'meta' key (must be bare spec)"
+        );
+        assert!(
+            !after_obj.contains_key("spec"),
+            "audit 'after' must not contain 'spec' wrapper key (must be bare spec)"
+        );
+        assert!(
+            after_obj.contains_key("id"),
+            "audit 'after' must contain spec field 'id'"
+        );
     }
 }

@@ -9,7 +9,7 @@ use awaken_contract::contract::config_store::{ConfigChangeNotifier, ConfigStore}
 use awaken_contract::contract::executor::LlmExecutor;
 use awaken_contract::contract::storage::StorageError;
 use awaken_contract::{
-    AgentSpec, McpRestartPolicy, McpServerSpec, McpTransportKind, ModelBindingSpec,
+    AgentSpec, ConfigRecord, McpRestartPolicy, McpServerSpec, McpTransportKind, ModelBindingSpec,
     PeriodicRefresher, ProviderSpec,
 };
 use awaken_ext_mcp::{
@@ -442,25 +442,38 @@ impl ConfigRuntimeManager {
             return Err(ConfigRuntimeError::PartialBootstrap);
         }
 
+        let bin_version = env!("CARGO_PKG_VERSION");
         for provider in providers {
             let json = serde_json::to_value(provider)
                 .map_err(|e| StorageError::Serialization(e.to_string()))?;
-            self.store.put(NS_PROVIDERS, &provider.id, &json).await?;
+            let envelope = wrap_builtin(&json, bin_version)
+                .map_err(|e| StorageError::Serialization(e.to_string()))?;
+            self.store
+                .put(NS_PROVIDERS, &provider.id, &envelope)
+                .await?;
         }
         for model in models {
             let json = serde_json::to_value(model)
                 .map_err(|e| StorageError::Serialization(e.to_string()))?;
-            self.store.put(NS_MODELS, &model.id, &json).await?;
+            let envelope = wrap_builtin(&json, bin_version)
+                .map_err(|e| StorageError::Serialization(e.to_string()))?;
+            self.store.put(NS_MODELS, &model.id, &envelope).await?;
         }
         for agent in agents {
             let json = serde_json::to_value(agent)
                 .map_err(|e| StorageError::Serialization(e.to_string()))?;
-            self.store.put(NS_AGENTS, &agent.id, &json).await?;
+            let envelope = wrap_builtin(&json, bin_version)
+                .map_err(|e| StorageError::Serialization(e.to_string()))?;
+            self.store.put(NS_AGENTS, &agent.id, &envelope).await?;
         }
         for server in mcp_servers {
             let json = serde_json::to_value(server)
                 .map_err(|e| StorageError::Serialization(e.to_string()))?;
-            self.store.put(NS_MCP_SERVERS, &server.id, &json).await?;
+            let envelope = wrap_builtin(&json, bin_version)
+                .map_err(|e| StorageError::Serialization(e.to_string()))?;
+            self.store
+                .put(NS_MCP_SERVERS, &server.id, &envelope)
+                .await?;
         }
 
         Ok(true)
@@ -1299,14 +1312,17 @@ fn deserialize_namespace<T>(entries: &[(String, Value)]) -> Result<Vec<T>, Confi
 where
     T: serde::de::DeserializeOwned,
 {
-    entries
-        .iter()
-        .map(|(_, value)| {
-            serde_json::from_value(value.clone())
-                .map_err(|error| StorageError::Serialization(error.to_string()))
-                .map_err(ConfigRuntimeError::Storage)
-        })
-        .collect()
+    let mut out = Vec::with_capacity(entries.len());
+    for (_, value) in entries {
+        let record: ConfigRecord<T> = ConfigRecord::from_value(value.clone())
+            .map_err(|error| StorageError::Serialization(error.to_string()))
+            .map_err(ConfigRuntimeError::Storage)?;
+        if record.meta.hidden {
+            continue;
+        }
+        out.push(record.spec);
+    }
+    Ok(out)
 }
 
 fn fingerprint_config(
@@ -1348,6 +1364,34 @@ fn canonicalize_value(value: &Value) -> Value {
         }
         _ => value.clone(),
     }
+}
+
+fn extract_timestamps_from_spec(spec: &Value) -> (u64, u64) {
+    let created = spec.get("created_at").and_then(Value::as_u64).unwrap_or(0);
+    let updated = spec.get("updated_at").and_then(Value::as_u64).unwrap_or(0);
+    (created, updated)
+}
+
+/// Wrap a bare spec `Value` in a `ConfigRecord` envelope with
+/// `RecordSource::Builtin { binary_version }`.
+///
+/// The spec's own `created_at`/`updated_at` are lifted into `RecordMeta` for
+/// provenance. The spec itself is not modified.
+fn wrap_builtin(spec: &Value, binary_version: &str) -> Result<Value, serde_json::Error> {
+    use awaken_contract::{ConfigRecord, RecordMeta};
+    let (created_at, updated_at) = extract_timestamps_from_spec(spec);
+    let mut meta = RecordMeta::new_builtin(binary_version);
+    if created_at != 0 {
+        meta.created_at = created_at;
+    }
+    if updated_at != 0 {
+        meta.updated_at = updated_at;
+    }
+    let record = ConfigRecord {
+        spec: spec.clone(),
+        meta,
+    };
+    record.to_value()
 }
 
 #[cfg(test)]
@@ -1879,6 +1923,272 @@ mod tests {
         assert!(
             matches!(err, ConfigRuntimeError::UnsupportedProviderAdapter(ref s) if s == "not-a-real-adapter"),
             "expected UnsupportedProviderAdapter, got: {err:?}"
+        );
+    }
+
+    fn minimal_agent_spec(id: &str) -> AgentSpec {
+        AgentSpec {
+            id: id.into(),
+            model_id: "test-model".into(),
+            system_prompt: "test prompt".into(),
+            max_rounds: 1,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn deserialize_namespace_decodes_legacy_bare_spec() {
+        let spec = minimal_agent_spec("agent-a");
+        let value = serde_json::to_value(&spec).expect("serialization must succeed");
+        let entries = vec![("agent-a".to_string(), value)];
+        let result: Vec<AgentSpec> =
+            deserialize_namespace(&entries).expect("legacy bare spec must decode");
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].id, "agent-a");
+    }
+
+    #[test]
+    fn deserialize_namespace_decodes_envelope() {
+        use awaken_contract::ConfigRecord;
+        let spec = minimal_agent_spec("agent-b");
+        let record = ConfigRecord {
+            spec,
+            meta: awaken_contract::RecordMeta::new_user(),
+        };
+        let value = record
+            .to_value()
+            .expect("envelope serialization must succeed");
+        let entries = vec![("agent-b".to_string(), value)];
+        let result: Vec<AgentSpec> = deserialize_namespace(&entries).expect("envelope must decode");
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].id, "agent-b");
+    }
+
+    #[test]
+    fn deserialize_namespace_skips_hidden_envelope() {
+        use awaken_contract::{ConfigRecord, RecordMeta};
+        let visible = minimal_agent_spec("visible");
+        let hidden = minimal_agent_spec("hidden");
+
+        let mut hidden_meta = RecordMeta::new_user();
+        hidden_meta.hidden = true;
+
+        let visible_record = ConfigRecord {
+            spec: visible,
+            meta: RecordMeta::new_user(),
+        };
+        let hidden_record = ConfigRecord {
+            spec: hidden,
+            meta: hidden_meta,
+        };
+
+        let entries = vec![
+            (
+                "visible".to_string(),
+                visible_record.to_value().expect("serialize visible"),
+            ),
+            (
+                "hidden".to_string(),
+                hidden_record.to_value().expect("serialize hidden"),
+            ),
+        ];
+        let result: Vec<AgentSpec> = deserialize_namespace(&entries).expect("decode must succeed");
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].id, "visible");
+    }
+
+    #[test]
+    fn deserialize_namespace_mixes_legacy_and_envelope() {
+        use awaken_contract::ConfigRecord;
+        let bare_spec = minimal_agent_spec("bare");
+        let envelope_spec = minimal_agent_spec("envelope");
+
+        let bare_value = serde_json::to_value(&bare_spec).expect("serialize bare");
+        let envelope_record = ConfigRecord {
+            spec: envelope_spec,
+            meta: awaken_contract::RecordMeta::new_user(),
+        };
+        let envelope_value = envelope_record.to_value().expect("serialize envelope");
+
+        let entries = vec![
+            ("bare".to_string(), bare_value),
+            ("envelope".to_string(), envelope_value),
+        ];
+        let result: Vec<AgentSpec> =
+            deserialize_namespace(&entries).expect("mixed decode must succeed");
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0].id, "bare");
+        assert_eq!(result[1].id, "envelope");
+    }
+
+    #[test]
+    fn deserialize_namespace_propagates_decode_error() {
+        let bad_value = json!({"completely": "wrong"});
+        let entries = vec![("bad".to_string(), bad_value)];
+        let err = deserialize_namespace::<AgentSpec>(&entries)
+            .expect_err("invalid spec must produce an error");
+        assert!(
+            matches!(
+                err,
+                ConfigRuntimeError::Storage(StorageError::Serialization(_))
+            ),
+            "expected Storage(Serialization(_)), got: {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn bootstrap_writes_builtin_envelope() {
+        use awaken_contract::contract::executor::{
+            InferenceExecutionError, InferenceRequest, LlmExecutor,
+        };
+        use awaken_contract::contract::inference::{StopReason, StreamResult, TokenUsage};
+        use awaken_stores::InMemoryStore;
+        use std::sync::Arc;
+
+        // Minimal executor for test runtime.
+        struct Stub;
+        #[async_trait::async_trait]
+        impl LlmExecutor for Stub {
+            async fn execute(
+                &self,
+                _: InferenceRequest,
+            ) -> Result<StreamResult, InferenceExecutionError> {
+                Ok(StreamResult {
+                    content: vec![],
+                    tool_calls: vec![],
+                    usage: Some(TokenUsage::default()),
+                    stop_reason: Some(StopReason::EndTurn),
+                    has_incomplete_tool_calls: false,
+                })
+            }
+            fn name(&self) -> &str {
+                "stub"
+            }
+        }
+
+        struct StubFactory;
+        impl ProviderExecutorFactory for StubFactory {
+            fn build(
+                &self,
+                spec: &ProviderSpec,
+            ) -> Result<Arc<dyn LlmExecutor>, ConfigRuntimeError> {
+                if spec.adapter.eq_ignore_ascii_case("stub") {
+                    return Ok(Arc::new(Stub));
+                }
+                Err(ConfigRuntimeError::UnsupportedProviderAdapter(
+                    spec.adapter.clone(),
+                ))
+            }
+        }
+
+        let store = Arc::new(InMemoryStore::new())
+            as Arc<dyn awaken_contract::contract::config_store::ConfigStore>;
+
+        let thread_store = Arc::new(InMemoryStore::new());
+        let runtime = Arc::new(
+            awaken_runtime::builder::AgentRuntimeBuilder::new()
+                .with_provider("boot", Arc::new(Stub))
+                .with_model_binding(
+                    "boot",
+                    awaken_runtime::registry::traits::ModelBinding {
+                        provider_id: "boot".into(),
+                        upstream_model: "boot-model".into(),
+                    },
+                )
+                .with_agent_spec(AgentSpec {
+                    id: "boot".into(),
+                    model_id: "boot".into(),
+                    system_prompt: "boot".into(),
+                    max_rounds: 1,
+                    ..Default::default()
+                })
+                .with_thread_run_store(thread_store)
+                .build()
+                .expect("build runtime"),
+        );
+
+        let manager = ConfigRuntimeManager::new(runtime, store.clone())
+            .expect("manager")
+            .with_provider_factory(Arc::new(StubFactory));
+
+        let bootstrapped = manager
+            .bootstrap_if_empty(
+                &[ProviderSpec {
+                    id: "p1".into(),
+                    adapter: "stub".into(),
+                    ..Default::default()
+                }],
+                &[ModelBindingSpec {
+                    id: "m1".into(),
+                    provider_id: "p1".into(),
+                    upstream_model: "m1-model".into(),
+                    created_at: None,
+                    updated_at: None,
+                }],
+                &[AgentSpec {
+                    id: "a1".into(),
+                    model_id: "m1".into(),
+                    system_prompt: "bootstrap test".into(),
+                    max_rounds: 1,
+                    ..Default::default()
+                }],
+                &[],
+            )
+            .await
+            .expect("bootstrap");
+        assert!(bootstrapped, "bootstrap must return true on empty store");
+
+        // Check provider stored as envelope with builtin source
+        let raw_p = awaken_contract::contract::config_store::ConfigStore::get(
+            store.as_ref(),
+            "providers",
+            "p1",
+        )
+        .await
+        .expect("get provider")
+        .expect("provider present");
+
+        let p_obj = raw_p.as_object().expect("must be object");
+        assert!(p_obj.contains_key("spec"), "provider must have 'spec' key");
+        assert!(p_obj.contains_key("meta"), "provider must have 'meta' key");
+        assert_eq!(
+            raw_p["meta"]["source"]["kind"].as_str(),
+            Some("builtin"),
+            "provider source.kind must be 'builtin'"
+        );
+        let bin_ver = raw_p["meta"]["source"]["binary_version"]
+            .as_str()
+            .expect("binary_version must be present");
+        assert_eq!(bin_ver, env!("CARGO_PKG_VERSION"));
+
+        // Check agent
+        let raw_a = awaken_contract::contract::config_store::ConfigStore::get(
+            store.as_ref(),
+            "agents",
+            "a1",
+        )
+        .await
+        .expect("get agent")
+        .expect("agent present");
+        assert_eq!(
+            raw_a["meta"]["source"]["kind"].as_str(),
+            Some("builtin"),
+            "agent source.kind must be 'builtin'"
+        );
+
+        // Check model
+        let raw_m = awaken_contract::contract::config_store::ConfigStore::get(
+            store.as_ref(),
+            "models",
+            "m1",
+        )
+        .await
+        .expect("get model")
+        .expect("model present");
+        assert_eq!(
+            raw_m["meta"]["source"]["kind"].as_str(),
+            Some("builtin"),
+            "model source.kind must be 'builtin'"
         );
     }
 }

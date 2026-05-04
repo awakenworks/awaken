@@ -484,6 +484,9 @@ async fn file_store_config_api_persists_and_publishes_runtime() {
         .await
         .expect("read persisted agent config");
     let stored_agent: Value = serde_json::from_str(&stored_agent).expect("agent config json");
+    let stored_agent = awaken_contract::ConfigRecord::<Value>::from_value(stored_agent)
+        .expect("decode envelope")
+        .spec;
     assert_eq!(stored_agent["id"], "file-agent");
 
     let resolved = app
