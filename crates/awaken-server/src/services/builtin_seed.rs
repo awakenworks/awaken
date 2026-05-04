@@ -597,7 +597,7 @@ mod tests {
     #[tokio::test]
     async fn orphan_cleanup_handles_more_than_one_page() {
         const RECORD_COUNT: usize = 300;
-        assert!(
+        const _: () = assert!(
             RECORD_COUNT > SEED_LIST_PAGE_SIZE,
             "test must exceed page size to exercise the multi-page path"
         );

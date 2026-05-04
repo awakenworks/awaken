@@ -1072,10 +1072,9 @@ Always greet the user warmly and ask how you can help today.
     let runtime = builder.build().expect("failed to build runtime");
     let runtime = Arc::new(runtime);
     let config_store = file_store.clone() as Arc<dyn ConfigStore>;
-    // Build an audit logger from the config store so seed-apply events are
-    // recorded at boot. The same store is later used by AppState when
-    // `with_audit_log_from_config` constructs its own logger instance.
-    let seed_audit_logger = Arc::new(awaken_server::services::audit_log::AuditLogger::new(
+    // Build a single audit logger shared by ConfigRuntimeManager (for seed-apply
+    // events at boot) and AppState (for all subsequent audit events).
+    let audit_logger = Arc::new(awaken_server::services::audit_log::AuditLogger::new(
         config_store.clone(),
     ));
     let config_runtime_manager = Arc::new(
@@ -1083,7 +1082,7 @@ Always greet the user warmly and ask how you can help today.
             .expect("failed to initialize config runtime manager")
             .with_provider_factory(provider_factory)
             .with_mcp_refresh_interval(Duration::from_secs(5))
-            .with_audit_log(seed_audit_logger),
+            .with_audit_log(audit_logger.clone()),
     );
 
     let seed = {
@@ -1154,6 +1153,7 @@ Always greet the user warmly and ask how you can help today.
     .with_config_runtime_manager(config_runtime_manager)
     .with_credential_broker(Arc::clone(&credential_broker))
     .with_runtime_stats(runtime_stats)
+    .with_audit_log(audit_logger)
     .with_audit_log_from_config()
     .with_skill_catalog_provider(
         Arc::new(RegistryBackedSkillCatalogProvider::new(skill_registry))

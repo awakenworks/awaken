@@ -211,10 +211,10 @@ impl RetryingExecutor {
                     return Ok(result);
                 }
                 Err(err) => {
-                    if err.counts_toward_circuit_breaker() {
-                        if let Some(ref cb) = self.circuit_breaker {
-                            cb.record_failure(&request.upstream_model);
-                        }
+                    if err.counts_toward_circuit_breaker()
+                        && let Some(ref cb) = self.circuit_breaker
+                    {
+                        cb.record_failure(&request.upstream_model);
                     }
                     if !is_retryable(&err) {
                         return Err(err);
@@ -268,10 +268,10 @@ impl RetryingExecutor {
                     return Ok(stream);
                 }
                 Err(err) => {
-                    if err.counts_toward_circuit_breaker() {
-                        if let Some(ref cb) = self.circuit_breaker {
-                            cb.record_failure(&request.upstream_model);
-                        }
+                    if err.counts_toward_circuit_breaker()
+                        && let Some(ref cb) = self.circuit_breaker
+                    {
+                        cb.record_failure(&request.upstream_model);
                     }
                     if !is_retryable(&err) {
                         return Err(err);
