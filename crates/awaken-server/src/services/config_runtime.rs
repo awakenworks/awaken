@@ -1368,6 +1368,170 @@ mod tests {
     }
 
     #[test]
+    fn build_genai_executor_for_every_supported_adapter() {
+        // Stronger than the parse round-trip: every adapter exposed via
+        // supported_adapters() must successfully construct an LlmExecutor end
+        // to end (parse → AdapterKind → genai builder chain → wrapper). No
+        // network calls happen at build time, so this is safe and offline.
+        for name in supported_adapters() {
+            let spec = ProviderSpec {
+                id: format!("test-{name}"),
+                adapter: name.to_string(),
+                ..ProviderSpec::default()
+            };
+            build_genai_provider_executor(&spec).unwrap_or_else(|err| {
+                panic!("supported adapter `{name}` failed to build executor: {err:?}")
+            });
+        }
+    }
+
+    #[test]
+    fn build_genai_executor_with_api_key_for_every_supported_adapter() {
+        // Same as above but exercising the auth_resolver path (api_key set).
+        // Catches any adapter that rejects a static key at builder time.
+        for name in supported_adapters() {
+            let spec = ProviderSpec {
+                id: format!("test-{name}"),
+                adapter: name.to_string(),
+                api_key: Some("test-secret-key".to_string().into()),
+                ..ProviderSpec::default()
+            };
+            build_genai_provider_executor(&spec).unwrap_or_else(|err| {
+                panic!("supported adapter `{name}` (with api_key) failed to build: {err:?}")
+            });
+        }
+    }
+
+    #[test]
+    fn build_genai_executor_with_base_url_override_for_every_supported_adapter() {
+        // Cover the third resolver path: base_url override (proxy / self-hosted).
+        // Use a syntactically valid URL — genai validates the form at build time.
+        for name in supported_adapters() {
+            let spec = ProviderSpec {
+                id: format!("test-{name}"),
+                adapter: name.to_string(),
+                base_url: Some("https://example.invalid/v1".to_string()),
+                ..ProviderSpec::default()
+            };
+            build_genai_provider_executor(&spec).unwrap_or_else(|err| {
+                panic!("supported adapter `{name}` (with base_url) failed to build: {err:?}")
+            });
+        }
+    }
+
+    #[test]
+    fn build_genai_executor_with_full_options_for_every_supported_adapter() {
+        // All resolver paths simultaneously: api_key + base_url + headers +
+        // an unknown forward-compat option key. Every adapter must accept the
+        // combination without breaking the builder chain.
+        for name in supported_adapters() {
+            let mut adapter_options = BTreeMap::new();
+            adapter_options.insert(
+                "headers".into(),
+                json!({ "X-Awaken-Trace": "regression-test" }),
+            );
+            adapter_options.insert("future_extension_key".into(), json!({ "ignored": true }));
+            let spec = ProviderSpec {
+                id: format!("test-{name}"),
+                adapter: name.to_string(),
+                api_key: Some("test-secret-key".to_string().into()),
+                base_url: Some("https://example.invalid/v1".to_string()),
+                timeout_secs: 60,
+                adapter_options,
+                ..ProviderSpec::default()
+            };
+            build_genai_provider_executor(&spec).unwrap_or_else(|err| {
+                panic!("supported adapter `{name}` (full options) failed to build: {err:?}")
+            });
+        }
+    }
+
+    #[test]
+    fn build_genai_executor_clamps_zero_timeout_for_every_supported_adapter() {
+        // Boundary: timeout_secs = 0 must be clamped to >=1 instead of producing
+        // a Duration that breaks the executor. Same protection for every adapter.
+        for name in supported_adapters() {
+            let spec = ProviderSpec {
+                id: format!("test-{name}"),
+                adapter: name.to_string(),
+                timeout_secs: 0,
+                ..ProviderSpec::default()
+            };
+            build_genai_provider_executor(&spec).unwrap_or_else(|err| {
+                panic!("supported adapter `{name}` (zero timeout) failed to build: {err:?}")
+            });
+        }
+    }
+
+    #[test]
+    fn parse_adapter_kind_is_case_insensitive_for_every_supported_adapter() {
+        // Every supported adapter must parse regardless of casing variations.
+        // Guards against silent regressions in the to_ascii_lowercase normalisation.
+        for name in supported_adapters() {
+            let upper = name.to_ascii_uppercase();
+            let mixed: String = name
+                .chars()
+                .enumerate()
+                .map(|(i, c)| {
+                    if i % 2 == 0 {
+                        c.to_ascii_uppercase()
+                    } else {
+                        c
+                    }
+                })
+                .collect();
+            for variant in [name.to_string(), upper, mixed, format!("  {name}  ")] {
+                parse_adapter_kind(&variant).unwrap_or_else(|err| {
+                    panic!("`{variant}` (canonical: {name}) failed to parse: {err:?}")
+                });
+            }
+        }
+    }
+
+    #[test]
+    fn supported_adapters_unique_no_duplicate_names() {
+        // Detect copy-paste mistakes in ADAPTER_CANDIDATES that would silently
+        // duplicate an entry in the admin UI dropdown.
+        let names: Vec<&'static str> = supported_adapters();
+        let mut seen = std::collections::HashSet::with_capacity(names.len());
+        for name in &names {
+            assert!(
+                seen.insert(*name),
+                "duplicate entry `{name}` in supported_adapters()"
+            );
+        }
+        // Sanity floor: PR opens with 19 known adapters, never expect to ship
+        // fewer (would mean we lost coverage of an upstream-supported adapter).
+        assert!(
+            names.len() >= 19,
+            "supported_adapters() shrank below floor of 19 (got {}): {names:?}",
+            names.len()
+        );
+    }
+
+    #[test]
+    fn vertex_anthropic_namespaces_parse_when_routed_through_adapter_string() {
+        // Vertex routes Gemini and Claude via the same adapter string; only
+        // genai's namespace routing inside `from_model` discriminates publishers.
+        // Ensure the adapter-name level still resolves to AdapterKind::Vertex
+        // regardless of which model the caller eventually sends.
+        let kind = parse_adapter_kind("vertex").expect("vertex must parse");
+        assert_eq!(kind, AdapterKind::Vertex);
+        // GitHub Copilot is the same shape: one adapter, multi-publisher routing.
+        let kind = parse_adapter_kind("github_copilot").expect("github_copilot must parse");
+        assert_eq!(kind, AdapterKind::GithubCopilot);
+        // Ollama Cloud must not collide with vanilla Ollama.
+        let cloud = parse_adapter_kind("ollama_cloud").expect("ollama_cloud must parse");
+        let local = parse_adapter_kind("ollama").expect("ollama must parse");
+        assert_ne!(
+            cloud, local,
+            "ollama_cloud and ollama must map to distinct kinds"
+        );
+        assert_eq!(cloud, AdapterKind::OllamaCloud);
+        assert_eq!(local, AdapterKind::Ollama);
+    }
+
+    #[test]
     fn parse_adapter_kind_accepts_legacy_aliases() {
         assert_eq!(
             parse_adapter_kind("openai-resp").unwrap(),
