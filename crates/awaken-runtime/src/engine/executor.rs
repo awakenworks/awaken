@@ -242,19 +242,45 @@ impl GenaiExecutor {
         match e {
             genai::Error::HttpError { status, .. } => Some((*status, None, None)),
             genai::Error::WebAdapterCall { webc_error, .. }
-            | genai::Error::WebModelCall { webc_error, .. } => match webc_error {
-                genai::webc::Error::ResponseFailedStatus {
-                    status,
-                    body,
-                    headers,
-                } => {
-                    let retry = parse_retry_after(headers);
-                    Some((*status, Some(body.clone()), retry))
+            | genai::Error::WebModelCall { webc_error, .. } => parts_from_webc(webc_error),
+            // Streaming errors carry the structured cause inside a BoxError.
+            // Without this arm, mid-stream 4xx (e.g. Vertex `403 BILLING_DISABLED`,
+            // OpenAI `401 Unauthorized`) would fall through to string matching,
+            // get mis-classified as a transient `Provider` error, and be retried
+            // pointlessly before surfacing as an opaque "stream interrupted".
+            //
+            // Both `genai::Error::HttpError` and `genai::webc::Error` may be
+            // wrapped in the BoxError depending on which layer raised the fault,
+            // so we attempt both downcasts.
+            genai::Error::WebStream { error, .. } => {
+                if let Some(genai::Error::HttpError { status, body, .. }) =
+                    error.downcast_ref::<genai::Error>()
+                {
+                    return Some((*status, Some(body.clone()), None));
                 }
-                _ => None,
-            },
+                if let Some(webc_err) = error.downcast_ref::<genai::webc::Error>() {
+                    return parts_from_webc(webc_err);
+                }
+                None
+            }
             _ => None,
         }
+    }
+}
+
+fn parts_from_webc(
+    webc_error: &genai::webc::Error,
+) -> Option<(StatusCode, Option<String>, Option<Duration>)> {
+    match webc_error {
+        genai::webc::Error::ResponseFailedStatus {
+            status,
+            body,
+            headers,
+        } => {
+            let retry = parse_retry_after(headers);
+            Some((*status, Some(body.clone()), retry))
+        }
+        _ => None,
     }
 }
 
@@ -1236,6 +1262,204 @@ mod tests {
         assert!(
             matches!(mapped, InferenceExecutionError::Provider(_)),
             "expected Provider, got {mapped:?}"
+        );
+    }
+
+    // -- WebStream tests (mid-stream HTTP errors) --
+    //
+    // Regression coverage for the bug discovered via real Vertex AI testing:
+    // genai surfaced a `403 BILLING_DISABLED` as `WebStream { error: BoxError }`
+    // where the BoxError wrapped `genai::Error::HttpError`. Without WebStream
+    // handling in `extract_structured_parts`, the 4xx fell through to string
+    // matching, was mis-classified as transient `Provider`, retried 2×, and
+    // finally surfaced to the user as the misleading "stream interrupted".
+    //
+    // Each variant we route through must land on the correct
+    // `InferenceExecutionError` so the retry policy and surfaced error are
+    // both correct.
+
+    fn make_webstream_with_http_error(status: StatusCode, body: &str) -> genai::Error {
+        use genai::ModelIden;
+        use genai::adapter::AdapterKind;
+
+        genai::Error::WebStream {
+            model_iden: ModelIden::new(AdapterKind::Vertex, "vertex::gemini-2.5-flash"),
+            cause: format!("HTTP error.\nStatus: {status} ...\nBody: {body}"),
+            error: Box::new(genai::Error::HttpError {
+                status,
+                canonical_reason: status.canonical_reason().unwrap_or("Unknown").into(),
+                body: body.into(),
+            }),
+        }
+    }
+
+    fn make_webstream_with_webc_status(
+        status: StatusCode,
+        body: &str,
+        retry_after_secs: Option<u64>,
+    ) -> genai::Error {
+        use genai::ModelIden;
+        use genai::adapter::AdapterKind;
+
+        let mut headers = reqwest::header::HeaderMap::new();
+        if let Some(secs) = retry_after_secs {
+            headers.insert(
+                reqwest::header::RETRY_AFTER,
+                reqwest::header::HeaderValue::from_str(&secs.to_string()).unwrap(),
+            );
+        }
+        genai::Error::WebStream {
+            model_iden: ModelIden::new(AdapterKind::OpenAI, "gpt-4o-mini"),
+            cause: format!("HTTP error.\nStatus: {status}"),
+            error: Box::new(genai::webc::Error::ResponseFailedStatus {
+                status,
+                body: body.into(),
+                headers: Box::new(headers),
+            }),
+        }
+    }
+
+    #[test]
+    fn map_error_webstream_403_unauthorized_no_retry() {
+        // The exact case from real Vertex AI: 403 BILLING_DISABLED mid-stream.
+        let body = r#"{"error":{"code":403,"message":"This API method requires billing","status":"PERMISSION_DENIED","details":[{"@type":"type.googleapis.com/google.rpc.ErrorInfo","reason":"BILLING_DISABLED"}]}}"#;
+        let err = make_webstream_with_http_error(StatusCode::FORBIDDEN, body);
+        let mapped = GenaiExecutor::map_error(err);
+        assert!(
+            matches!(mapped, InferenceExecutionError::Unauthorized(_)),
+            "expected Unauthorized, got {mapped:?}"
+        );
+        assert!(
+            !mapped.is_retryable(),
+            "Unauthorized must not be retried — mid-stream 4xx is permanent"
+        );
+        // The full upstream body must reach the user, including the actionable
+        // hint (BILLING_DISABLED → enable billing). Otherwise the operator gets
+        // a useless "stream interrupted".
+        let display = mapped.to_string();
+        assert!(
+            display.contains("BILLING_DISABLED") || display.contains("billing"),
+            "Unauthorized message must echo upstream body, got: {display}"
+        );
+    }
+
+    #[test]
+    fn map_error_webstream_401_unauthorized_no_retry() {
+        // OpenAI-shape 401: bad/missing API key surfaced mid-stream.
+        let err = make_webstream_with_http_error(
+            StatusCode::UNAUTHORIZED,
+            r#"{"error":{"message":"Invalid API key","type":"invalid_request_error"}}"#,
+        );
+        let mapped = GenaiExecutor::map_error(err);
+        assert!(
+            matches!(mapped, InferenceExecutionError::Unauthorized(_)),
+            "expected Unauthorized, got {mapped:?}"
+        );
+        assert!(!mapped.is_retryable());
+    }
+
+    #[test]
+    fn map_error_webstream_404_model_not_found_no_retry() {
+        // Wrong model id — mid-stream 404 should propagate as ModelNotFound,
+        // not get caught in the retry loop.
+        let err = make_webstream_with_http_error(
+            StatusCode::NOT_FOUND,
+            r#"{"error":{"message":"model not found"}}"#,
+        );
+        let mapped = GenaiExecutor::map_error(err);
+        assert!(
+            matches!(mapped, InferenceExecutionError::ModelNotFound(_)),
+            "expected ModelNotFound, got {mapped:?}"
+        );
+        assert!(!mapped.is_retryable());
+    }
+
+    #[test]
+    fn map_error_webstream_429_rate_limited_with_retry_after() {
+        // The webc::Error path also carries headers — Retry-After must propagate.
+        let err = make_webstream_with_webc_status(
+            StatusCode::TOO_MANY_REQUESTS,
+            r#"{"error":"rate limited"}"#,
+            Some(42),
+        );
+        let mapped = GenaiExecutor::map_error(err);
+        let retry_after = match &mapped {
+            InferenceExecutionError::RateLimited { retry_after, .. } => *retry_after,
+            other => panic!("expected RateLimited, got {other:?}"),
+        };
+        assert_eq!(
+            retry_after,
+            Some(Duration::from_secs(42)),
+            "Retry-After header should round-trip from webc::Error path"
+        );
+        assert!(mapped.is_retryable(), "RateLimited remains retryable");
+    }
+
+    #[test]
+    fn map_error_webstream_500_provider_retryable() {
+        // 5xx mid-stream is a genuine transient — must remain retryable.
+        let err = make_webstream_with_http_error(StatusCode::INTERNAL_SERVER_ERROR, "{}");
+        let mapped = GenaiExecutor::map_error(err);
+        assert!(
+            matches!(mapped, InferenceExecutionError::Provider(_)),
+            "expected Provider for 500, got {mapped:?}"
+        );
+        assert!(mapped.is_retryable());
+    }
+
+    #[test]
+    fn map_error_webstream_503_overloaded() {
+        let err =
+            make_webstream_with_http_error(StatusCode::SERVICE_UNAVAILABLE, "service unavailable");
+        let mapped = GenaiExecutor::map_error(err);
+        assert!(
+            matches!(mapped, InferenceExecutionError::Overloaded { .. }),
+            "expected Overloaded for 503, got {mapped:?}"
+        );
+    }
+
+    #[test]
+    fn map_error_webstream_400_context_overflow_when_body_signals_it() {
+        let err = make_webstream_with_http_error(
+            StatusCode::BAD_REQUEST,
+            "context_length_exceeded: prompt is too long",
+        );
+        let mapped = GenaiExecutor::map_error(err);
+        assert!(
+            matches!(mapped, InferenceExecutionError::ContextOverflow(_)),
+            "expected ContextOverflow, got {mapped:?}"
+        );
+        assert!(!mapped.is_retryable(), "ContextOverflow is permanent");
+    }
+
+    #[test]
+    fn map_error_webstream_with_unrelated_box_error_falls_through() {
+        // BoxError that we cannot downcast to genai::Error or webc::Error
+        // should fall back to string matching gracefully (not panic, not
+        // mis-classify).
+        use genai::ModelIden;
+        use genai::adapter::AdapterKind;
+
+        #[derive(Debug)]
+        struct OpaqueErr;
+        impl std::fmt::Display for OpaqueErr {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                write!(f, "opaque transport failure")
+            }
+        }
+        impl std::error::Error for OpaqueErr {}
+
+        let err = genai::Error::WebStream {
+            model_iden: ModelIden::new(AdapterKind::Anthropic, "claude-test"),
+            cause: "unknown transport thing".into(),
+            error: Box::new(OpaqueErr),
+        };
+        let mapped = GenaiExecutor::map_error(err);
+        // No structured parts, no matching keyword → falls through to Provider
+        // (current contract). The important thing is no panic / wrong variant.
+        assert!(
+            matches!(mapped, InferenceExecutionError::Provider(_)),
+            "expected Provider fallback, got {mapped:?}"
         );
     }
 }
