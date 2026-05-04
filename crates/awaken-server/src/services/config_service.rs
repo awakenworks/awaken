@@ -630,7 +630,7 @@ impl<'a> ConfigService<'a> {
                 let refs = models
                     .into_iter()
                     .filter(|(_, value)| {
-                        spec_field(&value, "provider_id")
+                        spec_field(value, "provider_id")
                             .and_then(Value::as_str)
                             .is_some_and(|pid| pid == id)
                     })
@@ -646,7 +646,7 @@ impl<'a> ConfigService<'a> {
                 let refs = agents
                     .into_iter()
                     .filter(|(_, value)| {
-                        spec_field(&value, "model_id")
+                        spec_field(value, "model_id")
                             .and_then(Value::as_str)
                             .is_some_and(|mid| mid == id)
                     })
@@ -2005,6 +2005,121 @@ mod tests {
             )
             .await
             .expect("force delete should succeed");
+    }
+
+    struct FailingProviderFactory;
+
+    impl ProviderExecutorFactory for FailingProviderFactory {
+        fn build(
+            &self,
+            _spec: &ProviderSpec,
+        ) -> Result<Arc<dyn LlmExecutor>, crate::services::config_runtime::ConfigRuntimeError>
+        {
+            Err(
+                crate::services::config_runtime::ConfigRuntimeError::InvalidConfig(
+                    "forced failure for rollback test".into(),
+                ),
+            )
+        }
+    }
+
+    #[tokio::test]
+    async fn delete_rollback_re_emits_envelope() {
+        // Step 1: build a manager with the succeeding TestProviderFactory and PUT a provider.
+        let config_store: Arc<dyn awaken_contract::contract::config_store::ConfigStore> =
+            Arc::new(awaken_stores::InMemoryStore::new());
+        let (state, _manager) = build_state(config_store.clone()).await;
+        let service = ConfigService::new(&state).expect("config service");
+
+        service
+            .create(
+                ConfigNamespace::Providers,
+                json!({ "id": "rollback-prov", "adapter": "stub" }),
+                &axum::http::HeaderMap::new(),
+            )
+            .await
+            .expect("create rollback-prov");
+
+        // Step 2: verify the stored record is already an envelope (precondition).
+        let stored_before = ConfigStore::get(config_store.as_ref(), "providers", "rollback-prov")
+            .await
+            .expect("read before delete")
+            .expect("provider must exist");
+        assert!(
+            stored_before.get("spec").is_some(),
+            "stored record must be envelope-shaped before delete (has 'spec' key)"
+        );
+
+        // Step 3: build a second manager over the same store, with FailingProviderFactory.
+        let thread_store = Arc::new(awaken_stores::InMemoryStore::new());
+        let runtime_failing = Arc::new(
+            AgentRuntimeBuilder::new()
+                .with_provider("bootstrap", Arc::new(ImmediateExecutor))
+                .with_thread_run_store(thread_store.clone())
+                .build()
+                .expect("build runtime"),
+        );
+        let manager_failing = Arc::new(
+            crate::services::config_runtime::ConfigRuntimeManager::new(
+                runtime_failing.clone(),
+                config_store.clone(),
+            )
+            .expect("config runtime manager")
+            .with_provider_factory(Arc::new(FailingProviderFactory)),
+        );
+
+        let mailbox_failing = Arc::new(crate::mailbox::Mailbox::new(
+            runtime_failing.clone(),
+            Arc::new(awaken_stores::InMemoryMailboxStore::new()),
+            thread_store.clone(),
+            "rollback-test".into(),
+            crate::mailbox::MailboxConfig::default(),
+        ));
+        let state_failing = crate::app::AppState::new(
+            runtime_failing.clone(),
+            mailbox_failing,
+            thread_store,
+            runtime_failing.resolver_arc(),
+            crate::app::ServerConfig::default(),
+        )
+        .with_config_store(config_store.clone())
+        .with_config_runtime_manager(manager_failing);
+
+        // Step 4: attempt DELETE via the failing service — apply_locked will fail.
+        let service_failing = ConfigService::new(&state_failing).expect("failing config service");
+        let delete_result = service_failing
+            .delete(
+                ConfigNamespace::Providers,
+                "rollback-prov",
+                true,
+                &axum::http::HeaderMap::new(),
+            )
+            .await;
+
+        assert!(
+            delete_result.is_err(),
+            "delete must fail when apply_locked fails"
+        );
+
+        // Step 5: assert the store still has the provider AND it is envelope-shaped.
+        let stored_after = ConfigStore::get(config_store.as_ref(), "providers", "rollback-prov")
+            .await
+            .expect("read after delete")
+            .expect("provider must have been rolled back");
+
+        assert!(
+            stored_after.get("spec").is_some(),
+            "rolled-back record must be envelope-shaped (has 'spec' key)"
+        );
+        assert!(
+            stored_after.get("meta").is_some(),
+            "rolled-back record must be envelope-shaped (has 'meta' key)"
+        );
+        assert_eq!(
+            stored_after["spec"]["id"],
+            Value::String("rollback-prov".into()),
+            "rolled-back spec must preserve the original provider id"
+        );
     }
 
     // ── ConfigNamespace::all() / iter_str() tests ─────────────────────────

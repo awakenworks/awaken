@@ -357,6 +357,8 @@ fn push_continuation(request: &mut InferenceRequest, assistant_prefix: String) {
 /// Drive a single `execute_stream` call to completion, returning one of
 /// three outcomes. The mid-stream error-to-`InterruptCause` classification
 /// lives here.
+// internal stream-driving helper; argument grouping into a struct would add wrapper noise without reducing call complexity
+#[allow(clippy::too_many_arguments)]
 async fn drive_one_stream(
     agent: &ResolvedAgent,
     request: InferenceRequest,
@@ -2194,27 +2196,29 @@ mod tests {
         // The executor was called exactly once, with a request whose
         // messages end in `assistant("half-written answer")` +
         // `user(<continuation prompt>)` — the R1 restore pattern.
-        let reqs = captured.lock().unwrap();
-        assert_eq!(reqs.len(), 1);
-        let last_two: Vec<_> = reqs[0]
-            .messages
-            .iter()
-            .rev()
-            .take(2)
-            .rev()
-            .cloned()
-            .collect();
-        assert_eq!(last_two.len(), 2);
-        assert_eq!(
-            last_two[0].text(),
-            "half-written answer",
-            "assistant prefix must carry saved partial text"
-        );
-        assert!(
-            last_two[1].text().contains("interrupted mid-stream"),
-            "user continuation prompt must follow the prefix, got: {}",
-            last_two[1].text()
-        );
+        {
+            let reqs = captured.lock().unwrap();
+            assert_eq!(reqs.len(), 1);
+            let last_two: Vec<_> = reqs[0]
+                .messages
+                .iter()
+                .rev()
+                .take(2)
+                .rev()
+                .cloned()
+                .collect();
+            assert_eq!(last_two.len(), 2);
+            assert_eq!(
+                last_two[0].text(),
+                "half-written answer",
+                "assistant prefix must carry saved partial text"
+            );
+            assert!(
+                last_two[1].text().contains("interrupted mid-stream"),
+                "user continuation prompt must follow the prefix, got: {}",
+                last_two[1].text()
+            );
+        } // drop MutexGuard before the await below
 
         // The fresh attempt's output wins: the text is whatever the
         // resumed attempt produced.

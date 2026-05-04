@@ -458,15 +458,24 @@ impl AppState {
     /// If `audit_log_enabled` is `false` or no config store is attached, this
     /// is a no-op.  Also spawns the background retention sweeper task.
     #[must_use]
-    pub fn with_audit_log_from_config(self) -> Self {
+    pub fn with_audit_log_from_config(mut self) -> Self {
         let admin_config = admin_api_config(&self);
         if !admin_config.audit_log_enabled {
             return self;
         }
-        let Some(store) = self.config_store.clone() else {
-            return self;
+
+        let logger = match &self.audit_log {
+            Some(existing) => existing.clone(),
+            None => {
+                let Some(store) = self.config_store.clone() else {
+                    return self;
+                };
+                let new_logger = Arc::new(AuditLogger::new(store));
+                self.audit_log = Some(new_logger.clone());
+                new_logger
+            }
         };
-        let logger = Arc::new(AuditLogger::new(store));
+
         let logger_for_sweeper = logger.clone();
         let retention_days = admin_config.audit_retention_days;
         let sweep_interval = effective_sweep_interval(admin_config.audit_sweep_interval_secs);
@@ -488,7 +497,7 @@ impl AppState {
                 }
             }
         });
-        self.with_audit_log(logger)
+        self
     }
 
     /// Insert a replay buffer for the given key, tracking creation time.
@@ -989,5 +998,61 @@ mod tests {
         // Values 1–9 should warn but still be used as-is.
         let duration = effective_sweep_interval(5);
         assert_eq!(duration, std::time::Duration::from_secs(5));
+    }
+
+    // ── with_audit_log_from_config reuses pre-set logger ───────────────────
+
+    #[tokio::test]
+    async fn with_audit_log_from_config_reuses_preset_logger() {
+        use crate::mailbox::{Mailbox, MailboxConfig};
+        use awaken_contract::contract::config_store::ConfigStore;
+        use awaken_runtime::AgentRuntime;
+        use awaken_stores::{InMemoryMailboxStore, InMemoryStore};
+
+        struct StubResolver;
+        impl awaken_runtime::AgentResolver for StubResolver {
+            fn resolve(
+                &self,
+                agent_id: &str,
+            ) -> Result<awaken_runtime::ResolvedAgent, awaken_runtime::RuntimeError> {
+                Err(awaken_runtime::RuntimeError::AgentNotFound {
+                    agent_id: agent_id.to_string(),
+                })
+            }
+        }
+
+        let runtime = Arc::new(AgentRuntime::new(Arc::new(StubResolver)));
+        let store = Arc::new(InMemoryStore::new());
+        let mailbox_store = Arc::new(InMemoryMailboxStore::new());
+        let mailbox = Arc::new(Mailbox::new(
+            runtime.clone(),
+            mailbox_store,
+            store.clone(),
+            "test".to_string(),
+            MailboxConfig::default(),
+        ));
+
+        let preset_logger = Arc::new(AuditLogger::new(store.clone() as Arc<dyn ConfigStore>));
+        let preset_ptr = Arc::as_ptr(&preset_logger);
+
+        let state = AppState::new(
+            runtime,
+            mailbox,
+            store.clone() as Arc<dyn awaken_contract::contract::storage::ThreadRunStore>,
+            Arc::new(StubResolver),
+            ServerConfig::default(),
+        )
+        .with_config_store(store as Arc<dyn ConfigStore>)
+        .with_audit_log(preset_logger)
+        .with_audit_log_from_config();
+
+        let stored = state
+            .audit_log
+            .expect("audit_log must be Some after with_audit_log_from_config");
+        assert_eq!(
+            Arc::as_ptr(&stored),
+            preset_ptr,
+            "with_audit_log_from_config must reuse the pre-set AuditLogger instance"
+        );
     }
 }

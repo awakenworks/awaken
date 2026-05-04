@@ -183,10 +183,11 @@ impl RuntimeStatsRegistry {
         let buckets = match window {
             None => return Some(self.snapshot_from_buckets(agent_id, &agent.buckets)),
             Some(d) => {
-                let n = ((d.as_nanos() + self.bucket_window.as_nanos() - 1)
-                    / self.bucket_window.as_nanos())
-                .max(1)
-                .min(self.bucket_count as u128) as usize;
+                let n = d
+                    .as_nanos()
+                    .div_ceil(self.bucket_window.as_nanos())
+                    .max(1)
+                    .min(self.bucket_count as u128) as usize;
                 let skip = agent.buckets.len().saturating_sub(n);
                 let slice: VecDeque<_> = agent.buckets.iter().skip(skip).cloned().collect();
                 slice
@@ -205,10 +206,11 @@ impl RuntimeStatsRegistry {
     ) -> AgentRuntimeSnapshot {
         let mut snap = self.snapshot_from_buckets(agent_id, buckets);
         if let Some(d) = window {
-            let n = ((d.as_nanos() + self.bucket_window.as_nanos() - 1)
-                / self.bucket_window.as_nanos())
-            .max(1)
-            .min(self.bucket_count as u128) as usize;
+            let n = d
+                .as_nanos()
+                .div_ceil(self.bucket_window.as_nanos())
+                .max(1)
+                .min(self.bucket_count as u128) as usize;
             snap.window_seconds = (self.bucket_window * n as u32).as_secs();
         }
         snap
