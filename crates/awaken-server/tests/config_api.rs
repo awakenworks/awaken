@@ -15,7 +15,9 @@ use awaken_contract::contract::storage::StorageError;
 use awaken_contract::contract::tool::{
     Tool, ToolCallContext, ToolDescriptor, ToolError, ToolOutput, ToolResult,
 };
-use awaken_contract::{AgentSpec, McpServerSpec, ModelBindingSpec, ProviderSpec};
+use awaken_contract::{
+    AgentSpec, BuiltinSeedSet, BuiltinSpec, McpServerSpec, ModelBindingSpec, ProviderSpec,
+};
 #[cfg(feature = "permission")]
 use awaken_ext_permission::{PermissionConfigKey, PermissionPlugin, ToolPermissionBehavior};
 use awaken_runtime::AgentRuntime;
@@ -26,7 +28,6 @@ use awaken_runtime::context::CompactionConfigKey;
 use awaken_runtime::engine::RetryConfigKey;
 use awaken_runtime::registry::ToolRegistry;
 use awaken_runtime::registry::memory::MapToolRegistry;
-use awaken_runtime::registry::traits::ModelBinding;
 use awaken_server::app::{
     AdminApiConfig, AppState, ServerConfig, SkillCatalogArgument, SkillCatalogContext,
     SkillCatalogEntry, SkillCatalogProvider,
@@ -549,30 +550,9 @@ async fn make_runtime_manager_custom(
     Arc<ConfigRuntimeManager>,
 ) {
     let store = Arc::new(InMemoryStore::new());
-    let bootstrap_provider = ProviderSpec {
-        id: "bootstrap".into(),
-        adapter: "stub".into(),
-        ..Default::default()
-    };
-    let bootstrap_model = ModelBindingSpec {
-        id: "bootstrap".into(),
-        provider_id: "bootstrap".into(),
-        upstream_model: "bootstrap-model".into(),
-        created_at: None,
-        updated_at: None,
-    };
-    let bootstrap_agent = agent_spec("bootstrap", "bootstrap");
 
     let builder = AgentRuntimeBuilder::new()
         .with_provider("bootstrap", Arc::new(ImmediateExecutor))
-        .with_model_binding(
-            "bootstrap",
-            ModelBinding {
-                provider_id: "bootstrap".into(),
-                upstream_model: "bootstrap-model".into(),
-            },
-        )
-        .with_agent_spec(bootstrap_agent.clone())
         .with_thread_run_store(store.clone());
     #[cfg(feature = "permission")]
     let builder = if register_permission_plugin {
@@ -597,15 +577,25 @@ async fn make_runtime_manager_custom(
         manager = manager.with_mcp_refresh_interval(interval);
     }
     let manager = Arc::new(manager);
-    manager
-        .bootstrap_if_empty(
-            std::slice::from_ref(&bootstrap_provider),
-            std::slice::from_ref(&bootstrap_model),
-            std::slice::from_ref(&bootstrap_agent),
-            &[],
-        )
-        .await
-        .expect("bootstrap config store");
+    let seed = BuiltinSeedSet {
+        binary_version: "test".to_string(),
+        specs: vec![
+            BuiltinSpec::provider(ProviderSpec {
+                id: "bootstrap".into(),
+                adapter: "stub".into(),
+                ..Default::default()
+            }),
+            BuiltinSpec::model(ModelBindingSpec {
+                id: "bootstrap".into(),
+                provider_id: "bootstrap".into(),
+                upstream_model: "bootstrap-model".into(),
+                created_at: None,
+                updated_at: None,
+            }),
+            BuiltinSpec::agent(agent_spec("bootstrap", "bootstrap")),
+        ],
+    };
+    manager.apply_seed(&seed).await.expect("apply_seed");
     manager.apply().await.expect("publish config snapshot");
 
     (runtime, store, manager)
@@ -1772,31 +1762,10 @@ async fn change_listener_coalesces_event_bursts_within_min_apply_interval() {
     let factory = Arc::new(CountingProviderFactory::default());
     let notifier = Arc::new(TestConfigChangeNotifier::new());
     let store = Arc::new(InMemoryStore::new());
-    let bootstrap_provider = ProviderSpec {
-        id: "bootstrap".into(),
-        adapter: "stub".into(),
-        ..Default::default()
-    };
-    let bootstrap_model = ModelBindingSpec {
-        id: "bootstrap".into(),
-        provider_id: "bootstrap".into(),
-        upstream_model: "bootstrap-model".into(),
-        created_at: None,
-        updated_at: None,
-    };
-    let bootstrap_agent = agent_spec("bootstrap", "bootstrap");
 
     let runtime = Arc::new(
         AgentRuntimeBuilder::new()
             .with_provider("bootstrap", Arc::new(ImmediateExecutor))
-            .with_model_binding(
-                "bootstrap",
-                ModelBinding {
-                    provider_id: "bootstrap".into(),
-                    upstream_model: "bootstrap-model".into(),
-                },
-            )
-            .with_agent_spec(bootstrap_agent.clone())
             .with_thread_run_store(store.clone())
             .build()
             .expect("build runtime"),
@@ -1810,15 +1779,25 @@ async fn change_listener_coalesces_event_bursts_within_min_apply_interval() {
             .with_change_notifier(notifier.clone() as Arc<dyn ConfigChangeNotifier>)
             .with_min_apply_interval(Duration::from_millis(200)),
     );
-    manager
-        .bootstrap_if_empty(
-            std::slice::from_ref(&bootstrap_provider),
-            std::slice::from_ref(&bootstrap_model),
-            std::slice::from_ref(&bootstrap_agent),
-            &[],
-        )
-        .await
-        .expect("bootstrap config store");
+    let seed = BuiltinSeedSet {
+        binary_version: "test".to_string(),
+        specs: vec![
+            BuiltinSpec::provider(ProviderSpec {
+                id: "bootstrap".into(),
+                adapter: "stub".into(),
+                ..Default::default()
+            }),
+            BuiltinSpec::model(ModelBindingSpec {
+                id: "bootstrap".into(),
+                provider_id: "bootstrap".into(),
+                upstream_model: "bootstrap-model".into(),
+                created_at: None,
+                updated_at: None,
+            }),
+            BuiltinSpec::agent(agent_spec("bootstrap", "bootstrap")),
+        ],
+    };
+    manager.apply_seed(&seed).await.expect("apply_seed");
     manager.apply().await.expect("initial apply");
     manager
         .start_periodic_refresh(Duration::from_secs(60))

@@ -11,6 +11,7 @@ pub enum AuditAction {
     Restart,
     Publish,
     Restore,
+    SeedApply,
 }
 
 /// A self-contained audit record for a single admin action.
@@ -119,6 +120,10 @@ mod tests {
             serde_json::to_value(AuditAction::Restore).unwrap(),
             json!("restore")
         );
+        assert_eq!(
+            serde_json::to_value(AuditAction::SeedApply).unwrap(),
+            json!("seed_apply")
+        );
     }
 
     #[test]
@@ -130,6 +135,7 @@ mod tests {
             ("restart", AuditAction::Restart),
             ("publish", AuditAction::Publish),
             ("restore", AuditAction::Restore),
+            ("seed_apply", AuditAction::SeedApply),
         ] {
             let parsed: AuditAction = serde_json::from_str(&format!("\"{s}\"")).unwrap();
             assert_eq!(parsed, expected);

@@ -5,9 +5,8 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use awaken_contract::contract::executor::{InferenceExecutionError, InferenceRequest, LlmExecutor};
 use awaken_contract::contract::inference::{StopReason, StreamResult, TokenUsage};
-use awaken_contract::{AgentSpec, ModelBindingSpec, ProviderSpec};
+use awaken_contract::{AgentSpec, BuiltinSeedSet, BuiltinSpec, ModelBindingSpec, ProviderSpec};
 use awaken_runtime::builder::AgentRuntimeBuilder;
-use awaken_runtime::registry::traits::ModelBinding;
 use awaken_server::app::{AppState, ServerConfig};
 use awaken_server::mailbox::{Mailbox, MailboxConfig};
 use awaken_server::routes::build_router;
@@ -73,14 +72,6 @@ async fn build_test_app() -> axum::Router {
     let runtime = Arc::new(
         AgentRuntimeBuilder::new()
             .with_provider("bootstrap", Arc::new(ImmediateExecutor))
-            .with_model_binding(
-                "bootstrap",
-                ModelBinding {
-                    provider_id: "bootstrap".into(),
-                    upstream_model: "bootstrap-model".into(),
-                },
-            )
-            .with_agent_spec(bootstrap_agent())
             .with_thread_run_store(thread_store.clone())
             .build()
             .expect("build runtime"),
@@ -91,25 +82,25 @@ async fn build_test_app() -> axum::Router {
             .expect("config runtime manager")
             .with_provider_factory(Arc::new(TestProviderFactory)),
     );
-    manager
-        .bootstrap_if_empty(
-            &[ProviderSpec {
+    let seed = BuiltinSeedSet {
+        binary_version: "test".to_string(),
+        specs: vec![
+            BuiltinSpec::provider(ProviderSpec {
                 id: "bootstrap".into(),
                 adapter: "stub".into(),
                 ..Default::default()
-            }],
-            &[ModelBindingSpec {
+            }),
+            BuiltinSpec::model(ModelBindingSpec {
                 id: "bootstrap".into(),
                 provider_id: "bootstrap".into(),
                 upstream_model: "bootstrap-model".into(),
                 created_at: None,
                 updated_at: None,
-            }],
-            &[bootstrap_agent()],
-            &[],
-        )
-        .await
-        .expect("bootstrap");
+            }),
+            BuiltinSpec::agent(bootstrap_agent()),
+        ],
+    };
+    manager.apply_seed(&seed).await.expect("apply_seed");
     manager.apply().await.expect("apply");
 
     let audit_logger = Arc::new(AuditLogger::new(config_store.clone()));
@@ -337,14 +328,6 @@ async fn restore_restart_event_returns_422() {
     let runtime = Arc::new(
         AgentRuntimeBuilder::new()
             .with_provider("bootstrap", Arc::new(ImmediateExecutor))
-            .with_model_binding(
-                "bootstrap",
-                ModelBinding {
-                    provider_id: "bootstrap".into(),
-                    upstream_model: "bootstrap-model".into(),
-                },
-            )
-            .with_agent_spec(bootstrap_agent())
             .with_thread_run_store(thread_store.clone())
             .build()
             .expect("build runtime"),
@@ -354,25 +337,25 @@ async fn restore_restart_event_returns_422() {
             .expect("manager")
             .with_provider_factory(Arc::new(TestProviderFactory)),
     );
-    manager
-        .bootstrap_if_empty(
-            &[ProviderSpec {
+    let seed = BuiltinSeedSet {
+        binary_version: "test".to_string(),
+        specs: vec![
+            BuiltinSpec::provider(ProviderSpec {
                 id: "bootstrap".into(),
                 adapter: "stub".into(),
                 ..Default::default()
-            }],
-            &[ModelBindingSpec {
+            }),
+            BuiltinSpec::model(ModelBindingSpec {
                 id: "bootstrap".into(),
                 provider_id: "bootstrap".into(),
                 upstream_model: "bootstrap-model".into(),
                 created_at: None,
                 updated_at: None,
-            }],
-            &[bootstrap_agent()],
-            &[],
-        )
-        .await
-        .expect("bootstrap");
+            }),
+            BuiltinSpec::agent(bootstrap_agent()),
+        ],
+    };
+    manager.apply_seed(&seed).await.expect("apply_seed");
     manager.apply().await.expect("apply");
 
     // Write a Restart event directly into the audit store.

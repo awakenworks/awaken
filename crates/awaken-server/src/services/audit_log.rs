@@ -192,6 +192,74 @@ impl AuditLogger {
         metrics::counter!("awaken_audit_events_total", "action" => "restore").increment(1);
     }
 
+    /// Emit one audit event per non-empty bucket of a seed-apply report.
+    ///
+    /// Boot-time emission has no HeaderMap; actor is recorded as "system:seed".
+    /// Best-effort — same failure semantics as [`AuditLogger::emit`].
+    ///
+    /// Skips entirely if the report has no created/updated/deleted entries
+    /// (idempotent re-runs produce no audit noise).
+    pub async fn emit_seed_report(&self, report: &crate::services::builtin_seed::SeedReport) {
+        use awaken_contract::AuditAction;
+        let buckets: [(&str, &[crate::services::builtin_seed::RecordRef]); 3] = [
+            ("created", &report.created),
+            ("updated", &report.updated),
+            ("deleted", &report.deleted),
+        ];
+        let mut ulid_gen = ulid::Generator::new();
+        for (label, entries) in buckets {
+            if entries.is_empty() {
+                continue;
+            }
+            let id = ulid_gen
+                .generate()
+                .unwrap_or_else(|_| ulid::Ulid::new())
+                .to_string();
+            let ts = Utc::now().to_rfc3339();
+            let after_payload = serde_json::json!({
+                "bucket": label,
+                "count": entries.len(),
+                // Cap the sample list so very large seeds don't bloat the audit log.
+                "sample": entries
+                    .iter()
+                    .take(20)
+                    .map(|r| format!("{}/{}", r.namespace, r.id))
+                    .collect::<Vec<_>>(),
+                "truncated": entries.len() > 20,
+            });
+
+            let event = AuditEvent {
+                id: id.clone(),
+                ts,
+                actor: "system:seed".to_string(),
+                action: AuditAction::SeedApply,
+                resource: format!("seed:{label}"),
+                before: None,
+                after: Some(after_payload),
+                ip: None,
+                request_id: None,
+                restored_from: None,
+            };
+
+            let value = match serde_json::to_value(&event) {
+                Ok(v) => v,
+                Err(error) => {
+                    tracing::warn!(error = %error, "audit: failed to serialize seed event");
+                    metrics::counter!("awaken_audit_write_failures_total").increment(1);
+                    continue;
+                }
+            };
+
+            if let Err(error) = self.store.put(AUDIT_NAMESPACE, &id, &value).await {
+                tracing::warn!(error = %error, "audit: failed to write seed event");
+                metrics::counter!("awaken_audit_write_failures_total").increment(1);
+                continue;
+            }
+
+            metrics::counter!("awaken_audit_events_total", "action" => "seed_apply").increment(1);
+        }
+    }
+
     /// Query audit events with optional filters and keyset pagination.
     ///
     /// Returns `Err` if `filter.cursor` is present but not valid base64.
@@ -729,6 +797,93 @@ mod tests {
             .unwrap();
         assert_eq!(page2.items.len(), 2);
         assert!(page2.next_cursor.is_none());
+    }
+
+    // ── emit_seed_report ─────────────────────────────────────────────────
+
+    fn make_record_ref(namespace: &str, id: &str) -> crate::services::builtin_seed::RecordRef {
+        crate::services::builtin_seed::RecordRef {
+            namespace: namespace.to_string(),
+            id: id.to_string(),
+        }
+    }
+
+    fn make_seed_report(
+        created: Vec<crate::services::builtin_seed::RecordRef>,
+        updated: Vec<crate::services::builtin_seed::RecordRef>,
+        deleted: Vec<crate::services::builtin_seed::RecordRef>,
+    ) -> crate::services::builtin_seed::SeedReport {
+        crate::services::builtin_seed::SeedReport {
+            created,
+            updated,
+            unchanged: vec![],
+            deleted,
+            preserved_user: vec![],
+        }
+    }
+
+    #[tokio::test]
+    async fn seed_apply_emits_event_per_non_empty_bucket() {
+        let logger = make_logger();
+        let report = make_seed_report(
+            vec![
+                make_record_ref("agents", "agent-a"),
+                make_record_ref("agents", "agent-b"),
+            ],
+            vec![],
+            vec![make_record_ref("models", "old-model")],
+        );
+        logger.emit_seed_report(&report).await;
+
+        let page = logger
+            .query(AuditQuery {
+                limit: 100,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(page.items.len(), 2, "one event per non-empty bucket");
+
+        // Both events must have the SeedApply action and system:seed actor.
+        for event in &page.items {
+            assert_eq!(event.action, AuditAction::SeedApply);
+            assert_eq!(event.actor, "system:seed");
+        }
+
+        // Check that resources match the expected bucket names (order may vary).
+        let resources: std::collections::HashSet<_> =
+            page.items.iter().map(|e| e.resource.as_str()).collect();
+        assert!(resources.contains("seed:created"));
+        assert!(resources.contains("seed:deleted"));
+    }
+
+    #[tokio::test]
+    async fn seed_apply_idempotent_run_emits_no_audit() {
+        let logger = make_logger();
+        let report = make_seed_report(vec![], vec![], vec![]);
+        logger.emit_seed_report(&report).await;
+
+        let page = logger.query(AuditQuery::default()).await.unwrap();
+        assert_eq!(page.items.len(), 0, "empty report must emit no events");
+    }
+
+    #[tokio::test]
+    async fn seed_apply_truncates_sample_at_20() {
+        let logger = make_logger();
+        let created: Vec<_> = (0..25)
+            .map(|i| make_record_ref("agents", &format!("agent-{i}")))
+            .collect();
+        let report = make_seed_report(created, vec![], vec![]);
+        logger.emit_seed_report(&report).await;
+
+        let page = logger.query(AuditQuery::default()).await.unwrap();
+        assert_eq!(page.items.len(), 1);
+
+        let after = page.items[0].after.as_ref().unwrap();
+        let sample = after["sample"].as_array().unwrap();
+        assert_eq!(sample.len(), 20, "sample must be capped at 20");
+        assert_eq!(after["truncated"], true);
+        assert_eq!(after["count"], 25);
     }
 
     // ── prune_before ──────────────────────────────────────────────────────

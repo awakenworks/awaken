@@ -11,7 +11,7 @@ use awaken_contract::contract::message::{Message, MessageMetadata};
 #[cfg(feature = "nats")]
 use awaken_contract::contract::storage::RunRecord;
 use awaken_contract::contract::storage::{RunStore, ThreadRunStore, ThreadStore};
-use awaken_contract::{AgentSpec, ModelBindingSpec, ProviderSpec};
+use awaken_contract::{AgentSpec, BuiltinSeedSet, BuiltinSpec, ModelBindingSpec, ProviderSpec};
 use awaken_runtime::AgentRuntime;
 use awaken_runtime::builder::AgentRuntimeBuilder;
 use awaken_runtime::registry::traits::ModelBinding;
@@ -107,21 +107,9 @@ async fn make_app<S>(store: Arc<S>, server_name: &str) -> TestApp<S>
 where
     S: ConfigStore + ThreadRunStore + Send + Sync + 'static,
 {
-    let bootstrap_provider = bootstrap_provider();
-    let bootstrap_model = bootstrap_model();
-    let bootstrap_agent = bootstrap_agent();
-
     let runtime = Arc::new(
         AgentRuntimeBuilder::new()
             .with_provider("bootstrap", Arc::new(ImmediateExecutor))
-            .with_model_binding(
-                "bootstrap",
-                ModelBinding {
-                    provider_id: "bootstrap".into(),
-                    upstream_model: "bootstrap-model".into(),
-                },
-            )
-            .with_agent_spec(bootstrap_agent.clone())
             .with_thread_run_store(store.clone() as Arc<dyn ThreadRunStore>)
             .build()
             .expect("build runtime"),
@@ -133,15 +121,15 @@ where
             .expect("config runtime manager")
             .with_provider_factory(Arc::new(StubProviderFactory)),
     );
-    manager
-        .bootstrap_if_empty(
-            std::slice::from_ref(&bootstrap_provider),
-            std::slice::from_ref(&bootstrap_model),
-            std::slice::from_ref(&bootstrap_agent),
-            &[],
-        )
-        .await
-        .expect("bootstrap config store");
+    let seed = BuiltinSeedSet {
+        binary_version: "test".to_string(),
+        specs: vec![
+            BuiltinSpec::provider(bootstrap_provider()),
+            BuiltinSpec::model(bootstrap_model()),
+            BuiltinSpec::agent(bootstrap_agent()),
+        ],
+    };
+    manager.apply_seed(&seed).await.expect("apply_seed");
     manager.apply().await.expect("publish config snapshot");
 
     let mailbox = Arc::new(Mailbox::new(

@@ -51,10 +51,6 @@ pub enum ConfigRuntimeError {
     #[error("runtime does not expose a configurable registry snapshot")]
     RuntimeNotConfigurable,
     #[error(
-        "config store is partially initialized; bootstrap requires all managed namespaces to be empty or all core namespaces populated"
-    )]
-    PartialBootstrap,
-    #[error(
         "unsupported provider adapter: {0} (valid names mirror genai::adapter::AdapterKind — see https://docs.rs/genai/latest/genai/adapter/enum.AdapterKind.html)"
     )]
     UnsupportedProviderAdapter(String),
@@ -68,13 +64,18 @@ pub enum ConfigRuntimeError {
     Storage(#[from] StorageError),
 }
 
+/// Holds A2A-discovered agent specs (those with `endpoint` or `registry`
+/// set). Built once from the runtime's pre-apply registry; subsequent
+/// `ConfigRuntimeManager::apply()` calls overlay these on top of the
+/// ConfigStore-derived registry. Pure code-defined regular agents flow
+/// only via ConfigStore (Phase 2 unification) and do NOT appear here.
 #[derive(Default)]
-struct RemoteAgentFallbackRegistry {
+struct DiscoveredAgentRegistry {
     exact: HashMap<String, AgentSpec>,
     plain: HashMap<String, AgentSpec>,
 }
 
-impl RemoteAgentFallbackRegistry {
+impl DiscoveredAgentRegistry {
     fn from_registry(registry: Arc<dyn AgentSpecRegistry>) -> Option<Arc<dyn AgentSpecRegistry>> {
         let mut exact = HashMap::new();
         let mut plain = HashMap::new();
@@ -98,7 +99,7 @@ impl RemoteAgentFallbackRegistry {
     }
 }
 
-impl AgentSpecRegistry for RemoteAgentFallbackRegistry {
+impl AgentSpecRegistry for DiscoveredAgentRegistry {
     fn get_agent(&self, id: &str) -> Option<AgentSpec> {
         self.exact
             .get(id)
@@ -142,7 +143,11 @@ macro_rules! overlay_registry {
     };
 }
 
-overlay_registry!(OverlayAgentRegistry, AgentSpecRegistry, get_agent -> Option<AgentSpec>, agent_ids);
+// AgentSpecRegistryWithDiscovery: ConfigStore-side agents (base) ⊕
+// runtime-discovered remote agents (overlay). Resolves a given id by
+// preferring base; falls through to discovery only if base does not
+// contain the id.
+overlay_registry!(AgentSpecRegistryWithDiscovery, AgentSpecRegistry, get_agent -> Option<AgentSpec>, agent_ids);
 overlay_registry!(OverlayToolRegistry, ToolRegistry, get_tool -> Option<Arc<dyn awaken_contract::contract::tool::Tool>>, tool_ids);
 
 #[derive(Clone)]
@@ -330,7 +335,10 @@ pub struct ConfigRuntimeManager {
     tools: Arc<dyn ToolRegistry>,
     plugins: Arc<dyn PluginSource>,
     backends: Arc<dyn BackendRegistry>,
-    remote_agents: Option<Arc<dyn AgentSpecRegistry>>,
+    /// Runtime A2A-discovery layer; merged on top of ConfigStore agents
+    /// at every `apply()`. None when no remote agents were registered
+    /// at builder time.
+    discovered_agents: Option<Arc<dyn AgentSpecRegistry>>,
     provider_factory: Arc<dyn ProviderExecutorFactory>,
     change_notifier: Option<Arc<dyn ConfigChangeNotifier>>,
     mcp_registry_factory: Arc<dyn McpRegistryFactory>,
@@ -350,6 +358,9 @@ pub struct ConfigRuntimeManager {
     /// into a single apply. Direct calls to [`Self::apply`] /
     /// [`Self::apply_if_changed`] are unaffected.
     min_apply_interval: Duration,
+    /// Optional audit logger — if set, `apply_seed` emits a `SeedApply` event
+    /// per non-empty bucket of the resulting [`SeedReport`].
+    audit_log: Option<Arc<crate::services::audit_log::AuditLogger>>,
 }
 
 impl ConfigRuntimeManager {
@@ -360,7 +371,7 @@ impl ConfigRuntimeManager {
         let registries = runtime
             .registry_set()
             .ok_or(ConfigRuntimeError::RuntimeNotConfigurable)?;
-        let remote_agents = RemoteAgentFallbackRegistry::from_registry(registries.agents.clone());
+        let discovered_agents = DiscoveredAgentRegistry::from_registry(registries.agents.clone());
 
         Ok(Self {
             runtime,
@@ -368,7 +379,7 @@ impl ConfigRuntimeManager {
             tools: registries.tools,
             plugins: registries.plugins,
             backends: registries.backends,
-            remote_agents,
+            discovered_agents,
             provider_factory: Arc::new(GenaiProviderExecutorFactory::default()),
             change_notifier: None,
             mcp_registry_factory: Arc::new(DefaultMcpRegistryFactory),
@@ -380,6 +391,7 @@ impl ConfigRuntimeManager {
             change_listener: Mutex::new(None),
             mcp_refresh_interval: RwLock::new(None),
             min_apply_interval: Duration::ZERO,
+            audit_log: None,
         })
     }
 
@@ -423,60 +435,39 @@ impl ConfigRuntimeManager {
         self
     }
 
-    pub async fn bootstrap_if_empty(
+    /// Attach an audit logger. When set, [`Self::apply_seed`] emits a
+    /// `SeedApply` audit event per non-empty bucket of the resulting report.
+    #[must_use]
+    pub fn with_audit_log(mut self, logger: Arc<crate::services::audit_log::AuditLogger>) -> Self {
+        self.audit_log = Some(logger);
+        self
+    }
+
+    /// Apply a built-in spec seed to the underlying ConfigStore.
+    ///
+    /// Idempotent and version-aware. See
+    /// [`apply_builtin_seed`](crate::services::builtin_seed::apply_builtin_seed)
+    /// for the full decision matrix and concurrency precondition.
+    ///
+    /// Holds the apply-lock; will block on a concurrent `apply()`/PUT/DELETE.
+    /// This ensures seed writes are serialized with runtime-registry publishes
+    /// so a concurrent HTTP write cannot race with the boot seed.
+    ///
+    /// Typical bootstrap sequence:
+    /// 1. `manager.apply_seed(&seed).await?` — write/refresh built-ins.
+    /// 2. `manager.apply().await?` — publish the resulting registry.
+    pub async fn apply_seed(
         &self,
-        providers: &[ProviderSpec],
-        models: &[ModelBindingSpec],
-        agents: &[AgentSpec],
-        mcp_servers: &[McpServerSpec],
-    ) -> Result<bool, ConfigRuntimeError> {
-        let has_providers = !self.store.list(NS_PROVIDERS, 0, 1).await?.is_empty();
-        let has_models = !self.store.list(NS_MODELS, 0, 1).await?.is_empty();
-        let has_agents = !self.store.list(NS_AGENTS, 0, 1).await?.is_empty();
-        let has_mcp_servers = !self.store.list(NS_MCP_SERVERS, 0, 1).await?.is_empty();
-
-        if has_providers || has_models || has_agents || has_mcp_servers {
-            if has_providers && has_models && has_agents {
-                return Ok(false);
-            }
-            return Err(ConfigRuntimeError::PartialBootstrap);
+        seed: &awaken_contract::BuiltinSeedSet,
+    ) -> Result<crate::services::builtin_seed::SeedReport, ConfigRuntimeError> {
+        let _guard = self.lock_apply().await;
+        let report = crate::services::builtin_seed::apply_builtin_seed(self.store.as_ref(), seed)
+            .await
+            .map_err(map_seed_error)?;
+        if let Some(audit) = &self.audit_log {
+            audit.emit_seed_report(&report).await;
         }
-
-        let bin_version = env!("CARGO_PKG_VERSION");
-        for provider in providers {
-            let json = serde_json::to_value(provider)
-                .map_err(|e| StorageError::Serialization(e.to_string()))?;
-            let envelope = wrap_builtin(&json, bin_version)
-                .map_err(|e| StorageError::Serialization(e.to_string()))?;
-            self.store
-                .put(NS_PROVIDERS, &provider.id, &envelope)
-                .await?;
-        }
-        for model in models {
-            let json = serde_json::to_value(model)
-                .map_err(|e| StorageError::Serialization(e.to_string()))?;
-            let envelope = wrap_builtin(&json, bin_version)
-                .map_err(|e| StorageError::Serialization(e.to_string()))?;
-            self.store.put(NS_MODELS, &model.id, &envelope).await?;
-        }
-        for agent in agents {
-            let json = serde_json::to_value(agent)
-                .map_err(|e| StorageError::Serialization(e.to_string()))?;
-            let envelope = wrap_builtin(&json, bin_version)
-                .map_err(|e| StorageError::Serialization(e.to_string()))?;
-            self.store.put(NS_AGENTS, &agent.id, &envelope).await?;
-        }
-        for server in mcp_servers {
-            let json = serde_json::to_value(server)
-                .map_err(|e| StorageError::Serialization(e.to_string()))?;
-            let envelope = wrap_builtin(&json, bin_version)
-                .map_err(|e| StorageError::Serialization(e.to_string()))?;
-            self.store
-                .put(NS_MCP_SERVERS, &server.id, &envelope)
-                .await?;
-        }
-
-        Ok(true)
+        Ok(report)
     }
 
     pub async fn apply(&self) -> Result<u64, ConfigRuntimeError> {
@@ -928,8 +919,8 @@ impl ConfigRuntimeManager {
         }
 
         let local_agents: Arc<dyn AgentSpecRegistry> = Arc::new(local_agents);
-        let agents = match &self.remote_agents {
-            Some(fallback) => Arc::new(OverlayAgentRegistry::new(
+        let agents = match &self.discovered_agents {
+            Some(fallback) => Arc::new(AgentSpecRegistryWithDiscovery::new(
                 local_agents,
                 Arc::clone(fallback),
             )) as Arc<dyn AgentSpecRegistry>,
@@ -1366,32 +1357,14 @@ fn canonicalize_value(value: &Value) -> Value {
     }
 }
 
-fn extract_timestamps_from_spec(spec: &Value) -> (u64, u64) {
-    let created = spec.get("created_at").and_then(Value::as_u64).unwrap_or(0);
-    let updated = spec.get("updated_at").and_then(Value::as_u64).unwrap_or(0);
-    (created, updated)
-}
-
-/// Wrap a bare spec `Value` in a `ConfigRecord` envelope with
-/// `RecordSource::Builtin { binary_version }`.
-///
-/// The spec's own `created_at`/`updated_at` are lifted into `RecordMeta` for
-/// provenance. The spec itself is not modified.
-fn wrap_builtin(spec: &Value, binary_version: &str) -> Result<Value, serde_json::Error> {
-    use awaken_contract::{ConfigRecord, RecordMeta};
-    let (created_at, updated_at) = extract_timestamps_from_spec(spec);
-    let mut meta = RecordMeta::new_builtin(binary_version);
-    if created_at != 0 {
-        meta.created_at = created_at;
+fn map_seed_error(error: crate::services::builtin_seed::SeedError) -> ConfigRuntimeError {
+    use crate::services::builtin_seed::SeedError;
+    match error {
+        SeedError::Storage(e) => ConfigRuntimeError::Storage(e),
+        SeedError::Serde(e) => {
+            ConfigRuntimeError::Storage(StorageError::Serialization(e.to_string()))
+        }
     }
-    if updated_at != 0 {
-        meta.updated_at = updated_at;
-    }
-    let record = ConfigRecord {
-        spec: spec.clone(),
-        meta,
-    };
-    record.to_value()
 }
 
 #[cfg(test)]
@@ -2036,16 +2009,119 @@ mod tests {
         );
     }
 
+    /// Replaces the former `bootstrap_if_empty` test.  Asserts that
+    /// `apply_seed` stores each spec as a ConfigRecord envelope whose
+    /// `meta.source` is `RecordSource::Builtin { binary_version }`.
     #[tokio::test]
-    async fn bootstrap_writes_builtin_envelope() {
+    async fn apply_seed_writes_builtin_envelope() {
+        use awaken_contract::{
+            BuiltinSeedSet, BuiltinSpec, ConfigRecord, ModelBindingSpec, ProviderSpec, RecordSource,
+        };
+
+        let bin_version = "test-env-ver".to_owned();
+        let (manager, store) = make_manager_with_store().await;
+
+        let seed = BuiltinSeedSet {
+            binary_version: bin_version.clone(),
+            specs: vec![
+                BuiltinSpec::Provider(ProviderSpec {
+                    id: "p1".into(),
+                    adapter: "openai".into(),
+                    ..Default::default()
+                }),
+                BuiltinSpec::Model(ModelBindingSpec {
+                    id: "m1".into(),
+                    provider_id: "p1".into(),
+                    upstream_model: "m1-model".into(),
+                    created_at: None,
+                    updated_at: None,
+                }),
+                BuiltinSpec::Agent(Box::new(AgentSpec {
+                    id: "a1".into(),
+                    model_id: "m1".into(),
+                    system_prompt: "seed test".into(),
+                    max_rounds: 1,
+                    ..Default::default()
+                })),
+            ],
+        };
+
+        let report = manager.apply_seed(&seed).await.expect("apply_seed");
+        assert_eq!(report.created.len(), 3, "all three specs must be created");
+
+        // Verify provider envelope and Builtin source.
+        let raw_p = awaken_contract::contract::config_store::ConfigStore::get(
+            store.as_ref(),
+            "providers",
+            "p1",
+        )
+        .await
+        .expect("get provider")
+        .expect("provider present");
+
+        let p_obj = raw_p.as_object().expect("must be object");
+        assert!(p_obj.contains_key("spec"), "provider must have 'spec' key");
+        assert!(p_obj.contains_key("meta"), "provider must have 'meta' key");
+        let p_rec: ConfigRecord<serde_json::Value> = ConfigRecord::from_value(raw_p).unwrap();
+        assert_eq!(
+            p_rec.meta.source,
+            RecordSource::Builtin {
+                binary_version: bin_version.clone()
+            },
+            "provider source must be Builtin with correct binary_version"
+        );
+
+        // Verify agent envelope.
+        let raw_a = awaken_contract::contract::config_store::ConfigStore::get(
+            store.as_ref(),
+            "agents",
+            "a1",
+        )
+        .await
+        .expect("get agent")
+        .expect("agent present");
+        let a_rec: ConfigRecord<serde_json::Value> = ConfigRecord::from_value(raw_a).unwrap();
+        assert_eq!(
+            a_rec.meta.source,
+            RecordSource::Builtin {
+                binary_version: bin_version.clone()
+            },
+            "agent source must be Builtin"
+        );
+
+        // Verify model envelope.
+        let raw_m = awaken_contract::contract::config_store::ConfigStore::get(
+            store.as_ref(),
+            "models",
+            "m1",
+        )
+        .await
+        .expect("get model")
+        .expect("model present");
+        let m_rec: ConfigRecord<serde_json::Value> = ConfigRecord::from_value(raw_m).unwrap();
+        assert_eq!(
+            m_rec.meta.source,
+            RecordSource::Builtin {
+                binary_version: bin_version
+            },
+            "model source must be Builtin"
+        );
+    }
+
+    // ── apply_seed tests ─────────────────────────────────────────────────────
+
+    /// Build a minimal ConfigRuntimeManager backed by an InMemoryStore.
+    /// Mirrors the pattern used by `bootstrap_writes_builtin_envelope`.
+    async fn make_manager_with_store() -> (
+        ConfigRuntimeManager,
+        Arc<dyn awaken_contract::contract::config_store::ConfigStore>,
+    ) {
         use awaken_contract::contract::executor::{
             InferenceExecutionError, InferenceRequest, LlmExecutor,
         };
         use awaken_contract::contract::inference::{StopReason, StreamResult, TokenUsage};
         use awaken_stores::InMemoryStore;
-        use std::sync::Arc;
 
-        // Minimal executor for test runtime.
         struct Stub;
         #[async_trait::async_trait]
         impl LlmExecutor for Stub {
@@ -2066,24 +2142,8 @@ mod tests {
             }
         }
 
-        struct StubFactory;
-        impl ProviderExecutorFactory for StubFactory {
-            fn build(
-                &self,
-                spec: &ProviderSpec,
-            ) -> Result<Arc<dyn LlmExecutor>, ConfigRuntimeError> {
-                if spec.adapter.eq_ignore_ascii_case("stub") {
-                    return Ok(Arc::new(Stub));
-                }
-                Err(ConfigRuntimeError::UnsupportedProviderAdapter(
-                    spec.adapter.clone(),
-                ))
-            }
-        }
-
         let store = Arc::new(InMemoryStore::new())
             as Arc<dyn awaken_contract::contract::config_store::ConfigStore>;
-
         let thread_store = Arc::new(InMemoryStore::new());
         let runtime = Arc::new(
             awaken_runtime::builder::AgentRuntimeBuilder::new()
@@ -2106,89 +2166,159 @@ mod tests {
                 .build()
                 .expect("build runtime"),
         );
+        let manager = ConfigRuntimeManager::new(runtime, store.clone()).expect("manager");
+        (manager, store)
+    }
 
-        let manager = ConfigRuntimeManager::new(runtime, store.clone())
-            .expect("manager")
-            .with_provider_factory(Arc::new(StubFactory));
+    #[tokio::test]
+    async fn apply_seed_writes_builtin_records_to_store() {
+        use awaken_contract::{
+            BuiltinSeedSet, BuiltinSpec, ConfigRecord, ModelBindingSpec, ProviderSpec, RecordSource,
+        };
 
-        let bootstrapped = manager
-            .bootstrap_if_empty(
-                &[ProviderSpec {
-                    id: "p1".into(),
-                    adapter: "stub".into(),
-                    ..Default::default()
-                }],
-                &[ModelBindingSpec {
-                    id: "m1".into(),
-                    provider_id: "p1".into(),
-                    upstream_model: "m1-model".into(),
-                    created_at: None,
-                    updated_at: None,
-                }],
-                &[AgentSpec {
-                    id: "a1".into(),
-                    model_id: "m1".into(),
-                    system_prompt: "bootstrap test".into(),
+        let (manager, store) = make_manager_with_store().await;
+
+        let seed = BuiltinSeedSet {
+            binary_version: "v1-test".to_owned(),
+            specs: vec![
+                BuiltinSpec::Agent(Box::new(AgentSpec {
+                    id: "seed-agent".into(),
+                    model_id: "m".into(),
+                    system_prompt: "hello".into(),
                     max_rounds: 1,
                     ..Default::default()
-                }],
-                &[],
-            )
-            .await
-            .expect("bootstrap");
-        assert!(bootstrapped, "bootstrap must return true on empty store");
+                })),
+                BuiltinSpec::Provider(ProviderSpec {
+                    id: "seed-provider".into(),
+                    adapter: "openai".into(),
+                    ..Default::default()
+                }),
+                BuiltinSpec::Model(ModelBindingSpec {
+                    id: "seed-model".into(),
+                    provider_id: "seed-provider".into(),
+                    upstream_model: "gpt-4o".into(),
+                    created_at: None,
+                    updated_at: None,
+                }),
+            ],
+        };
 
-        // Check provider stored as envelope with builtin source
-        let raw_p = awaken_contract::contract::config_store::ConfigStore::get(
-            store.as_ref(),
-            "providers",
-            "p1",
-        )
-        .await
-        .expect("get provider")
-        .expect("provider present");
+        let report = manager.apply_seed(&seed).await.expect("apply_seed");
+        assert_eq!(report.created.len(), 3, "expected 3 created");
+        assert!(report.updated.is_empty());
+        assert!(report.unchanged.is_empty());
 
-        let p_obj = raw_p.as_object().expect("must be object");
-        assert!(p_obj.contains_key("spec"), "provider must have 'spec' key");
-        assert!(p_obj.contains_key("meta"), "provider must have 'meta' key");
-        assert_eq!(
-            raw_p["meta"]["source"]["kind"].as_str(),
-            Some("builtin"),
-            "provider source.kind must be 'builtin'"
-        );
-        let bin_ver = raw_p["meta"]["source"]["binary_version"]
-            .as_str()
-            .expect("binary_version must be present");
-        assert_eq!(bin_ver, env!("CARGO_PKG_VERSION"));
-
-        // Check agent
-        let raw_a = awaken_contract::contract::config_store::ConfigStore::get(
+        // Verify agent record stored with Builtin source and correct version.
+        let raw = awaken_contract::contract::config_store::ConfigStore::get(
             store.as_ref(),
             "agents",
-            "a1",
+            "seed-agent",
         )
         .await
         .expect("get agent")
-        .expect("agent present");
+        .expect("agent must be present");
+
+        let rec: ConfigRecord<serde_json::Value> = ConfigRecord::from_value(raw).unwrap();
         assert_eq!(
-            raw_a["meta"]["source"]["kind"].as_str(),
-            Some("builtin"),
-            "agent source.kind must be 'builtin'"
+            rec.meta.source,
+            RecordSource::Builtin {
+                binary_version: "v1-test".to_owned()
+            },
+            "source must be Builtin with seed binary_version"
+        );
+    }
+
+    #[tokio::test]
+    async fn apply_seed_idempotent() {
+        use awaken_contract::{BuiltinSeedSet, BuiltinSpec, ModelBindingSpec, ProviderSpec};
+
+        let (manager, _store) = make_manager_with_store().await;
+
+        let seed = BuiltinSeedSet {
+            binary_version: "v1-idem".to_owned(),
+            specs: vec![
+                BuiltinSpec::Agent(Box::new(AgentSpec {
+                    id: "idem-agent".into(),
+                    model_id: "m".into(),
+                    system_prompt: "hello".into(),
+                    max_rounds: 1,
+                    ..Default::default()
+                })),
+                BuiltinSpec::Provider(ProviderSpec {
+                    id: "idem-provider".into(),
+                    adapter: "openai".into(),
+                    ..Default::default()
+                }),
+                BuiltinSpec::Model(ModelBindingSpec {
+                    id: "idem-model".into(),
+                    provider_id: "idem-provider".into(),
+                    upstream_model: "gpt-4o".into(),
+                    created_at: None,
+                    updated_at: None,
+                }),
+            ],
+        };
+
+        manager.apply_seed(&seed).await.expect("first apply_seed");
+        let report = manager.apply_seed(&seed).await.expect("second apply_seed");
+
+        assert_eq!(
+            report.unchanged.len(),
+            3,
+            "second call must report 3 unchanged"
+        );
+        assert!(report.created.is_empty());
+        assert!(report.updated.is_empty());
+    }
+
+    /// Verify that `apply_seed` holds `lock_apply` for its duration, so a
+    /// concurrent `apply()` blocks until the seed write completes.
+    ///
+    /// Strategy: acquire the lock manually, spawn `apply_seed` in a task, then
+    /// release the lock and confirm the task finishes cleanly.  This asserts
+    /// the lock is actually contended (the task cannot proceed while we hold it).
+    #[tokio::test]
+    async fn apply_seed_serializes_with_apply_lock() {
+        use awaken_contract::{BuiltinSeedSet, BuiltinSpec, ProviderSpec};
+        use std::sync::Arc;
+
+        let (manager, _store) = make_manager_with_store().await;
+        let manager = Arc::new(manager);
+
+        // Hold the apply-lock ourselves to block apply_seed.
+        let guard = manager.lock_apply().await;
+
+        let manager2 = Arc::clone(&manager);
+        let seed = BuiltinSeedSet {
+            binary_version: "lock-test".to_owned(),
+            specs: vec![BuiltinSpec::Provider(ProviderSpec {
+                id: "lock-prov".into(),
+                adapter: "openai".into(),
+                ..Default::default()
+            })],
+        };
+
+        let handle = tokio::spawn(async move {
+            manager2
+                .apply_seed(&seed)
+                .await
+                .expect("apply_seed in task")
+        });
+
+        // Give the spawned task a moment to reach lock acquisition and block.
+        tokio::task::yield_now().await;
+        assert!(
+            !handle.is_finished(),
+            "apply_seed must block while apply-lock is held"
         );
 
-        // Check model
-        let raw_m = awaken_contract::contract::config_store::ConfigStore::get(
-            store.as_ref(),
-            "models",
-            "m1",
-        )
-        .await
-        .expect("get model")
-        .expect("model present");
+        // Release the lock; the task should now be able to complete.
+        drop(guard);
+        let report = handle.await.expect("task must not panic");
         assert_eq!(
-            raw_m["meta"]["source"]["kind"].as_str(),
-            Some("builtin"),
-            "model source.kind must be 'builtin'"
+            report.created.len(),
+            1,
+            "seed record must be created after lock release"
         );
     }
 }

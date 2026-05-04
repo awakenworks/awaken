@@ -26,6 +26,7 @@ use awaken_contract::contract::tool::Tool;
 use awaken_contract::registry_spec::{
     AgentSpec, McpServerSpec, McpTransportKind, ModelBindingSpec, ProviderSpec,
 };
+use awaken_contract::{BuiltinSeedSet, BuiltinSpec};
 use awaken_ext_deferred_tools::DeferredToolsPlugin;
 use awaken_ext_generative_ui::{
     A2uiPlugin, A2uiPromptConfig, A2uiPromptConfigKey, json_render, openui,
@@ -47,7 +48,6 @@ use awaken_runtime::plugins::Plugin;
 use awaken_runtime::policies::{
     ConsecutiveErrorsPolicy, StopConditionPlugin, StopPolicy, TimeoutPolicy, TokenBudgetPolicy,
 };
-use awaken_runtime::registry::traits::ModelBinding;
 use awaken_server::app::{
     AppState, ServerConfig, SkillCatalogArgument, SkillCatalogContext, SkillCatalogEntry,
     SkillCatalogProvider,
@@ -848,10 +848,6 @@ Deterministic compatibility directives:\n\
         created_at: None,
         updated_at: None,
     };
-    let executor = provider_factory
-        .build(&default_provider)
-        .expect("failed to build default provider executor");
-
     // -- MCP managed defaults --
 
     let managed_mcp_servers = if let Some(ref cmd_str) = args.mcp_server_cmd {
@@ -879,22 +875,10 @@ Deterministic compatibility directives:\n\
     // -- Builder --
 
     let mut builder = AgentRuntimeBuilder::new()
-        .with_provider(DEFAULT_PROVIDER_ID, executor)
-        .with_model_binding(
-            DEFAULT_MODEL_ID,
-            ModelBinding {
-                provider_id: default_model.provider_id.clone(),
-                upstream_model: default_model.upstream_model.clone(),
-            },
-        )
         .with_thread_run_store(file_store.clone() as Arc<dyn ThreadRunStore>)
         .with_profile_store(
             Arc::new(awaken_stores::InMemoryStore::default()) as Arc<dyn ProfileStore>
         );
-
-    for agent in &managed_agents {
-        builder = builder.with_agent_spec(agent.clone());
-    }
 
     for (id, tool) in &tools {
         builder = builder.with_tool(*id, Arc::clone(tool));
@@ -1088,31 +1072,54 @@ Always greet the user warmly and ask how you can help today.
     let runtime = builder.build().expect("failed to build runtime");
     let runtime = Arc::new(runtime);
     let config_store = file_store.clone() as Arc<dyn ConfigStore>;
+    // Build an audit logger from the config store so seed-apply events are
+    // recorded at boot. The same store is later used by AppState when
+    // `with_audit_log_from_config` constructs its own logger instance.
+    let seed_audit_logger = Arc::new(awaken_server::services::audit_log::AuditLogger::new(
+        config_store.clone(),
+    ));
     let config_runtime_manager = Arc::new(
         ConfigRuntimeManager::new(runtime.clone(), config_store.clone())
             .expect("failed to initialize config runtime manager")
             .with_provider_factory(provider_factory)
-            .with_mcp_refresh_interval(Duration::from_secs(5)),
+            .with_mcp_refresh_interval(Duration::from_secs(5))
+            .with_audit_log(seed_audit_logger),
     );
 
-    let bootstrapped = config_runtime_manager
-        .bootstrap_if_empty(
-            std::slice::from_ref(&default_provider),
-            std::slice::from_ref(&default_model),
-            &managed_agents,
-            &managed_mcp_servers,
-        )
+    let seed = {
+        let mut specs: Vec<BuiltinSpec> = Vec::new();
+        specs.push(BuiltinSpec::provider(default_provider.clone()));
+        specs.push(BuiltinSpec::model(default_model.clone()));
+        for agent in &managed_agents {
+            specs.push(BuiltinSpec::agent(agent.clone()));
+        }
+        for mcp in &managed_mcp_servers {
+            specs.push(BuiltinSpec::mcp_server(mcp.clone()));
+        }
+        BuiltinSeedSet {
+            binary_version: env!("CARGO_PKG_VERSION").to_string(),
+            specs,
+        }
+    };
+
+    let seed_report = config_runtime_manager
+        .apply_seed(&seed)
         .await
-        .expect("failed to bootstrap managed config store");
+        .expect("failed to apply built-in seed");
+    tracing::info!(
+        created = seed_report.created.len(),
+        updated = seed_report.updated.len(),
+        unchanged = seed_report.unchanged.len(),
+        deleted = seed_report.deleted.len(),
+        preserved_user = seed_report.preserved_user.len(),
+        "built-in seed applied"
+    );
+
     let config_version = config_runtime_manager
         .apply()
         .await
         .expect("failed to publish managed config snapshot");
-    tracing::info!(
-        bootstrapped,
-        config_version,
-        "managed config snapshot published"
-    );
+    tracing::info!(config_version, "managed config snapshot published");
     config_runtime_manager
         .start_periodic_refresh(Duration::from_secs(5))
         .expect("failed to start managed config refresh");

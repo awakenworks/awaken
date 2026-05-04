@@ -476,7 +476,7 @@ impl<'a> ConfigService<'a> {
                 .before
                 .clone()
                 .ok_or(RestoreError::NoPayload(event.action.clone()))?,
-            A::Restart => return Err(RestoreError::NotRestorable),
+            A::Restart | A::SeedApply => return Err(RestoreError::NotRestorable),
         };
 
         // Single store read: determines both existence and the pre-restore snapshot.
@@ -727,14 +727,7 @@ impl<'a> ConfigService<'a> {
             // holds it.
             if !object.contains_key("created_at") {
                 if let Ok(Some(existing)) = self.store.get(namespace.as_str(), &id).await {
-                    let spec_layer = if existing
-                        .as_object()
-                        .is_some_and(|m| m.contains_key("spec") && m.contains_key("meta"))
-                    {
-                        existing.get("spec").cloned().unwrap_or(existing)
-                    } else {
-                        existing
-                    };
+                    let spec_layer = unwrap_spec(existing);
                     if let Some(existing_created_at) = spec_layer
                         .as_object()
                         .and_then(|obj| obj.get("created_at"))
@@ -782,14 +775,7 @@ impl<'a> ConfigService<'a> {
         };
         // The stored value may be either a bare spec or a ConfigRecord envelope.
         // Navigate into spec if needed before accessing fields.
-        let spec_value = if existing
-            .as_object()
-            .is_some_and(|m| m.contains_key("spec") && m.contains_key("meta"))
-        {
-            existing.get("spec").cloned().unwrap_or(existing)
-        } else {
-            existing
-        };
+        let spec_value = unwrap_spec(existing);
         let Some(existing_object) = spec_value.as_object() else {
             return Ok(());
         };
@@ -1030,14 +1016,7 @@ impl<'a> ConfigService<'a> {
             return Ok(());
         };
         // The stored value may be either a bare spec or a ConfigRecord envelope.
-        let spec_value = if existing
-            .as_object()
-            .is_some_and(|m| m.contains_key("spec") && m.contains_key("meta"))
-        {
-            existing.get("spec").cloned().unwrap_or(existing)
-        } else {
-            existing
-        };
+        let spec_value = unwrap_spec(existing);
         let Some(existing_object) = spec_value.as_object() else {
             return Ok(());
         };
@@ -1065,8 +1044,7 @@ fn classify_tool_source(id: &str) -> Value {
 fn map_runtime_error(error: ConfigRuntimeError) -> ConfigServiceError {
     match error {
         ConfigRuntimeError::UnsupportedProviderAdapter(_)
-        | ConfigRuntimeError::InvalidConfig(_)
-        | ConfigRuntimeError::PartialBootstrap => {
+        | ConfigRuntimeError::InvalidConfig(_) => {
             ConfigServiceError::InvalidPayload(error.to_string())
         }
         ConfigRuntimeError::RuntimeNotConfigurable
@@ -1177,7 +1155,7 @@ mod tests {
         InferenceExecutionError, InferenceRequest, LlmExecutor,
     };
     use awaken_contract::contract::inference::{StopReason, StreamResult, TokenUsage};
-    use awaken_contract::{AgentSpec, ModelBindingSpec, ProviderSpec};
+    use awaken_contract::{AgentSpec, BuiltinSeedSet, BuiltinSpec, ModelBindingSpec, ProviderSpec};
     use awaken_runtime::builder::AgentRuntimeBuilder;
     use awaken_runtime::registry::traits::ModelBinding;
     use serde_json::{Value, json};
@@ -1323,14 +1301,6 @@ mod tests {
         let runtime = Arc::new(
             AgentRuntimeBuilder::new()
                 .with_provider("bootstrap", Arc::new(ImmediateExecutor))
-                .with_model_binding(
-                    "bootstrap",
-                    ModelBinding {
-                        provider_id: "bootstrap".into(),
-                        upstream_model: "bootstrap-model".into(),
-                    },
-                )
-                .with_agent_spec(bootstrap_agent())
                 .with_thread_run_store(thread_store.clone())
                 .build()
                 .expect("build runtime"),
@@ -1342,25 +1312,25 @@ mod tests {
                 .with_provider_factory(Arc::new(TestProviderFactory)),
         );
         let resolver = runtime.resolver_arc();
-        manager
-            .bootstrap_if_empty(
-                &[ProviderSpec {
+        let seed = BuiltinSeedSet {
+            binary_version: "test".to_string(),
+            specs: vec![
+                BuiltinSpec::provider(ProviderSpec {
                     id: "bootstrap".into(),
                     adapter: "stub".into(),
                     ..Default::default()
-                }],
-                &[ModelBindingSpec {
+                }),
+                BuiltinSpec::model(ModelBindingSpec {
                     id: "bootstrap".into(),
                     provider_id: "bootstrap".into(),
                     upstream_model: "bootstrap-model".into(),
                     created_at: None,
                     updated_at: None,
-                }],
-                &[bootstrap_agent()],
-                &[],
-            )
-            .await
-            .expect("bootstrap config store");
+                }),
+                BuiltinSpec::agent(bootstrap_agent()),
+            ],
+        };
+        manager.apply_seed(&seed).await.expect("apply_seed");
         manager.apply().await.expect("publish config");
 
         let mailbox = Arc::new(Mailbox::new(
@@ -2040,17 +2010,6 @@ mod tests {
             updated_at_2 >= created_at_2,
             "updated_at must be >= created_at after update"
         );
-    }
-
-    #[tokio::test]
-    #[ignore = "requires force-apply-failure hook not yet available in test harness"]
-    async fn delete_rollback_re_emits_envelope() {
-        // This test requires a way to configure the runtime manager to fail
-        // apply() after delete so we can observe the rollback path writing an
-        // envelope. The current test harness has no such hook. When that
-        // infrastructure is added, verify that the rolled-back store entry has
-        // both "spec" and "meta" keys.
-        panic!("test infrastructure for force-apply-failure not yet available")
     }
 
     #[tokio::test]
