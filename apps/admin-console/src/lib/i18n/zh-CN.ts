@@ -126,6 +126,15 @@ export const zhCN: Dict = {
     sortLabel: "最后修改",
     searchPh: "按 ID、模型、插件搜索…",
     noMatches: "没有智能体符合当前筛选条件。",
+    source: {
+      builtin: "内置",
+      customized: "已定制",
+      userDefined: "用户自建",
+    },
+    resetOverrides: "重置为默认",
+    resetOverridesConfirm: "重置此 Agent 的所有定制?",
+    resetOverrideField: "重置为默认",
+    resetOverrideFieldDone: "已重置 \"{{field}}\" 为默认",
   },
   audit: {
     title: "审计日志",

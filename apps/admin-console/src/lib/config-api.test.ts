@@ -4,6 +4,8 @@ import {
   BACKEND_URL,
   ConfigApiError,
   configApi,
+  deriveSourceState,
+  type RecordMeta,
   type RestoreResponse,
 } from "./config-api";
 import {
@@ -301,5 +303,51 @@ describe("configApi", () => {
         },
       ],
     });
+  });
+});
+
+// ── deriveSourceState ─────────────────────────────────────────────────────────
+
+function makeMeta(overrides?: Partial<RecordMeta>): RecordMeta {
+  return {
+    source: { kind: "builtin", binary_version: "1.0" },
+    hidden: false,
+    user_overrides: null,
+    created_at: 0,
+    updated_at: 0,
+    ...overrides,
+  };
+}
+
+describe("deriveSourceState", () => {
+  it("returns 'builtin' for a builtin record with no overrides", () => {
+    const meta = makeMeta({ source: { kind: "builtin", binary_version: "1.0" } });
+    expect(deriveSourceState(meta)).toBe("builtin");
+  });
+
+  it("returns 'customized' for a builtin record with non-empty user_overrides", () => {
+    const meta = makeMeta({
+      source: { kind: "builtin", binary_version: "1.0" },
+      user_overrides: { system_prompt: "custom" },
+    });
+    expect(deriveSourceState(meta)).toBe("customized");
+  });
+
+  it("returns 'builtin' for a builtin record with empty user_overrides object", () => {
+    const meta = makeMeta({
+      source: { kind: "builtin", binary_version: "1.0" },
+      user_overrides: {},
+    });
+    expect(deriveSourceState(meta)).toBe("builtin");
+  });
+
+  it("returns 'user' for a user-created record", () => {
+    const meta = makeMeta({ source: { kind: "user" } });
+    expect(deriveSourceState(meta)).toBe("user");
+  });
+
+  it("returns 'user' defensively when source is missing (malformed payload)", () => {
+    const meta = makeMeta({ source: undefined as unknown as RecordMeta["source"] });
+    expect(deriveSourceState(meta)).toBe("user");
   });
 });

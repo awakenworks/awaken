@@ -5,13 +5,17 @@ use awaken_contract::AuditAction;
 use awaken_contract::contract::config_store::ConfigStore;
 use awaken_contract::contract::storage::StorageError;
 use awaken_contract::{
-    AgentSpec, ConfigRecord, McpServerSpec, ModelBindingSpec, ProviderSpec, RecordMeta,
+    AgentSpec, AgentSpecPatch, ConfigRecord, McpServerSpec, ModelBindingSpec, ProviderSpec,
+    RecordSource, now_ms,
 };
 use axum::http::HeaderMap;
 use serde_json::{Map, Value, json};
 
 use crate::app::AppState;
 use crate::services::audit_log::AuditLogger;
+use crate::services::config_envelope::{
+    apply_overrides, ensure_envelope, spec_field, unwrap_spec, wrap_user,
+};
 
 use super::config_runtime::ConfigRuntimeError;
 
@@ -100,6 +104,8 @@ pub enum ConfigServiceError {
     Apply(String),
     #[error("blocked: {used_by:?} record(s) depend on this resource")]
     Blocked { used_by: Vec<DependentRef> },
+    #[error("overrides are not supported for user-source records; use PUT to update")]
+    OverridesNotSupportedForUserRecord,
     #[error("storage error: {0}")]
     Storage(#[from] StorageError),
 }
@@ -261,7 +267,7 @@ impl<'a> ConfigService<'a> {
         let values = self.store.list(namespace.as_str(), offset, limit).await?;
         values
             .into_iter()
-            .map(|(_, value)| self.redact_response(namespace, unwrap_spec(value)))
+            .map(|(_, value)| self.redact_response(namespace, effective_spec(namespace, value)?))
             .collect()
     }
 
@@ -272,8 +278,47 @@ impl<'a> ConfigService<'a> {
     ) -> Result<Option<Value>, ConfigServiceError> {
         let value = self.store.get(namespace.as_str(), id).await?;
         value
-            .map(|value| self.redact_response(namespace, unwrap_spec(value)))
+            .map(|value| self.redact_response(namespace, effective_spec(namespace, value)?))
             .transpose()
+    }
+
+    /// Return just the `RecordMeta` for a stored entry. Returns `None` when
+    /// the record does not exist.  Does not apply redaction (meta contains no
+    /// secrets) and does not apply overrides (meta is the raw provenance).
+    pub async fn get_meta(
+        &self,
+        namespace: ConfigNamespace,
+        id: &str,
+    ) -> Result<Option<awaken_contract::RecordMeta>, ConfigServiceError> {
+        let value = self.store.get(namespace.as_str(), id).await?;
+        let Some(value) = value else {
+            return Ok(None);
+        };
+        // For non-Agent namespaces the envelope may not have been written yet
+        // (legacy bare-spec). ConfigRecord::from_value handles both shapes.
+        let meta = awaken_contract::ConfigRecord::<Value>::from_value(value)
+            .map_err(|e| ConfigServiceError::Serialization(e.to_string()))?
+            .meta;
+        Ok(Some(meta))
+    }
+
+    /// Return `RecordMeta` for every record in the namespace. Pairs are
+    /// `(id, RecordMeta)`.
+    pub async fn list_meta(
+        &self,
+        namespace: ConfigNamespace,
+        offset: usize,
+        limit: usize,
+    ) -> Result<Vec<(String, awaken_contract::RecordMeta)>, ConfigServiceError> {
+        let values = self.store.list(namespace.as_str(), offset, limit).await?;
+        let mut out = Vec::with_capacity(values.len());
+        for (id, value) in values {
+            let meta = awaken_contract::ConfigRecord::<Value>::from_value(value)
+                .map_err(|e| ConfigServiceError::Serialization(e.to_string()))?
+                .meta;
+            out.push((id, meta));
+        }
+        Ok(out)
     }
 
     /// Dry-run validation. Runs the same `prepare_body` + `validate_payload`
@@ -457,9 +502,11 @@ impl<'a> ConfigService<'a> {
             .map_err(RestoreError::Storage)?
             .ok_or(RestoreError::VersionNotFound)?;
 
-        // Verify cross-resource guard.
+        // Verify cross-resource guard. Override events for this same record carry
+        // a `/overrides[/{field}]` suffix; treat them as in-scope.
         let expected_resource = format!("{}/{}", namespace.as_str(), id);
-        if event.resource != expected_resource {
+        let expected_prefix = format!("{expected_resource}/");
+        if event.resource != expected_resource && !event.resource.starts_with(&expected_prefix) {
             return Err(RestoreError::ResourceMismatch {
                 event_resource: event.resource.clone(),
                 expected: expected_resource,
@@ -626,8 +673,29 @@ impl<'a> ConfigService<'a> {
         after: Option<Value>,
         headers: &HeaderMap,
     ) {
-        let Some(audit) = &self.audit else { return };
-        let resource = format!("{}/{}", namespace.as_str(), id);
+        self.emit_audit_with_suffix(action, namespace, id, "", before, after, headers)
+            .await;
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn emit_audit_with_suffix(
+        &self,
+        action: AuditAction,
+        namespace: ConfigNamespace,
+        id: &str,
+        suffix: &str,
+        before: Option<Value>,
+        after: Option<Value>,
+        headers: &HeaderMap,
+    ) {
+        let Some(audit) = &self.audit else {
+            return;
+        };
+        let resource = if suffix.is_empty() {
+            format!("{}/{}", namespace.as_str(), id)
+        } else {
+            format!("{}/{}/{}", namespace.as_str(), id, suffix)
+        };
         audit.emit(action, &resource, before, after, headers).await;
     }
 
@@ -1025,6 +1093,342 @@ impl<'a> ConfigService<'a> {
         }
         Ok(())
     }
+
+    /// PATCH /v1/config/agents/:id/overrides
+    ///
+    /// Merges the patch body into the existing `user_overrides` of a Builtin
+    /// agent record. Null-valued keys in the patch remove overrides; non-null
+    /// keys overwrite. Returns the effective AgentSpec after the merge.
+    pub async fn patch_agent_overrides(
+        &self,
+        id: &str,
+        body: Value,
+        headers: &HeaderMap,
+    ) -> Result<Value, ConfigServiceError> {
+        let manager = self.runtime_manager()?;
+        let _apply_guard = manager.lock_apply().await;
+
+        let raw = self
+            .store
+            .get(ConfigNamespace::Agents.as_str(), id)
+            .await?
+            .ok_or_else(|| ConfigServiceError::NotFound(format!("agents/{id}")))?;
+
+        let mut record = ConfigRecord::<AgentSpec>::from_value(raw.clone())
+            .map_err(|e| ConfigServiceError::InvalidPayload(e.to_string()))?;
+
+        if matches!(record.meta.source, RecordSource::User) {
+            return Err(ConfigServiceError::OverridesNotSupportedForUserRecord);
+        }
+
+        // Validate incoming body field names via AgentSpecPatch (deny_unknown_fields).
+        // We use a separate check for null values: replace nulls with a dummy value
+        // so that deny_unknown_fields can still catch unknown field names.
+        let body_map = match &body {
+            Value::Object(m) => m,
+            _ => {
+                return Err(ConfigServiceError::InvalidPayload(
+                    "expected JSON object body".into(),
+                ));
+            }
+        };
+        // Null values for Option fields are valid (they mean "clear this override").
+        // Pass the body as-is; deny_unknown_fields catches unknown field names.
+        let _: AgentSpecPatch = serde_json::from_value(body.clone())
+            .map_err(|e| ConfigServiceError::InvalidPayload(e.to_string()))?;
+
+        // Merge patch INTO existing user_overrides (shallow key-level merge).
+        // Use the raw body Value to preserve nulls (null = clear the key).
+        let mut existing_map: Map<String, Value> = record
+            .meta
+            .user_overrides
+            .as_ref()
+            .and_then(Value::as_object)
+            .cloned()
+            .unwrap_or_default();
+
+        for (k, v) in body_map {
+            if v.is_null() {
+                existing_map.remove(k);
+            } else {
+                existing_map.insert(k.clone(), v.clone());
+            }
+        }
+
+        // Validate the merged overrides by round-tripping through AgentSpecPatch.
+        let merged_value = Value::Object(existing_map.clone());
+        let _: AgentSpecPatch = serde_json::from_value(merged_value.clone())
+            .map_err(|e| ConfigServiceError::InvalidPayload(e.to_string()))?;
+
+        let proposed_overrides: Option<Value> = if existing_map.is_empty() {
+            None
+        } else {
+            Some(merged_value.clone())
+        };
+
+        // Short-circuit: if the proposed overrides are identical to existing ones,
+        // skip the store write, apply_locked, and audit emit — it's a no-op.
+        if proposed_overrides == record.meta.user_overrides {
+            let effective_spec = apply_overrides(record.spec, record.meta.user_overrides.as_ref())
+                .map_err(|e| ConfigServiceError::InvalidPayload(e.to_string()))?;
+            return serde_json::to_value(&effective_spec)
+                .map_err(|e| ConfigServiceError::Serialization(e.to_string()));
+        }
+
+        let before_spec = apply_overrides(record.spec.clone(), record.meta.user_overrides.as_ref())
+            .map_err(|e| ConfigServiceError::InvalidPayload(e.to_string()))?;
+        let before = serde_json::to_value(&before_spec)
+            .map_err(|e| ConfigServiceError::Serialization(e.to_string()))?;
+
+        record.meta.user_overrides = proposed_overrides;
+        record.meta.updated_at = now_ms();
+
+        let envelope = record
+            .to_value()
+            .map_err(|e| ConfigServiceError::Serialization(e.to_string()))?;
+        self.store
+            .put(ConfigNamespace::Agents.as_str(), id, &envelope)
+            .await?;
+
+        let apply_result = manager
+            .apply_locked()
+            .await
+            .map(|_| ())
+            .map_err(map_runtime_error);
+        if let Err(error) = apply_result {
+            // Roll back to the original envelope.
+            let rollback =
+                ensure_envelope(raw).map_err(|e| StorageError::Serialization(e.to_string()))?;
+            self.store
+                .put(ConfigNamespace::Agents.as_str(), id, &rollback)
+                .await?;
+            return Err(error);
+        }
+
+        let after_spec = apply_overrides(record.spec, record.meta.user_overrides.as_ref())
+            .map_err(|e| ConfigServiceError::InvalidPayload(e.to_string()))?;
+        let after = serde_json::to_value(&after_spec)
+            .map_err(|e| ConfigServiceError::Serialization(e.to_string()))?;
+
+        self.emit_audit_with_suffix(
+            AuditAction::Update,
+            ConfigNamespace::Agents,
+            id,
+            "overrides",
+            Some(before),
+            Some(after.clone()),
+            headers,
+        )
+        .await;
+
+        Ok(after)
+    }
+
+    /// DELETE /v1/config/agents/:id/overrides
+    ///
+    /// Clears all user overrides from a Builtin agent record. Returns the
+    /// effective AgentSpec (which is now the bare base spec, no overrides).
+    pub async fn clear_agent_overrides(
+        &self,
+        id: &str,
+        headers: &HeaderMap,
+    ) -> Result<Value, ConfigServiceError> {
+        let manager = self.runtime_manager()?;
+        let _apply_guard = manager.lock_apply().await;
+
+        let raw = self
+            .store
+            .get(ConfigNamespace::Agents.as_str(), id)
+            .await?
+            .ok_or_else(|| ConfigServiceError::NotFound(format!("agents/{id}")))?;
+
+        let mut record = ConfigRecord::<AgentSpec>::from_value(raw.clone())
+            .map_err(|e| ConfigServiceError::InvalidPayload(e.to_string()))?;
+
+        if matches!(record.meta.source, RecordSource::User) {
+            return Err(ConfigServiceError::OverridesNotSupportedForUserRecord);
+        }
+
+        // Short-circuit: if overrides are already None, this is a no-op — skip
+        // the store write, apply_locked, and audit emit.
+        if record.meta.user_overrides.is_none() {
+            return serde_json::to_value(&record.spec)
+                .map_err(|e| ConfigServiceError::Serialization(e.to_string()));
+        }
+
+        let before_spec = apply_overrides(record.spec.clone(), record.meta.user_overrides.as_ref())
+            .map_err(|e| ConfigServiceError::InvalidPayload(e.to_string()))?;
+        let before = serde_json::to_value(&before_spec)
+            .map_err(|e| ConfigServiceError::Serialization(e.to_string()))?;
+
+        record.meta.user_overrides = None;
+        record.meta.updated_at = now_ms();
+
+        let envelope = record
+            .to_value()
+            .map_err(|e| ConfigServiceError::Serialization(e.to_string()))?;
+        self.store
+            .put(ConfigNamespace::Agents.as_str(), id, &envelope)
+            .await?;
+
+        let apply_result = manager
+            .apply_locked()
+            .await
+            .map(|_| ())
+            .map_err(map_runtime_error);
+        if let Err(error) = apply_result {
+            let rollback =
+                ensure_envelope(raw).map_err(|e| StorageError::Serialization(e.to_string()))?;
+            self.store
+                .put(ConfigNamespace::Agents.as_str(), id, &rollback)
+                .await?;
+            return Err(error);
+        }
+
+        let after = serde_json::to_value(&record.spec)
+            .map_err(|e| ConfigServiceError::Serialization(e.to_string()))?;
+
+        self.emit_audit_with_suffix(
+            AuditAction::Update,
+            ConfigNamespace::Agents,
+            id,
+            "overrides",
+            Some(before),
+            Some(after.clone()),
+            headers,
+        )
+        .await;
+
+        Ok(after)
+    }
+
+    /// DELETE /v1/config/agents/:id/overrides/:field
+    ///
+    /// Removes a single field from the user overrides of a Builtin agent record.
+    /// Returns 400 if `field` is not a recognized AgentSpecPatch field.
+    /// Idempotent: if the field is not present in user_overrides, returns the
+    /// current effective spec without writing to the store or emitting an audit event.
+    pub async fn clear_agent_override_field(
+        &self,
+        id: &str,
+        field: &str,
+        headers: &HeaderMap,
+    ) -> Result<Value, ConfigServiceError> {
+        let manager = self.runtime_manager()?;
+        let _apply_guard = manager.lock_apply().await;
+
+        let raw = self
+            .store
+            .get(ConfigNamespace::Agents.as_str(), id)
+            .await?
+            .ok_or_else(|| ConfigServiceError::NotFound(format!("agents/{id}")))?;
+
+        let mut record = ConfigRecord::<AgentSpec>::from_value(raw.clone())
+            .map_err(|e| ConfigServiceError::InvalidPayload(e.to_string()))?;
+
+        if matches!(record.meta.source, RecordSource::User) {
+            return Err(ConfigServiceError::OverridesNotSupportedForUserRecord);
+        }
+
+        let before_spec = apply_overrides(record.spec.clone(), record.meta.user_overrides.as_ref())
+            .map_err(|e| ConfigServiceError::InvalidPayload(e.to_string()))?;
+        let before = serde_json::to_value(&before_spec)
+            .map_err(|e| ConfigServiceError::Serialization(e.to_string()))?;
+
+        // Validate that field is recognized by AgentSpecPatch before mutating.
+        // Use a null probe: `AgentSpecPatch` accepts null for all Option fields, and
+        // deny_unknown_fields will reject unknown field names.
+        let probe = Value::Object({
+            let mut m = Map::new();
+            m.insert(field.to_string(), Value::Null);
+            m
+        });
+        let _: AgentSpecPatch = serde_json::from_value(probe).map_err(|_| {
+            ConfigServiceError::InvalidPayload(format!("unknown override field: {field}"))
+        })?;
+
+        // Remove the field from existing overrides.
+        let mut existing_map: Map<String, Value> = record
+            .meta
+            .user_overrides
+            .as_ref()
+            .and_then(Value::as_object)
+            .cloned()
+            .unwrap_or_default();
+
+        // Short-circuit: if the field is not present in overrides, this is a no-op —
+        // skip the store write, apply_locked, and audit emit.
+        if !existing_map.contains_key(field) {
+            let effective_spec = apply_overrides(record.spec, record.meta.user_overrides.as_ref())
+                .map_err(|e| ConfigServiceError::InvalidPayload(e.to_string()))?;
+            return serde_json::to_value(&effective_spec)
+                .map_err(|e| ConfigServiceError::Serialization(e.to_string()));
+        }
+
+        existing_map.remove(field);
+
+        let merged_value = Value::Object(existing_map.clone());
+        record.meta.user_overrides = if existing_map.is_empty() {
+            None
+        } else {
+            Some(merged_value)
+        };
+        record.meta.updated_at = now_ms();
+
+        let envelope = record
+            .to_value()
+            .map_err(|e| ConfigServiceError::Serialization(e.to_string()))?;
+        self.store
+            .put(ConfigNamespace::Agents.as_str(), id, &envelope)
+            .await?;
+
+        let apply_result = manager
+            .apply_locked()
+            .await
+            .map(|_| ())
+            .map_err(map_runtime_error);
+        if let Err(error) = apply_result {
+            let rollback =
+                ensure_envelope(raw).map_err(|e| StorageError::Serialization(e.to_string()))?;
+            self.store
+                .put(ConfigNamespace::Agents.as_str(), id, &rollback)
+                .await?;
+            return Err(error);
+        }
+
+        let after_spec = apply_overrides(record.spec, record.meta.user_overrides.as_ref())
+            .map_err(|e| ConfigServiceError::InvalidPayload(e.to_string()))?;
+        let after = serde_json::to_value(&after_spec)
+            .map_err(|e| ConfigServiceError::Serialization(e.to_string()))?;
+
+        self.emit_audit_with_suffix(
+            AuditAction::Update,
+            ConfigNamespace::Agents,
+            id,
+            &format!("overrides/{field}"),
+            Some(before),
+            Some(after.clone()),
+            headers,
+        )
+        .await;
+
+        Ok(after)
+    }
+}
+
+/// Return the effective spec Value for a stored entry, applying `user_overrides`
+/// when the namespace supports it (currently only Agents).
+///
+/// For non-Agent namespaces this is equivalent to `unwrap_spec`.
+fn effective_spec(namespace: ConfigNamespace, value: Value) -> Result<Value, ConfigServiceError> {
+    if namespace != ConfigNamespace::Agents {
+        return Ok(unwrap_spec(value));
+    }
+    let record = ConfigRecord::<AgentSpec>::from_value(value)
+        .map_err(|e| ConfigServiceError::InvalidPayload(e.to_string()))?;
+    let effective = apply_overrides(record.spec, record.meta.user_overrides.as_ref())
+        .map_err(|e| ConfigServiceError::InvalidPayload(e.to_string()))?;
+    serde_json::to_value(&effective).map_err(|e| ConfigServiceError::Serialization(e.to_string()))
 }
 
 /// Classify a tool's source from its id.
@@ -1069,78 +1473,6 @@ where
 {
     serde_json::from_value(value.clone())
         .map_err(|error| ConfigServiceError::InvalidPayload(error.to_string()))
-}
-
-/// Extract the spec from a stored value, unwrapping a ConfigRecord envelope
-/// if present.  Returns the value unchanged for legacy bare-spec entries.
-///
-/// Used to ensure audit `before`/`after` payloads always contain bare specs.
-fn unwrap_spec(value: Value) -> Value {
-    if value
-        .as_object()
-        .is_some_and(|m| m.contains_key("spec") && m.contains_key("meta"))
-    {
-        value.get("spec").cloned().unwrap_or(value)
-    } else {
-        value
-    }
-}
-
-/// Get a field from a stored value, transparently handling both bare spec
-/// and `ConfigRecord` envelope forms.
-fn spec_field<'a>(value: &'a Value, key: &str) -> Option<&'a Value> {
-    if value
-        .as_object()
-        .is_some_and(|m| m.contains_key("spec") && m.contains_key("meta"))
-    {
-        value.get("spec").and_then(|s| s.get(key))
-    } else {
-        value.get(key)
-    }
-}
-
-fn extract_timestamps(spec: &Value) -> (u64, u64) {
-    let created = spec.get("created_at").and_then(Value::as_u64).unwrap_or(0);
-    let updated = spec.get("updated_at").and_then(Value::as_u64).unwrap_or(0);
-    (created, updated)
-}
-
-/// Wrap a bare spec `Value` in a `ConfigRecord` envelope with `RecordSource::User`.
-///
-/// The spec's own `created_at`/`updated_at` are lifted into `RecordMeta` for
-/// provenance. This does **not** modify the spec itself — the spec timestamps
-/// remain authoritative for UI display.
-fn wrap_user(spec: &Value) -> Result<Value, serde_json::Error> {
-    let (created_at, updated_at) = extract_timestamps(spec);
-    let mut meta = RecordMeta::new_user();
-    if created_at != 0 {
-        meta.created_at = created_at;
-    }
-    if updated_at != 0 {
-        meta.updated_at = updated_at;
-    }
-    let record = ConfigRecord {
-        spec: spec.clone(),
-        meta,
-    };
-    record.to_value()
-}
-
-/// If `value` is already a `ConfigRecord` envelope (has both `"spec"` and
-/// `"meta"` keys), return it as-is.  Otherwise wrap it via `wrap_user`.
-///
-/// Used for rollback paths where the value being restored may have been
-/// written by an earlier writer (envelope) or an older binary (bare spec).
-fn ensure_envelope(value: Value) -> Result<Value, serde_json::Error> {
-    if value.is_object()
-        && value
-            .as_object()
-            .is_some_and(|m| m.contains_key("spec") && m.contains_key("meta"))
-    {
-        Ok(value)
-    } else {
-        wrap_user(&value)
-    }
 }
 
 #[cfg(test)]

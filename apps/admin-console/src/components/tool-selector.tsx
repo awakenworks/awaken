@@ -16,8 +16,9 @@ interface ToolSelectorProps {
   title: string;
   /// Free-form caption explaining the semantics.
   description: string;
-  /// `undefined` = mode "all"; explicit list = mode "custom".
-  value: string[] | undefined;
+  /// `undefined` or `null` = mode "all"; explicit list = mode "custom".
+  /// (Backend serializes `Option<Vec<String>>` as JSON null, so accept both.)
+  value: string[] | null | undefined;
   onChange: (next: string[] | undefined) => void;
   tools: ToolInfo[];
   /// Default mode. "include" matches `allowed_tools` semantics where

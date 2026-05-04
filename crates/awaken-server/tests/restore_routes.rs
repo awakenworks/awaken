@@ -156,6 +156,20 @@ async fn put_json(app: &axum::Router, uri: &str, body: &Value) -> (StatusCode, V
     (status, body)
 }
 
+async fn patch_json(app: &axum::Router, uri: &str, body: &Value) -> (StatusCode, Value) {
+    let req = Request::builder()
+        .method("PATCH")
+        .uri(uri)
+        .header("content-type", "application/json")
+        .body(Body::from(serde_json::to_vec(body).unwrap()))
+        .unwrap();
+    let resp = app.clone().oneshot(req).await.unwrap();
+    let status = resp.status();
+    let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+    let body: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
+    (status, body)
+}
+
 async fn delete_resource(app: &axum::Router, uri: &str) -> StatusCode {
     let req = Request::builder()
         .method("DELETE")
@@ -616,6 +630,192 @@ async fn restore_audit_event_has_restored_from() {
     );
     assert_eq!(restore_ev["action"], "restore");
     assert!(restore_ev["after"]["system_prompt"] == "initial");
+}
+
+/// POSTing restore with a SeedApply event ULID returns 422 (NotRestorable).
+///
+/// Uses the same direct-store-write pattern as `restore_restart_event_returns_422`
+/// to produce a known-ULID SeedApply event without requiring audit-on-manager wiring.
+#[tokio::test]
+async fn restore_rejects_seed_apply_event() {
+    use awaken_contract::AuditAction;
+    use awaken_contract::AuditEvent;
+    use awaken_contract::contract::config_store::ConfigStore;
+    use awaken_server::services::audit_log::AUDIT_NAMESPACE;
+
+    let config_store = Arc::new(InMemoryStore::new());
+    let thread_store = Arc::new(InMemoryStore::new());
+    let runtime = Arc::new(
+        AgentRuntimeBuilder::new()
+            .with_provider("bootstrap", Arc::new(ImmediateExecutor))
+            .with_thread_run_store(thread_store.clone())
+            .build()
+            .expect("build runtime"),
+    );
+    let manager = Arc::new(
+        ConfigRuntimeManager::new(runtime.clone(), config_store.clone())
+            .expect("manager")
+            .with_provider_factory(Arc::new(TestProviderFactory)),
+    );
+    let seed = BuiltinSeedSet {
+        binary_version: "test".to_string(),
+        specs: vec![
+            BuiltinSpec::provider(ProviderSpec {
+                id: "bootstrap".into(),
+                adapter: "stub".into(),
+                ..Default::default()
+            }),
+            BuiltinSpec::model(ModelBindingSpec {
+                id: "bootstrap".into(),
+                provider_id: "bootstrap".into(),
+                upstream_model: "bootstrap-model".into(),
+                created_at: None,
+                updated_at: None,
+            }),
+            BuiltinSpec::agent(bootstrap_agent()),
+        ],
+    };
+    manager.apply_seed(&seed).await.expect("apply_seed");
+    manager.apply().await.expect("apply");
+
+    // Write a SeedApply event directly into the audit store.
+    // The resource must match the restore URL ("agents/bootstrap") so that
+    // ResourceMismatch is NOT raised and NotRestorable is the failure path.
+    let seed_apply_id = ulid::Ulid::new().to_string();
+    let seed_apply_event = AuditEvent {
+        id: seed_apply_id.clone(),
+        ts: chrono::Utc::now().to_rfc3339(),
+        actor: "system:seed".to_string(),
+        action: AuditAction::SeedApply,
+        resource: "agents/bootstrap".to_string(),
+        before: None,
+        after: Some(serde_json::json!({"bucket": "created", "count": 1})),
+        ip: None,
+        request_id: None,
+        restored_from: None,
+    };
+    config_store
+        .put(
+            AUDIT_NAMESPACE,
+            &seed_apply_id,
+            &serde_json::to_value(&seed_apply_event).unwrap(),
+        )
+        .await
+        .unwrap();
+
+    let audit_logger = Arc::new(AuditLogger::new(config_store.clone()));
+    let resolver = runtime.resolver_arc();
+    let mailbox = Arc::new(Mailbox::new(
+        runtime.clone(),
+        Arc::new(awaken_stores::InMemoryMailboxStore::new()),
+        thread_store.clone(),
+        "seed-restore-test".into(),
+        MailboxConfig::default(),
+    ));
+    let state = AppState::new(
+        runtime,
+        mailbox,
+        thread_store,
+        resolver,
+        ServerConfig::default(),
+    )
+    .with_config_store(config_store)
+    .with_config_runtime_manager(manager)
+    .with_audit_log(audit_logger);
+    let app = build_router(&state).with_state(state);
+
+    // POST restore with the SeedApply event ULID.
+    // The agent id in the URL doesn't matter — the event type check fires first.
+    let (status, body) = post_json(
+        &app,
+        "/v1/config/agents/bootstrap/restore",
+        &json!({ "version": seed_apply_id }),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "NotRestorable must map to 422; body: {body}"
+    );
+    assert!(
+        body["error"]
+            .as_str()
+            .is_some_and(|e| e.contains("not restorable")),
+        "error body must mention 'not restorable': {body}"
+    );
+}
+
+/// Restoring a pre-customization version of a Builtin agent must not crash and
+/// must restore the spec content. User overrides are preserved as they are at
+/// restore time (conservative policy: restore only restores spec content, not
+/// the override state from the moment of the source audit event).
+#[tokio::test]
+async fn restore_on_customized_record_restores_spec_only() {
+    let app = build_test_app().await;
+
+    // Step 1: Seed a Builtin agent ("bootstrap") — already done by build_test_app.
+    // The bootstrap agent uses model_id="bootstrap" and system_prompt="bootstrap".
+
+    // Step 2: PATCH /overrides to set a user override on the Builtin agent.
+    let (status, _patch_body) = patch_json(
+        &app,
+        "/v1/config/agents/bootstrap/overrides",
+        &json!({"system_prompt": "user-prompt"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "PATCH overrides must succeed");
+
+    // Get the PATCH audit event ULID.
+    let audit = get_audit_log(&app, "resource=agents/bootstrap").await;
+    let items = audit["items"].as_array().expect("items");
+    let patch_event_id = items
+        .iter()
+        .find(|e| e["action"] == "update")
+        .and_then(|e| e["id"].as_str())
+        .expect("update (PATCH overrides) event")
+        .to_string();
+
+    // Step 3: PUT a full spec — this converts the record to User source, drops overrides.
+    let (status, _) = put_json(
+        &app,
+        "/v1/config/agents/bootstrap",
+        &json!({
+            "id": "bootstrap",
+            "model_id": "bootstrap",
+            "system_prompt": "full-put-prompt",
+            "max_rounds": 3
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "PUT must succeed");
+
+    // Step 4: POST /restore with the ULID of the PATCH event (step 2).
+    // Conservative policy: restoring a pre-customization version restores the
+    // spec content; user_overrides at restore time is whatever was set, not
+    // what it was at the source event's moment.
+    let (status, body) = post_json(
+        &app,
+        "/v1/config/agents/bootstrap/restore",
+        &json!({ "version": patch_event_id }),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "restore of a pre-customization version must not crash; body: {body}"
+    );
+
+    // The restored spec content should reflect the state from the PATCH event's
+    // "after" payload. The exact prompt depends on what apply_overrides produced
+    // at that moment ("user-prompt" because PATCH was applied to the Builtin base).
+    assert!(
+        body["system_prompt"].is_string(),
+        "restored spec must have a system_prompt; body: {body}"
+    );
+    assert_eq!(
+        body["id"], "bootstrap",
+        "restored spec must preserve agent id; body: {body}"
+    );
 }
 
 /// Restore from a Publish audit event restores `event.after` as the resource state.

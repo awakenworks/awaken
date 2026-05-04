@@ -122,7 +122,7 @@ pub async fn apply_builtin_seed(
                             report.unchanged.push(RecordRef::new(namespace, id));
                         } else {
                             // Update: refresh spec and/or version; preserve
-                            // hidden flag and created_at.
+                            // hidden flag, user_overrides, and created_at.
                             let now = awaken_contract::time::now_ms();
                             let record = ConfigRecord {
                                 spec: new_spec_value,
@@ -131,6 +131,7 @@ pub async fn apply_builtin_seed(
                                         binary_version: seed.binary_version.clone(),
                                     },
                                     hidden: existing.meta.hidden,
+                                    user_overrides: existing.meta.user_overrides,
                                     created_at: existing.meta.created_at,
                                     updated_at: now,
                                 },
@@ -633,6 +634,55 @@ mod tests {
             s.get("providers", "prov-0256").await.unwrap().is_none(),
             "record past first page boundary must also be deleted"
         );
+    }
+
+    // ── test 11b ─────────────────────────────────────────────────────────────
+
+    /// user_overrides set on a Builtin record before a version upgrade must be
+    /// preserved after the upgrade, just like the `hidden` flag.
+    #[tokio::test]
+    async fn seed_upgrade_preserves_user_overrides() {
+        let s = store();
+
+        apply_builtin_seed(
+            &s,
+            &seed_v1(vec![BuiltinSpec::Agent(Box::new(agent_spec("a1", "v1")))]),
+        )
+        .await
+        .unwrap();
+
+        // Set user_overrides on the stored record.
+        let raw = s.get("agents", "a1").await.unwrap().unwrap();
+        let mut rec: ConfigRecord<serde_json::Value> = ConfigRecord::from_value(raw).unwrap();
+        rec.meta.user_overrides = Some(serde_json::json!({"system_prompt": "user-custom"}));
+        s.put("agents", "a1", &rec.to_value().unwrap())
+            .await
+            .unwrap();
+
+        // Apply v2 with a new spec.
+        apply_builtin_seed(
+            &s,
+            &seed_v2(vec![BuiltinSpec::Agent(Box::new(agent_spec("a1", "v2")))]),
+        )
+        .await
+        .unwrap();
+
+        let raw = s.get("agents", "a1").await.unwrap().unwrap();
+        let rec: ConfigRecord<serde_json::Value> = ConfigRecord::from_value(raw).unwrap();
+        assert_eq!(
+            rec.meta.source,
+            RecordSource::Builtin {
+                binary_version: "v2".to_owned()
+            },
+            "binary_version must be updated to v2"
+        );
+        assert_eq!(
+            rec.meta.user_overrides,
+            Some(serde_json::json!({"system_prompt": "user-custom"})),
+            "user_overrides must be preserved across version upgrade"
+        );
+        // Base spec in store reflects v2 defaults.
+        assert_eq!(rec.spec["system_prompt"], "v2");
     }
 
     // ── test 12 ──────────────────────────────────────────────────────────────

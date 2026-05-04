@@ -1301,7 +1301,7 @@ fn restart_policy_to_connection_policy(policy: &McpRestartPolicy) -> mcp::transp
 
 fn deserialize_namespace<T>(entries: &[(String, Value)]) -> Result<Vec<T>, ConfigRuntimeError>
 where
-    T: serde::de::DeserializeOwned,
+    T: serde::de::DeserializeOwned + crate::services::config_envelope::ApplyPatch,
 {
     let mut out = Vec::with_capacity(entries.len());
     for (_, value) in entries {
@@ -1311,7 +1311,13 @@ where
         if record.meta.hidden {
             continue;
         }
-        out.push(record.spec);
+        let effective = crate::services::config_envelope::apply_overrides(
+            record.spec,
+            record.meta.user_overrides.as_ref(),
+        )
+        .map_err(|error| StorageError::Serialization(error.to_string()))
+        .map_err(ConfigRuntimeError::Storage)?;
+        out.push(effective);
     }
     Ok(out)
 }
@@ -2319,6 +2325,480 @@ mod tests {
             report.created.len(),
             1,
             "seed record must be created after lock release"
+        );
+    }
+
+    /// ConfigStore (base) wins over discovered (overlay) for the same agent id;
+    /// discovery-only ids that are never seeded still resolve via the overlay.
+    #[tokio::test]
+    async fn discovered_agent_overlays_seeded_agent_with_same_id() {
+        use awaken_contract::registry_spec::RemoteEndpoint;
+        use awaken_contract::{BuiltinSeedSet, BuiltinSpec};
+
+        // Build the runtime with a pre-registered agent "shared" that has an
+        // endpoint (so DiscoveredAgentRegistry picks it up) and a distinct
+        // remote-only agent "remote-only" also with an endpoint.
+        struct Stub;
+        #[async_trait::async_trait]
+        impl awaken_contract::contract::executor::LlmExecutor for Stub {
+            async fn execute(
+                &self,
+                _: awaken_contract::contract::executor::InferenceRequest,
+            ) -> Result<
+                awaken_contract::contract::inference::StreamResult,
+                awaken_contract::contract::executor::InferenceExecutionError,
+            > {
+                Ok(awaken_contract::contract::inference::StreamResult {
+                    content: vec![],
+                    tool_calls: vec![],
+                    usage: Some(awaken_contract::contract::inference::TokenUsage::default()),
+                    stop_reason: Some(awaken_contract::contract::inference::StopReason::EndTurn),
+                    has_incomplete_tool_calls: false,
+                })
+            }
+            fn name(&self) -> &str {
+                "stub"
+            }
+        }
+
+        let store = Arc::new(awaken_stores::InMemoryStore::new())
+            as Arc<dyn awaken_contract::contract::config_store::ConfigStore>;
+        let thread_store = Arc::new(awaken_stores::InMemoryStore::new());
+
+        // Register a "shared" agent with an endpoint (will be captured as discovered)
+        // and a "remote-only" agent with an endpoint.
+        let shared_discovered = AgentSpec {
+            id: "shared".into(),
+            model_id: "boot".into(),
+            system_prompt: "discovered-prompt".into(),
+            max_rounds: 1,
+            endpoint: Some(RemoteEndpoint {
+                base_url: "http://remote-shared/".into(),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let remote_only = AgentSpec {
+            id: "remote-only".into(),
+            model_id: "boot".into(),
+            system_prompt: "remote-only-prompt".into(),
+            max_rounds: 1,
+            endpoint: Some(RemoteEndpoint {
+                base_url: "http://remote-only/".into(),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+
+        let runtime = Arc::new(
+            awaken_runtime::builder::AgentRuntimeBuilder::new()
+                .with_provider("boot", Arc::new(Stub))
+                .with_model_binding(
+                    "boot",
+                    awaken_runtime::registry::traits::ModelBinding {
+                        provider_id: "boot".into(),
+                        upstream_model: "boot-model".into(),
+                    },
+                )
+                .with_agent_spec(shared_discovered)
+                .with_agent_spec(remote_only)
+                .with_thread_run_store(thread_store)
+                .build()
+                .expect("build runtime"),
+        );
+
+        // Use a stub provider factory so provider executor construction always succeeds.
+        struct StubFactory;
+        impl ProviderExecutorFactory for StubFactory {
+            fn build(
+                &self,
+                _spec: &ProviderSpec,
+            ) -> Result<Arc<dyn awaken_contract::contract::executor::LlmExecutor>, ConfigRuntimeError>
+            {
+                Ok(Arc::new(Stub))
+            }
+        }
+
+        let manager = ConfigRuntimeManager::new(runtime.clone(), store.clone())
+            .expect("manager")
+            .with_provider_factory(Arc::new(StubFactory));
+
+        // Seed a provider + model + "shared" agent — NO endpoint on the agent,
+        // so it lives in ConfigStore only (plain Builtin, not discovered).
+        let seed = BuiltinSeedSet {
+            binary_version: "overlay-test".to_owned(),
+            specs: vec![
+                BuiltinSpec::Provider(awaken_contract::ProviderSpec {
+                    id: "boot-prov".into(),
+                    adapter: "stub".into(),
+                    ..Default::default()
+                }),
+                BuiltinSpec::Model(awaken_contract::ModelBindingSpec {
+                    id: "boot-model".into(),
+                    provider_id: "boot-prov".into(),
+                    upstream_model: "gpt-4o".into(),
+                    created_at: None,
+                    updated_at: None,
+                }),
+                BuiltinSpec::Agent(Box::new(AgentSpec {
+                    id: "shared".into(),
+                    model_id: "boot-model".into(),
+                    system_prompt: "seeded-prompt".into(),
+                    max_rounds: 5,
+                    endpoint: None,
+                    ..Default::default()
+                })),
+            ],
+        };
+        manager.apply_seed(&seed).await.expect("apply_seed");
+        manager.apply().await.expect("apply");
+
+        // After apply, the active registry is installed in the runtime.
+        let snapshot = runtime.registry_snapshot().expect("registry snapshot");
+        let registry = &snapshot.registries().agents;
+
+        // "shared" → seeded (base) wins over discovered (overlay).
+        let shared_spec = registry.get_agent("shared").expect("shared must resolve");
+        let shared_json = serde_json::to_value(&shared_spec).expect("serialize");
+        assert_eq!(
+            shared_json["system_prompt"], "seeded-prompt",
+            "base (seeded) wins: system_prompt must be 'seeded-prompt', got {shared_json}"
+        );
+        assert_eq!(
+            shared_json["max_rounds"], 5,
+            "base (seeded) wins: max_rounds must be 5"
+        );
+
+        // "remote-only" → only in discovered layer; must still resolve.
+        let remote_spec = registry
+            .get_agent("remote-only")
+            .expect("remote-only must resolve via overlay");
+        let remote_json = serde_json::to_value(&remote_spec).expect("serialize");
+        assert_eq!(
+            remote_json["system_prompt"], "remote-only-prompt",
+            "discovery-only agent resolves via overlay"
+        );
+        assert_eq!(
+            remote_json["endpoint"]["base_url"], "http://remote-only/",
+            "endpoint base_url must be preserved"
+        );
+    }
+
+    // ── apply_overrides integration tests ────────────────────────────────────
+
+    /// Helper: build a minimal Builtin envelope for an AgentSpec with optional
+    /// user_overrides stored on the meta.
+    fn builtin_agent_record(
+        spec: &AgentSpec,
+        binary_version: &str,
+        user_overrides: Option<serde_json::Value>,
+    ) -> serde_json::Value {
+        use awaken_contract::{ConfigRecord, RecordMeta};
+        let mut meta = RecordMeta::new_builtin(binary_version);
+        meta.user_overrides = user_overrides;
+        let record = ConfigRecord {
+            spec: spec.clone(),
+            meta,
+        };
+        record.to_value().expect("envelope serialize must succeed")
+    }
+
+    #[tokio::test]
+    async fn apply_overrides_merges_at_read() {
+        use awaken_contract::{BuiltinSeedSet, BuiltinSpec};
+
+        let (manager, store) = make_manager_with_store().await;
+
+        // Seed provider + model + agent so apply() can build a working registry.
+        let seed = BuiltinSeedSet {
+            binary_version: "v1".to_owned(),
+            specs: vec![
+                BuiltinSpec::Provider(ProviderSpec {
+                    id: "p".into(),
+                    adapter: "openai".into(),
+                    ..Default::default()
+                }),
+                BuiltinSpec::Model(ModelBindingSpec {
+                    id: "m".into(),
+                    provider_id: "p".into(),
+                    upstream_model: "gpt-4o".into(),
+                    created_at: None,
+                    updated_at: None,
+                }),
+                BuiltinSpec::Agent(Box::new(AgentSpec {
+                    id: "x".into(),
+                    model_id: "m".into(),
+                    system_prompt: "base-prompt".into(),
+                    max_rounds: 5,
+                    ..Default::default()
+                })),
+            ],
+        };
+        manager.apply_seed(&seed).await.expect("apply_seed");
+
+        // Overwrite the agent record directly in the store with user_overrides.
+        let base_spec = AgentSpec {
+            id: "x".into(),
+            model_id: "m".into(),
+            system_prompt: "base-prompt".into(),
+            max_rounds: 5,
+            ..Default::default()
+        };
+        let envelope =
+            builtin_agent_record(&base_spec, "v1", Some(json!({"system_prompt": "patched"})));
+        store
+            .put("agents", "x", &envelope)
+            .await
+            .expect("put must succeed");
+
+        manager.apply().await.expect("apply must succeed");
+
+        let snapshot = manager
+            .runtime
+            .registry_snapshot()
+            .expect("registry snapshot");
+        let spec = snapshot
+            .registries()
+            .agents
+            .get_agent("x")
+            .expect("agent x must resolve");
+        assert_eq!(
+            spec.system_prompt, "patched",
+            "user_overrides must be applied at read time"
+        );
+        // Non-overridden field stays as base.
+        assert_eq!(spec.max_rounds, 5);
+    }
+
+    #[tokio::test]
+    async fn apply_overrides_no_user_overrides_uses_base() {
+        use awaken_contract::{BuiltinSeedSet, BuiltinSpec};
+
+        let (manager, store) = make_manager_with_store().await;
+
+        let seed = BuiltinSeedSet {
+            binary_version: "v1".to_owned(),
+            specs: vec![
+                BuiltinSpec::Provider(ProviderSpec {
+                    id: "p".into(),
+                    adapter: "openai".into(),
+                    ..Default::default()
+                }),
+                BuiltinSpec::Model(ModelBindingSpec {
+                    id: "m".into(),
+                    provider_id: "p".into(),
+                    upstream_model: "gpt-4o".into(),
+                    created_at: None,
+                    updated_at: None,
+                }),
+                BuiltinSpec::Agent(Box::new(AgentSpec {
+                    id: "y".into(),
+                    model_id: "m".into(),
+                    system_prompt: "base-prompt".into(),
+                    max_rounds: 3,
+                    ..Default::default()
+                })),
+            ],
+        };
+        manager.apply_seed(&seed).await.expect("apply_seed");
+
+        // Ensure the record has no overrides (seed already writes None).
+        let raw = store.get("agents", "y").await.unwrap().unwrap();
+        let rec: awaken_contract::ConfigRecord<serde_json::Value> =
+            awaken_contract::ConfigRecord::from_value(raw).unwrap();
+        assert!(rec.meta.user_overrides.is_none());
+
+        manager.apply().await.expect("apply must succeed");
+
+        let snapshot = manager
+            .runtime
+            .registry_snapshot()
+            .expect("registry snapshot");
+        let spec = snapshot
+            .registries()
+            .agents
+            .get_agent("y")
+            .expect("agent y must resolve");
+        assert_eq!(spec.system_prompt, "base-prompt");
+        assert_eq!(spec.max_rounds, 3);
+    }
+
+    #[tokio::test]
+    async fn apply_overrides_on_user_record_applies_overrides() {
+        // At read time, user_overrides is applied regardless of source.
+        // The semantic guard (only Builtin records should have overrides set)
+        // is enforced at the write path (Task 131), not at read time.
+        use awaken_contract::{BuiltinSeedSet, BuiltinSpec};
+        use awaken_contract::{ConfigRecord, RecordMeta};
+
+        let (manager, store) = make_manager_with_store().await;
+
+        // Seed supporting records but NOT the agent "z".
+        let seed = BuiltinSeedSet {
+            binary_version: "v1".to_owned(),
+            specs: vec![
+                BuiltinSpec::Provider(ProviderSpec {
+                    id: "p".into(),
+                    adapter: "openai".into(),
+                    ..Default::default()
+                }),
+                BuiltinSpec::Model(ModelBindingSpec {
+                    id: "m".into(),
+                    provider_id: "p".into(),
+                    upstream_model: "gpt-4o".into(),
+                    created_at: None,
+                    updated_at: None,
+                }),
+            ],
+        };
+        manager.apply_seed(&seed).await.expect("apply_seed");
+
+        // Write a User-source record with user_overrides set (unusual in
+        // production but must work defensively at read time).
+        let user_spec = AgentSpec {
+            id: "z".into(),
+            model_id: "m".into(),
+            system_prompt: "user-base".into(),
+            max_rounds: 2,
+            ..Default::default()
+        };
+        let mut meta = RecordMeta::new_user();
+        meta.user_overrides = Some(json!({"system_prompt": "user-override"}));
+        let record = ConfigRecord {
+            spec: user_spec,
+            meta,
+        };
+        store
+            .put("agents", "z", &record.to_value().unwrap())
+            .await
+            .expect("put must succeed");
+
+        manager.apply().await.expect("apply must succeed");
+
+        let snapshot = manager
+            .runtime
+            .registry_snapshot()
+            .expect("registry snapshot");
+        let spec = snapshot
+            .registries()
+            .agents
+            .get_agent("z")
+            .expect("agent z must resolve");
+        // Overrides are applied even for User-source records at read time.
+        assert_eq!(
+            spec.system_prompt, "user-override",
+            "user_overrides applied at read time regardless of source (write-path enforcement is Task 131)"
+        );
+    }
+
+    #[tokio::test]
+    async fn version_upgrade_preserves_user_overrides() {
+        use awaken_contract::{BuiltinSeedSet, BuiltinSpec};
+
+        let (manager, store) = make_manager_with_store().await;
+
+        // Apply seed v1 with agent A.
+        let seed_v1 = BuiltinSeedSet {
+            binary_version: "v1".to_owned(),
+            specs: vec![
+                BuiltinSpec::Provider(ProviderSpec {
+                    id: "p".into(),
+                    adapter: "openai".into(),
+                    ..Default::default()
+                }),
+                BuiltinSpec::Model(ModelBindingSpec {
+                    id: "m".into(),
+                    provider_id: "p".into(),
+                    upstream_model: "gpt-4o".into(),
+                    created_at: None,
+                    updated_at: None,
+                }),
+                BuiltinSpec::Agent(Box::new(AgentSpec {
+                    id: "a".into(),
+                    model_id: "m".into(),
+                    system_prompt: "v1-prompt".into(),
+                    max_rounds: 5,
+                    ..Default::default()
+                })),
+            ],
+        };
+        manager.apply_seed(&seed_v1).await.expect("apply_seed v1");
+
+        // Manually set user_overrides on the stored record.
+        let raw = store.get("agents", "a").await.unwrap().unwrap();
+        let mut rec: awaken_contract::ConfigRecord<serde_json::Value> =
+            awaken_contract::ConfigRecord::from_value(raw).unwrap();
+        rec.meta.user_overrides = Some(json!({"system_prompt": "user-prompt"}));
+        store
+            .put("agents", "a", &rec.to_value().unwrap())
+            .await
+            .expect("put with overrides");
+
+        // Apply seed v2 with different defaults (new system_prompt + max_rounds).
+        let seed_v2 = BuiltinSeedSet {
+            binary_version: "v2".to_owned(),
+            specs: vec![
+                BuiltinSpec::Provider(ProviderSpec {
+                    id: "p".into(),
+                    adapter: "openai".into(),
+                    ..Default::default()
+                }),
+                BuiltinSpec::Model(ModelBindingSpec {
+                    id: "m".into(),
+                    provider_id: "p".into(),
+                    upstream_model: "gpt-4o".into(),
+                    created_at: None,
+                    updated_at: None,
+                }),
+                BuiltinSpec::Agent(Box::new(AgentSpec {
+                    id: "a".into(),
+                    model_id: "m".into(),
+                    system_prompt: "v2-prompt".into(),
+                    max_rounds: 10,
+                    ..Default::default()
+                })),
+            ],
+        };
+        manager.apply_seed(&seed_v2).await.expect("apply_seed v2");
+
+        // Assert store record: binary_version = v2, user_overrides preserved.
+        let raw = store.get("agents", "a").await.unwrap().unwrap();
+        let stored: awaken_contract::ConfigRecord<serde_json::Value> =
+            awaken_contract::ConfigRecord::from_value(raw).unwrap();
+        assert_eq!(
+            stored.meta.source,
+            awaken_contract::RecordSource::Builtin {
+                binary_version: "v2".to_owned()
+            },
+            "binary_version must be updated to v2"
+        );
+        assert_eq!(
+            stored.meta.user_overrides,
+            Some(json!({"system_prompt": "user-prompt"})),
+            "user_overrides must be preserved across version upgrade"
+        );
+        // Base spec in store uses v2 values.
+        assert_eq!(stored.spec["system_prompt"], "v2-prompt");
+        assert_eq!(stored.spec["max_rounds"], 10);
+
+        // Apply and resolve — effective spec should merge overrides onto v2 base.
+        manager.apply().await.expect("apply must succeed");
+        let snapshot = manager
+            .runtime
+            .registry_snapshot()
+            .expect("registry snapshot");
+        let spec = snapshot
+            .registries()
+            .agents
+            .get_agent("a")
+            .expect("agent a must resolve");
+        assert_eq!(
+            spec.system_prompt, "user-prompt",
+            "user override for system_prompt must be preserved after version upgrade"
+        );
+        assert_eq!(
+            spec.max_rounds, 10,
+            "max_rounds must use v2 base (not overridden)"
         );
     }
 }

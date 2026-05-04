@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import {
   RouterProvider,
   createMemoryRouter,
@@ -390,5 +390,434 @@ describe("agent editor History tab auto-refresh after Save", () => {
     await screen.findByText("hash2");
 
     expect(auditCallCount).toBeGreaterThanOrEqual(2);
+  });
+});
+
+// ── Source badge + reset button ──────────────────────────────────────────────
+
+function buildEditorFetchMock(
+  agentId: string,
+  agentBody: Record<string, unknown>,
+  metaBody: Record<string, unknown> | null,
+) {
+  return vi.fn(async (url: string) => {
+    if (String(url).includes("/v1/capabilities")) {
+      return {
+        ok: true,
+        status: 200,
+        text: async () =>
+          JSON.stringify({
+            agents: [],
+            tools: [],
+            plugins: [],
+            skills: [],
+            models: [],
+            providers: [],
+            namespaces: [],
+          }),
+      };
+    }
+    // GET meta endpoint — must be checked before the general agent URL check
+    if (String(url).endsWith(`/v1/config/agents/${agentId}/meta`)) {
+      if (!metaBody) return { ok: false, status: 404, text: async () => "" };
+      return {
+        ok: true,
+        status: 200,
+        text: async () => JSON.stringify(metaBody),
+      };
+    }
+    // GET / PUT agent
+    if (String(url).includes(`/v1/config/agents/${agentId}`)) {
+      return {
+        ok: true,
+        status: 200,
+        text: async () => JSON.stringify(agentBody),
+      };
+    }
+    // DELETE overrides
+    if (String(url).includes(`/v1/config/agents/${agentId}/overrides`)) {
+      return { ok: true, status: 200, text: async () => JSON.stringify(agentBody) };
+    }
+    if (String(url).includes("/v1/audit-log")) {
+      return {
+        ok: true,
+        status: 200,
+        text: async () => JSON.stringify({ items: [] }),
+      };
+    }
+    return { ok: false, status: 404, text: async () => "" };
+  });
+}
+
+describe("agent editor source badges", () => {
+  it("shows Built-in badge for a builtin agent", async () => {
+    vi.stubGlobal(
+      "fetch",
+      buildEditorFetchMock(
+        "my-builtin",
+        { id: "my-builtin", model_id: "m1", system_prompt: "", max_rounds: 8 },
+        {
+          source: { kind: "builtin", binary_version: "1.0" },
+          hidden: false,
+          user_overrides: null,
+          created_at: 0,
+          updated_at: 0,
+        },
+      ),
+    );
+
+    renderEditorRoute("/agents/my-builtin");
+    await screen.findByText(/Edit my-builtin/i);
+    expect(screen.getByText("Built-in")).toBeDefined();
+  });
+
+  it("shows Customized badge and Reset to defaults button for customized agent", async () => {
+    vi.stubGlobal(
+      "fetch",
+      buildEditorFetchMock(
+        "my-customized",
+        { id: "my-customized", model_id: "m1", system_prompt: "custom", max_rounds: 8 },
+        {
+          source: { kind: "builtin", binary_version: "1.0" },
+          hidden: false,
+          user_overrides: { system_prompt: "custom" },
+          created_at: 0,
+          updated_at: 0,
+        },
+      ),
+    );
+
+    renderEditorRoute("/agents/my-customized");
+    await screen.findByText(/Edit my-customized/i);
+    expect(screen.getByText("Customized")).toBeDefined();
+    expect(screen.getByRole("button", { name: /reset to defaults/i })).toBeDefined();
+  });
+
+  it("does not show Reset button for builtin agent with no overrides", async () => {
+    vi.stubGlobal(
+      "fetch",
+      buildEditorFetchMock(
+        "pure-builtin",
+        { id: "pure-builtin", model_id: "m1", system_prompt: "", max_rounds: 8 },
+        {
+          source: { kind: "builtin", binary_version: "1.0" },
+          hidden: false,
+          user_overrides: null,
+          created_at: 0,
+          updated_at: 0,
+        },
+      ),
+    );
+
+    renderEditorRoute("/agents/pure-builtin");
+    await screen.findByText(/Edit pure-builtin/i);
+    expect(screen.queryByRole("button", { name: /reset to defaults/i })).toBeNull();
+  });
+
+  it("shows User-defined badge for user-created agent", async () => {
+    vi.stubGlobal(
+      "fetch",
+      buildEditorFetchMock(
+        "user-def",
+        { id: "user-def", model_id: "m1", system_prompt: "", max_rounds: 8 },
+        {
+          source: { kind: "user" },
+          hidden: false,
+          user_overrides: null,
+          created_at: 0,
+          updated_at: 0,
+        },
+      ),
+    );
+
+    renderEditorRoute("/agents/user-def");
+    await screen.findByText(/Edit user-def/i);
+    expect(screen.getByText("User-defined")).toBeDefined();
+    expect(screen.queryByRole("button", { name: /reset to defaults/i })).toBeNull();
+  });
+
+  it("calls clearAgentOverrides and refetches on reset confirm", async () => {
+    let deleteOverridesCalled = false;
+    const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
+      if (String(url).includes("/v1/capabilities")) {
+        return {
+          ok: true,
+          status: 200,
+          text: async () =>
+            JSON.stringify({
+              agents: [],
+              tools: [],
+              plugins: [],
+              skills: [],
+              models: [],
+              providers: [],
+              namespaces: [],
+            }),
+        };
+      }
+      if (
+        String(url).includes("/v1/config/agents/reset-me/overrides") &&
+        (init as RequestInit | undefined)?.method === "DELETE"
+      ) {
+        deleteOverridesCalled = true;
+        return { ok: true, status: 200, text: async () => JSON.stringify({ id: "reset-me", model_id: "m1", system_prompt: "", max_rounds: 8 }) };
+      }
+      if (String(url).endsWith("/v1/config/agents/reset-me/meta")) {
+        return {
+          ok: true,
+          status: 200,
+          text: async () =>
+            JSON.stringify({
+              source: { kind: "builtin", binary_version: "1.0" },
+              hidden: false,
+              user_overrides: { system_prompt: "custom" },
+              created_at: 0,
+              updated_at: 0,
+            }),
+        };
+      }
+      if (String(url).includes("/v1/config/agents/reset-me")) {
+        return {
+          ok: true,
+          status: 200,
+          text: async () =>
+            JSON.stringify({ id: "reset-me", model_id: "m1", system_prompt: "custom", max_rounds: 8 }),
+        };
+      }
+      if (String(url).includes("/v1/audit-log")) {
+        return { ok: true, status: 200, text: async () => JSON.stringify({ items: [] }) };
+      }
+      return { ok: false, status: 404, text: async () => "" };
+    });
+
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderEditorRoute("/agents/reset-me");
+    await screen.findByText(/Edit reset-me/i);
+    expect(screen.getByText("Customized")).toBeDefined();
+
+    const resetBtn = screen.getByRole("button", { name: /reset to defaults/i });
+    fireEvent.click(resetBtn);
+
+    // Confirm dialog appears — wait for it, then click the last "Reset to defaults" button
+    // (the dialog's confirm button, not the page trigger).
+    await waitFor(() => {
+      const buttons = screen.getAllByRole("button", { name: /reset to defaults/i });
+      expect(buttons.length).toBeGreaterThan(1);
+    });
+    const allReset = screen.getAllByRole("button", { name: /reset to defaults/i });
+    fireEvent.click(allReset[allReset.length - 1]);
+
+    await waitFor(() => {
+      expect(deleteOverridesCalled).toBe(true);
+    });
+  });
+});
+
+// ── Save → PATCH vs PUT branching ────────────────────────────────────────────
+
+describe("agent editor Save → PATCH vs PUT branching", () => {
+  it("Save calls PATCH /overrides for Builtin records", async () => {
+    const agentId = "builtin-agent";
+    const agentBody = {
+      id: agentId,
+      model_id: "m1",
+      system_prompt: "original",
+      max_rounds: 8,
+      plugin_ids: [],
+      sections: {},
+      delegates: [],
+    };
+    const metaBody = {
+      source: { kind: "builtin", binary_version: "1.0" },
+      hidden: false,
+      user_overrides: null,
+      created_at: 0,
+      updated_at: 0,
+    };
+
+    let patchCalled = false;
+    let patchBody: Record<string, unknown> = {};
+    let putCalled = false;
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string, init?: RequestInit) => {
+        const u = String(url);
+        if (u.includes("/v1/capabilities")) {
+          return {
+            ok: true,
+            status: 200,
+            text: async () =>
+              JSON.stringify({
+                agents: [],
+                tools: [],
+                plugins: [],
+                skills: [],
+                models: [],
+                providers: [],
+                namespaces: [],
+              }),
+          };
+        }
+        if (u.endsWith(`/v1/config/agents/${agentId}/meta`)) {
+          return {
+            ok: true,
+            status: 200,
+            text: async () => JSON.stringify(metaBody),
+          };
+        }
+        if (u.includes(`/v1/config/agents/${agentId}/overrides`) && init?.method === "PATCH") {
+          patchCalled = true;
+          patchBody = JSON.parse((init.body as string) ?? "{}") as Record<string, unknown>;
+          // Return the updated spec after patch
+          return {
+            ok: true,
+            status: 200,
+            text: async () =>
+              JSON.stringify({ ...agentBody, system_prompt: "updated-prompt" }),
+          };
+        }
+        if (u.includes(`/v1/config/agents/${agentId}`) && init?.method === "PUT") {
+          putCalled = true;
+          return {
+            ok: true,
+            status: 200,
+            text: async () => JSON.stringify(agentBody),
+          };
+        }
+        if (u.includes(`/v1/config/agents/${agentId}`)) {
+          return {
+            ok: true,
+            status: 200,
+            text: async () => JSON.stringify(agentBody),
+          };
+        }
+        if (u.includes("/v1/audit-log")) {
+          return {
+            ok: true,
+            status: 200,
+            text: async () => JSON.stringify({ items: [] }),
+          };
+        }
+        return { ok: false, status: 404, text: async () => "" };
+      }),
+    );
+
+    renderEditorRoute(`/agents/${agentId}`);
+    await screen.findByText(new RegExp(`Edit ${agentId}`, "i"));
+
+    // Edit the system prompt (a patchable field)
+    const promptTextarea = screen.getByRole("textbox", { name: /system prompt/i });
+    fireEvent.change(promptTextarea, { target: { value: "updated-prompt" } });
+
+    // Click Save
+    const saveBtn = screen.getAllByRole("button", { name: /^save$/i })[0];
+    fireEvent.click(saveBtn);
+
+    await waitFor(() => {
+      expect(patchCalled).toBe(true);
+    });
+
+    expect(putCalled).toBe(false);
+    expect(patchBody).toMatchObject({ system_prompt: "updated-prompt" });
+  });
+
+  it("Save calls PUT /agents/:id for User records", async () => {
+    const agentId = "user-agent";
+    const agentBody = {
+      id: agentId,
+      model_id: "m1",
+      system_prompt: "original",
+      max_rounds: 8,
+      plugin_ids: [],
+      sections: {},
+      delegates: [],
+    };
+    const metaBody = {
+      source: { kind: "user" },
+      hidden: false,
+      user_overrides: null,
+      created_at: 0,
+      updated_at: 0,
+    };
+
+    let putCalled = false;
+    let patchCalled = false;
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string, init?: RequestInit) => {
+        const u = String(url);
+        if (u.includes("/v1/capabilities")) {
+          return {
+            ok: true,
+            status: 200,
+            text: async () =>
+              JSON.stringify({
+                agents: [],
+                tools: [],
+                plugins: [],
+                skills: [],
+                models: [],
+                providers: [],
+                namespaces: [],
+              }),
+          };
+        }
+        if (u.endsWith(`/v1/config/agents/${agentId}/meta`)) {
+          return {
+            ok: true,
+            status: 200,
+            text: async () => JSON.stringify(metaBody),
+          };
+        }
+        if (u.includes(`/v1/config/agents/${agentId}/overrides`) && init?.method === "PATCH") {
+          patchCalled = true;
+          return { ok: true, status: 200, text: async () => JSON.stringify(agentBody) };
+        }
+        if (u.includes(`/v1/config/agents/${agentId}`) && init?.method === "PUT") {
+          putCalled = true;
+          return {
+            ok: true,
+            status: 200,
+            text: async () =>
+              JSON.stringify({ ...agentBody, system_prompt: "updated-prompt" }),
+          };
+        }
+        if (u.includes(`/v1/config/agents/${agentId}`)) {
+          return {
+            ok: true,
+            status: 200,
+            text: async () => JSON.stringify(agentBody),
+          };
+        }
+        if (u.includes("/v1/audit-log")) {
+          return {
+            ok: true,
+            status: 200,
+            text: async () => JSON.stringify({ items: [] }),
+          };
+        }
+        return { ok: false, status: 404, text: async () => "" };
+      }),
+    );
+
+    renderEditorRoute(`/agents/${agentId}`);
+    await screen.findByText(new RegExp(`Edit ${agentId}`, "i"));
+
+    // Edit the system prompt
+    const promptTextarea = screen.getByRole("textbox", { name: /system prompt/i });
+    fireEvent.change(promptTextarea, { target: { value: "updated-prompt" } });
+
+    // Click Save
+    const saveBtn = screen.getAllByRole("button", { name: /^save$/i })[0];
+    fireEvent.click(saveBtn);
+
+    await waitFor(() => {
+      expect(putCalled).toBe(true);
+    });
+
+    expect(patchCalled).toBe(false);
   });
 });

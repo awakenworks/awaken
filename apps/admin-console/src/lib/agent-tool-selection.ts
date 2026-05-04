@@ -1,12 +1,15 @@
+/// Backend serializes `Option<Vec<String>>` as JSON `null` when None, which
+/// becomes JS `null` after parsing. Treat null and undefined identically as
+/// "no explicit list set" — the default-all sentinel for inclusion semantics.
 export function isToolAllowed(
-  allowedTools: string[] | undefined,
+  allowedTools: string[] | null | undefined,
   toolId: string,
 ): boolean {
   return allowedTools ? allowedTools.includes(toolId) : true;
 }
 
 export function nextAllowedTools(
-  allowedTools: string[] | undefined,
+  allowedTools: string[] | null | undefined,
   allToolIds: string[],
   toolId: string,
   checked: boolean,
@@ -26,14 +29,14 @@ export function nextAllowedTools(
   return baseAllowed.filter((id) => id !== toolId);
 }
 
-/// Inclusion semantics — `undefined` (or missing) means "every tool"; an
-/// explicit array means "only these tools".
+/// Inclusion semantics — `undefined`/`null` (or missing) means "every tool";
+/// an explicit array means "only these tools".
 export type ToolSelectionMode = "all" | "custom";
 
 export function toolSelectionMode(
-  allowedTools: string[] | undefined,
+  allowedTools: string[] | null | undefined,
 ): ToolSelectionMode {
-  return allowedTools === undefined ? "all" : "custom";
+  return allowedTools == null ? "all" : "custom";
 }
 
 /// Switch between modes without losing user data. When toggling to "all",
@@ -41,12 +44,12 @@ export function toolSelectionMode(
 /// the current list is preserved, falling back to *all* known tools so
 /// the resulting custom set has the same effective behaviour as "all".
 export function applyToolSelectionMode(
-  current: string[] | undefined,
+  current: string[] | null | undefined,
   mode: ToolSelectionMode,
   allToolIds: string[],
 ): string[] | undefined {
   if (mode === "all") return undefined;
-  if (current !== undefined) return current;
+  if (current != null) return current;
   return [...allToolIds];
 }
 
@@ -147,7 +150,7 @@ const SOURCE_ORDER: Record<ToolSourceKind, number> = {
 /// value, preserving the inclusion semantics: when every tool ends up
 /// selected we collapse to `undefined`.
 export function setGroupSelection(
-  allowedTools: string[] | undefined,
+  allowedTools: string[] | null | undefined,
   allToolIds: string[],
   groupToolIds: string[],
   selected: boolean,
@@ -175,7 +178,7 @@ export function setGroupSelection(
 /// Returns the selection state of a group: "all" if every tool in the
 /// group is selected, "none" if zero, or "some" otherwise.
 export function groupSelectionState(
-  allowedTools: string[] | undefined,
+  allowedTools: string[] | null | undefined,
   groupToolIds: string[],
 ): "all" | "some" | "none" {
   if (groupToolIds.length === 0) return "none";

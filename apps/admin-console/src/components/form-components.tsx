@@ -5,21 +5,59 @@ export function Field({
   children,
   required = false,
   error,
+  overridden = false,
+  onReset,
+  resetLabel,
 }: {
   label: string;
   children: ReactNode;
   required?: boolean;
   error?: string | null;
+  overridden?: boolean;
+  onReset?: () => void;
+  resetLabel?: string;
 }) {
   // The required marker is rendered via the ::after pseudo-element so it
   // appears visually without contributing to label.textContent — RTL's
   // getByLabelText matches on textContent, not accessible name.
   const labelClassName = required
-    ? "mb-1.5 block text-sm font-medium text-fg-soft after:ml-0.5 after:text-tone-error after:content-['*']"
-    : "mb-1.5 block text-sm font-medium text-fg-soft";
+    ? "text-sm font-medium text-fg-soft after:ml-0.5 after:text-tone-error after:content-['*']"
+    : "text-sm font-medium text-fg-soft";
+  // The label-text + reset-button pair lives outside <label> because <button>
+  // is a labelable element — nesting it would steal the implicit label
+  // association from the wrapped form control.
+  if (onReset) {
+    return (
+      <div className="block">
+        <div className="mb-1.5 flex items-center gap-1.5">
+          <span className={labelClassName}>{label}</span>
+          {overridden ? (
+            <button
+              type="button"
+              onClick={onReset}
+              aria-label={resetLabel ?? `Reset ${label} to default`}
+              title={resetLabel ?? `Reset ${label} to default`}
+              className="inline-flex h-5 w-5 items-center justify-center rounded-full text-xs text-tone-warn transition hover:bg-tone-warn/15"
+            >
+              ↺
+            </button>
+          ) : null}
+        </div>
+        <label className="block">
+          <span className="sr-only">{label}</span>
+          {children}
+        </label>
+        {error ? (
+          <span role="alert" className="mt-1 block text-xs text-tone-error">
+            {error}
+          </span>
+        ) : null}
+      </div>
+    );
+  }
   return (
     <label className="block">
-      <span className={labelClassName}>{label}</span>
+      <span className={`mb-1.5 block ${labelClassName}`}>{label}</span>
       {children}
       {error ? (
         <span role="alert" className="mt-1 block text-xs text-tone-error">

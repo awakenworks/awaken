@@ -2033,3 +2033,516 @@ async fn mcp_restart_returns_404_for_unknown_server() {
     // The manager returns "no MCP registry is active" → 503.
     assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
 }
+
+// ── Agent override endpoint tests ──────────────────────────────────────────
+
+/// Seed a builtin agent with `system_prompt` for override tests.
+/// Uses the already-seeded "bootstrap" agent from `make_app`.
+async fn patch_overrides(router: &axum::Router, id: &str, body: Value) -> (StatusCode, Value) {
+    request_json(
+        router,
+        Method::PATCH,
+        &format!("/v1/config/agents/{id}/overrides"),
+        Some(body),
+    )
+    .await
+}
+
+async fn delete_overrides(router: &axum::Router, id: &str) -> (StatusCode, Value) {
+    request_json(
+        router,
+        Method::DELETE,
+        &format!("/v1/config/agents/{id}/overrides"),
+        None,
+    )
+    .await
+}
+
+async fn delete_override_field(
+    router: &axum::Router,
+    id: &str,
+    field: &str,
+) -> (StatusCode, Value) {
+    request_json(
+        router,
+        Method::DELETE,
+        &format!("/v1/config/agents/{id}/overrides/{field}"),
+        None,
+    )
+    .await
+}
+
+async fn get_agent_spec(router: &axum::Router, id: &str) -> (StatusCode, Value) {
+    request_json(
+        router,
+        Method::GET,
+        &format!("/v1/config/agents/{id}"),
+        None,
+    )
+    .await
+}
+
+#[tokio::test]
+async fn patch_overrides_on_builtin_returns_effective_spec() {
+    let app = make_app().await;
+
+    // The "bootstrap" agent is seeded as Builtin.
+    let (status, body) = patch_overrides(
+        &app.router,
+        "bootstrap",
+        json!({"system_prompt": "patched"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "body: {body}");
+    assert_eq!(body["system_prompt"], "patched");
+
+    // Verify the store has user_overrides set.
+    use awaken_contract::contract::config_store::ConfigStore;
+    let raw = ConfigStore::get(app.store.as_ref(), "agents", "bootstrap")
+        .await
+        .expect("store read")
+        .expect("entry present");
+    let overrides = &raw["meta"]["user_overrides"];
+    assert_eq!(overrides["system_prompt"], "patched");
+
+    // GET should also return the patched effective spec.
+    let (get_status, get_body) = get_agent_spec(&app.router, "bootstrap").await;
+    assert_eq!(get_status, StatusCode::OK);
+    assert_eq!(get_body["system_prompt"], "patched");
+}
+
+#[tokio::test]
+async fn patch_overrides_merges_with_existing_overrides() {
+    let app = make_app().await;
+
+    // First patch: system_prompt
+    let (s1, _) = patch_overrides(&app.router, "bootstrap", json!({"system_prompt": "p1"})).await;
+    assert_eq!(s1, StatusCode::OK);
+
+    // Second patch: max_rounds
+    let (s2, body) = patch_overrides(&app.router, "bootstrap", json!({"max_rounds": 99})).await;
+    assert_eq!(s2, StatusCode::OK, "body: {body}");
+    assert_eq!(body["system_prompt"], "p1");
+    assert_eq!(body["max_rounds"], 99);
+}
+
+#[tokio::test]
+async fn patch_overrides_null_clears_field() {
+    let app = make_app().await;
+
+    // Patch both fields.
+    patch_overrides(
+        &app.router,
+        "bootstrap",
+        json!({"system_prompt": "p1", "max_rounds": 99}),
+    )
+    .await;
+
+    // Null-out max_rounds.
+    let (status, body) =
+        patch_overrides(&app.router, "bootstrap", json!({"max_rounds": null})).await;
+    assert_eq!(status, StatusCode::OK, "body: {body}");
+    assert_eq!(body["system_prompt"], "p1");
+    // max_rounds should be reset to the base value (not 99).
+    assert_ne!(body["max_rounds"], 99);
+
+    // Store should only have system_prompt in user_overrides.
+    use awaken_contract::contract::config_store::ConfigStore;
+    let raw = ConfigStore::get(app.store.as_ref(), "agents", "bootstrap")
+        .await
+        .expect("store read")
+        .expect("entry present");
+    let overrides = &raw["meta"]["user_overrides"];
+    assert_eq!(overrides["system_prompt"], "p1");
+    assert!(
+        overrides.get("max_rounds").is_none() || overrides["max_rounds"].is_null(),
+        "max_rounds must not remain in user_overrides"
+    );
+}
+
+#[tokio::test]
+async fn patch_overrides_rejects_unknown_field() {
+    let app = make_app().await;
+
+    let (status, body) =
+        patch_overrides(&app.router, "bootstrap", json!({"unknown_field": "x"})).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "body: {body}");
+}
+
+#[tokio::test]
+async fn patch_overrides_on_user_record_returns_422() {
+    let app = make_app().await;
+
+    // Create a User-source agent via PUT (regular create).
+    let (create_status, _) = request_json(
+        &app.router,
+        Method::POST,
+        "/v1/config/agents",
+        Some(json!({
+            "id": "user-agent-422",
+            "model_id": "bootstrap",
+            "system_prompt": "hello",
+            "max_rounds": 1
+        })),
+    )
+    .await;
+    assert_eq!(create_status, StatusCode::CREATED);
+
+    let (status, body) =
+        patch_overrides(&app.router, "user-agent-422", json!({"system_prompt": "x"})).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "body: {body}");
+}
+
+#[tokio::test]
+async fn patch_overrides_on_missing_agent_returns_404() {
+    let app = make_app().await;
+
+    let (status, _body) = patch_overrides(
+        &app.router,
+        "nonexistent-agent",
+        json!({"system_prompt": "x"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn delete_all_overrides_resets_to_builtin() {
+    let app = make_app().await;
+
+    // Set some overrides first.
+    patch_overrides(
+        &app.router,
+        "bootstrap",
+        json!({"system_prompt": "customized"}),
+    )
+    .await;
+
+    // Delete all overrides.
+    let (status, body) = delete_overrides(&app.router, "bootstrap").await;
+    assert_eq!(status, StatusCode::OK, "body: {body}");
+
+    // Store record should have user_overrides = None.
+    use awaken_contract::contract::config_store::ConfigStore;
+    let raw = ConfigStore::get(app.store.as_ref(), "agents", "bootstrap")
+        .await
+        .expect("store read")
+        .expect("entry present");
+    assert!(
+        raw["meta"].get("user_overrides").is_none() || raw["meta"]["user_overrides"].is_null(),
+        "user_overrides must be None after delete all"
+    );
+
+    // Effective spec should be back to the seed value.
+    let (get_status, get_body) = get_agent_spec(&app.router, "bootstrap").await;
+    assert_eq!(get_status, StatusCode::OK);
+    assert_eq!(get_body["system_prompt"], "agent bootstrap");
+}
+
+#[tokio::test]
+async fn delete_one_override_field_resets_only_that_field() {
+    let app = make_app().await;
+
+    // Set two overrides.
+    patch_overrides(
+        &app.router,
+        "bootstrap",
+        json!({"system_prompt": "p1", "max_rounds": 99}),
+    )
+    .await;
+
+    // Delete only max_rounds.
+    let (status, body) = delete_override_field(&app.router, "bootstrap", "max_rounds").await;
+    assert_eq!(status, StatusCode::OK, "body: {body}");
+
+    // system_prompt override is preserved.
+    assert_eq!(body["system_prompt"], "p1");
+    // max_rounds is back to base (not 99).
+    assert_ne!(body["max_rounds"], 99);
+}
+
+#[tokio::test]
+async fn audit_event_emitted_for_patch_and_delete() {
+    use awaken_server::services::audit_log::{AuditLogger, AuditQuery};
+    use awaken_server::services::config_service::ConfigService;
+
+    // Test audit via direct service calls (bypassing HTTP routing) to verify
+    // that patch/clear methods emit Update audit events.
+    let config_store = Arc::new(InMemoryStore::new());
+    let thread_store = Arc::new(InMemoryStore::new());
+    let runtime = Arc::new(
+        AgentRuntimeBuilder::new()
+            .with_provider("bootstrap", Arc::new(ImmediateExecutor))
+            .with_thread_run_store(thread_store.clone())
+            .build()
+            .expect("build runtime"),
+    );
+    let manager = Arc::new(
+        ConfigRuntimeManager::new(
+            runtime.clone(),
+            config_store.clone() as Arc<dyn ConfigStore>,
+        )
+        .expect("manager")
+        .with_provider_factory(Arc::new(TestProviderFactory)),
+    );
+    let seed = BuiltinSeedSet {
+        binary_version: "test".to_string(),
+        specs: vec![
+            BuiltinSpec::provider(ProviderSpec {
+                id: "bootstrap".into(),
+                adapter: "stub".into(),
+                ..Default::default()
+            }),
+            BuiltinSpec::model(ModelBindingSpec {
+                id: "bootstrap".into(),
+                provider_id: "bootstrap".into(),
+                upstream_model: "bootstrap-model".into(),
+                created_at: None,
+                updated_at: None,
+            }),
+            BuiltinSpec::agent(agent_spec("bootstrap", "bootstrap")),
+        ],
+    };
+    manager.apply_seed(&seed).await.expect("apply_seed");
+    manager.apply().await.expect("apply");
+
+    let audit_logger = Arc::new(AuditLogger::new(
+        config_store.clone() as Arc<dyn ConfigStore>
+    ));
+    let mailbox = Arc::new(Mailbox::new(
+        runtime.clone(),
+        Arc::new(awaken_stores::InMemoryMailboxStore::new()),
+        thread_store.clone(),
+        "override-audit-test".into(),
+        MailboxConfig::default(),
+    ));
+    let state = awaken_server::app::AppState::new(
+        runtime.clone(),
+        mailbox,
+        thread_store,
+        runtime.resolver_arc(),
+        ServerConfig::default(),
+    )
+    .with_config_store(config_store.clone() as Arc<dyn ConfigStore>)
+    .with_config_runtime_manager(manager)
+    .with_audit_log(audit_logger.clone());
+
+    let headers = axum::http::HeaderMap::new();
+
+    // 1. PATCH overrides
+    let service = ConfigService::new(&state).expect("service");
+    service
+        .patch_agent_overrides("bootstrap", json!({"system_prompt": "audited"}), &headers)
+        .await
+        .expect("patch_agent_overrides");
+
+    // Verify state has audit_log
+    assert!(state.audit_log.is_some(), "state should have audit_log");
+
+    // 2. DELETE all overrides
+    let service = ConfigService::new(&state).expect("service");
+    service
+        .clear_agent_overrides("bootstrap", &headers)
+        .await
+        .expect("clear_agent_overrides");
+
+    // Check count after step 2
+    let after_clear = audit_logger
+        .query(AuditQuery::default())
+        .await
+        .expect("after_clear query");
+    assert!(
+        after_clear.items.len() >= 2,
+        "should have 2 events after clear, got {}: {:?}",
+        after_clear.items.len(),
+        after_clear
+            .items
+            .iter()
+            .map(|e| format!("{:?}@{}", e.action, e.resource))
+            .collect::<Vec<_>>()
+    );
+
+    // 3. PATCH again
+    let service = ConfigService::new(&state).expect("service");
+    service
+        .patch_agent_overrides(
+            "bootstrap",
+            json!({"system_prompt": "p1", "max_rounds": 5}),
+            &headers,
+        )
+        .await
+        .expect("patch_agent_overrides 2");
+
+    // 4. DELETE single field
+    let service = ConfigService::new(&state).expect("service");
+    service
+        .clear_agent_override_field("bootstrap", "max_rounds", &headers)
+        .await
+        .expect("clear_agent_override_field");
+
+    // Query audit log — expect at least 3 Update events for agents/bootstrap.
+    let page = audit_logger
+        .query(AuditQuery {
+            action: Some(awaken_contract::AuditAction::Update),
+            ..Default::default()
+        })
+        .await
+        .expect("audit query");
+
+    // Override mutations now emit with resource path including the
+    // `/overrides[/{field}]` suffix per Phase 3 spec.
+    let agent_updates: Vec<_> = page
+        .items
+        .iter()
+        .filter(|e| {
+            e.resource == "agents/bootstrap/overrides"
+                || e.resource.starts_with("agents/bootstrap/overrides/")
+        })
+        .collect();
+    assert_eq!(
+        agent_updates.len(),
+        4,
+        "expected exactly one Update per non-no-op mutation (patch + clear-all + patch + clear-field), got {} (all: {:?})",
+        agent_updates.len(),
+        page.items
+            .iter()
+            .map(|e| format!("{:?}@{}", e.action, e.resource))
+            .collect::<Vec<_>>()
+    );
+
+    // Specifically: 2 PATCH calls + 1 DELETE all + 1 DELETE field.
+    let single_field_updates: Vec<_> = page
+        .items
+        .iter()
+        .filter(|e| e.resource == "agents/bootstrap/overrides/max_rounds")
+        .collect();
+    assert_eq!(
+        single_field_updates.len(),
+        1,
+        "expected one Update for the per-field DELETE, got {}",
+        single_field_updates.len()
+    );
+}
+
+// ── GET /v1/config/:ns/:id/meta ──────────────────────────────────────────────
+
+#[tokio::test]
+async fn get_meta_returns_source_and_overrides_for_builtin() {
+    let app = make_app().await;
+
+    // The bootstrap agent is seeded as Builtin.
+    let (status, body) = request_json(
+        &app.router,
+        Method::GET,
+        "/v1/config/agents/bootstrap/meta",
+        None,
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::OK, "body: {body}");
+    assert_eq!(
+        body["source"]["kind"], "builtin",
+        "source.kind must be 'builtin'"
+    );
+    assert!(
+        body["source"]["binary_version"].is_string(),
+        "binary_version must be present"
+    );
+    // No overrides on a freshly seeded builtin.
+    assert!(
+        body.get("user_overrides").is_none() || body["user_overrides"].is_null(),
+        "user_overrides should be absent or null for a pristine builtin"
+    );
+}
+
+#[tokio::test]
+async fn get_meta_returns_user_source_for_user_record() {
+    let app = make_app().await;
+
+    // Create a user record.
+    let (create_status, _) = request_json(
+        &app.router,
+        Method::POST,
+        "/v1/config/agents",
+        Some(json!({ "id": "user-agent-meta", "model_id": "bootstrap", "system_prompt": "test", "max_rounds": 1 })),
+    )
+    .await;
+    assert_eq!(create_status, StatusCode::CREATED);
+
+    let (status, body) = request_json(
+        &app.router,
+        Method::GET,
+        "/v1/config/agents/user-agent-meta/meta",
+        None,
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::OK, "body: {body}");
+    assert_eq!(
+        body["source"]["kind"], "user",
+        "user-created record must have source.kind 'user'"
+    );
+}
+
+#[tokio::test]
+async fn get_meta_returns_404_for_missing() {
+    let app = make_app().await;
+
+    let (status, _) = request_json(
+        &app.router,
+        Method::GET,
+        "/v1/config/agents/no-such-agent/meta",
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+// ── GET /v1/config/:ns/meta ──────────────────────────────────────────────────
+
+#[tokio::test]
+async fn list_meta_returns_all_records_with_source() {
+    let app = make_app().await;
+
+    // Create a user agent.
+    let (create_status, _) = request_json(
+        &app.router,
+        Method::POST,
+        "/v1/config/agents",
+        Some(json!({ "id": "user-list-meta", "model_id": "bootstrap", "system_prompt": "hi", "max_rounds": 1 })),
+    )
+    .await;
+    assert_eq!(create_status, StatusCode::CREATED);
+
+    let (status, body) =
+        request_json(&app.router, Method::GET, "/v1/config/agents/meta", None).await;
+
+    assert_eq!(status, StatusCode::OK, "body: {body}");
+    let items = body.as_array().expect("body must be a JSON array");
+    assert!(
+        !items.is_empty(),
+        "list/meta must return at least one entry"
+    );
+
+    // Every item must have id and meta.source.kind.
+    for item in items {
+        assert!(item["id"].is_string(), "each item must have an id string");
+        let kind = item["meta"]["source"]["kind"].as_str();
+        assert!(
+            matches!(kind, Some("builtin") | Some("user")),
+            "source.kind must be 'builtin' or 'user', got: {kind:?}"
+        );
+    }
+
+    // Confirm both the builtin seed and our user record appear.
+    let bootstrap = items.iter().find(|i| i["id"] == "bootstrap");
+    assert!(
+        bootstrap.is_some(),
+        "bootstrap builtin must be in list/meta"
+    );
+    assert_eq!(bootstrap.unwrap()["meta"]["source"]["kind"], "builtin");
+
+    let user_rec = items.iter().find(|i| i["id"] == "user-list-meta");
+    assert!(user_rec.is_some(), "user-list-meta must be in list/meta");
+    assert_eq!(user_rec.unwrap()["meta"]["source"]["kind"], "user");
+}

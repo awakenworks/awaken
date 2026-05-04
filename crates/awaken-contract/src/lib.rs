@@ -12,6 +12,7 @@
 
 #![allow(missing_docs)]
 
+pub mod agent_spec_patch;
 pub mod builtin_seed;
 pub mod cancellation;
 pub mod config_loader;
@@ -37,6 +38,9 @@ pub use model::{
     EffectSpec, FailedScheduledActions, JsonValue, PendingScheduledActions, Phase,
     ScheduledActionSpec, TypedEffect,
 };
+
+// ── agent spec patch ──
+pub use agent_spec_patch::{AgentSpecPatch, merge_agent_spec};
 
 // ── registry spec (AgentSpec, PluginConfigKey) ──
 pub use registry_spec::{

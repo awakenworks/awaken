@@ -21,6 +21,11 @@ pub struct RecordMeta {
     pub source: RecordSource,
     #[serde(default)]
     pub hidden: bool,
+    /// Field-level overrides for Builtin records (Phase 3).
+    /// Decoded by spec-type-specific helpers downstream; opaque at this layer.
+    /// `None` for User records and for Builtin records that have not been customized.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user_overrides: Option<serde_json::Value>,
     /// Milliseconds since UNIX epoch (see `crate::time::now_ms`).
     /// `0` is a sentinel meaning "unknown / pre-envelope legacy entry".
     #[serde(default)]
@@ -74,6 +79,7 @@ impl RecordMeta {
         Self {
             source: RecordSource::User,
             hidden: false,
+            user_overrides: None,
             created_at: 0,
             updated_at: 0,
         }
@@ -85,6 +91,7 @@ impl RecordMeta {
         Self {
             source: RecordSource::User,
             hidden: false,
+            user_overrides: None,
             created_at: now,
             updated_at: now,
         }
@@ -98,6 +105,7 @@ impl RecordMeta {
                 binary_version: binary_version.into(),
             },
             hidden: false,
+            user_overrides: None,
             created_at: now,
             updated_at: now,
         }

@@ -18,7 +18,7 @@ use sha2::Digest;
 pub const AUDIT_NAMESPACE: &str = "_audit";
 
 /// Query parameters for listing audit events.
-#[derive(Debug, Clone, Default, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Deserialize)]
 pub struct AuditQuery {
     /// Include only events at or after this timestamp (RFC 3339).
     #[serde(default)]
@@ -41,6 +41,20 @@ pub struct AuditQuery {
     /// Opaque keyset cursor from a previous response.
     #[serde(default)]
     pub cursor: Option<String>,
+}
+
+impl Default for AuditQuery {
+    fn default() -> Self {
+        Self {
+            since: None,
+            until: None,
+            action: None,
+            resource: None,
+            actor: None,
+            limit: default_audit_limit(),
+            cursor: None,
+        }
+    }
 }
 
 fn default_audit_limit() -> usize {
@@ -313,6 +327,7 @@ impl AuditLogger {
                 }
                 if let Some(ref resource) = filter.resource
                     && &event.resource != resource
+                    && !event.resource.starts_with(&format!("{resource}/"))
                 {
                     return false;
                 }

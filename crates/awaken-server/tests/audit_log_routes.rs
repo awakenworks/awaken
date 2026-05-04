@@ -342,3 +342,103 @@ async fn malformed_cursor_returns_400() {
         "body must contain error: invalid cursor"
     );
 }
+
+/// The `apply_seed` boot call emits `SeedApply` events that are visible
+/// when the audit log is queried with `action=seed_apply`.
+///
+/// The audit logger must be attached to the manager BEFORE `apply_seed` so that
+/// the manager's `emit_seed_report` call fires.
+#[tokio::test]
+async fn seed_apply_event_visible_via_http_query() {
+    let config_store = Arc::new(InMemoryStore::new());
+    let thread_store = Arc::new(InMemoryStore::new());
+    let runtime = Arc::new(
+        AgentRuntimeBuilder::new()
+            .with_provider("bootstrap", Arc::new(ImmediateExecutor))
+            .with_thread_run_store(thread_store.clone())
+            .build()
+            .expect("build runtime"),
+    );
+
+    let audit_logger = Arc::new(AuditLogger::new(config_store.clone()));
+
+    // Attach audit to manager BEFORE apply_seed so emit_seed_report fires.
+    let manager = Arc::new(
+        ConfigRuntimeManager::new(runtime.clone(), config_store.clone())
+            .expect("config runtime manager")
+            .with_provider_factory(Arc::new(TestProviderFactory))
+            .with_audit_log(audit_logger.clone()),
+    );
+
+    let seed = BuiltinSeedSet {
+        binary_version: "test".to_string(),
+        specs: vec![
+            BuiltinSpec::provider(ProviderSpec {
+                id: "bootstrap".into(),
+                adapter: "stub".into(),
+                ..Default::default()
+            }),
+            BuiltinSpec::model(ModelBindingSpec {
+                id: "bootstrap".into(),
+                provider_id: "bootstrap".into(),
+                upstream_model: "bootstrap-model".into(),
+                created_at: None,
+                updated_at: None,
+            }),
+            BuiltinSpec::agent(bootstrap_agent()),
+        ],
+    };
+    manager.apply_seed(&seed).await.expect("apply_seed");
+    manager.apply().await.expect("apply");
+
+    let resolver = runtime.resolver_arc();
+    let mailbox = Arc::new(Mailbox::new(
+        runtime.clone(),
+        Arc::new(awaken_stores::InMemoryMailboxStore::new()),
+        thread_store.clone(),
+        "seed-audit-test".into(),
+        MailboxConfig::default(),
+    ));
+    let state = AppState::new(
+        runtime,
+        mailbox,
+        thread_store,
+        resolver,
+        ServerConfig::default(),
+    )
+    .with_config_store(config_store)
+    .with_config_runtime_manager(manager)
+    .with_audit_log(audit_logger);
+
+    let app = build_router(&state).with_state(state);
+
+    let (status, body) = get_audit_log(&app, "action=seed_apply").await;
+    assert_eq!(status, StatusCode::OK, "body: {body}");
+
+    let items = body["items"].as_array().expect("items array");
+    assert!(
+        !items.is_empty(),
+        "at least one seed_apply event must be present; body: {body}"
+    );
+
+    // Every returned event must have action=seed_apply, actor=system:seed,
+    // and a resource starting with "seed:".
+    for item in items {
+        assert_eq!(
+            item["action"].as_str(),
+            Some("seed_apply"),
+            "action must be seed_apply; got {item}"
+        );
+        assert_eq!(
+            item["actor"].as_str(),
+            Some("system:seed"),
+            "actor must be system:seed; got {item}"
+        );
+        assert!(
+            item["resource"]
+                .as_str()
+                .is_some_and(|r| r.starts_with("seed:")),
+            "resource must start with 'seed:'; got {item}"
+        );
+    }
+}

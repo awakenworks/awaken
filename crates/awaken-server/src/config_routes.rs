@@ -1,7 +1,7 @@
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{get, post};
+use axum::routing::{delete as delete_route, get, patch, post};
 use axum::{Json, Router};
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -44,9 +44,19 @@ pub fn config_routes() -> Router<AppState> {
             get(get_config).put(put_config).delete(delete_config),
         )
         .route("/v1/config/:namespace/:id/restore", post(restore_config))
+        .route("/v1/config/:namespace/:id/meta", get(get_config_meta))
+        .route("/v1/config/:namespace/meta", get(list_config_meta))
         .route("/v1/config/:namespace/$schema", get(get_schema))
         .route("/v1/agents", get(list_agents))
         .route("/v1/agents/:id", get(get_agent))
+        .route(
+            "/v1/config/agents/:id/overrides",
+            patch(patch_agent_overrides_handler).delete(clear_agent_overrides_handler),
+        )
+        .route(
+            "/v1/config/agents/:id/overrides/:field",
+            delete_route(clear_agent_override_field_handler),
+        )
         .route("/v1/providers/:id/test", post(test_provider_connection))
         .route("/v1/mcp-servers/:id/status", get(get_mcp_server_status))
         .route("/v1/mcp-servers/:id/restart", post(post_mcp_server_restart))
@@ -187,6 +197,42 @@ async fn get_config_inner(
         .map_err(map_service_error)?
         .ok_or_else(|| ApiError::NotFound(format!("{}/{}", namespace.as_str(), id)))?;
     Ok(Json(value))
+}
+
+async fn get_config_meta(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path((namespace, id)): Path<(String, String)>,
+) -> Result<impl IntoResponse, ConfigRouteError> {
+    ensure_admin_auth(&state, &headers)?;
+    let namespace = ConfigNamespace::parse(&namespace).map_err(map_service_error)?;
+    let service = ConfigService::new(&state).map_err(map_service_error)?;
+    let meta = service
+        .get_meta(namespace, &id)
+        .await
+        .map_err(map_service_error)?
+        .ok_or_else(|| ApiError::NotFound(format!("{}/{}", namespace.as_str(), id)))?;
+    Ok(Json(meta))
+}
+
+async fn list_config_meta(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(namespace): Path<String>,
+    Query(params): Query<ListParams>,
+) -> Result<impl IntoResponse, ConfigRouteError> {
+    ensure_admin_auth(&state, &headers)?;
+    let namespace = ConfigNamespace::parse(&namespace).map_err(map_service_error)?;
+    let service = ConfigService::new(&state).map_err(map_service_error)?;
+    let items = service
+        .list_meta(namespace, params.offset, params.limit)
+        .await
+        .map_err(map_service_error)?;
+    let response: Vec<_> = items
+        .into_iter()
+        .map(|(id, meta)| json!({ "id": id, "meta": meta }))
+        .collect();
+    Ok(Json(response))
 }
 
 async fn put_config(
@@ -480,6 +526,79 @@ fn ensure_admin_auth_for_token(
     Ok(())
 }
 
+async fn patch_agent_overrides_handler(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    Json(body): Json<Value>,
+) -> Response {
+    if let Err(err) = ensure_admin_auth(&state, &headers) {
+        return err.into_response();
+    }
+    let service = match ConfigService::new(&state) {
+        Ok(s) => s,
+        Err(e) => return ConfigRouteError::Api(map_service_error(e)).into_response(),
+    };
+    match service.patch_agent_overrides(&id, body, &headers).await {
+        Ok(spec) => Json(spec).into_response(),
+        Err(ConfigServiceError::OverridesNotSupportedForUserRecord) => (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(json!({ "error": ConfigServiceError::OverridesNotSupportedForUserRecord.to_string() })),
+        )
+            .into_response(),
+        Err(e) => ConfigRouteError::Api(map_service_error(e)).into_response(),
+    }
+}
+
+async fn clear_agent_overrides_handler(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> Response {
+    if let Err(err) = ensure_admin_auth(&state, &headers) {
+        return err.into_response();
+    }
+    let service = match ConfigService::new(&state) {
+        Ok(s) => s,
+        Err(e) => return ConfigRouteError::Api(map_service_error(e)).into_response(),
+    };
+    match service.clear_agent_overrides(&id, &headers).await {
+        Ok(spec) => Json(spec).into_response(),
+        Err(ConfigServiceError::OverridesNotSupportedForUserRecord) => (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(json!({ "error": ConfigServiceError::OverridesNotSupportedForUserRecord.to_string() })),
+        )
+            .into_response(),
+        Err(e) => ConfigRouteError::Api(map_service_error(e)).into_response(),
+    }
+}
+
+async fn clear_agent_override_field_handler(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path((id, field)): Path<(String, String)>,
+) -> Response {
+    if let Err(err) = ensure_admin_auth(&state, &headers) {
+        return err.into_response();
+    }
+    let service = match ConfigService::new(&state) {
+        Ok(s) => s,
+        Err(e) => return ConfigRouteError::Api(map_service_error(e)).into_response(),
+    };
+    match service
+        .clear_agent_override_field(&id, &field, &headers)
+        .await
+    {
+        Ok(spec) => Json(spec).into_response(),
+        Err(ConfigServiceError::OverridesNotSupportedForUserRecord) => (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(json!({ "error": ConfigServiceError::OverridesNotSupportedForUserRecord.to_string() })),
+        )
+            .into_response(),
+        Err(e) => ConfigRouteError::Api(map_service_error(e)).into_response(),
+    }
+}
+
 fn map_service_error(error: ConfigServiceError) -> ApiError {
     match error {
         ConfigServiceError::NotEnabled | ConfigServiceError::InvalidPayload(_) => {
@@ -497,6 +616,10 @@ fn map_service_error(error: ConfigServiceError) -> ApiError {
         | ConfigServiceError::Storage(_) => ApiError::Internal(error.to_string()),
         // Blocked is matched inline in delete_config before reaching this function.
         ConfigServiceError::Blocked { .. } => ApiError::Conflict(error.to_string()),
+        // OverridesNotSupportedForUserRecord is matched inline in patch/clear handlers.
+        ConfigServiceError::OverridesNotSupportedForUserRecord => {
+            ApiError::BadRequest(error.to_string())
+        }
     }
 }
 

@@ -1,6 +1,55 @@
 use awaken_contract::{AgentSpec, ConfigRecord, RecordMeta, RecordSource};
 use serde_json::json;
 
+#[test]
+fn record_meta_user_overrides_serde_round_trip() {
+    let meta = RecordMeta {
+        source: RecordSource::User,
+        hidden: false,
+        user_overrides: Some(json!({"x": 1})),
+        created_at: 100,
+        updated_at: 200,
+    };
+    let value = serde_json::to_value(&meta).expect("serialize must succeed");
+    let decoded: RecordMeta = serde_json::from_value(value).expect("deserialize must succeed");
+    assert_eq!(decoded.user_overrides, Some(json!({"x": 1})));
+}
+
+#[test]
+fn record_meta_user_overrides_omitted_when_none() {
+    let meta = RecordMeta::new_user();
+    let value = serde_json::to_value(&meta).expect("serialize must succeed");
+    let obj = value.as_object().expect("must be object");
+    assert!(
+        !obj.contains_key("user_overrides"),
+        "user_overrides must be absent from JSON when None"
+    );
+}
+
+#[test]
+fn legacy_envelope_without_user_overrides_decodes_cleanly() {
+    let value = json!({
+        "spec": {
+            "id": "x",
+            "model_id": "y",
+            "system_prompt": "z",
+        },
+        "meta": {
+            "source": { "kind": "user" },
+            "hidden": false,
+            "created_at": 100,
+            "updated_at": 200,
+        }
+    });
+
+    let decoded =
+        ConfigRecord::<AgentSpec>::from_value(value).expect("legacy envelope must decode cleanly");
+    assert_eq!(
+        decoded.meta.user_overrides, None,
+        "user_overrides must default to None when absent from JSON"
+    );
+}
+
 fn sample_agent_spec() -> AgentSpec {
     AgentSpec {
         id: "x".into(),
@@ -17,6 +66,7 @@ fn envelope_round_trip_preserves_all_fields() {
             binary_version: "1.2.3".into(),
         },
         hidden: true,
+        user_overrides: None,
         created_at: 1_000,
         updated_at: 2_000,
     };

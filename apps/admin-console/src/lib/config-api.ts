@@ -17,8 +17,8 @@ export interface AgentSpec {
   max_continuation_retries?: number;
   plugin_ids?: string[];
   sections?: Record<string, unknown>;
-  allowed_tools?: string[];
-  excluded_tools?: string[];
+  allowed_tools?: string[] | null;
+  excluded_tools?: string[] | null;
   delegates?: string[];
   reasoning_effort?: string | number | null;
   created_at?: number;
@@ -196,6 +196,41 @@ export interface AgentRuntimeSnapshot {
 }
 
 export type RestoreResponse = Record<string, unknown>;
+
+// ── Record provenance types (mirrors Rust RecordMeta / RecordSource) ─────────
+
+export type RecordSource =
+  | { kind: "builtin"; binary_version: string }
+  | { kind: "user" };
+
+export interface RecordMeta {
+  source: RecordSource;
+  hidden: boolean;
+  user_overrides?: Record<string, unknown> | null;
+  created_at: number;
+  updated_at: number;
+}
+
+export interface ConfigMetaItem {
+  id: string;
+  meta: RecordMeta;
+}
+
+/** Three-state derivation. Pure function — no fetch required. */
+export type ConfigSourceState = "builtin" | "customized" | "user";
+
+export function deriveSourceState(meta: RecordMeta): ConfigSourceState {
+  // Defensive: handle missing source (e.g. unexpected server response shape).
+  if (!meta.source || meta.source.kind === "user") return "user";
+  if (
+    meta.user_overrides &&
+    typeof meta.user_overrides === "object" &&
+    Object.keys(meta.user_overrides).length > 0
+  ) {
+    return "customized";
+  }
+  return "builtin";
+}
 
 export interface ListResponse<T> {
   namespace: string;
@@ -435,5 +470,33 @@ export const configApi = {
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ version }),
       },
+    ),
+
+  getMeta: (namespace: string, id: string) =>
+    fetchJson<RecordMeta>(`${configUrl(namespace, id)}/meta`),
+
+  listMeta: (namespace: string) =>
+    fetchJson<ConfigMetaItem[]>(`${configUrl(namespace)}/meta`),
+
+  patchAgentOverrides: (id: string, patch: Record<string, unknown>) =>
+    fetchJson<unknown>(
+      `${BACKEND_URL}/v1/config/agents/${encodeURIComponent(id)}/overrides`,
+      {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(patch),
+      },
+    ),
+
+  clearAgentOverrides: (id: string) =>
+    fetchJson<unknown>(
+      `${BACKEND_URL}/v1/config/agents/${encodeURIComponent(id)}/overrides`,
+      { method: "DELETE" },
+    ),
+
+  clearAgentOverrideField: (id: string, field: string) =>
+    fetchJson<unknown>(
+      `${BACKEND_URL}/v1/config/agents/${encodeURIComponent(id)}/overrides/${encodeURIComponent(field)}`,
+      { method: "DELETE" },
     ),
 };

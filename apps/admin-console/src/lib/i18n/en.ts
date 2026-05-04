@@ -127,6 +127,15 @@ export const en = {
     sortLabel: "last modified",
     searchPh: "Search by id, model, or plugin…",
     noMatches: "No agents match the current filter.",
+    source: {
+      builtin: "Built-in",
+      customized: "Customized",
+      userDefined: "User-defined",
+    },
+    resetOverrides: "Reset to defaults",
+    resetOverridesConfirm: "Reset all customizations on this agent?",
+    resetOverrideField: "Reset to default",
+    resetOverrideFieldDone: "Reset \"{{field}}\" to default",
   },
   audit: {
     title: "Audit Log",

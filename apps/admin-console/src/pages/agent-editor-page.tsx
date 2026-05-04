@@ -5,7 +5,14 @@ import {
   useParams,
   useSearchParams,
 } from "react-router";
-import { type AgentSpec, type Capabilities, configApi } from "@/lib/config-api";
+import {
+  type AgentSpec,
+  type Capabilities,
+  type ConfigSourceState,
+  type RecordMeta,
+  configApi,
+  deriveSourceState,
+} from "@/lib/config-api";
 import { type AuditEvent, type AuditPage, formatActor, summarizeChange } from "@/lib/audit-log";
 import { Field } from "@/components/form-components";
 import { AgentPreviewPanel } from "@/components/agent-preview-panel";
@@ -40,6 +47,34 @@ const EMPTY_AGENT: AgentSpec = {
   delegates: [],
 };
 
+const PATCHABLE_FIELDS: Array<keyof AgentSpec> = [
+  "model_id",
+  "system_prompt",
+  "max_rounds",
+  "max_continuation_retries",
+  "plugin_ids",
+  "sections",
+  "allowed_tools",
+  "excluded_tools",
+  "delegates",
+  "reasoning_effort",
+];
+
+function diffPatchableFields(
+  current: AgentSpec,
+  original: AgentSpec,
+): Record<string, unknown> {
+  const patch: Record<string, unknown> = {};
+  for (const key of PATCHABLE_FIELDS) {
+    const a = current[key];
+    const b = original[key];
+    if (JSON.stringify(a) !== JSON.stringify(b)) {
+      patch[key] = a;
+    }
+  }
+  return patch;
+}
+
 export function AgentEditorPage() {
   const navigate = useNavigate();
   const { id } = useParams();
@@ -53,6 +88,8 @@ export function AgentEditorPage() {
 
   const [spec, setSpec] = useState<AgentSpec>({ ...EMPTY_AGENT });
   const [savedSpec, setSavedSpec] = useState<AgentSpec | null>(null);
+  const [originalSpec, setOriginalSpec] = useState<AgentSpec | null>(null);
+  const [agentMeta, setAgentMeta] = useState<RecordMeta | null>(null);
   const [capabilities, setCapabilities] = useState<Capabilities | null>(null);
   const [loading, setLoading] = useState(!isNew);
   const [saving, setSaving] = useState(false);
@@ -61,6 +98,7 @@ export function AgentEditorPage() {
   const [errors, setErrors] = useState<Partial<Record<"id" | "model_id", string>>>({});
   const { t } = useTranslation();
   const toast = useToast();
+  const confirmDialog = useConfirmDialog();
 
   const isDirty = useMemo(() => {
     if (saving) return false;
@@ -77,6 +115,10 @@ export function AgentEditorPage() {
   }, [spec, savedSpec, isNew, saving]);
 
   useUnsavedChangesGuard({ enabled: isDirty });
+
+  const sourceState: ConfigSourceState | null = agentMeta
+    ? deriveSourceState(agentMeta)
+    : null;
 
   useEffect(() => {
     let cancelled = false;
@@ -104,7 +146,10 @@ export function AgentEditorPage() {
 
       setLoading(true);
       try {
-        const nextSpec = await configApi.get<AgentSpec>("agents", id);
+        const [nextSpec, nextMeta] = await Promise.all([
+          configApi.get<AgentSpec>("agents", id),
+          configApi.getMeta("agents", id).catch(() => null),
+        ]);
         if (!cancelled) {
           const hydrated = {
             sections: {},
@@ -114,6 +159,8 @@ export function AgentEditorPage() {
           };
           setSpec(hydrated);
           setSavedSpec(hydrated);
+          setOriginalSpec(hydrated);
+          setAgentMeta(nextMeta);
         }
       } catch (loadError) {
         if (!cancelled) {
@@ -168,8 +215,36 @@ export function AgentEditorPage() {
           payload,
         );
         setSavedSpec(created);
+        setOriginalSpec(created);
         toast.success(`Agent "${created.id}" created`);
         navigate(adminRoutes.agent(created.id), { replace: true });
+      } else if (sourceState === "builtin" || sourceState === "customized") {
+        // For Builtin/Customized records, use PATCH /overrides to preserve
+        // upgrade tracking. Only patchable fields are included.
+        const patch = diffPatchableFields(spec, originalSpec ?? spec);
+        if (Object.keys(patch).length === 0) {
+          // Nothing patchable changed; nothing to send.
+          toast.success(`Agent "${spec.id}" saved (no patchable changes)`);
+        } else {
+          await configApi.patchAgentOverrides(spec.id, patch);
+          // Refresh spec and meta so the badge updates correctly.
+          const [nextSpec, nextMeta] = await Promise.all([
+            configApi.get<AgentSpec>("agents", spec.id),
+            configApi.getMeta("agents", spec.id).catch(() => null),
+          ]);
+          const hydrated: AgentSpec = {
+            sections: {},
+            plugin_ids: [],
+            delegates: [],
+            ...nextSpec,
+          };
+          setSpec(hydrated);
+          setSavedSpec(hydrated);
+          setOriginalSpec(hydrated);
+          setAgentMeta(nextMeta);
+          toast.success(`Agent "${spec.id}" saved`);
+          setHistoryRefreshKey((k) => k + 1);
+        }
       } else {
         const updated = await configApi.update<typeof payload, AgentSpec>(
           "agents",
@@ -178,6 +253,7 @@ export function AgentEditorPage() {
         );
         setSpec(updated);
         setSavedSpec(updated);
+        setOriginalSpec(updated);
         toast.success(`Agent "${updated.id}" saved`);
         setHistoryRefreshKey((k) => k + 1);
       }
@@ -187,6 +263,58 @@ export function AgentEditorPage() {
       );
     } finally {
       setSaving(false);
+    }
+  }
+
+  async function handleResetOverrides() {
+    if (!id) return;
+    const accepted = await confirmDialog({
+      title: t("agents.resetOverrides"),
+      description: t("agents.resetOverridesConfirm"),
+      confirmLabel: t("agents.resetOverrides"),
+      tone: "destructive",
+    });
+    if (!accepted) return;
+    try {
+      await configApi.clearAgentOverrides(id);
+      // Re-fetch spec and meta after reset.
+      const [nextSpec, nextMeta] = await Promise.all([
+        configApi.get<AgentSpec>("agents", id),
+        configApi.getMeta("agents", id).catch(() => null),
+      ]);
+      const hydrated: AgentSpec = { sections: {}, plugin_ids: [], delegates: [], ...nextSpec };
+      setSpec(hydrated);
+      setSavedSpec(hydrated);
+      setOriginalSpec(hydrated);
+      setAgentMeta(nextMeta);
+      toast.success(`Agent "${id}" overrides cleared`);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  async function handleResetField(field: string) {
+    if (!id) return;
+    try {
+      await configApi.clearAgentOverrideField(id, field);
+      const [nextSpec, nextMeta] = await Promise.all([
+        configApi.get<AgentSpec>("agents", id),
+        configApi.getMeta("agents", id).catch(() => null),
+      ]);
+      const hydrated: AgentSpec = {
+        sections: {},
+        plugin_ids: [],
+        delegates: [],
+        ...nextSpec,
+      };
+      setSpec(hydrated);
+      setSavedSpec(hydrated);
+      setOriginalSpec(hydrated);
+      setAgentMeta(nextMeta);
+      toast.success(t("agents.resetOverrideFieldDone", { field }));
+      setHistoryRefreshKey((k) => k + 1);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : String(err));
     }
   }
 
@@ -250,6 +378,13 @@ export function AgentEditorPage() {
   }
 
   const reasoningMode = reasoningEffortMode(spec.reasoning_effort);
+
+  const overriddenFields = useMemo(() => {
+    const overrides = agentMeta?.user_overrides;
+    if (!overrides || typeof overrides !== "object") return new Set<string>();
+    return new Set(Object.keys(overrides));
+  }, [agentMeta]);
+  const isCustomized = sourceState === "customized";
 
   const configurablePlugins = (capabilities?.plugins ?? []).filter(
     (plugin) => plugin.config_schemas.length > 0,
@@ -327,6 +462,8 @@ export function AgentEditorPage() {
         onSave={() => void handleSave()}
         activeTab={activeTab}
         onTabChange={setActiveTab}
+        sourceState={sourceState}
+        onResetOverrides={() => void handleResetOverrides()}
       />
 
       <div className="grid gap-6 px-6 py-6 md:px-8 xl:grid-cols-[minmax(0,1fr),24rem]">
@@ -348,6 +485,9 @@ export function AgentEditorPage() {
                   updateField={updateField}
                   reasoningMode={reasoningMode}
                   errors={errors}
+                  canResetFields={!isNew && isCustomized}
+                  overriddenFields={overriddenFields}
+                  onResetField={(field) => void handleResetField(field)}
                 />
               )}
               {tab.id === "tools" && (
@@ -625,6 +765,30 @@ function formatDiffValue(value: unknown): string {
   return JSON.stringify(value, null, 2);
 }
 
+function EditorSourceBadge({ state }: { state: ConfigSourceState }) {
+  const { t } = useTranslation();
+  if (state === "builtin") {
+    return (
+      <span className="rounded-full bg-muted px-2 py-0.5 text-xs font-medium text-fg-soft">
+        {t("agents.source.builtin")}
+      </span>
+    );
+  }
+  if (state === "customized") {
+    return (
+      <span className="inline-flex items-center gap-1 rounded-full bg-blue-100 px-2 py-0.5 text-xs font-medium text-blue-800 dark:bg-blue-900/30 dark:text-blue-300">
+        <span aria-hidden className="h-1.5 w-1.5 rounded-full bg-blue-500" />
+        {t("agents.source.customized")}
+      </span>
+    );
+  }
+  return (
+    <span className="rounded-full bg-soft px-2 py-0.5 text-xs font-medium text-fg">
+      {t("agents.source.userDefined")}
+    </span>
+  );
+}
+
 function StickyEditorHeader({
   isNew,
   agentId,
@@ -634,6 +798,8 @@ function StickyEditorHeader({
   onSave,
   activeTab,
   onTabChange,
+  sourceState,
+  onResetOverrides,
 }: {
   isNew: boolean;
   agentId: string;
@@ -643,6 +809,8 @@ function StickyEditorHeader({
   onSave: () => void;
   activeTab: AgentEditorTabId;
   onTabChange: (next: AgentEditorTabId) => void;
+  sourceState: ConfigSourceState | null;
+  onResetOverrides: () => void;
 }) {
   const { t } = useTranslation();
   const tabRefs = useRef<(HTMLButtonElement | null)[]>([]);
@@ -704,7 +872,19 @@ function StickyEditorHeader({
                 {t("editor.upToDate")}
               </span>
             ) : null}
+            {!isNew && sourceState && <EditorSourceBadge state={sourceState} />}
           </h2>
+          {!isNew && sourceState === "customized" && (
+            <div className="mt-1">
+              <button
+                type="button"
+                onClick={onResetOverrides}
+                className="text-xs font-medium text-tone-error transition hover:underline"
+              >
+                {t("agents.resetOverrides")}
+              </button>
+            </div>
+          )}
         </div>
         {(isDirty || isNew) ? null : (
           <button
@@ -775,6 +955,9 @@ function BasicsPanel({
   updateField,
   reasoningMode,
   errors,
+  canResetFields,
+  overriddenFields,
+  onResetField,
 }: {
   spec: AgentSpec;
   capabilities: Capabilities | null;
@@ -782,7 +965,21 @@ function BasicsPanel({
   updateField: <K extends keyof AgentSpec>(key: K, value: AgentSpec[K]) => void;
   reasoningMode: ReturnType<typeof reasoningEffortMode>;
   errors?: Partial<Record<"id" | "model_id", string>>;
+  canResetFields?: boolean;
+  overriddenFields?: Set<string>;
+  onResetField?: (field: string) => void;
 }) {
+  const { t } = useTranslation();
+  const fieldResetProps = (field: string) => {
+    if (!canResetFields || !overriddenFields?.has(field) || !onResetField) {
+      return {};
+    }
+    return {
+      overridden: true,
+      onReset: () => onResetField(field),
+      resetLabel: t("agents.resetOverrideField"),
+    } as const;
+  };
   return (
     <section className="rounded-md border border-line bg-surface p-5 shadow-sm">
       <h3 className="text-lg font-semibold text-fg-strong">Basics</h3>
@@ -797,7 +994,12 @@ function BasicsPanel({
             className="w-full rounded-xl border border-line-strong px-3 py-2 text-sm text-fg-strong outline-none transition focus:border-line-strong disabled:bg-muted disabled:text-fg-soft aria-[invalid=true]:border-tone-error"
           />
         </Field>
-        <Field label="Model" required error={errors?.model_id}>
+        <Field
+          label="Model"
+          required
+          error={errors?.model_id}
+          {...fieldResetProps("model_id")}
+        >
           <select
             value={String(spec.model_id ?? "")}
             aria-invalid={Boolean(errors?.model_id)}
@@ -812,7 +1014,7 @@ function BasicsPanel({
             ))}
           </select>
         </Field>
-        <Field label="Max rounds">
+        <Field label="Max rounds" {...fieldResetProps("max_rounds")}>
           <input
             type="number"
             min={1}
@@ -823,7 +1025,10 @@ function BasicsPanel({
             className="w-full rounded-xl border border-line-strong px-3 py-2 text-sm text-fg-strong outline-none transition focus:border-line-strong"
           />
         </Field>
-        <Field label="Max continuation retries">
+        <Field
+          label="Max continuation retries"
+          {...fieldResetProps("max_continuation_retries")}
+        >
           <input
             type="number"
             min={0}
@@ -913,7 +1118,7 @@ function BasicsPanel({
       </div>
 
       <div className="mt-4">
-        <Field label="System prompt">
+        <Field label="System prompt" {...fieldResetProps("system_prompt")}>
           <textarea
             value={String(spec.system_prompt ?? "")}
             onChange={(event) => updateField("system_prompt", event.target.value)}

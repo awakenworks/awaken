@@ -1,7 +1,14 @@
 import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Link, useNavigate } from "react-router";
-import { type AgentRuntimeSnapshot, type AgentSpec, configApi } from "@/lib/config-api";
+import {
+  type AgentRuntimeSnapshot,
+  type AgentSpec,
+  type ConfigMetaItem,
+  type ConfigSourceState,
+  configApi,
+  deriveSourceState,
+} from "@/lib/config-api";
 import { useConfirmDialog } from "@/components/confirm-dialog";
 import { useToast } from "@/components/toast-provider";
 import {
@@ -55,6 +62,7 @@ const COLUMNS: SortableColumn<AgentSortKey>[] = [
   { key: "model_id", label: "Model" },
   { key: "plugin_count", label: "Plugins" },
   { key: "updated_at", label: "Last modified" },
+  { key: null, label: "Source" },
   { key: null, label: "Inferences (24h)" },
   { key: null, label: "Actions" },
 ];
@@ -74,6 +82,7 @@ export function AgentsPage() {
   const [modelFilter, setModelFilter] = useState<string>("any");
   const [pluginFilter, setPluginFilter] = useState<string>("any");
   const [modifiedRange, setModifiedRange] = useState<ModifiedRange>("any");
+  const [metaMap, setMetaMap] = useState<Map<string, ConfigSourceState>>(new Map());
   const [runtimeStats, setRuntimeStats] = useState<
     Map<string, AgentRuntimeSnapshot> | null
   >(null);
@@ -87,8 +96,18 @@ export function AgentsPage() {
     async function load() {
       setLoading(true);
       try {
-        const response = await configApi.list<AgentSpec>("agents");
-        if (!cancelled) setAgents(response.items);
+        const [agentResponse, metaItems] = await Promise.all([
+          configApi.list<AgentSpec>("agents"),
+          configApi.listMeta("agents").catch(() => [] as ConfigMetaItem[]),
+        ]);
+        if (!cancelled) {
+          setAgents(agentResponse.items);
+          const map = new Map<string, ConfigSourceState>();
+          for (const item of metaItems) {
+            map.set(item.id, deriveSourceState(item.meta));
+          }
+          setMetaMap(map);
+        }
       } catch (loadError) {
         if (!cancelled) {
           toast.error(
@@ -354,6 +373,9 @@ export function AgentsPage() {
                     <td className="px-5 py-4 text-fg-soft">
                       {formatRelativeTime(agent.updated_at)}
                     </td>
+                    <td className="px-5 py-4">
+                      <SourceBadge state={metaMap.get(agent.id)} />
+                    </td>
                     <td className="px-5 py-4 font-mono text-fg">
                       <InferenceCount
                         snapshot={runtimeStats?.get(agent.id)}
@@ -399,6 +421,32 @@ export function AgentsPage() {
         )}
       </div>
     </div>
+  );
+}
+
+function SourceBadge({ state }: { state: ConfigSourceState | undefined }) {
+  const { t } = useTranslation();
+  if (!state) return null;
+  if (state === "builtin") {
+    return (
+      <span className="inline-flex items-center rounded-full bg-muted px-2 py-0.5 text-xs font-medium text-fg-soft">
+        {t("agents.source.builtin")}
+      </span>
+    );
+  }
+  if (state === "customized") {
+    return (
+      <span className="inline-flex items-center gap-1 rounded-full bg-blue-100 px-2 py-0.5 text-xs font-medium text-blue-800 dark:bg-blue-900/30 dark:text-blue-300">
+        <span aria-hidden className="h-1.5 w-1.5 rounded-full bg-blue-500" />
+        {t("agents.source.customized")}
+      </span>
+    );
+  }
+  // user
+  return (
+    <span className="inline-flex items-center rounded-full bg-soft px-2 py-0.5 text-xs font-medium text-fg">
+      {t("agents.source.userDefined")}
+    </span>
   );
 }
 
