@@ -170,12 +170,39 @@ pub trait ProviderExecutorFactory: Send + Sync {
     fn build(&self, spec: &ProviderSpec) -> Result<Arc<dyn LlmExecutor>, ConfigRuntimeError>;
 }
 
-#[derive(Default)]
-pub struct GenaiProviderExecutorFactory;
+/// Provider executor factory backed by genai.
+///
+/// When constructed with [`GenaiProviderExecutorFactory::with_broker`],
+/// every executor it builds shares the same credential broker — so token
+/// caches, single-flight refreshes, and metrics are unified across all
+/// providers in this process. The default constructor creates a
+/// throwaway broker, which is useful for tests but means each
+/// `build_genai_provider_executor_with_broker` invocation gets its own
+/// (independent) cache.
+pub struct GenaiProviderExecutorFactory {
+    broker: Arc<dyn awaken_runtime::credentials::CredentialBroker>,
+}
+
+impl Default for GenaiProviderExecutorFactory {
+    fn default() -> Self {
+        Self {
+            broker: Arc::new(awaken_runtime::credentials::AwakenCredentialBroker::new()),
+        }
+    }
+}
+
+impl GenaiProviderExecutorFactory {
+    /// Construct a factory bound to the given broker. The broker is
+    /// shared across all executors this factory builds, which is what
+    /// production wiring wants.
+    pub fn with_broker(broker: Arc<dyn awaken_runtime::credentials::CredentialBroker>) -> Self {
+        Self { broker }
+    }
+}
 
 impl ProviderExecutorFactory for GenaiProviderExecutorFactory {
     fn build(&self, spec: &ProviderSpec) -> Result<Arc<dyn LlmExecutor>, ConfigRuntimeError> {
-        build_genai_provider_executor(spec)
+        build_genai_provider_executor_with_broker(spec, Arc::clone(&self.broker))
     }
 }
 
@@ -344,7 +371,7 @@ impl ConfigRuntimeManager {
             plugins: registries.plugins,
             backends: registries.backends,
             remote_agents,
-            provider_factory: Arc::new(GenaiProviderExecutorFactory),
+            provider_factory: Arc::new(GenaiProviderExecutorFactory::default()),
             change_notifier: None,
             mcp_registry_factory: Arc::new(DefaultMcpRegistryFactory),
             apply_lock: tokio::sync::Mutex::new(()),
@@ -951,18 +978,86 @@ impl ConfigRuntimeManager {
     }
 }
 
+/// Build an LLM executor from a [`ProviderSpec`].
+///
+/// **Backward-compatible entry point** — uses a private, freshly created
+/// broker to mint tokens. Suitable for ad-hoc paths (tests, the
+/// construction-only `/v1/providers/:id/test` endpoint) where you don't
+/// want to thread an `AppState`-scoped broker through.
+///
+/// In the live runtime, prefer
+/// [`build_genai_provider_executor_with_broker`] so concurrent providers
+/// share token caches and metrics surface uniformly.
 pub fn build_genai_provider_executor(
     spec: &ProviderSpec,
 ) -> Result<Arc<dyn LlmExecutor>, ConfigRuntimeError> {
+    let broker: Arc<dyn awaken_runtime::credentials::CredentialBroker> =
+        Arc::new(awaken_runtime::credentials::AwakenCredentialBroker::new());
+    build_genai_provider_executor_with_broker(spec, broker)
+}
+
+/// Build an LLM executor that delegates auth to a shared
+/// [`CredentialBroker`](awaken_runtime::credentials::CredentialBroker).
+///
+/// The broker registers the provider's credential material at build time
+/// (so misconfigured material is rejected here, not at first inference)
+/// and is then consulted by genai's async auth resolver for every chat
+/// request — which lets the broker's cache + single-flight handle token
+/// rotation transparently.
+pub fn build_genai_provider_executor_with_broker(
+    spec: &ProviderSpec,
+    broker: Arc<dyn awaken_runtime::credentials::CredentialBroker>,
+) -> Result<Arc<dyn LlmExecutor>, ConfigRuntimeError> {
+    use awaken_runtime::credentials::{CredentialKind, build_material};
+
     let adapter_kind = parse_adapter_kind(&spec.adapter)?;
+    let kind = CredentialKind::from_options(&spec.adapter_options)
+        .map_err(ConfigRuntimeError::InvalidConfig)?;
+
+    // Build material. This is the eager-validation choke point: a
+    // malformed SA JSON or kind/adapter mismatch fails here, well before
+    // any LLM call is attempted. `None` means "no explicit credential —
+    // let genai's adapter fall back to its env var default" (0.4.0 behaviour).
+    let material = build_material(&spec.adapter, kind, spec.api_key.as_ref())
+        .map_err(ConfigRuntimeError::InvalidConfig)?;
+
     let mut builder = Client::builder().with_model_mapper_fn(move |model: ModelIden| {
         Ok(ModelIden::new(adapter_kind, model.model_name.to_string()))
     });
 
-    if let Some(api_key) = spec.api_key.as_ref().filter(|value| !value.is_empty()) {
-        let key = api_key.expose_secret().to_owned();
-        builder =
-            builder.with_auth_resolver_fn(move |_| Ok(Some(AuthData::from_single(key.clone()))));
+    // Wire the auth resolver only when explicit material is present.
+    // Otherwise leave genai's default behaviour (read from VENDOR_API_KEY
+    // env var) so existing 0.4.0 deployments keep working.
+    if let Some(material) = material {
+        broker.register(spec.id.clone(), material);
+
+        let scope = scopes_from_options(&spec.adapter_options)?;
+        let provider_id = spec.id.clone();
+        let broker_for_resolver = Arc::clone(&broker);
+
+        // genai's `IntoAuthResolverAsyncFn` requires the closure to
+        // return a `Pin<Box<dyn Future<Output = Result<Option<AuthData>>> + Send>>`,
+        // not a bare `async` block. The explicit type erases the concrete
+        // future type so the trait bound resolves.
+        type ResolverFuture = std::pin::Pin<
+            Box<dyn std::future::Future<Output = genai::resolver::Result<Option<AuthData>>> + Send>,
+        >;
+        let resolver_fn = move |_iden: ModelIden| -> ResolverFuture {
+            let broker = Arc::clone(&broker_for_resolver);
+            let provider_id = provider_id.clone();
+            let scope = scope.clone();
+            Box::pin(async move {
+                let lease = broker.token_for(&provider_id, &scope).await.map_err(|e| {
+                    genai::resolver::Error::Custom(format!(
+                        "credential broker error for provider '{provider_id}': {e}"
+                    ))
+                })?;
+                Ok(Some(AuthData::from_single(lease.bearer().to_owned())))
+            })
+        };
+        builder = builder.with_auth_resolver(
+            genai::resolver::AuthResolver::from_resolver_async_fn(resolver_fn),
+        );
     }
 
     if let Some(base_url) = spec.base_url.clone().filter(|value| !value.is_empty()) {
@@ -985,6 +1080,40 @@ pub fn build_genai_provider_executor(
     let executor = GenaiExecutor::with_client(client)
         .with_timeout(Duration::from_secs(spec.timeout_secs.max(1)));
     Ok(Arc::new(executor))
+}
+
+/// Default OAuth scope used when the provider does not list any in
+/// `adapter_options.scopes`. `cloud-platform` covers Vertex AI's needs.
+const DEFAULT_OAUTH_SCOPE: &str = "https://www.googleapis.com/auth/cloud-platform";
+
+/// Read `adapter_options.scopes` (string array) and join with spaces, the
+/// form Google's OAuth endpoint accepts. Returns the default scope when
+/// the field is absent.
+fn scopes_from_options(options: &BTreeMap<String, Value>) -> Result<String, ConfigRuntimeError> {
+    let Some(value) = options.get("scopes") else {
+        return Ok(DEFAULT_OAUTH_SCOPE.to_owned());
+    };
+    let arr = value.as_array().ok_or_else(|| {
+        ConfigRuntimeError::InvalidConfig(
+            "adapter_options.scopes must be an array of strings".into(),
+        )
+    })?;
+    if arr.is_empty() {
+        return Ok(DEFAULT_OAUTH_SCOPE.to_owned());
+    }
+    let mut joined = String::new();
+    for (i, item) in arr.iter().enumerate() {
+        let s = item.as_str().ok_or_else(|| {
+            ConfigRuntimeError::InvalidConfig(
+                "adapter_options.scopes must be an array of strings".into(),
+            )
+        })?;
+        if i > 0 {
+            joined.push(' ');
+        }
+        joined.push_str(s);
+    }
+    Ok(joined)
 }
 
 /// Parse `adapter_options.headers` into a [`HeaderMap`]. Returns `Ok(None)`
@@ -1327,6 +1456,32 @@ mod tests {
         }
     }
 
+    // -- credential broker integration tests ---------------------------------
+    //
+    // These tests exercise the path: ProviderSpec → build_material →
+    // broker.register → executor build. They cover the eager-validation
+    // contract (bad credentials_kind, bad SA JSON, missing api_key) and
+    // backward compatibility (no api_key + bearer = silent fallback to
+    // genai env vars).
+
+    fn provider_spec_with_kind_and_key(
+        adapter: &str,
+        kind: Option<&str>,
+        api_key: Option<&str>,
+    ) -> ProviderSpec {
+        let mut options: BTreeMap<String, Value> = BTreeMap::new();
+        if let Some(k) = kind {
+            options.insert("credentials_kind".into(), json!(k));
+        }
+        ProviderSpec {
+            id: format!("test-{adapter}"),
+            adapter: adapter.into(),
+            api_key: api_key.map(|k| k.to_string().into()),
+            adapter_options: options,
+            ..ProviderSpec::default()
+        }
+    }
+
     #[test]
     fn supported_adapters_includes_recent_additions() {
         let names: std::collections::HashSet<&str> = supported_adapters().into_iter().collect();
@@ -1545,6 +1700,96 @@ mod tests {
             parse_adapter_kind("  Anthropic ").unwrap(),
             AdapterKind::Anthropic
         );
+    }
+
+    #[test]
+    fn build_genai_omitted_api_key_falls_back_to_env_default() {
+        // 0.4.0 behaviour: a provider with no api_key should still build —
+        // genai's adapter will read VENDOR_API_KEY at request time. The
+        // broker integration must not break this.
+        let spec = provider_spec_with_kind_and_key("openai", None, None);
+        build_genai_provider_executor(&spec).expect("env-fallback bearer must build");
+    }
+
+    #[test]
+    fn build_genai_explicit_bearer_succeeds() {
+        let spec = provider_spec_with_kind_and_key("openai", Some("bearer"), Some("sk-test-123"));
+        build_genai_provider_executor(&spec).expect("explicit bearer must build");
+    }
+
+    #[test]
+    fn build_genai_unknown_credentials_kind_rejected_with_clear_error() {
+        let spec = provider_spec_with_kind_and_key(
+            "openai",
+            Some("never-heard-of-it"),
+            Some("sk-test-123"),
+        );
+        let err = build_genai_provider_executor(&spec)
+            .err()
+            .expect("expected error");
+        assert!(
+            matches!(err, ConfigRuntimeError::InvalidConfig(ref m) if m.contains("never-heard-of-it")),
+            "expected InvalidConfig naming the bad kind, got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn build_genai_service_account_kind_with_non_vertex_adapter_rejected() {
+        let spec = provider_spec_with_kind_and_key(
+            "openai",
+            Some("service_account_json"),
+            Some(r#"{"client_email":"x@y","private_key":"-----BEGIN PRIVATE KEY-----"}"#),
+        );
+        let err = build_genai_provider_executor(&spec)
+            .err()
+            .expect("expected error");
+        assert!(
+            matches!(err, ConfigRuntimeError::InvalidConfig(ref m)
+                if m.contains("service_account_json") && m.contains("vertex") && m.contains("openai")),
+            "expected InvalidConfig naming the kind/adapter mismatch, got: {err:?}"
+        );
+    }
+
+    // Note: deeper service_account_json shape tests live in
+    // `awaken_runtime::credentials::material::tests` so they don't depend
+    // on `parse_adapter_kind` recognising the "vertex" adapter (which is
+    // gated on the upstream genai version actually shipping it).
+
+    #[test]
+    fn scopes_from_options_default_when_absent() {
+        assert_eq!(
+            scopes_from_options(&BTreeMap::new()).unwrap(),
+            DEFAULT_OAUTH_SCOPE
+        );
+    }
+
+    #[test]
+    fn scopes_from_options_joins_array_with_spaces() {
+        let mut options = BTreeMap::new();
+        options.insert(
+            "scopes".into(),
+            json!(["a.googleapis.com/auth/x", "b.googleapis.com/auth/y"]),
+        );
+        assert_eq!(
+            scopes_from_options(&options).unwrap(),
+            "a.googleapis.com/auth/x b.googleapis.com/auth/y"
+        );
+    }
+
+    #[test]
+    fn scopes_from_options_rejects_non_array() {
+        let mut options = BTreeMap::new();
+        options.insert("scopes".into(), json!("not-an-array"));
+        let err = scopes_from_options(&options).unwrap_err();
+        assert!(matches!(err, ConfigRuntimeError::InvalidConfig(ref m) if m.contains("scopes")));
+    }
+
+    #[test]
+    fn scopes_from_options_rejects_non_string_entry() {
+        let mut options = BTreeMap::new();
+        options.insert("scopes".into(), json!([42]));
+        let err = scopes_from_options(&options).unwrap_err();
+        assert!(matches!(err, ConfigRuntimeError::InvalidConfig(ref m) if m.contains("scopes")));
     }
 
     #[test]

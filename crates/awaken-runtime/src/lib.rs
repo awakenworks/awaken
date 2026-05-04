@@ -12,6 +12,7 @@ pub mod backend;
 pub mod builder;
 pub(crate) mod cancellation;
 pub mod context;
+pub mod credentials;
 pub mod engine;
 mod error;
 pub mod execution;

@@ -56,7 +56,6 @@ use awaken_server::mailbox::{Mailbox, MailboxConfig};
 use awaken_server::routes::build_router;
 use awaken_server::services::config_runtime::{
     ConfigRuntimeError, ConfigRuntimeManager, ProviderExecutorFactory,
-    build_genai_provider_executor,
 };
 use awaken_stores::FileStore;
 
@@ -135,8 +134,17 @@ const DEFAULT_PROVIDER_ID: &str = "default";
 const DEFAULT_MODEL_ID: &str = "default";
 const SCRIPTED_PROVIDER_ADAPTER: &str = "scripted";
 
-#[derive(Default)]
-struct StarterProviderFactory;
+struct StarterProviderFactory {
+    /// Shared credential broker — reused for every non-scripted provider
+    /// so token caches are unified across the runtime.
+    broker: Arc<dyn awaken_runtime::credentials::CredentialBroker>,
+}
+
+impl StarterProviderFactory {
+    fn new(broker: Arc<dyn awaken_runtime::credentials::CredentialBroker>) -> Self {
+        Self { broker }
+    }
+}
 
 impl ProviderExecutorFactory for StarterProviderFactory {
     fn build(&self, spec: &ProviderSpec) -> Result<Arc<dyn LlmExecutor>, ConfigRuntimeError> {
@@ -146,7 +154,10 @@ impl ProviderExecutorFactory for StarterProviderFactory {
             return Ok(executor);
         }
 
-        build_genai_provider_executor(spec)
+        awaken_server::services::config_runtime::build_genai_provider_executor_with_broker(
+            spec,
+            Arc::clone(&self.broker),
+        )
     }
 }
 
@@ -825,7 +836,10 @@ Deterministic compatibility directives:\n\
 
     // -- Managed defaults --
 
-    let provider_factory = Arc::new(StarterProviderFactory) as Arc<dyn ProviderExecutorFactory>;
+    let credential_broker: Arc<dyn awaken_runtime::credentials::CredentialBroker> =
+        Arc::new(awaken_runtime::credentials::AwakenCredentialBroker::new());
+    let provider_factory = Arc::new(StarterProviderFactory::new(Arc::clone(&credential_broker)))
+        as Arc<dyn ProviderExecutorFactory>;
     let default_provider = build_default_provider_spec(&args.model);
     let default_model = ModelBindingSpec {
         id: DEFAULT_MODEL_ID.into(),
@@ -1131,6 +1145,7 @@ Always greet the user warmly and ask how you can help today.
     )
     .with_config_store(config_store)
     .with_config_runtime_manager(config_runtime_manager)
+    .with_credential_broker(Arc::clone(&credential_broker))
     .with_runtime_stats(runtime_stats)
     .with_audit_log_from_config()
     .with_skill_catalog_provider(

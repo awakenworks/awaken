@@ -1,0 +1,433 @@
+//! Typed credential material parsed from `ProviderSpec`.
+//!
+//! `CredentialMaterial` is the broker's internal canonical form. The
+//! conversion `(credentials_kind, api_key)` → `CredentialMaterial` happens
+//! at the **server boundary** (config write time + executor build time);
+//! once material lives inside the broker every signer can rely on the
+//! variant invariant being satisfied.
+
+use std::collections::BTreeMap;
+use std::sync::Arc;
+
+use awaken_contract::secret::RedactedString;
+use serde::Deserialize;
+use serde_json::Value;
+
+/// All adapter+kind combinations the broker can mint tokens for.
+///
+/// Adding a new cloud means:
+/// 1. add a variant here,
+/// 2. add a signer in `crates/awaken-runtime/src/credentials/<cloud>.rs`,
+/// 3. wire it into `CredentialBroker::mint`.
+#[derive(Debug, Clone)]
+pub enum CredentialMaterial {
+    /// Static OAuth bearer / API key. The broker hands it back unchanged
+    /// every call; refresh is the operator's responsibility.
+    StaticBearer(RedactedString),
+
+    /// Google Cloud service-account JSON. The broker parses, signs an
+    /// RS256 JWT, and exchanges it for a short-lived OAuth token via the
+    /// service account's `token_uri`. Refresh is automatic.
+    GoogleServiceAccount(Arc<GoogleServiceAccountKey>),
+}
+
+/// Parsed view of a Google service account JSON key.
+///
+/// Held inside an `Arc` so the broker can clone cheaply when minting tokens
+/// concurrently for the same provider (single-flight still serialises the
+/// actual HTTP call; the parsed key is shared).
+#[derive(Debug, Clone, Deserialize)]
+pub struct GoogleServiceAccountKey {
+    /// Service account email (used as JWT `iss`).
+    pub client_email: String,
+    /// PEM-encoded RSA private key (used to sign the JWT with RS256).
+    #[serde(deserialize_with = "deserialize_redacted")]
+    pub private_key: RedactedString,
+    /// OAuth token endpoint. Defaults to Google's standard endpoint when
+    /// the service account JSON omits it.
+    #[serde(default = "default_token_uri")]
+    pub token_uri: String,
+    /// Project id from the SA JSON. Currently unused by the signer (the
+    /// project is encoded in `ProviderSpec.base_url`) but parsed so admins
+    /// can be warned when the SA's home project differs from the URL's.
+    #[serde(default)]
+    pub project_id: Option<String>,
+}
+
+fn default_token_uri() -> String {
+    "https://oauth2.googleapis.com/token".to_owned()
+}
+
+fn deserialize_redacted<'de, D>(d: D) -> Result<RedactedString, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let s = String::deserialize(d)?;
+    Ok(RedactedString::new(s))
+}
+
+impl GoogleServiceAccountKey {
+    /// Parse a service-account JSON string. Validates the minimum fields
+    /// the signer needs (`client_email`, `private_key`, with `private_key`
+    /// looking like a PEM block).
+    pub fn parse(json: &str) -> Result<Self, String> {
+        let key: Self = serde_json::from_str(json)
+            .map_err(|e| format!("not a valid service account JSON: {e}"))?;
+        if key.client_email.trim().is_empty() {
+            return Err("service account JSON missing 'client_email'".into());
+        }
+        if key.private_key.is_empty() {
+            return Err("service account JSON missing 'private_key'".into());
+        }
+        if !key.private_key.expose_secret().contains("BEGIN") {
+            return Err("'private_key' does not look like a PEM block".into());
+        }
+        Ok(key)
+    }
+}
+
+/// String form of a credential kind, used in `adapter_options.credentials_kind`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CredentialKind {
+    /// Default — `api_key` is a pre-signed bearer.
+    Bearer,
+    /// Google service account JSON in `api_key`.
+    GoogleServiceAccountJson,
+}
+
+impl CredentialKind {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Bearer => "bearer",
+            Self::GoogleServiceAccountJson => "service_account_json",
+        }
+    }
+
+    /// Parse from the `adapter_options.credentials_kind` value. Absence
+    /// resolves to [`CredentialKind::Bearer`] (back-compat with 0.4.0
+    /// configs that never set the field).
+    pub fn from_options(options: &BTreeMap<String, Value>) -> Result<Self, String> {
+        let Some(value) = options.get("credentials_kind") else {
+            return Ok(Self::Bearer);
+        };
+        let Some(s) = value.as_str() else {
+            return Err(format!(
+                "adapter_options.credentials_kind must be a string, got {value}"
+            ));
+        };
+        match s {
+            "bearer" => Ok(Self::Bearer),
+            "service_account_json" => Ok(Self::GoogleServiceAccountJson),
+            other => Err(format!(
+                "unknown adapter_options.credentials_kind '{other}' (valid: bearer, service_account_json)"
+            )),
+        }
+    }
+}
+
+/// Adapter strings this kind is allowed for. Empty array means "no
+/// restriction"; a non-empty array means "only these adapters".
+///
+/// Returned from validation so the server can produce a precise error
+/// message at config write time without depending on an exhaustive match.
+fn compatible_adapters(kind: CredentialKind) -> &'static [&'static str] {
+    match kind {
+        CredentialKind::Bearer => &[],
+        // Vertex is the only adapter today that mints OAuth tokens from a
+        // Google service account JWT. (Other Google products use their own
+        // auth flows even when nominally on GCP.)
+        CredentialKind::GoogleServiceAccountJson => &["vertex"],
+    }
+}
+
+/// Build typed material from raw fields (adapter + kind + api_key).
+///
+/// Used at config write time for **eager validation** — the server rejects
+/// invalid (kind × adapter × api_key shape) combinations with a precise
+/// error rather than letting them blow up at first inference.
+///
+/// Also used at executor build time to decide whether to register material
+/// with the broker.
+///
+/// Returns:
+/// - `Ok(Some(material))` — material is configured; register with the broker.
+/// - `Ok(None)` — `kind == Bearer` AND `api_key` is absent/empty. The runtime
+///   should skip broker registration and let genai's adapter fall back to
+///   its default env var (e.g. `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`).
+///   This preserves 0.4.0 behaviour where omitting `api_key` means "use
+///   the host environment".
+/// - `Err(_)` — incompatible (kind × adapter), missing required api_key for
+///   non-bearer kinds, or unparseable material.
+pub fn build_material(
+    adapter: &str,
+    kind: CredentialKind,
+    api_key: Option<&RedactedString>,
+) -> Result<Option<CredentialMaterial>, String> {
+    // (kind × adapter) compatibility
+    let allowed = compatible_adapters(kind);
+    if !allowed.is_empty() && !allowed.iter().any(|a| *a == adapter) {
+        return Err(format!(
+            "credentials_kind '{}' requires adapter ∈ [{}]; got '{adapter}'",
+            kind.as_str(),
+            allowed.join(", ")
+        ));
+    }
+
+    match kind {
+        CredentialKind::Bearer => {
+            // Bearer is the back-compat path: missing api_key is allowed
+            // and signals "fall back to genai's env var default".
+            let Some(key) = api_key.filter(|k| !k.is_empty()) else {
+                return Ok(None);
+            };
+            Ok(Some(CredentialMaterial::StaticBearer(key.clone())))
+        }
+        CredentialKind::GoogleServiceAccountJson => {
+            let key = api_key.ok_or_else(|| {
+                "credentials_kind 'service_account_json' requires api_key with the JSON content"
+                    .to_owned()
+            })?;
+            let parsed = GoogleServiceAccountKey::parse(key.expose_secret())?;
+            Ok(Some(CredentialMaterial::GoogleServiceAccount(Arc::new(
+                parsed,
+            ))))
+        }
+    }
+}
+
+impl From<&CredentialMaterial> for &'static str {
+    /// Stable label for telemetry / logging.
+    fn from(m: &CredentialMaterial) -> Self {
+        match m {
+            CredentialMaterial::StaticBearer(_) => "bearer",
+            CredentialMaterial::GoogleServiceAccount(_) => "service_account_json",
+        }
+    }
+}
+
+impl CredentialMaterial {
+    /// Convenience constructor used by tests and direct embedders that
+    /// already have a parsed key in hand.
+    pub fn google_service_account(key: GoogleServiceAccountKey) -> Self {
+        Self::GoogleServiceAccount(Arc::new(key))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn opts(kind: Option<&str>) -> BTreeMap<String, Value> {
+        let mut o = BTreeMap::new();
+        if let Some(k) = kind {
+            o.insert("credentials_kind".into(), json!(k));
+        }
+        o
+    }
+
+    #[test]
+    fn kind_defaults_to_bearer_when_absent() {
+        assert_eq!(
+            CredentialKind::from_options(&opts(None)).unwrap(),
+            CredentialKind::Bearer
+        );
+    }
+
+    #[test]
+    fn kind_recognises_explicit_bearer() {
+        assert_eq!(
+            CredentialKind::from_options(&opts(Some("bearer"))).unwrap(),
+            CredentialKind::Bearer
+        );
+    }
+
+    #[test]
+    fn kind_recognises_service_account_json() {
+        assert_eq!(
+            CredentialKind::from_options(&opts(Some("service_account_json"))).unwrap(),
+            CredentialKind::GoogleServiceAccountJson
+        );
+    }
+
+    #[test]
+    fn kind_rejects_unknown_string_with_helpful_message() {
+        let err = CredentialKind::from_options(&opts(Some("not-a-kind"))).unwrap_err();
+        assert!(err.contains("not-a-kind"));
+        assert!(err.contains("bearer") && err.contains("service_account_json"));
+    }
+
+    #[test]
+    fn kind_rejects_non_string_value() {
+        let mut o = BTreeMap::new();
+        o.insert("credentials_kind".into(), json!(42));
+        assert!(
+            CredentialKind::from_options(&o)
+                .unwrap_err()
+                .contains("must be a string")
+        );
+    }
+
+    // -- build_material -----------------------------------------------------
+
+    #[test]
+    fn build_material_bearer_with_key_returns_static_bearer() {
+        let key = RedactedString::new("sk-test-123");
+        let m = build_material("openai", CredentialKind::Bearer, Some(&key))
+            .unwrap()
+            .expect("Some material");
+        assert!(matches!(m, CredentialMaterial::StaticBearer(_)));
+    }
+
+    #[test]
+    fn build_material_bearer_without_key_returns_none_for_env_fallback() {
+        // 0.4.0 contract: omitting api_key is allowed and means "use the
+        // adapter's env var default". Material returns None so the broker
+        // is bypassed entirely.
+        assert!(
+            build_material("openai", CredentialKind::Bearer, None)
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn build_material_bearer_with_empty_key_returns_none_not_error() {
+        let key = RedactedString::new("");
+        assert!(
+            build_material("openai", CredentialKind::Bearer, Some(&key))
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn build_material_service_account_kind_requires_vertex_adapter() {
+        let key = RedactedString::new(r#"{"client_email":"x","private_key":"-----BEGIN"}"#);
+        let err = build_material(
+            "openai",
+            CredentialKind::GoogleServiceAccountJson,
+            Some(&key),
+        )
+        .unwrap_err();
+        assert!(
+            err.contains("service_account_json")
+                && err.contains("vertex")
+                && err.contains("openai"),
+            "expected message naming kind/adapter mismatch, got: {err}"
+        );
+    }
+
+    #[test]
+    fn build_material_service_account_kind_requires_api_key() {
+        let err =
+            build_material("vertex", CredentialKind::GoogleServiceAccountJson, None).unwrap_err();
+        assert!(
+            err.contains("service_account_json") && err.contains("api_key"),
+            "expected message naming missing api_key, got: {err}"
+        );
+    }
+
+    #[test]
+    fn build_material_service_account_kind_rejects_garbage_json() {
+        let key = RedactedString::new("this is not json");
+        let err = build_material(
+            "vertex",
+            CredentialKind::GoogleServiceAccountJson,
+            Some(&key),
+        )
+        .unwrap_err();
+        assert!(
+            err.contains("service account JSON"),
+            "expected SA JSON parse error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn build_material_service_account_kind_rejects_json_missing_client_email() {
+        let key = RedactedString::new(r#"{"private_key":"-----BEGIN PRIVATE KEY-----\n..."}"#);
+        let err = build_material(
+            "vertex",
+            CredentialKind::GoogleServiceAccountJson,
+            Some(&key),
+        )
+        .unwrap_err();
+        // serde rejects the missing field at deserialize time; either error
+        // shape names the missing field, so we assert on the field name.
+        assert!(
+            err.contains("client_email"),
+            "expected error mentioning client_email, got: {err}"
+        );
+    }
+
+    #[test]
+    fn build_material_service_account_kind_rejects_json_missing_private_key() {
+        let key = RedactedString::new(r#"{"client_email":"sa@p.iam.gserviceaccount.com"}"#);
+        let err = build_material(
+            "vertex",
+            CredentialKind::GoogleServiceAccountJson,
+            Some(&key),
+        )
+        .unwrap_err();
+        assert!(
+            err.contains("private_key"),
+            "expected error mentioning private_key, got: {err}"
+        );
+    }
+
+    #[test]
+    fn build_material_service_account_kind_rejects_private_key_not_pem() {
+        let key =
+            RedactedString::new(r#"{"client_email":"sa@p","private_key":"raw-bytes-not-pem"}"#);
+        let err = build_material(
+            "vertex",
+            CredentialKind::GoogleServiceAccountJson,
+            Some(&key),
+        )
+        .unwrap_err();
+        assert!(err.contains("PEM"), "expected error about PEM, got: {err}");
+    }
+
+    #[test]
+    fn build_material_service_account_kind_with_well_formed_json_returns_material() {
+        let sa = RedactedString::new(
+            r#"{
+                "type":"service_account",
+                "client_email":"sa@p.iam.gserviceaccount.com",
+                "private_key":"-----BEGIN PRIVATE KEY-----\nfake\n-----END PRIVATE KEY-----",
+                "project_id":"p"
+            }"#,
+        );
+        let m = build_material(
+            "vertex",
+            CredentialKind::GoogleServiceAccountJson,
+            Some(&sa),
+        )
+        .unwrap()
+        .expect("Some material");
+        assert!(matches!(m, CredentialMaterial::GoogleServiceAccount(_)));
+    }
+
+    // -- GoogleServiceAccountKey::parse direct tests ------------------------
+
+    #[test]
+    fn google_sa_key_parse_uses_default_token_uri_when_absent() {
+        let json = r#"{
+            "client_email":"sa@p.iam.gserviceaccount.com",
+            "private_key":"-----BEGIN PRIVATE KEY-----\nfake\n-----END PRIVATE KEY-----"
+        }"#;
+        let key = GoogleServiceAccountKey::parse(json).unwrap();
+        assert_eq!(key.token_uri, "https://oauth2.googleapis.com/token");
+    }
+
+    #[test]
+    fn google_sa_key_parse_honours_explicit_token_uri() {
+        let json = r#"{
+            "client_email":"sa@p.iam.gserviceaccount.com",
+            "private_key":"-----BEGIN PRIVATE KEY-----\nfake\n-----END PRIVATE KEY-----",
+            "token_uri":"https://custom.example/token"
+        }"#;
+        let key = GoogleServiceAccountKey::parse(json).unwrap();
+        assert_eq!(key.token_uri, "https://custom.example/token");
+    }
+}

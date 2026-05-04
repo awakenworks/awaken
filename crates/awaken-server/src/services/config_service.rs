@@ -11,7 +11,7 @@ use serde_json::{Map, Value, json};
 use crate::app::AppState;
 use crate::services::audit_log::AuditLogger;
 
-use super::config_runtime::{ConfigRuntimeError, build_genai_provider_executor};
+use super::config_runtime::ConfigRuntimeError;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConfigNamespace {
@@ -772,6 +772,24 @@ impl<'a> ConfigService<'a> {
                         "provider adapter cannot be empty".into(),
                     ));
                 }
+                // Eager credential validation: parse `credentials_kind` and the
+                // (kind × adapter × api_key) shape so misconfigured providers
+                // are rejected at write time, not at first inference. The
+                // adapter string is **not** validated here because the provider
+                // may be saved before its target adapter is rolled out (admin
+                // UI accepts unknown adapter names with a server-side error
+                // surface). Adapter-specific validation lives in the runtime
+                // build path.
+                let kind = awaken_runtime::credentials::CredentialKind::from_options(
+                    &spec.adapter_options,
+                )
+                .map_err(ConfigServiceError::InvalidPayload)?;
+                awaken_runtime::credentials::build_material(
+                    &spec.adapter,
+                    kind,
+                    spec.api_key.as_ref(),
+                )
+                .map_err(ConfigServiceError::InvalidPayload)?;
             }
             ConfigNamespace::McpServers => {
                 let spec: McpServerSpec = from_value(body)?;
@@ -855,15 +873,25 @@ impl<'a> ConfigService<'a> {
 
     /// Test whether a stored provider config is usable.
     ///
-    /// Strategy (construction-only probe): load the stored `ProviderSpec` and
-    /// attempt to build a genai client from it via
-    /// `build_genai_provider_executor`. A successful build proves that the
-    /// adapter name is recognised and the credentials are syntactically valid
-    /// (e.g. not an obviously empty key when one is expected). It does **not**
-    /// make a live network call, so it catches misconfiguration but not
-    /// unreachable hosts or revoked keys. A live-chat probe would require a
-    /// full runtime context and async stream handling that is disproportionate
-    /// for a health-check endpoint, so the construction-only approach is used.
+    /// Strategy depends on `credentials_kind`:
+    ///
+    /// - **Static / bearer** (default): construction-only probe. Loads the
+    ///   stored `ProviderSpec` and runs `build_genai_provider_executor` to
+    ///   prove that the adapter name parses, the api_key (if any) is the
+    ///   right shape, and adapter_options are valid. **No network call.**
+    ///
+    /// - **Dynamic** (`service_account_json`, future cloud creds):
+    ///   construction-only probe **plus** a live token mint via the
+    ///   credential broker. This catches revoked keys, deleted service
+    ///   accounts, unreachable token endpoints, and missing scopes —
+    ///   problems that a construction probe cannot see. The mint reuses
+    ///   the same broker code that production inference does, so a
+    ///   passing test is strong evidence that the next inference will
+    ///   succeed at the auth layer.
+    ///
+    /// In both cases the LLM endpoint itself is not contacted; that
+    /// would require a full runtime context (cancellation, streaming,
+    /// observability) and would also bill the user for a token.
     pub async fn test_provider(&self, id: &str) -> Result<ProviderTestResult, ConfigServiceError> {
         let raw = self
             .store
@@ -874,22 +902,66 @@ impl<'a> ConfigService<'a> {
         let spec: ProviderSpec = serde_json::from_value(raw)
             .map_err(|e| ConfigServiceError::InvalidPayload(e.to_string()))?;
 
+        // Construction probe: catches adapter parsing, material parsing,
+        // header validation, and any other build-time check. Reuses the
+        // production builder so any change to the build path is covered
+        // here automatically.
         let start = Instant::now();
-        let result = build_genai_provider_executor(&spec);
-        let latency_ms = start.elapsed().as_millis() as u64;
+        let broker: std::sync::Arc<dyn awaken_runtime::credentials::CredentialBroker> =
+            std::sync::Arc::new(awaken_runtime::credentials::AwakenCredentialBroker::new());
+        let build_result =
+            crate::services::config_runtime::build_genai_provider_executor_with_broker(
+                &spec,
+                std::sync::Arc::clone(&broker),
+            );
+        let mut latency_ms = start.elapsed().as_millis() as u64;
 
-        match result {
-            Ok(_) => Ok(ProviderTestResult {
-                ok: true,
-                latency_ms,
-                error: None,
-            }),
-            Err(e) => Ok(ProviderTestResult {
+        if let Err(e) = build_result {
+            return Ok(ProviderTestResult {
                 ok: false,
                 latency_ms,
                 error: Some(e.to_string()),
-            }),
+            });
         }
+
+        // Pre-flight token mint for dynamic credentials. Skipped for bearer
+        // (static / env-var fallback) where the broker would either no-op
+        // or hand back the static value — neither tests anything new.
+        let kind = match awaken_runtime::credentials::CredentialKind::from_options(
+            &spec.adapter_options,
+        ) {
+            Ok(k) => k,
+            Err(_) => {
+                // Already caught by the build probe above; defensive-coded.
+                return Ok(ProviderTestResult {
+                    ok: true,
+                    latency_ms,
+                    error: None,
+                });
+            }
+        };
+        if matches!(
+            kind,
+            awaken_runtime::credentials::CredentialKind::GoogleServiceAccountJson
+        ) {
+            let scope = "https://www.googleapis.com/auth/cloud-platform";
+            let mint_start = Instant::now();
+            let mint_result = broker.token_for(&spec.id, scope).await;
+            latency_ms = latency_ms.saturating_add(mint_start.elapsed().as_millis() as u64);
+            if let Err(err) = mint_result {
+                return Ok(ProviderTestResult {
+                    ok: false,
+                    latency_ms,
+                    error: Some(err.to_string()),
+                });
+            }
+        }
+
+        Ok(ProviderTestResult {
+            ok: true,
+            latency_ms,
+            error: None,
+        })
     }
 
     async fn normalize_mcp_server_payload(
