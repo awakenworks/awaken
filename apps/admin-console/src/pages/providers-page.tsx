@@ -53,6 +53,10 @@ const COLUMNS: SortableColumn<ProviderSortKey>[] = [
   { key: null, label: "Actions" },
 ];
 
+// Used only when /v1/capabilities is unreachable (offline dev). The runtime
+// is the source of truth — `supported_adapters` from the API replaces this list
+// once it loads. Mirrors `crates/awaken-server/src/services/config_runtime.rs`'s
+// SUPPORTED_ADAPTERS enumeration.
 const FALLBACK_ADAPTERS = [
   "anthropic",
   "openai",
@@ -60,6 +64,7 @@ const FALLBACK_ADAPTERS = [
   "deepseek",
   "gemini",
   "ollama",
+  "ollama_cloud",
   "cohere",
   "together",
   "fireworks",
@@ -70,6 +75,8 @@ const FALLBACK_ADAPTERS = [
   "aliyun",
   "mimo",
   "nebius",
+  "vertex",
+  "github_copilot",
 ];
 
 type ApiKeyMode = "preserve" | "replace" | "clear";

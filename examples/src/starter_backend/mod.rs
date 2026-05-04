@@ -190,21 +190,18 @@ fn resolve_openai_compatible_adapter(
 ) -> genai::adapter::AdapterKind {
     use genai::adapter::AdapterKind;
 
-    match adapter_override
+    let Some(value) = adapter_override
         .map(str::trim)
         .filter(|value| !value.is_empty())
-    {
-        Some(value) => match value.to_ascii_lowercase().as_str() {
-            "openai" => AdapterKind::OpenAI,
-            "openai_resp" | "openai-resp" | "responses" => AdapterKind::OpenAIResp,
-            "anthropic" => AdapterKind::Anthropic,
-            "deepseek" => AdapterKind::DeepSeek,
-            "together" => AdapterKind::Together,
-            "fireworks" => AdapterKind::Fireworks,
-            _ => infer_openai_compatible_adapter(model_name),
-        },
-        None => infer_openai_compatible_adapter(model_name),
+    else {
+        return infer_openai_compatible_adapter(model_name);
+    };
+    let normalized = value.to_ascii_lowercase();
+    if matches!(normalized.as_str(), "openai-resp" | "responses") {
+        return AdapterKind::OpenAIResp;
     }
+    AdapterKind::from_lower_str(&normalized)
+        .unwrap_or_else(|| infer_openai_compatible_adapter(model_name))
 }
 
 fn infer_openai_compatible_adapter(model_name: &str) -> genai::adapter::AdapterKind {
@@ -221,20 +218,6 @@ fn infer_openai_compatible_adapter(model_name: &str) -> genai::adapter::AdapterK
     }
 }
 
-fn adapter_kind_name(kind: genai::adapter::AdapterKind) -> &'static str {
-    use genai::adapter::AdapterKind;
-
-    match kind {
-        AdapterKind::OpenAI => "openai",
-        AdapterKind::OpenAIResp => "openai_resp",
-        AdapterKind::Anthropic => "anthropic",
-        AdapterKind::DeepSeek => "deepseek",
-        AdapterKind::Together => "together",
-        AdapterKind::Fireworks => "fireworks",
-        _ => "openai",
-    }
-}
-
 fn build_default_provider_spec(model_name: &str) -> ProviderSpec {
     let has_openai_config =
         std::env::var("OPENAI_BASE_URL").is_ok() || std::env::var("OPENAI_API_KEY").is_ok();
@@ -244,7 +227,7 @@ fn build_default_provider_spec(model_name: &str) -> ProviderSpec {
         let adapter = resolve_openai_compatible_adapter(model_name, adapter_override.as_deref());
         ProviderSpec {
             id: DEFAULT_PROVIDER_ID.into(),
-            adapter: adapter_kind_name(adapter).into(),
+            adapter: adapter.as_lower_str().into(),
             api_key: std::env::var("OPENAI_API_KEY").ok().map(Into::into),
             base_url: std::env::var("OPENAI_BASE_URL").ok(),
             ..Default::default()

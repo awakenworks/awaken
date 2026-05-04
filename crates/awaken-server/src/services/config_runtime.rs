@@ -54,7 +54,9 @@ pub enum ConfigRuntimeError {
         "config store is partially initialized; bootstrap requires all managed namespaces to be empty or all core namespaces populated"
     )]
     PartialBootstrap,
-    #[error("unsupported provider adapter: {0}")]
+    #[error(
+        "unsupported provider adapter: {0} (valid names mirror genai::adapter::AdapterKind — see https://docs.rs/genai/latest/genai/adapter/enum.AdapterKind.html)"
+    )]
     UnsupportedProviderAdapter(String),
     #[error("invalid managed config: {0}")]
     InvalidConfig(String),
@@ -1026,50 +1028,76 @@ fn build_default_headers_from_options(
     Ok(Some(map))
 }
 
+/// Probe-style candidate list for adapter discovery.
+///
+/// Each entry is a lowercase adapter name we *want* to expose if genai
+/// recognises it. Authoritative validation happens via
+/// [`AdapterKind::from_lower_str`]: unknown candidates are silently filtered
+/// out, so adding a forward-looking name here is safe even before genai
+/// ships support — the entry becomes a no-op.
+///
+/// To pick up a brand-new genai adapter:
+/// 1. Append its lowercase name to `ADAPTER_CANDIDATES`.
+/// 2. The runtime auto-discovers it through `AdapterKind::from_lower_str`
+///    — no enum import or match-arm change needed.
+///
+/// Forward-looking entries are speculative names common LLM providers go by
+/// (e.g. `bedrock`, `azure`). They cost nothing today and auto-light-up the
+/// moment genai adopts them.
+const ADAPTER_CANDIDATES: &[&str] = &[
+    // Currently shipping in upstream genai 0.6
+    "anthropic",
+    "openai",
+    "openai_resp",
+    "deepseek",
+    "gemini",
+    "ollama",
+    "ollama_cloud",
+    "cohere",
+    "together",
+    "fireworks",
+    "groq",
+    "xai",
+    "zai",
+    "bigmodel",
+    "aliyun",
+    "mimo",
+    "nebius",
+    "vertex",
+    "github_copilot",
+    // Forward-looking — no-op until genai recognises them
+    "bedrock",
+    "azure",
+    "azure_openai",
+    "mistral",
+    "perplexity",
+    "watsonx",
+    "huggingface",
+    "replicate",
+];
+
 /// Canonical list of provider adapter identifiers supported by the runtime.
-pub fn supported_adapters() -> &'static [&'static str] {
-    &[
-        "anthropic",
-        "openai",
-        "openai_resp",
-        "deepseek",
-        "gemini",
-        "ollama",
-        "cohere",
-        "together",
-        "fireworks",
-        "groq",
-        "xai",
-        "zai",
-        "bigmodel",
-        "aliyun",
-        "mimo",
-        "nebius",
-    ]
+///
+/// Computed by probing each candidate name through
+/// [`AdapterKind::from_lower_str`], so the result reflects whatever the
+/// linked genai version actually supports — not a hand-maintained snapshot.
+pub fn supported_adapters() -> Vec<&'static str> {
+    ADAPTER_CANDIDATES
+        .iter()
+        .copied()
+        .filter(|name| AdapterKind::from_lower_str(name).is_some())
+        .collect()
 }
 
 fn parse_adapter_kind(adapter: &str) -> Result<AdapterKind, ConfigRuntimeError> {
-    match adapter.trim().to_ascii_lowercase().as_str() {
-        "openai" => Ok(AdapterKind::OpenAI),
-        "openai_resp" | "openai-resp" | "responses" => Ok(AdapterKind::OpenAIResp),
-        "anthropic" => Ok(AdapterKind::Anthropic),
-        "gemini" => Ok(AdapterKind::Gemini),
-        "ollama" => Ok(AdapterKind::Ollama),
-        "cohere" => Ok(AdapterKind::Cohere),
-        "deepseek" => Ok(AdapterKind::DeepSeek),
-        "together" => Ok(AdapterKind::Together),
-        "fireworks" => Ok(AdapterKind::Fireworks),
-        "groq" => Ok(AdapterKind::Groq),
-        "xai" => Ok(AdapterKind::Xai),
-        "zai" => Ok(AdapterKind::Zai),
-        "bigmodel" => Ok(AdapterKind::BigModel),
-        "aliyun" => Ok(AdapterKind::Aliyun),
-        "mimo" => Ok(AdapterKind::Mimo),
-        "nebius" => Ok(AdapterKind::Nebius),
-        other => Err(ConfigRuntimeError::UnsupportedProviderAdapter(
-            other.to_string(),
-        )),
+    let normalized = adapter.trim().to_ascii_lowercase();
+    // Awaken-specific aliases mapped before delegating to genai. These predate
+    // the unified `from_lower_str` path and are kept for backwards compatibility.
+    if matches!(normalized.as_str(), "openai-resp" | "responses") {
+        return Ok(AdapterKind::OpenAIResp);
     }
+    AdapterKind::from_lower_str(&normalized)
+        .ok_or_else(|| ConfigRuntimeError::UnsupportedProviderAdapter(adapter.to_string()))
 }
 
 fn mcp_spec_to_connection_config(
@@ -1283,6 +1311,84 @@ mod tests {
         assert!(
             matches!(err, ConfigRuntimeError::InvalidConfig(ref msg) if msg.contains("Invalid Header Name")),
             "expected InvalidConfig naming the bad header, got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn supported_adapters_round_trip_through_parser() {
+        for name in supported_adapters() {
+            let parsed = parse_adapter_kind(name)
+                .unwrap_or_else(|err| panic!("supported adapter {name} must parse: {err:?}"));
+            assert_eq!(
+                parsed.as_lower_str(),
+                name,
+                "as_lower_str round-trip mismatch for {name}"
+            );
+        }
+    }
+
+    #[test]
+    fn supported_adapters_includes_recent_additions() {
+        let names: std::collections::HashSet<&str> = supported_adapters().into_iter().collect();
+        for required in ["vertex", "github_copilot", "ollama_cloud"] {
+            assert!(
+                names.contains(required),
+                "expected adapter {required} to be exposed via supported_adapters()"
+            );
+        }
+    }
+
+    #[test]
+    fn supported_adapters_filters_unknown_candidates() {
+        // Forward-looking candidates that genai 0.6 does not yet recognise must
+        // be dropped, not passed through as broken options to the admin UI.
+        let names: std::collections::HashSet<&str> = supported_adapters().into_iter().collect();
+        for speculative in ["bedrock", "azure", "azure_openai", "mistral", "perplexity"] {
+            if AdapterKind::from_lower_str(speculative).is_none() {
+                assert!(
+                    !names.contains(speculative),
+                    "speculative candidate {speculative} leaked into supported_adapters() despite genai not supporting it"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn unsupported_adapter_error_points_at_genai_docs() {
+        let err = parse_adapter_kind("definitely-not-a-real-adapter").unwrap_err();
+        let display = err.to_string();
+        assert!(
+            display.contains("definitely-not-a-real-adapter"),
+            "error must echo the offending name, got: {display}"
+        );
+        assert!(
+            display.contains("docs.rs/genai"),
+            "error must point operators at genai's AdapterKind docs, got: {display}"
+        );
+    }
+
+    #[test]
+    fn parse_adapter_kind_accepts_legacy_aliases() {
+        assert_eq!(
+            parse_adapter_kind("openai-resp").unwrap(),
+            AdapterKind::OpenAIResp
+        );
+        assert_eq!(
+            parse_adapter_kind("responses").unwrap(),
+            AdapterKind::OpenAIResp
+        );
+        assert_eq!(
+            parse_adapter_kind("  Anthropic ").unwrap(),
+            AdapterKind::Anthropic
+        );
+    }
+
+    #[test]
+    fn parse_adapter_kind_rejects_unknown() {
+        let err = parse_adapter_kind("not-a-real-adapter").unwrap_err();
+        assert!(
+            matches!(err, ConfigRuntimeError::UnsupportedProviderAdapter(ref s) if s == "not-a-real-adapter"),
+            "expected UnsupportedProviderAdapter, got: {err:?}"
         );
     }
 }
