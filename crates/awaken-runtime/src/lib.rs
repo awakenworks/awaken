@@ -25,6 +25,7 @@ pub mod plugins;
 pub mod policies;
 pub mod profile;
 pub mod registry;
+pub mod retry;
 pub mod runtime;
 pub mod state;
 

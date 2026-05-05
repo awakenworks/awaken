@@ -909,11 +909,10 @@ impl<'a> ConfigService<'a> {
         let start = Instant::now();
         let broker: std::sync::Arc<dyn awaken_runtime::credentials::CredentialBroker> =
             std::sync::Arc::new(awaken_runtime::credentials::AwakenCredentialBroker::new());
-        let build_result =
-            crate::services::config_runtime::build_genai_provider_executor_with_broker(
-                &spec,
-                std::sync::Arc::clone(&broker),
-            );
+        let build_result = crate::services::config_runtime::build_genai_provider_executor(
+            &spec,
+            std::sync::Arc::clone(&broker),
+        );
         let mut latency_ms = start.elapsed().as_millis() as u64;
 
         if let Err(e) = build_result {

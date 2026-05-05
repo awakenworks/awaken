@@ -13,22 +13,48 @@ use awaken_contract::secret::RedactedString;
 use serde::Deserialize;
 use serde_json::Value;
 
-/// All adapter+kind combinations the broker can mint tokens for.
-///
-/// Adding a new cloud means:
-/// 1. add a variant here,
-/// 2. add a signer in `crates/awaken-runtime/src/credentials/<cloud>.rs`,
-/// 3. wire it into `CredentialBroker::mint`.
-#[derive(Debug, Clone)]
-pub enum CredentialMaterial {
-    /// Static OAuth bearer / API key. The broker hands it back unchanged
-    /// every call; refresh is the operator's responsibility.
-    StaticBearer(RedactedString),
+use super::minter::{self, Minter};
 
-    /// Google Cloud service-account JSON. The broker parses, signs an
-    /// RS256 JWT, and exchanges it for a short-lived OAuth token via the
-    /// service account's `token_uri`. Refresh is automatic.
-    GoogleServiceAccount(Arc<GoogleServiceAccountKey>),
+/// Opaque carrier of a parsed credential.
+///
+/// Internally holds an [`Arc<dyn Minter>`](Minter) — the broker dispatches
+/// minting via the trait rather than a central `match`. Construct via
+/// [`Self::static_bearer`] or [`Self::google_service_account`]; library
+/// consumers can also produce one indirectly via [`build_material`].
+#[derive(Debug, Clone)]
+pub struct CredentialMaterial {
+    minter: Arc<dyn Minter>,
+}
+
+impl CredentialMaterial {
+    /// Static OAuth bearer / API key. Always available.
+    pub fn static_bearer(bearer: RedactedString) -> Self {
+        Self {
+            minter: minter::static_bearer_arc(bearer),
+        }
+    }
+
+    /// Google service-account material. Only available when the
+    /// `credentials-google` feature is enabled (or in tests, which always
+    /// link the signer for unit-test coverage).
+    #[cfg(any(test, feature = "credentials-google"))]
+    pub fn google_service_account(
+        provider_id: impl Into<String>,
+        key: GoogleServiceAccountKey,
+    ) -> Self {
+        Self {
+            minter: minter::google_service_account_arc(provider_id.into(), Arc::new(key)),
+        }
+    }
+
+    /// Stable telemetry label for the underlying kind.
+    pub fn kind_label(&self) -> &'static str {
+        self.minter.kind_label()
+    }
+
+    pub(crate) fn minter(&self) -> &Arc<dyn Minter> {
+        &self.minter
+    }
 }
 
 /// Parsed view of a Google service account JSON key.
@@ -157,7 +183,8 @@ fn compatible_adapters(kind: CredentialKind) -> &'static [&'static str] {
 ///   This preserves 0.4.0 behaviour where omitting `api_key` means "use
 ///   the host environment".
 /// - `Err(_)` — incompatible (kind × adapter), missing required api_key for
-///   non-bearer kinds, or unparseable material.
+///   non-bearer kinds, the `credentials-google` feature disabled but a
+///   service-account configuration was supplied, or unparseable material.
 pub fn build_material(
     adapter: &str,
     kind: CredentialKind,
@@ -165,7 +192,7 @@ pub fn build_material(
 ) -> Result<Option<CredentialMaterial>, String> {
     // (kind × adapter) compatibility
     let allowed = compatible_adapters(kind);
-    if !allowed.is_empty() && !allowed.iter().any(|a| *a == adapter) {
+    if !allowed.is_empty() && !allowed.contains(&adapter) {
         return Err(format!(
             "credentials_kind '{}' requires adapter ∈ [{}]; got '{adapter}'",
             kind.as_str(),
@@ -180,17 +207,35 @@ pub fn build_material(
             let Some(key) = api_key.filter(|k| !k.is_empty()) else {
                 return Ok(None);
             };
-            Ok(Some(CredentialMaterial::StaticBearer(key.clone())))
+            Ok(Some(CredentialMaterial::static_bearer(key.clone())))
         }
         CredentialKind::GoogleServiceAccountJson => {
-            let key = api_key.ok_or_else(|| {
-                "credentials_kind 'service_account_json' requires api_key with the JSON content"
-                    .to_owned()
-            })?;
-            let parsed = GoogleServiceAccountKey::parse(key.expose_secret())?;
-            Ok(Some(CredentialMaterial::GoogleServiceAccount(Arc::new(
-                parsed,
-            ))))
+            // Reject at the build boundary when the signer feature is off
+            // — a runtime stub would otherwise produce an opaque "not
+            // configured" error at first inference. Operators get the
+            // precise reason at config write time instead.
+            #[cfg(not(any(test, feature = "credentials-google")))]
+            {
+                let _ = api_key;
+                return Err("credentials_kind 'service_account_json' requires the \
+                            `credentials-google` feature to be enabled at build time"
+                    .to_owned());
+            }
+            #[cfg(any(test, feature = "credentials-google"))]
+            {
+                let key = api_key.ok_or_else(|| {
+                    "credentials_kind 'service_account_json' requires api_key with the JSON content"
+                        .to_owned()
+                })?;
+                let parsed = GoogleServiceAccountKey::parse(key.expose_secret())?;
+                // provider_id isn't known at this layer — embed a placeholder;
+                // the broker re-stamps with the real id when registering. The
+                // signer only uses provider_id for telemetry.
+                Ok(Some(CredentialMaterial::google_service_account(
+                    String::new(),
+                    parsed,
+                )))
+            }
         }
     }
 }
@@ -198,18 +243,7 @@ pub fn build_material(
 impl From<&CredentialMaterial> for &'static str {
     /// Stable label for telemetry / logging.
     fn from(m: &CredentialMaterial) -> Self {
-        match m {
-            CredentialMaterial::StaticBearer(_) => "bearer",
-            CredentialMaterial::GoogleServiceAccount(_) => "service_account_json",
-        }
-    }
-}
-
-impl CredentialMaterial {
-    /// Convenience constructor used by tests and direct embedders that
-    /// already have a parsed key in hand.
-    pub fn google_service_account(key: GoogleServiceAccountKey) -> Self {
-        Self::GoogleServiceAccount(Arc::new(key))
+        m.kind_label()
     }
 }
 
@@ -276,7 +310,7 @@ mod tests {
         let m = build_material("openai", CredentialKind::Bearer, Some(&key))
             .unwrap()
             .expect("Some material");
-        assert!(matches!(m, CredentialMaterial::StaticBearer(_)));
+        assert_eq!(m.kind_label(), "bearer");
     }
 
     #[test]
@@ -405,7 +439,7 @@ mod tests {
         )
         .unwrap()
         .expect("Some material");
-        assert!(matches!(m, CredentialMaterial::GoogleServiceAccount(_)));
+        assert_eq!(m.kind_label(), "service_account_json");
     }
 
     // -- GoogleServiceAccountKey::parse direct tests ------------------------

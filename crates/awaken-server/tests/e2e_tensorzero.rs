@@ -31,10 +31,16 @@ use std::time::Duration;
 
 use awaken_contract::registry_spec::{AgentSpec, ProviderSpec};
 use awaken_runtime::builder::AgentRuntimeBuilder;
+use awaken_runtime::credentials::{AwakenCredentialBroker, CredentialBroker};
 use awaken_runtime::registry::traits::ModelBinding;
 use awaken_server::app::{AppState, ServerConfig};
 use awaken_server::routes::build_router;
 use awaken_server::services::config_runtime::build_genai_provider_executor;
+use std::sync::Arc as StdArc;
+
+fn tz_test_broker() -> StdArc<dyn CredentialBroker> {
+    StdArc::new(AwakenCredentialBroker::new())
+}
 use awaken_stores::memory::InMemoryStore;
 use serde_json::{Value, json};
 
@@ -475,8 +481,8 @@ async fn tz_router_provider_compiles_smoke() {
         created_at: None,
         updated_at: None,
     };
-    let executor =
-        build_genai_provider_executor(&provider_spec).expect("genai executor builds for TZ");
+    let executor = build_genai_provider_executor(&provider_spec, tz_test_broker())
+        .expect("genai executor builds for TZ");
 
     let store = Arc::new(InMemoryStore::new());
     let runtime = Arc::new(
@@ -757,7 +763,7 @@ mod helper_tests {
             created_at: None,
             updated_at: None,
         };
-        let _executor = build_genai_provider_executor(&spec)
+        let _executor = build_genai_provider_executor(&spec, tz_test_broker())
             .expect("genai executor builds for TensorZero base URL");
     }
 
@@ -773,7 +779,7 @@ mod helper_tests {
             created_at: None,
             updated_at: None,
         };
-        let _executor = build_genai_provider_executor(&spec)
+        let _executor = build_genai_provider_executor(&spec, tz_test_broker())
             .expect("base URL without trailing slash should build");
     }
 
@@ -792,7 +798,7 @@ mod helper_tests {
             created_at: None,
             updated_at: None,
         };
-        let executor = build_genai_provider_executor(&spec).expect("executor");
+        let executor = build_genai_provider_executor(&spec, tz_test_broker()).expect("executor");
         let store = Arc::new(InMemoryStore::new());
         let runtime = AgentRuntimeBuilder::new()
             .with_provider("tz", executor)

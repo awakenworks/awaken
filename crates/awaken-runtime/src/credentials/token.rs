@@ -1,9 +1,11 @@
-//! Token + lease types returned by the credential broker.
+//! Token type returned by the credential broker.
 //!
-//! `Token` is the broker-internal form (carries the refresh deadline);
-//! `TokenLease` is what callers see — they should not cache it themselves
-//! (the broker already does that), so we hand out bearer-only references
-//! that auto-drop quickly.
+//! `Token` is the broker-internal cache entry. `IssuedToken` is the
+//! short-lived public view callers receive — a plain value object holding
+//! the bearer string and the wall-clock deadline. It carries no lease
+//! semantics (no Drop, no revoke); callers are expected to use the bearer
+//! immediately and ask the broker for a new one next request rather than
+//! caching client-side. The broker already caches.
 
 use std::time::{Duration, SystemTime};
 
@@ -30,18 +32,19 @@ impl Token {
     }
 }
 
-/// Public, short-lived view of a minted token.
+/// Public, value-object view of a minted token.
 ///
-/// Callers receive this from [`CredentialBroker::token_for`](super::CredentialBroker::token_for),
-/// extract the bearer string with [`TokenLease::bearer`], and are expected to
-/// use it immediately rather than cache. The broker handles caching.
+/// Returned by [`CredentialBroker::token_for`](super::CredentialBroker::token_for).
+/// Use the bearer immediately; the broker caches token state, so client-side
+/// caching of this value is unnecessary and risks holding a token past its
+/// upstream-side expiry.
 #[derive(Debug, Clone)]
-pub struct TokenLease {
+pub struct IssuedToken {
     bearer: RedactedString,
     expires_at: SystemTime,
 }
 
-impl TokenLease {
+impl IssuedToken {
     pub(crate) fn from_token(token: &Token) -> Self {
         Self {
             bearer: token.bearer.clone(),
@@ -56,7 +59,7 @@ impl TokenLease {
 
     /// Wall-clock deadline after which this token is no longer valid.
     /// Exposed for telemetry / debug — callers must not gate retry logic
-    /// on this; ask the broker for a new lease instead.
+    /// on this; ask the broker for a new one instead.
     pub fn expires_at(&self) -> SystemTime {
         self.expires_at
     }

@@ -32,10 +32,8 @@ use parking_lot::RwLock as PlRwLock;
 use tokio::sync::Mutex as AsyncMutex;
 
 use super::error::CredentialError;
-use super::google_oauth;
 use super::material::CredentialMaterial;
-use super::static_bearer::mint_static_bearer;
-use super::token::{Token, TokenLease};
+use super::token::{IssuedToken, Token};
 
 /// Refresh tokens this long before their stated expiry. Prevents handing
 /// out a token that would expire mid-request. Google OAuth tokens are
@@ -62,44 +60,15 @@ type HttpClient = reqwest::Client;
 /// `is_retryable() == false` short-circuits the loop on attempt 1.
 ///
 /// **Transient errors** (`Network`, `TransientUpstream`) are retried up to
-/// `max_attempts` times with exponential backoff bounded by
-/// `max_backoff`. The sequence for the default policy is approximately
+/// `max_attempts` times with exponential backoff bounded by `max`. The
+/// sequence for the default policy is approximately
 /// 100ms → 200ms → 400ms (~700ms total wall clock for 3 attempts).
-#[derive(Debug, Clone)]
-pub struct CredentialRetryPolicy {
-    /// Total mint attempts (including the first). `1` disables retry.
-    pub max_attempts: u32,
-    /// Backoff before the second attempt. Doubled each subsequent time
-    /// (capped by `max_backoff`).
-    pub initial_backoff: Duration,
-    /// Multiplier applied to backoff after each failed attempt.
-    pub backoff_multiplier: f64,
-    /// Cap on backoff growth — stops one slow tail-attempt from delaying
-    /// the user beyond `max_backoff` per retry.
-    pub max_backoff: Duration,
-}
-
-impl Default for CredentialRetryPolicy {
-    fn default() -> Self {
-        Self {
-            max_attempts: 3,
-            initial_backoff: Duration::from_millis(100),
-            backoff_multiplier: 2.0,
-            max_backoff: Duration::from_secs(1),
-        }
-    }
-}
-
-impl CredentialRetryPolicy {
-    /// Disable retries — every mint failure surfaces immediately. Useful
-    /// in tests where you want to assert the first error directly.
-    pub fn disabled() -> Self {
-        Self {
-            max_attempts: 1,
-            ..Self::default()
-        }
-    }
-}
+///
+/// This is a thin alias over [`crate::retry::BackoffPolicy`] — the broker
+/// uses the shared exponential-backoff primitive rather than maintaining
+/// its own loop. The alias preserves the existing `CredentialRetryPolicy`
+/// name in tests and embedder code.
+pub type CredentialRetryPolicy = crate::retry::BackoffPolicy;
 
 /// Trait for credential lookups. Owning crates can swap in fakes for tests.
 ///
@@ -123,7 +92,7 @@ pub trait CredentialBroker: Send + Sync {
         &self,
         provider_id: &str,
         scope: &str,
-    ) -> Result<TokenLease, CredentialError>;
+    ) -> Result<IssuedToken, CredentialError>;
 }
 
 /// Cache key. Scope is part of the key because the same SA can mint
@@ -225,12 +194,10 @@ impl AwakenCredentialBroker {
             .cloned()
             .ok_or_else(|| CredentialError::NotConfigured(provider_id.to_owned()))?;
 
-        match material {
-            CredentialMaterial::StaticBearer(bearer) => Ok(mint_static_bearer(&bearer)),
-            CredentialMaterial::GoogleServiceAccount(key) => {
-                google_oauth::mint(provider_id, &key, scope, &self.http).await
-            }
-        }
+        // Dispatch via the Minter trait — no central match. Adding a new
+        // cloud means a new Minter impl and a new CredentialMaterial
+        // constructor, not editing the broker.
+        material.minter().mint(scope, &self.http).await
     }
 }
 
@@ -262,13 +229,19 @@ impl CredentialBroker for AwakenCredentialBroker {
         self.cache
             .write()
             .retain(|key, _| key.provider_id != provider_id);
+        // Drop flight slots so deregister-then-re-register does not reuse a
+        // stale `Arc<FlightSlot>` (and so a long-lived broker doesn't
+        // accumulate orphaned slot entries when providers churn).
+        self.flights
+            .write()
+            .retain(|key, _| key.provider_id != provider_id);
     }
 
     async fn token_for(
         &self,
         provider_id: &str,
         scope: &str,
-    ) -> Result<TokenLease, CredentialError> {
+    ) -> Result<IssuedToken, CredentialError> {
         let key = CacheKey {
             provider_id: provider_id.to_owned(),
             scope: scope.to_owned(),
@@ -278,7 +251,7 @@ impl CredentialBroker for AwakenCredentialBroker {
         if let Some(token) = self.cache.read().get(&key)
             && !token.is_near_expiry(SAFETY_WINDOW)
         {
-            return Ok(TokenLease::from_token(token));
+            return Ok(IssuedToken::from_token(token));
         }
 
         // 2. Acquire the per-key single-flight slot.
@@ -290,7 +263,7 @@ impl CredentialBroker for AwakenCredentialBroker {
         if let Some(token) = self.cache.read().get(&key)
             && !token.is_near_expiry(SAFETY_WINDOW)
         {
-            return Ok(TokenLease::from_token(token));
+            return Ok(IssuedToken::from_token(token));
         }
 
         // 4. We are the elected refresher. Apply the bounded retry policy:
@@ -298,79 +271,38 @@ impl CredentialBroker for AwakenCredentialBroker {
         //    retry up to `max_attempts` times. The cache write only happens
         //    on the *successful* attempt.
         let fresh = self.mint_with_retry(provider_id, scope).await?;
-        let lease = TokenLease::from_token(&fresh);
+        let issued = IssuedToken::from_token(&fresh);
         self.cache.write().insert(key, fresh);
-        Ok(lease)
+        Ok(issued)
     }
 }
 
 impl AwakenCredentialBroker {
     /// Wrap [`mint`](Self::mint) with the broker's retry policy.
     ///
-    /// Just a thin shim around [`retry_mint_loop`] so the policy's retry
-    /// semantics can be tested in isolation from the full broker (cache,
-    /// single-flight, materials map).
+    /// Defers to the shared [`crate::retry::with_backoff`] primitive — the
+    /// broker holds no retry implementation of its own, just the
+    /// retry-classification function (`CredentialError::is_retryable`) and
+    /// a tracing hook for transient failures.
     async fn mint_with_retry(
         &self,
         provider_id: &str,
         scope: &str,
     ) -> Result<Token, CredentialError> {
-        retry_mint_loop(&self.retry_policy, provider_id, || async move {
-            self.mint(provider_id, scope).await
-        })
-        .await
-    }
-}
-
-/// Apply [`CredentialRetryPolicy`] to a mint closure.
-///
-/// Contract:
-/// - **Permanent** errors (`!is_retryable()`) return immediately on the
-///   first attempt — retrying a SigningFailed or PermanentUpstream wastes
-///   time and may rate-limit the upstream OAuth endpoint to no benefit.
-/// - **Transient** errors retry with exponential backoff bounded by
-///   `policy.max_backoff` per step. The most recent error is surfaced
-///   when the budget is exhausted (so callers get the *actual* upstream
-///   message, not the first transient blip).
-/// - The loop runs at most `policy.max_attempts` times (≥ 1).
-///
-/// Extracted as a free function so the retry semantics can be unit-tested
-/// against scripted mint closures, separately from the broker's cache and
-/// single-flight machinery.
-async fn retry_mint_loop<F, Fut>(
-    policy: &CredentialRetryPolicy,
-    provider_id: &str,
-    mut mint_fn: F,
-) -> Result<Token, CredentialError>
-where
-    F: FnMut() -> Fut,
-    Fut: std::future::Future<Output = Result<Token, CredentialError>>,
-{
-    let mut attempt: u32 = 1;
-    let mut backoff = policy.initial_backoff;
-    loop {
-        match mint_fn().await {
-            Ok(token) => return Ok(token),
-            Err(err) if !err.is_retryable() => return Err(err),
-            Err(err) if attempt >= policy.max_attempts => return Err(err),
-            Err(_transient) => {
+        crate::retry::with_backoff(
+            &self.retry_policy,
+            CredentialError::is_retryable,
+            |attempt, _err, backoff| {
                 tracing::debug!(
                     provider_id = %provider_id,
                     attempt,
                     backoff_ms = backoff.as_millis() as u64,
                     "credential broker: transient mint error, retrying after backoff"
                 );
-                tokio::time::sleep(backoff).await;
-                let scaled = backoff.as_secs_f64() * policy.backoff_multiplier;
-                let scaled_dur = Duration::from_secs_f64(scaled);
-                backoff = if scaled_dur > policy.max_backoff {
-                    policy.max_backoff
-                } else {
-                    scaled_dur
-                };
-                attempt += 1;
-            }
-        }
+            },
+            || async move { self.mint(provider_id, scope).await },
+        )
+        .await
     }
 }
 
@@ -395,25 +327,25 @@ mod tests {
             &self,
             _provider_id: &str,
             _scope: &str,
-        ) -> Result<TokenLease, CredentialError> {
+        ) -> Result<IssuedToken, CredentialError> {
             if let Some(t) = self.cache.read().as_ref()
                 && !t.is_near_expiry(SAFETY_WINDOW)
             {
-                return Ok(TokenLease::from_token(t));
+                return Ok(IssuedToken::from_token(t));
             }
             let _g = self.flight.lock().await;
             if let Some(t) = self.cache.read().as_ref()
                 && !t.is_near_expiry(SAFETY_WINDOW)
             {
-                return Ok(TokenLease::from_token(t));
+                return Ok(IssuedToken::from_token(t));
             }
             self.mint_calls.fetch_add(1, Ordering::SeqCst);
             // Simulate slow mint so concurrent callers actually pile up.
             tokio::time::sleep(Duration::from_millis(20)).await;
             let token = self.token.lock().clone();
-            let lease = TokenLease::from_token(&token);
+            let issued = IssuedToken::from_token(&token);
             *self.cache.write() = Some(token);
-            Ok(lease)
+            Ok(issued)
         }
     }
 
@@ -454,7 +386,7 @@ mod tests {
         let broker = AwakenCredentialBroker::new();
         broker.register(
             "p".to_string(),
-            CredentialMaterial::StaticBearer(awaken_contract::secret::RedactedString::new("k")),
+            CredentialMaterial::static_bearer(awaken_contract::secret::RedactedString::new("k")),
         );
         let a = broker.token_for("p", "any").await.unwrap();
         let b = broker.token_for("p", "any").await.unwrap();
@@ -474,7 +406,7 @@ mod tests {
         let broker = AwakenCredentialBroker::new();
         broker.register(
             "p".to_string(),
-            CredentialMaterial::StaticBearer(awaken_contract::secret::RedactedString::new("k1")),
+            CredentialMaterial::static_bearer(awaken_contract::secret::RedactedString::new("k1")),
         );
         let _ = broker.token_for("p", "any").await.unwrap();
         broker.deregister("p");
@@ -483,17 +415,39 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn deregister_drops_flight_slots() {
+        // Without dropping flight slots, `deregister` would leak entries in
+        // `flights` for every provider that had ever minted a token.
+        let broker = AwakenCredentialBroker::new();
+        broker.register(
+            "p".to_string(),
+            CredentialMaterial::static_bearer(awaken_contract::secret::RedactedString::new("k")),
+        );
+        // Touch token_for so a flight slot is created for (p, scope).
+        let _ = broker.token_for("p", "scope").await.unwrap();
+        assert!(
+            broker.flights.read().keys().any(|k| k.provider_id == "p"),
+            "precondition: flight slot must exist after a mint"
+        );
+        broker.deregister("p");
+        assert!(
+            !broker.flights.read().keys().any(|k| k.provider_id == "p"),
+            "deregister must drop flight slots for the provider"
+        );
+    }
+
+    #[tokio::test]
     async fn re_register_invalidates_cache_so_new_material_takes_effect() {
         let broker = AwakenCredentialBroker::new();
         broker.register(
             "p".to_string(),
-            CredentialMaterial::StaticBearer(awaken_contract::secret::RedactedString::new("k1")),
+            CredentialMaterial::static_bearer(awaken_contract::secret::RedactedString::new("k1")),
         );
         assert_eq!(broker.token_for("p", "s").await.unwrap().bearer(), "k1");
 
         broker.register(
             "p".to_string(),
-            CredentialMaterial::StaticBearer(awaken_contract::secret::RedactedString::new("k2")),
+            CredentialMaterial::static_bearer(awaken_contract::secret::RedactedString::new("k2")),
         );
         assert_eq!(broker.token_for("p", "s").await.unwrap().bearer(), "k2");
     }
@@ -503,7 +457,7 @@ mod tests {
         let broker = AwakenCredentialBroker::new();
         broker.register(
             "p".to_string(),
-            CredentialMaterial::StaticBearer(awaken_contract::secret::RedactedString::new("k")),
+            CredentialMaterial::static_bearer(awaken_contract::secret::RedactedString::new("k")),
         );
         // Both scopes should resolve to the same static bearer (because
         // for static bearer the scope is irrelevant) but should have
@@ -514,7 +468,7 @@ mod tests {
         let _ = broker.token_for("p", "scope-b").await.unwrap();
         broker.register(
             "p".to_string(),
-            CredentialMaterial::StaticBearer(awaken_contract::secret::RedactedString::new(
+            CredentialMaterial::static_bearer(awaken_contract::secret::RedactedString::new(
                 "rotated",
             )),
         );
@@ -557,239 +511,52 @@ mod tests {
         );
     }
 
-    // ── retry_mint_loop tests ────────────────────────────────────────────
+    // ── CredentialError retry classification ─────────────────────────────
     //
-    // These exercise the broker's transient-retry policy in isolation
-    // from the rest of the broker (cache, single-flight, materials map).
-    // The mint function is a closure so we can script success / specific
-    // error sequences without touching a network.
+    // The broker's contribution to the shared retry primitive is its
+    // is_retryable() classification — the loop math itself is exercised
+    // by `crate::retry::tests`. Pin every variant here so a future change
+    // to the enum forces a deliberate decision, not a silent flip.
 
-    fn fast_policy(max_attempts: u32) -> CredentialRetryPolicy {
-        // Sub-millisecond backoff so the test suite stays fast. We're
-        // verifying counts and ordering, not real timing.
-        CredentialRetryPolicy {
-            max_attempts,
-            initial_backoff: Duration::from_micros(10),
-            backoff_multiplier: 2.0,
-            max_backoff: Duration::from_millis(1),
-        }
-    }
-
-    fn ok_token() -> Token {
-        Token {
-            bearer: awaken_contract::secret::RedactedString::new("token-x"),
-            expires_at: std::time::SystemTime::now() + Duration::from_secs(3600),
-        }
-    }
-
-    #[tokio::test]
-    async fn retry_loop_returns_ok_on_first_success_without_retrying() {
-        let calls = Arc::new(AtomicUsize::new(0));
-        let calls_for_closure = Arc::clone(&calls);
-        let result = retry_mint_loop(&fast_policy(3), "p", || {
-            let calls = Arc::clone(&calls_for_closure);
-            async move {
-                calls.fetch_add(1, Ordering::SeqCst);
-                Ok(ok_token())
-            }
-        })
-        .await;
-        assert!(result.is_ok());
-        assert_eq!(calls.load(Ordering::SeqCst), 1);
-    }
-
-    #[tokio::test]
-    async fn retry_loop_does_not_retry_permanent_signing_failed() {
-        // SigningFailed is permanent; broken JWT signing won't recover by
-        // retry. Loop must call mint exactly once.
-        let calls = Arc::new(AtomicUsize::new(0));
-        let calls_for_closure = Arc::clone(&calls);
-        let result = retry_mint_loop(&fast_policy(5), "p", || {
-            let calls = Arc::clone(&calls_for_closure);
-            async move {
-                calls.fetch_add(1, Ordering::SeqCst);
-                Err::<Token, _>(CredentialError::SigningFailed {
-                    provider_id: "p".into(),
-                    reason: "bad PEM".into(),
-                })
-            }
-        })
-        .await;
-        assert!(matches!(result, Err(CredentialError::SigningFailed { .. })));
-        assert_eq!(
-            calls.load(Ordering::SeqCst),
-            1,
-            "permanent error must short-circuit on attempt 1"
-        );
-    }
-
-    #[tokio::test]
-    async fn retry_loop_does_not_retry_permanent_upstream() {
-        let calls = Arc::new(AtomicUsize::new(0));
-        let calls_for_closure = Arc::clone(&calls);
-        let _ = retry_mint_loop(&fast_policy(5), "p", || {
-            let calls = Arc::clone(&calls_for_closure);
-            async move {
-                calls.fetch_add(1, Ordering::SeqCst);
-                Err::<Token, _>(CredentialError::PermanentUpstream {
-                    provider_id: "p".into(),
-                    status: 403,
-                    body: "invalid_grant".into(),
-                })
-            }
-        })
-        .await;
-        assert_eq!(
-            calls.load(Ordering::SeqCst),
-            1,
-            "PermanentUpstream must not be retried"
-        );
-    }
-
-    #[tokio::test]
-    async fn retry_loop_does_not_retry_not_configured() {
-        let calls = Arc::new(AtomicUsize::new(0));
-        let calls_for_closure = Arc::clone(&calls);
-        let _ = retry_mint_loop(&fast_policy(5), "p", || {
-            let calls = Arc::clone(&calls_for_closure);
-            async move {
-                calls.fetch_add(1, Ordering::SeqCst);
-                Err::<Token, _>(CredentialError::NotConfigured("p".into()))
-            }
-        })
-        .await;
-        assert_eq!(calls.load(Ordering::SeqCst), 1);
-    }
-
-    #[tokio::test]
-    async fn retry_loop_retries_network_then_succeeds() {
-        // First two calls return transient Network; third succeeds. Loop
-        // must invoke mint exactly 3 times and return Ok.
-        let calls = Arc::new(AtomicUsize::new(0));
-        let calls_for_closure = Arc::clone(&calls);
-        let result = retry_mint_loop(&fast_policy(3), "p", || {
-            let calls = Arc::clone(&calls_for_closure);
-            async move {
-                let n = calls.fetch_add(1, Ordering::SeqCst) + 1;
-                if n < 3 {
-                    Err(CredentialError::Network {
-                        provider_id: "p".into(),
-                        reason: format!("blip #{n}"),
-                    })
-                } else {
-                    Ok(ok_token())
-                }
-            }
-        })
-        .await;
-        assert!(result.is_ok());
-        assert_eq!(calls.load(Ordering::SeqCst), 3);
-    }
-
-    #[tokio::test]
-    async fn retry_loop_retries_transient_upstream_then_succeeds() {
-        let calls = Arc::new(AtomicUsize::new(0));
-        let calls_for_closure = Arc::clone(&calls);
-        let result = retry_mint_loop(&fast_policy(3), "p", || {
-            let calls = Arc::clone(&calls_for_closure);
-            async move {
-                let n = calls.fetch_add(1, Ordering::SeqCst) + 1;
-                if n < 2 {
-                    Err(CredentialError::TransientUpstream {
-                        provider_id: "p".into(),
-                        reason: "503".into(),
-                    })
-                } else {
-                    Ok(ok_token())
-                }
-            }
-        })
-        .await;
-        assert!(result.is_ok());
-        assert_eq!(calls.load(Ordering::SeqCst), 2);
-    }
-
-    #[tokio::test]
-    async fn retry_loop_exhausts_budget_and_returns_last_transient_error() {
-        // Persistent transient: every attempt fails. Loop must invoke mint
-        // exactly `max_attempts` times and return the most recent error
-        // (so the user sees the actual current root cause, not a stale
-        // first message).
-        let calls = Arc::new(AtomicUsize::new(0));
-        let calls_for_closure = Arc::clone(&calls);
-        let result = retry_mint_loop(&fast_policy(4), "p", || {
-            let calls = Arc::clone(&calls_for_closure);
-            async move {
-                let n = calls.fetch_add(1, Ordering::SeqCst) + 1;
-                Err::<Token, _>(CredentialError::Network {
-                    provider_id: "p".into(),
-                    reason: format!("attempt #{n}"),
-                })
-            }
-        })
-        .await;
-        match result {
-            Err(CredentialError::Network { reason, .. }) => {
-                assert_eq!(
-                    reason, "attempt #4",
-                    "must surface the LAST error, not the first"
-                );
-            }
-            other => panic!("expected Network error, got {other:?}"),
-        }
-        assert_eq!(calls.load(Ordering::SeqCst), 4);
-    }
-
-    #[tokio::test]
-    async fn retry_loop_disabled_policy_runs_exactly_once() {
-        let calls = Arc::new(AtomicUsize::new(0));
-        let calls_for_closure = Arc::clone(&calls);
-        let _ = retry_mint_loop(&CredentialRetryPolicy::disabled(), "p", || {
-            let calls = Arc::clone(&calls_for_closure);
-            async move {
-                calls.fetch_add(1, Ordering::SeqCst);
-                Err::<Token, _>(CredentialError::Network {
-                    provider_id: "p".into(),
-                    reason: "x".into(),
-                })
-            }
-        })
-        .await;
-        assert_eq!(
-            calls.load(Ordering::SeqCst),
-            1,
-            "disabled policy must not retry transient errors either"
-        );
-    }
-
-    #[tokio::test]
-    async fn retry_loop_backoff_is_bounded_by_max_backoff() {
-        // After enough doublings the backoff would exceed max_backoff if
-        // not clamped. With initial=1ms, multiplier=10.0, max=2ms,
-        // backoff sequence is 1ms → 2ms (clamped) → 2ms → 2ms.
-        // We can't measure backoff directly without timing, but we can
-        // assert the loop completes in well under what unbounded growth
-        // would take (1ms + 10ms + 100ms + 1000ms ≈ 1.1s vs ≤ 7ms here).
-        let policy = CredentialRetryPolicy {
-            max_attempts: 4,
-            initial_backoff: Duration::from_millis(1),
-            backoff_multiplier: 10.0,
-            max_backoff: Duration::from_millis(2),
-        };
-        let start = std::time::Instant::now();
-        let _ = retry_mint_loop(&policy, "p", || async move {
-            Err::<Token, _>(CredentialError::Network {
-                provider_id: "p".into(),
-                reason: "blip".into(),
-            })
-        })
-        .await;
-        let elapsed = start.elapsed();
-        // Total backoff = 1 + 2 + 2 = 5ms (between 4 attempts). Allow 50ms
-        // headroom for scheduler jitter.
+    #[test]
+    fn credential_error_retry_classification_is_pinned_per_variant() {
+        let pid = "p".to_owned();
+        assert!(!CredentialError::NotConfigured(pid.clone()).is_retryable());
         assert!(
-            elapsed < Duration::from_millis(55),
-            "backoff appears unbounded: elapsed={elapsed:?}"
+            !CredentialError::InvalidMaterial {
+                provider_id: pid.clone(),
+                reason: "x".into(),
+            }
+            .is_retryable()
+        );
+        assert!(
+            !CredentialError::SigningFailed {
+                provider_id: pid.clone(),
+                reason: "x".into(),
+            }
+            .is_retryable()
+        );
+        assert!(
+            !CredentialError::PermanentUpstream {
+                provider_id: pid.clone(),
+                status: 403,
+                body: String::new(),
+            }
+            .is_retryable()
+        );
+        assert!(
+            CredentialError::TransientUpstream {
+                provider_id: pid.clone(),
+                reason: "503".into(),
+            }
+            .is_retryable()
+        );
+        assert!(
+            CredentialError::Network {
+                provider_id: pid,
+                reason: "tcp reset".into(),
+            }
+            .is_retryable()
         );
     }
 }

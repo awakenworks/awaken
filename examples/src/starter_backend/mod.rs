@@ -154,7 +154,7 @@ impl ProviderExecutorFactory for StarterProviderFactory {
             return Ok(executor);
         }
 
-        awaken_server::services::config_runtime::build_genai_provider_executor_with_broker(
+        awaken_server::services::config_runtime::build_genai_provider_executor(
             spec,
             Arc::clone(&self.broker),
         )

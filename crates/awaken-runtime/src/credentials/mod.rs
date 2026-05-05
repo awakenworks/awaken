@@ -16,6 +16,12 @@
 //! broker is the dedicated owner: one place to look at all auth, one
 //! trait to mock in tests, one observability hook to instrument.
 //!
+//! Static bearers bypass the broker on the production hot path (see
+//! `awaken_server::services::config_runtime::build_genai_provider_executor`)
+//! because there is no token to refresh — it is identical to 0.4.0 wiring.
+//! The broker still accepts static-bearer material for embedders that
+//! want everything funnelled through one chokepoint and for tests.
+//!
 //! ## Configuration discriminator
 //! `ProviderSpec.adapter_options.credentials_kind` selects how the broker
 //! interprets `ProviderSpec.api_key`:
@@ -26,45 +32,24 @@
 //! | `"service_account_json"`   | full Google service-account JSON   | broker, automatic|
 //!
 //! Compatibility rules and validation live in [`material::build_material`].
+//!
+//! ## Disabled-feature gating
+//! `service_account_json` requires the `credentials-google` cargo feature.
+//! When the feature is off, `build_material` rejects the configuration at
+//! the server boundary (config write time) with a clear error — there is
+//! no runtime stub mod swapped in via cfg.
 
 pub mod broker;
 pub mod error;
 pub mod material;
-mod static_bearer;
+mod minter;
 
 #[cfg(any(test, feature = "credentials-google"))]
 pub mod google_oauth;
 
-#[cfg(not(any(test, feature = "credentials-google")))]
-mod google_oauth {
-    //! Stubbed signer when the `credentials-google` feature is disabled.
-    //!
-    //! Configuring a `service_account_json` provider without the feature
-    //! produces a clear error at first mint instead of a silent panic.
-    use std::sync::Arc;
-
-    use super::error::CredentialError;
-    use super::material::GoogleServiceAccountKey;
-    use super::token::Token;
-
-    pub(super) async fn mint(
-        provider_id: &str,
-        _key: &Arc<GoogleServiceAccountKey>,
-        _scope: &str,
-        _http: &reqwest::Client,
-    ) -> Result<Token, CredentialError> {
-        Err(CredentialError::InvalidMaterial {
-            provider_id: provider_id.to_owned(),
-            reason: "credentials_kind 'service_account_json' requires the \
-                     `credentials-google` feature to be enabled at build time"
-                .to_owned(),
-        })
-    }
-}
-
 mod token;
 
-pub use broker::{AwakenCredentialBroker, CredentialBroker};
+pub use broker::{AwakenCredentialBroker, CredentialBroker, CredentialRetryPolicy};
 pub use error::CredentialError;
 pub use material::{CredentialKind, CredentialMaterial, GoogleServiceAccountKey, build_material};
-pub use token::TokenLease;
+pub use token::IssuedToken;

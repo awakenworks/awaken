@@ -172,13 +172,11 @@ pub trait ProviderExecutorFactory: Send + Sync {
 
 /// Provider executor factory backed by genai.
 ///
-/// When constructed with [`GenaiProviderExecutorFactory::with_broker`],
-/// every executor it builds shares the same credential broker — so token
-/// caches, single-flight refreshes, and metrics are unified across all
-/// providers in this process. The default constructor creates a
-/// throwaway broker, which is useful for tests but means each
-/// `build_genai_provider_executor_with_broker` invocation gets its own
-/// (independent) cache.
+/// Every executor this factory builds shares the same credential broker —
+/// so token caches, single-flight refreshes, and metrics are unified
+/// across all providers in this process. The default constructor creates
+/// a fresh broker, suitable for tests; production wiring should pass the
+/// `AppState`-scoped broker via [`with_broker`](Self::with_broker).
 pub struct GenaiProviderExecutorFactory {
     broker: Arc<dyn awaken_runtime::credentials::CredentialBroker>,
 }
@@ -202,7 +200,7 @@ impl GenaiProviderExecutorFactory {
 
 impl ProviderExecutorFactory for GenaiProviderExecutorFactory {
     fn build(&self, spec: &ProviderSpec) -> Result<Arc<dyn LlmExecutor>, ConfigRuntimeError> {
-        build_genai_provider_executor_with_broker(spec, Arc::clone(&self.broker))
+        build_genai_provider_executor(spec, Arc::clone(&self.broker))
     }
 }
 
@@ -980,31 +978,26 @@ impl ConfigRuntimeManager {
 
 /// Build an LLM executor from a [`ProviderSpec`].
 ///
-/// **Backward-compatible entry point** — uses a private, freshly created
-/// broker to mint tokens. Suitable for ad-hoc paths (tests, the
-/// construction-only `/v1/providers/:id/test` endpoint) where you don't
-/// want to thread an `AppState`-scoped broker through.
+/// Auth wiring branches on credential kind:
 ///
-/// In the live runtime, prefer
-/// [`build_genai_provider_executor_with_broker`] so concurrent providers
-/// share token caches and metrics surface uniformly.
+/// - **Static bearer / env-fallback** (0.4.0 default): the api_key (or
+///   genai's per-adapter env var, when api_key is absent) is handed
+///   directly to genai's synchronous `with_auth_resolver_fn`. The broker
+///   is **not** consulted — there is no token to refresh and no token
+///   endpoint to single-flight against. This keeps the inference hot path
+///   identical to 0.4.0 and avoids the cache / lock churn the broker
+///   would otherwise add per request.
+///
+/// - **Dynamic** (`service_account_json`, future cloud creds): material
+///   is registered with the broker, and an async auth resolver consults
+///   `broker.token_for(provider, scope)` per chat. This lets the broker's
+///   cache + single-flight handle token rotation transparently.
+///
+/// Misconfigured material is rejected here (eager validation) rather
+/// than at first inference. The provided broker is shared with all
+/// dynamic providers built by the same caller; passing the
+/// `AppState::credential_broker` is the production wiring.
 pub fn build_genai_provider_executor(
-    spec: &ProviderSpec,
-) -> Result<Arc<dyn LlmExecutor>, ConfigRuntimeError> {
-    let broker: Arc<dyn awaken_runtime::credentials::CredentialBroker> =
-        Arc::new(awaken_runtime::credentials::AwakenCredentialBroker::new());
-    build_genai_provider_executor_with_broker(spec, broker)
-}
-
-/// Build an LLM executor that delegates auth to a shared
-/// [`CredentialBroker`](awaken_runtime::credentials::CredentialBroker).
-///
-/// The broker registers the provider's credential material at build time
-/// (so misconfigured material is rejected here, not at first inference)
-/// and is then consulted by genai's async auth resolver for every chat
-/// request — which lets the broker's cache + single-flight handle token
-/// rotation transparently.
-pub fn build_genai_provider_executor_with_broker(
     spec: &ProviderSpec,
     broker: Arc<dyn awaken_runtime::credentials::CredentialBroker>,
 ) -> Result<Arc<dyn LlmExecutor>, ConfigRuntimeError> {
@@ -1014,10 +1007,13 @@ pub fn build_genai_provider_executor_with_broker(
     let kind = CredentialKind::from_options(&spec.adapter_options)
         .map_err(ConfigRuntimeError::InvalidConfig)?;
 
-    // Build material. This is the eager-validation choke point: a
-    // malformed SA JSON or kind/adapter mismatch fails here, well before
-    // any LLM call is attempted. `None` means "no explicit credential —
-    // let genai's adapter fall back to its env var default" (0.4.0 behaviour).
+    // Eager-validate material shape (malformed SA JSON, kind/adapter
+    // mismatch, missing api_key for non-bearer kinds, disabled feature).
+    // Bearer goes through `build_material` for the same eager check; the
+    // returned `Option<CredentialMaterial>` is discarded for that branch
+    // because the bearer wiring reads `spec.api_key` directly to bypass
+    // the broker entirely. Non-bearer kinds *do* register the returned
+    // material with the broker.
     let material = build_material(&spec.adapter, kind, spec.api_key.as_ref())
         .map_err(ConfigRuntimeError::InvalidConfig)?;
 
@@ -1025,18 +1021,31 @@ pub fn build_genai_provider_executor_with_broker(
         Ok(ModelIden::new(adapter_kind, model.model_name.to_string()))
     });
 
-    // Wire the auth resolver only when explicit material is present.
-    // Otherwise leave genai's default behaviour (read from VENDOR_API_KEY
-    // env var) so existing 0.4.0 deployments keep working.
-    if let Some(material) = material {
+    if matches!(kind, CredentialKind::Bearer) {
+        // Static bearer / env-fallback path — identical wiring to 0.4.0.
+        // Broker is bypassed entirely: there's no token to refresh and no
+        // token endpoint to single-flight against, so cache/lock churn
+        // would be pure overhead.
+        if let Some(api_key) = spec.api_key.as_ref().filter(|k| !k.is_empty()) {
+            let key = api_key.expose_secret().to_owned();
+            builder = builder
+                .with_auth_resolver_fn(move |_| Ok(Some(AuthData::from_single(key.clone()))));
+        }
+        // else: env-fallback — leave genai's default resolver
+        // (VENDOR_API_KEY env var) in place.
+    } else if let Some(material) = material {
+        // Dynamic kind: register with the broker; the async resolver
+        // consults `token_for` per chat call. Provider id and scope are
+        // captured as `Arc<str>` so each invocation just bumps refcounts
+        // rather than cloning two `String`s.
         broker.register(spec.id.clone(), material);
 
-        let scope = scopes_from_options(&spec.adapter_options)?;
-        let provider_id = spec.id.clone();
+        let provider_id: Arc<str> = Arc::from(spec.id.as_str());
+        let scope: Arc<str> = Arc::from(scopes_from_options(&spec.adapter_options)?);
         let broker_for_resolver = Arc::clone(&broker);
 
-        // genai's `IntoAuthResolverAsyncFn` requires the closure to
-        // return a `Pin<Box<dyn Future<Output = Result<Option<AuthData>>> + Send>>`,
+        // genai's `IntoAuthResolverAsyncFn` requires the closure to return
+        // a `Pin<Box<dyn Future<Output = Result<Option<AuthData>>> + Send>>`,
         // not a bare `async` block. The explicit type erases the concrete
         // future type so the trait bound resolves.
         type ResolverFuture = std::pin::Pin<
@@ -1044,15 +1053,15 @@ pub fn build_genai_provider_executor_with_broker(
         >;
         let resolver_fn = move |_iden: ModelIden| -> ResolverFuture {
             let broker = Arc::clone(&broker_for_resolver);
-            let provider_id = provider_id.clone();
-            let scope = scope.clone();
+            let provider_id = Arc::clone(&provider_id);
+            let scope = Arc::clone(&scope);
             Box::pin(async move {
-                let lease = broker.token_for(&provider_id, &scope).await.map_err(|e| {
+                let issued = broker.token_for(&provider_id, &scope).await.map_err(|e| {
                     genai::resolver::Error::Custom(format!(
                         "credential broker error for provider '{provider_id}': {e}"
                     ))
                 })?;
-                Ok(Some(AuthData::from_single(lease.bearer().to_owned())))
+                Ok(Some(AuthData::from_single(issued.bearer().to_owned())))
             })
         };
         builder = builder.with_auth_resolver(
@@ -1356,12 +1365,19 @@ mod tests {
         }
     }
 
+    /// Fresh per-call broker — equivalent to what the old
+    /// no-broker `build_genai_provider_executor` constructed internally.
+    /// Tests that don't care about broker state share-ability use this.
+    fn test_broker() -> Arc<dyn awaken_runtime::credentials::CredentialBroker> {
+        Arc::new(awaken_runtime::credentials::AwakenCredentialBroker::new())
+    }
+
     #[test]
     fn build_genai_with_valid_headers_succeeds() {
         let mut options = BTreeMap::new();
         options.insert("headers".into(), json!({"OpenAI-Organization": "org-xyz"}));
         let spec = provider_spec_with_options(options);
-        build_genai_provider_executor(&spec).expect("valid headers must build");
+        build_genai_provider_executor(&spec, test_broker()).expect("valid headers must build");
     }
 
     #[test]
@@ -1369,7 +1385,7 @@ mod tests {
         let mut options = BTreeMap::new();
         options.insert("headers".into(), json!("not-an-object"));
         let spec = provider_spec_with_options(options);
-        let err = match build_genai_provider_executor(&spec) {
+        let err = match build_genai_provider_executor(&spec, test_broker()) {
             Ok(_) => panic!("expected build to fail"),
             Err(e) => e,
         };
@@ -1384,7 +1400,7 @@ mod tests {
         let mut options = BTreeMap::new();
         options.insert("headers".into(), json!({"X-Numeric-Value": 42}));
         let spec = provider_spec_with_options(options);
-        let err = match build_genai_provider_executor(&spec) {
+        let err = match build_genai_provider_executor(&spec, test_broker()) {
             Ok(_) => panic!("expected build to fail"),
             Err(e) => e,
         };
@@ -1399,7 +1415,7 @@ mod tests {
         let mut options = BTreeMap::new();
         options.insert("future_extension_key".into(), json!({"anything": true}));
         let spec = provider_spec_with_options(options);
-        build_genai_provider_executor(&spec)
+        build_genai_provider_executor(&spec, test_broker())
             .expect("unknown adapter_options keys must not break the build");
     }
 
@@ -1534,7 +1550,7 @@ mod tests {
                 adapter: name.to_string(),
                 ..ProviderSpec::default()
             };
-            build_genai_provider_executor(&spec).unwrap_or_else(|err| {
+            build_genai_provider_executor(&spec, test_broker()).unwrap_or_else(|err| {
                 panic!("supported adapter `{name}` failed to build executor: {err:?}")
             });
         }
@@ -1551,7 +1567,7 @@ mod tests {
                 api_key: Some("test-secret-key".to_string().into()),
                 ..ProviderSpec::default()
             };
-            build_genai_provider_executor(&spec).unwrap_or_else(|err| {
+            build_genai_provider_executor(&spec, test_broker()).unwrap_or_else(|err| {
                 panic!("supported adapter `{name}` (with api_key) failed to build: {err:?}")
             });
         }
@@ -1568,7 +1584,7 @@ mod tests {
                 base_url: Some("https://example.invalid/v1".to_string()),
                 ..ProviderSpec::default()
             };
-            build_genai_provider_executor(&spec).unwrap_or_else(|err| {
+            build_genai_provider_executor(&spec, test_broker()).unwrap_or_else(|err| {
                 panic!("supported adapter `{name}` (with base_url) failed to build: {err:?}")
             });
         }
@@ -1595,7 +1611,7 @@ mod tests {
                 adapter_options,
                 ..ProviderSpec::default()
             };
-            build_genai_provider_executor(&spec).unwrap_or_else(|err| {
+            build_genai_provider_executor(&spec, test_broker()).unwrap_or_else(|err| {
                 panic!("supported adapter `{name}` (full options) failed to build: {err:?}")
             });
         }
@@ -1612,7 +1628,7 @@ mod tests {
                 timeout_secs: 0,
                 ..ProviderSpec::default()
             };
-            build_genai_provider_executor(&spec).unwrap_or_else(|err| {
+            build_genai_provider_executor(&spec, test_broker()).unwrap_or_else(|err| {
                 panic!("supported adapter `{name}` (zero timeout) failed to build: {err:?}")
             });
         }
@@ -1708,13 +1724,14 @@ mod tests {
         // genai's adapter will read VENDOR_API_KEY at request time. The
         // broker integration must not break this.
         let spec = provider_spec_with_kind_and_key("openai", None, None);
-        build_genai_provider_executor(&spec).expect("env-fallback bearer must build");
+        build_genai_provider_executor(&spec, test_broker())
+            .expect("env-fallback bearer must build");
     }
 
     #[test]
     fn build_genai_explicit_bearer_succeeds() {
         let spec = provider_spec_with_kind_and_key("openai", Some("bearer"), Some("sk-test-123"));
-        build_genai_provider_executor(&spec).expect("explicit bearer must build");
+        build_genai_provider_executor(&spec, test_broker()).expect("explicit bearer must build");
     }
 
     #[test]
@@ -1724,7 +1741,7 @@ mod tests {
             Some("never-heard-of-it"),
             Some("sk-test-123"),
         );
-        let err = build_genai_provider_executor(&spec)
+        let err = build_genai_provider_executor(&spec, test_broker())
             .err()
             .expect("expected error");
         assert!(
@@ -1740,7 +1757,7 @@ mod tests {
             Some("service_account_json"),
             Some(r#"{"client_email":"x@y","private_key":"-----BEGIN PRIVATE KEY-----"}"#),
         );
-        let err = build_genai_provider_executor(&spec)
+        let err = build_genai_provider_executor(&spec, test_broker())
             .err()
             .expect("expected error");
         assert!(
@@ -1754,6 +1771,70 @@ mod tests {
     // `awaken_runtime::credentials::material::tests` so they don't depend
     // on `parse_adapter_kind` recognising the "vertex" adapter (which is
     // gated on the upstream genai version actually shipping it).
+
+    /// Broker double that records every `register` / `deregister` call so
+    /// tests can assert what was (or wasn't) handed to the broker.
+    #[derive(Default)]
+    struct RecordingBroker {
+        registered: parking_lot::Mutex<Vec<String>>,
+    }
+
+    #[async_trait::async_trait]
+    impl awaken_runtime::credentials::CredentialBroker for RecordingBroker {
+        fn register(
+            &self,
+            provider_id: String,
+            _material: awaken_runtime::credentials::CredentialMaterial,
+        ) {
+            self.registered.lock().push(provider_id);
+        }
+        async fn token_for(
+            &self,
+            _provider_id: &str,
+            _scope: &str,
+        ) -> Result<
+            awaken_runtime::credentials::IssuedToken,
+            awaken_runtime::credentials::CredentialError,
+        > {
+            unreachable!("static-bearer build must not call token_for");
+        }
+    }
+
+    #[test]
+    fn build_genai_static_bearer_does_not_register_with_broker() {
+        // Item 2: static bearers go straight into genai's sync resolver,
+        // bypassing the broker. If we ever regress and register them, the
+        // broker would unnecessarily cache, single-flight, and lock on
+        // every chat call.
+        let recording: Arc<RecordingBroker> = Arc::new(RecordingBroker::default());
+        let broker: Arc<dyn awaken_runtime::credentials::CredentialBroker> =
+            Arc::clone(&recording) as _;
+
+        let spec = provider_spec_with_kind_and_key("openai", Some("bearer"), Some("sk-x"));
+        build_genai_provider_executor(&spec, broker).expect("static bearer must build");
+
+        assert!(
+            recording.registered.lock().is_empty(),
+            "static bearer must not register with the broker"
+        );
+    }
+
+    #[test]
+    fn build_genai_omitted_api_key_does_not_register_with_broker() {
+        // Env-var fallback — same expectation as the static bearer case:
+        // there's no material to register and no token to mint.
+        let recording: Arc<RecordingBroker> = Arc::new(RecordingBroker::default());
+        let broker: Arc<dyn awaken_runtime::credentials::CredentialBroker> =
+            Arc::clone(&recording) as _;
+
+        let spec = provider_spec_with_kind_and_key("openai", None, None);
+        build_genai_provider_executor(&spec, broker).expect("env-fallback must build");
+
+        assert!(
+            recording.registered.lock().is_empty(),
+            "env-fallback must not register with the broker"
+        );
+    }
 
     #[test]
     fn scopes_from_options_default_when_absent() {
