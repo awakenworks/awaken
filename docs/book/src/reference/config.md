@@ -275,9 +275,9 @@ pub struct AdminApiConfig {
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `bearer_token` | `Option<RedactedString>` | `None` | Requires `Authorization: Bearer ...` for `/v1/capabilities`, `/v1/config/*`, and `/v1/agents*` when set. Redacts itself in `Debug`/`Display`; call `expose_secret()` to read the value. JSON wire format remains a plain string |
+| `bearer_token` | `Option<RedactedString>` | `None` | Requires `Authorization: Bearer ...` for the admin surface when set: `/v1/capabilities`, `/v1/config/*`, `/v1/agents*`, `/v1/system/info`, `/v1/audit-log`, and runtime-stats endpoints. Redacts itself in `Debug`/`Display`; call `expose_secret()` to read the value. JSON wire format remains a plain string |
 | `cors_allowed_origins` | `Vec<String>` | `["http://127.0.0.1:3002", "http://localhost:3002"]` | Browser origins allowed by the admin CORS layer |
-| `expose_config_routes` | `bool` | `true` | Whether the server mounts the `/v1/config/*` and `/v1/agents` admin CRUD routes. Set to `false` to drop those routes entirely when configuration is driven through an external RBAC/audit pipeline. `/v1/capabilities` remains available so frontends can still discover registered components |
+| `expose_config_routes` | `bool` | `true` | Whether the server mounts the admin/configuration HTTP surface. Set to `false` to drop those routes entirely when configuration is driven through an external RBAC/audit pipeline |
 
 Environment variables override the `AppState` admin settings:
 

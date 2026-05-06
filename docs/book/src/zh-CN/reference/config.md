@@ -242,9 +242,9 @@ pub struct AdminApiConfig {
 
 | 字段 | 类型 | 默认值 | 说明 |
 |---|---|---|---|
-| `bearer_token` | `Option<RedactedString>` | `None` | 设置后，`/v1/capabilities`、`/v1/config/*` 和 `/v1/agents*` 要求 `Authorization: Bearer ...`。`Debug`/`Display` 自动遮蔽，需要明文请调用 `expose_secret()`；JSON 序列化保持普通字符串 |
+| `bearer_token` | `Option<RedactedString>` | `None` | 设置后，admin surface 要求 `Authorization: Bearer ...`：`/v1/capabilities`、`/v1/config/*`、`/v1/agents*`、`/v1/system/info`、`/v1/audit-log` 和 runtime-stats 端点。`Debug`/`Display` 自动遮蔽，需要明文请调用 `expose_secret()`；JSON 序列化保持普通字符串 |
 | `cors_allowed_origins` | `Vec<String>` | `["http://127.0.0.1:3002", "http://localhost:3002"]` | admin CORS layer 允许的浏览器来源 |
-| `expose_config_routes` | `bool` | `true` | 是否挂载 `/v1/config/*` 与 `/v1/agents` 这套 admin CRUD 路由。当配置由外部 RBAC/审计流水线管理时设为 `false`，可以彻底隐藏这部分 HTTP 表面；`/v1/capabilities` 仍保持暴露以便前端发现已注册组件 |
+| `expose_config_routes` | `bool` | `true` | 是否挂载 admin/configuration HTTP surface。当配置由外部 RBAC/审计流水线管理时设为 `false`，可以彻底隐藏这部分 HTTP 表面 |
 
 环境变量会覆盖 `AppState` 上的 admin 配置：
 

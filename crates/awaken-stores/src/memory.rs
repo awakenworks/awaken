@@ -1215,6 +1215,62 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn delete_and_update_same_revision_are_mutually_exclusive() {
+        use awaken_contract::contract::config_store::ConfigStore;
+        use std::sync::Arc;
+
+        let store = Arc::new(InMemoryStore::new());
+        let value_r1 = serde_json::json!({
+            "spec": {"id": "duel", "value": 1},
+            "meta": {"source": {"kind": "user"}, "revision": 1}
+        });
+        store
+            .put_if_revision("ns", "duel", &value_r1, 0)
+            .await
+            .unwrap();
+
+        let barrier = Arc::new(Barrier::new(2));
+        let delete_store = Arc::clone(&store);
+        let update_store = Arc::clone(&store);
+        let delete_barrier = Arc::clone(&barrier);
+        let update_barrier = Arc::clone(&barrier);
+
+        let delete = tokio::spawn(async move {
+            delete_barrier.wait().await;
+            delete_store.delete_if_revision("ns", "duel", 1).await
+        });
+        let update = tokio::spawn(async move {
+            let value_r2 = serde_json::json!({
+                "spec": {"id": "duel", "value": 2},
+                "meta": {"source": {"kind": "user"}, "revision": 2}
+            });
+            update_barrier.wait().await;
+            update_store
+                .put_if_revision("ns", "duel", &value_r2, 1)
+                .await
+        });
+
+        let delete_ok = delete.await.unwrap().is_ok();
+        let update_ok = update.await.unwrap().is_ok();
+        assert_ne!(
+            delete_ok, update_ok,
+            "same-revision delete and update must be serialized by CAS"
+        );
+
+        let stored = ConfigStore::get(store.as_ref(), "ns", "duel")
+            .await
+            .unwrap();
+        if delete_ok {
+            assert!(stored.is_none(), "successful delete must remove the record");
+        } else {
+            assert_eq!(
+                stored.expect("successful update must leave record")["meta"]["revision"],
+                2
+            );
+        }
+    }
+
+    #[tokio::test]
     async fn config_change_notifier_emits_on_put_and_delete() {
         use awaken_contract::contract::config_store::{
             ConfigChangeKind, ConfigChangeNotifier, ConfigStore,

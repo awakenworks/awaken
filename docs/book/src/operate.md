@@ -16,7 +16,8 @@ Two orthogonal levers, both detailed in the
 [config reference](./reference/config.md):
 
 - `AdminApiConfig.bearer_token` (or `AWAKEN_ADMIN_API_BEARER_TOKEN`) protects
-  `/v1/capabilities`, `/v1/config/*`, and `/v1/agents*`.
+  `/v1/capabilities`, `/v1/config/*`, `/v1/agents*`, `/v1/system/info`,
+  `/v1/audit-log`, and runtime-stats endpoints.
 - `AdminApiConfig.expose_config_routes = false` drops the admin CRUD routes
   entirely when configuration is owned by an external pipeline.
 

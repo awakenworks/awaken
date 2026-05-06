@@ -5,6 +5,7 @@ use axum::routing::{delete as delete_route, get, patch, post};
 use axum::{Json, Router};
 use serde::Deserialize;
 use serde_json::{Value, json};
+use subtle::ConstantTimeEq;
 
 #[derive(Deserialize, Default)]
 struct DeleteParams {
@@ -513,11 +514,17 @@ fn ensure_admin_auth_for_token(
     let Some(expected) = expected else {
         return Ok(());
     };
-    let Some(auth) = headers.get(axum::http::header::AUTHORIZATION) else {
+    let mut auth_values = headers.get_all(axum::http::header::AUTHORIZATION).iter();
+    let Some(auth) = auth_values.next() else {
         return Err(ConfigRouteError::Unauthorized(
             "admin authentication required".into(),
         ));
     };
+    if auth_values.next().is_some() {
+        return Err(ConfigRouteError::Unauthorized(
+            "multiple Authorization headers are not allowed".into(),
+        ));
+    }
     let auth = auth
         .to_str()
         .map_err(|_| ConfigRouteError::Unauthorized("invalid Authorization header".into()))?;
@@ -529,7 +536,12 @@ fn ensure_admin_auth_for_token(
             "Authorization header must use Bearer authentication".into(),
         ));
     };
-    if token != expected.expose_secret() {
+    if token
+        .as_bytes()
+        .ct_eq(expected.expose_secret().as_bytes())
+        .unwrap_u8()
+        != 1
+    {
         return Err(ConfigRouteError::Unauthorized(
             "invalid admin bearer token".into(),
         ));
@@ -744,6 +756,61 @@ mod tests {
             HeaderValue::from_static("Bearer secret"),
         );
         assert!(ensure_admin_auth_for_token(Some(&expected), &headers).is_ok());
+    }
+
+    #[test]
+    fn admin_auth_rejects_ambiguous_or_malformed_bearer_headers_without_leaking_secret() {
+        let expected = RedactedString::from("secret-value-that-must-not-leak");
+        let cases = [
+            "Bearer",
+            "Bearer ",
+            "Bearer\tsecret-value-that-must-not-leak",
+            "Token secret-value-that-must-not-leak",
+            "bearer wrong-token",
+            "Bearer secret-value-that-must-not-leak extra",
+        ];
+
+        for value in cases {
+            let mut headers = HeaderMap::new();
+            headers.insert(
+                header::AUTHORIZATION,
+                HeaderValue::from_str(value).expect("valid header value"),
+            );
+            let err = ensure_admin_auth_for_token(Some(&expected), &headers).unwrap_err();
+            let ConfigRouteError::Unauthorized(message) = &err else {
+                panic!("expected Unauthorized for {value:?}, got {err:?}");
+            };
+            assert!(
+                !message.contains(expected.expose_secret()),
+                "unauthorized error leaked secret for {value:?}: {message}"
+            );
+            let response = err.into_response();
+            assert_eq!(
+                response.status(),
+                StatusCode::UNAUTHORIZED,
+                "case {value:?}"
+            );
+        }
+
+        let mut headers = HeaderMap::new();
+        headers.append(
+            header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer secret-value-that-must-not-leak"),
+        );
+        headers.append(
+            header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer different"),
+        );
+        let err = ensure_admin_auth_for_token(Some(&expected), &headers).unwrap_err();
+        let ConfigRouteError::Unauthorized(message) = &err else {
+            panic!("expected Unauthorized for duplicate headers, got {err:?}");
+        };
+        assert!(
+            !message.contains(expected.expose_secret()),
+            "duplicate-header error leaked secret: {message}"
+        );
+        let response = err.into_response();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     }
 
     // ── delete 409 / force integration tests ──────────────────────────────
@@ -1063,6 +1130,10 @@ mod tests {
                 body["latency_ms"].is_number(),
                 "expected latency_ms to be a number"
             );
+            assert_eq!(
+                body["network_tested"], false,
+                "build-time failures do not reach the network"
+            );
         }
 
         #[tokio::test]
@@ -1128,6 +1199,10 @@ mod tests {
             let (status, body) = test_provider(&app, "prov-openai").await;
             assert_eq!(status, StatusCode::OK, "body: {body}");
             assert_eq!(body["ok"], true, "expected ok=true for openai adapter");
+            assert_eq!(
+                body["network_tested"], false,
+                "bearer/env provider probe validates config only"
+            );
             assert!(body.get("error").is_none(), "should have no error field");
         }
 

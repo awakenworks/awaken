@@ -175,4 +175,22 @@ describe("ToolsPage", () => {
     const cells = screen.getAllByText("—");
     expect(cells.length).toBeGreaterThan(0);
   });
+
+  it("renders server supplied tool text as inert text, not HTML", async () => {
+    const payload = `<img src=x onerror="globalThis.__xss = true">`;
+    vi.stubGlobal("fetch", buildFetchMock(
+      [toolItem("xss-tool", payload, payload, payload)],
+      [metaItem("xss-tool")],
+    ));
+
+    renderToolsPage();
+
+    await waitFor(() => {
+      expect(screen.getByText("xss-tool")).toBeDefined();
+    });
+
+    expect(document.querySelector("img")).toBeNull();
+    expect((globalThis as unknown as { __xss?: boolean }).__xss).toBeUndefined();
+    expect(screen.getAllByText(payload).length).toBeGreaterThan(0);
+  });
 });

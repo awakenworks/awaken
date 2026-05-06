@@ -251,7 +251,7 @@ export const zhCN: Dict = {
       credentialsKind: "凭证类型",
       saJson: "Service Account JSON",
       saJsonPh: "粘贴从 GCP IAM 下载的完整 JSON",
-      saJsonHint: "Awaken 自动签发 JWT 并刷新 OAuth token；加密存储。",
+      saJsonHint: "Awaken 自动签发 JWT 并刷新 OAuth token；在界面和审计 payload 中脱敏。",
     },
     credentialsKind: {
       bearer: "静态 Bearer / API 密钥",

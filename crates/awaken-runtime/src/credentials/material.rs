@@ -15,6 +15,8 @@ use serde_json::Value;
 
 use super::minter::{self, Minter};
 
+pub(crate) const GOOGLE_OAUTH_TOKEN_URI: &str = "https://oauth2.googleapis.com/token";
+
 /// Opaque carrier of a parsed credential.
 ///
 /// Internally holds an [`Arc<dyn Minter>`](Minter) — the broker dispatches
@@ -32,6 +34,11 @@ impl CredentialMaterial {
         Self {
             minter: minter::static_bearer_arc(bearer),
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn from_minter(minter: Arc<dyn Minter>) -> Self {
+        Self { minter }
     }
 
     /// Google service-account material. Only available when the
@@ -81,7 +88,16 @@ pub struct GoogleServiceAccountKey {
 }
 
 fn default_token_uri() -> String {
-    "https://oauth2.googleapis.com/token".to_owned()
+    GOOGLE_OAUTH_TOKEN_URI.to_owned()
+}
+
+pub(crate) fn validate_google_token_uri(token_uri: &str) -> Result<(), String> {
+    if token_uri == GOOGLE_OAUTH_TOKEN_URI {
+        return Ok(());
+    }
+    Err(format!(
+        "service account JSON token_uri must be {GOOGLE_OAUTH_TOKEN_URI}; got '{token_uri}'"
+    ))
 }
 
 fn deserialize_redacted<'de, D>(d: D) -> Result<RedactedString, D::Error>
@@ -108,6 +124,7 @@ impl GoogleServiceAccountKey {
         if !key.private_key.expose_secret().contains("BEGIN") {
             return Err("'private_key' does not look like a PEM block".into());
         }
+        validate_google_token_uri(&key.token_uri)?;
         Ok(key)
     }
 }
@@ -455,13 +472,61 @@ mod tests {
     }
 
     #[test]
-    fn google_sa_key_parse_honours_explicit_token_uri() {
+    fn google_sa_key_parse_accepts_standard_explicit_token_uri() {
+        let json = r#"{
+            "client_email":"sa@p.iam.gserviceaccount.com",
+            "private_key":"-----BEGIN PRIVATE KEY-----\nfake\n-----END PRIVATE KEY-----",
+            "token_uri":"https://oauth2.googleapis.com/token"
+        }"#;
+        let key = GoogleServiceAccountKey::parse(json).unwrap();
+        assert_eq!(key.token_uri, GOOGLE_OAUTH_TOKEN_URI);
+    }
+
+    #[test]
+    fn google_sa_key_parse_rejects_custom_token_uri() {
         let json = r#"{
             "client_email":"sa@p.iam.gserviceaccount.com",
             "private_key":"-----BEGIN PRIVATE KEY-----\nfake\n-----END PRIVATE KEY-----",
             "token_uri":"https://custom.example/token"
         }"#;
-        let key = GoogleServiceAccountKey::parse(json).unwrap();
-        assert_eq!(key.token_uri, "https://custom.example/token");
+        let err = GoogleServiceAccountKey::parse(json).unwrap_err();
+        assert!(
+            err.contains(GOOGLE_OAUTH_TOKEN_URI) && err.contains("custom.example"),
+            "expected token_uri allowlist error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn google_sa_key_parse_rejects_ssrf_token_uri_corpus() {
+        let corpus = [
+            "http://127.0.0.1/token",
+            "http://127.0.0.1:8080/token",
+            "http://localhost/token",
+            "http://[::1]/token",
+            "http://10.0.0.1/token",
+            "http://172.16.0.1/token",
+            "http://192.168.1.1/token",
+            "http://169.254.169.254/latest/meta-data",
+            "https://oauth2.googleapis.com.evil.example/token",
+            "https://oauth2.googleapis.com@evil.example/token",
+            "https://oauth2.googleapis.com./token",
+            "https://evil.example/redirect?next=https%3A%2F%2Foauth2.googleapis.com%2Ftoken",
+            "HTTPS://oauth2.googleapis.com/token",
+        ];
+
+        for token_uri in corpus {
+            let json = serde_json::json!({
+                "client_email": "sa@p.iam.gserviceaccount.com",
+                "private_key": "-----BEGIN PRIVATE KEY-----\nfake\n-----END PRIVATE KEY-----",
+                "token_uri": token_uri,
+            })
+            .to_string();
+            let err = GoogleServiceAccountKey::parse(&json)
+                .expect_err("non-allowlisted token_uri must be rejected");
+            assert!(
+                err.contains(GOOGLE_OAUTH_TOKEN_URI) && err.contains(token_uri),
+                "expected allowlist error mentioning canonical endpoint and rejected URI, got: {err}"
+            );
+        }
     }
 }

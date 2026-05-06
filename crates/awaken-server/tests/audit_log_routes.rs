@@ -250,6 +250,42 @@ async fn list_returns_events_after_create() {
 }
 
 #[tokio::test]
+async fn audit_log_redacts_provider_secret_materials() {
+    let app = build_test_app_with_audit(None).await;
+
+    let provider_secret = r#"{
+        "client_email":"sa@project.iam.gserviceaccount.com",
+        "private_key":"-----BEGIN PRIVATE KEY-----\nprovider-private-key\n-----END PRIVATE KEY-----",
+        "token_uri":"https://oauth2.googleapis.com/token"
+    }"#;
+    let status = create_config(
+        &app,
+        "providers",
+        &json!({
+            "id": "secret-provider",
+            "adapter": "stub",
+            "api_key": provider_secret
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, body) = get_audit_log(&app, "limit=20").await;
+    assert_eq!(status, StatusCode::OK, "body: {body}");
+    let rendered = body.to_string();
+    for secret in [
+        "provider-private-key",
+        "BEGIN PRIVATE KEY",
+        "sa@project.iam.gserviceaccount.com",
+    ] {
+        assert!(
+            !rendered.contains(secret),
+            "audit log leaked secret fragment {secret:?}: {rendered}"
+        );
+    }
+}
+
+#[tokio::test]
 async fn filter_by_resource_returns_only_matching_events() {
     let app = build_test_app_with_audit(None).await;
 

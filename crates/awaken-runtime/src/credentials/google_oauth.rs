@@ -26,7 +26,7 @@ use jsonwebtoken::{Algorithm, EncodingKey, Header};
 use serde::{Deserialize, Serialize};
 
 use super::error::CredentialError;
-use super::material::GoogleServiceAccountKey;
+use super::material::{GoogleServiceAccountKey, validate_google_token_uri};
 use super::token::Token;
 
 /// JWT lifetime. Google accepts up to 3600s; using the maximum minimises
@@ -61,6 +61,8 @@ pub(super) async fn mint(
     scope: &str,
     http: &reqwest::Client,
 ) -> Result<Token, CredentialError> {
+    validate_token_uri_for_exchange(provider_id, &key.token_uri)?;
+
     let now_secs = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_err(|e| CredentialError::SigningFailed {
@@ -131,6 +133,21 @@ pub(super) async fn mint(
     })
 }
 
+fn validate_token_uri_for_exchange(
+    provider_id: &str,
+    token_uri: &str,
+) -> Result<(), CredentialError> {
+    #[cfg(test)]
+    if token_uri.starts_with("http://127.0.0.1:") || token_uri.starts_with("http://[::1]:") {
+        return Ok(());
+    }
+
+    validate_google_token_uri(token_uri).map_err(|reason| CredentialError::InvalidMaterial {
+        provider_id: provider_id.to_owned(),
+        reason,
+    })
+}
+
 /// Discriminate retryable transport faults (DNS, connection reset, TLS
 /// handshake) from upstream-rejected requests. reqwest doesn't give us
 /// a clean enum so the only signal we have is whether a status code
@@ -165,6 +182,7 @@ fn classify_reqwest_error(provider_id: &str, e: reqwest::Error) -> CredentialErr
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::credentials::material::GOOGLE_OAUTH_TOKEN_URI;
     use crate::credentials::material::GoogleServiceAccountKey;
     use awaken_contract::secret::RedactedString;
     use std::sync::Arc;
@@ -333,6 +351,18 @@ yJe99wYtUpHld4D+pLiyUnQ=
             "expected Network for unreachable endpoint, got {err:?}"
         );
         assert!(err.is_retryable());
+    }
+
+    #[tokio::test]
+    async fn mint_rejects_non_google_token_uri() {
+        let key = test_sa_key("https://custom.example/token");
+        let http = reqwest::Client::new();
+        let err = mint("p", &key, "s", &http).await.unwrap_err();
+        assert!(
+            matches!(err, CredentialError::InvalidMaterial { ref reason, .. } if reason.contains(GOOGLE_OAUTH_TOKEN_URI)),
+            "expected InvalidMaterial allowlist error, got {err:?}"
+        );
+        assert!(!err.is_retryable());
     }
 
     #[tokio::test]

@@ -15,7 +15,8 @@
 两个互不相关的开关，详见 [配置参考](./reference/config.md)：
 
 - `AdminApiConfig.bearer_token`（或 `AWAKEN_ADMIN_API_BEARER_TOKEN`）保护
-  `/v1/capabilities`、`/v1/config/*`、`/v1/agents*`。
+  `/v1/capabilities`、`/v1/config/*`、`/v1/agents*`、`/v1/system/info`、
+  `/v1/audit-log` 和 runtime-stats 端点。
 - `AdminApiConfig.expose_config_routes = false` 把 admin CRUD 路由整组卸下，
   适合配置由外部流水线管理的部署。
 

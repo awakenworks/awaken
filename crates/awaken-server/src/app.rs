@@ -656,7 +656,7 @@ pub fn validate_admin_surface(state: &AppState) -> std::io::Result<()> {
     if admin.bearer_token.is_some() {
         return Ok(());
     }
-    if state.config_store.is_none() && state.config_runtime_manager.is_none() {
+    if !admin_surface_has_sensitive_state(state) {
         return Ok(());
     }
 
@@ -669,9 +669,17 @@ pub fn validate_admin_surface(state: &AppState) -> std::io::Result<()> {
     Err(std::io::Error::new(
         std::io::ErrorKind::PermissionDenied,
         format!(
-            "admin/config APIs require {ADMIN_API_BEARER_TOKEN_ENV} when binding a non-loopback address"
+            "admin APIs require {ADMIN_API_BEARER_TOKEN_ENV} when binding a non-loopback address"
         ),
     ))
+}
+
+fn admin_surface_has_sensitive_state(state: &AppState) -> bool {
+    state.config_store.is_some()
+        || state.config_runtime_manager.is_some()
+        || state.audit_log.is_some()
+        || state.runtime_stats.is_some()
+        || state.skill_catalog_provider.is_some()
 }
 
 pub fn admin_cors_layer(state: &AppState) -> std::io::Result<tower_http::cors::CorsLayer> {
@@ -803,6 +811,60 @@ mod tests {
     #[test]
     fn build_service_router_rejects_non_loopback_admin_surface_without_token() {
         let state = state_for_admin_surface_test("0.0.0.0:3000", AdminApiConfig::default());
+
+        let error = build_service_router(state).unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
+        assert!(
+            error.to_string().contains(ADMIN_API_BEARER_TOKEN_ENV),
+            "error should name the required env var, got: {error}"
+        );
+    }
+
+    #[test]
+    fn build_service_router_rejects_runtime_stats_admin_surface_without_token() {
+        let mut state = state_for_admin_surface_test("0.0.0.0:3000", AdminApiConfig::default());
+        state.config_store = None;
+        state.config_runtime_manager = None;
+        state.runtime_stats = Some(Arc::new(RuntimeStatsRegistry::new()));
+
+        let error = build_service_router(state).unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
+        assert!(
+            error.to_string().contains(ADMIN_API_BEARER_TOKEN_ENV),
+            "error should name the required env var, got: {error}"
+        );
+    }
+
+    #[test]
+    fn build_service_router_rejects_audit_log_admin_surface_without_token() {
+        let mut state = state_for_admin_surface_test("0.0.0.0:3000", AdminApiConfig::default());
+        state.config_store = None;
+        state.config_runtime_manager = None;
+        state.audit_log = Some(Arc::new(AuditLogger::new(Arc::new(
+            awaken_stores::InMemoryStore::new(),
+        ))));
+
+        let error = build_service_router(state).unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
+        assert!(
+            error.to_string().contains(ADMIN_API_BEARER_TOKEN_ENV),
+            "error should name the required env var, got: {error}"
+        );
+    }
+
+    #[test]
+    fn build_service_router_rejects_skill_catalog_admin_surface_without_token() {
+        struct EmptySkillCatalog;
+        impl SkillCatalogProvider for EmptySkillCatalog {
+            fn list_skills(&self) -> Vec<SkillCatalogEntry> {
+                Vec::new()
+            }
+        }
+
+        let mut state = state_for_admin_surface_test("0.0.0.0:3000", AdminApiConfig::default());
+        state.config_store = None;
+        state.config_runtime_manager = None;
+        state.skill_catalog_provider = Some(Arc::new(EmptySkillCatalog));
 
         let error = build_service_router(state).unwrap_err();
         assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);

@@ -69,6 +69,13 @@ export interface ProviderRecord extends Omit<ProviderSpec, "api_key"> {
   has_api_key?: boolean;
 }
 
+export interface ProviderTestResponse {
+  ok: boolean;
+  latency_ms: number;
+  network_tested: boolean;
+  error?: string;
+}
+
 export interface McpRestartPolicy {
   enabled?: boolean;
   max_attempts?: number;
@@ -316,16 +323,23 @@ function adminBearerToken(override?: string): string | undefined {
     return override.trim();
   }
 
-  const envToken = import.meta.env.VITE_ADMIN_BEARER_TOKEN;
-  if (typeof envToken === "string" && envToken.trim().length > 0) {
-    return envToken.trim();
-  }
-
   if (typeof globalThis.localStorage === "undefined") {
-    return undefined;
+    return devEnvAdminBearerToken();
   }
   const stored = globalThis.localStorage.getItem(ADMIN_TOKEN_STORAGE_KEY);
-  return stored?.trim() || undefined;
+  const storedToken = stored?.trim();
+  if (storedToken) {
+    return storedToken;
+  }
+  return devEnvAdminBearerToken();
+}
+
+function devEnvAdminBearerToken(): string | undefined {
+  if (import.meta.env.PROD) {
+    return undefined;
+  }
+  const envToken = import.meta.env.VITE_ADMIN_BEARER_TOKEN;
+  return typeof envToken === "string" ? envToken.trim() || undefined : undefined;
 }
 
 function withAdminAuth(init?: RequestInit, override?: string): RequestInit | undefined {
@@ -408,7 +422,7 @@ export const configApi = {
     ),
 
   testProvider: (id: string) =>
-    fetchJson<{ ok: boolean; latency_ms: number; error?: string }>(
+    fetchJson<ProviderTestResponse>(
       `${BACKEND_URL}/v1/providers/${encodeURIComponent(id)}/test`,
       { method: "POST" },
     ),

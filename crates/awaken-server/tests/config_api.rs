@@ -826,6 +826,60 @@ async fn provider_secret_is_redacted_and_preserved_on_update() {
 }
 
 #[tokio::test]
+async fn provider_service_account_shaped_secret_is_never_returned_by_admin_api() {
+    let app = make_app().await;
+    let service_account_json = r#"{
+        "client_email":"sa@project.iam.gserviceaccount.com",
+        "private_key":"-----BEGIN PRIVATE KEY-----\nsa-private-material\n-----END PRIVATE KEY-----",
+        "token_uri":"https://oauth2.googleapis.com/token"
+    }"#;
+
+    let (status, created) = request_json(
+        &app.router,
+        Method::POST,
+        "/v1/config/providers",
+        Some(json!({
+            "id": "sa-shaped",
+            "adapter": "stub",
+            "api_key": service_account_json
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, fetched) = request_json(
+        &app.router,
+        Method::GET,
+        "/v1/config/providers/sa-shaped",
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let (status, listed) =
+        request_json(&app.router, Method::GET, "/v1/config/providers", None).await;
+    assert_eq!(status, StatusCode::OK);
+
+    for payload in [created, fetched, listed] {
+        let rendered = payload.to_string();
+        for secret in [
+            "sa-private-material",
+            "BEGIN PRIVATE KEY",
+            "sa@project.iam.gserviceaccount.com",
+        ] {
+            assert!(
+                !rendered.contains(secret),
+                "admin API response leaked provider secret fragment {secret:?}: {rendered}"
+            );
+        }
+        assert!(
+            rendered.contains("has_api_key"),
+            "response should expose only a boolean/key-presence marker: {rendered}"
+        );
+    }
+}
+
+#[tokio::test]
 async fn mcp_servers_are_redacted_and_publish_live_tools() {
     let app = make_app().await;
 

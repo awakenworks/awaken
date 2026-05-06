@@ -485,6 +485,8 @@ pub fn redact_secrets(value: Value) -> Value {
                 let lower = key.to_lowercase();
                 if lower.contains("api_key")
                     || lower.contains("bearer")
+                    || lower.contains("credential")
+                    || lower.contains("private_key")
                     || lower.contains("token")
                     || lower.contains("password")
                     || lower.contains("secret")
@@ -715,6 +717,50 @@ mod tests {
         assert_eq!(output["flag"], true);
         assert_eq!(output["nothing"], Value::Null);
         assert_eq!(output["secret"], "***");
+    }
+
+    #[test]
+    fn redact_secrets_credential_corpus_is_case_insensitive_and_recursive() {
+        let input = json!({
+            "adapter_options": {
+                "credentials_kind": "service_account_json",
+                "nested": [{
+                    "PRIVATE_KEY": "-----BEGIN PRIVATE KEY-----\nraw\n-----END PRIVATE KEY-----",
+                    "refreshToken": "rt-123",
+                    "client_secret": "client-secret",
+                    "safe_label": "visible"
+                }]
+            },
+            "env": {
+                "GOOGLE_APPLICATION_CREDENTIALS": "/tmp/key.json",
+                "PASSWORD": "p",
+                "TOKEN": "t"
+            }
+        });
+
+        let output = redact_secrets(input);
+        let rendered = serde_json::to_string(&output).unwrap();
+        for leaked in [
+            "raw",
+            "rt-123",
+            "client-secret",
+            "/tmp/key.json",
+            "\"p\"",
+            "\"t\"",
+        ] {
+            assert!(
+                !rendered.contains(leaked),
+                "redacted audit payload leaked {leaked:?}: {rendered}"
+            );
+        }
+        assert_eq!(
+            output["adapter_options"]["credentials_kind"], "***",
+            "credential discriminator should be redacted in audit payloads"
+        );
+        assert_eq!(
+            output["adapter_options"]["nested"][0]["safe_label"], "visible",
+            "non-secret fields should remain useful"
+        );
     }
 
     // ── emit ──────────────────────────────────────────────────────────────

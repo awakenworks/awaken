@@ -63,7 +63,7 @@ function stubFetch(overrides?: Record<string, unknown>) {
 
     // test provider
     if (urlStr.includes("/v1/providers/") && urlStr.endsWith("/test") && method === "POST") {
-      const defaults = { ok: true, latency_ms: 42 };
+      const defaults = { ok: true, latency_ms: 42, network_tested: false };
       return {
         ok: true,
         status: 200,
@@ -132,7 +132,7 @@ describe("ProvidersPage — Test connection button", () => {
     expect(screen.getByRole("button", { name: /test connection/i })).toBeDefined();
   });
 
-  it("calls testProvider and shows success status badge on OK result", async () => {
+  it("calls testProvider and shows config-only success status badge on OK result", async () => {
     const fetchSpy = stubFetch({ ok: true, latency_ms: 55 });
     renderProviders();
 
@@ -147,13 +147,30 @@ describe("ProvidersPage — Test connection button", () => {
     });
 
     // status badge should appear
-    await screen.findByText(/OK — 55ms/i);
+    await screen.findByText(/Config OK — 55ms/i);
 
     // fetch was called with the test endpoint
     const testCall = fetchSpy.mock.calls.find(([url]) =>
       String(url).includes("/v1/providers/my-openai/test"),
     );
     expect(testCall).toBeDefined();
+  });
+
+  it("shows connection success status when the provider test reached the network", async () => {
+    stubFetch({ ok: true, latency_ms: 77, network_tested: true });
+    renderProviders();
+
+    const editButton = await screen.findByRole("button", { name: /edit/i });
+    fireEvent.click(editButton);
+
+    await screen.findByText(/edit provider/i);
+
+    const testBtn = screen.getByRole("button", { name: /test connection/i });
+    await act(async () => {
+      fireEvent.click(testBtn);
+    });
+
+    await screen.findByText(/Connection OK — 77ms/i);
   });
 
   it("blocks Save when required fields are empty and shows inline Required errors", async () => {

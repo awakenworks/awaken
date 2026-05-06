@@ -42,6 +42,7 @@ agent-client-protocol = { workspace = true }
 tokio-util = { workspace = true }
 genai = { workspace = true }
 schemars = { workspace = true }
+subtle = { workspace = true }
 
 # MCP server
 mcp = { package = "model-context-protocol", version = "0.2", default-features = false, features = ["server", "client"] }

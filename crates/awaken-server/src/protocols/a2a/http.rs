@@ -2857,6 +2857,12 @@ mod tests {
     }
 
     #[test]
+    fn message_conversion_drops_internal_messages() {
+        let message = AwakenMessage::internal_system("do not expose");
+        assert!(awaken_message_to_a2a_message(&message, "task-1", "thread-1").is_none());
+    }
+
+    #[test]
     fn parse_task_action_segment_accepts_spec_suffixes() {
         assert_eq!(
             parse_task_action_segment("task-1:cancel").unwrap(),

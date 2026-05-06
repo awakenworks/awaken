@@ -6,6 +6,7 @@ import {
   configApi,
   type ProviderRecord,
   type ProviderSpec,
+  type ProviderTestResponse,
 } from "@/lib/config-api";
 import { useToast } from "@/components/toast-provider";
 import { useCrudPage } from "@/lib/use-crud-page";
@@ -95,6 +96,7 @@ const LIST_OPTIONS = {
 interface TestStatus {
   ok: boolean;
   latency_ms: number;
+  network_tested: boolean;
   error?: string;
   testedAt: number;
 }
@@ -112,6 +114,18 @@ function readCredentialsKind(
 ): CredentialsKind {
   const raw = options?.credentials_kind;
   return raw === "service_account_json" ? "service_account_json" : "bearer";
+}
+
+function providerTestSuccessLabel(result: ProviderTestResponse): string {
+  return result.network_tested
+    ? `Connection OK — ${result.latency_ms}ms`
+    : `Config OK — ${result.latency_ms}ms`;
+}
+
+function providerTestToastLabel(result: ProviderTestResponse): string {
+  return result.network_tested
+    ? `Provider connection OK (${result.latency_ms}ms)`
+    : `Provider config OK (${result.latency_ms}ms)`;
 }
 
 export function ProvidersPage() {
@@ -252,7 +266,7 @@ export function ProvidersPage() {
       if (testingIdRef.current !== id) return;
       setTestStatus({ ...result, testedAt: Date.now() });
       if (result.ok) {
-        toast.success(`Provider OK (${result.latency_ms}ms)`);
+        toast.success(providerTestToastLabel(result));
       } else {
         toast.error(result.error ?? "Provider test failed");
       }
@@ -260,7 +274,13 @@ export function ProvidersPage() {
       if (testingIdRef.current !== id) return;
       const message =
         err instanceof ConfigApiError ? err.message : "Provider test failed";
-      setTestStatus({ ok: false, latency_ms: 0, error: message, testedAt: Date.now() });
+      setTestStatus({
+        ok: false,
+        latency_ms: 0,
+        network_tested: false,
+        error: message,
+        testedAt: Date.now(),
+      });
       toast.error(message);
     } finally {
       if (testingIdRef.current === id) setTesting(false);
@@ -302,7 +322,11 @@ export function ProvidersPage() {
     try {
       const result = await configApi.testProvider(providerId);
       if (result.ok) {
-        toast.success(`${providerId} OK · ${result.latency_ms}ms`);
+        toast.success(
+          result.network_tested
+            ? `${providerId} connection OK · ${result.latency_ms}ms`
+            : `${providerId} config OK · ${result.latency_ms}ms`,
+        );
       } else {
         toast.error(`${providerId}: ${result.error ?? "test failed"}`);
       }
@@ -535,7 +559,7 @@ export function ProvidersPage() {
                   <>{t("providers.fields.saJsonHint")}</>
                 ) : (
                   <>
-                    Stored encrypted at rest. Submitting saves the new value and rotates the runtime client; in-flight requests continue with the prior key.
+                    Redacted in the UI and audit payloads. Submitting saves the new value and rotates the runtime client; in-flight requests continue with the prior key.
                   </>
                 )
               }
@@ -607,7 +631,7 @@ export function ProvidersPage() {
             >
               <span className="font-medium">
                 {testStatus.ok
-                  ? `OK — ${testStatus.latency_ms}ms`
+                  ? providerTestSuccessLabel(testStatus)
                   : `Failed${testStatus.error ? `: ${testStatus.error}` : ""}`}
               </span>
               <span className="ml-auto text-xs opacity-60">

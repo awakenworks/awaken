@@ -576,6 +576,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "sqlx",
+ "subtle",
  "tempfile",
  "testcontainers",
  "thiserror 2.0.18",

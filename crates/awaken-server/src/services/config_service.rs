@@ -144,6 +144,7 @@ pub enum RestoreError {
 pub struct ProviderTestResult {
     pub ok: bool,
     pub latency_ms: u64,
+    pub network_tested: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
 }
@@ -1230,6 +1231,7 @@ impl<'a> ConfigService<'a> {
             return Ok(ProviderTestResult {
                 ok: false,
                 latency_ms,
+                network_tested: false,
                 error: Some(e.to_string()),
             });
         }
@@ -1246,22 +1248,26 @@ impl<'a> ConfigService<'a> {
                 return Ok(ProviderTestResult {
                     ok: true,
                     latency_ms,
+                    network_tested: false,
                     error: None,
                 });
             }
         };
+        let mut network_tested = false;
         if matches!(
             kind,
             awaken_runtime::credentials::CredentialKind::GoogleServiceAccountJson
         ) {
             let scope = "https://www.googleapis.com/auth/cloud-platform";
             let mint_start = Instant::now();
+            network_tested = true;
             let mint_result = broker.token_for(&spec.id, scope).await;
             latency_ms = latency_ms.saturating_add(mint_start.elapsed().as_millis() as u64);
             if let Err(err) = mint_result {
                 return Ok(ProviderTestResult {
                     ok: false,
                     latency_ms,
+                    network_tested,
                     error: Some(err.to_string()),
                 });
             }
@@ -1270,6 +1276,7 @@ impl<'a> ConfigService<'a> {
         Ok(ProviderTestResult {
             ok: true,
             latency_ms,
+            network_tested,
             error: None,
         })
     }

@@ -67,6 +67,7 @@ jsonschema = "0.45"
 parking_lot = "0.12"
 proptest = "1"
 secrecy = { version = "0.10", features = ["serde"] }
+subtle = "2.6"
 tokio-util = { version = "0.7", features = ["compat"] }
 
 [workspace.lints.rust]

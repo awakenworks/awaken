@@ -9,11 +9,14 @@
 //!
 //! ## Architecture
 //! Two RwLocks:
-//! - `materials`: `provider_id → CredentialMaterial`. Updated on
-//!   [`register`](AwakenCredentialBroker::register) calls; read on every mint.
-//!   Hot read path: no contention under steady state.
-//! - `cache`: `(provider_id, scope) → Token`. Updated on each mint; read on
-//!   every `token_for`. Cache hits short-circuit before any lock upgrade.
+//! - `materials`: `provider_id → (generation, CredentialMaterial)`. Updated on
+//!   [`register`](AwakenCredentialBroker::register) and
+//!   [`deregister`](AwakenCredentialBroker::deregister); read on every mint.
+//!   The generation prevents in-flight mints from writing or returning tokens
+//!   after credential rotation/removal.
+//! - `cache`: `(provider_id, scope) → (generation, Token)`. Updated on each
+//!   mint; read on every `token_for`. Cache hits are accepted only when the
+//!   provider is still registered at the same generation.
 //!
 //! Single-flight is implemented with a per-key
 //! `tokio::sync::OnceCell` pattern: the first task to find a stale cache
@@ -114,9 +117,20 @@ struct FlightSlot {
     inflight: AsyncMutex<()>,
 }
 
+#[derive(Clone)]
+struct MaterialEntry {
+    generation: u64,
+    material: Option<CredentialMaterial>,
+}
+
+struct CachedToken {
+    generation: u64,
+    token: Token,
+}
+
 pub struct AwakenCredentialBroker {
-    materials: PlRwLock<HashMap<String, CredentialMaterial>>,
-    cache: PlRwLock<HashMap<CacheKey, Token>>,
+    materials: PlRwLock<HashMap<String, MaterialEntry>>,
+    cache: PlRwLock<HashMap<CacheKey, CachedToken>>,
     /// Per-key in-flight mutex map. Entries live for the lifetime of the
     /// broker; the value is a small struct so the memory footprint stays
     /// bounded by the number of distinct (provider_id, scope) pairs in
@@ -167,7 +181,11 @@ impl AwakenCredentialBroker {
     /// Whether this broker knows about `provider_id`. Useful for
     /// embedder-side assertions.
     pub fn is_registered(&self, provider_id: &str) -> bool {
-        self.materials.read().contains_key(provider_id)
+        self.materials
+            .read()
+            .get(provider_id)
+            .and_then(|entry| entry.material.as_ref())
+            .is_some()
     }
 
     fn flight_slot(&self, key: &CacheKey) -> Arc<FlightSlot> {
@@ -184,16 +202,36 @@ impl AwakenCredentialBroker {
         )
     }
 
-    /// Mint a token for the registered material. **No cache, no
-    /// single-flight** — the caller (`token_for`) wraps this with both.
-    async fn mint(&self, provider_id: &str, scope: &str) -> Result<Token, CredentialError> {
-        let material = self
-            .materials
+    fn material_snapshot(
+        &self,
+        provider_id: &str,
+    ) -> Result<(u64, CredentialMaterial), CredentialError> {
+        let materials = self.materials.read();
+        let entry = materials
+            .get(provider_id)
+            .ok_or_else(|| CredentialError::NotConfigured(provider_id.to_owned()))?;
+        let material = entry
+            .material
+            .clone()
+            .ok_or_else(|| CredentialError::NotConfigured(provider_id.to_owned()))?;
+        Ok((entry.generation, material))
+    }
+
+    fn generation_still_current(&self, provider_id: &str, generation: u64) -> bool {
+        self.materials
             .read()
             .get(provider_id)
-            .cloned()
-            .ok_or_else(|| CredentialError::NotConfigured(provider_id.to_owned()))?;
+            .is_some_and(|entry| entry.generation == generation && entry.material.is_some())
+    }
 
+    /// Mint a token for a material snapshot. **No cache, no single-flight** —
+    /// the caller (`token_for`) wraps this with both and validates the snapshot
+    /// generation before returning.
+    async fn mint_material(
+        &self,
+        scope: &str,
+        material: CredentialMaterial,
+    ) -> Result<Token, CredentialError> {
         // Dispatch via the Minter trait — no central match. Adding a new
         // cloud means a new Minter impl and a new CredentialMaterial
         // constructor, not editing the broker.
@@ -212,7 +250,17 @@ impl CredentialBroker for AwakenCredentialBroker {
     fn register(&self, provider_id: String, material: CredentialMaterial) {
         {
             let mut materials = self.materials.write();
-            materials.insert(provider_id.clone(), material);
+            let next_generation = materials
+                .get(&provider_id)
+                .map(|entry| entry.generation.saturating_add(1))
+                .unwrap_or(1);
+            materials.insert(
+                provider_id.clone(),
+                MaterialEntry {
+                    generation: next_generation,
+                    material: Some(material),
+                },
+            );
         }
         // Drop any cached tokens for this provider — material change means
         // they may have been signed by a key that's about to be revoked.
@@ -220,12 +268,14 @@ impl CredentialBroker for AwakenCredentialBroker {
         cache.retain(|key, _| key.provider_id != provider_id);
     }
 
-    /// Forget a provider entirely. Best-effort: in-flight mints for this
-    /// provider will still complete and write to the (now-orphaned)
-    /// cache; the next read will treat the entry as missing and return
-    /// [`CredentialError::NotConfigured`].
+    /// Forget a provider entirely. In-flight mints for this provider are
+    /// generation-checked before cache write/return, so they are discarded if
+    /// this deregistration wins the race.
     fn deregister(&self, provider_id: &str) {
-        self.materials.write().remove(provider_id);
+        if let Some(entry) = self.materials.write().get_mut(provider_id) {
+            entry.generation = entry.generation.saturating_add(1);
+            entry.material = None;
+        }
         self.cache
             .write()
             .retain(|key, _| key.provider_id != provider_id);
@@ -247,33 +297,62 @@ impl CredentialBroker for AwakenCredentialBroker {
             scope: scope.to_owned(),
         };
 
-        // 1. Cache fast path — short-circuit before touching any other lock.
-        if let Some(token) = self.cache.read().get(&key)
-            && !token.is_near_expiry(SAFETY_WINDOW)
-        {
-            return Ok(IssuedToken::from_token(token));
+        loop {
+            let (generation, _) = self.material_snapshot(provider_id)?;
+
+            // 1. Cache fast path. A cached token is valid only while the
+            // provider remains registered at the same material generation.
+            if let Some(cached) = self.cache.read().get(&key)
+                && cached.generation == generation
+                && !cached.token.is_near_expiry(SAFETY_WINDOW)
+            {
+                return Ok(IssuedToken::from_token(&cached.token));
+            }
+
+            // 2. Acquire the per-key single-flight slot.
+            let slot = self.flight_slot(&key);
+            let _guard = slot.inflight.lock().await;
+
+            // 3. Re-read material and cache under the slot — a concurrent
+            //    task may have populated it or an admin may have rotated
+            //    credentials while we were waiting.
+            let (generation, material) = match self.material_snapshot(provider_id) {
+                Ok(snapshot) => snapshot,
+                Err(err) => return Err(err),
+            };
+            if let Some(cached) = self.cache.read().get(&key)
+                && cached.generation == generation
+                && !cached.token.is_near_expiry(SAFETY_WINDOW)
+            {
+                return Ok(IssuedToken::from_token(&cached.token));
+            }
+
+            // 4. We are the elected refresher. Apply the bounded retry
+            //    policy. If credentials are rotated/removed while minting,
+            //    discard the result and loop against the current generation.
+            let fresh = self
+                .mint_with_retry(provider_id, scope, material.clone())
+                .await?;
+            if !self.generation_still_current(provider_id, generation) {
+                tracing::debug!(
+                    provider_id = %provider_id,
+                    scope = %scope,
+                    generation,
+                    "credential broker: discarded token minted from stale material generation"
+                );
+                continue;
+            }
+
+            let issued = IssuedToken::from_token(&fresh);
+            self.cache.write().insert(
+                key.clone(),
+                CachedToken {
+                    generation,
+                    token: fresh,
+                },
+            );
+            return Ok(issued);
         }
-
-        // 2. Acquire the per-key single-flight slot.
-        let slot = self.flight_slot(&key);
-        let _guard = slot.inflight.lock().await;
-
-        // 3. Re-check cache under the slot — a concurrent task may have
-        //    populated it while we were waiting for the lock.
-        if let Some(token) = self.cache.read().get(&key)
-            && !token.is_near_expiry(SAFETY_WINDOW)
-        {
-            return Ok(IssuedToken::from_token(token));
-        }
-
-        // 4. We are the elected refresher. Apply the bounded retry policy:
-        //    permanent errors short-circuit; transient errors back off and
-        //    retry up to `max_attempts` times. The cache write only happens
-        //    on the *successful* attempt.
-        let fresh = self.mint_with_retry(provider_id, scope).await?;
-        let issued = IssuedToken::from_token(&fresh);
-        self.cache.write().insert(key, fresh);
-        Ok(issued)
     }
 }
 
@@ -288,6 +367,7 @@ impl AwakenCredentialBroker {
         &self,
         provider_id: &str,
         scope: &str,
+        material: CredentialMaterial,
     ) -> Result<Token, CredentialError> {
         crate::retry::with_backoff(
             &self.retry_policy,
@@ -300,7 +380,10 @@ impl AwakenCredentialBroker {
                     "credential broker: transient mint error, retrying after backoff"
                 );
             },
-            || async move { self.mint(provider_id, scope).await },
+            || {
+                let material = material.clone();
+                async move { self.mint_material(scope, material).await }
+            },
         )
         .await
     }
@@ -309,7 +392,9 @@ impl AwakenCredentialBroker {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::credentials::minter::Minter;
     use std::sync::atomic::{AtomicUsize, Ordering};
+    use tokio::sync::Notify;
 
     /// Test broker that counts mint calls — used to assert single-flight
     /// behaviour without spinning up an HTTP server.
@@ -353,6 +438,77 @@ mod tests {
         Token {
             bearer: awaken_contract::secret::RedactedString::new("tok"),
             expires_at: std::time::SystemTime::now() + Duration::from_secs(secs),
+        }
+    }
+
+    fn future_token_with(bearer: &str, secs: u64) -> Token {
+        Token {
+            bearer: awaken_contract::secret::RedactedString::new(bearer),
+            expires_at: std::time::SystemTime::now() + Duration::from_secs(secs),
+        }
+    }
+
+    #[derive(Debug)]
+    struct BlockingMinter {
+        bearer: &'static str,
+        started: Arc<Notify>,
+        release: Arc<Notify>,
+    }
+
+    #[async_trait]
+    impl Minter for BlockingMinter {
+        fn kind_label(&self) -> &'static str {
+            "test_blocking"
+        }
+
+        async fn mint(
+            &self,
+            _scope: &str,
+            _http: &reqwest::Client,
+        ) -> Result<Token, CredentialError> {
+            self.started.notify_one();
+            self.release.notified().await;
+            Ok(future_token_with(self.bearer, 3600))
+        }
+    }
+
+    fn blocking_material(
+        bearer: &'static str,
+        started: Arc<Notify>,
+        release: Arc<Notify>,
+    ) -> CredentialMaterial {
+        CredentialMaterial::from_minter(Arc::new(BlockingMinter {
+            bearer,
+            started,
+            release,
+        }))
+    }
+
+    #[derive(Debug)]
+    struct FailsOnceMinter {
+        calls: Arc<AtomicUsize>,
+    }
+
+    #[async_trait]
+    impl Minter for FailsOnceMinter {
+        fn kind_label(&self) -> &'static str {
+            "test_fails_once"
+        }
+
+        async fn mint(
+            &self,
+            _scope: &str,
+            _http: &reqwest::Client,
+        ) -> Result<Token, CredentialError> {
+            let call = self.calls.fetch_add(1, Ordering::SeqCst);
+            if call == 0 {
+                return Err(CredentialError::PermanentUpstream {
+                    provider_id: "p".to_string(),
+                    status: 403,
+                    body: "rejected".to_string(),
+                });
+            }
+            Ok(future_token_with("after-failure", 3600))
         }
     }
 
@@ -453,6 +609,60 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn register_during_in_flight_mint_discards_stale_token() {
+        let broker = Arc::new(AwakenCredentialBroker::new());
+        let started = Arc::new(Notify::new());
+        let release = Arc::new(Notify::new());
+        broker.register(
+            "p".to_string(),
+            blocking_material("old", Arc::clone(&started), Arc::clone(&release)),
+        );
+
+        let task = {
+            let broker = Arc::clone(&broker);
+            tokio::spawn(async move { broker.token_for("p", "s").await })
+        };
+        started.notified().await;
+
+        broker.register(
+            "p".to_string(),
+            CredentialMaterial::static_bearer(awaken_contract::secret::RedactedString::new("new")),
+        );
+        release.notify_one();
+
+        let issued = task.await.unwrap().unwrap();
+        assert_eq!(issued.bearer(), "new");
+        assert_eq!(broker.token_for("p", "s").await.unwrap().bearer(), "new");
+    }
+
+    #[tokio::test]
+    async fn deregister_during_in_flight_mint_discards_stale_token() {
+        let broker = Arc::new(AwakenCredentialBroker::new());
+        let started = Arc::new(Notify::new());
+        let release = Arc::new(Notify::new());
+        broker.register(
+            "p".to_string(),
+            blocking_material("old", Arc::clone(&started), Arc::clone(&release)),
+        );
+
+        let task = {
+            let broker = Arc::clone(&broker);
+            tokio::spawn(async move { broker.token_for("p", "s").await })
+        };
+        started.notified().await;
+
+        broker.deregister("p");
+        release.notify_one();
+
+        let err = task.await.unwrap().unwrap_err();
+        assert!(matches!(err, CredentialError::NotConfigured(provider) if provider == "p"));
+        assert!(matches!(
+            broker.token_for("p", "s").await.unwrap_err(),
+            CredentialError::NotConfigured(provider) if provider == "p"
+        ));
+    }
+
+    #[tokio::test]
     async fn different_scopes_have_independent_cache_entries() {
         let broker = AwakenCredentialBroker::new();
         broker.register(
@@ -479,6 +689,107 @@ mod tests {
         assert_eq!(
             broker.token_for("p", "scope-b").await.unwrap().bearer(),
             "rotated"
+        );
+    }
+
+    #[tokio::test]
+    async fn mint_failures_are_not_cached_or_replayed_to_later_callers() {
+        let broker = AwakenCredentialBroker::new();
+        let calls = Arc::new(AtomicUsize::new(0));
+        broker.register(
+            "p".to_string(),
+            CredentialMaterial::from_minter(Arc::new(FailsOnceMinter {
+                calls: Arc::clone(&calls),
+            })),
+        );
+
+        let err = broker.token_for("p", "scope").await.unwrap_err();
+        assert!(matches!(
+            err,
+            CredentialError::PermanentUpstream { status: 403, .. }
+        ));
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+
+        let issued = broker.token_for("p", "scope").await.unwrap();
+        assert_eq!(issued.bearer(), "after-failure");
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            2,
+            "broker must mint again after a failed exchange instead of caching the error"
+        );
+
+        let cached = broker.token_for("p", "scope").await.unwrap();
+        assert_eq!(cached.bearer(), "after-failure");
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            2,
+            "successful retry may be cached, but the failed exchange must not be"
+        );
+    }
+
+    #[tokio::test]
+    async fn concurrent_rotation_is_isolated_by_provider_and_scope() {
+        let broker = Arc::new(AwakenCredentialBroker::new());
+        let started = Arc::new(Notify::new());
+        let release = Arc::new(Notify::new());
+        broker.register(
+            "rotating".to_string(),
+            blocking_material("old-rotating", Arc::clone(&started), Arc::clone(&release)),
+        );
+        broker.register(
+            "stable".to_string(),
+            CredentialMaterial::static_bearer(awaken_contract::secret::RedactedString::new(
+                "stable-token",
+            )),
+        );
+
+        let rotating_task = {
+            let broker = Arc::clone(&broker);
+            tokio::spawn(async move { broker.token_for("rotating", "scope-a").await })
+        };
+        started.notified().await;
+
+        assert_eq!(
+            broker
+                .token_for("stable", "scope-a")
+                .await
+                .unwrap()
+                .bearer(),
+            "stable-token",
+            "unrelated providers must remain readable while another provider is mid-mint"
+        );
+
+        broker.register(
+            "rotating".to_string(),
+            CredentialMaterial::static_bearer(awaken_contract::secret::RedactedString::new(
+                "new-rotating",
+            )),
+        );
+        release.notify_one();
+
+        let issued = rotating_task.await.unwrap().unwrap();
+        assert_eq!(
+            issued.bearer(),
+            "new-rotating",
+            "in-flight mint from the old generation must be discarded"
+        );
+        assert_eq!(
+            broker
+                .token_for("rotating", "scope-b")
+                .await
+                .unwrap()
+                .bearer(),
+            "new-rotating",
+            "rotation must apply to all scopes for the provider"
+        );
+        assert_eq!(
+            broker
+                .token_for("stable", "scope-b")
+                .await
+                .unwrap()
+                .bearer(),
+            "stable-token",
+            "rotation must not invalidate unrelated providers"
         );
     }
 

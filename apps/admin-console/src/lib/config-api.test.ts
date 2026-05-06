@@ -150,6 +150,7 @@ describe("configUrl encoding", () => {
 describe("configApi", () => {
   afterEach(() => {
     vi.unstubAllGlobals();
+    vi.unstubAllEnvs();
   });
 
   it("returns undefined for successful deletes", async () => {
@@ -200,6 +201,46 @@ describe("configApi", () => {
     expect(new Headers(init.headers).get("authorization")).toBe(
       "Bearer stored-token",
     );
+  });
+
+  it("uses stored bearer token before the dev env token", async () => {
+    vi.stubEnv("VITE_ADMIN_BEARER_TOKEN", "stale-env-token");
+    const fetchSpy = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify({ namespace: "agents", items: [] }),
+    });
+    vi.stubGlobal("fetch", fetchSpy);
+    vi.stubGlobal("localStorage", {
+      getItem: (key: string) =>
+        key === ADMIN_TOKEN_STORAGE_KEY ? "fresh-stored-token" : null,
+    });
+
+    await configApi.list("agents");
+
+    const init = fetchSpy.mock.calls[0][1] as RequestInit;
+    expect(new Headers(init.headers).get("authorization")).toBe(
+      "Bearer fresh-stored-token",
+    );
+  });
+
+  it("ignores VITE_ADMIN_BEARER_TOKEN in production builds", async () => {
+    vi.stubEnv("PROD", true);
+    vi.stubEnv("VITE_ADMIN_BEARER_TOKEN", "must-not-ship-token");
+    const fetchSpy = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify({ namespace: "agents", items: [] }),
+    });
+    vi.stubGlobal("fetch", fetchSpy);
+    vi.stubGlobal("localStorage", {
+      getItem: () => null,
+    });
+
+    await configApi.list("agents");
+
+    const init = fetchSpy.mock.calls[0][1] as RequestInit | undefined;
+    expect(init?.headers).toBeUndefined();
   });
 
   it("retries with a fresh token when the unauthorized handler returns one", async () => {

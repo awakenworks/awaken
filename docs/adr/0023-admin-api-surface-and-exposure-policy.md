@@ -17,8 +17,9 @@ Until now the access policy lived implicitly across three places:
 1. `AdminApiConfig::bearer_token` — optional bearer required by every
    handler via `ensure_admin_auth`.
 2. `validate_admin_surface` — refuses to start the server when binding a
-   non-loopback address without a bearer token, *if* a config store or
-   runtime manager is attached.
+   non-loopback address without a bearer token, *if* a sensitive admin
+   subsystem is attached (`ConfigStore`, runtime manager, audit log,
+   runtime stats, or skill catalog).
 3. `build_router` — unconditionally merges `config_routes()`.
 
 This ad-hoc structure has two problems:
@@ -95,8 +96,8 @@ upstream gate, not a replacement.
   the framework refusing to start.
 - The default surface is unchanged: defaults remain
   `expose_config_routes = true` and `bearer_token = None`, with the
-  loopback / bearer requirement enforced at startup when a config store
-  or runtime manager is attached.
+  loopback / bearer requirement enforced at startup when a sensitive
+  admin subsystem is attached.
 - `build_router` now requires `&AppState` so it can read the effective
   admin policy at compose time. Test code constructs an `AppState` and
   passes it; the API change is mechanical.

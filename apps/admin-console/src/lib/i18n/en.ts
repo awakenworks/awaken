@@ -252,7 +252,7 @@ export const en = {
       credentialsKind: "Credentials type",
       saJson: "Service account JSON",
       saJsonPh: "Paste the full JSON downloaded from GCP IAM",
-      saJsonHint: "Awaken signs JWTs and refreshes OAuth tokens automatically. Stored encrypted at rest.",
+      saJsonHint: "Awaken signs JWTs and refreshes OAuth tokens automatically. Redacted in the UI and audit payloads.",
     },
     credentialsKind: {
       bearer: "Static bearer / API key",
