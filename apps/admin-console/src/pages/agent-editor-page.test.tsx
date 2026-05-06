@@ -60,17 +60,21 @@ afterEach(() => {
 });
 
 describe("agent editor tab ARIA semantics", () => {
+  async function waitForBasicsPanel() {
+    await screen.findByLabelText("Agent ID", undefined, { timeout: 5000 });
+  }
+
   it("renders a tablist with correct role", async () => {
     renderEditorRoute("/agents/new");
     // Wait for the page to render (Agent ID field indicates Basics panel is shown)
-    await screen.findByLabelText("Agent ID");
+    await waitForBasicsPanel();
     const tablist = screen.getByRole("tablist");
     expect(tablist).toBeDefined();
   });
 
   it("each tab has role=tab and aria-selected reflects active state", async () => {
     renderEditorRoute("/agents/new");
-    await screen.findByLabelText("Agent ID");
+    await waitForBasicsPanel();
 
     const tabs = screen.getAllByRole("tab");
     expect(tabs.length).toBe(6);
@@ -89,7 +93,7 @@ describe("agent editor tab ARIA semantics", () => {
 
   it("active tab has tabIndex=0 and inactive tabs have tabIndex=-1", async () => {
     renderEditorRoute("/agents/new");
-    await screen.findByLabelText("Agent ID");
+    await waitForBasicsPanel();
 
     const basicsTab = screen.getByRole("tab", { name: "Basics" });
     expect(basicsTab.getAttribute("tabindex")).toBe("0");

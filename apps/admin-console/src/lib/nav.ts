@@ -50,6 +50,7 @@ export const navGroups: (NavGroup & { groupKey: string })[] = [
       { id: "models", path: adminRoutes.models, label: "Models", labelKey: "nav.items.models" } as NavItemKeyed,
       { id: "mcp-servers", path: adminRoutes.mcpServers, label: "MCP Servers", healthSource: "mcp", labelKey: "nav.items.mcp" } as NavItemKeyed,
       { id: "skills", path: adminRoutes.skills, label: "Skills", badge: "ro", labelKey: "nav.items.skills" } as NavItemKeyed,
+      { id: "tools", path: adminRoutes.tools, label: "Tools", labelKey: "nav.items.tools" } as NavItemKeyed,
     ] as NavItem[],
   },
   {
