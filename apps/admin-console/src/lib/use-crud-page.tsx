@@ -1,8 +1,10 @@
-import { useCallback, useEffect, useState } from "react";
-import { ConfigApiError, configApi } from "@/lib/config-api";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { ConfigApiError, configResourceApi } from "@/lib/api";
 import { useToast } from "@/components/toast-provider";
 import { useConfirmDialog } from "@/components/confirm-dialog";
 import { UsedByList } from "@/components/used-by-list";
+import { qk } from "@/lib/query/keys";
 
 export interface CrudPageOptions<TRecord extends { id: string }, TSpec = TRecord> {
   /** API namespace used for list/create/update/delete calls. */
@@ -53,11 +55,14 @@ export interface CrudPageLoadResult<TRecord extends { id: string }> {
   auxiliaryError: string | null;
 }
 
+const EMPTY_ITEMS: never[] = [];
+const EMPTY_AUXILIARY: unknown[] = [];
+
 export async function loadCrudPageData<TRecord extends { id: string }>(
   namespace: string,
   auxiliaryLoaders?: () => Promise<unknown[]>,
 ): Promise<CrudPageLoadResult<TRecord>> {
-  const listPromise = configApi.list<TRecord>(namespace);
+  const listPromise = configResourceApi.list<TRecord>(namespace);
   const auxiliaryPromise = auxiliaryLoaders?.();
   const [listResult, auxiliaryResult] = await Promise.allSettled([
     listPromise,
@@ -97,16 +102,21 @@ export function useCrudPage<TRecord extends { id: string }, TSpec = TRecord>(
   const { namespace, entityLabel, prepareSave, auxiliaryLoaders } = options;
   const toast = useToast();
   const confirmDialog = useConfirmDialog();
+  const queryClient = useQueryClient();
+  const queryKey = useMemo(() => qk.config.list(namespace), [namespace]);
 
-  const [items, setItems] = useState<TRecord[]>([]);
   const [draft, setDraft] = useState<TRecord | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [auxiliaryData, setAuxiliaryData] = useState<unknown[]>([]);
 
   const isEditingExisting = editingId !== null;
+  const query = useQuery<CrudPageLoadResult<TRecord>>({
+    queryKey,
+    queryFn: () => loadCrudPageData<TRecord>(namespace, auxiliaryLoaders),
+  });
+
+  const items = query.data?.items ?? EMPTY_ITEMS;
+  const auxiliaryData = query.data?.auxiliaryData ?? EMPTY_AUXILIARY;
 
   const reportError = useCallback(
     (message: string) => {
@@ -116,42 +126,64 @@ export function useCrudPage<TRecord extends { id: string }, TSpec = TRecord>(
     [toast],
   );
 
+  const loadErrorMessage = query.error
+    ? toErrorMessage(query.error)
+    : (query.data?.auxiliaryError ?? null);
+
   useEffect(() => {
-    let cancelled = false;
-
-    async function load() {
-      setLoading(true);
-      try {
-        const result = await loadCrudPageData<TRecord>(namespace, auxiliaryLoaders);
-        if (!cancelled) {
-          setItems(result.items);
-          setAuxiliaryData(result.auxiliaryData);
-          if (result.auxiliaryError) {
-            reportError(result.auxiliaryError);
-          } else {
-            setError(null);
-          }
-        }
-      } catch (loadError) {
-        if (!cancelled) {
-          reportError(toErrorMessage(loadError));
-          setItems([]);
-        }
-      } finally {
-        if (!cancelled) {
-          setLoading(false);
-        }
-      }
+    if (loadErrorMessage) {
+      reportError(loadErrorMessage);
+      return;
     }
+    setError(null);
+  }, [loadErrorMessage, reportError]);
 
-    void load();
+  const updateCachedItems = useCallback(
+    (updater: (current: TRecord[]) => TRecord[]) => {
+      queryClient.setQueryData<CrudPageLoadResult<TRecord>>(queryKey, (current) => ({
+        items: updater(current?.items ?? []),
+        auxiliaryData: current?.auxiliaryData ?? [],
+        auxiliaryError: current?.auxiliaryError ?? null,
+      }));
+    },
+    [queryClient, queryKey],
+  );
 
-    return () => {
-      cancelled = true;
-    };
-    // Options are expected to be stable across renders.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  const { mutateAsync: saveRecord, isPending: saving } = useMutation({
+    mutationFn: async ({
+      currentDraft,
+      currentEditingId,
+    }: {
+      currentDraft: TRecord;
+      currentEditingId: string | null;
+    }) => {
+      const editing = currentEditingId !== null;
+      const payload = prepareSave
+        ? prepareSave(currentDraft, editing)
+        : (currentDraft as unknown as TSpec);
+      if (editing) {
+        return {
+          editingId: currentEditingId,
+          record: await configResourceApi.update<TSpec, TRecord>(
+            namespace,
+            currentEditingId,
+            payload,
+          ),
+        };
+      }
+      return {
+        editingId: null,
+        record: await configResourceApi.create<TSpec, TRecord>(namespace, payload),
+      };
+    },
+  });
+
+  const { mutateAsync: deleteRecord } = useMutation({
+    mutationFn: ({ id, force }: { id: string; force?: boolean }) => {
+      if (force) return configResourceApi.delete(namespace, id, { force: true });
+      return configResourceApi.delete(namespace, id);
+    },
+  });
 
   const startEdit = useCallback((item: TRecord) => {
     setDraft({ ...item });
@@ -173,42 +205,45 @@ export function useCrudPage<TRecord extends { id: string }, TSpec = TRecord>(
       return;
     }
 
-    const editing = editingId !== null;
-    const payload = prepareSave
-      ? prepareSave(draft, editing)
-      : (draft as unknown as TSpec);
-
-    setSaving(true);
     try {
-      if (editing) {
-        const updated = await configApi.update<TSpec, TRecord>(
-          namespace,
-          editingId,
-          payload,
+      const result = await saveRecord({
+        currentDraft: draft,
+        currentEditingId: editingId,
+      });
+      if (result.editingId) {
+        updateCachedItems((current) =>
+          current.map((item) => (item.id === result.editingId ? result.record : item)),
         );
-        setItems((current) =>
-          current.map((item) => (item.id === editingId ? updated : item)),
-        );
-        toast.success(`${capitalize(entityLabel)} "${editingId}" saved`);
+        void queryClient.invalidateQueries({
+          queryKey: qk.config.get(namespace, result.editingId),
+        });
+        toast.success(`${capitalize(entityLabel)} "${result.editingId}" saved`);
       } else {
-        const created = await configApi.create<TSpec, TRecord>(namespace, payload);
-        setItems((current) =>
-          [...current.filter((item) => item.id !== created.id), created].sort(
+        updateCachedItems((current) =>
+          [...current.filter((item) => item.id !== result.record.id), result.record].sort(
             (left, right) => left.id.localeCompare(right.id),
           ),
         );
-        toast.success(`${capitalize(entityLabel)} "${created.id}" created`);
+        void queryClient.invalidateQueries({ queryKey: qk.navHealth() });
+        toast.success(`${capitalize(entityLabel)} "${result.record.id}" created`);
       }
       setDraft(null);
       setEditingId(null);
       setError(null);
     } catch (saveError) {
       reportError(toErrorMessage(saveError));
-    } finally {
-      setSaving(false);
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [draft, editingId, namespace, prepareSave, entityLabel, toast, reportError]);
+  }, [
+    draft,
+    editingId,
+    entityLabel,
+    namespace,
+    queryClient,
+    reportError,
+    saveRecord,
+    toast,
+    updateCachedItems,
+  ]);
 
   const handleDelete = useCallback(
     async (id: string) => {
@@ -216,8 +251,8 @@ export function useCrudPage<TRecord extends { id: string }, TSpec = TRecord>(
         title: `Delete ${entityLabel}?`,
         description: (
           <>
-            This permanently removes <span className="font-mono">{id}</span> from
-            the runtime catalog.
+            This permanently removes <span className="font-mono">{id}</span> from the runtime
+            catalog.
           </>
         ),
         confirmLabel: "Delete",
@@ -228,8 +263,9 @@ export function useCrudPage<TRecord extends { id: string }, TSpec = TRecord>(
       }
 
       try {
-        await configApi.delete(namespace, id);
-        setItems((current) => current.filter((item) => item.id !== id));
+        await deleteRecord({ id });
+        updateCachedItems((current) => current.filter((item) => item.id !== id));
+        void queryClient.invalidateQueries({ queryKey: qk.navHealth() });
         setError(null);
         toast.success(`${capitalize(entityLabel)} "${id}" deleted`);
       } catch (deleteError) {
@@ -252,8 +288,9 @@ export function useCrudPage<TRecord extends { id: string }, TSpec = TRecord>(
           });
           if (!force) return;
           try {
-            await configApi.delete(namespace, id, { force: true });
-            setItems((current) => current.filter((item) => item.id !== id));
+            await deleteRecord({ id, force: true });
+            updateCachedItems((current) => current.filter((item) => item.id !== id));
+            void queryClient.invalidateQueries({ queryKey: qk.navHealth() });
             setError(null);
             toast.success(`${capitalize(entityLabel)} "${id}" deleted`);
           } catch (forceError) {
@@ -264,13 +301,13 @@ export function useCrudPage<TRecord extends { id: string }, TSpec = TRecord>(
         }
       }
     },
-    [namespace, entityLabel, confirmDialog, toast, reportError],
+    [confirmDialog, deleteRecord, entityLabel, queryClient, reportError, toast, updateCachedItems],
   );
 
   return {
     items,
     draft,
-    loading,
+    loading: query.isPending,
     saving,
     error,
     isEditingExisting,

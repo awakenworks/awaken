@@ -1,12 +1,13 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, render, act, screen, fireEvent } from "@testing-library/react";
-import React, { useEffect } from "react";
+import React from "react";
 
-import { ConfigApiError, configApi } from "./config-api";
+import { ConfigApiError, configResourceApi } from "./api";
 import { useCrudPage } from "./use-crud-page";
 import { ConfirmDialogProvider } from "@/components/confirm-dialog";
 import { ToastProvider } from "@/components/toast-provider";
+import { withQueryClient } from "@/test/query";
 
 afterEach(() => {
   cleanup();
@@ -18,13 +19,7 @@ interface SimpleRecord {
 }
 
 // Wrapper component that exposes handleDelete via a button click
-function TestPage({
-  targetId,
-  onDone,
-}: {
-  targetId: string;
-  onDone?: () => void;
-}) {
+function TestPage({ targetId, onDone }: { targetId: string; onDone?: () => void }) {
   const { handleDelete, items } = useCrudPage<SimpleRecord>({
     namespace: "providers",
     entityLabel: "provider",
@@ -47,11 +42,13 @@ function TestPage({
 
 function renderTest(targetId: string, onDone?: () => void) {
   return render(
-    <ToastProvider>
-      <ConfirmDialogProvider>
-        <TestPage targetId={targetId} onDone={onDone} />
-      </ConfirmDialogProvider>
-    </ToastProvider>,
+    withQueryClient(
+      <ToastProvider>
+        <ConfirmDialogProvider>
+          <TestPage targetId={targetId} onDone={onDone} />
+        </ConfirmDialogProvider>
+      </ToastProvider>,
+    ),
   );
 }
 
@@ -59,7 +56,7 @@ describe("useCrudPage handleDelete 409 → force flow", () => {
   it("re-prompts with used_by list when delete returns 409 and force-deletes on confirm", async () => {
     // First delete call: 409 with used_by
     const deleteStub = vi
-      .spyOn(configApi, "delete")
+      .spyOn(configResourceApi, "delete")
       .mockRejectedValueOnce(
         new ConfigApiError(409, {
           error: "blocked",
@@ -69,7 +66,7 @@ describe("useCrudPage handleDelete 409 → force flow", () => {
       // Force delete call: success
       .mockResolvedValueOnce(undefined);
 
-    vi.spyOn(configApi, "list").mockResolvedValue({
+    vi.spyOn(configResourceApi, "list").mockResolvedValue({
       namespace: "providers",
       items: [{ id: "prov-a" }],
       offset: 0,
@@ -87,7 +84,7 @@ describe("useCrudPage handleDelete 409 → force flow", () => {
     expect(screen.getByRole("dialog")).toBeTruthy();
     expect(screen.getByText(/Delete provider\?/)).toBeTruthy();
 
-        // Confirm initial delete — click the confirm button inside the dialog
+    // Confirm initial delete — click the confirm button inside the dialog
     await act(async () => {
       const dialog = screen.getByRole("dialog");
       const confirmBtn = dialog.querySelector<HTMLButtonElement>("button:last-child");
@@ -108,24 +105,18 @@ describe("useCrudPage handleDelete 409 → force flow", () => {
     // delete called twice: first without force, then with force
     expect(deleteStub).toHaveBeenCalledTimes(2);
     expect(deleteStub.mock.calls[0]).toEqual(["providers", "prov-a"]);
-    expect(deleteStub.mock.calls[1]).toEqual([
-      "providers",
-      "prov-a",
-      { force: true },
-    ]);
+    expect(deleteStub.mock.calls[1]).toEqual(["providers", "prov-a", { force: true }]);
   });
 
   it("cancels without force-delete when user dismisses the second dialog", async () => {
-    const deleteStub = vi
-      .spyOn(configApi, "delete")
-      .mockRejectedValueOnce(
-        new ConfigApiError(409, {
-          error: "blocked",
-          used_by: [{ namespace: "models", id: "model-b" }],
-        }),
-      );
+    const deleteStub = vi.spyOn(configResourceApi, "delete").mockRejectedValueOnce(
+      new ConfigApiError(409, {
+        error: "blocked",
+        used_by: [{ namespace: "models", id: "model-b" }],
+      }),
+    );
 
-    vi.spyOn(configApi, "list").mockResolvedValue({
+    vi.spyOn(configResourceApi, "list").mockResolvedValue({
       namespace: "providers",
       items: [{ id: "prov-b" }],
       offset: 0,
@@ -158,11 +149,11 @@ describe("useCrudPage handleDelete 409 → force flow", () => {
   });
 
   it("reports error for non-409 errors without re-prompting", async () => {
-    vi.spyOn(configApi, "delete").mockRejectedValueOnce(
+    vi.spyOn(configResourceApi, "delete").mockRejectedValueOnce(
       new ConfigApiError(500, { error: "internal error" }),
     );
 
-    vi.spyOn(configApi, "list").mockResolvedValue({
+    vi.spyOn(configResourceApi, "list").mockResolvedValue({
       namespace: "providers",
       items: [{ id: "prov-c" }],
       offset: 0,

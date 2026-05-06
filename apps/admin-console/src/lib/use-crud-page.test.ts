@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { configApi } from "./config-api";
+import { configResourceApi } from "./api";
 import { loadCrudPageData } from "./use-crud-page";
 
 describe("loadCrudPageData", () => {
@@ -9,7 +9,7 @@ describe("loadCrudPageData", () => {
   });
 
   it("returns list and auxiliary data when both succeed", async () => {
-    vi.spyOn(configApi, "list").mockResolvedValue({
+    vi.spyOn(configResourceApi, "list").mockResolvedValue({
       namespace: "models",
       items: [{ id: "model-1" }],
       offset: 0,
@@ -26,7 +26,7 @@ describe("loadCrudPageData", () => {
   });
 
   it("keeps list data when auxiliary loading fails", async () => {
-    vi.spyOn(configApi, "list").mockResolvedValue({
+    vi.spyOn(configResourceApi, "list").mockResolvedValue({
       namespace: "providers",
       items: [{ id: "provider-1" }],
       offset: 0,
@@ -45,10 +45,10 @@ describe("loadCrudPageData", () => {
   });
 
   it("still fails the load when the primary list request fails", async () => {
-    vi.spyOn(configApi, "list").mockRejectedValue(new Error("list failed"));
+    vi.spyOn(configResourceApi, "list").mockRejectedValue(new Error("list failed"));
 
-    await expect(
-      loadCrudPageData("providers", async () => [["openai"]]),
-    ).rejects.toThrow("list failed");
+    await expect(loadCrudPageData("providers", async () => [["openai"]])).rejects.toThrow(
+      "list failed",
+    );
   });
 });
