@@ -158,9 +158,8 @@ describe("AuthProvider — probe state machine", () => {
   });
 
   it("in-flight probe is superseded: second call's outcome wins", async () => {
-    // resolve1 controls the first probe, resolve2 controls the second.
+    // resolve1 controls the first probe; reject2 controls the second.
     let resolve1!: (v: Awaited<ReturnType<typeof configApi.capabilities>>) => void;
-    let resolve2!: (v: Awaited<ReturnType<typeof configApi.capabilities>>) => void;
 
     const p1 = new Promise<Awaited<ReturnType<typeof configApi.capabilities>>>(
       (res) => { resolve1 = res; },

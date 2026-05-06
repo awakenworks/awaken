@@ -1,6 +1,8 @@
 // @vitest-environment jsdom
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { act, renderHook, waitFor } from "@testing-library/react";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { cleanup, renderHook, waitFor } from "@testing-library/react";
+import { createQueryClientWrapper } from "../test/query";
+import { useSystemInfo } from "./use-system-info";
 
 const fakeInfo = {
   version: "0.4.1-test",
@@ -10,65 +12,72 @@ const fakeInfo = {
   runtime_stats_enabled: false,
 };
 
-// Stub the configApi.systemInfo call before importing the SUT so the module
-// cache picks up the mock.
-vi.mock("./config-api", () => ({
-  configApi: {
-    systemInfo: vi.fn(async () => fakeInfo),
-  },
-}));
+function hrefOf(input: string | URL | Request): string {
+  if (typeof input === "string") return input;
+  if (input instanceof URL) return input.href;
+  return input.url;
+}
+
+function jsonResponse(data: unknown, init?: { ok?: boolean; status?: number }) {
+  return {
+    ok: init?.ok ?? true,
+    status: init?.status ?? 200,
+    text: async () => JSON.stringify(data),
+  };
+}
+
+function stubSystemInfoFetch(response = jsonResponse(fakeInfo)) {
+  const fetchSpy = vi.fn(async (url: string | URL | Request) => {
+    expect(hrefOf(url)).toContain("/v1/system/info");
+    return response;
+  });
+  vi.stubGlobal("fetch", fetchSpy);
+  return fetchSpy;
+}
 
 describe("useSystemInfo", () => {
-  beforeEach(() => {
-    vi.resetModules();
-  });
   afterEach(() => {
-    vi.clearAllMocks();
+    cleanup();
+    vi.unstubAllGlobals();
   });
 
   it("first caller fetches; result becomes available after the promise settles", async () => {
-    const { useSystemInfo } = await import("./use-system-info");
-    const { result } = renderHook(() => useSystemInfo());
-    // Initial render: cache is empty
+    stubSystemInfoFetch();
+    const wrapper = createQueryClientWrapper();
+
+    const { result } = renderHook(() => useSystemInfo(), { wrapper });
+
     expect(result.current).toBeNull();
     await waitFor(() => {
       expect(result.current).toEqual(fakeInfo);
     });
   });
 
-  it("subsequent callers reuse the module-level cache (one fetch total)", async () => {
-    const api = await import("./config-api");
-    const spy = api.configApi.systemInfo as ReturnType<typeof vi.fn>;
-    spy.mockClear();
-    const { useSystemInfo } = await import("./use-system-info");
+  it("concurrent callers on the same QueryClient reuse the in-flight request", async () => {
+    const fetchSpy = stubSystemInfoFetch();
+    const wrapper = createQueryClientWrapper();
 
-    const a = renderHook(() => useSystemInfo());
-    const b = renderHook(() => useSystemInfo());
+    const a = renderHook(() => useSystemInfo(), { wrapper });
+    const b = renderHook(() => useSystemInfo(), { wrapper });
+
     await waitFor(() => {
       expect(a.result.current).toEqual(fakeInfo);
       expect(b.result.current).toEqual(fakeInfo);
     });
-    // Either 1 (single inflight resolved before second mount) or 0 (cache hit on
-    // second mount). Never 2.
-    expect(spy.mock.calls.length).toBeLessThanOrEqual(1);
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
   });
 
   it("returns null when the API call rejects (no throw)", async () => {
-    vi.resetModules();
-    vi.doMock("./config-api", () => ({
-      configApi: {
-        systemInfo: vi.fn(async () => {
-          throw new Error("503");
-        }),
-      },
-    }));
-    const { useSystemInfo } = await import("./use-system-info");
-    const { result } = renderHook(() => useSystemInfo());
+    const fetchSpy = stubSystemInfoFetch(
+      jsonResponse({ error: "unavailable" }, { ok: false, status: 503 }),
+    );
+    const wrapper = createQueryClientWrapper();
+
+    const { result } = renderHook(() => useSystemInfo(), { wrapper });
+
     await waitFor(() => {
-      // Resolved to null (error path); no throw bubbled out.
-      expect(result.current).toBeNull();
+      expect(fetchSpy).toHaveBeenCalledTimes(1);
     });
-    // Re-render to ensure the hook itself didn't crash on the rejection.
-    expect(() => act(() => {})).not.toThrow();
+    expect(result.current).toBeNull();
   });
 });
