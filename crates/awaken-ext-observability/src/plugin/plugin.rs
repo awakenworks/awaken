@@ -1,10 +1,12 @@
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::sync::Arc;
 use std::sync::atomic::AtomicU32;
 
 use awaken_contract::StateError;
 use awaken_contract::model::Phase;
 use awaken_runtime::{Plugin, PluginDescriptor, PluginRegistrar};
+use serde_json::Value;
 use tokio::sync::Mutex;
 
 use crate::metrics::{AgentMetrics, SpanContext, ToolIoCapture};
@@ -14,7 +16,9 @@ use super::hooks::{
     AfterInferenceHook, AfterToolExecuteHook, BackgroundTaskObserveHook, BeforeInferenceHook,
     BeforeToolExecuteHook, RunEndHook, RunStartHook,
 };
-use super::shared::Inner;
+use super::shared::{
+    DEFAULT_TOOL_IO_MAX_PAYLOAD_BYTES, Inner, ToolIoRedactor, identity_tool_io_redactor,
+};
 
 /// Plugin that captures LLM and tool telemetry aligned with OpenTelemetry GenAI conventions.
 pub struct ObservabilityPlugin {
@@ -38,6 +42,9 @@ impl ObservabilityPlugin {
                 max_tokens: Mutex::new(None),
                 stop_sequences: Mutex::new(Vec::new()),
                 tool_io_capture: ToolIoCapture::default(),
+                tool_io_max_payload_bytes: DEFAULT_TOOL_IO_MAX_PAYLOAD_BYTES,
+                tool_io_allowed_fields: None,
+                tool_io_redactor: Arc::new(identity_tool_io_redactor),
                 inference_tracing_span: Mutex::new(None),
                 tool_tracing_span: Mutex::new(HashMap::new()),
                 span_context: Mutex::new(SpanContext::default()),
@@ -112,6 +119,39 @@ impl ObservabilityPlugin {
         Arc::get_mut(&mut self.inner)
             .expect("no shared references during builder")
             .tool_io_capture = capture;
+        self
+    }
+
+    #[must_use]
+    pub fn with_tool_io_max_payload_bytes(mut self, max_payload_bytes: usize) -> Self {
+        Arc::get_mut(&mut self.inner)
+            .expect("no shared references during builder")
+            .tool_io_max_payload_bytes = max_payload_bytes;
+        self
+    }
+
+    #[must_use]
+    pub fn with_tool_io_allowed_fields<I, S>(mut self, fields: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        let allowlist = fields.into_iter().map(Into::into).collect::<HashSet<_>>();
+        Arc::get_mut(&mut self.inner)
+            .expect("no shared references during builder")
+            .tool_io_allowed_fields = Some(Arc::new(allowlist));
+        self
+    }
+
+    #[must_use]
+    pub fn with_tool_io_redactor<F>(mut self, redactor: F) -> Self
+    where
+        F: Fn(Value) -> Value + Send + Sync + 'static,
+    {
+        let redactor: Arc<ToolIoRedactor> = Arc::new(redactor);
+        Arc::get_mut(&mut self.inner)
+            .expect("no shared references during builder")
+            .tool_io_redactor = redactor;
         self
     }
 }

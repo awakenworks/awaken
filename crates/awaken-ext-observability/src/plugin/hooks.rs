@@ -10,7 +10,7 @@ use awaken_runtime::{PhaseContext, PhaseHook, StateCommand};
 
 use crate::metrics::{
     BackgroundTaskSpan, DelegationSpan, GenAISpan, HandoffSpan, MetricsEvent, SpanContext,
-    SuspensionSpan, ToolSpan,
+    SuspensionSpan, ToolSpan, is_tool_payload_truncated,
 };
 
 use super::shared::{Inner, extract_cache_tokens, extract_token_counts};
@@ -31,6 +31,11 @@ pub(crate) struct RunStartHook(pub(crate) Arc<Inner>);
 impl PhaseHook for RunStartHook {
     async fn run(&self, ctx: &PhaseContext) -> Result<StateCommand, StateError> {
         *self.0.run_start.lock().await = Some(Instant::now());
+        *self.0.metrics.lock().await = crate::metrics::AgentMetrics::default();
+        self.0.background_task_statuses.lock().await.clear();
+        self.0.inference_tracing_span.lock().await.take();
+        self.0.tool_tracing_span.lock().await.clear();
+        self.0.tool_start.lock().await.clear();
 
         // Capture execution context from RunIdentity for all subsequent spans.
         let ri = &ctx.run_identity;
@@ -282,15 +287,21 @@ impl PhaseHook for BeforeToolExecuteHook {
             "gen_ai.tool.type" = "function",
             "gen_ai.tool.call.arguments" = tracing::field::Empty,
             "gen_ai.tool.call.result" = tracing::field::Empty,
+            "awaken.tool.payload.truncated" = tracing::field::Empty,
             "error.type" = tracing::field::Empty,
             "error.message" = tracing::field::Empty,
         );
 
         if s.tool_io_capture.captures_arguments()
             && let Some(args) = &ctx.tool_args
-            && let Ok(serialized) = serde_json::to_string(args)
         {
-            span.record("gen_ai.tool.call.arguments", serialized.as_str());
+            let sanitized = s.sanitize_tool_payload(args);
+            if is_tool_payload_truncated(&sanitized) {
+                span.record("awaken.tool.payload.truncated", true);
+            }
+            if let Ok(serialized) = serde_json::to_string(&sanitized) {
+                span.record("gen_ai.tool.call.arguments", serialized.as_str());
+            }
         }
 
         if !call_id.is_empty() {
@@ -363,12 +374,14 @@ impl PhaseHook for AfterToolExecuteHook {
             call_id: call_id.clone(),
             tool_type: "function".to_string(),
             call_arguments: if s.tool_io_capture.captures_arguments() {
-                ctx.tool_args.clone()
+                ctx.tool_args
+                    .as_ref()
+                    .map(|value| s.sanitize_tool_payload(value))
             } else {
                 None
             },
             call_result: if s.tool_io_capture.captures_results() && result.is_success() {
-                Some(result.data.clone())
+                Some(s.sanitize_tool_payload(&result.data))
             } else {
                 None
             },
@@ -382,6 +395,9 @@ impl PhaseHook for AfterToolExecuteHook {
                 && let Ok(serialized) = serde_json::to_string(value)
             {
                 tracing_span.record("gen_ai.tool.call.result", serialized.as_str());
+            }
+            if span.has_truncated_payload() {
+                tracing_span.record("awaken.tool.payload.truncated", true);
             }
             if let (Some(v), Some(msg)) = (&span.error_type, &error_message) {
                 tracing_span.record("error.type", v.as_str());
@@ -476,6 +492,8 @@ impl PhaseHook for RunEndHook {
         metrics.session_duration_ms = session_duration_ms;
         crate::prometheus::record_run_end(&metrics);
         s.sink.on_run_end(&metrics);
+        *s.metrics.lock().await = crate::metrics::AgentMetrics::default();
+        s.background_task_statuses.lock().await.clear();
 
         Ok(StateCommand::new())
     }
@@ -508,8 +526,7 @@ impl PhaseHook for BackgroundTaskObserveHook {
             }
 
             let span = background_task_span_from_meta(meta);
-            crate::prometheus::record_background_task(&span);
-            s.sink.record(&MetricsEvent::BackgroundTask(span.clone()));
+            s.sink.record_background_task(&span);
             s.metrics.lock().await.background_tasks.push(span);
         }
 

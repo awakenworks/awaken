@@ -12,7 +12,7 @@ use awaken_runtime::extensions::background::{
 };
 use awaken_runtime::{PhaseContext, PhaseHook, Plugin};
 
-use crate::metrics::ToolIoCapture;
+use crate::metrics::{TOOL_PAYLOAD_TRUNCATED_MARKER, ToolIoCapture};
 use crate::sink::InMemorySink;
 
 use super::ObservabilityPlugin;
@@ -175,6 +175,63 @@ async fn background_task_state_records_lifecycle_once_per_status() {
             .parent_tool_call_id
             .as_deref(),
         Some("call-bg")
+    );
+}
+
+#[tokio::test]
+async fn run_end_resets_run_scoped_metrics_and_background_statuses() {
+    let sink = InMemorySink::new();
+    let plugin = ObservabilityPlugin::new(sink.clone()).with_model("m");
+
+    let running = PersistedTaskMeta {
+        task_id: "bg-reset".to_string(),
+        owner_thread_id: "thread-bg".to_string(),
+        task_type: "sub_agent".to_string(),
+        name: Some("worker".to_string()),
+        description: "background worker".to_string(),
+        status: TaskStatus::Running,
+        error: None,
+        result: None,
+        created_at_ms: 10,
+        completed_at_ms: None,
+        parent_context: TaskParentContext::default(),
+    };
+
+    let ctx =
+        PhaseContext::new(Phase::RunStart, empty_snapshot()).with_run_identity(identity("agent-a"));
+    run_phase(&plugin, &ctx).await;
+    let ctx = PhaseContext::new(
+        Phase::StepEnd,
+        snapshot_with_background_task(running.clone()),
+    );
+    run_phase(&plugin, &ctx).await;
+    assert_eq!(
+        lock_unpoison(&plugin.inner.metrics).background_tasks.len(),
+        1
+    );
+    assert_eq!(
+        lock_unpoison(&plugin.inner.background_task_statuses).len(),
+        1
+    );
+
+    let ctx =
+        PhaseContext::new(Phase::RunEnd, empty_snapshot()).with_run_identity(identity("agent-a"));
+    run_phase(&plugin, &ctx).await;
+    assert!(
+        lock_unpoison(&plugin.inner.metrics)
+            .background_tasks
+            .is_empty()
+    );
+    assert!(lock_unpoison(&plugin.inner.background_task_statuses).is_empty());
+
+    let ctx =
+        PhaseContext::new(Phase::RunStart, empty_snapshot()).with_run_identity(identity("agent-a"));
+    run_phase(&plugin, &ctx).await;
+    let ctx = PhaseContext::new(Phase::StepEnd, snapshot_with_background_task(running));
+    run_phase(&plugin, &ctx).await;
+    assert_eq!(
+        lock_unpoison(&plugin.inner.metrics).background_tasks.len(),
+        1
     );
 }
 
@@ -387,6 +444,85 @@ async fn tool_io_capture_records_opt_in_arguments_and_results() {
     let sink_m = sink.metrics();
     assert_eq!(sink_m.tools[0].call_arguments.as_ref(), Some(&args));
     assert_eq!(sink_m.tools[0].call_result.as_ref(), Some(&result));
+}
+
+#[tokio::test]
+async fn tool_io_capture_redacts_sensitive_fields() {
+    let sink = InMemorySink::new();
+    let plugin = ObservabilityPlugin::new(sink.clone())
+        .with_tool_io_capture(ToolIoCapture::ArgumentsAndResults);
+    let args = serde_json::json!({
+        "query": "otel",
+        "api_key": "sample-api-key",
+        "nested": {"token": "sample-token", "safe": "kept"}
+    });
+    let result = serde_json::json!({"password": "sample-password", "count": 1});
+
+    let ctx = PhaseContext::new(Phase::BeforeToolExecute, empty_snapshot()).with_tool_info(
+        "search",
+        "c1",
+        Some(args.clone()),
+    );
+    run_phase(&plugin, &ctx).await;
+
+    let ctx = PhaseContext::new(Phase::AfterToolExecute, empty_snapshot())
+        .with_tool_info("search", "c1", Some(args))
+        .with_tool_result(ToolResult::success("search", result));
+    run_phase(&plugin, &ctx).await;
+
+    let metrics = lock_unpoison(&plugin.inner.metrics);
+    let rendered = serde_json::to_string(&metrics.tools[0]).unwrap();
+    assert!(!rendered.contains("sample-api-key"));
+    assert!(!rendered.contains("sample-token"));
+    assert!(!rendered.contains("sample-password"));
+    assert!(rendered.contains("\"api_key\":\"***\""));
+    assert!(rendered.contains("\"token\":\"***\""));
+    assert!(rendered.contains("\"password\":\"***\""));
+}
+
+#[tokio::test]
+async fn tool_io_capture_allows_fields_and_truncates_oversized_payloads() {
+    let sink = InMemorySink::new();
+    let plugin = ObservabilityPlugin::new(sink.clone())
+        .with_tool_io_capture(ToolIoCapture::Arguments)
+        .with_tool_io_allowed_fields(["query"])
+        .with_tool_io_max_payload_bytes(48);
+    let args = serde_json::json!({
+        "query": "x".repeat(200),
+        "api_key": "sample-api-key",
+        "dropped": "value"
+    });
+
+    let ctx = PhaseContext::new(Phase::BeforeToolExecute, empty_snapshot()).with_tool_info(
+        "search",
+        "c1",
+        Some(args.clone()),
+    );
+    run_phase(&plugin, &ctx).await;
+
+    let ctx = PhaseContext::new(Phase::AfterToolExecute, empty_snapshot())
+        .with_tool_info("search", "c1", Some(args))
+        .with_tool_result(ToolResult::success(
+            "search",
+            serde_json::json!({"ok": true}),
+        ));
+    run_phase(&plugin, &ctx).await;
+
+    let metrics = lock_unpoison(&plugin.inner.metrics);
+    let captured = metrics.tools[0]
+        .call_arguments
+        .as_ref()
+        .expect("captured arguments");
+    assert_eq!(
+        captured
+            .get(TOOL_PAYLOAD_TRUNCATED_MARKER)
+            .and_then(serde_json::Value::as_bool),
+        Some(true)
+    );
+    let rendered = serde_json::to_string(captured).unwrap();
+    assert!(!rendered.contains("sample-api-key"));
+    assert!(!rendered.contains("dropped"));
+    assert!(metrics.tools[0].has_truncated_payload());
 }
 
 #[tokio::test]

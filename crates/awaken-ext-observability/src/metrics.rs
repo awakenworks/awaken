@@ -5,6 +5,16 @@ use serde_json::Value;
 
 use super::stats::{ModelStats, ToolStats};
 
+pub(crate) const TOOL_PAYLOAD_TRUNCATED_MARKER: &str = "__awaken_payload_truncated";
+
+pub(crate) fn is_tool_payload_truncated(value: &Value) -> bool {
+    value
+        .as_object()
+        .and_then(|obj| obj.get(TOOL_PAYLOAD_TRUNCATED_MARKER))
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+}
+
 /// Execution context shared by all observability spans.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct SpanContext {
@@ -31,11 +41,9 @@ pub struct SpanContext {
 pub enum MetricsEvent {
     Inference(GenAISpan),
     Tool(ToolSpan),
-    EvaluationResult(EvaluationResultEvent),
     Suspension(SuspensionSpan),
     Handoff(HandoffSpan),
     Delegation(DelegationSpan),
-    BackgroundTask(BackgroundTaskSpan),
 }
 
 /// Opt-in capture policy for potentially sensitive tool call payloads.
@@ -142,6 +150,16 @@ impl ToolSpan {
     pub fn is_success(&self) -> bool {
         self.error_type.is_none()
     }
+
+    pub fn has_truncated_payload(&self) -> bool {
+        self.call_arguments
+            .as_ref()
+            .is_some_and(is_tool_payload_truncated)
+            || self
+                .call_result
+                .as_ref()
+                .is_some_and(is_tool_payload_truncated)
+    }
 }
 
 /// Result of evaluating a GenAI response.
@@ -237,21 +255,28 @@ pub struct BackgroundTaskSpan {
 
 impl BackgroundTaskSpan {
     pub fn is_terminal(&self) -> bool {
-        self.status != "running"
+        matches!(self.status.as_str(), "completed" | "failed" | "cancelled")
     }
 }
 
 /// Aggregated metrics for an agent session.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct AgentMetrics {
+    #[serde(default)]
     pub inferences: Vec<GenAISpan>,
+    #[serde(default)]
     pub tools: Vec<ToolSpan>,
+    #[serde(default)]
     pub evaluations: Vec<EvaluationResultEvent>,
+    #[serde(default)]
     pub suspensions: Vec<SuspensionSpan>,
+    #[serde(default)]
     pub handoffs: Vec<HandoffSpan>,
+    #[serde(default)]
     pub delegations: Vec<DelegationSpan>,
     #[serde(default)]
     pub background_tasks: Vec<BackgroundTaskSpan>,
+    #[serde(default)]
     pub session_duration_ms: u64,
 }
 
@@ -345,26 +370,18 @@ impl AgentMetrics {
         result
     }
 
-    /// Get all events as a unified stream, ordered by type
-    /// (inferences, tools, suspensions, handoffs, delegations).
+    /// Get all `MetricsEvent`-compatible events as a unified stream, ordered
+    /// by type (inferences, tools, suspensions, handoffs, delegations).
     pub fn events(&self) -> Vec<MetricsEvent> {
         let mut events = Vec::with_capacity(
             self.inferences.len()
                 + self.tools.len()
-                + self.evaluations.len()
                 + self.suspensions.len()
                 + self.handoffs.len()
-                + self.delegations.len()
-                + self.background_tasks.len(),
+                + self.delegations.len(),
         );
         events.extend(self.inferences.iter().cloned().map(MetricsEvent::Inference));
         events.extend(self.tools.iter().cloned().map(MetricsEvent::Tool));
-        events.extend(
-            self.evaluations
-                .iter()
-                .cloned()
-                .map(MetricsEvent::EvaluationResult),
-        );
         events.extend(
             self.suspensions
                 .iter()
@@ -377,12 +394,6 @@ impl AgentMetrics {
                 .iter()
                 .cloned()
                 .map(MetricsEvent::Delegation),
-        );
-        events.extend(
-            self.background_tasks
-                .iter()
-                .cloned()
-                .map(MetricsEvent::BackgroundTask),
         );
         events
     }
@@ -490,6 +501,21 @@ mod tests {
         }
     }
 
+    fn make_background_task_span() -> BackgroundTaskSpan {
+        BackgroundTaskSpan {
+            context: SpanContext::default(),
+            task_id: "task-1".to_string(),
+            task_type: "sub_agent".to_string(),
+            task_name: None,
+            description: "background task".to_string(),
+            status: "running".to_string(),
+            parent_task_id: None,
+            error_message: None,
+            created_at_ms: 1_000,
+            completed_at_ms: None,
+        }
+    }
+
     // ---- SpanContext serde roundtrip ----
 
     #[test]
@@ -567,6 +593,45 @@ mod tests {
         let m: AgentMetrics = serde_json::from_str(json).unwrap();
 
         assert!(m.background_tasks.is_empty());
+    }
+
+    #[test]
+    fn agent_metrics_deserializes_0_4_0_json_without_new_fields() {
+        let json = r#"{
+            "inferences": [],
+            "tools": [],
+            "suspensions": [],
+            "handoffs": [],
+            "delegations": [],
+            "session_duration_ms": 0
+        }"#;
+
+        let m: AgentMetrics = serde_json::from_str(json).unwrap();
+
+        assert!(m.evaluations.is_empty());
+        assert!(m.background_tasks.is_empty());
+    }
+
+    #[test]
+    fn background_task_terminal_statuses_are_explicit() {
+        for status in ["completed", "failed", "cancelled"] {
+            assert!(
+                BackgroundTaskSpan {
+                    status: status.to_string(),
+                    ..make_background_task_span()
+                }
+                .is_terminal()
+            );
+        }
+        for status in ["running", "queued", "scheduled", "retrying", "typo"] {
+            assert!(
+                !BackgroundTaskSpan {
+                    status: status.to_string(),
+                    ..make_background_task_span()
+                }
+                .is_terminal()
+            );
+        }
     }
 
     // ---- total_input_tokens() ----

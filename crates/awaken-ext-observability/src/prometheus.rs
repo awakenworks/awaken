@@ -33,12 +33,14 @@ impl MetricsSink for PrometheusSink {
         match event {
             MetricsEvent::Inference(span) => record_inference(span),
             MetricsEvent::Tool(span) => record_tool(span),
-            MetricsEvent::EvaluationResult(_) => {}
             MetricsEvent::Suspension(span) => record_suspension(span),
             MetricsEvent::Handoff(span) => record_handoff(span),
             MetricsEvent::Delegation(span) => record_delegation(span),
-            MetricsEvent::BackgroundTask(span) => record_background_task(span),
         }
+    }
+
+    fn record_background_task(&self, span: &BackgroundTaskSpan) {
+        record_background_task(span);
     }
 
     fn on_run_end(&self, metrics: &AgentMetrics) {

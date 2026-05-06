@@ -337,11 +337,9 @@ impl RuntimeStatsRegistry {
         let agent_id = match event {
             MetricsEvent::Inference(s) => s.context.agent_id.clone(),
             MetricsEvent::Tool(s) => s.context.agent_id.clone(),
-            MetricsEvent::EvaluationResult(s) => s.context.agent_id.clone(),
             MetricsEvent::Suspension(s) => s.context.agent_id.clone(),
             MetricsEvent::Handoff(s) => s.context.agent_id.clone(),
             MetricsEvent::Delegation(s) => s.context.agent_id.clone(),
-            MetricsEvent::BackgroundTask(s) => s.context.agent_id.clone(),
         };
         if agent_id.is_empty() {
             return;
@@ -365,11 +363,9 @@ impl RuntimeStatsRegistry {
         match event {
             MetricsEvent::Inference(span) => apply_inference(bucket, span),
             MetricsEvent::Tool(span) => apply_tool(bucket, span),
-            MetricsEvent::EvaluationResult(_) => {}
             MetricsEvent::Suspension(_) => bucket.suspensions += 1,
             MetricsEvent::Handoff(_) => bucket.handoffs += 1,
             MetricsEvent::Delegation(_) => bucket.delegations += 1,
-            MetricsEvent::BackgroundTask(_) => {}
         }
     }
 }

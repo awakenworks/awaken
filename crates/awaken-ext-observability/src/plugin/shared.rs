@@ -1,15 +1,23 @@
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::sync::Arc;
 use std::sync::atomic::AtomicU32;
 use std::time::Instant;
 
 use awaken_contract::contract::inference::TokenUsage;
+use serde_json::{Value, json};
 use tokio::sync::Mutex;
 
 use crate::metrics::AgentMetrics;
 use crate::metrics::SpanContext;
+use crate::metrics::TOOL_PAYLOAD_TRUNCATED_MARKER;
 use crate::metrics::ToolIoCapture;
 use crate::sink::MetricsSink;
+
+pub(crate) const DEFAULT_TOOL_IO_MAX_PAYLOAD_BYTES: usize = 8 * 1024;
+pub(crate) const REDACTED_TOOL_FIELD_VALUE: &str = "***";
+
+pub(crate) type ToolIoRedactor = dyn Fn(Value) -> Value + Send + Sync;
 
 pub(crate) fn extract_token_counts(
     usage: Option<&TokenUsage>,
@@ -30,6 +38,87 @@ pub(crate) fn extract_cache_tokens(usage: Option<&TokenUsage>) -> (Option<i32>, 
         Some(u) => (u.cache_read_tokens, u.cache_creation_tokens),
         None => (None, None),
     }
+}
+
+pub(crate) fn default_tool_io_redactor(value: Value) -> Value {
+    redact_sensitive_fields(value)
+}
+
+pub(crate) fn identity_tool_io_redactor(value: Value) -> Value {
+    value
+}
+
+fn redact_sensitive_fields(value: Value) -> Value {
+    match value {
+        Value::Object(map) => Value::Object(
+            map.into_iter()
+                .map(|(key, value)| {
+                    let value = if is_sensitive_key(&key) {
+                        Value::String(REDACTED_TOOL_FIELD_VALUE.to_string())
+                    } else {
+                        redact_sensitive_fields(value)
+                    };
+                    (key, value)
+                })
+                .collect(),
+        ),
+        Value::Array(values) => {
+            Value::Array(values.into_iter().map(redact_sensitive_fields).collect())
+        }
+        value => value,
+    }
+}
+
+fn is_sensitive_key(key: &str) -> bool {
+    let lower = key.to_ascii_lowercase();
+    lower.contains("secret")
+        || lower.contains("token")
+        || lower.contains("password")
+        || lower.contains("api_key")
+        || lower.contains("apikey")
+        || lower.contains("authorization")
+        || lower.contains("credential")
+        || lower.contains("bearer")
+        || lower.contains("private_key")
+}
+
+fn apply_field_allowlist(value: Value, allowlist: &HashSet<String>) -> Value {
+    match value {
+        Value::Object(map) => Value::Object(
+            map.into_iter()
+                .filter_map(|(key, value)| {
+                    allowlist
+                        .contains(&key)
+                        .then(|| (key, apply_field_allowlist(value, allowlist)))
+                })
+                .collect(),
+        ),
+        Value::Array(values) => Value::Array(
+            values
+                .into_iter()
+                .map(|value| apply_field_allowlist(value, allowlist))
+                .collect(),
+        ),
+        value => value,
+    }
+}
+
+fn enforce_payload_limit(value: Value, max_payload_bytes: usize) -> Value {
+    let Ok(serialized) = serde_json::to_vec(&value) else {
+        return json!({
+            TOOL_PAYLOAD_TRUNCATED_MARKER: true,
+            "reason": "serialization_failed",
+            "max_payload_bytes": max_payload_bytes,
+        });
+    };
+    if serialized.len() <= max_payload_bytes {
+        return value;
+    }
+    json!({
+        TOOL_PAYLOAD_TRUNCATED_MARKER: true,
+        "original_size_bytes": serialized.len(),
+        "max_payload_bytes": max_payload_bytes,
+    })
 }
 
 /// Test-only compatibility wrapper: acquires a `tokio::sync::Mutex` lock
@@ -56,6 +145,9 @@ pub(crate) struct Inner {
     pub(crate) max_tokens: Mutex<Option<u32>>,
     pub(crate) stop_sequences: Mutex<Vec<String>>,
     pub(crate) tool_io_capture: ToolIoCapture,
+    pub(crate) tool_io_max_payload_bytes: usize,
+    pub(crate) tool_io_allowed_fields: Option<Arc<HashSet<String>>>,
+    pub(crate) tool_io_redactor: Arc<ToolIoRedactor>,
     pub(crate) inference_tracing_span: Mutex<Option<tracing::Span>>,
     pub(crate) tool_tracing_span: Mutex<HashMap<String, tracing::Span>>,
     /// Execution context captured from RunIdentity at RunStart.
@@ -64,4 +156,16 @@ pub(crate) struct Inner {
     pub(crate) background_task_statuses: Mutex<HashMap<String, String>>,
     /// Step counter incremented per inference (0-based).
     pub(crate) step_counter: AtomicU32,
+}
+
+impl Inner {
+    pub(crate) fn sanitize_tool_payload(&self, value: &Value) -> Value {
+        let mut sanitized = value.clone();
+        if let Some(allowlist) = &self.tool_io_allowed_fields {
+            sanitized = apply_field_allowlist(sanitized, allowlist);
+        }
+        sanitized = default_tool_io_redactor(sanitized);
+        sanitized = (self.tool_io_redactor)(sanitized);
+        enforce_payload_limit(sanitized, self.tool_io_max_payload_bytes)
+    }
 }

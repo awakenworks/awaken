@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use parking_lot::Mutex;
 
-use super::metrics::{AgentMetrics, MetricsEvent};
+use super::metrics::{AgentMetrics, BackgroundTaskSpan, EvaluationResultEvent, MetricsEvent};
 
 /// Error type for sink operations (flush, shutdown).
 #[derive(Debug)]
@@ -49,6 +49,12 @@ pub trait MetricsSink: Send + Sync {
     /// Record a single metrics event.
     fn record(&self, event: &MetricsEvent);
 
+    /// Record a GenAI evaluation event.
+    fn record_evaluation_result(&self, _event: &EvaluationResultEvent) {}
+
+    /// Record a background task lifecycle event.
+    fn record_background_task(&self, _span: &BackgroundTaskSpan) {}
+
     /// Called at end of run with aggregated metrics.
     fn on_run_end(&self, metrics: &AgentMetrics);
 
@@ -85,12 +91,18 @@ impl MetricsSink for InMemorySink {
         match event {
             MetricsEvent::Inference(s) => inner.inferences.push(s.clone()),
             MetricsEvent::Tool(s) => inner.tools.push(s.clone()),
-            MetricsEvent::EvaluationResult(s) => inner.evaluations.push(s.clone()),
             MetricsEvent::Suspension(s) => inner.suspensions.push(s.clone()),
             MetricsEvent::Handoff(s) => inner.handoffs.push(s.clone()),
             MetricsEvent::Delegation(s) => inner.delegations.push(s.clone()),
-            MetricsEvent::BackgroundTask(s) => inner.background_tasks.push(s.clone()),
         }
+    }
+
+    fn record_evaluation_result(&self, event: &EvaluationResultEvent) {
+        self.inner.lock().evaluations.push(event.clone());
+    }
+
+    fn record_background_task(&self, span: &BackgroundTaskSpan) {
+        self.inner.lock().background_tasks.push(span.clone());
     }
 
     fn on_run_end(&self, metrics: &AgentMetrics) {

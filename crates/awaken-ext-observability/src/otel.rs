@@ -10,7 +10,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use awaken_runtime::extensions::background::current_background_task_id;
 use parking_lot::Mutex;
 
-use opentelemetry::trace::{SpanKind, Status, Tracer};
+use opentelemetry::trace::{SpanContext as OtelSpanContext, SpanId, SpanKind, Status, Tracer};
 use opentelemetry::{Array, KeyValue, StringValue, Value, trace::TraceContextExt};
 use opentelemetry_sdk::trace::SdkTracer;
 
@@ -52,17 +52,34 @@ pub struct OtelMetricsSink {
     /// to the tool call that spawned it.
     tool_contexts: Mutex<ContextCache>,
     /// Tool contexts created before the matching ToolSpan arrives.
-    pending_tool_spans: Mutex<HashMap<String, opentelemetry::Context>>,
+    pending_tool_spans: Mutex<HashMap<String, PendingToolSpan>>,
     /// Background task spans that may outlive the run that created them.
-    current_background_tasks: Mutex<HashMap<String, opentelemetry::Context>>,
+    current_background_tasks: Mutex<HashMap<String, ActiveBackgroundTask>>,
     /// Background task contexts retained for nested background task lineage.
     background_task_contexts: Mutex<ContextCache>,
+    /// Root spans whose run ended but still have open background task children.
+    deferred_root_ends: Mutex<HashMap<String, Vec<KeyValue>>>,
 }
 
 #[derive(Clone)]
 struct ActiveInference {
     cx: opentelemetry::Context,
     end_time: std::time::SystemTime,
+}
+
+#[derive(Clone)]
+struct PendingToolSpan {
+    parent_cx: opentelemetry::Context,
+    reserved_cx: opentelemetry::Context,
+    span_id: SpanId,
+    parent_run_id: String,
+    call_id: String,
+}
+
+#[derive(Clone)]
+struct ActiveBackgroundTask {
+    cx: opentelemetry::Context,
+    run_key: String,
 }
 
 #[derive(Default)]
@@ -89,6 +106,11 @@ impl ContextCache {
     fn get(&self, key: &str) -> Option<opentelemetry::Context> {
         self.contexts.get(key).cloned()
     }
+
+    fn remove(&mut self, key: &str) {
+        self.contexts.remove(key);
+        self.order.retain(|existing| existing != key);
+    }
 }
 
 struct RootSpanSeed<'a> {
@@ -108,6 +130,7 @@ impl OtelMetricsSink {
             pending_tool_spans: Mutex::new(HashMap::new()),
             current_background_tasks: Mutex::new(HashMap::new()),
             background_task_contexts: Mutex::new(ContextCache::default()),
+            deferred_root_ends: Mutex::new(HashMap::new()),
         }
     }
 
@@ -162,6 +185,18 @@ impl OtelMetricsSink {
 
     fn task_context_key(task_id: &str) -> String {
         task_id.to_string()
+    }
+
+    fn new_span_id() -> SpanId {
+        let uuid = uuid::Uuid::now_v7();
+        let mut bytes = [0u8; 8];
+        bytes.copy_from_slice(&uuid.as_bytes()[8..]);
+        let span_id = SpanId::from_bytes(bytes);
+        if span_id == SpanId::INVALID {
+            SpanId::from_bytes([1, 0, 0, 0, 0, 0, 0, 0])
+        } else {
+            span_id
+        }
     }
 
     fn ambient_parent_task_id() -> Option<String> {
@@ -389,6 +424,9 @@ impl OtelMetricsSink {
         {
             attrs.push(KeyValue::new("gen_ai.tool.call.result", serialized));
         }
+        if span.has_truncated_payload() {
+            attrs.push(KeyValue::new("awaken.tool.payload.truncated", true));
+        }
 
         if let Some(ref error_type) = span.error_type {
             attrs.push(KeyValue::new("error.type", error_type.clone()));
@@ -464,16 +502,38 @@ impl OtelMetricsSink {
                 .collect::<Vec<_>>()
         };
         for key in keys {
-            if let Some(cx) = self.pending_tool_spans.lock().remove(&key) {
-                cx.span().end();
+            if let Some(pending) = self.pending_tool_spans.lock().remove(&key) {
+                self.tool_contexts.lock().remove(&key);
+                self.end_synthetic_tool_span(pending);
             }
         }
     }
 
     fn end_all_pending_tool_spans(&self) {
-        for (_, cx) in self.pending_tool_spans.lock().drain() {
-            cx.span().end();
+        let pending = self.pending_tool_spans.lock().drain().collect::<Vec<_>>();
+        for (key, pending) in pending {
+            self.tool_contexts.lock().remove(&key);
+            self.end_synthetic_tool_span(pending);
         }
+    }
+
+    fn end_synthetic_tool_span(&self, pending: PendingToolSpan) {
+        let now = std::time::SystemTime::now();
+        let mut attrs = Self::lazy_tool_attributes(&pending.parent_run_id, &pending.call_id);
+        attrs.push(KeyValue::new("awaken.tool.synthetic_parent", true));
+        let span = self
+            .tracer
+            .span_builder("execute_tool")
+            .with_kind(SpanKind::Internal)
+            .with_span_id(pending.span_id)
+            .with_attributes(attrs)
+            .with_start_time(now)
+            .start_with_context(&self.tracer, &pending.parent_cx);
+        pending
+            .parent_cx
+            .with_span(span)
+            .span()
+            .end_with_timestamp(now);
     }
 
     fn record_tool(&self, span: &ToolSpan) {
@@ -492,15 +552,22 @@ impl OtelMetricsSink {
         };
 
         if let Some(key) = tool_key.as_deref()
-            && let Some(cx) = self.pending_tool_spans.lock().remove(key)
+            && let Some(pending) = self.pending_tool_spans.lock().remove(key)
         {
-            let span_ref = cx.span();
-            span_ref.update_name(span_name);
-            span_ref.set_attributes(attrs);
+            let otel_span = self
+                .tracer
+                .span_builder(span_name)
+                .with_kind(SpanKind::Internal)
+                .with_span_id(pending.span_id)
+                .with_attributes(attrs)
+                .with_start_time(start_time)
+                .start_with_context(&self.tracer, &pending.parent_cx);
+            let cx = pending.parent_cx.with_span(otel_span);
             if span.error_type.is_some() {
-                span_ref.set_status(Status::error(span.error_type.clone().unwrap_or_default()));
+                cx.span()
+                    .set_status(Status::error(span.error_type.clone().unwrap_or_default()));
             }
-            span_ref.end_with_timestamp(end_time);
+            cx.span().end_with_timestamp(end_time);
             self.tool_contexts.lock().insert(key.to_string(), cx);
             return;
         }
@@ -640,12 +707,20 @@ impl OtelMetricsSink {
     }
 
     fn background_task_context(&self, task_id: &str) -> Option<opentelemetry::Context> {
-        if let Some(cx) = self.current_background_tasks.lock().get(task_id).cloned() {
-            return Some(cx);
+        if let Some(active) = self.current_background_tasks.lock().get(task_id).cloned() {
+            return Some(active.cx);
         }
         self.background_task_contexts
             .lock()
             .get(&Self::task_context_key(task_id))
+    }
+
+    fn run_key_for_background_context(ctx: &SpanContext) -> String {
+        ctx.parent_run_id
+            .as_deref()
+            .filter(|id| !id.is_empty())
+            .map(ToOwned::to_owned)
+            .unwrap_or_else(|| Self::run_key(ctx))
     }
 
     fn parent_run_context(&self, run_key: &str) -> Option<opentelemetry::Context> {
@@ -670,26 +745,35 @@ impl OtelMetricsSink {
     ) -> Option<opentelemetry::Context> {
         let key = Self::tool_context_key(parent_run_id, parent_tool_call_id);
         if let Some(cx) = self.pending_tool_spans.lock().get(&key).cloned() {
-            return Some(cx);
+            return Some(cx.reserved_cx);
         }
         if let Some(cx) = self.tool_contexts.lock().get(&key) {
             return Some(cx);
         }
 
         let parent_cx = self.parent_run_context(parent_run_id)?;
-        let otel_span = self
-            .tracer
-            .span_builder("execute_tool")
-            .with_kind(SpanKind::Internal)
-            .with_attributes(Self::lazy_tool_attributes(
-                parent_run_id,
-                parent_tool_call_id,
-            ))
-            .start_with_context(&self.tracer, &parent_cx);
-        let cx = parent_cx.with_span(otel_span);
+        let parent_span_context = parent_cx.span().span_context().clone();
+        let span_id = Self::new_span_id();
+        let span_context = OtelSpanContext::new(
+            parent_span_context.trace_id(),
+            span_id,
+            parent_span_context.trace_flags(),
+            false,
+            parent_span_context.trace_state().clone(),
+        );
+        let cx = parent_cx.with_remote_span_context(span_context);
 
         self.tool_contexts.lock().insert(key.clone(), cx.clone());
-        self.pending_tool_spans.lock().insert(key, cx.clone());
+        self.pending_tool_spans.lock().insert(
+            key,
+            PendingToolSpan {
+                parent_cx,
+                reserved_cx: cx.clone(),
+                span_id,
+                parent_run_id: parent_run_id.to_string(),
+                call_id: parent_tool_call_id.to_string(),
+            },
+        );
         Some(cx)
     }
 
@@ -764,9 +848,13 @@ impl OtelMetricsSink {
         self.background_task_contexts
             .lock()
             .insert(Self::task_context_key(task_id), cx.clone());
-        self.current_background_tasks
-            .lock()
-            .insert(task_id.to_string(), cx.clone());
+        self.current_background_tasks.lock().insert(
+            task_id.to_string(),
+            ActiveBackgroundTask {
+                cx: cx.clone(),
+                run_key: Self::run_key_for_background_context(ctx),
+            },
+        );
         cx
     }
 
@@ -778,6 +866,21 @@ impl OtelMetricsSink {
             && let Some(cx) = self.background_task_context(parent_task_id)
         {
             return cx;
+        }
+        if let Some(parent_tool_call_id) = span
+            .context
+            .parent_tool_call_id
+            .as_deref()
+            .filter(|id| !id.is_empty())
+        {
+            let run_key = Self::run_key(&span.context);
+            let key = Self::tool_context_key(&run_key, parent_tool_call_id);
+            if let Some(cx) = self.tool_contexts.lock().get(&key) {
+                return cx;
+            }
+            if let Some(cx) = self.ensure_lazy_tool_context(&run_key, parent_tool_call_id) {
+                return cx;
+            }
         }
         self.parent_context_for_event(&span.context)
     }
@@ -798,15 +901,16 @@ impl OtelMetricsSink {
                 .cloned()
         };
         if let Some(active) = active {
-            active.span().set_attributes(attrs);
+            active.cx.span().set_attributes(attrs);
             if span.error_message.is_some() {
-                active.span().set_status(Status::error(
+                active.cx.span().set_status(Status::error(
                     span.error_message.clone().unwrap_or_default(),
                 ));
             }
             if span.is_terminal() {
                 self.current_background_tasks.lock().remove(&span.task_id);
-                active.span().end_with_timestamp(end_time);
+                active.cx.span().end_with_timestamp(end_time);
+                self.end_deferred_root_if_background_idle(&active.run_key);
             }
             return;
         }
@@ -833,10 +937,17 @@ impl OtelMetricsSink {
 
         if span.is_terminal() {
             cx.span().end_with_timestamp(end_time);
+            self.end_deferred_root_if_background_idle(&Self::run_key_for_background_context(
+                &span.context,
+            ));
         } else {
-            self.current_background_tasks
-                .lock()
-                .insert(span.task_id.clone(), cx);
+            self.current_background_tasks.lock().insert(
+                span.task_id.clone(),
+                ActiveBackgroundTask {
+                    cx,
+                    run_key: Self::run_key_for_background_context(&span.context),
+                },
+            );
         }
     }
 
@@ -882,6 +993,42 @@ impl OtelMetricsSink {
             .with_attributes(attrs)
             .start_with_context(&self.tracer, &parent_cx);
         parent_cx.with_span(span).span().end();
+    }
+
+    fn has_running_background_tasks_for_run(&self, run_key: &str) -> bool {
+        self.current_background_tasks
+            .lock()
+            .values()
+            .any(|active| active.run_key == run_key)
+    }
+
+    fn end_root_context_with_attrs(&self, run_key: &str, attrs: Vec<KeyValue>) {
+        if let Some(cx) = self.root_contexts.lock().remove(run_key) {
+            let span_ref = cx.span();
+            span_ref.set_attributes(attrs);
+            span_ref.end();
+        }
+    }
+
+    fn defer_or_end_root_context(&self, run_key: &str, attrs: Vec<KeyValue>) {
+        if self.has_running_background_tasks_for_run(run_key) {
+            self.deferred_root_ends
+                .lock()
+                .insert(run_key.to_string(), attrs);
+        } else {
+            self.end_root_context_with_attrs(run_key, attrs);
+        }
+    }
+
+    fn end_deferred_root_if_background_idle(&self, run_key: &str) {
+        if self.has_running_background_tasks_for_run(run_key) {
+            return;
+        }
+        let attrs = self.deferred_root_ends.lock().remove(run_key);
+        if let Some(attrs) = attrs {
+            self.end_pending_tool_spans_for_run(run_key);
+            self.end_root_context_with_attrs(run_key, attrs);
+        }
     }
 }
 
@@ -935,12 +1082,18 @@ impl MetricsSink for OtelMetricsSink {
         match event {
             MetricsEvent::Inference(span) => self.record_inference(span),
             MetricsEvent::Tool(span) => self.record_tool(span),
-            MetricsEvent::EvaluationResult(event) => self.record_evaluation_result(event),
             MetricsEvent::Suspension(span) => self.record_suspension(span),
             MetricsEvent::Handoff(span) => self.record_handoff(span),
             MetricsEvent::Delegation(span) => self.record_delegation(span),
-            MetricsEvent::BackgroundTask(span) => self.record_background_task(span),
         }
+    }
+
+    fn record_evaluation_result(&self, event: &EvaluationResultEvent) {
+        OtelMetricsSink::record_evaluation_result(self, event);
+    }
+
+    fn record_background_task(&self, span: &BackgroundTaskSpan) {
+        OtelMetricsSink::record_background_task(self, span);
     }
 
     fn on_run_end(&self, metrics: &AgentMetrics) {
@@ -950,12 +1103,14 @@ impl MetricsSink for OtelMetricsSink {
             self.end_all_current_inferences();
         } else {
             for run_key in &run_keys {
-                self.end_pending_tool_spans_for_run(run_key);
+                if !self.has_running_background_tasks_for_run(run_key) {
+                    self.end_pending_tool_spans_for_run(run_key);
+                }
                 self.end_current_inference(run_key);
             }
         }
 
-        let agent_summary_attrs = [
+        let agent_summary_attrs = vec![
             KeyValue::new(
                 "gen_ai.usage.input_tokens",
                 i64::from(metrics.total_input_tokens()),
@@ -988,13 +1143,8 @@ impl MetricsSink for OtelMetricsSink {
                 span_ref.end();
             }
         } else {
-            let mut root_contexts = self.root_contexts.lock();
             for run_key in run_keys {
-                if let Some(cx) = root_contexts.remove(&run_key) {
-                    let span_ref = cx.span();
-                    span_ref.set_attributes(agent_summary_attrs.clone());
-                    span_ref.end();
-                }
+                self.defer_or_end_root_context(&run_key, agent_summary_attrs.clone());
             }
         }
     }
@@ -1004,8 +1154,8 @@ impl Drop for OtelMetricsSink {
     fn drop(&mut self) {
         self.end_all_pending_tool_spans();
         self.end_all_current_inferences();
-        for (_, cx) in self.current_background_tasks.lock().drain() {
-            cx.span().end();
+        for (_, active) in self.current_background_tasks.lock().drain() {
+            active.cx.span().end();
         }
         for (_, cx) in self.root_contexts.lock().drain() {
             cx.span().end();
@@ -1020,13 +1170,17 @@ impl OtelMetricsSink {
             let ctx = match &event {
                 MetricsEvent::Inference(span) => &span.context,
                 MetricsEvent::Tool(span) => &span.context,
-                MetricsEvent::EvaluationResult(event) => &event.context,
                 MetricsEvent::Suspension(span) => &span.context,
                 MetricsEvent::Handoff(span) => &span.context,
                 MetricsEvent::Delegation(span) => &span.context,
-                MetricsEvent::BackgroundTask(span) => &span.context,
             };
             run_keys.insert(Self::run_key(ctx));
+        }
+        for event in &metrics.evaluations {
+            run_keys.insert(Self::run_key(&event.context));
+        }
+        for span in &metrics.background_tasks {
+            run_keys.insert(Self::run_key_for_background_context(&span.context));
         }
         run_keys
     }
@@ -1657,8 +1811,8 @@ mod tests {
 
         sink.record(&MetricsEvent::Inference(parent_inference.clone()));
         sink.record(&MetricsEvent::Tool(tool.clone()));
-        sink.record(&MetricsEvent::BackgroundTask(running));
-        sink.record(&MetricsEvent::BackgroundTask(completed.clone()));
+        sink.record_background_task(&running);
+        sink.record_background_task(&completed);
         sink.on_run_end(&AgentMetrics {
             inferences: vec![parent_inference],
             tools: vec![tool],
@@ -1702,6 +1856,162 @@ mod tests {
                 .get("awaken.background_task.parent_tool_call_id")
                 .map(|v| v.to_string()),
             Some("call-bg".to_string())
+        );
+    }
+
+    #[test]
+    fn otlp_background_task_before_tool_uses_real_tool_parent_and_duration() {
+        let (sink, exporter, provider) = make_capturing_sink();
+
+        let context = SpanContext {
+            run_id: "run-bg-early".to_string(),
+            thread_id: "thread-bg".to_string(),
+            agent_id: "agent-bg".to_string(),
+            parent_run_id: None,
+            parent_tool_call_id: None,
+        };
+        let parent_inference = GenAISpan {
+            context: context.clone(),
+            model: "parent-model".to_string(),
+            ..sample_genai_span()
+        };
+        let tool = ToolSpan {
+            context: context.clone(),
+            name: "spawn_background".to_string(),
+            call_id: "call-bg-early".to_string(),
+            duration_ms: 250,
+            ..sample_tool_span()
+        };
+        let background_context = SpanContext {
+            parent_tool_call_id: Some(tool.call_id.clone()),
+            ..context.clone()
+        };
+        let running = BackgroundTaskSpan {
+            context: background_context.clone(),
+            task_id: "bg-early".to_string(),
+            ..sample_background_task_span("running")
+        };
+        let completed = BackgroundTaskSpan {
+            context: background_context,
+            status: "completed".to_string(),
+            completed_at_ms: Some(1_500),
+            ..running.clone()
+        };
+
+        sink.record(&MetricsEvent::Inference(parent_inference.clone()));
+        sink.record_background_task(&running);
+        sink.record(&MetricsEvent::Tool(tool.clone()));
+        sink.record_background_task(&completed);
+        sink.on_run_end(&AgentMetrics {
+            inferences: vec![parent_inference],
+            tools: vec![tool],
+            background_tasks: vec![completed],
+            session_duration_ms: 600,
+            ..Default::default()
+        });
+
+        drop(sink);
+        let _ = provider.shutdown();
+
+        let spans = exporter.finished_spans();
+        let tool = spans
+            .iter()
+            .find(|s| s.name.as_ref() == "execute_tool spawn_background")
+            .expect("background spawning tool span not found");
+        let background = spans
+            .iter()
+            .find(|s| s.name.as_ref() == "awaken.background_task")
+            .expect("background task span not found");
+
+        assert_eq!(
+            background.parent_span_id,
+            tool.span_context.span_id(),
+            "early background event should be reparented to the eventual tool span id"
+        );
+        let tool_duration = tool
+            .end_time
+            .duration_since(tool.start_time)
+            .expect("tool end after start");
+        assert_eq!(
+            tool_duration,
+            std::time::Duration::from_millis(250),
+            "lazy tool completion should preserve ToolSpan duration"
+        );
+    }
+
+    #[test]
+    fn otlp_run_end_defers_root_until_running_background_task_finishes() {
+        let (sink, exporter, provider) = make_capturing_sink();
+
+        let context = SpanContext {
+            run_id: "run-bg-open".to_string(),
+            thread_id: "thread-bg".to_string(),
+            agent_id: "agent-bg".to_string(),
+            parent_run_id: None,
+            parent_tool_call_id: None,
+        };
+        let inference = GenAISpan {
+            context: context.clone(),
+            model: "parent-model".to_string(),
+            ..sample_genai_span()
+        };
+        let tool = ToolSpan {
+            context: context.clone(),
+            name: "spawn_background".to_string(),
+            call_id: "call-bg-open".to_string(),
+            ..sample_tool_span()
+        };
+        let background_context = SpanContext {
+            parent_tool_call_id: Some(tool.call_id.clone()),
+            ..context.clone()
+        };
+        let running = BackgroundTaskSpan {
+            context: background_context.clone(),
+            task_id: "bg-open".to_string(),
+            ..sample_background_task_span("running")
+        };
+        let completed = BackgroundTaskSpan {
+            context: background_context,
+            status: "completed".to_string(),
+            completed_at_ms: Some(1_500),
+            ..running.clone()
+        };
+
+        sink.record(&MetricsEvent::Inference(inference.clone()));
+        sink.record(&MetricsEvent::Tool(tool.clone()));
+        sink.record_background_task(&running);
+        sink.on_run_end(&AgentMetrics {
+            inferences: vec![inference.clone()],
+            tools: vec![tool.clone()],
+            background_tasks: vec![running],
+            session_duration_ms: 600,
+            ..Default::default()
+        });
+
+        assert!(
+            exporter
+                .finished_spans()
+                .iter()
+                .all(|s| !s.name.starts_with("invoke_agent")),
+            "root span should remain open while background task is running"
+        );
+
+        sink.record_background_task(&completed);
+        drop(sink);
+        let _ = provider.shutdown();
+
+        let spans = exporter.finished_spans();
+        let root = spans
+            .iter()
+            .find(|s| s.name.as_ref() == "invoke_agent agent-bg")
+            .expect("root span should close after background task terminal event");
+        let background = spans
+            .iter()
+            .find(|s| s.name.as_ref() == "awaken.background_task")
+            .expect("background task span not found");
+        assert_eq!(
+            background.span_context.trace_id(),
+            root.span_context.trace_id()
         );
     }
 
@@ -1803,7 +2113,7 @@ mod tests {
             ..sample_background_task_span("completed")
         };
         sink.record(&MetricsEvent::Tool(tool.clone()));
-        sink.record(&MetricsEvent::BackgroundTask(completed.clone()));
+        sink.record_background_task(&completed);
         sink.on_run_end(&AgentMetrics {
             inferences: vec![parent_inference],
             tools: vec![tool],
@@ -2131,7 +2441,7 @@ mod tests {
         };
 
         sink.record(&MetricsEvent::Inference(inference.clone()));
-        sink.record(&MetricsEvent::EvaluationResult(EvaluationResultEvent {
+        sink.record_evaluation_result(&EvaluationResultEvent {
             context,
             name: "faithfulness".to_string(),
             score_label: Some("pass".to_string()),
@@ -2143,7 +2453,7 @@ mod tests {
                 .duration_since(std::time::UNIX_EPOCH)
                 .expect("system clock after unix epoch")
                 .as_millis() as u64,
-        }));
+        });
         sink.on_run_end(&AgentMetrics {
             inferences: vec![inference],
             ..Default::default()
