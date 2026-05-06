@@ -22,6 +22,7 @@ export const zhCN: Dict = {
       providers: "供应商",
       mcp: "MCP 服务",
       skills: "技能",
+      tools: "工具",
       dashboard: "总览",
       audit: "审计日志",
       evals: "评测报告",
@@ -339,6 +340,19 @@ export const zhCN: Dict = {
     callerHint: "用户可在聊天界面调用此技能",
     modelHint: "模型可自主调用此技能",
     counter: "共 {{total}} 条，显示 {{shown}} 条",
+  },
+  tools: {
+    list: {
+      title: "工具",
+      filterOverridden: "仅显示自定义工具",
+    },
+    editor: {
+      builtin: "内置",
+      userOverride: "用户覆盖",
+      effective: "生效",
+      revert: "恢复默认",
+      lengthWarning: "过长的描述会稀释模型注意力，复杂规则建议放在 Agent 的 system prompt 中。",
+    },
   },
   evals: {
     title: "评测报告",

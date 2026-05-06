@@ -77,6 +77,16 @@ const AuditLogPage = lazy(async () => {
   return { default: module.AuditLogPage };
 });
 
+const ToolsPage = lazy(async () => {
+  const module = await import("./pages/tools-page");
+  return { default: module.ToolsPage };
+});
+
+const ToolEditorPage = lazy(async () => {
+  const module = await import("./pages/tool-editor-page");
+  return { default: module.ToolEditorPage };
+});
+
 /// Routes are declared once and reused via the data router so that v7
 /// hooks like `useBlocker` work. `<Routes>` (kept exported for tests
 /// that prefer the legacy router) renders the same structure.
@@ -192,6 +202,22 @@ export function appRoutes() {
           element={
             <RouteLoader>
               <AuditLogPage />
+            </RouteLoader>
+          }
+        />
+        <Route
+          path="tools"
+          element={
+            <RouteLoader>
+              <ToolsPage />
+            </RouteLoader>
+          }
+        />
+        <Route
+          path="tools/:id"
+          element={
+            <RouteLoader>
+              <ToolEditorPage />
             </RouteLoader>
           }
         />

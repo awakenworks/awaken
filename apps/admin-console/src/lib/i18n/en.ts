@@ -23,6 +23,7 @@ export const en = {
       providers: "Providers",
       mcp: "MCP Servers",
       skills: "Skills",
+      tools: "Tools",
       dashboard: "Dashboard",
       audit: "Audit Log",
       evals: "Eval Reports",
@@ -340,6 +341,19 @@ export const en = {
     callerHint: "Users can invoke this skill from the chat surface",
     modelHint: "Model can autonomously invoke this skill",
     counter: "{{shown}} of {{total}} shown",
+  },
+  tools: {
+    list: {
+      title: "Tools",
+      filterOverridden: "Show only customized",
+    },
+    editor: {
+      builtin: "Built-in",
+      userOverride: "User override",
+      effective: "Effective",
+      revert: "Revert to default",
+      lengthWarning: "Long descriptions dilute model attention. Consider moving rules into the agent's system prompt.",
+    },
   },
   evals: {
     title: "Eval Reports",

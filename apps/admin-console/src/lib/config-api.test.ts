@@ -351,3 +351,35 @@ describe("deriveSourceState", () => {
     expect(deriveSourceState(meta)).toBe("user");
   });
 });
+
+describe("tool overrides client", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("PATCH posts to /v1/config/tools/:id/overrides", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify({ id: "echo", description: "patched" }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    await configApi.patchToolOverrides("echo", { description: "patched" });
+    const url = fetchMock.mock.calls[0]![0] as string;
+    expect(url).toMatch(/\/v1\/config\/tools\/echo\/overrides$/);
+    expect((fetchMock.mock.calls[0]![1] as RequestInit).method).toBe("PATCH");
+  });
+
+  it("DELETE clears all overrides", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify({ id: "echo", description: "stock" }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    await configApi.clearToolOverrides("echo");
+    const url = fetchMock.mock.calls[0]![0] as string;
+    expect(url).toMatch(/\/v1\/config\/tools\/echo\/overrides$/);
+    expect((fetchMock.mock.calls[0]![1] as RequestInit).method).toBe("DELETE");
+  });
+});

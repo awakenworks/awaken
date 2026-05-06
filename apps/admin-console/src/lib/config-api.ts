@@ -25,6 +25,14 @@ export interface AgentSpec {
   updated_at?: number;
 }
 
+export interface ToolSpec {
+  id: string;
+  name: string;
+  description: string;
+  category?: string | null;
+  parameters_schema?: unknown;
+}
+
 export interface ModelBindingSpec {
   id: string;
   provider_id: string;
@@ -499,4 +507,32 @@ export const configApi = {
       `${BACKEND_URL}/v1/config/agents/${encodeURIComponent(id)}/overrides/${encodeURIComponent(field)}`,
       { method: "DELETE" },
     ),
+
+  patchToolOverrides: (id: string, patch: { description?: string | null }) =>
+    fetchJson<ToolSpec>(
+      `${BACKEND_URL}/v1/config/tools/${encodeURIComponent(id)}/overrides`,
+      {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(patch),
+      },
+    ),
+
+  clearToolOverrides: (id: string) =>
+    fetchJson<ToolSpec>(
+      `${BACKEND_URL}/v1/config/tools/${encodeURIComponent(id)}/overrides`,
+      { method: "DELETE" },
+    ),
+
+  clearToolOverrideField: (id: string, field: string) =>
+    fetchJson<ToolSpec>(
+      `${BACKEND_URL}/v1/config/tools/${encodeURIComponent(id)}/overrides/${encodeURIComponent(field)}`,
+      { method: "DELETE" },
+    ),
+
+  listTools: () =>
+    fetchJson<ListResponse<ToolSpec>>(`${BACKEND_URL}/v1/config/tools`),
+
+  getTool: (id: string) =>
+    fetchJson<ToolSpec>(configUrl("tools", id)),
 };

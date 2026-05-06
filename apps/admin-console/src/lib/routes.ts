@@ -11,6 +11,8 @@ export const adminRoutes = {
   mcpServers: "/mcp-servers",
   mcpServer: (id: string) => `/mcp-servers/${encodeURIComponent(id)}`,
   skill: (id: string) => `/skills/${encodeURIComponent(id)}`,
+  tools: "/tools",
+  tool: (id: string) => `/tools/${encodeURIComponent(id)}`,
   assistant: "/assistant",
   evalReports: "/eval-reports",
   auditLog: "/audit-log",
