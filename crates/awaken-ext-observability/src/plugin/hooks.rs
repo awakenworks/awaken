@@ -5,10 +5,12 @@ use std::time::Instant;
 use async_trait::async_trait;
 use awaken_contract::StateError;
 use awaken_contract::contract::tool::ToolStatus;
+use awaken_runtime::extensions::background::{BackgroundTaskStateKey, PersistedTaskMeta};
 use awaken_runtime::{PhaseContext, PhaseHook, StateCommand};
 
 use crate::metrics::{
-    DelegationSpan, GenAISpan, HandoffSpan, MetricsEvent, SpanContext, SuspensionSpan, ToolSpan,
+    BackgroundTaskSpan, DelegationSpan, GenAISpan, HandoffSpan, MetricsEvent, SpanContext,
+    SuspensionSpan, ToolSpan,
 };
 
 use super::shared::{Inner, extract_cache_tokens, extract_token_counts};
@@ -37,6 +39,7 @@ impl PhaseHook for RunStartHook {
             thread_id: ri.thread_id.clone(),
             agent_id: ri.agent_id.clone(),
             parent_run_id: ri.parent_run_id.clone(),
+            parent_tool_call_id: ri.parent_tool_call_id.clone(),
         };
         // Reset step counter for the new run.
         self.0.step_counter.store(0, Ordering::Relaxed);
@@ -108,7 +111,7 @@ impl PhaseHook for BeforeInferenceHook {
             "gen_ai.request.stop_sequences" = tracing::field::Empty,
             "gen_ai.response.model" = tracing::field::Empty,
             "gen_ai.response.id" = tracing::field::Empty,
-            "gen_ai.usage.thinking_tokens" = tracing::field::Empty,
+            "gen_ai.usage.reasoning.output_tokens" = tracing::field::Empty,
             "gen_ai.usage.input_tokens" = tracing::field::Empty,
             "gen_ai.usage.output_tokens" = tracing::field::Empty,
             "gen_ai.response.finish_reasons" = tracing::field::Empty,
@@ -202,7 +205,7 @@ impl PhaseHook for AfterInferenceHook {
         // Record tracing span attributes.
         if let Some(tracing_span) = s.inference_tracing_span.lock().await.take() {
             if let Some(v) = span.thinking_tokens {
-                tracing_span.record("gen_ai.usage.thinking_tokens", v);
+                tracing_span.record("gen_ai.usage.reasoning.output_tokens", v);
             }
             if let Some(v) = span.input_tokens {
                 tracing_span.record("gen_ai.usage.input_tokens", v);
@@ -277,9 +280,18 @@ impl PhaseHook for BeforeToolExecuteHook {
             "gen_ai.tool.name" = %tool_name,
             "gen_ai.tool.call.id" = %call_id,
             "gen_ai.tool.type" = "function",
+            "gen_ai.tool.call.arguments" = tracing::field::Empty,
+            "gen_ai.tool.call.result" = tracing::field::Empty,
             "error.type" = tracing::field::Empty,
             "error.message" = tracing::field::Empty,
         );
+
+        if s.tool_io_capture.captures_arguments()
+            && let Some(args) = &ctx.tool_args
+            && let Ok(serialized) = serde_json::to_string(args)
+        {
+            span.record("gen_ai.tool.call.arguments", serialized.as_str());
+        }
 
         if !call_id.is_empty() {
             s.tool_tracing_span
@@ -350,12 +362,27 @@ impl PhaseHook for AfterToolExecuteHook {
             operation: "execute_tool".to_string(),
             call_id: call_id.clone(),
             tool_type: "function".to_string(),
+            call_arguments: if s.tool_io_capture.captures_arguments() {
+                ctx.tool_args.clone()
+            } else {
+                None
+            },
+            call_result: if s.tool_io_capture.captures_results() && result.is_success() {
+                Some(result.data.clone())
+            } else {
+                None
+            },
             error_type,
             duration_ms,
         };
 
         let tracing_span = s.tool_tracing_span.lock().await.remove(&call_id);
         if let Some(tracing_span) = tracing_span {
+            if let Some(value) = &span.call_result
+                && let Ok(serialized) = serde_json::to_string(value)
+            {
+                tracing_span.record("gen_ai.tool.call.result", serialized.as_str());
+            }
             if let (Some(v), Some(msg)) = (&span.error_type, &error_message) {
                 tracing_span.record("error.type", v.as_str());
                 tracing_span.record("error.message", msg.as_str());
@@ -451,5 +478,63 @@ impl PhaseHook for RunEndHook {
         s.sink.on_run_end(&metrics);
 
         Ok(StateCommand::new())
+    }
+}
+
+pub(crate) struct BackgroundTaskObserveHook(pub(crate) Arc<Inner>);
+
+#[async_trait]
+impl PhaseHook for BackgroundTaskObserveHook {
+    async fn run(&self, ctx: &PhaseContext) -> Result<StateCommand, StateError> {
+        let Some(snapshot) = ctx.state::<BackgroundTaskStateKey>() else {
+            return Ok(StateCommand::new());
+        };
+
+        let s = &self.0;
+        for meta in snapshot.tasks.values() {
+            let status = meta.status.as_str().to_string();
+            let should_record = {
+                let mut seen = s.background_task_statuses.lock().await;
+                if seen.get(&meta.task_id) == Some(&status) {
+                    false
+                } else {
+                    seen.insert(meta.task_id.clone(), status);
+                    true
+                }
+            };
+
+            if !should_record {
+                continue;
+            }
+
+            let span = background_task_span_from_meta(meta);
+            crate::prometheus::record_background_task(&span);
+            s.sink.record(&MetricsEvent::BackgroundTask(span.clone()));
+            s.metrics.lock().await.background_tasks.push(span);
+        }
+
+        Ok(StateCommand::new())
+    }
+}
+
+fn background_task_span_from_meta(meta: &PersistedTaskMeta) -> BackgroundTaskSpan {
+    let parent = &meta.parent_context;
+    BackgroundTaskSpan {
+        context: SpanContext {
+            run_id: parent.run_id.clone().unwrap_or_default(),
+            thread_id: meta.owner_thread_id.clone(),
+            agent_id: parent.agent_id.clone().unwrap_or_default(),
+            parent_run_id: None,
+            parent_tool_call_id: parent.call_id.clone(),
+        },
+        task_id: meta.task_id.clone(),
+        task_type: meta.task_type.clone(),
+        task_name: meta.name.clone(),
+        description: meta.description.clone(),
+        status: meta.status.as_str().to_string(),
+        parent_task_id: meta.parent_context.task_id.clone(),
+        error_message: meta.error.clone(),
+        created_at_ms: meta.created_at_ms,
+        completed_at_ms: meta.completed_at_ms,
     }
 }

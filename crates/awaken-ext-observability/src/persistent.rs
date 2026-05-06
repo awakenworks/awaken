@@ -284,6 +284,8 @@ mod tests {
             operation: "execute".to_string(),
             call_id: "call_1".to_string(),
             tool_type: "function".to_string(),
+            call_arguments: None,
+            call_result: None,
             error_type: None,
             duration_ms: 50,
         }

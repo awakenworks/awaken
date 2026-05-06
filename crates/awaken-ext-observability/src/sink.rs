@@ -85,9 +85,11 @@ impl MetricsSink for InMemorySink {
         match event {
             MetricsEvent::Inference(s) => inner.inferences.push(s.clone()),
             MetricsEvent::Tool(s) => inner.tools.push(s.clone()),
+            MetricsEvent::EvaluationResult(s) => inner.evaluations.push(s.clone()),
             MetricsEvent::Suspension(s) => inner.suspensions.push(s.clone()),
             MetricsEvent::Handoff(s) => inner.handoffs.push(s.clone()),
             MetricsEvent::Delegation(s) => inner.delegations.push(s.clone()),
+            MetricsEvent::BackgroundTask(s) => inner.background_tasks.push(s.clone()),
         }
     }
 
@@ -136,6 +138,8 @@ mod tests {
             operation: "execute".to_string(),
             call_id: "call_1".to_string(),
             tool_type: "function".to_string(),
+            call_arguments: None,
+            call_result: None,
             error_type: if error {
                 Some("timeout".to_string())
             } else {

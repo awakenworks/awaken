@@ -6,19 +6,32 @@ use awaken_contract::contract::suspension::{ResumeDecisionAction, ToolCallResume
 use awaken_contract::contract::tool::ToolResult;
 use awaken_contract::model::Phase;
 use awaken_contract::state::{Snapshot, StateMap};
+use awaken_runtime::extensions::background::{
+    BackgroundTaskStateKey, BackgroundTaskStateSnapshot, PersistedTaskMeta, TaskParentContext,
+    TaskStatus,
+};
 use awaken_runtime::{PhaseContext, PhaseHook, Plugin};
 
+use crate::metrics::ToolIoCapture;
 use crate::sink::InMemorySink;
 
 use super::ObservabilityPlugin;
 use super::hooks::{
-    AfterInferenceHook, AfterToolExecuteHook, BeforeInferenceHook, BeforeToolExecuteHook,
-    RunEndHook, RunStartHook,
+    AfterInferenceHook, AfterToolExecuteHook, BackgroundTaskObserveHook, BeforeInferenceHook,
+    BeforeToolExecuteHook, RunEndHook, RunStartHook,
 };
 use super::shared::{extract_cache_tokens, extract_token_counts, lock_unpoison};
 
 fn empty_snapshot() -> Snapshot {
     Snapshot::new(0, Arc::new(StateMap::default()))
+}
+
+fn snapshot_with_background_task(meta: PersistedTaskMeta) -> Snapshot {
+    let mut state = StateMap::default();
+    let mut tasks = std::collections::HashMap::new();
+    tasks.insert(meta.task_id.clone(), meta);
+    state.insert::<BackgroundTaskStateKey>(BackgroundTaskStateSnapshot { tasks });
+    Snapshot::new(0, Arc::new(state))
 }
 
 fn usage(prompt: i32, completion: i32, total: i32) -> TokenUsage {
@@ -53,6 +66,7 @@ async fn run_phase(plugin: &ObservabilityPlugin, ctx: &PhaseContext) {
         Phase::BeforeToolExecute => BeforeToolExecuteHook(inner).run(ctx).await.unwrap(),
         Phase::AfterToolExecute => AfterToolExecuteHook(inner).run(ctx).await.unwrap(),
         Phase::RunEnd => RunEndHook(inner).run(ctx).await.unwrap(),
+        Phase::StepEnd => BackgroundTaskObserveHook(inner).run(ctx).await.unwrap(),
         _ => return,
     };
 }
@@ -105,6 +119,66 @@ fn new_defaults_metrics_empty() {
 }
 
 #[test]
+fn new_defaults_tool_io_capture_disabled() {
+    let plugin = ObservabilityPlugin::new(InMemorySink::new());
+    assert_eq!(plugin.inner.tool_io_capture, ToolIoCapture::Disabled);
+}
+
+#[tokio::test]
+async fn background_task_state_records_lifecycle_once_per_status() {
+    let sink = InMemorySink::new();
+    let plugin = ObservabilityPlugin::new(sink.clone());
+
+    let running = PersistedTaskMeta {
+        task_id: "bg-1".to_string(),
+        owner_thread_id: "thread-bg".to_string(),
+        task_type: "sub_agent".to_string(),
+        name: Some("worker".to_string()),
+        description: "background worker".to_string(),
+        status: TaskStatus::Running,
+        error: None,
+        result: None,
+        created_at_ms: 10,
+        completed_at_ms: None,
+        parent_context: TaskParentContext {
+            run_id: Some("run-parent".to_string()),
+            call_id: Some("call-bg".to_string()),
+            agent_id: Some("agent-parent".to_string()),
+            ..Default::default()
+        },
+    };
+
+    let ctx = PhaseContext::new(
+        Phase::StepEnd,
+        snapshot_with_background_task(running.clone()),
+    );
+    run_phase(&plugin, &ctx).await;
+    run_phase(&plugin, &ctx).await;
+
+    let mut completed = running;
+    completed.status = TaskStatus::Completed;
+    completed.completed_at_ms = Some(40);
+    let ctx = PhaseContext::new(Phase::StepEnd, snapshot_with_background_task(completed));
+    run_phase(&plugin, &ctx).await;
+
+    let metrics = sink.metrics();
+    assert_eq!(metrics.background_tasks.len(), 2);
+    assert_eq!(metrics.background_tasks[0].status, "running");
+    assert_eq!(metrics.background_tasks[1].status, "completed");
+    assert_eq!(
+        metrics.background_tasks[1].context.run_id,
+        "run-parent".to_string()
+    );
+    assert_eq!(
+        metrics.background_tasks[1]
+            .context
+            .parent_tool_call_id
+            .as_deref(),
+        Some("call-bg")
+    );
+}
+
+#[test]
 fn with_model_sets_model() {
     let plugin = ObservabilityPlugin::new(InMemorySink::new()).with_model("gpt-4o");
     assert_eq!(*lock_unpoison(&plugin.inner.model), "gpt-4o");
@@ -150,7 +224,8 @@ fn builder_chaining() {
         .with_temperature(0.5)
         .with_top_p(0.8)
         .with_max_tokens(2048)
-        .with_stop_sequences(vec!["DONE".into()]);
+        .with_stop_sequences(vec!["DONE".into()])
+        .with_tool_io_capture(ToolIoCapture::ArgumentsAndResults);
 
     assert_eq!(*lock_unpoison(&plugin.inner.model), "claude-3");
     assert_eq!(*lock_unpoison(&plugin.inner.provider), "anthropic");
@@ -158,6 +233,10 @@ fn builder_chaining() {
     assert_eq!(*lock_unpoison(&plugin.inner.top_p), Some(0.8));
     assert_eq!(*lock_unpoison(&plugin.inner.max_tokens), Some(2048));
     assert_eq!(*lock_unpoison(&plugin.inner.stop_sequences), vec!["DONE"]);
+    assert_eq!(
+        plugin.inner.tool_io_capture,
+        ToolIoCapture::ArgumentsAndResults
+    );
 }
 
 #[test]
@@ -273,9 +352,41 @@ async fn on_after_tool_execute_records_tool_span() {
     assert_eq!(metrics.tools[0].name, "search");
     assert_eq!(metrics.tools[0].call_id, "c1");
     assert!(metrics.tools[0].is_success());
+    assert!(metrics.tools[0].call_arguments.is_none());
+    assert!(metrics.tools[0].call_result.is_none());
 
     let sink_m = sink.metrics();
     assert_eq!(sink_m.tool_count(), 1);
+}
+
+#[tokio::test]
+async fn tool_io_capture_records_opt_in_arguments_and_results() {
+    let sink = InMemorySink::new();
+    let plugin = ObservabilityPlugin::new(sink.clone())
+        .with_tool_io_capture(ToolIoCapture::ArgumentsAndResults);
+    let args = serde_json::json!({"query": "otel", "limit": 3});
+    let result = serde_json::json!({"count": 2});
+
+    let ctx = PhaseContext::new(Phase::BeforeToolExecute, empty_snapshot()).with_tool_info(
+        "search",
+        "c1",
+        Some(args.clone()),
+    );
+    run_phase(&plugin, &ctx).await;
+
+    let ctx = PhaseContext::new(Phase::AfterToolExecute, empty_snapshot())
+        .with_tool_info("search", "c1", Some(args.clone()))
+        .with_tool_result(ToolResult::success("search", result.clone()));
+    run_phase(&plugin, &ctx).await;
+
+    let metrics = lock_unpoison(&plugin.inner.metrics);
+    assert_eq!(metrics.tools.len(), 1);
+    assert_eq!(metrics.tools[0].call_arguments.as_ref(), Some(&args));
+    assert_eq!(metrics.tools[0].call_result.as_ref(), Some(&result));
+
+    let sink_m = sink.metrics();
+    assert_eq!(sink_m.tools[0].call_arguments.as_ref(), Some(&args));
+    assert_eq!(sink_m.tools[0].call_result.as_ref(), Some(&result));
 }
 
 #[tokio::test]

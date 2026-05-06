@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 use super::stats::{ModelStats, ToolStats};
 
@@ -19,6 +20,9 @@ pub struct SpanContext {
     /// Parent run id (for delegated sub-agent runs).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent_run_id: Option<String>,
+    /// Parent tool call id that caused this run/event, when available.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_tool_call_id: Option<String>,
 }
 
 /// Unified event type for all observability events.
@@ -27,9 +31,35 @@ pub struct SpanContext {
 pub enum MetricsEvent {
     Inference(GenAISpan),
     Tool(ToolSpan),
+    EvaluationResult(EvaluationResultEvent),
     Suspension(SuspensionSpan),
     Handoff(HandoffSpan),
     Delegation(DelegationSpan),
+    BackgroundTask(BackgroundTaskSpan),
+}
+
+/// Opt-in capture policy for potentially sensitive tool call payloads.
+///
+/// Tool arguments and results can contain user data or secrets.  The default
+/// keeps them out of telemetry; embedders must explicitly opt in.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolIoCapture {
+    #[default]
+    Disabled,
+    Arguments,
+    Results,
+    ArgumentsAndResults,
+}
+
+impl ToolIoCapture {
+    pub fn captures_arguments(self) -> bool {
+        matches!(self, Self::Arguments | Self::ArgumentsAndResults)
+    }
+
+    pub fn captures_results(self) -> bool {
+        matches!(self, Self::Results | Self::ArgumentsAndResults)
+    }
 }
 
 /// A single LLM inference span (OTel GenAI aligned).
@@ -57,7 +87,7 @@ pub struct GenAISpan {
     pub error_type: Option<String>,
     /// Classified error category (e.g. `rate_limit`, `timeout`).
     pub error_class: Option<String>,
-    /// OTel: `gen_ai.usage.thinking_tokens`.
+    /// OTel: `gen_ai.usage.reasoning.output_tokens`.
     pub thinking_tokens: Option<i32>,
     /// OTel: `gen_ai.usage.input_tokens`.
     pub input_tokens: Option<i32>,
@@ -76,7 +106,7 @@ pub struct GenAISpan {
     pub max_tokens: Option<u32>,
     /// OTel: `gen_ai.request.stop_sequences`.
     pub stop_sequences: Vec<String>,
-    /// OTel: `gen_ai.client.operation.duration`.
+    /// Local duration used to set the exported span start/end timestamps.
     pub duration_ms: u64,
 }
 
@@ -97,6 +127,12 @@ pub struct ToolSpan {
     pub call_id: String,
     /// OTel: `gen_ai.tool.type`.
     pub tool_type: String,
+    /// OTel opt-in: `gen_ai.tool.call.arguments`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub call_arguments: Option<Value>,
+    /// OTel opt-in: `gen_ai.tool.call.result`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub call_result: Option<Value>,
     /// OTel: `error.type`.
     pub error_type: Option<String>,
     pub duration_ms: u64,
@@ -106,6 +142,32 @@ impl ToolSpan {
     pub fn is_success(&self) -> bool {
         self.error_type.is_none()
     }
+}
+
+/// Result of evaluating a GenAI response.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EvaluationResultEvent {
+    /// Execution context (run, thread, agent).
+    #[serde(flatten)]
+    pub context: SpanContext,
+    /// OTel: `gen_ai.evaluation.name`.
+    pub name: String,
+    /// OTel: `gen_ai.evaluation.score.label`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub score_label: Option<String>,
+    /// OTel: `gen_ai.evaluation.score.value`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub score_value: Option<f64>,
+    /// OTel: `gen_ai.evaluation.explanation`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub explanation: Option<String>,
+    /// OTel: `gen_ai.response.id`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub response_id: Option<String>,
+    /// OTel: `error.type`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error_type: Option<String>,
+    pub timestamp_ms: u64,
 }
 
 /// Span for tool suspension/resume events (HITL decisions).
@@ -152,14 +214,44 @@ pub struct DelegationSpan {
     pub timestamp_ms: u64,
 }
 
+/// Lifecycle span for background task execution.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BackgroundTaskSpan {
+    /// Parent execution context (run, thread, agent).
+    #[serde(flatten)]
+    pub context: SpanContext,
+    pub task_id: String,
+    pub task_type: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task_name: Option<String>,
+    pub description: String,
+    pub status: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_task_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error_message: Option<String>,
+    pub created_at_ms: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub completed_at_ms: Option<u64>,
+}
+
+impl BackgroundTaskSpan {
+    pub fn is_terminal(&self) -> bool {
+        self.status != "running"
+    }
+}
+
 /// Aggregated metrics for an agent session.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct AgentMetrics {
     pub inferences: Vec<GenAISpan>,
     pub tools: Vec<ToolSpan>,
+    pub evaluations: Vec<EvaluationResultEvent>,
     pub suspensions: Vec<SuspensionSpan>,
     pub handoffs: Vec<HandoffSpan>,
     pub delegations: Vec<DelegationSpan>,
+    #[serde(default)]
+    pub background_tasks: Vec<BackgroundTaskSpan>,
     pub session_duration_ms: u64,
 }
 
@@ -222,6 +314,10 @@ impl AgentMetrics {
         self.delegations.len()
     }
 
+    pub fn total_background_tasks(&self) -> usize {
+        self.background_tasks.len()
+    }
+
     pub fn successful_delegations(&self) -> usize {
         self.delegations.iter().filter(|d| d.success).count()
     }
@@ -255,12 +351,20 @@ impl AgentMetrics {
         let mut events = Vec::with_capacity(
             self.inferences.len()
                 + self.tools.len()
+                + self.evaluations.len()
                 + self.suspensions.len()
                 + self.handoffs.len()
-                + self.delegations.len(),
+                + self.delegations.len()
+                + self.background_tasks.len(),
         );
         events.extend(self.inferences.iter().cloned().map(MetricsEvent::Inference));
         events.extend(self.tools.iter().cloned().map(MetricsEvent::Tool));
+        events.extend(
+            self.evaluations
+                .iter()
+                .cloned()
+                .map(MetricsEvent::EvaluationResult),
+        );
         events.extend(
             self.suspensions
                 .iter()
@@ -273,6 +377,12 @@ impl AgentMetrics {
                 .iter()
                 .cloned()
                 .map(MetricsEvent::Delegation),
+        );
+        events.extend(
+            self.background_tasks
+                .iter()
+                .cloned()
+                .map(MetricsEvent::BackgroundTask),
         );
         events
     }
@@ -369,6 +479,8 @@ mod tests {
             operation: "execute_tool".to_string(),
             call_id: format!("call_{name}"),
             tool_type: "function".to_string(),
+            call_arguments: None,
+            call_result: None,
             error_type: if error {
                 Some("tool_error".to_string())
             } else {
@@ -387,6 +499,7 @@ mod tests {
         assert!(ctx.thread_id.is_empty());
         assert!(ctx.agent_id.is_empty());
         assert!(ctx.parent_run_id.is_none());
+        assert!(ctx.parent_tool_call_id.is_none());
     }
 
     #[test]
@@ -396,6 +509,7 @@ mod tests {
             thread_id: "thread-1".to_string(),
             agent_id: "agent-1".to_string(),
             parent_run_id: Some("parent-run-1".to_string()),
+            parent_tool_call_id: Some("call-1".to_string()),
         };
         let json = serde_json::to_string(&ctx).unwrap();
         let restored: SpanContext = serde_json::from_str(&json).unwrap();
@@ -403,6 +517,7 @@ mod tests {
         assert_eq!(restored.thread_id, "thread-1");
         assert_eq!(restored.agent_id, "agent-1");
         assert_eq!(restored.parent_run_id.as_deref(), Some("parent-run-1"));
+        assert_eq!(restored.parent_tool_call_id.as_deref(), Some("call-1"));
     }
 
     #[test]
@@ -413,6 +528,7 @@ mod tests {
         assert!(!json.contains("thread_id"));
         assert!(!json.contains("agent_id"));
         assert!(!json.contains("parent_run_id"));
+        assert!(!json.contains("parent_tool_call_id"));
     }
 
     // ---- AgentMetrics::default() ----
@@ -422,6 +538,7 @@ mod tests {
         let m = AgentMetrics::default();
         assert!(m.inferences.is_empty());
         assert!(m.tools.is_empty());
+        assert!(m.background_tasks.is_empty());
         assert_eq!(m.session_duration_ms, 0);
         assert_eq!(m.total_input_tokens(), 0);
         assert_eq!(m.total_output_tokens(), 0);
@@ -433,6 +550,23 @@ mod tests {
         assert_eq!(m.inference_count(), 0);
         assert_eq!(m.tool_count(), 0);
         assert_eq!(m.tool_failures(), 0);
+    }
+
+    #[test]
+    fn agent_metrics_deserializes_without_background_tasks() {
+        let json = r#"{
+            "inferences": [],
+            "tools": [],
+            "evaluations": [],
+            "suspensions": [],
+            "handoffs": [],
+            "delegations": [],
+            "session_duration_ms": 0
+        }"#;
+
+        let m: AgentMetrics = serde_json::from_str(json).unwrap();
+
+        assert!(m.background_tasks.is_empty());
     }
 
     // ---- total_input_tokens() ----
@@ -620,6 +754,7 @@ mod tests {
                 thread_id: "t1".into(),
                 agent_id: agent_id.to_string(),
                 parent_run_id: None,
+                parent_tool_call_id: None,
             },
             ..make_tool_span(name, error)
         }

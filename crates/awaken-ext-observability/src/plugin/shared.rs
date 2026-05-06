@@ -8,6 +8,7 @@ use tokio::sync::Mutex;
 
 use crate::metrics::AgentMetrics;
 use crate::metrics::SpanContext;
+use crate::metrics::ToolIoCapture;
 use crate::sink::MetricsSink;
 
 pub(crate) fn extract_token_counts(
@@ -54,10 +55,13 @@ pub(crate) struct Inner {
     pub(crate) top_p: Mutex<Option<f64>>,
     pub(crate) max_tokens: Mutex<Option<u32>>,
     pub(crate) stop_sequences: Mutex<Vec<String>>,
+    pub(crate) tool_io_capture: ToolIoCapture,
     pub(crate) inference_tracing_span: Mutex<Option<tracing::Span>>,
     pub(crate) tool_tracing_span: Mutex<HashMap<String, tracing::Span>>,
     /// Execution context captured from RunIdentity at RunStart.
     pub(crate) span_context: Mutex<SpanContext>,
+    /// Last exported background task status keyed by task id.
+    pub(crate) background_task_statuses: Mutex<HashMap<String, String>>,
     /// Step counter incremented per inference (0-based).
     pub(crate) step_counter: AtomicU32,
 }

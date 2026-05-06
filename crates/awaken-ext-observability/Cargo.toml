@@ -25,7 +25,7 @@ metrics = "0.24"
 # Optional OTel
 opentelemetry = { version = "0.28", optional = true }
 opentelemetry_sdk = { version = "0.28", optional = true }
-opentelemetry-otlp = { version = "0.28", optional = true, features = ["http-proto", "reqwest-client"] }
+opentelemetry-otlp = { version = "0.28", optional = true, default-features = false, features = ["http-proto", "reqwest-blocking-client"] }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["time"] }

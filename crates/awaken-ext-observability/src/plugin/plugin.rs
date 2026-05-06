@@ -7,12 +7,12 @@ use awaken_contract::model::Phase;
 use awaken_runtime::{Plugin, PluginDescriptor, PluginRegistrar};
 use tokio::sync::Mutex;
 
-use crate::metrics::{AgentMetrics, SpanContext};
+use crate::metrics::{AgentMetrics, SpanContext, ToolIoCapture};
 use crate::sink::MetricsSink;
 
 use super::hooks::{
-    AfterInferenceHook, AfterToolExecuteHook, BeforeInferenceHook, BeforeToolExecuteHook,
-    RunEndHook, RunStartHook,
+    AfterInferenceHook, AfterToolExecuteHook, BackgroundTaskObserveHook, BeforeInferenceHook,
+    BeforeToolExecuteHook, RunEndHook, RunStartHook,
 };
 use super::shared::Inner;
 
@@ -37,9 +37,11 @@ impl ObservabilityPlugin {
                 top_p: Mutex::new(None),
                 max_tokens: Mutex::new(None),
                 stop_sequences: Mutex::new(Vec::new()),
+                tool_io_capture: ToolIoCapture::default(),
                 inference_tracing_span: Mutex::new(None),
                 tool_tracing_span: Mutex::new(HashMap::new()),
                 span_context: Mutex::new(SpanContext::default()),
+                background_task_statuses: Mutex::new(HashMap::new()),
                 step_counter: AtomicU32::new(0),
             }),
         }
@@ -104,6 +106,14 @@ impl ObservabilityPlugin {
             .expect("no contention during builder") = seqs;
         self
     }
+
+    #[must_use]
+    pub fn with_tool_io_capture(mut self, capture: ToolIoCapture) -> Self {
+        Arc::get_mut(&mut self.inner)
+            .expect("no shared references during builder")
+            .tool_io_capture = capture;
+        self
+    }
 }
 
 /// Stable plugin ID for the observability extension.
@@ -120,6 +130,11 @@ impl Plugin for ObservabilityPlugin {
         let id = OBSERVABILITY_PLUGIN_ID;
         let s = Arc::clone(&self.inner);
         registrar.register_phase_hook(id, Phase::RunStart, RunStartHook(Arc::clone(&s)))?;
+        registrar.register_phase_hook(
+            id,
+            Phase::RunStart,
+            BackgroundTaskObserveHook(Arc::clone(&s)),
+        )?;
         registrar.register_phase_hook(
             id,
             Phase::BeforeInference,
@@ -140,7 +155,17 @@ impl Plugin for ObservabilityPlugin {
             Phase::AfterToolExecute,
             AfterToolExecuteHook(Arc::clone(&s)),
         )?;
+        registrar.register_phase_hook(
+            id,
+            Phase::RunEnd,
+            BackgroundTaskObserveHook(Arc::clone(&s)),
+        )?;
         registrar.register_phase_hook(id, Phase::RunEnd, RunEndHook(Arc::clone(&s)))?;
+        registrar.register_phase_hook(
+            id,
+            Phase::StepEnd,
+            BackgroundTaskObserveHook(Arc::clone(&s)),
+        )?;
         Ok(())
     }
 }

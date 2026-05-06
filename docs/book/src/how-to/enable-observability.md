@@ -144,10 +144,10 @@ impl MetricsSink for MySink {
 | `BeforeInference` | Inference start timestamp, model, provider |
 | `AfterInference` | Token usage, finish reasons, duration, cache tokens |
 | `BeforeToolExecute` | Tool call start timestamp |
-| `AfterToolExecute` | Tool duration, error status |
+| `AfterToolExecute` | Tool duration, error status; optional tool arguments/results when `ToolIoCapture` is enabled |
 | `RunEnd` | Session duration |
 
-OTel spans follow GenAI semantic conventions with attributes such as `gen_ai.system`, `gen_ai.request.model`, `gen_ai.usage.input_tokens`, and `gen_ai.usage.output_tokens`.
+OTel spans follow GenAI semantic conventions: the root agent span uses `gen_ai.operation.name=invoke_agent`; inference spans use attributes such as `gen_ai.provider.name`, `gen_ai.request.model`, `gen_ai.conversation.id`, `gen_ai.usage.input_tokens`, and `gen_ai.usage.output_tokens`; tool spans use `gen_ai.operation.name=execute_tool` plus `gen_ai.tool.*` attributes.
 
 ## Verify
 

@@ -59,6 +59,8 @@ fn sample_tool() -> ToolSpan {
         operation: "execute_tool".into(),
         call_id: "call-int".into(),
         tool_type: "function".into(),
+        call_arguments: None,
+        call_result: None,
         error_type: None,
         duration_ms: 1,
     }

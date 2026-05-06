@@ -22,8 +22,8 @@ mod otel_config;
 pub use batching::{BatchingConfig, BatchingSink};
 pub use composite::{CompositeSink, CompositeSinkBuilder};
 pub use metrics::{
-    AgentMetrics, DelegationSpan, GenAISpan, HandoffSpan, MetricsEvent, SpanContext,
-    SuspensionSpan, ToolSpan,
+    AgentMetrics, BackgroundTaskSpan, DelegationSpan, EvaluationResultEvent, GenAISpan,
+    HandoffSpan, MetricsEvent, SpanContext, SuspensionSpan, ToolIoCapture, ToolSpan,
 };
 pub use persistent::{PersistenceConfig, PersistentSink};
 pub use plugin::{OBSERVABILITY_PLUGIN_ID, ObservabilityPlugin};
@@ -148,6 +148,8 @@ mod tests {
             operation: "execute_tool".into(),
             call_id: call_id.into(),
             tool_type: "function".into(),
+            call_arguments: None,
+            call_result: None,
             error_type: None,
             duration_ms: 10,
         }

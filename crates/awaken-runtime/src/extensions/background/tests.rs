@@ -1204,6 +1204,10 @@ async fn nested_spawn_inherits_parent_task_id_from_ambient_task_context() {
                         let current = super::current_background_task_context()
                             .expect("plain background task should expose current task context");
                         assert_eq!(current.task_id, ctx.task_id);
+                        assert_eq!(
+                            super::current_background_task_id(),
+                            Some(ctx.task_id.clone())
+                        );
 
                         let child_id = manager
                             .spawn(

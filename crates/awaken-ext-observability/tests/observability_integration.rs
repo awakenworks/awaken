@@ -73,6 +73,8 @@ fn make_tool_span(name: &str, error: bool) -> ToolSpan {
         operation: "execute_tool".into(),
         call_id: format!("call_{name}"),
         tool_type: "function".into(),
+        call_arguments: None,
+        call_result: None,
         error_type: if error {
             Some("tool_error".into())
         } else {

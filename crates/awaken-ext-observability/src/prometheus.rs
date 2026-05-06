@@ -1,7 +1,8 @@
 use metrics::{counter, histogram};
 
 use crate::metrics::{
-    AgentMetrics, DelegationSpan, GenAISpan, HandoffSpan, MetricsEvent, SuspensionSpan, ToolSpan,
+    AgentMetrics, BackgroundTaskSpan, DelegationSpan, GenAISpan, HandoffSpan, MetricsEvent,
+    SuspensionSpan, ToolSpan,
 };
 use crate::sink::MetricsSink;
 
@@ -32,9 +33,11 @@ impl MetricsSink for PrometheusSink {
         match event {
             MetricsEvent::Inference(span) => record_inference(span),
             MetricsEvent::Tool(span) => record_tool(span),
+            MetricsEvent::EvaluationResult(_) => {}
             MetricsEvent::Suspension(span) => record_suspension(span),
             MetricsEvent::Handoff(span) => record_handoff(span),
             MetricsEvent::Delegation(span) => record_delegation(span),
+            MetricsEvent::BackgroundTask(span) => record_background_task(span),
         }
     }
 
@@ -144,6 +147,27 @@ pub(crate) fn record_delegation(span: &DelegationSpan) {
     }
 }
 
+pub(crate) fn record_background_task(span: &BackgroundTaskSpan) {
+    if !span.is_terminal() {
+        return;
+    }
+    counter!(
+        "awaken_background_tasks_total",
+        "task_type" => span.task_type.clone(),
+        "status" => span.status.clone()
+    )
+    .increment(1);
+    if let Some(completed_at_ms) = span.completed_at_ms {
+        let duration_ms = completed_at_ms.saturating_sub(span.created_at_ms);
+        histogram!(
+            "awaken_background_task_duration_seconds",
+            "task_type" => span.task_type.clone(),
+            "status" => span.status.clone()
+        )
+        .record(duration_ms as f64 / 1000.0);
+    }
+}
+
 pub(crate) fn record_run_end(metrics: &AgentMetrics) {
     histogram!("awaken_agent_session_duration_seconds")
         .record(metrics.session_duration_ms as f64 / 1000.0);
@@ -220,6 +244,8 @@ mod tests {
             operation: "execute_tool".to_string(),
             call_id: "call-1".to_string(),
             tool_type: "function".to_string(),
+            call_arguments: None,
+            call_result: None,
             error_type: None,
             duration_ms: 125,
         });
@@ -245,6 +271,8 @@ mod tests {
             operation: "execute_tool".to_string(),
             call_id: "call-sink".to_string(),
             tool_type: "function".to_string(),
+            call_arguments: None,
+            call_result: None,
             error_type: None,
             duration_ms: 7,
         }));

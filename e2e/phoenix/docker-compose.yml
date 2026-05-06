@@ -11,7 +11,7 @@
 # OTLP/gRPC:  http://localhost:4317            (when grpc protocol is preferred)
 services:
   phoenix:
-    image: arizephoenix/phoenix:version-7.10.0
+    image: arizephoenix/phoenix:version-11.34.0
     container_name: awaken-phoenix-e2e
     ports:
       - "6006:6006"

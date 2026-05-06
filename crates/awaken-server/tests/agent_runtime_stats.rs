@@ -96,6 +96,7 @@ fn ctx(agent: &str) -> SpanContext {
         thread_id: "t".into(),
         agent_id: agent.into(),
         parent_run_id: None,
+        parent_tool_call_id: None,
     }
 }
 
@@ -133,6 +134,8 @@ fn tool(agent: &str, name: &str) -> ToolSpan {
         operation: "execute_tool".into(),
         call_id: format!("call-{name}-{agent}"),
         tool_type: "function".into(),
+        call_arguments: None,
+        call_result: None,
         error_type: None,
         duration_ms: 5,
     }

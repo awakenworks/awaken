@@ -135,6 +135,8 @@ mod tests {
             operation: "execute_tool".to_string(),
             call_id: "c1".to_string(),
             tool_type: "function".to_string(),
+            call_arguments: None,
+            call_result: None,
             error_type: None,
             duration_ms: 50,
         }

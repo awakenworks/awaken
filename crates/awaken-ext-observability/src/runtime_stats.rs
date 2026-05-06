@@ -337,9 +337,11 @@ impl RuntimeStatsRegistry {
         let agent_id = match event {
             MetricsEvent::Inference(s) => s.context.agent_id.clone(),
             MetricsEvent::Tool(s) => s.context.agent_id.clone(),
+            MetricsEvent::EvaluationResult(s) => s.context.agent_id.clone(),
             MetricsEvent::Suspension(s) => s.context.agent_id.clone(),
             MetricsEvent::Handoff(s) => s.context.agent_id.clone(),
             MetricsEvent::Delegation(s) => s.context.agent_id.clone(),
+            MetricsEvent::BackgroundTask(s) => s.context.agent_id.clone(),
         };
         if agent_id.is_empty() {
             return;
@@ -363,9 +365,11 @@ impl RuntimeStatsRegistry {
         match event {
             MetricsEvent::Inference(span) => apply_inference(bucket, span),
             MetricsEvent::Tool(span) => apply_tool(bucket, span),
+            MetricsEvent::EvaluationResult(_) => {}
             MetricsEvent::Suspension(_) => bucket.suspensions += 1,
             MetricsEvent::Handoff(_) => bucket.handoffs += 1,
             MetricsEvent::Delegation(_) => bucket.delegations += 1,
+            MetricsEvent::BackgroundTask(_) => {}
         }
     }
 }
@@ -618,6 +622,7 @@ mod tests {
             thread_id: "t".into(),
             agent_id: agent.into(),
             parent_run_id: None,
+            parent_tool_call_id: None,
         }
     }
 
@@ -655,6 +660,8 @@ mod tests {
             operation: "execute_tool".into(),
             call_id: format!("call-{name}-{agent}"),
             tool_type: "function".into(),
+            call_arguments: None,
+            call_result: None,
             error_type: if err { Some("err".into()) } else { None },
             duration_ms,
         }
