@@ -129,8 +129,26 @@ const EMPTY_SERVER: McpServerRecord = {
 import type { McpServerStatusResponse } from "@/lib/config-api";
 type McpServerStatus = McpServerStatusResponse;
 
-function StatusBadge({ status }: { status: McpServerStatus | null | undefined }) {
+function statusErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function StatusBadge({
+  status,
+  error,
+}: {
+  status: McpServerStatus | null | undefined;
+  error?: unknown;
+}) {
   if (status === undefined) {
+    if (error) {
+      return (
+        <span
+          className="inline-block h-2 w-2 rounded-pill bg-state-blocked"
+          title={`Status probe failed: ${statusErrorMessage(error)}`}
+        />
+      );
+    }
     return (
       <span className="inline-block h-2 w-2 rounded-pill bg-fg-faint" title="Loading status..." />
     );
@@ -197,9 +215,13 @@ export function McpServersPage() {
   const statusIds = useMemo(() => crud.items.map((server) => server.id), [crud.items]);
   const statusQueries = useMcpStatusQueries(statusIds);
   const statuses: Record<string, McpServerStatus | null | undefined> = {};
+  const statusErrors: Record<string, unknown> = {};
   for (let i = 0; i < statusIds.length; i += 1) {
     const query = statusQueries[i];
-    statuses[statusIds[i]] = query?.isPending ? undefined : (query?.data ?? null);
+    statuses[statusIds[i]] = query?.isPending || query?.isError ? undefined : (query?.data ?? null);
+    if (query?.isError) {
+      statusErrors[statusIds[i]] = query.error;
+    }
   }
   const restartMutation = useMutation({
     mutationFn: async (id: string) => {
@@ -649,6 +671,7 @@ export function McpServersPage() {
             <LiveStatusSection
               draft={crud.draft}
               status={statuses[crud.draft.id]}
+              error={statusErrors[crud.draft.id]}
               restarting={restartingId === crud.draft.id}
               onRestart={() => void handleRestart(crud.draft!.id)}
             />
@@ -740,7 +763,7 @@ export function McpServersPage() {
                         {formatRelativeTime(server.updated_at)}
                       </td>
                       <td className="px-5 py-4">
-                        <StatusBadge status={statuses[server.id]} />
+                        <StatusBadge status={statuses[server.id]} error={statusErrors[server.id]} />
                       </td>
                       <td className="px-5 py-4">
                         <div className="flex gap-4">
@@ -784,16 +807,19 @@ export function McpServersPage() {
 function LiveStatusSection({
   draft,
   status,
+  error,
   restarting,
   onRestart,
 }: {
   draft: McpServerRecord;
   status: McpServerStatus | null | undefined;
+  error?: unknown;
   restarting: boolean;
   onRestart: () => void;
 }) {
-  const stateLabel =
-    status === undefined
+  const stateLabel = error
+    ? "Error"
+    : status === undefined
       ? "Loading…"
       : status === null
         ? "Unavailable"
@@ -801,8 +827,18 @@ function LiveStatusSection({
           ? "Connected"
           : "Disconnected";
   const stateTone: "success" | "neutral" | "error" =
-    status === undefined || status === null ? "neutral" : status.connected ? "success" : "error";
-  const handshake = status === undefined || status === null ? "—" : status.connected ? "ok" : "—";
+    error || (status !== undefined && status !== null && !status.connected)
+      ? "error"
+      : status === undefined || status === null
+        ? "neutral"
+        : "success";
+  const handshake = error
+    ? "error"
+    : status === undefined || status === null
+      ? "—"
+      : status.connected
+        ? "ok"
+        : "—";
   const toolCount = status?.tools?.length ?? 0;
   const restartHint = draft.restart_policy?.enabled
     ? `auto · max ${draft.restart_policy?.max_attempts ?? "∞"}`
@@ -812,7 +848,7 @@ function LiveStatusSection({
     <section className="mt-5 rounded-md border border-line bg-soft p-4">
       <div className="flex items-center justify-between gap-4">
         <div className="flex items-center gap-2">
-          <StatusBadge status={status} />
+          <StatusBadge status={status} error={error} />
           <h4 className="text-sm font-semibold text-fg-strong">Live Status</h4>
         </div>
         <button
@@ -860,6 +896,12 @@ function LiveStatusSection({
       {status?.last_error && (
         <p className="mt-3 rounded-md border border-tone-error/30 bg-tone-error/10 px-3 py-2 font-mono text-xs text-tone-error">
           {status.last_error}
+        </p>
+      )}
+
+      {Boolean(error) && (
+        <p className="mt-3 rounded-md border border-tone-error/30 bg-tone-error/10 px-3 py-2 font-mono text-xs text-tone-error">
+          {statusErrorMessage(error)}
         </p>
       )}
 

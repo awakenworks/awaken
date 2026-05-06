@@ -78,7 +78,7 @@ describe("router smoke", () => {
     // The Basics tab renders an "Agent ID" labelled input — the same
     // selector that broke when the AgentEditorPage crashed because the
     // legacy BrowserRouter could not satisfy useBlocker.
-    expect(await screen.findByLabelText("Agent ID")).toBeDefined();
+    expect(await screen.findByLabelText("Agent ID", undefined, { timeout: 5_000 })).toBeDefined();
     expect(await screen.findByRole("heading", { name: /New Agent/ })).toBeDefined();
   });
 

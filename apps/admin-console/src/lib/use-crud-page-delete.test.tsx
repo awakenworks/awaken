@@ -1,13 +1,15 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { cleanup, render, act, screen, fireEvent } from "@testing-library/react";
+import { cleanup, render, act, screen, fireEvent, waitFor } from "@testing-library/react";
 import React from "react";
+import { QueryClientProvider } from "@tanstack/react-query";
 
 import { ConfigApiError, configResourceApi } from "./api";
 import { useCrudPage } from "./use-crud-page";
 import { ConfirmDialogProvider } from "@/components/confirm-dialog";
 import { ToastProvider } from "@/components/toast-provider";
-import { withQueryClient } from "@/test/query";
+import { createAdminQueryClient } from "@/lib/query/client";
+import { qk } from "@/lib/query/keys";
 
 afterEach(() => {
   cleanup();
@@ -19,9 +21,17 @@ interface SimpleRecord {
 }
 
 // Wrapper component that exposes handleDelete via a button click
-function TestPage({ targetId, onDone }: { targetId: string; onDone?: () => void }) {
+function TestPage({
+  targetId,
+  namespace = "providers",
+  onDone,
+}: {
+  targetId: string;
+  namespace?: string;
+  onDone?: () => void;
+}) {
   const { handleDelete, items } = useCrudPage<SimpleRecord>({
-    namespace: "providers",
+    namespace,
     entityLabel: "provider",
   });
 
@@ -40,15 +50,21 @@ function TestPage({ targetId, onDone }: { targetId: string; onDone?: () => void 
   );
 }
 
-function renderTest(targetId: string, onDone?: () => void) {
+function renderTest(
+  targetId: string,
+  onDone?: () => void,
+  options: { client?: ReturnType<typeof createAdminQueryClient>; namespace?: string } = {},
+) {
+  const client = options.client ?? createAdminQueryClient();
   return render(
-    withQueryClient(
+    <QueryClientProvider client={client}>
       <ToastProvider>
         <ConfirmDialogProvider>
-          <TestPage targetId={targetId} onDone={onDone} />
+          <TestPage targetId={targetId} namespace={options.namespace} onDone={onDone} />
         </ConfirmDialogProvider>
-      </ToastProvider>,
-    ),
+      </ToastProvider>
+      ,
+    </QueryClientProvider>,
   );
 }
 
@@ -175,5 +191,48 @@ describe("useCrudPage handleDelete 409 → force flow", () => {
 
     // "Still delete?" should NOT appear
     expect(screen.queryByText(/Still delete\?/)).toBeNull();
+  });
+
+  it("removes deleted detail caches and invalidates dependent summaries", async () => {
+    const client = createAdminQueryClient();
+    client.setQueryData(qk.config.get("providers", "prov-d"), { id: "prov-d" });
+    client.setQueryData(qk.config.meta("providers", "prov-d"), {
+      source: { kind: "user" },
+      user_overrides: null,
+      hidden: false,
+      created_at: 0,
+      updated_at: 0,
+    });
+    client.setQueryData(qk.config.listMeta("providers"), []);
+    client.setQueryData(qk.navHealth(), {});
+    client.setQueryData(qk.dashboard("24h"), {});
+    client.setQueryData(qk.capabilities(), {});
+
+    const deleteStub = vi.spyOn(configResourceApi, "delete").mockResolvedValue(undefined);
+    vi.spyOn(configResourceApi, "list").mockResolvedValue({
+      namespace: "providers",
+      items: [{ id: "prov-d" }],
+      offset: 0,
+      limit: 100,
+    });
+
+    renderTest("prov-d", undefined, { client });
+
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("delete-btn"));
+    });
+    await act(async () => {
+      const dialog = screen.getByRole("dialog");
+      const confirmBtn = dialog.querySelector<HTMLButtonElement>("button:last-child");
+      fireEvent.click(confirmBtn!);
+    });
+
+    await waitFor(() => expect(deleteStub).toHaveBeenCalledWith("providers", "prov-d"));
+    expect(client.getQueryData(qk.config.get("providers", "prov-d"))).toBeUndefined();
+    expect(client.getQueryData(qk.config.meta("providers", "prov-d"))).toBeUndefined();
+    expect(client.getQueryState(qk.config.listMeta("providers"))?.isInvalidated).toBe(true);
+    expect(client.getQueryState(qk.navHealth())?.isInvalidated).toBe(true);
+    expect(client.getQueryState(qk.dashboard("24h"))?.isInvalidated).toBe(true);
+    expect(client.getQueryState(qk.capabilities())?.isInvalidated).toBe(true);
   });
 });

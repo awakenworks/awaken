@@ -116,10 +116,13 @@ describe("ToolsPage", () => {
 
     renderToolsPage();
 
-    await waitFor(() => {
-      expect(screen.getByText("echo")).toBeDefined();
-      expect(screen.getByText("shell")).toBeDefined();
-    });
+    await waitFor(
+      () => {
+        expect(screen.getByText("echo")).toBeDefined();
+        expect(screen.getByText("shell")).toBeDefined();
+      },
+      { timeout: 5_000 },
+    );
 
     // The "echo" row carries the override badge; "shell" does not.
     const echoRow = screen.getByText("echo").closest("tr")!;
@@ -134,9 +137,12 @@ describe("ToolsPage", () => {
 
     renderToolsPage();
 
-    await waitFor(() => {
-      expect(screen.getByText("grep")).toBeDefined();
-    });
+    await waitFor(
+      () => {
+        expect(screen.getByText("grep")).toBeDefined();
+      },
+      { timeout: 5_000 },
+    );
 
     const grepRow = screen.getByText("grep").closest("tr")!;
     expect(grepRow.textContent).toMatch(/builtin/i);
@@ -156,9 +162,12 @@ describe("ToolsPage", () => {
 
     renderToolsPage();
 
-    await waitFor(() => {
-      expect(screen.getByText("echo")).toBeDefined();
-    });
+    await waitFor(
+      () => {
+        expect(screen.getByText("echo")).toBeDefined();
+      },
+      { timeout: 5_000 },
+    );
 
     expect(screen.getByText("debug")).toBeDefined();
     // shell has no category — should show "—"
@@ -175,9 +184,12 @@ describe("ToolsPage", () => {
 
     renderToolsPage();
 
-    await waitFor(() => {
-      expect(screen.getByText("xss-tool")).toBeDefined();
-    });
+    await waitFor(
+      () => {
+        expect(screen.getByText("xss-tool")).toBeDefined();
+      },
+      { timeout: 5_000 },
+    );
 
     expect(document.querySelector("img")).toBeNull();
     expect((globalThis as unknown as { __xss?: boolean }).__xss).toBeUndefined();

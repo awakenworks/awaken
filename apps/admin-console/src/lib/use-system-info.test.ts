@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, renderHook, waitFor } from "@testing-library/react";
 import { createQueryClientWrapper } from "../test/query";
 import { useSystemInfo } from "./use-system-info";
+import { useSystemInfoQuery } from "./query/hooks/system";
 
 const fakeInfo = {
   version: "0.4.1-test",
@@ -67,7 +68,7 @@ describe("useSystemInfo", () => {
     expect(fetchSpy).toHaveBeenCalledTimes(1);
   });
 
-  it("returns null when the API call rejects (no throw)", async () => {
+  it("returns null when the optional API responds service unavailable", async () => {
     const fetchSpy = stubSystemInfoFetch(
       jsonResponse({ error: "unavailable" }, { ok: false, status: 503 }),
     );
@@ -79,5 +80,18 @@ describe("useSystemInfo", () => {
       expect(fetchSpy).toHaveBeenCalledTimes(1);
     });
     expect(result.current).toBeNull();
+  });
+
+  it("surfaces non-optional API failures through the query error state", async () => {
+    stubSystemInfoFetch(jsonResponse({ error: "forbidden" }, { ok: false, status: 403 }));
+    const wrapper = createQueryClientWrapper();
+
+    const { result } = renderHook(() => useSystemInfoQuery(), { wrapper });
+
+    await waitFor(() => {
+      expect(result.current.isError).toBe(true);
+    });
+    expect(result.current.error).toBeInstanceOf(Error);
+    expect(result.current.error?.message).toBe("forbidden");
   });
 });

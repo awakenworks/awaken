@@ -1,10 +1,17 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useParams, Link } from "react-router";
 import { useTranslation } from "react-i18next";
-import { configResourceApi, deriveSourceState, toolsApi, type ToolSpec } from "@/lib/api";
+import {
+  ConfigApiError,
+  configResourceApi,
+  deriveSourceState,
+  toolsApi,
+  type ToolSpec,
+} from "@/lib/api";
 import { useConfigMetaQuery, useConfigRecordQuery } from "@/lib/query/hooks/config";
 import { qk } from "@/lib/query/keys";
+import { invalidateConfigMutation } from "@/lib/query/invalidation";
 import { adminRoutes } from "@/lib/routes";
 
 const SOFT_WARN_LEN = 400;
@@ -15,6 +22,7 @@ export function ToolEditorPage() {
   const queryClient = useQueryClient();
 
   const [draft, setDraft] = useState<string>("");
+  const [mutationError, setMutationError] = useState<string | null>(null);
   const toolQuery = useConfigRecordQuery<ToolSpec>("tools", id);
   const metaQuery = useConfigMetaQuery("tools", id);
 
@@ -33,8 +41,8 @@ export function ToolEditorPage() {
     onSuccess: ({ next, nextMeta }) => {
       queryClient.setQueryData(qk.config.get("tools", id), next);
       queryClient.setQueryData(qk.config.meta("tools", id), nextMeta);
-      void queryClient.invalidateQueries({ queryKey: qk.config.list("tools") });
-      void queryClient.invalidateQueries({ queryKey: qk.config.listMeta("tools") });
+      invalidateConfigMutation(queryClient, "tools", id);
+      setMutationError(null);
     },
   });
 
@@ -47,8 +55,8 @@ export function ToolEditorPage() {
     onSuccess: ({ next, nextMeta }) => {
       queryClient.setQueryData(qk.config.get("tools", id), next);
       queryClient.setQueryData(qk.config.meta("tools", id), nextMeta);
-      void queryClient.invalidateQueries({ queryKey: qk.config.list("tools") });
-      void queryClient.invalidateQueries({ queryKey: qk.config.listMeta("tools") });
+      invalidateConfigMutation(queryClient, "tools", id);
+      setMutationError(null);
     },
   });
 
@@ -56,18 +64,46 @@ export function ToolEditorPage() {
   const meta = metaQuery.data ?? null;
   const saving = patchMutation.isPending || clearMutation.isPending;
 
-  if (!builtin || !meta) return <p className="p-6 text-fg-soft">Loading…</p>;
+  if (toolQuery.error) {
+    return (
+      <ToolEditorError>
+        {toolQuery.error instanceof ConfigApiError && toolQuery.error.status === 404
+          ? `Tool "${id}" not found.`
+          : `Tool unavailable: ${toErrorMessage(toolQuery.error)}`}
+      </ToolEditorError>
+    );
+  }
+  if (metaQuery.error) {
+    return (
+      <ToolEditorError>
+        Tool metadata unavailable: {toErrorMessage(metaQuery.error)}
+      </ToolEditorError>
+    );
+  }
+  if (toolQuery.isPending || metaQuery.isPending || !builtin || !meta) {
+    return <p className="p-6 text-fg-soft">Loading…</p>;
+  }
 
   const dirty = draft !== builtin.description;
   const overLength = draft.length >= SOFT_WARN_LEN;
 
   async function onSave() {
     if (!dirty) return;
-    await patchMutation.mutateAsync(draft);
+    try {
+      setMutationError(null);
+      await patchMutation.mutateAsync(draft);
+    } catch (error) {
+      setMutationError(`Save failed: ${toErrorMessage(error)}`);
+    }
   }
 
   async function onRevert() {
-    await clearMutation.mutateAsync();
+    try {
+      setMutationError(null);
+      await clearMutation.mutateAsync();
+    } catch (error) {
+      setMutationError(`Revert failed: ${toErrorMessage(error)}`);
+    }
   }
 
   return (
@@ -94,7 +130,10 @@ export function ToolEditorPage() {
           <textarea
             className="mt-2 w-full min-h-[140px] rounded border border-line p-2 font-mono text-sm"
             value={draft}
-            onChange={(e) => setDraft(e.target.value)}
+            onChange={(e) => {
+              setDraft(e.target.value);
+              setMutationError(null);
+            }}
             disabled={saving}
           />
           <p className="mt-1 text-[11px] text-fg-faint">{draft.length} chars</p>
@@ -109,11 +148,17 @@ export function ToolEditorPage() {
         </div>
       </div>
 
+      {mutationError && (
+        <div className="rounded-md border border-tone-error/30 bg-tone-error/10 px-3 py-2 text-sm text-tone-error">
+          {mutationError}
+        </div>
+      )}
+
       <footer className="flex gap-2">
         <button
           type="button"
           className="rounded bg-fg-strong px-3 py-1.5 text-sm text-canvas disabled:opacity-50"
-          onClick={onSave}
+          onClick={() => void onSave()}
           disabled={!dirty || saving}
         >
           {t("common.save", { defaultValue: "Save" })}
@@ -121,7 +166,7 @@ export function ToolEditorPage() {
         <button
           type="button"
           className="rounded border border-line px-3 py-1.5 text-sm disabled:opacity-50"
-          onClick={onRevert}
+          onClick={() => void onRevert()}
           disabled={saving || deriveSourceState(meta) !== "customized"}
         >
           {t("tools.editor.revert", { defaultValue: "Revert to default" })}
@@ -129,4 +174,18 @@ export function ToolEditorPage() {
       </footer>
     </section>
   );
+}
+
+function ToolEditorError({ children }: { children: ReactNode }) {
+  return (
+    <div className="p-6">
+      <div className="rounded-md border border-tone-error/30 bg-tone-error/10 p-4 text-sm text-tone-error">
+        {children}
+      </div>
+    </div>
+  );
+}
+
+function toErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }

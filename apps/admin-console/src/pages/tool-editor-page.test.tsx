@@ -35,17 +35,27 @@ function jsonResponse(data: unknown) {
   };
 }
 
-function stubToolFetch() {
+function errorResponse(status: number, error: string) {
+  return {
+    ok: false,
+    status,
+    text: async () => JSON.stringify({ error }),
+  };
+}
+
+function stubToolFetch(options: { metaResponse?: unknown; patchResponse?: unknown } = {}) {
   const fetchSpy = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
     const href = hrefOf(url);
     const method = init?.method?.toUpperCase() ?? "GET";
     if (href.includes("/v1/config/tools/echo/overrides") && method === "PATCH") {
+      if (options.patchResponse) return options.patchResponse;
       return jsonResponse({ ...tool, description: "patched" });
     }
     if (href.includes("/v1/config/tools/echo/overrides") && method === "DELETE") {
       return jsonResponse(tool);
     }
     if (href.endsWith("/v1/config/tools/echo/meta")) {
+      if (options.metaResponse) return options.metaResponse;
       return jsonResponse(meta);
     }
     if (href.endsWith("/v1/config/tools/echo")) {
@@ -127,5 +137,23 @@ describe("ToolEditorPage", () => {
     const textarea = await waitFor(() => screen.getByDisplayValue("Stock description"));
     fireEvent.change(textarea, { target: { value: "x".repeat(401) } });
     expect(screen.getByText(/dilute|长描述|attention/i)).toBeDefined();
+  });
+
+  it("shows metadata load errors instead of staying in loading state", async () => {
+    stubToolFetch({ metaResponse: errorResponse(403, "metadata forbidden") });
+    renderEditor();
+
+    expect(await screen.findByText(/Tool metadata unavailable: metadata forbidden/i)).toBeDefined();
+    expect(screen.queryByText("Loading…")).toBeNull();
+  });
+
+  it("shows mutation errors when saving overrides fails", async () => {
+    stubToolFetch({ patchResponse: errorResponse(500, "patch failed") });
+    renderEditor();
+    const textarea = await waitFor(() => screen.getByDisplayValue("Stock description"));
+    fireEvent.change(textarea, { target: { value: "Custom description" } });
+    fireEvent.click(screen.getByRole("button", { name: /save/i }));
+
+    expect(await screen.findByText(/Save failed: patch failed/i)).toBeDefined();
   });
 });

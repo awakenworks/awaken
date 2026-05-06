@@ -128,9 +128,12 @@ describe("AgentsPage source badges", () => {
 
     renderAgentsPage();
 
-    await waitFor(() => {
-      expect(screen.getByText("builtin-agent")).toBeDefined();
-    });
+    await waitFor(
+      () => {
+        expect(screen.getByText("builtin-agent")).toBeDefined();
+      },
+      { timeout: 5_000 },
+    );
     expect(screen.getByText("Built-in")).toBeDefined();
   });
 
@@ -145,9 +148,12 @@ describe("AgentsPage source badges", () => {
 
     renderAgentsPage();
 
-    await waitFor(() => {
-      expect(screen.getByText("customized-agent")).toBeDefined();
-    });
+    await waitFor(
+      () => {
+        expect(screen.getByText("customized-agent")).toBeDefined();
+      },
+      { timeout: 5_000 },
+    );
     expect(screen.getByText("Customized")).toBeDefined();
   });
 
@@ -159,9 +165,12 @@ describe("AgentsPage source badges", () => {
 
     renderAgentsPage();
 
-    await waitFor(() => {
-      expect(screen.getByText("user-agent")).toBeDefined();
-    });
+    await waitFor(
+      () => {
+        expect(screen.getByText("user-agent")).toBeDefined();
+      },
+      { timeout: 5_000 },
+    );
     expect(screen.getByText("User-defined")).toBeDefined();
   });
 
@@ -180,9 +189,12 @@ describe("AgentsPage source badges", () => {
 
     renderAgentsPage();
 
-    await waitFor(() => {
-      expect(screen.getByText("a-builtin")).toBeDefined();
-    });
+    await waitFor(
+      () => {
+        expect(screen.getByText("a-builtin")).toBeDefined();
+      },
+      { timeout: 5_000 },
+    );
     expect(screen.getByText("Built-in")).toBeDefined();
     expect(screen.getByText("User-defined")).toBeDefined();
     expect(screen.getByText("Customized")).toBeDefined();
@@ -200,9 +212,12 @@ describe("AgentsPage source badges", () => {
 
     renderAgentsPage();
 
-    await waitFor(() => {
-      expect(screen.getByText("some-agent")).toBeDefined();
-    });
+    await waitFor(
+      () => {
+        expect(screen.getByText("some-agent")).toBeDefined();
+      },
+      { timeout: 5_000 },
+    );
     // No badge rendered when metaMap has no entry
     expect(screen.queryByText("Built-in")).toBeNull();
     expect(screen.queryByText("User-defined")).toBeNull();

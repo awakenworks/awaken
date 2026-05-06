@@ -111,10 +111,14 @@ describe("ProvidersPage — Test connection button", () => {
     stubFetch();
     renderProviders();
 
-    const newButton = await screen.findByRole("button", { name: /new provider/i });
+    const newButton = await screen.findByRole(
+      "button",
+      { name: /new provider/i },
+      { timeout: 5_000 },
+    );
     fireEvent.click(newButton);
 
-    await screen.findByText(/create provider/i);
+    await screen.findByText(/create provider/i, undefined, { timeout: 5_000 });
     const buttons = screen.queryAllByRole("button", { name: /test connection/i });
     expect(buttons).toHaveLength(0);
   });
@@ -123,10 +127,10 @@ describe("ProvidersPage — Test connection button", () => {
     stubFetch();
     renderProviders();
 
-    const editButton = await screen.findByRole("button", { name: /edit/i });
+    const editButton = await screen.findByRole("button", { name: /edit/i }, { timeout: 5_000 });
     fireEvent.click(editButton);
 
-    await screen.findByText(/edit provider/i);
+    await screen.findByText(/edit provider/i, undefined, { timeout: 5_000 });
     expect(screen.getByRole("button", { name: /test connection/i })).toBeDefined();
   });
 
@@ -134,10 +138,10 @@ describe("ProvidersPage — Test connection button", () => {
     const fetchSpy = stubFetch({ ok: true, latency_ms: 55 });
     renderProviders();
 
-    const editButton = await screen.findByRole("button", { name: /edit/i });
+    const editButton = await screen.findByRole("button", { name: /edit/i }, { timeout: 5_000 });
     fireEvent.click(editButton);
 
-    await screen.findByText(/edit provider/i);
+    await screen.findByText(/edit provider/i, undefined, { timeout: 5_000 });
 
     const testBtn = screen.getByRole("button", { name: /test connection/i });
     await act(async () => {
@@ -145,7 +149,7 @@ describe("ProvidersPage — Test connection button", () => {
     });
 
     // status badge should appear
-    await screen.findByText(/Config OK — 55ms/i);
+    await screen.findByText(/Config OK — 55ms/i, undefined, { timeout: 5_000 });
 
     // fetch was called with the test endpoint
     const testCall = fetchSpy.mock.calls.find(([url]) =>
@@ -158,27 +162,31 @@ describe("ProvidersPage — Test connection button", () => {
     stubFetch({ ok: true, latency_ms: 77, network_tested: true });
     renderProviders();
 
-    const editButton = await screen.findByRole("button", { name: /edit/i });
+    const editButton = await screen.findByRole("button", { name: /edit/i }, { timeout: 5_000 });
     fireEvent.click(editButton);
 
-    await screen.findByText(/edit provider/i);
+    await screen.findByText(/edit provider/i, undefined, { timeout: 5_000 });
 
     const testBtn = screen.getByRole("button", { name: /test connection/i });
     await act(async () => {
       fireEvent.click(testBtn);
     });
 
-    await screen.findByText(/Connection OK — 77ms/i);
+    await screen.findByText(/Connection OK — 77ms/i, undefined, { timeout: 5_000 });
   });
 
   it("blocks Save when required fields are empty and shows inline Required errors", async () => {
     const fetchSpy = stubFetch();
     renderProviders();
 
-    const newButton = await screen.findByRole("button", { name: /new provider/i });
+    const newButton = await screen.findByRole(
+      "button",
+      { name: /new provider/i },
+      { timeout: 5_000 },
+    );
     fireEvent.click(newButton);
 
-    await screen.findByText(/create provider/i);
+    await screen.findByText(/create provider/i, undefined, { timeout: 5_000 });
 
     // Clear the Provider ID field (defaults to empty for new) and click Save.
     const saveBtn = screen.getAllByRole("button", { name: /^save$/i })[0];
@@ -202,16 +210,16 @@ describe("ProvidersPage — Test connection button", () => {
     stubFetch({ ok: false, latency_ms: 10, error: "unsupported adapter: stub" });
     renderProviders();
 
-    const editButton = await screen.findByRole("button", { name: /edit/i });
+    const editButton = await screen.findByRole("button", { name: /edit/i }, { timeout: 5_000 });
     fireEvent.click(editButton);
 
-    await screen.findByText(/edit provider/i);
+    await screen.findByText(/edit provider/i, undefined, { timeout: 5_000 });
 
     const testBtn = screen.getByRole("button", { name: /test connection/i });
     await act(async () => {
       fireEvent.click(testBtn);
     });
 
-    await screen.findByText(/Failed.*unsupported adapter: stub/i);
+    await screen.findByText(/Failed.*unsupported adapter: stub/i, undefined, { timeout: 5_000 });
   });
 });

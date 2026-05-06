@@ -6,6 +6,7 @@ import {
   type Capabilities,
   type ConfigSourceState,
   type RecordMeta,
+  ConfigApiError,
   configApi,
   deriveSourceState,
 } from "@/lib/config-api";
@@ -35,6 +36,7 @@ import { useCapabilitiesQuery } from "@/lib/query/hooks/capabilities";
 import { useConfigMetaQuery, useConfigRecordQuery } from "@/lib/query/hooks/config";
 import { useAuditLogInfiniteQuery } from "@/lib/query/hooks/audit";
 import { qk } from "@/lib/query/keys";
+import { invalidateConfigMutation } from "@/lib/query/invalidation";
 
 const EMPTY_AGENT: AgentSpec = {
   id: "",
@@ -59,6 +61,17 @@ const PATCHABLE_FIELDS: Array<keyof AgentSpec> = [
   "delegates",
   "reasoning_effort",
 ];
+
+async function getOptionalAgentMeta(id: string): Promise<RecordMeta | null> {
+  try {
+    return await configApi.getMeta("agents", id);
+  } catch (error) {
+    if (error instanceof ConfigApiError && error.status === 404) {
+      return null;
+    }
+    throw error;
+  }
+}
 
 function diffPatchableFields(current: AgentSpec, original: AgentSpec): Record<string, unknown> {
   const patch: Record<string, unknown> = {};
@@ -113,8 +126,20 @@ export function AgentEditorPage() {
     optional: true,
   });
   const capabilities = capabilitiesQuery.data ?? null;
-  const loading =
-    capabilitiesQuery.isPending || (!isNew && (agentQuery.isPending || agentMetaQuery.isPending));
+  const loading = capabilitiesQuery.isPending || (!isNew && agentQuery.isPending);
+  const agentError =
+    !isNew && agentQuery.error
+      ? agentQuery.error instanceof Error
+        ? agentQuery.error.message
+        : String(agentQuery.error)
+      : null;
+  const agentMetaError =
+    !isNew && agentMetaQuery.error
+      ? agentMetaQuery.error instanceof Error
+        ? agentMetaQuery.error.message
+        : String(agentMetaQuery.error)
+      : null;
+  const saveDisabled = saving || Boolean(agentMetaError || (!isNew && agentMetaQuery.isPending));
   const initializedAgentIdRef = useRef<string | null>(null);
 
   const isDirty = useMemo(() => {
@@ -154,19 +179,30 @@ export function AgentEditorPage() {
   }, [agentQuery.error, toast]);
 
   useEffect(() => {
+    if (agentMetaError) {
+      toast.error(`Agent metadata unavailable: ${agentMetaError}`);
+    }
+  }, [agentMetaError, toast]);
+
+  useEffect(() => {
     if (isNew || !id) {
       initializedAgentIdRef.current = "new";
       return;
     }
-    if (!agentQuery.data || agentMetaQuery.isPending) return;
+    if (!agentQuery.data) return;
     if (initializedAgentIdRef.current === id) return;
     const hydrated = hydrateAgentSpec(agentQuery.data);
     setSpec(hydrated);
     setSavedSpec(hydrated);
     setOriginalSpec(hydrated);
-    setAgentMeta(agentMetaQuery.data ?? null);
     initializedAgentIdRef.current = id;
-  }, [agentMetaQuery.data, agentMetaQuery.isPending, agentQuery.data, id, isNew]);
+  }, [agentQuery.data, id, isNew]);
+
+  useEffect(() => {
+    if (isNew || !id) return;
+    if (agentMetaQuery.isPending) return;
+    setAgentMeta(agentMetaQuery.isError ? null : (agentMetaQuery.data ?? null));
+  }, [agentMetaQuery.data, agentMetaQuery.isError, agentMetaQuery.isPending, id, isNew]);
 
   function validateSpec(current: AgentSpec): typeof errors {
     const next: typeof errors = {};
@@ -180,6 +216,15 @@ export function AgentEditorPage() {
   }
 
   async function handleSave() {
+    if (!isNew && agentMetaQuery.isPending) {
+      toast.error("Agent metadata is still loading.");
+      return;
+    }
+    if (agentMetaError) {
+      toast.error(`Agent metadata unavailable: ${agentMetaError}`);
+      return;
+    }
+
     const validationErrors = validateSpec(spec);
     setErrors(validationErrors);
     if (Object.keys(validationErrors).length > 0) {
@@ -200,8 +245,7 @@ export function AgentEditorPage() {
         setSavedSpec(created);
         setOriginalSpec(created);
         queryClient.setQueryData(qk.config.get("agents", created.id), created);
-        void queryClient.invalidateQueries({ queryKey: qk.config.list("agents") });
-        void queryClient.invalidateQueries({ queryKey: qk.navHealth() });
+        invalidateConfigMutation(queryClient, "agents", created.id);
         toast.success(`Agent "${created.id}" created`);
         navigate(adminRoutes.agent(created.id), { replace: true });
       } else if (sourceState === "builtin" || sourceState === "customized") {
@@ -216,7 +260,7 @@ export function AgentEditorPage() {
           // Refresh spec and meta so the badge updates correctly.
           const [nextSpec, nextMeta] = await Promise.all([
             configApi.get<AgentSpec>("agents", spec.id),
-            configApi.getMeta("agents", spec.id).catch(() => null),
+            getOptionalAgentMeta(spec.id),
           ]);
           const hydrated = hydrateAgentSpec(nextSpec);
           setSpec(hydrated);
@@ -225,8 +269,7 @@ export function AgentEditorPage() {
           setAgentMeta(nextMeta);
           queryClient.setQueryData(qk.config.get("agents", spec.id), hydrated);
           queryClient.setQueryData(qk.config.meta("agents", spec.id), nextMeta);
-          void queryClient.invalidateQueries({ queryKey: qk.config.list("agents") });
-          void queryClient.invalidateQueries({ queryKey: qk.config.listMeta("agents") });
+          invalidateConfigMutation(queryClient, "agents", spec.id);
           toast.success(`Agent "${spec.id}" saved`);
           setHistoryRefreshKey((k) => k + 1);
         }
@@ -240,7 +283,7 @@ export function AgentEditorPage() {
         setSavedSpec(updated);
         setOriginalSpec(updated);
         queryClient.setQueryData(qk.config.get("agents", updated.id), updated);
-        void queryClient.invalidateQueries({ queryKey: qk.config.list("agents") });
+        invalidateConfigMutation(queryClient, "agents", updated.id);
         toast.success(`Agent "${updated.id}" saved`);
         setHistoryRefreshKey((k) => k + 1);
       }
@@ -265,7 +308,7 @@ export function AgentEditorPage() {
       // Re-fetch spec and meta after reset.
       const [nextSpec, nextMeta] = await Promise.all([
         configApi.get<AgentSpec>("agents", id),
-        configApi.getMeta("agents", id).catch(() => null),
+        getOptionalAgentMeta(id),
       ]);
       const hydrated = hydrateAgentSpec(nextSpec);
       setSpec(hydrated);
@@ -274,8 +317,7 @@ export function AgentEditorPage() {
       setAgentMeta(nextMeta);
       queryClient.setQueryData(qk.config.get("agents", id), hydrated);
       queryClient.setQueryData(qk.config.meta("agents", id), nextMeta);
-      void queryClient.invalidateQueries({ queryKey: qk.config.list("agents") });
-      void queryClient.invalidateQueries({ queryKey: qk.config.listMeta("agents") });
+      invalidateConfigMutation(queryClient, "agents", id);
       toast.success(`Agent "${id}" overrides cleared`);
     } catch (err) {
       toast.error(err instanceof Error ? err.message : String(err));
@@ -288,7 +330,7 @@ export function AgentEditorPage() {
       await configApi.clearAgentOverrideField(id, field);
       const [nextSpec, nextMeta] = await Promise.all([
         configApi.get<AgentSpec>("agents", id),
-        configApi.getMeta("agents", id).catch(() => null),
+        getOptionalAgentMeta(id),
       ]);
       const hydrated = hydrateAgentSpec(nextSpec);
       setSpec(hydrated);
@@ -297,8 +339,7 @@ export function AgentEditorPage() {
       setAgentMeta(nextMeta);
       queryClient.setQueryData(qk.config.get("agents", id), hydrated);
       queryClient.setQueryData(qk.config.meta("agents", id), nextMeta);
-      void queryClient.invalidateQueries({ queryKey: qk.config.list("agents") });
-      void queryClient.invalidateQueries({ queryKey: qk.config.listMeta("agents") });
+      invalidateConfigMutation(queryClient, "agents", id);
       toast.success(t("agents.resetOverrideFieldDone", { field }));
       setHistoryRefreshKey((k) => k + 1);
     } catch (err) {
@@ -437,6 +478,15 @@ export function AgentEditorPage() {
       </div>
     );
   }
+  if (agentError) {
+    return (
+      <div className="mx-auto max-w-6xl p-6 md:p-8">
+        <div className="rounded-md border border-tone-error/30 bg-tone-error/10 p-4 text-sm text-tone-error">
+          Agent unavailable: {agentError}
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="mx-auto max-w-[96rem]">
@@ -445,13 +495,19 @@ export function AgentEditorPage() {
         agentId={spec.id}
         spec={spec}
         isDirty={isDirty}
-        saving={saving}
+        saveDisabled={saveDisabled}
         onSave={() => void handleSave()}
         activeTab={activeTab}
         onTabChange={setActiveTab}
         sourceState={sourceState}
         onResetOverrides={() => void handleResetOverrides()}
       />
+
+      {agentMetaError && (
+        <div className="mx-6 mt-4 rounded-md border border-tone-error/30 bg-tone-error/10 px-4 py-3 text-sm text-tone-error md:mx-8">
+          Agent metadata unavailable: {agentMetaError}
+        </div>
+      )}
 
       <div className="grid gap-6 px-6 py-6 md:px-8 xl:grid-cols-[minmax(0,1fr),24rem]">
         <div className="space-y-6">
@@ -510,7 +566,7 @@ export function AgentEditorPage() {
                     setSavedSpec(updated);
                     setOriginalSpec(updated);
                     queryClient.setQueryData(qk.config.get("agents", updated.id), updated);
-                    void queryClient.invalidateQueries({ queryKey: qk.config.list("agents") });
+                    invalidateConfigMutation(queryClient, "agents", updated.id);
                     setHistoryRefreshKey((k) => k + 1);
                   }}
                 />
@@ -526,6 +582,7 @@ export function AgentEditorPage() {
         isDirty={isDirty}
         isNew={isNew}
         saving={saving}
+        saveDisabled={saveDisabled}
         spec={spec}
         savedSpec={savedSpec}
         onSave={() => void handleSave()}
@@ -538,6 +595,7 @@ function EditorSaveBar({
   isDirty,
   isNew,
   saving,
+  saveDisabled,
   spec,
   savedSpec,
   onSave,
@@ -545,6 +603,7 @@ function EditorSaveBar({
   isDirty: boolean;
   isNew: boolean;
   saving: boolean;
+  saveDisabled: boolean;
   spec: AgentSpec;
   savedSpec: AgentSpec | null;
   onSave: () => void;
@@ -602,7 +661,7 @@ function EditorSaveBar({
             <button
               type="button"
               onClick={onSave}
-              disabled={saving || validating}
+              disabled={saveDisabled || validating}
               className="inline-flex h-9 items-center rounded-md bg-accent px-4 text-sm font-medium text-accent-text transition-colors hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
             >
               {saving ? t("editor.saving") : t("editor.save")}
@@ -775,7 +834,7 @@ function StickyEditorHeader({
   agentId,
   spec,
   isDirty,
-  saving,
+  saveDisabled,
   onSave,
   activeTab,
   onTabChange,
@@ -786,7 +845,7 @@ function StickyEditorHeader({
   agentId: string;
   spec: AgentSpec;
   isDirty: boolean;
-  saving: boolean;
+  saveDisabled: boolean;
   onSave: () => void;
   activeTab: AgentEditorTabId;
   onTabChange: (next: AgentEditorTabId) => void;
@@ -880,7 +939,7 @@ function StickyEditorHeader({
           <button
             type="button"
             onClick={onSave}
-            disabled={saving}
+            disabled={saveDisabled}
             className="rounded-xl bg-accent px-4 py-2 text-sm font-medium text-accent-text transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
           >
             {t("editor.save")}

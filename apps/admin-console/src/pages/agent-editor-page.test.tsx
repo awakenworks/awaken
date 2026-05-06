@@ -29,6 +29,54 @@ function stubCapabilitiesFetch() {
   return fetchSpy;
 }
 
+function jsonResponse(data: unknown, init?: { ok?: boolean; status?: number }) {
+  return {
+    ok: init?.ok ?? true,
+    status: init?.status ?? 200,
+    text: async () => JSON.stringify(data),
+  };
+}
+
+function agentSpec(id: string) {
+  return {
+    id,
+    model_id: "model-a",
+    system_prompt: "Loaded prompt",
+    max_rounds: 16,
+    max_continuation_retries: 2,
+    plugin_ids: [],
+    sections: {},
+    delegates: [],
+  };
+}
+
+function stubExistingAgentWithMetaError() {
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (url: string | URL | Request) => {
+      const href = typeof url === "string" ? url : url instanceof URL ? url.href : url.url;
+      if (href.includes("/v1/capabilities")) {
+        return jsonResponse({
+          agents: [],
+          tools: [],
+          plugins: [],
+          skills: [],
+          models: [],
+          providers: [],
+          namespaces: [],
+        });
+      }
+      if (href.endsWith("/v1/config/agents/agent-a/meta")) {
+        return jsonResponse({ error: "metadata forbidden" }, { ok: false, status: 403 });
+      }
+      if (href.endsWith("/v1/config/agents/agent-a")) {
+        return jsonResponse(agentSpec("agent-a"));
+      }
+      return jsonResponse({ error: "not found" }, { ok: false, status: 404 });
+    }),
+  );
+}
+
 function renderEditorRoute(path = "/agents/new") {
   const memRouter = createMemoryRouter(createRoutesFromElements(appRoutes()), {
     initialEntries: [path],
@@ -215,6 +263,27 @@ describe("agent editor save validation", () => {
       return method === "POST" && String(url).includes("/v1/config/agents");
     });
     expect(postCall).toBeUndefined();
+  });
+
+  it("hydrates existing agent data when metadata loading fails", async () => {
+    stubExistingAgentWithMetaError();
+    renderEditorRoute("/agents/agent-a");
+
+    const idInput = await screen.findByLabelText("Agent ID", undefined, { timeout: 5_000 });
+    await waitFor(() => {
+      expect((idInput as HTMLInputElement).value).toBe("agent-a");
+      expect((screen.getByLabelText("System prompt") as HTMLTextAreaElement).value).toBe(
+        "Loaded prompt",
+      );
+    });
+    expect(
+      await screen.findAllByText(/Agent metadata unavailable: metadata forbidden/i),
+    ).not.toHaveLength(0);
+    expect(
+      screen
+        .getAllByRole("button", { name: /^save$/i })
+        .every((button) => button.hasAttribute("disabled")),
+    ).toBe(true);
   });
 });
 

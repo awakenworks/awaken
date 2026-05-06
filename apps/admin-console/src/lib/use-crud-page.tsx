@@ -5,8 +5,9 @@ import { useToast } from "@/components/toast-provider";
 import { useConfirmDialog } from "@/components/confirm-dialog";
 import { UsedByList } from "@/components/used-by-list";
 import { qk } from "@/lib/query/keys";
+import { invalidateConfigMutation, removeConfigResourceQueries } from "@/lib/query/invalidation";
 
-export interface CrudPageOptions<TRecord extends { id: string }, TSpec = TRecord> {
+interface CrudPageBaseOptions<TRecord extends { id: string }, TSpec = TRecord> {
   /** API namespace used for list/create/update/delete calls. */
   namespace: string;
   /** Confirmation label shown in the delete dialog (e.g. "model", "provider"). */
@@ -16,12 +17,28 @@ export interface CrudPageOptions<TRecord extends { id: string }, TSpec = TRecord
    * When omitted the draft is sent as-is (cast to `TSpec`).
    */
   prepareSave?: (draft: TRecord, isEditing: boolean) => TSpec;
+}
+
+interface CrudPageAuxiliaryOptions {
   /**
    * Additional async loaders that run in parallel with the main list fetch.
    * Results are returned via the `auxiliaryData` field on the hook return value.
    */
-  auxiliaryLoaders?: () => Promise<unknown[]>;
+  auxiliaryLoaders: () => Promise<unknown[]>;
+  /** Stable query-key fragment that identifies this auxiliary loader set. */
+  auxiliaryQueryKey: readonly unknown[];
 }
+
+interface CrudPageWithoutAuxiliaryOptions {
+  auxiliaryLoaders?: undefined;
+  auxiliaryQueryKey?: undefined;
+}
+
+export type CrudPageOptions<TRecord extends { id: string }, TSpec = TRecord> = CrudPageBaseOptions<
+  TRecord,
+  TSpec
+> &
+  (CrudPageAuxiliaryOptions | CrudPageWithoutAuxiliaryOptions);
 
 export interface CrudPageState<TRecord extends { id: string }> {
   items: TRecord[];
@@ -99,11 +116,17 @@ export async function loadCrudPageData<TRecord extends { id: string }>(
 export function useCrudPage<TRecord extends { id: string }, TSpec = TRecord>(
   options: CrudPageOptions<TRecord, TSpec>,
 ): CrudPageState<TRecord> {
-  const { namespace, entityLabel, prepareSave, auxiliaryLoaders } = options;
+  const { namespace, entityLabel, prepareSave, auxiliaryLoaders, auxiliaryQueryKey } = options;
   const toast = useToast();
   const confirmDialog = useConfirmDialog();
   const queryClient = useQueryClient();
-  const queryKey = useMemo(() => qk.config.list(namespace), [namespace]);
+  const queryKey = useMemo(
+    () =>
+      auxiliaryLoaders
+        ? qk.config.listWithAux(namespace, auxiliaryQueryKey)
+        : qk.config.list(namespace),
+    [auxiliaryLoaders, auxiliaryQueryKey, namespace],
+  );
 
   const [draft, setDraft] = useState<TRecord | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -214,9 +237,7 @@ export function useCrudPage<TRecord extends { id: string }, TSpec = TRecord>(
         updateCachedItems((current) =>
           current.map((item) => (item.id === result.editingId ? result.record : item)),
         );
-        void queryClient.invalidateQueries({
-          queryKey: qk.config.get(namespace, result.editingId),
-        });
+        invalidateConfigMutation(queryClient, namespace, result.editingId);
         toast.success(`${capitalize(entityLabel)} "${result.editingId}" saved`);
       } else {
         updateCachedItems((current) =>
@@ -224,7 +245,7 @@ export function useCrudPage<TRecord extends { id: string }, TSpec = TRecord>(
             (left, right) => left.id.localeCompare(right.id),
           ),
         );
-        void queryClient.invalidateQueries({ queryKey: qk.navHealth() });
+        invalidateConfigMutation(queryClient, namespace, result.record.id);
         toast.success(`${capitalize(entityLabel)} "${result.record.id}" created`);
       }
       setDraft(null);
@@ -265,7 +286,8 @@ export function useCrudPage<TRecord extends { id: string }, TSpec = TRecord>(
       try {
         await deleteRecord({ id });
         updateCachedItems((current) => current.filter((item) => item.id !== id));
-        void queryClient.invalidateQueries({ queryKey: qk.navHealth() });
+        removeConfigResourceQueries(queryClient, namespace, id);
+        invalidateConfigMutation(queryClient, namespace, id);
         setError(null);
         toast.success(`${capitalize(entityLabel)} "${id}" deleted`);
       } catch (deleteError) {
@@ -290,7 +312,8 @@ export function useCrudPage<TRecord extends { id: string }, TSpec = TRecord>(
           try {
             await deleteRecord({ id, force: true });
             updateCachedItems((current) => current.filter((item) => item.id !== id));
-            void queryClient.invalidateQueries({ queryKey: qk.navHealth() });
+            removeConfigResourceQueries(queryClient, namespace, id);
+            invalidateConfigMutation(queryClient, namespace, id);
             setError(null);
             toast.success(`${capitalize(entityLabel)} "${id}" deleted`);
           } catch (forceError) {
@@ -301,7 +324,16 @@ export function useCrudPage<TRecord extends { id: string }, TSpec = TRecord>(
         }
       }
     },
-    [confirmDialog, deleteRecord, entityLabel, queryClient, reportError, toast, updateCachedItems],
+    [
+      confirmDialog,
+      deleteRecord,
+      entityLabel,
+      namespace,
+      queryClient,
+      reportError,
+      toast,
+      updateCachedItems,
+    ],
   );
 
   return {

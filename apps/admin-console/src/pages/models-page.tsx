@@ -40,6 +40,7 @@ const auxiliaryLoaders = () =>
   configApi
     .list<ProviderRecord>("providers")
     .then((response) => response.items.map((provider) => provider.id));
+const MODEL_AUXILIARY_QUERY_KEY = ["provider-ids"] as const;
 
 type ModelSortKey = "id" | "provider_id" | "upstream_model" | "updated_at";
 
@@ -71,6 +72,7 @@ export function ModelsPage() {
     namespace: "models",
     entityLabel: "model",
     auxiliaryLoaders,
+    auxiliaryQueryKey: MODEL_AUXILIARY_QUERY_KEY,
   });
   const [errors, setErrors] = useState<ModelFieldErrors>({});
 

@@ -150,7 +150,6 @@ describe.skipIf(!teamsCheckedOut)("design-tokens parity vs teams", () => {
 describe("design-tokens parity vs teams (presence)", () => {
   it("either teams is checked out, or CI explicitly opted out", () => {
     if (!teamsCheckedOut) {
-      // eslint-disable-next-line no-console
       console.warn(
         `[tokens.parity] teams not found at ${theirs}; skipping shared-token diff. ` +
           `In CI without teams sibling, this is fine — the values are still correct, ` +

@@ -40,6 +40,7 @@ import { formatRelativeTime } from "@/lib/format-time";
 import { useAgentsRuntimeStatsQuery } from "@/lib/query/hooks/agent-stats";
 import { useConfigListQuery, useConfigMetaListQuery } from "@/lib/query/hooks/config";
 import { qk } from "@/lib/query/keys";
+import { invalidateConfigMutation, removeConfigResourceQueries } from "@/lib/query/invalidation";
 
 type AgentSortKey = "id" | "model_id" | "plugin_count" | "updated_at";
 
@@ -104,7 +105,8 @@ export function AgentsPage() {
       queryClient.setQueryData<ListResponse<AgentSpec>>(qk.config.list("agents"), (current) =>
         current ? { ...current, items: current.items.filter((agent) => agent.id !== id) } : current,
       );
-      void queryClient.invalidateQueries({ queryKey: qk.navHealth() });
+      removeConfigResourceQueries(queryClient, "agents", id);
+      invalidateConfigMutation(queryClient, "agents", id);
       toast.success(`Agent "${id}" deleted`);
     },
     onError: (deleteError) => {

@@ -80,6 +80,7 @@ const FALLBACK_ADAPTERS = [
   "vertex",
   "github_copilot",
 ];
+const PROVIDER_AUXILIARY_QUERY_KEY = ["supported-adapters"] as const;
 
 type ApiKeyMode = "preserve" | "replace" | "clear";
 
@@ -168,7 +169,6 @@ export function ProvidersPage() {
 
       return payload;
     },
-    // eslint-disable-next-line react-hooks/exhaustive-deps
     [apiKeyMode, apiKeyDraft, saJsonDraft],
   );
 
@@ -176,6 +176,7 @@ export function ProvidersPage() {
     namespace: "providers",
     entityLabel: "provider",
     prepareSave,
+    auxiliaryQueryKey: PROVIDER_AUXILIARY_QUERY_KEY,
     auxiliaryLoaders: () =>
       capabilitiesApi.capabilities().then((caps) => [caps.supported_adapters ?? FALLBACK_ADAPTERS]),
   });

@@ -1,5 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import {
+  ConfigApiError,
   configResourceApi,
   type ConfigMetaItem,
   type ListResponse,
@@ -11,6 +12,10 @@ interface ConfigListQueryOptions {
   enabled?: boolean;
   offset?: number;
   limit?: number;
+}
+
+function isNotFound(error: unknown): boolean {
+  return error instanceof ConfigApiError && error.status === 404;
 }
 
 export function useConfigListQuery<T>(namespace: string, options: ConfigListQueryOptions = {}) {
@@ -50,7 +55,7 @@ export function useConfigMetaQuery(
       try {
         return await configResourceApi.getMeta(namespace, id);
       } catch (error) {
-        if (options.optional) return null;
+        if (options.optional && isNotFound(error)) return null;
         throw error;
       }
     },

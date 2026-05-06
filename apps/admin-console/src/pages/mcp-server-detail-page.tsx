@@ -130,10 +130,36 @@ export function McpServerDetailPage() {
 
   const cmd = formatCommand(server);
   const isStdio = server.transport === "stdio";
-  const isConnected = status?.connected ?? false;
+  const statusLoading = statusQuery.isPending;
+  const statusError = statusQuery.error ? toStatusErrorMessage(statusQuery.error) : null;
+  const statusTools = status?.tools ?? [];
+  const isConnected = status?.connected === true;
   const lastAttempt = status?.last_attempt_at ? new Date(status.last_attempt_at * 1000) : null;
   const lastSuccess = status?.last_success_at ? new Date(status.last_success_at * 1000) : null;
   const failures = status?.consecutive_failures ?? 0;
+  const statusPillLabel = statusLoading
+    ? "status loading"
+    : statusError
+      ? "status error"
+      : isConnected
+        ? "● connected"
+        : status === null
+          ? "status unavailable"
+          : "disconnected";
+  const statusPillTone = isConnected
+    ? "success"
+    : statusLoading || status === null
+      ? "neutral"
+      : "error";
+  const toolsEmptyLabel = statusLoading
+    ? "loading tools"
+    : statusError
+      ? "status query failed"
+      : status === null
+        ? "status unavailable"
+        : isConnected
+          ? "no tools advertised"
+          : "not connected";
 
   return (
     <div className="mx-auto max-w-5xl p-6 md:p-8">
@@ -162,10 +188,8 @@ export function McpServerDetailPage() {
           </div>
         </div>
         <div className="mt-2 flex flex-wrap items-center gap-2 text-xs">
-          <Pill tone={isConnected ? "success" : status === null ? "neutral" : "error"}>
-            {isConnected ? "● connected" : status === null ? "status unavailable" : "disconnected"}
-          </Pill>
-          <Pill tone="neutral">{(status?.tools ?? []).length} tools exposed</Pill>
+          <Pill tone={statusPillTone}>{statusPillLabel}</Pill>
+          <Pill tone="neutral">{statusTools.length} tools exposed</Pill>
           <Pill tone={usedByAgents.length > 0 ? "info" : "neutral"}>
             used by {usedByAgents.length} agent{usedByAgents.length === 1 ? "" : "s"}
           </Pill>
@@ -182,18 +206,28 @@ export function McpServerDetailPage() {
           <Cell
             label="HANDSHAKE"
             value={
-              isConnected ? (
+              statusLoading ? (
+                <span className="text-fg-faint">loading</span>
+              ) : isConnected ? (
                 <span className="flex items-center gap-1.5">
                   <span aria-hidden className="inline-block h-2 w-2 rounded-pill bg-state-done" />
                   ok
                 </span>
+              ) : statusError ? (
+                <span className="text-tone-error">error</span>
               ) : status === null ? (
                 <span className="text-fg-faint">—</span>
               ) : (
                 <span className="text-tone-error">failed</span>
               )
             }
-            sub={status?.tools.length ? `${status.tools.length} tools advertised` : "—"}
+            sub={
+              statusLoading
+                ? "checking status"
+                : statusTools.length
+                  ? `${statusTools.length} tools advertised`
+                  : "—"
+            }
           />
           <Cell
             label="LAST ATTEMPT"
@@ -208,21 +242,34 @@ export function McpServerDetailPage() {
           <Cell
             label="FAILURES (since last ok)"
             value={
-              <span className={failures > 0 ? "text-tone-error" : "text-fg-strong"}>
-                {failures}
-              </span>
+              statusLoading || statusError || status === null ? (
+                <span className="text-fg-faint">—</span>
+              ) : (
+                <span className={failures > 0 ? "text-tone-error" : "text-fg-strong"}>
+                  {failures}
+                </span>
+              )
             }
             sub={
-              status?.permanently_failed
-                ? "gave up retrying"
-                : status?.reconnecting
-                  ? "retrying with backoff"
-                  : failures === 0
-                    ? "healthy"
-                    : "transient"
+              statusLoading
+                ? "loading"
+                : statusError
+                  ? "status query failed"
+                  : status?.permanently_failed
+                    ? "gave up retrying"
+                    : status?.reconnecting
+                      ? "retrying with backoff"
+                      : status && failures === 0
+                        ? "healthy"
+                        : "transient"
             }
           />
         </div>
+        {statusError && (
+          <div className="border-t border-line bg-tone-error/5 px-5 py-2 font-mono text-xs text-tone-error">
+            status_error: {statusError}
+          </div>
+        )}
         {status?.last_error && (
           <div className="border-t border-line bg-tone-error/5 px-5 py-2 font-mono text-xs text-tone-error">
             last_error: {status.last_error}
@@ -253,19 +300,13 @@ export function McpServerDetailPage() {
       <section className="mt-4 rounded-md border border-line bg-surface p-5 shadow-card">
         <div className="flex items-baseline justify-between">
           <h3 className="text-sm font-semibold text-fg-strong">Tools exposed</h3>
-          <span className="font-mono text-xs text-fg-faint">{(status?.tools ?? []).length}</span>
+          <span className="font-mono text-xs text-fg-faint">{statusTools.length}</span>
         </div>
-        {(status?.tools ?? []).length === 0 ? (
-          <p className="mt-2 text-sm text-fg-soft">
-            {status === null
-              ? "status unavailable"
-              : isConnected
-                ? "no tools advertised"
-                : "not connected"}
-          </p>
+        {statusTools.length === 0 ? (
+          <p className="mt-2 text-sm text-fg-soft">{toolsEmptyLabel}</p>
         ) : (
           <ul className="mt-3 space-y-2">
-            {(status?.tools ?? []).map((tool) => (
+            {statusTools.map((tool) => (
               <li key={tool.name} className="rounded-md border border-line bg-soft px-3 py-2">
                 <div className="font-mono text-sm text-fg-strong">{tool.name}</div>
                 {tool.description && (
@@ -339,6 +380,10 @@ function formatCommand(server: McpServerRecord): string {
     return [server.command, ...(server.args ?? [])].filter(Boolean).join(" ");
   }
   return server.url ?? "";
+}
+
+function toStatusErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 /**

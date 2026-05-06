@@ -3,7 +3,6 @@ import {
   capabilitiesApi,
   configResourceApi,
   ConfigApiError,
-  systemApi,
   type AgentSpec,
   type Capabilities,
   type McpServerRecord,
@@ -15,6 +14,7 @@ import { auditApi } from "../../api/audit";
 import type { AuditPage } from "../../audit-log";
 import { TIME_RANGE_SECONDS, type TimeRange } from "../../../components/ui/time-range-switcher";
 import { qk } from "../keys";
+import { loadOptionalSystemInfo } from "../system-info";
 
 export type DashboardData = {
   capabilities: Capabilities;
@@ -49,7 +49,7 @@ export function useDashboardQuery(range: TimeRange) {
         configResourceApi.list<ModelBindingSpec>("models"),
         configResourceApi.list<AgentSpec>("agents"),
         auditPromise,
-        systemApi.systemInfo().catch(() => null),
+        loadOptionalSystemInfo(),
       ]);
       return {
         capabilities,
@@ -62,5 +62,6 @@ export function useDashboardQuery(range: TimeRange) {
         systemInfo,
       };
     },
+    refetchInterval: 30_000,
   });
 }

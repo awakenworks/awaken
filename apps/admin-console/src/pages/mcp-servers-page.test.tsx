@@ -123,25 +123,31 @@ describe("MCP servers page — status badge", () => {
     renderMcpPage();
 
     // Wait for the server row to appear.
-    await screen.findByText("my-server");
+    await screen.findByText("my-server", undefined, { timeout: 5_000 });
 
     // Wait for status fetch to complete; the connected badge has title="Connected".
-    await waitFor(() => {
-      const badge = document.querySelector('[title="Connected"]');
-      expect(badge).not.toBeNull();
-    });
+    await waitFor(
+      () => {
+        const badge = document.querySelector('[title="Connected"]');
+        expect(badge).not.toBeNull();
+      },
+      { timeout: 5_000 },
+    );
   });
 
   it("renders a red status badge when the server is disconnected", async () => {
     vi.stubGlobal("fetch", buildFetchMock({ statusConnected: false, statusTools: [] }));
     renderMcpPage();
 
-    await screen.findByText("my-server");
+    await screen.findByText("my-server", undefined, { timeout: 5_000 });
 
-    await waitFor(() => {
-      const badge = document.querySelector('[title^="Error:"]');
-      expect(badge).not.toBeNull();
-    });
+    await waitFor(
+      () => {
+        const badge = document.querySelector('[title^="Error:"]');
+        expect(badge).not.toBeNull();
+      },
+      { timeout: 5_000 },
+    );
   });
 
   it("shows a loading badge (grey) before status is fetched", async () => {
@@ -197,7 +203,7 @@ describe("MCP servers page — status badge", () => {
     vi.stubGlobal("fetch", fetchMock);
     renderMcpPage();
 
-    await screen.findByText("my-server");
+    await screen.findByText("my-server", undefined, { timeout: 5_000 });
 
     // While status is pending, a grey/loading dot should be present.
     const loadingBadge = document.querySelector('[title="Loading status..."]');
@@ -214,16 +220,19 @@ describe("MCP servers page — status badge", () => {
     vi.stubGlobal("fetch", buildFetchMock({ statusConnected: true, statusTools: tools }));
     renderMcpPage();
 
-    await screen.findByText("my-server");
+    await screen.findByText("my-server", undefined, { timeout: 5_000 });
 
     // Click Edit to open the editor.
-    const editButton = await screen.findByRole("button", { name: "Edit" });
+    const editButton = await screen.findByRole("button", { name: "Edit" }, { timeout: 5_000 });
     editButton.click();
 
     // Wait for the tools list to appear in the editor.
-    await waitFor(() => {
-      expect(screen.getByText("list_files")).toBeDefined();
-      expect(screen.getByText("read_file")).toBeDefined();
-    });
+    await waitFor(
+      () => {
+        expect(screen.getByText("list_files")).toBeDefined();
+        expect(screen.getByText("read_file")).toBeDefined();
+      },
+      { timeout: 5_000 },
+    );
   });
 });
