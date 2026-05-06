@@ -16,10 +16,12 @@ where
     encoder
         .transcode(event)
         .into_iter()
-        .filter_map(|item| {
-            serde_json::to_string(&item)
-                .ok()
-                .map(|json| format_sse_data(&json))
+        .filter_map(|item| match serde_json::to_string(&item) {
+            Ok(json) => Some(format_sse_data(&json)),
+            Err(error) => {
+                tracing::warn!(error = %error, "failed to serialize transcoded event");
+                None
+            }
         })
         .collect()
 }
@@ -33,10 +35,12 @@ where
     encoder
         .prologue()
         .into_iter()
-        .filter_map(|item| {
-            serde_json::to_string(&item)
-                .ok()
-                .map(|json| format_sse_data(&json))
+        .filter_map(|item| match serde_json::to_string(&item) {
+            Ok(json) => Some(format_sse_data(&json)),
+            Err(error) => {
+                tracing::warn!(error = %error, "failed to serialize transcoder prologue");
+                None
+            }
         })
         .collect()
 }
@@ -50,10 +54,12 @@ where
     encoder
         .epilogue()
         .into_iter()
-        .filter_map(|item| {
-            serde_json::to_string(&item)
-                .ok()
-                .map(|json| format_sse_data(&json))
+        .filter_map(|item| match serde_json::to_string(&item) {
+            Ok(json) => Some(format_sse_data(&json)),
+            Err(error) => {
+                tracing::warn!(error = %error, "failed to serialize transcoder epilogue");
+                None
+            }
         })
         .collect()
 }

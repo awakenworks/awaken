@@ -385,6 +385,7 @@ async fn restore_restart_event_returns_422() {
         ip: None,
         request_id: None,
         restored_from: None,
+        error: None,
     };
     config_store
         .put(
@@ -693,6 +694,7 @@ async fn restore_rejects_seed_apply_event() {
         ip: None,
         request_id: None,
         restored_from: None,
+        error: None,
     };
     config_store
         .put(
@@ -816,43 +818,4 @@ async fn restore_on_customized_record_restores_spec_only() {
         body["id"], "bootstrap",
         "restored spec must preserve agent id; body: {body}"
     );
-}
-
-/// Restore from a Publish audit event restores `event.after` as the resource state.
-///
-/// # Why ignored
-///
-/// The publish flow described in ADR-0025 is not yet implemented. There is no API
-/// endpoint or service method that emits a `Publish` audit event, so it is not
-/// possible to construct one through the normal execution path. Synthesising a fake
-/// Publish event directly in the store would test the plumbing without validating
-/// that real publish events have the correct shape; that would give false confidence.
-///
-/// Enable this test once the publish endpoint from ADR-0025 is implemented and
-/// `AuditAction::Publish` events are produced by the real code path.
-#[tokio::test]
-#[ignore = "publish flow (ADR-0025) not yet implemented; enable once publish endpoint exists"]
-async fn restore_from_publish_event_uses_after() {
-    let app = build_test_app().await;
-
-    // Create an agent so there is at least one version on record.
-    let (status, _) = post_json(
-        &app,
-        "/v1/config/agents",
-        &json!({
-            "id": "publish-restore-agent",
-            "model_id": "bootstrap",
-            "system_prompt": "published version",
-            "max_rounds": 1
-        }),
-    )
-    .await;
-    assert_eq!(status, StatusCode::CREATED);
-
-    // TODO: call the publish endpoint once it exists to emit a real Publish event,
-    // then retrieve its ULID from the audit log, call restore with it, and assert:
-    //   - response body matches event.after
-    //   - audit log has exactly one new entry of action=restore
-    //   - restored_from references the publish event ULID
-    todo!("wire up publish endpoint from ADR-0025")
 }

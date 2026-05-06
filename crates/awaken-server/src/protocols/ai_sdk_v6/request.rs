@@ -15,6 +15,11 @@ use awaken_contract::contract::storage::{RunRecord, RunWaitingState, ThreadRunSt
 use awaken_contract::contract::suspension::{ResumeDecisionAction, ToolCallResume};
 use awaken_contract::registry_spec::AgentSpec;
 
+use crate::message_convert::{
+    content_block_from_media_base64, content_block_from_media_url, message_from_role_blocks,
+    parse_data_uri,
+};
+
 // ── AI SDK v6 wire types ────────────────────────────────────────────
 //
 // Maps directly to the TypeScript `UIMessage` / `UIMessagePart` types
@@ -213,14 +218,6 @@ pub(crate) fn process_preview_chat_request(
 
 // ── Internal helpers ────────────────────────────────────────────────
 
-/// Parse a data-URI of the form `data:<media_type>;base64,<data>`.
-fn parse_data_uri(url: &str) -> Option<(String, String)> {
-    let rest = url.strip_prefix("data:")?;
-    let (meta, data) = rest.split_once(",")?;
-    let media_type = meta.strip_suffix(";base64")?;
-    Some((media_type.to_string(), data.to_string()))
-}
-
 pub(crate) fn part_kind(part: &Value) -> Option<&str> {
     part.get("type").and_then(Value::as_str)
 }
@@ -231,23 +228,9 @@ fn part_to_content_block(part: &Value) -> Option<ContentBlock> {
         UIPart::Text { text } => Some(ContentBlock::text(text.as_str())),
         UIPart::File { url, media_type } => {
             if let Some((mime, data)) = parse_data_uri(&url) {
-                if mime.starts_with("image/") {
-                    Some(ContentBlock::image_base64(mime, data))
-                } else if mime.starts_with("audio/") {
-                    Some(ContentBlock::audio_base64(mime, data))
-                } else if mime.starts_with("video/") {
-                    Some(ContentBlock::video_base64(mime, data))
-                } else {
-                    Some(ContentBlock::document_base64(mime, data, None))
-                }
-            } else if media_type.starts_with("image/") {
-                Some(ContentBlock::image_url(url.as_str()))
-            } else if media_type.starts_with("audio/") {
-                Some(ContentBlock::audio_url(url.as_str()))
-            } else if media_type.starts_with("video/") {
-                Some(ContentBlock::video_url(url.as_str()))
+                Some(content_block_from_media_base64(data, mime, None))
             } else {
-                Some(ContentBlock::document_url(url.as_str(), None))
+                Some(content_block_from_media_url(url, Some(&media_type), None))
             }
         }
         _ => None,
@@ -273,19 +256,7 @@ fn convert_messages_internal(msgs: Vec<UIMessage>, include_assistant: bool) -> V
         .filter_map(|m| {
             let blocks: Vec<ContentBlock> =
                 m.parts.iter().filter_map(part_to_content_block).collect();
-            if blocks.is_empty() {
-                return None;
-            }
-            let mut msg = match m.role.as_str() {
-                "user" => Message::user_with_content(blocks),
-                "system" => {
-                    Message::system(awaken_contract::contract::content::extract_text(&blocks))
-                }
-                "assistant" if include_assistant => {
-                    Message::assistant(awaken_contract::contract::content::extract_text(&blocks))
-                }
-                _ => return None,
-            };
+            let mut msg = message_from_role_blocks(m.role.as_str(), blocks, include_assistant)?;
             // Preserve frontend ID for deduplication; fall back to generated UUID.
             if let Some(id) = m.id {
                 msg.id = Some(id);

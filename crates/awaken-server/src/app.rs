@@ -1,7 +1,7 @@
 //! Application state and server startup.
 
 use std::collections::HashMap;
-use std::sync::{Arc, OnceLock, Weak};
+use std::sync::Arc;
 use std::time::Instant;
 
 use awaken_contract::RedactedString;
@@ -18,13 +18,6 @@ use crate::transport::replay_buffer::EventReplayBuffer;
 
 pub type ReplayBufferEntry = (Arc<EventReplayBuffer>, Instant);
 pub type ReplayBufferMap = Arc<Mutex<HashMap<String, ReplayBufferEntry>>>;
-type AdminApiConfigRegistry = HashMap<
-    usize,
-    (
-        Weak<Mutex<HashMap<String, ReplayBufferEntry>>>,
-        AdminApiConfig,
-    ),
->;
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -223,13 +216,8 @@ fn default_max_concurrent() -> usize {
     100
 }
 
-const ADMIN_API_BEARER_TOKEN_ENV: &str = "AWAKEN_ADMIN_API_BEARER_TOKEN";
+pub const ADMIN_API_BEARER_TOKEN_ENV: &str = "AWAKEN_ADMIN_API_BEARER_TOKEN";
 const ADMIN_CORS_ALLOWED_ORIGINS_ENV: &str = "AWAKEN_ADMIN_CORS_ALLOWED_ORIGINS";
-static ADMIN_API_CONFIGS: OnceLock<Mutex<AdminApiConfigRegistry>> = OnceLock::new();
-
-fn admin_api_config_registry() -> &'static Mutex<AdminApiConfigRegistry> {
-    ADMIN_API_CONFIGS.get_or_init(|| Mutex::new(HashMap::new()))
-}
 
 fn admin_api_bearer_token_from_env() -> Option<RedactedString> {
     std::env::var(ADMIN_API_BEARER_TOKEN_ENV)
@@ -261,15 +249,7 @@ fn default_admin_cors_allowed_origins() -> Vec<String> {
 }
 
 pub(crate) fn admin_api_config(state: &AppState) -> AdminApiConfig {
-    let key = Arc::as_ptr(&state.replay_buffers) as usize;
-    let mut config = {
-        let mut registry = admin_api_config_registry().lock();
-        registry.retain(|_, (weak, _)| weak.upgrade().is_some());
-        registry
-            .get(&key)
-            .map(|(_, config)| config.clone())
-            .unwrap_or_default()
-    };
+    let mut config = state.admin_api_config.clone();
 
     if let Some(token) = admin_api_bearer_token_from_env() {
         config.bearer_token = Some(token);
@@ -279,14 +259,6 @@ pub(crate) fn admin_api_config(state: &AppState) -> AdminApiConfig {
     }
 
     config
-}
-
-fn admin_api_config_for_replay_buffers(replay_buffers: &ReplayBufferMap, config: AdminApiConfig) {
-    let key = Arc::as_ptr(replay_buffers) as usize;
-    let weak = Arc::downgrade(replay_buffers);
-    let mut registry = admin_api_config_registry().lock();
-    registry.retain(|_, (weak, _)| weak.upgrade().is_some());
-    registry.insert(key, (weak, config));
 }
 
 fn admin_cors_allowed_origins_for_state(state: &AppState) -> Vec<String> {
@@ -344,6 +316,8 @@ pub struct AppState {
     /// this single instance so token caches and metrics are unified
     /// (vs. each `build_genai_provider_executor` call creating its own).
     pub credential_broker: Arc<dyn awaken_runtime::credentials::CredentialBroker>,
+    /// Admin/configuration API policy for this state.
+    admin_api_config: AdminApiConfig,
 }
 
 impl AppState {
@@ -370,6 +344,7 @@ impl AppState {
             audit_log: None,
             started_at: Instant::now(),
             credential_broker: Arc::new(awaken_runtime::credentials::AwakenCredentialBroker::new()),
+            admin_api_config: AdminApiConfig::default(),
         }
     }
 
@@ -417,8 +392,8 @@ impl AppState {
 
     /// Attach admin/configuration API security settings without changing the
     /// 0.2-compatible `ServerConfig` struct shape.
-    pub fn with_admin_api_config(self, config: AdminApiConfig) -> Self {
-        admin_api_config_for_replay_buffers(&self.replay_buffers, config);
+    pub fn with_admin_api_config(mut self, config: AdminApiConfig) -> Self {
+        self.admin_api_config = config;
         self
     }
 
@@ -620,9 +595,7 @@ pub async fn serve(state: AppState) -> std::io::Result<()> {
     crate::metrics::install_recorder();
 
     let addr = state.config.address.clone();
-    validate_admin_surface(&state)?;
     let timeout = std::time::Duration::from_secs(state.config.shutdown.timeout_secs);
-    let max_concurrent = state.config.max_concurrent_requests;
     let mailbox_lifecycle = match state.config.mailbox_lifecycle {
         MailboxLifecycleMode::Auto => {
             let cleanup_state = state.clone();
@@ -648,11 +621,7 @@ pub async fn serve(state: AppState) -> std::io::Result<()> {
     let listener = tokio::net::TcpListener::bind(&addr).await?;
     tracing::info!("listening on {addr}");
 
-    let admin_cors = admin_cors_layer(&state)?;
-    let app = crate::routes::build_router(&state)
-        .layer(tower::limit::ConcurrencyLimitLayer::new(max_concurrent))
-        .layer(admin_cors)
-        .with_state(state);
+    let app = build_service_router(state)?;
 
     let result = serve_with_shutdown(listener, app, timeout).await;
     if let Some(mailbox_lifecycle) = mailbox_lifecycle
@@ -663,7 +632,23 @@ pub async fn serve(state: AppState) -> std::io::Result<()> {
     result
 }
 
-fn validate_admin_surface(state: &AppState) -> std::io::Result<()> {
+/// Build the production HTTP router for an [`AppState`].
+///
+/// This is the shared entry point for embedders that need to bind their own
+/// listener or add outer layers. It applies the same admin-surface validation,
+/// concurrency limit, admin CORS policy, route composition, and state wiring as
+/// [`serve`].
+pub fn build_service_router(state: AppState) -> std::io::Result<axum::Router> {
+    validate_admin_surface(&state)?;
+    let max_concurrent = state.config.max_concurrent_requests;
+    let admin_cors = admin_cors_layer(&state)?;
+    Ok(crate::routes::build_router(&state)
+        .layer(tower::limit::ConcurrencyLimitLayer::new(max_concurrent))
+        .layer(admin_cors)
+        .with_state(state))
+}
+
+pub fn validate_admin_surface(state: &AppState) -> std::io::Result<()> {
     let admin = admin_api_config(state);
     if !admin.expose_config_routes {
         return Ok(());
@@ -689,7 +674,7 @@ fn validate_admin_surface(state: &AppState) -> std::io::Result<()> {
     ))
 }
 
-fn admin_cors_layer(state: &AppState) -> std::io::Result<tower_http::cors::CorsLayer> {
+pub fn admin_cors_layer(state: &AppState) -> std::io::Result<tower_http::cors::CorsLayer> {
     use axum::http::{HeaderValue, Method, header};
     use tower_http::cors::CorsLayer;
 
@@ -721,6 +706,50 @@ fn admin_cors_layer(state: &AppState) -> std::io::Result<tower_http::cors::CorsL
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn state_for_admin_surface_test(address: &str, admin_api_config: AdminApiConfig) -> AppState {
+        use crate::mailbox::{Mailbox, MailboxConfig};
+        use awaken_runtime::AgentRuntime;
+        use awaken_stores::{InMemoryMailboxStore, InMemoryStore};
+
+        struct StubResolver;
+        impl awaken_runtime::AgentResolver for StubResolver {
+            fn resolve(
+                &self,
+                agent_id: &str,
+            ) -> Result<awaken_runtime::ResolvedAgent, awaken_runtime::RuntimeError> {
+                Err(awaken_runtime::RuntimeError::AgentNotFound {
+                    agent_id: agent_id.to_string(),
+                })
+            }
+        }
+
+        let runtime = Arc::new(AgentRuntime::new(Arc::new(StubResolver)));
+        let store = Arc::new(InMemoryStore::new());
+        let mailbox_store = Arc::new(InMemoryMailboxStore::new());
+        let mailbox = Arc::new(Mailbox::new(
+            runtime.clone(),
+            mailbox_store,
+            store.clone(),
+            "test".to_string(),
+            MailboxConfig::default(),
+        ));
+
+        let config = ServerConfig {
+            address: address.to_string(),
+            ..ServerConfig::default()
+        };
+
+        AppState::new(
+            runtime,
+            mailbox,
+            store.clone() as Arc<dyn ThreadRunStore>,
+            Arc::new(StubResolver),
+            config,
+        )
+        .with_config_store(store as Arc<dyn ConfigStore>)
+        .with_admin_api_config(admin_api_config)
+    }
 
     #[test]
     fn admin_api_config_default_exposes_config_routes() {
@@ -759,57 +788,56 @@ mod tests {
 
     #[test]
     fn validate_admin_surface_short_circuits_when_routes_disabled() {
-        use crate::mailbox::{Mailbox, MailboxConfig};
-        use awaken_contract::contract::config_store::ConfigStore;
-        use awaken_runtime::AgentRuntime;
-        use awaken_stores::{InMemoryMailboxStore, InMemoryStore};
-
-        struct StubResolver;
-        impl awaken_runtime::AgentResolver for StubResolver {
-            fn resolve(
-                &self,
-                agent_id: &str,
-            ) -> Result<awaken_runtime::ResolvedAgent, awaken_runtime::RuntimeError> {
-                Err(awaken_runtime::RuntimeError::AgentNotFound {
-                    agent_id: agent_id.to_string(),
-                })
-            }
-        }
-
-        let runtime = Arc::new(AgentRuntime::new(Arc::new(StubResolver)));
-        let store = Arc::new(InMemoryStore::new());
-        let mailbox_store = Arc::new(InMemoryMailboxStore::new());
-        let mailbox = Arc::new(Mailbox::new(
-            runtime.clone(),
-            mailbox_store,
-            store.clone(),
-            "test".to_string(),
-            MailboxConfig::default(),
-        ));
-
-        // Non-loopback bind, no bearer token, *with* a config store —
-        // historically this would refuse to start. The toggle should
-        // short-circuit that check.
-        let config = ServerConfig {
-            address: "0.0.0.0:3000".to_string(),
-            ..ServerConfig::default()
-        };
-
-        let state = AppState::new(
-            runtime,
-            mailbox,
-            store.clone() as Arc<dyn awaken_contract::contract::storage::ThreadRunStore>,
-            Arc::new(StubResolver),
-            config,
-        )
-        .with_config_store(store as Arc<dyn ConfigStore>)
-        .with_admin_api_config(AdminApiConfig {
-            expose_config_routes: false,
-            ..AdminApiConfig::default()
-        });
+        let state = state_for_admin_surface_test(
+            "0.0.0.0:3000",
+            AdminApiConfig {
+                expose_config_routes: false,
+                ..AdminApiConfig::default()
+            },
+        );
 
         validate_admin_surface(&state)
             .expect("disabling config routes must waive the bearer-token requirement");
+    }
+
+    #[test]
+    fn build_service_router_rejects_non_loopback_admin_surface_without_token() {
+        let state = state_for_admin_surface_test("0.0.0.0:3000", AdminApiConfig::default());
+
+        let error = build_service_router(state).unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
+        assert!(
+            error.to_string().contains(ADMIN_API_BEARER_TOKEN_ENV),
+            "error should name the required env var, got: {error}"
+        );
+    }
+
+    #[test]
+    fn build_service_router_allows_non_loopback_admin_surface_with_token() {
+        let state = state_for_admin_surface_test(
+            "0.0.0.0:3000",
+            AdminApiConfig {
+                bearer_token: Some(RedactedString::new("admin-token")),
+                ..AdminApiConfig::default()
+            },
+        );
+
+        let _ = build_service_router(state)
+            .expect("bearer token must allow non-loopback admin surface");
+    }
+
+    #[test]
+    fn build_service_router_allows_non_loopback_when_admin_surface_disabled() {
+        let state = state_for_admin_surface_test(
+            "0.0.0.0:3000",
+            AdminApiConfig {
+                expose_config_routes: false,
+                ..AdminApiConfig::default()
+            },
+        );
+
+        let _ = build_service_router(state)
+            .expect("disabled admin surface must not require a bearer token");
     }
 
     #[test]

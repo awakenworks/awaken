@@ -9,6 +9,7 @@ fn record_meta_user_overrides_serde_round_trip() {
         user_overrides: Some(json!({"x": 1})),
         created_at: 100,
         updated_at: 200,
+        revision: 0,
     };
     let value = serde_json::to_value(&meta).expect("serialize must succeed");
     let decoded: RecordMeta = serde_json::from_value(value).expect("deserialize must succeed");
@@ -69,6 +70,7 @@ fn envelope_round_trip_preserves_all_fields() {
         user_overrides: None,
         created_at: 1_000,
         updated_at: 2_000,
+        revision: 3,
     };
     let record = ConfigRecord {
         spec: sample_agent_spec(),

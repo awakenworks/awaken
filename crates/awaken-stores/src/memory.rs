@@ -3,7 +3,10 @@
 use std::collections::HashMap;
 
 use async_trait::async_trait;
-use awaken_contract::contract::config_store::ConfigStore;
+use awaken_contract::contract::config_store::{
+    ConfigChangeEvent, ConfigChangeKind, ConfigChangeNotifier, ConfigChangeSubscriber, ConfigStore,
+    extract_meta_revision,
+};
 use awaken_contract::contract::message::Message;
 use awaken_contract::contract::profile_store::{ProfileEntry, ProfileOwner, ProfileStore};
 use awaken_contract::contract::storage::{
@@ -19,7 +22,7 @@ use tokio::sync::RwLock;
 ///
 /// Uses `tokio::sync::RwLock` for async-safe concurrent access.
 /// Data lives only in memory and is lost when the store is dropped.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct InMemoryStore {
     threads: RwLock<HashMap<String, Thread>>,
     runs: RwLock<HashMap<String, RunRecord>>,
@@ -29,12 +32,28 @@ pub struct InMemoryStore {
     profiles: RwLock<HashMap<ProfileOwner, HashMap<String, ProfileEntry>>>,
     /// Config entries keyed by namespace then ID.
     configs: RwLock<HashMap<String, HashMap<String, Value>>>,
+    /// Broadcast sender for config change notifications.
+    config_change_tx: tokio::sync::broadcast::Sender<ConfigChangeEvent>,
 }
 
 impl InMemoryStore {
     /// Create a new empty in-memory store.
     pub fn new() -> Self {
-        Self::default()
+        let (config_change_tx, _) = tokio::sync::broadcast::channel(256);
+        Self {
+            threads: RwLock::new(HashMap::new()),
+            runs: RwLock::new(HashMap::new()),
+            messages: RwLock::new(HashMap::new()),
+            profiles: RwLock::new(HashMap::new()),
+            configs: RwLock::new(HashMap::new()),
+            config_change_tx,
+        }
+    }
+}
+
+impl Default for InMemoryStore {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -454,6 +473,33 @@ impl ConfigStore for InMemoryStore {
             .entry(namespace.to_string())
             .or_default()
             .insert(id.to_string(), value.clone());
+        drop(guard);
+        let _ = self.config_change_tx.send(ConfigChangeEvent {
+            namespace: namespace.to_string(),
+            id: id.to_string(),
+            kind: ConfigChangeKind::Put,
+        });
+        Ok(())
+    }
+
+    async fn put_if_absent(
+        &self,
+        namespace: &str,
+        id: &str,
+        value: &Value,
+    ) -> Result<(), StorageError> {
+        let mut guard = self.configs.write().await;
+        let entries = guard.entry(namespace.to_string()).or_default();
+        if entries.contains_key(id) {
+            return Err(StorageError::AlreadyExists(format!("{namespace}/{id}")));
+        }
+        entries.insert(id.to_string(), value.clone());
+        drop(guard);
+        let _ = self.config_change_tx.send(ConfigChangeEvent {
+            namespace: namespace.to_string(),
+            id: id.to_string(),
+            kind: ConfigChangeKind::Put,
+        });
         Ok(())
     }
 
@@ -462,7 +508,110 @@ impl ConfigStore for InMemoryStore {
         if let Some(entries) = guard.get_mut(namespace) {
             entries.remove(id);
         }
+        drop(guard);
+        let _ = self.config_change_tx.send(ConfigChangeEvent {
+            namespace: namespace.to_string(),
+            id: id.to_string(),
+            kind: ConfigChangeKind::Delete,
+        });
         Ok(())
+    }
+
+    async fn put_if_revision(
+        &self,
+        namespace: &str,
+        id: &str,
+        value: &Value,
+        expected_revision: u64,
+    ) -> Result<(), StorageError> {
+        let mut guard = self.configs.write().await;
+        let actual = guard
+            .get(namespace)
+            .and_then(|entries| entries.get(id))
+            .and_then(extract_meta_revision)
+            .unwrap_or(0);
+        if actual != expected_revision {
+            return Err(StorageError::VersionConflict {
+                expected: expected_revision,
+                actual,
+            });
+        }
+        guard
+            .entry(namespace.to_string())
+            .or_default()
+            .insert(id.to_string(), value.clone());
+        drop(guard);
+        let _ = self.config_change_tx.send(ConfigChangeEvent {
+            namespace: namespace.to_string(),
+            id: id.to_string(),
+            kind: ConfigChangeKind::Put,
+        });
+        Ok(())
+    }
+
+    async fn delete_if_revision(
+        &self,
+        namespace: &str,
+        id: &str,
+        expected_revision: u64,
+    ) -> Result<(), StorageError> {
+        let mut guard = self.configs.write().await;
+        let actual = guard
+            .get(namespace)
+            .and_then(|entries| entries.get(id))
+            .and_then(extract_meta_revision)
+            .unwrap_or(0);
+        if actual != expected_revision {
+            return Err(StorageError::VersionConflict {
+                expected: expected_revision,
+                actual,
+            });
+        }
+        if let Some(entries) = guard.get_mut(namespace) {
+            entries.remove(id);
+        }
+        drop(guard);
+        let _ = self.config_change_tx.send(ConfigChangeEvent {
+            namespace: namespace.to_string(),
+            id: id.to_string(),
+            kind: ConfigChangeKind::Delete,
+        });
+        Ok(())
+    }
+}
+
+// ── ConfigChangeNotifier ────────────────────────────────────────────
+
+#[async_trait]
+impl ConfigChangeNotifier for InMemoryStore {
+    async fn subscribe(&self) -> Result<Box<dyn ConfigChangeSubscriber>, StorageError> {
+        Ok(Box::new(InMemoryConfigChangeSubscriber {
+            rx: self.config_change_tx.subscribe(),
+        }))
+    }
+}
+
+struct InMemoryConfigChangeSubscriber {
+    rx: tokio::sync::broadcast::Receiver<ConfigChangeEvent>,
+}
+
+#[async_trait]
+impl ConfigChangeSubscriber for InMemoryConfigChangeSubscriber {
+    async fn next(&mut self) -> Result<ConfigChangeEvent, StorageError> {
+        match self.rx.recv().await {
+            Ok(event) => Ok(event),
+            Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
+                tracing::warn!(skipped, "in-memory config notifier lagged");
+                Ok(ConfigChangeEvent {
+                    namespace: String::new(),
+                    id: String::new(),
+                    kind: ConfigChangeKind::Put,
+                })
+            }
+            Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                Err(StorageError::Io("config change channel closed".into()))
+            }
+        }
     }
 }
 
@@ -905,5 +1054,207 @@ mod tests {
 
         // Clear again is idempotent
         store.clear_owner(&alice).await.unwrap();
+    }
+
+    // ── ConfigChangeNotifier ──
+
+    // ── ConfigStore::put_if_revision ──
+
+    #[tokio::test]
+    async fn put_if_revision_succeeds_when_revision_matches() {
+        use awaken_contract::contract::config_store::ConfigStore;
+        let store = InMemoryStore::new();
+
+        // First write: no existing record, expected=0 → insert at revision 1.
+        let value_r1 = serde_json::json!({"spec": {"id": "a"}, "meta": {"source": {"kind": "user"}, "revision": 1}});
+        store
+            .put_if_revision("ns", "a", &value_r1, 0)
+            .await
+            .unwrap();
+        let stored = ConfigStore::get(&store, "ns", "a").await.unwrap().unwrap();
+        assert_eq!(stored["meta"]["revision"], 1);
+
+        // Second write: expected=1 → update to revision 2.
+        let value_r2 = serde_json::json!({"spec": {"id": "a"}, "meta": {"source": {"kind": "user"}, "revision": 2}});
+        store
+            .put_if_revision("ns", "a", &value_r2, 1)
+            .await
+            .unwrap();
+        let stored = ConfigStore::get(&store, "ns", "a").await.unwrap().unwrap();
+        assert_eq!(stored["meta"]["revision"], 2);
+    }
+
+    #[tokio::test]
+    async fn put_if_revision_returns_conflict_on_mismatch() {
+        use awaken_contract::contract::storage::StorageError;
+        let store = InMemoryStore::new();
+
+        // Insert a record at revision 1.
+        let value_r1 =
+            serde_json::json!({"spec": {}, "meta": {"source": {"kind": "user"}, "revision": 1}});
+        store.put("ns", "b", &value_r1).await.unwrap();
+
+        // Try with wrong expected revision.
+        let err = store
+            .put_if_revision("ns", "b", &value_r1, 5)
+            .await
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            StorageError::VersionConflict {
+                expected: 5,
+                actual: 1
+            }
+        ));
+    }
+
+    #[tokio::test]
+    async fn put_if_absent_inserts_once_and_reports_existing() {
+        use awaken_contract::contract::config_store::ConfigStore;
+        use awaken_contract::contract::storage::StorageError;
+
+        let store = InMemoryStore::new();
+        let value = serde_json::json!({
+            "spec": {"id": "new"},
+            "meta": {"source": {"kind": "user"}, "revision": 1}
+        });
+
+        store.put_if_absent("ns", "new", &value).await.unwrap();
+
+        let err = store.put_if_absent("ns", "new", &value).await.unwrap_err();
+        assert!(matches!(err, StorageError::AlreadyExists(id) if id == "ns/new"));
+
+        let stored = ConfigStore::get(&store, "ns", "new")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(stored, value);
+    }
+
+    #[tokio::test]
+    async fn delete_if_revision_removes_only_matching_revision() {
+        use awaken_contract::contract::config_store::ConfigStore;
+        use awaken_contract::contract::storage::StorageError;
+
+        let store = InMemoryStore::new();
+        let value = serde_json::json!({
+            "spec": {"id": "delete-me"},
+            "meta": {"source": {"kind": "user"}, "revision": 3}
+        });
+        store.put("ns", "delete-me", &value).await.unwrap();
+
+        let err = store
+            .delete_if_revision("ns", "delete-me", 2)
+            .await
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            StorageError::VersionConflict {
+                expected: 2,
+                actual: 3
+            }
+        ));
+        assert!(
+            ConfigStore::get(&store, "ns", "delete-me")
+                .await
+                .unwrap()
+                .is_some()
+        );
+
+        store
+            .delete_if_revision("ns", "delete-me", 3)
+            .await
+            .unwrap();
+        assert!(
+            ConfigStore::get(&store, "ns", "delete-me")
+                .await
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn put_if_revision_handles_concurrent_writers() {
+        use awaken_contract::contract::config_store::ConfigStore;
+        use awaken_contract::contract::storage::StorageError;
+        use std::sync::Arc;
+
+        let store = Arc::new(InMemoryStore::new());
+
+        // Seed with revision 0 (absence treated as 0).
+        const N: usize = 20;
+        let mut handles = Vec::with_capacity(N);
+        for _ in 0..N {
+            let s = store.clone();
+            handles.push(tokio::spawn(async move {
+                let value = serde_json::json!({"spec": {}, "meta": {"source": {"kind": "user"}, "revision": 1}});
+                s.put_if_revision("ns", "concurrent", &value, 0).await
+            }));
+        }
+
+        let results: Vec<_> = futures::future::join_all(handles)
+            .await
+            .into_iter()
+            .map(|r| r.unwrap())
+            .collect();
+
+        let successes = results.iter().filter(|r| r.is_ok()).count();
+        let conflicts = results
+            .iter()
+            .filter(|r| matches!(r, Err(StorageError::VersionConflict { expected: 0, .. })))
+            .count();
+
+        assert_eq!(successes, 1, "exactly one writer should succeed");
+        assert_eq!(conflicts, N - 1, "all others should get VersionConflict");
+
+        let stored = ConfigStore::get(store.as_ref(), "ns", "concurrent")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(stored["meta"]["revision"], 1);
+    }
+
+    #[tokio::test]
+    async fn config_change_notifier_emits_on_put_and_delete() {
+        use awaken_contract::contract::config_store::{
+            ConfigChangeKind, ConfigChangeNotifier, ConfigStore,
+        };
+        let store = InMemoryStore::new();
+        let mut sub = store.subscribe().await.unwrap();
+
+        store
+            .put("agents", "a1", &serde_json::json!({"hello": "world"}))
+            .await
+            .unwrap();
+        let event = sub.next().await.unwrap();
+        assert_eq!(event.namespace, "agents");
+        assert_eq!(event.id, "a1");
+        assert!(matches!(event.kind, ConfigChangeKind::Put));
+
+        ConfigStore::delete(&store, "agents", "a1").await.unwrap();
+        let event = sub.next().await.unwrap();
+        assert_eq!(event.namespace, "agents");
+        assert_eq!(event.id, "a1");
+        assert!(matches!(event.kind, ConfigChangeKind::Delete));
+    }
+
+    #[tokio::test]
+    async fn config_change_notifier_supports_multiple_subscribers() {
+        use awaken_contract::contract::config_store::ConfigChangeNotifier;
+        let store = InMemoryStore::new();
+        let mut sub_a = store.subscribe().await.unwrap();
+        let mut sub_b = store.subscribe().await.unwrap();
+
+        store
+            .put("tools", "echo", &serde_json::json!({}))
+            .await
+            .unwrap();
+
+        let a = sub_a.next().await.unwrap();
+        let b = sub_b.next().await.unwrap();
+        assert_eq!(a.namespace, "tools");
+        assert_eq!(b.namespace, "tools");
+        assert_eq!(a.id, "echo");
+        assert_eq!(b.id, "echo");
     }
 }

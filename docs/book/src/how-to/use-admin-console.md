@@ -11,7 +11,7 @@ For the technical inventory of every screen and widget, see
 - A running `awaken-server` reachable from your browser. The default URL is
   `http://127.0.0.1:38080`.
 - An admin bearer token. Set it on the server via either:
-  - `AWAKEN_ADMIN_BEARER_TOKEN` environment variable, or
+  - `AWAKEN_ADMIN_API_BEARER_TOKEN` environment variable, or
   - `AdminApiConfig.bearer_token` field in the server config.
 - The admin console dev server (`apps/admin-console`) running locally — or a
   production build served behind your edge.
@@ -19,7 +19,7 @@ For the technical inventory of every screen and widget, see
 ```sh
 # Terminal 1 — runtime
 AWAKEN_HTTP_ADDR=127.0.0.1:38080 \
-AWAKEN_ADMIN_BEARER_TOKEN=dev-token \
+AWAKEN_ADMIN_API_BEARER_TOKEN=dev-token \
 cargo run -p ai-sdk-starter-agent
 
 # Terminal 2 — admin console

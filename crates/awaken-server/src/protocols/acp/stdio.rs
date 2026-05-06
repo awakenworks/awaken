@@ -17,9 +17,9 @@ use awaken_runtime::AgentRuntime;
 
 use super::encoder::{AcpEncoder, AcpOutput};
 use super::types::{
-    AgentCapabilities, ContentBlock, EmbeddedResource, EmbeddedResourceResource, Implementation,
-    InitializeRequest, InitializeResponse, NewSessionRequest, NewSessionResponse, PromptRequest,
-    PromptResponse, RequestPermissionResponse, ResourceLink,
+    AgentCapabilities, AudioContent, ContentBlock, EmbeddedResource, EmbeddedResourceResource,
+    ImageContent, Implementation, InitializeRequest, InitializeResponse, NewSessionRequest,
+    NewSessionResponse, PromptRequest, PromptResponse, RequestPermissionResponse, ResourceLink,
 };
 
 struct SessionState {
@@ -242,7 +242,12 @@ impl acp::Agent for AcpAgent {
 }
 
 fn build_initialize_response(request: InitializeRequest) -> InitializeResponse {
-    let capabilities = AgentCapabilities::new();
+    let capabilities = AgentCapabilities::new().prompt_capabilities(
+        agent_client_protocol_schema::PromptCapabilities::new()
+            .image(true)
+            .audio(true)
+            .embedded_context(true),
+    );
     InitializeResponse::new(request.protocol_version)
         .agent_capabilities(capabilities)
         .agent_info(Implementation::new("awaken-acp", env!("CARGO_PKG_VERSION")))
@@ -412,12 +417,8 @@ fn prompt_blocks_to_message_content(
             ContentBlock::Resource(resource) => {
                 content.push(embedded_resource_to_runtime_content(resource)?);
             }
-            ContentBlock::Image(_) => {
-                return Err("image prompt content is not supported by this ACP server".to_string());
-            }
-            ContentBlock::Audio(_) => {
-                return Err("audio prompt content is not supported by this ACP server".to_string());
-            }
+            ContentBlock::Image(image) => content.push(image_content_to_runtime_content(image)),
+            ContentBlock::Audio(audio) => content.push(audio_content_to_runtime_content(audio)),
             _ => return Err("unsupported ACP prompt content block".to_string()),
         }
     }
@@ -440,7 +441,7 @@ fn embedded_resource_to_runtime_content(
             let media_type = blob
                 .mime_type
                 .clone()
-                .unwrap_or_else(|| infer_media_type_from_uri(&blob.uri));
+                .unwrap_or_else(|| crate::message_convert::infer_media_type_from_url(&blob.uri));
             Ok(RuntimeContentBlock::document_base64(
                 media_type,
                 blob.blob.clone(),
@@ -451,14 +452,17 @@ fn embedded_resource_to_runtime_content(
     }
 }
 
-fn infer_media_type_from_uri(uri: &str) -> String {
-    match Path::new(uri).extension().and_then(|ext| ext.to_str()) {
-        Some("png") => "image/png".to_string(),
-        Some("jpg") | Some("jpeg") => "image/jpeg".to_string(),
-        Some("gif") => "image/gif".to_string(),
-        Some("pdf") => "application/pdf".to_string(),
-        _ => "application/octet-stream".to_string(),
+fn image_content_to_runtime_content(image: &ImageContent) -> RuntimeContentBlock {
+    if image.data.is_empty()
+        && let Some(uri) = image.uri.as_ref()
+    {
+        return RuntimeContentBlock::image_url(uri.clone());
     }
+    RuntimeContentBlock::image_base64(image.mime_type.clone(), image.data.clone())
+}
+
+fn audio_content_to_runtime_content(audio: &AudioContent) -> RuntimeContentBlock {
+    RuntimeContentBlock::audio_base64(audio.mime_type.clone(), audio.data.clone())
 }
 
 fn path_title(uri: &str) -> Option<String> {

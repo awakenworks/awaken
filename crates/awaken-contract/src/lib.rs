@@ -26,6 +26,8 @@ pub mod secret;
 pub mod state;
 pub mod thread;
 pub mod time;
+pub mod tool_spec;
+pub mod tool_spec_patch;
 
 // ── time ──
 pub use time::now_ms;
@@ -41,6 +43,9 @@ pub use model::{
 
 // ── agent spec patch ──
 pub use agent_spec_patch::{AgentSpecPatch, merge_agent_spec};
+
+// ── tool spec patch ──
+pub use tool_spec_patch::{ToolSpecPatch, merge_tool_spec};
 
 // ── registry spec (AgentSpec, PluginConfigKey) ──
 pub use registry_spec::{
@@ -84,6 +89,9 @@ pub use contract::tool_schema::{generate_tool_schema, sanitize_for_llm, validate
 
 // ── thread ──
 pub use thread::{Thread, ThreadMetadata};
+
+// ── tool spec ──
+pub use tool_spec::ToolSpec;
 
 // ── cancellation ──
 pub use cancellation::{CancellationHandle, CancellationToken};

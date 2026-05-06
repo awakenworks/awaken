@@ -168,7 +168,7 @@ mod tests {
                 &self,
                 _request: InferenceRequest,
             ) -> Result<StreamResult, InferenceExecutionError> {
-                unimplemented!()
+                Err(InferenceExecutionError::Provider("stub executor".into()))
             }
 
             fn name(&self) -> &str {

@@ -1,7 +1,7 @@
 //! Axum router setup — unified route registration.
 
 use axum::extract::{Path, Query, State};
-use axum::http::StatusCode;
+use axum::http::{HeaderMap, StatusCode};
 use axum::middleware;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, patch, post};
@@ -113,7 +113,7 @@ pub fn build_router(state: &AppState) -> Router<AppState> {
         .merge(mcp_routes());
 
     if state.admin_api_config().expose_config_routes {
-        router = router.merge(config_routes());
+        router = router.merge(admin_routes());
     }
 
     router
@@ -125,7 +125,6 @@ fn health_routes() -> Router<AppState> {
     Router::new()
         .route("/health", get(health_ready))
         .route("/health/live", get(health_live))
-        .route("/v1/system/info", get(system_info))
 }
 
 fn thread_routes() -> Router<AppState> {
@@ -160,6 +159,11 @@ fn run_routes() -> Router<AppState> {
         .route("/v1/threads/:id/runs", get(list_thread_runs))
         .route("/v1/threads/:id/runs/active", get(active_thread_run))
         .route("/v1/threads/:id/runs/latest", get(latest_thread_run))
+}
+
+fn admin_routes() -> Router<AppState> {
+    config_routes()
+        .route("/v1/system/info", get(system_info))
         .route("/v1/agents/:id/runtime-stats", get(get_agent_runtime_stats))
         .route("/v1/agents/runtime-stats", get(list_agents_runtime_stats))
 }
@@ -183,9 +187,13 @@ struct RuntimeStatsQuery {
 #[tracing::instrument(skip(state))]
 async fn get_agent_runtime_stats(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Path(id): Path<String>,
     Query(params): Query<RuntimeStatsQuery>,
 ) -> Response {
+    if let Err(err) = crate::config_routes::ensure_admin_auth(&state, &headers) {
+        return err.into_response();
+    }
     let Some(registry) = state.runtime_stats.as_ref() else {
         return (
             StatusCode::SERVICE_UNAVAILABLE,
@@ -218,7 +226,10 @@ async fn get_agent_runtime_stats(
 /// sorted by `agent_id`. Returns `{"agents":[...]}` (or 503 when the
 /// registry is missing).
 #[tracing::instrument(skip(state))]
-async fn list_agents_runtime_stats(State(state): State<AppState>) -> Response {
+async fn list_agents_runtime_stats(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    if let Err(err) = crate::config_routes::ensure_admin_auth(&state, &headers) {
+        return err.into_response();
+    }
     let Some(registry) = state.runtime_stats.as_ref() else {
         return (
             StatusCode::SERVICE_UNAVAILABLE,
@@ -251,7 +262,10 @@ async fn health_live() -> impl IntoResponse {
 /// string would mislead. Embedders that need to expose the concrete backend
 /// can decorate `AppState` with their own field and a separate route.
 #[tracing::instrument(skip(state))]
-async fn system_info(State(state): State<AppState>) -> Response {
+async fn system_info(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    if let Err(err) = crate::config_routes::ensure_admin_auth(&state, &headers) {
+        return err.into_response();
+    }
     let uptime_secs = state.started_at.elapsed().as_secs();
     Json(json!({
         "version": env!("CARGO_PKG_VERSION"),
@@ -1586,6 +1600,64 @@ mod tests {
                 StatusCode::NOT_FOUND,
                 "disabled config routes must not be mounted"
             );
+        }
+
+        #[tokio::test]
+        async fn admin_routes_return_404_when_admin_surface_disabled() {
+            use crate::app::AdminApiConfig;
+            use axum::http::StatusCode;
+
+            let state = make_app_state().with_admin_api_config(AdminApiConfig {
+                expose_config_routes: false,
+                ..AdminApiConfig::default()
+            });
+            let app = build_router(&state).with_state(state);
+
+            for uri in [
+                "/v1/system/info",
+                "/v1/agents/runtime-stats",
+                "/v1/agents/default/runtime-stats",
+            ] {
+                let req = axum::http::Request::builder()
+                    .uri(uri)
+                    .body(axum::body::Body::empty())
+                    .unwrap();
+                let resp = app.clone().oneshot(req).await.unwrap();
+                assert_eq!(
+                    resp.status(),
+                    StatusCode::NOT_FOUND,
+                    "{uri} must not be mounted when the admin surface is disabled"
+                );
+            }
+        }
+
+        #[tokio::test]
+        async fn admin_routes_require_bearer_token_when_configured() {
+            use crate::app::AdminApiConfig;
+            use awaken_contract::RedactedString;
+            use axum::http::{StatusCode, header};
+
+            let token = RedactedString::new("admin-token");
+            let state = make_app_state().with_admin_api_config(AdminApiConfig {
+                bearer_token: Some(token),
+                ..AdminApiConfig::default()
+            });
+            let app = build_router(&state).with_state(state);
+
+            let req = axum::http::Request::builder()
+                .uri("/v1/system/info")
+                .body(axum::body::Body::empty())
+                .unwrap();
+            let resp = app.clone().oneshot(req).await.unwrap();
+            assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+
+            let req = axum::http::Request::builder()
+                .uri("/v1/system/info")
+                .header(header::AUTHORIZATION, "Bearer admin-token")
+                .body(axum::body::Body::empty())
+                .unwrap();
+            let resp = app.oneshot(req).await.unwrap();
+            assert_eq!(resp.status(), StatusCode::OK);
         }
 
         #[tokio::test]

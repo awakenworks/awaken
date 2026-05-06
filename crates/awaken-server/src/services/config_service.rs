@@ -6,7 +6,7 @@ use awaken_contract::contract::config_store::ConfigStore;
 use awaken_contract::contract::storage::StorageError;
 use awaken_contract::{
     AgentSpec, AgentSpecPatch, ConfigRecord, McpServerSpec, ModelBindingSpec, ProviderSpec,
-    RecordSource, now_ms,
+    RecordMeta, RecordSource, ToolSpec, ToolSpecPatch, now_ms,
 };
 use axum::http::HeaderMap;
 use serde_json::{Map, Value, json};
@@ -14,7 +14,7 @@ use serde_json::{Map, Value, json};
 use crate::app::AppState;
 use crate::services::audit_log::AuditLogger;
 use crate::services::config_envelope::{
-    apply_overrides, ensure_envelope, spec_field, unwrap_spec, wrap_user,
+    apply_overrides, extract_timestamps, spec_field, unwrap_spec,
 };
 
 use super::config_runtime::ConfigRuntimeError;
@@ -25,23 +25,25 @@ pub enum ConfigNamespace {
     Models,
     Providers,
     McpServers,
+    Tools,
 }
 
 impl ConfigNamespace {
-    /// All four managed namespaces in a fixed order.
-    pub const ALL: [Self; 4] = [
+    /// All five managed namespaces in a fixed order.
+    pub const ALL: [Self; 5] = [
         Self::Agents,
         Self::Providers,
         Self::Models,
         Self::McpServers,
+        Self::Tools,
     ];
 
-    /// Slice over all four namespace variants.
+    /// Slice over all five namespace variants.
     pub fn all() -> &'static [Self] {
         &Self::ALL
     }
 
-    /// Iterator over the `&'static str` names of all four namespaces.
+    /// Iterator over the `&'static str` names of all five namespaces.
     pub fn iter_str() -> impl Iterator<Item = &'static str> + 'static {
         Self::ALL.iter().copied().map(Self::as_str)
     }
@@ -52,6 +54,7 @@ impl ConfigNamespace {
             "models" => Ok(Self::Models),
             "providers" => Ok(Self::Providers),
             "mcp-servers" => Ok(Self::McpServers),
+            "tools" => Ok(Self::Tools),
             _ => Err(ConfigServiceError::UnknownNamespace(value.to_string())),
         }
     }
@@ -62,6 +65,7 @@ impl ConfigNamespace {
             Self::Models => "models",
             Self::Providers => "providers",
             Self::McpServers => "mcp-servers",
+            Self::Tools => "tools",
         }
     }
 
@@ -71,6 +75,7 @@ impl ConfigNamespace {
             Self::Models => schemars::schema_for!(ModelBindingSpec),
             Self::Providers => schemars::schema_for!(ProviderSpec),
             Self::McpServers => schemars::schema_for!(McpServerSpec),
+            Self::Tools => schemars::schema_for!(ToolSpec),
         };
         serde_json::to_value(schema)
             .map_err(|error| ConfigServiceError::Serialization(error.to_string()))
@@ -253,7 +258,8 @@ impl<'a> ConfigService<'a> {
                 { "namespace": "agents", "schema": ConfigNamespace::Agents.schema_json()? },
                 { "namespace": "models", "schema": ConfigNamespace::Models.schema_json()? },
                 { "namespace": "providers", "schema": ConfigNamespace::Providers.schema_json()? },
-                { "namespace": "mcp-servers", "schema": ConfigNamespace::McpServers.schema_json()? }
+                { "namespace": "mcp-servers", "schema": ConfigNamespace::McpServers.schema_json()? },
+                { "namespace": "tools", "schema": ConfigNamespace::Tools.schema_json()? }
             ],
         }))
     }
@@ -353,6 +359,11 @@ impl<'a> ConfigService<'a> {
         body: Value,
         headers: &HeaderMap,
     ) -> Result<Value, ConfigServiceError> {
+        if matches!(namespace, ConfigNamespace::Tools) {
+            return Err(ConfigServiceError::InvalidPayload(
+                "tools namespace is read-only; use PATCH /v1/config/tools/:id/overrides".into(),
+            ));
+        }
         let manager = self.runtime_manager()?;
         let _apply_guard = manager.lock_apply().await;
         let (id, body) = self.prepare_body(namespace, None, body).await?;
@@ -365,7 +376,14 @@ impl<'a> ConfigService<'a> {
         }
 
         let result = self
-            .persist_and_apply_locked(manager.as_ref(), namespace, &id, None, body.clone())
+            .persist_and_apply_locked(
+                manager.as_ref(),
+                namespace,
+                &id,
+                None,
+                body.clone(),
+                headers,
+            )
             .await?;
 
         self.emit_audit(
@@ -388,6 +406,11 @@ impl<'a> ConfigService<'a> {
         body: Value,
         headers: &HeaderMap,
     ) -> Result<Value, ConfigServiceError> {
+        if matches!(namespace, ConfigNamespace::Tools) {
+            return Err(ConfigServiceError::InvalidPayload(
+                "tools namespace is read-only; use PATCH /v1/config/tools/:id/overrides".into(),
+            ));
+        }
         let manager = self.runtime_manager()?;
         let _apply_guard = manager.lock_apply().await;
         let (body_id, body) = self.prepare_body(namespace, Some(id), body).await?;
@@ -405,6 +428,7 @@ impl<'a> ConfigService<'a> {
                 id,
                 previous.clone(),
                 body.clone(),
+                headers,
             )
             .await?;
 
@@ -428,6 +452,11 @@ impl<'a> ConfigService<'a> {
         force: bool,
         headers: &HeaderMap,
     ) -> Result<(), ConfigServiceError> {
+        if matches!(namespace, ConfigNamespace::Tools) {
+            return Err(ConfigServiceError::InvalidPayload(
+                "tools namespace is read-only; use PATCH /v1/config/tools/:id/overrides".into(),
+            ));
+        }
         let manager = self.runtime_manager()?;
         let _apply_guard = manager.lock_apply().await;
         let previous = self
@@ -445,16 +474,32 @@ impl<'a> ConfigService<'a> {
             }
         }
 
-        self.store.delete(namespace.as_str(), id).await?;
+        let expected_revision = ConfigRecord::<Value>::from_value(previous.clone())
+            .map_err(|e| ConfigServiceError::Serialization(e.to_string()))?
+            .meta
+            .revision;
+        self.cas_delete_record(namespace, id, expected_revision)
+            .await?;
         let apply_result = manager
             .apply_locked()
             .await
             .map(|_| ())
             .map_err(map_runtime_error);
         if let Err(error) = apply_result {
-            let env = ensure_envelope(previous)
-                .map_err(|e| StorageError::Serialization(e.to_string()))?;
-            self.store.put(namespace.as_str(), id, &env).await?;
+            self.emit_audit_apply_failed(
+                namespace,
+                id,
+                "",
+                Some(unwrap_spec(previous.clone())),
+                None,
+                error.to_string(),
+                headers,
+            )
+            .await;
+            let mut rollback = ConfigRecord::<Value>::from_value(previous.clone())
+                .map_err(|e| ConfigServiceError::Serialization(e.to_string()))?;
+            self.insert_record_absent(namespace, id, &mut rollback, expected_revision + 1)
+                .await?;
             return Err(error);
         }
 
@@ -523,7 +568,7 @@ impl<'a> ConfigService<'a> {
                 .before
                 .clone()
                 .ok_or(RestoreError::NoPayload(event.action.clone()))?,
-            A::Restart | A::SeedApply => return Err(RestoreError::NotRestorable),
+            A::Restart | A::SeedApply | A::ApplyFailed => return Err(RestoreError::NotRestorable),
         };
 
         // Single store read: determines both existence and the pre-restore snapshot.
@@ -548,9 +593,16 @@ impl<'a> ConfigService<'a> {
                     format!("restored payload id '{body_id}' does not match URL id '{id}'"),
                 )));
             }
-            self.persist_and_apply_locked(manager.as_ref(), namespace, id, before.clone(), prepared)
-                .await
-                .map_err(RestoreError::Service)?
+            self.persist_and_apply_locked(
+                manager.as_ref(),
+                namespace,
+                id,
+                before.clone(),
+                prepared,
+                headers,
+            )
+            .await
+            .map_err(RestoreError::Service)?
         } else {
             // Resource does not exist — restore from a deleted state.
             // We need to preserve created_at from the restored payload.
@@ -592,6 +644,7 @@ impl<'a> ConfigService<'a> {
                 &body_id,
                 None,
                 prepared.clone(),
+                headers,
             )
             .await
             .map_err(RestoreError::Service)?
@@ -657,7 +710,9 @@ impl<'a> ConfigService<'a> {
                     .collect();
                 Ok(refs)
             }
-            ConfigNamespace::Agents | ConfigNamespace::McpServers => Ok(vec![]),
+            ConfigNamespace::Agents | ConfigNamespace::McpServers | ConfigNamespace::Tools => {
+                Ok(vec![])
+            }
         }
     }
 
@@ -699,6 +754,30 @@ impl<'a> ConfigService<'a> {
         audit.emit(action, &resource, before, after, headers).await;
     }
 
+    #[allow(clippy::too_many_arguments)]
+    async fn emit_audit_apply_failed(
+        &self,
+        namespace: ConfigNamespace,
+        id: &str,
+        suffix: &str,
+        before: Option<Value>,
+        after: Option<Value>,
+        error_msg: String,
+        headers: &HeaderMap,
+    ) {
+        let Some(audit) = &self.audit else {
+            return;
+        };
+        let resource = if suffix.is_empty() {
+            format!("{}/{}", namespace.as_str(), id)
+        } else {
+            format!("{}/{}/{}", namespace.as_str(), id, suffix)
+        };
+        audit
+            .emit_apply_failed(&resource, before, after, error_msg, headers)
+            .await;
+    }
+
     fn runtime_manager(
         &self,
     ) -> Result<&Arc<crate::services::config_runtime::ConfigRuntimeManager>, ConfigServiceError>
@@ -709,6 +788,108 @@ impl<'a> ConfigService<'a> {
             .ok_or(ConfigServiceError::NotEnabled)
     }
 
+    fn user_record_from_body(body: &Value) -> ConfigRecord<Value> {
+        let (created_at, updated_at) = extract_timestamps(body);
+        let mut meta = RecordMeta::new_user();
+        if created_at != 0 {
+            meta.created_at = created_at;
+        }
+        if updated_at != 0 {
+            meta.updated_at = updated_at;
+        }
+        ConfigRecord {
+            spec: body.clone(),
+            meta,
+        }
+    }
+
+    fn storage_write_error(
+        namespace: ConfigNamespace,
+        id: &str,
+        error: StorageError,
+    ) -> ConfigServiceError {
+        match error {
+            StorageError::AlreadyExists(_) => ConfigServiceError::Conflict(format!(
+                "{}/{} already exists",
+                namespace.as_str(),
+                id
+            )),
+            StorageError::VersionConflict { expected, actual } => {
+                ConfigServiceError::Conflict(format!(
+                    "{}/{} was modified by another writer (expected revision {expected}, found {actual}); retry the mutation",
+                    namespace.as_str(),
+                    id,
+                ))
+            }
+            other => ConfigServiceError::Storage(other),
+        }
+    }
+
+    async fn insert_record_absent<T: serde::Serialize + serde::de::DeserializeOwned>(
+        &self,
+        namespace: ConfigNamespace,
+        id: &str,
+        record: &mut ConfigRecord<T>,
+        revision: u64,
+    ) -> Result<u64, ConfigServiceError> {
+        record.meta.revision = revision;
+        let envelope = record
+            .to_value()
+            .map_err(|e| ConfigServiceError::Serialization(e.to_string()))?;
+        self.store
+            .put_if_absent(namespace.as_str(), id, &envelope)
+            .await
+            .map(|()| revision)
+            .map_err(|error| Self::storage_write_error(namespace, id, error))
+    }
+
+    /// Write `record` using `put_if_revision`, bumping `meta.revision` from
+    /// `expected_revision`. Returns the new revision on success or
+    /// `ConfigServiceError::Conflict` on CAS mismatch.
+    async fn cas_put_record<T: serde::Serialize + serde::de::DeserializeOwned>(
+        &self,
+        namespace: ConfigNamespace,
+        id: &str,
+        record: &mut ConfigRecord<T>,
+        expected_revision: u64,
+    ) -> Result<u64, ConfigServiceError> {
+        let next_revision = expected_revision.saturating_add(1);
+        record.meta.revision = next_revision;
+        let envelope = record
+            .to_value()
+            .map_err(|e| ConfigServiceError::Serialization(e.to_string()))?;
+        self.store
+            .put_if_revision(namespace.as_str(), id, &envelope, expected_revision)
+            .await
+            .map(|()| next_revision)
+            .map_err(|error| Self::storage_write_error(namespace, id, error))
+    }
+
+    async fn cas_delete_record(
+        &self,
+        namespace: ConfigNamespace,
+        id: &str,
+        expected_revision: u64,
+    ) -> Result<(), ConfigServiceError> {
+        self.store
+            .delete_if_revision(namespace.as_str(), id, expected_revision)
+            .await
+            .map_err(|error| Self::storage_write_error(namespace, id, error))
+    }
+
+    async fn rollback_to_raw_after_revision(
+        &self,
+        namespace: ConfigNamespace,
+        id: &str,
+        raw: Value,
+        expected_revision: u64,
+    ) -> Result<u64, ConfigServiceError> {
+        let mut rollback = ConfigRecord::<Value>::from_value(raw)
+            .map_err(|e| ConfigServiceError::Serialization(e.to_string()))?;
+        self.cas_put_record(namespace, id, &mut rollback, expected_revision)
+            .await
+    }
+
     async fn persist_and_apply_locked(
         &self,
         manager: &crate::services::config_runtime::ConfigRuntimeManager,
@@ -716,10 +897,24 @@ impl<'a> ConfigService<'a> {
         id: &str,
         previous: Option<Value>,
         body: Value,
+        headers: &HeaderMap,
     ) -> Result<Value, ConfigServiceError> {
         self.validate_payload(namespace, &body)?;
-        let envelope = wrap_user(&body).map_err(|e| StorageError::Serialization(e.to_string()))?;
-        self.store.put(namespace.as_str(), id, &envelope).await?;
+        let mut record = Self::user_record_from_body(&body);
+        let write_revision = match previous.as_ref() {
+            Some(previous) => {
+                let expected_revision = ConfigRecord::<Value>::from_value(previous.clone())
+                    .map_err(|e| ConfigServiceError::Serialization(e.to_string()))?
+                    .meta
+                    .revision;
+                self.cas_put_record(namespace, id, &mut record, expected_revision)
+                    .await?
+            }
+            None => {
+                self.insert_record_absent(namespace, id, &mut record, 1)
+                    .await?
+            }
+        };
 
         let apply_result = manager
             .apply_locked()
@@ -727,13 +922,25 @@ impl<'a> ConfigService<'a> {
             .map(|_| ())
             .map_err(map_runtime_error);
         if let Err(error) = apply_result {
+            self.emit_audit_apply_failed(
+                namespace,
+                id,
+                "",
+                previous.as_ref().map(|p| unwrap_spec(p.clone())),
+                Some(unwrap_spec(body.clone())),
+                error.to_string(),
+                headers,
+            )
+            .await;
             match previous {
                 Some(previous) => {
-                    let env = ensure_envelope(previous)
-                        .map_err(|e| StorageError::Serialization(e.to_string()))?;
-                    self.store.put(namespace.as_str(), id, &env).await?;
+                    self.rollback_to_raw_after_revision(namespace, id, previous, write_revision)
+                        .await?;
                 }
-                None => self.store.delete(namespace.as_str(), id).await?,
+                None => {
+                    self.cas_delete_record(namespace, id, write_revision)
+                        .await?
+                }
             }
             return Err(error);
         }
@@ -776,7 +983,7 @@ impl<'a> ConfigService<'a> {
                 self.normalize_mcp_server_payload(path_id, &mut object)
                     .await?;
             }
-            ConfigNamespace::Agents | ConfigNamespace::Models => {}
+            ConfigNamespace::Agents | ConfigNamespace::Models | ConfigNamespace::Tools => {}
         }
 
         let now = SystemTime::now()
@@ -924,6 +1131,9 @@ impl<'a> ConfigService<'a> {
                     }
                 }
             }
+            ConfigNamespace::Tools => {
+                let _: ToolSpec = from_value(body)?;
+            }
         }
         Ok(())
     }
@@ -967,7 +1177,7 @@ impl<'a> ConfigService<'a> {
                 }
                 Ok(Value::Object(object))
             }
-            ConfigNamespace::Agents | ConfigNamespace::Models => Ok(value),
+            ConfigNamespace::Agents | ConfigNamespace::Models | ConfigNamespace::Tools => Ok(value),
         }
     }
 
@@ -1121,6 +1331,8 @@ impl<'a> ConfigService<'a> {
             return Err(ConfigServiceError::OverridesNotSupportedForUserRecord);
         }
 
+        let expected_revision = record.meta.revision;
+
         // Validate incoming body field names via AgentSpecPatch (deny_unknown_fields).
         // We use a separate check for null values: replace nulls with a dummy value
         // so that deny_unknown_fields can still catch unknown field names.
@@ -1183,11 +1395,8 @@ impl<'a> ConfigService<'a> {
         record.meta.user_overrides = proposed_overrides;
         record.meta.updated_at = now_ms();
 
-        let envelope = record
-            .to_value()
-            .map_err(|e| ConfigServiceError::Serialization(e.to_string()))?;
-        self.store
-            .put(ConfigNamespace::Agents.as_str(), id, &envelope)
+        let write_revision = self
+            .cas_put_record(ConfigNamespace::Agents, id, &mut record, expected_revision)
             .await?;
 
         let apply_result = manager
@@ -1196,11 +1405,17 @@ impl<'a> ConfigService<'a> {
             .map(|_| ())
             .map_err(map_runtime_error);
         if let Err(error) = apply_result {
-            // Roll back to the original envelope.
-            let rollback =
-                ensure_envelope(raw).map_err(|e| StorageError::Serialization(e.to_string()))?;
-            self.store
-                .put(ConfigNamespace::Agents.as_str(), id, &rollback)
+            self.emit_audit_apply_failed(
+                ConfigNamespace::Agents,
+                id,
+                "overrides",
+                Some(before.clone()),
+                None,
+                error.to_string(),
+                headers,
+            )
+            .await;
+            self.rollback_to_raw_after_revision(ConfigNamespace::Agents, id, raw, write_revision)
                 .await?;
             return Err(error);
         }
@@ -1256,6 +1471,8 @@ impl<'a> ConfigService<'a> {
                 .map_err(|e| ConfigServiceError::Serialization(e.to_string()));
         }
 
+        let expected_revision = record.meta.revision;
+
         let before_spec = apply_overrides(record.spec.clone(), record.meta.user_overrides.as_ref())
             .map_err(|e| ConfigServiceError::InvalidPayload(e.to_string()))?;
         let before = serde_json::to_value(&before_spec)
@@ -1264,11 +1481,8 @@ impl<'a> ConfigService<'a> {
         record.meta.user_overrides = None;
         record.meta.updated_at = now_ms();
 
-        let envelope = record
-            .to_value()
-            .map_err(|e| ConfigServiceError::Serialization(e.to_string()))?;
-        self.store
-            .put(ConfigNamespace::Agents.as_str(), id, &envelope)
+        let write_revision = self
+            .cas_put_record(ConfigNamespace::Agents, id, &mut record, expected_revision)
             .await?;
 
         let apply_result = manager
@@ -1277,10 +1491,17 @@ impl<'a> ConfigService<'a> {
             .map(|_| ())
             .map_err(map_runtime_error);
         if let Err(error) = apply_result {
-            let rollback =
-                ensure_envelope(raw).map_err(|e| StorageError::Serialization(e.to_string()))?;
-            self.store
-                .put(ConfigNamespace::Agents.as_str(), id, &rollback)
+            self.emit_audit_apply_failed(
+                ConfigNamespace::Agents,
+                id,
+                "overrides",
+                Some(before.clone()),
+                None,
+                error.to_string(),
+                headers,
+            )
+            .await;
+            self.rollback_to_raw_after_revision(ConfigNamespace::Agents, id, raw, write_revision)
                 .await?;
             return Err(error);
         }
@@ -1330,6 +1551,8 @@ impl<'a> ConfigService<'a> {
             return Err(ConfigServiceError::OverridesNotSupportedForUserRecord);
         }
 
+        let expected_revision = record.meta.revision;
+
         let before_spec = apply_overrides(record.spec.clone(), record.meta.user_overrides.as_ref())
             .map_err(|e| ConfigServiceError::InvalidPayload(e.to_string()))?;
         let before = serde_json::to_value(&before_spec)
@@ -1375,11 +1598,8 @@ impl<'a> ConfigService<'a> {
         };
         record.meta.updated_at = now_ms();
 
-        let envelope = record
-            .to_value()
-            .map_err(|e| ConfigServiceError::Serialization(e.to_string()))?;
-        self.store
-            .put(ConfigNamespace::Agents.as_str(), id, &envelope)
+        let write_revision = self
+            .cas_put_record(ConfigNamespace::Agents, id, &mut record, expected_revision)
             .await?;
 
         let apply_result = manager
@@ -1388,10 +1608,17 @@ impl<'a> ConfigService<'a> {
             .map(|_| ())
             .map_err(map_runtime_error);
         if let Err(error) = apply_result {
-            let rollback =
-                ensure_envelope(raw).map_err(|e| StorageError::Serialization(e.to_string()))?;
-            self.store
-                .put(ConfigNamespace::Agents.as_str(), id, &rollback)
+            self.emit_audit_apply_failed(
+                ConfigNamespace::Agents,
+                id,
+                &format!("overrides/{field}"),
+                Some(before.clone()),
+                None,
+                error.to_string(),
+                headers,
+            )
+            .await;
+            self.rollback_to_raw_after_revision(ConfigNamespace::Agents, id, raw, write_revision)
                 .await?;
             return Err(error);
         }
@@ -1414,6 +1641,350 @@ impl<'a> ConfigService<'a> {
 
         Ok(after)
     }
+
+    /// PATCH /v1/config/tools/:id/overrides — see ADR-0029.
+    pub async fn patch_tool_overrides(
+        &self,
+        id: &str,
+        body: Value,
+        headers: &HeaderMap,
+    ) -> Result<Value, ConfigServiceError> {
+        const MAX_DESCRIPTION_LEN: usize = 4096;
+
+        let manager = self.runtime_manager()?;
+        let _apply_guard = manager.lock_apply().await;
+
+        let raw = self
+            .store
+            .get(ConfigNamespace::Tools.as_str(), id)
+            .await?
+            .ok_or_else(|| ConfigServiceError::NotFound(format!("tools/{id}")))?;
+
+        let mut record = ConfigRecord::<ToolSpec>::from_value(raw.clone())
+            .map_err(|e| ConfigServiceError::InvalidPayload(e.to_string()))?;
+
+        if matches!(record.meta.source, RecordSource::User) {
+            return Err(ConfigServiceError::OverridesNotSupportedForUserRecord);
+        }
+
+        let expected_revision = record.meta.revision;
+
+        let body_map = match &body {
+            Value::Object(m) => m,
+            _ => {
+                return Err(ConfigServiceError::InvalidPayload(
+                    "expected JSON object body".into(),
+                ));
+            }
+        };
+
+        // Schema validation: deny_unknown_fields catches bad field names.
+        let _: ToolSpecPatch = serde_json::from_value(body.clone())
+            .map_err(|e| ConfigServiceError::InvalidPayload(e.to_string()))?;
+
+        // Value validation (non-empty trim, length cap).
+        if let Some(Value::String(s)) = body_map.get("description") {
+            let trimmed = s.trim();
+            if trimmed.is_empty() {
+                return Err(ConfigServiceError::InvalidPayload(
+                    "description must be non-empty".into(),
+                ));
+            }
+            if s.len() > MAX_DESCRIPTION_LEN {
+                return Err(ConfigServiceError::InvalidPayload(format!(
+                    "description exceeds {MAX_DESCRIPTION_LEN}-byte limit"
+                )));
+            }
+        }
+
+        // Shallow merge into existing user_overrides; null = clear.
+        let mut existing_map: Map<String, Value> = record
+            .meta
+            .user_overrides
+            .as_ref()
+            .and_then(Value::as_object)
+            .cloned()
+            .unwrap_or_default();
+        for (k, v) in body_map {
+            if v.is_null() {
+                existing_map.remove(k);
+            } else {
+                existing_map.insert(k.clone(), v.clone());
+            }
+        }
+
+        // Re-validate the merged overrides shape.
+        let merged_value = Value::Object(existing_map.clone());
+        let _: ToolSpecPatch = serde_json::from_value(merged_value.clone())
+            .map_err(|e| ConfigServiceError::InvalidPayload(e.to_string()))?;
+
+        let proposed_overrides: Option<Value> = if existing_map.is_empty() {
+            None
+        } else {
+            Some(merged_value.clone())
+        };
+
+        if proposed_overrides == record.meta.user_overrides {
+            let effective_spec = apply_overrides(record.spec, record.meta.user_overrides.as_ref())
+                .map_err(|e| ConfigServiceError::InvalidPayload(e.to_string()))?;
+            return serde_json::to_value(&effective_spec)
+                .map_err(|e| ConfigServiceError::Serialization(e.to_string()));
+        }
+
+        let before_spec = apply_overrides(record.spec.clone(), record.meta.user_overrides.as_ref())
+            .map_err(|e| ConfigServiceError::InvalidPayload(e.to_string()))?;
+        let before = serde_json::to_value(&before_spec)
+            .map_err(|e| ConfigServiceError::Serialization(e.to_string()))?;
+
+        record.meta.user_overrides = proposed_overrides;
+        record.meta.updated_at = now_ms();
+
+        let write_revision = self
+            .cas_put_record(ConfigNamespace::Tools, id, &mut record, expected_revision)
+            .await?;
+
+        if let Err(error) = manager
+            .apply_locked()
+            .await
+            .map(|_| ())
+            .map_err(map_runtime_error)
+        {
+            self.emit_audit_apply_failed(
+                ConfigNamespace::Tools,
+                id,
+                "overrides",
+                Some(before.clone()),
+                None,
+                error.to_string(),
+                headers,
+            )
+            .await;
+            self.rollback_to_raw_after_revision(ConfigNamespace::Tools, id, raw, write_revision)
+                .await?;
+            return Err(error);
+        }
+
+        let after_spec = apply_overrides(record.spec, record.meta.user_overrides.as_ref())
+            .map_err(|e| ConfigServiceError::InvalidPayload(e.to_string()))?;
+        let after = serde_json::to_value(&after_spec)
+            .map_err(|e| ConfigServiceError::Serialization(e.to_string()))?;
+
+        self.emit_audit_with_suffix(
+            AuditAction::Update,
+            ConfigNamespace::Tools,
+            id,
+            "overrides",
+            Some(before),
+            Some(after.clone()),
+            headers,
+        )
+        .await;
+
+        Ok(after)
+    }
+
+    /// DELETE /v1/config/tools/:id/overrides
+    ///
+    /// Clears all user overrides from a Builtin tool record. Returns the
+    /// effective ToolSpec (which is now the bare base spec, no overrides).
+    pub async fn clear_tool_overrides(
+        &self,
+        id: &str,
+        headers: &HeaderMap,
+    ) -> Result<Value, ConfigServiceError> {
+        let manager = self.runtime_manager()?;
+        let _apply_guard = manager.lock_apply().await;
+
+        let raw = self
+            .store
+            .get(ConfigNamespace::Tools.as_str(), id)
+            .await?
+            .ok_or_else(|| ConfigServiceError::NotFound(format!("tools/{id}")))?;
+
+        let mut record = ConfigRecord::<ToolSpec>::from_value(raw.clone())
+            .map_err(|e| ConfigServiceError::InvalidPayload(e.to_string()))?;
+
+        if matches!(record.meta.source, RecordSource::User) {
+            return Err(ConfigServiceError::OverridesNotSupportedForUserRecord);
+        }
+
+        // Short-circuit: if overrides are already None, this is a no-op — skip
+        // the store write, apply_locked, and audit emit.
+        if record.meta.user_overrides.is_none() {
+            return serde_json::to_value(&record.spec)
+                .map_err(|e| ConfigServiceError::Serialization(e.to_string()));
+        }
+
+        let expected_revision = record.meta.revision;
+
+        let before_spec = apply_overrides(record.spec.clone(), record.meta.user_overrides.as_ref())
+            .map_err(|e| ConfigServiceError::InvalidPayload(e.to_string()))?;
+        let before = serde_json::to_value(&before_spec)
+            .map_err(|e| ConfigServiceError::Serialization(e.to_string()))?;
+
+        record.meta.user_overrides = None;
+        record.meta.updated_at = now_ms();
+
+        let write_revision = self
+            .cas_put_record(ConfigNamespace::Tools, id, &mut record, expected_revision)
+            .await?;
+
+        let apply_result = manager
+            .apply_locked()
+            .await
+            .map(|_| ())
+            .map_err(map_runtime_error);
+        if let Err(error) = apply_result {
+            self.emit_audit_apply_failed(
+                ConfigNamespace::Tools,
+                id,
+                "overrides",
+                Some(before.clone()),
+                None,
+                error.to_string(),
+                headers,
+            )
+            .await;
+            self.rollback_to_raw_after_revision(ConfigNamespace::Tools, id, raw, write_revision)
+                .await?;
+            return Err(error);
+        }
+
+        let after = serde_json::to_value(&record.spec)
+            .map_err(|e| ConfigServiceError::Serialization(e.to_string()))?;
+
+        self.emit_audit_with_suffix(
+            AuditAction::Update,
+            ConfigNamespace::Tools,
+            id,
+            "overrides",
+            Some(before),
+            Some(after.clone()),
+            headers,
+        )
+        .await;
+
+        Ok(after)
+    }
+
+    /// DELETE /v1/config/tools/:id/overrides/:field
+    ///
+    /// Removes a single field from the user overrides of a Builtin tool record.
+    /// Returns 400 if `field` is not a recognized ToolSpecPatch field.
+    /// Idempotent: if the field is not present in user_overrides, returns the
+    /// current effective spec without writing to the store or emitting an audit event.
+    pub async fn clear_tool_override_field(
+        &self,
+        id: &str,
+        field: &str,
+        headers: &HeaderMap,
+    ) -> Result<Value, ConfigServiceError> {
+        let manager = self.runtime_manager()?;
+        let _apply_guard = manager.lock_apply().await;
+
+        let raw = self
+            .store
+            .get(ConfigNamespace::Tools.as_str(), id)
+            .await?
+            .ok_or_else(|| ConfigServiceError::NotFound(format!("tools/{id}")))?;
+
+        let mut record = ConfigRecord::<ToolSpec>::from_value(raw.clone())
+            .map_err(|e| ConfigServiceError::InvalidPayload(e.to_string()))?;
+
+        if matches!(record.meta.source, RecordSource::User) {
+            return Err(ConfigServiceError::OverridesNotSupportedForUserRecord);
+        }
+
+        let expected_revision = record.meta.revision;
+
+        let before_spec = apply_overrides(record.spec.clone(), record.meta.user_overrides.as_ref())
+            .map_err(|e| ConfigServiceError::InvalidPayload(e.to_string()))?;
+        let before = serde_json::to_value(&before_spec)
+            .map_err(|e| ConfigServiceError::Serialization(e.to_string()))?;
+
+        // Validate that field is recognized by ToolSpecPatch before mutating.
+        // Use a null probe: `ToolSpecPatch` accepts null for all Option fields, and
+        // deny_unknown_fields will reject unknown field names.
+        let probe = Value::Object({
+            let mut m = Map::new();
+            m.insert(field.to_string(), Value::Null);
+            m
+        });
+        let _: ToolSpecPatch = serde_json::from_value(probe).map_err(|_| {
+            ConfigServiceError::InvalidPayload(format!("unknown override field: {field}"))
+        })?;
+
+        // Remove the field from existing overrides.
+        let mut existing_map: Map<String, Value> = record
+            .meta
+            .user_overrides
+            .as_ref()
+            .and_then(Value::as_object)
+            .cloned()
+            .unwrap_or_default();
+
+        // Short-circuit: if the field is not present in overrides, this is a no-op —
+        // skip the store write, apply_locked, and audit emit.
+        if !existing_map.contains_key(field) {
+            let effective_spec = apply_overrides(record.spec, record.meta.user_overrides.as_ref())
+                .map_err(|e| ConfigServiceError::InvalidPayload(e.to_string()))?;
+            return serde_json::to_value(&effective_spec)
+                .map_err(|e| ConfigServiceError::Serialization(e.to_string()));
+        }
+
+        existing_map.remove(field);
+
+        let merged_value = Value::Object(existing_map.clone());
+        record.meta.user_overrides = if existing_map.is_empty() {
+            None
+        } else {
+            Some(merged_value)
+        };
+        record.meta.updated_at = now_ms();
+
+        let write_revision = self
+            .cas_put_record(ConfigNamespace::Tools, id, &mut record, expected_revision)
+            .await?;
+
+        let apply_result = manager
+            .apply_locked()
+            .await
+            .map(|_| ())
+            .map_err(map_runtime_error);
+        if let Err(error) = apply_result {
+            self.emit_audit_apply_failed(
+                ConfigNamespace::Tools,
+                id,
+                &format!("overrides/{field}"),
+                Some(before.clone()),
+                None,
+                error.to_string(),
+                headers,
+            )
+            .await;
+            self.rollback_to_raw_after_revision(ConfigNamespace::Tools, id, raw, write_revision)
+                .await?;
+            return Err(error);
+        }
+
+        let after_spec = apply_overrides(record.spec, record.meta.user_overrides.as_ref())
+            .map_err(|e| ConfigServiceError::InvalidPayload(e.to_string()))?;
+        let after = serde_json::to_value(&after_spec)
+            .map_err(|e| ConfigServiceError::Serialization(e.to_string()))?;
+
+        self.emit_audit_with_suffix(
+            AuditAction::Update,
+            ConfigNamespace::Tools,
+            id,
+            &format!("overrides/{field}"),
+            Some(before),
+            Some(after.clone()),
+            headers,
+        )
+        .await;
+
+        Ok(after)
+    }
 }
 
 /// Return the effective spec Value for a stored entry, applying `user_overrides`
@@ -1421,14 +1992,25 @@ impl<'a> ConfigService<'a> {
 ///
 /// For non-Agent namespaces this is equivalent to `unwrap_spec`.
 fn effective_spec(namespace: ConfigNamespace, value: Value) -> Result<Value, ConfigServiceError> {
-    if namespace != ConfigNamespace::Agents {
-        return Ok(unwrap_spec(value));
+    match namespace {
+        ConfigNamespace::Agents => {
+            let record = ConfigRecord::<AgentSpec>::from_value(value)
+                .map_err(|e| ConfigServiceError::InvalidPayload(e.to_string()))?;
+            let effective = apply_overrides(record.spec, record.meta.user_overrides.as_ref())
+                .map_err(|e| ConfigServiceError::InvalidPayload(e.to_string()))?;
+            serde_json::to_value(&effective)
+                .map_err(|e| ConfigServiceError::Serialization(e.to_string()))
+        }
+        ConfigNamespace::Tools => {
+            let record = ConfigRecord::<ToolSpec>::from_value(value)
+                .map_err(|e| ConfigServiceError::InvalidPayload(e.to_string()))?;
+            let effective = apply_overrides(record.spec, record.meta.user_overrides.as_ref())
+                .map_err(|e| ConfigServiceError::InvalidPayload(e.to_string()))?;
+            serde_json::to_value(&effective)
+                .map_err(|e| ConfigServiceError::Serialization(e.to_string()))
+        }
+        _ => Ok(unwrap_spec(value)),
     }
-    let record = ConfigRecord::<AgentSpec>::from_value(value)
-        .map_err(|e| ConfigServiceError::InvalidPayload(e.to_string()))?;
-    let effective = apply_overrides(record.spec, record.meta.user_overrides.as_ref())
-        .map_err(|e| ConfigServiceError::InvalidPayload(e.to_string()))?;
-    serde_json::to_value(&effective).map_err(|e| ConfigServiceError::Serialization(e.to_string()))
 }
 
 /// Classify a tool's source from its id.
@@ -2127,7 +2709,7 @@ mod tests {
     #[test]
     fn namespace_all_lists_every_variant() {
         let all = ConfigNamespace::all();
-        assert_eq!(all.len(), 4, "exactly four namespaces");
+        assert_eq!(all.len(), 5, "exactly five namespaces");
 
         // Each variant must appear exactly once.
         let has = |v: ConfigNamespace| all.iter().filter(|&&x| x == v).count();
@@ -2135,11 +2717,12 @@ mod tests {
         assert_eq!(has(ConfigNamespace::Providers), 1);
         assert_eq!(has(ConfigNamespace::Models), 1);
         assert_eq!(has(ConfigNamespace::McpServers), 1);
+        assert_eq!(has(ConfigNamespace::Tools), 1);
     }
 
     #[test]
     fn namespace_all_matches_builtin_spec_namespace() {
-        use awaken_contract::{BuiltinSpec, McpServerSpec};
+        use awaken_contract::{BuiltinSpec, McpServerSpec, ToolSpec};
 
         for &ns in ConfigNamespace::all() {
             let spec = match ns {
@@ -2163,6 +2746,12 @@ mod tests {
                 }),
                 ConfigNamespace::McpServers => BuiltinSpec::McpServer(McpServerSpec {
                     id: "x".into(),
+                    ..Default::default()
+                }),
+                ConfigNamespace::Tools => BuiltinSpec::Tool(ToolSpec {
+                    id: "x".into(),
+                    name: "x".into(),
+                    description: "x".into(),
                     ..Default::default()
                 }),
             };
@@ -2502,6 +3091,648 @@ mod tests {
         assert!(
             after_obj.contains_key("id"),
             "audit 'after' must contain spec field 'id'"
+        );
+    }
+
+    #[test]
+    fn config_namespace_parses_tools() {
+        assert_eq!(
+            ConfigNamespace::parse("tools").unwrap(),
+            ConfigNamespace::Tools
+        );
+        assert_eq!(ConfigNamespace::Tools.as_str(), "tools");
+    }
+
+    #[test]
+    fn config_namespace_all_includes_tools() {
+        assert!(ConfigNamespace::ALL.contains(&ConfigNamespace::Tools));
+    }
+
+    #[test]
+    fn config_namespace_schema_for_tools_is_object() {
+        let schema = ConfigNamespace::Tools.schema_json().expect("schema");
+        // schemars 0.8: top-level object schema shape
+        assert!(schema.get("$defs").is_some() || schema.get("type").is_some());
+    }
+
+    #[tokio::test]
+    async fn tools_namespace_rejects_create() {
+        let config_store = Arc::new(awaken_stores::InMemoryStore::new());
+        let (state, _manager) = build_state(config_store).await;
+        let service = ConfigService::new(&state).expect("config service");
+        let body = json!({"id": "x", "name": "x", "description": "x"});
+        let err = service
+            .create(ConfigNamespace::Tools, body, &axum::http::HeaderMap::new())
+            .await
+            .expect_err("tools namespace must reject create");
+        match err {
+            ConfigServiceError::InvalidPayload(msg) => assert!(msg.contains("tools")),
+            other => panic!("expected InvalidPayload, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn tools_namespace_rejects_update() {
+        let config_store = Arc::new(awaken_stores::InMemoryStore::new());
+        let (state, _manager) = build_state(config_store).await;
+        let service = ConfigService::new(&state).expect("config service");
+        let body = json!({"id": "x", "name": "x", "description": "x"});
+        let err = service
+            .update(
+                ConfigNamespace::Tools,
+                "x",
+                body,
+                &axum::http::HeaderMap::new(),
+            )
+            .await
+            .expect_err("tools namespace must reject update");
+        match err {
+            ConfigServiceError::InvalidPayload(msg) => assert!(msg.contains("tools")),
+            other => panic!("expected InvalidPayload, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn tools_namespace_rejects_delete() {
+        let config_store = Arc::new(awaken_stores::InMemoryStore::new());
+        let (state, _manager) = build_state(config_store).await;
+        let service = ConfigService::new(&state).expect("config service");
+        let err = service
+            .delete(
+                ConfigNamespace::Tools,
+                "x",
+                false,
+                &axum::http::HeaderMap::new(),
+            )
+            .await
+            .expect_err("tools namespace must reject delete");
+        match err {
+            ConfigServiceError::InvalidPayload(msg) => assert!(msg.contains("tools")),
+            other => panic!("expected InvalidPayload, got {other:?}"),
+        }
+    }
+
+    // ── patch_tool_overrides helpers ──────────────────────────────────────────
+
+    use crate::services::audit_log::{AuditLogger, AuditQuery};
+    use awaken_contract::ToolSpec;
+    use awaken_contract::contract::audit_log::AuditEvent;
+    use awaken_contract::contract::tool::{
+        Tool, ToolCallContext, ToolDescriptor, ToolError, ToolOutput, ToolResult,
+    };
+
+    struct StubTool {
+        id: String,
+        desc: String,
+    }
+
+    #[async_trait]
+    impl Tool for StubTool {
+        fn descriptor(&self) -> ToolDescriptor {
+            ToolDescriptor::new(self.id.clone(), self.id.clone(), self.desc.clone())
+        }
+        async fn execute(
+            &self,
+            _args: serde_json::Value,
+            _ctx: &ToolCallContext,
+        ) -> Result<ToolOutput, ToolError> {
+            Ok(ToolResult::success(&self.id, serde_json::json!({})).into())
+        }
+    }
+
+    async fn build_test_service_with_tool(
+        id: &str,
+        description: &str,
+    ) -> (ConfigService<'static>, Arc<AuditLogger>) {
+        use awaken_contract::{BuiltinSeedSet, BuiltinSpec, RecordMeta};
+
+        let config_store: Arc<dyn awaken_contract::contract::config_store::ConfigStore> =
+            Arc::new(awaken_stores::InMemoryStore::new());
+        let audit_store: Arc<dyn awaken_contract::contract::config_store::ConfigStore> =
+            Arc::new(awaken_stores::InMemoryStore::new());
+        let audit_logger = Arc::new(AuditLogger::new(audit_store));
+
+        let thread_store = Arc::new(awaken_stores::InMemoryStore::new());
+        let runtime = Arc::new(
+            AgentRuntimeBuilder::new()
+                .with_provider("bootstrap", Arc::new(ImmediateExecutor))
+                .with_thread_run_store(thread_store.clone())
+                .with_tool(
+                    id,
+                    Arc::new(StubTool {
+                        id: id.to_string(),
+                        desc: description.to_string(),
+                    }),
+                )
+                .build()
+                .expect("build runtime"),
+        );
+
+        let manager = Arc::new(
+            crate::services::config_runtime::ConfigRuntimeManager::new(
+                runtime.clone(),
+                config_store.clone(),
+            )
+            .expect("config runtime manager")
+            .with_provider_factory(Arc::new(TestProviderFactory)),
+        );
+        let resolver = runtime.resolver_arc();
+        let seed = BuiltinSeedSet {
+            binary_version: "test".to_string(),
+            specs: vec![
+                BuiltinSpec::provider(ProviderSpec {
+                    id: "bootstrap".into(),
+                    adapter: "stub".into(),
+                    ..Default::default()
+                }),
+                BuiltinSpec::model(awaken_contract::ModelBindingSpec {
+                    id: "bootstrap".into(),
+                    provider_id: "bootstrap".into(),
+                    upstream_model: "bootstrap-model".into(),
+                    created_at: None,
+                    updated_at: None,
+                }),
+                BuiltinSpec::agent(bootstrap_agent()),
+            ],
+        };
+        manager.apply_seed(&seed).await.expect("apply_seed");
+        manager.apply().await.expect("publish config");
+
+        // Write a Builtin ConfigRecord for the tool directly into the store.
+        let tool_spec = ToolSpec {
+            id: id.to_string(),
+            name: id.to_string(),
+            description: description.to_string(),
+            ..Default::default()
+        };
+        let mut meta = RecordMeta::new_builtin("test");
+        meta.user_overrides = None;
+        meta.revision = 1;
+        let record = awaken_contract::ConfigRecord {
+            spec: tool_spec,
+            meta,
+        };
+        let envelope = record.to_value().expect("serialize tool record");
+        awaken_contract::contract::config_store::ConfigStore::put_if_absent(
+            config_store.as_ref(),
+            "tools",
+            id,
+            &envelope,
+        )
+        .await
+        .expect("put tool record");
+
+        let mailbox = Arc::new(crate::mailbox::Mailbox::new(
+            runtime.clone(),
+            Arc::new(awaken_stores::InMemoryMailboxStore::new()),
+            thread_store.clone(),
+            "tool-override-test".into(),
+            crate::mailbox::MailboxConfig::default(),
+        ));
+        let state = AppState::new(
+            runtime,
+            mailbox,
+            thread_store,
+            resolver,
+            crate::app::ServerConfig::default(),
+        )
+        .with_config_store(config_store)
+        .with_config_runtime_manager(manager)
+        .with_audit_log(audit_logger.clone());
+
+        // SAFETY: state is owned for the duration of the test; the 'static bound is
+        // satisfied by leaking the Box – acceptable in tests only.
+        let state: &'static AppState = Box::leak(Box::new(state));
+        let service = ConfigService::new(state).expect("config service");
+        (service, audit_logger)
+    }
+
+    async fn recent_audit_events(audit_logger: &AuditLogger, resource: &str) -> Vec<AuditEvent> {
+        let page = audit_logger
+            .query(AuditQuery::default())
+            .await
+            .expect("audit query");
+        page.items
+            .into_iter()
+            .filter(|e| e.resource == resource || e.resource.starts_with(&format!("{resource}/")))
+            .collect()
+    }
+
+    // ── patch_tool_overrides tests ────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn patch_tool_overrides_replaces_description_and_emits_audit() {
+        let (service, audit_logger) =
+            build_test_service_with_tool("echo", "stock description").await;
+        let patch = serde_json::json!({"description": "custom override"});
+        let after = service
+            .patch_tool_overrides("echo", patch, &axum::http::HeaderMap::new())
+            .await
+            .expect("patch ok");
+        assert_eq!(after["description"], "custom override");
+        assert_eq!(after["id"], "echo");
+        let events: Vec<AuditEvent> = recent_audit_events(&audit_logger, "tools/echo").await;
+        let event = events
+            .iter()
+            .find(|e| e.action == awaken_contract::AuditAction::Update)
+            .expect("audit event missing");
+        assert_eq!(event.resource, "tools/echo/overrides");
+        let before = event.before.as_ref().expect("before payload missing");
+        let after_payload = event.after.as_ref().expect("after payload missing");
+        assert_eq!(before["description"], "stock description");
+        assert_eq!(after_payload["description"], "custom override");
+    }
+
+    #[tokio::test]
+    async fn get_tools_merges_overrides_into_effective_spec() {
+        // Regression for the bug where `effective_spec` only merged for
+        // Agents, leaving Tools' GET endpoint returning the unpatched
+        // description even though the override was persisted in meta.
+        let (service, _audit_logger) =
+            build_test_service_with_tool("echo", "stock description").await;
+        service
+            .patch_tool_overrides(
+                "echo",
+                serde_json::json!({"description": "patched"}),
+                &axum::http::HeaderMap::new(),
+            )
+            .await
+            .expect("patch ok");
+        let value = service
+            .get(ConfigNamespace::Tools, "echo")
+            .await
+            .expect("get ok")
+            .expect("present");
+        assert_eq!(value["description"], "patched");
+    }
+
+    #[tokio::test]
+    async fn patch_tool_overrides_404_for_unknown_id() {
+        let (service, _audit_logger) = build_test_service_with_tool("echo", "x").await;
+        let err = service
+            .patch_tool_overrides(
+                "nope",
+                serde_json::json!({"description": "x"}),
+                &Default::default(),
+            )
+            .await
+            .expect_err("unknown id");
+        assert!(matches!(err, ConfigServiceError::NotFound(_)));
+    }
+
+    #[tokio::test]
+    async fn patch_tool_overrides_422_for_unknown_field() {
+        let (service, _audit_logger) = build_test_service_with_tool("echo", "x").await;
+        let err = service
+            .patch_tool_overrides(
+                "echo",
+                serde_json::json!({"name": "renamed"}),
+                &Default::default(),
+            )
+            .await
+            .expect_err("unknown field");
+        assert!(matches!(err, ConfigServiceError::InvalidPayload(_)));
+    }
+
+    #[tokio::test]
+    async fn patch_tool_overrides_rejects_empty_description() {
+        let (service, _audit_logger) = build_test_service_with_tool("echo", "x").await;
+        let err = service
+            .patch_tool_overrides(
+                "echo",
+                serde_json::json!({"description": ""}),
+                &Default::default(),
+            )
+            .await
+            .expect_err("empty description");
+        assert!(matches!(err, ConfigServiceError::InvalidPayload(_)));
+    }
+
+    #[tokio::test]
+    async fn patch_tool_overrides_rejects_overlong_description() {
+        let (service, _audit_logger) = build_test_service_with_tool("echo", "x").await;
+        let too_long = "x".repeat(4097);
+        let err = service
+            .patch_tool_overrides(
+                "echo",
+                serde_json::json!({"description": too_long}),
+                &Default::default(),
+            )
+            .await
+            .expect_err("overlong");
+        assert!(matches!(err, ConfigServiceError::InvalidPayload(_)));
+    }
+
+    #[tokio::test]
+    async fn clear_tool_overrides_reverts_to_builtin() {
+        let (service, _audit_logger) = build_test_service_with_tool("echo", "stock").await;
+        service
+            .patch_tool_overrides(
+                "echo",
+                serde_json::json!({"description": "custom"}),
+                &Default::default(),
+            )
+            .await
+            .unwrap();
+        let after = service
+            .clear_tool_overrides("echo", &Default::default())
+            .await
+            .unwrap();
+        assert_eq!(after["description"], "stock");
+    }
+
+    #[tokio::test]
+    async fn clear_tool_overrides_idempotent_when_already_empty() {
+        let (service, _audit_logger) = build_test_service_with_tool("echo", "stock").await;
+        let after = service
+            .clear_tool_overrides("echo", &Default::default())
+            .await
+            .unwrap();
+        assert_eq!(after["description"], "stock");
+    }
+
+    #[tokio::test]
+    async fn clear_tool_override_field_unknown_returns_422() {
+        let (service, _audit_logger) = build_test_service_with_tool("echo", "stock").await;
+        let err = service
+            .clear_tool_override_field("echo", "garbage", &Default::default())
+            .await
+            .expect_err("unknown field");
+        assert!(matches!(err, ConfigServiceError::InvalidPayload(_)));
+    }
+
+    #[tokio::test]
+    async fn clear_tool_override_field_known_clears_only_that_field() {
+        let (service, _audit_logger) = build_test_service_with_tool("echo", "stock").await;
+        service
+            .patch_tool_overrides(
+                "echo",
+                serde_json::json!({"description": "custom"}),
+                &Default::default(),
+            )
+            .await
+            .unwrap();
+        let after = service
+            .clear_tool_override_field("echo", "description", &Default::default())
+            .await
+            .unwrap();
+        assert_eq!(after["description"], "stock");
+    }
+
+    // ── CAS / revision tests ──────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn patch_tool_overrides_bumps_revision() {
+        let (service, _audit) = build_test_service_with_tool("echo", "stock").await;
+
+        let meta_before = service
+            .get_meta(ConfigNamespace::Tools, "echo")
+            .await
+            .expect("get_meta")
+            .expect("present");
+        assert_eq!(
+            meta_before.revision, 1,
+            "fresh seed must start at revision 1"
+        );
+
+        service
+            .patch_tool_overrides(
+                "echo",
+                serde_json::json!({"description": "patched"}),
+                &Default::default(),
+            )
+            .await
+            .expect("first patch ok");
+
+        let meta_after = service
+            .get_meta(ConfigNamespace::Tools, "echo")
+            .await
+            .expect("get_meta")
+            .expect("present");
+        assert!(
+            meta_after.revision > meta_before.revision,
+            "patch must bump revision: before={}, after={}",
+            meta_before.revision,
+            meta_after.revision,
+        );
+    }
+
+    #[tokio::test]
+    async fn patch_tool_overrides_conflict_on_stale_revision() {
+        use awaken_contract::ConfigRecord;
+
+        let (service, _audit) = build_test_service_with_tool("echo", "stock").await;
+
+        let store = service.store.clone();
+        let raw = awaken_contract::contract::config_store::ConfigStore::get(
+            store.as_ref(),
+            "tools",
+            "echo",
+        )
+        .await
+        .expect("read")
+        .expect("present");
+
+        let mut stale_record = ConfigRecord::<awaken_contract::ToolSpec>::from_value(raw.clone())
+            .expect("parse record");
+        let stale_expected = stale_record.meta.revision;
+
+        let mut concurrent_record =
+            ConfigRecord::<awaken_contract::ToolSpec>::from_value(raw).expect("parse current");
+        concurrent_record.spec.description = "concurrent".into();
+        concurrent_record.meta.revision = stale_expected + 1;
+        let concurrent_envelope = concurrent_record.to_value().expect("serialize concurrent");
+        awaken_contract::contract::config_store::ConfigStore::put_if_revision(
+            store.as_ref(),
+            "tools",
+            "echo",
+            &concurrent_envelope,
+            stale_expected,
+        )
+        .await
+        .expect("concurrent writer succeeds");
+
+        stale_record.spec.description = "stale".into();
+        let err = service
+            .cas_put_record(
+                ConfigNamespace::Tools,
+                "echo",
+                &mut stale_record,
+                stale_expected,
+            )
+            .await
+            .expect_err("stale write must conflict");
+        assert!(matches!(err, ConfigServiceError::Conflict(_)));
+
+        let meta_final = service
+            .get_meta(ConfigNamespace::Tools, "echo")
+            .await
+            .expect("get_meta final")
+            .expect("present final");
+        assert_eq!(
+            meta_final.revision,
+            stale_expected + 1,
+            "stale writer must not advance the stored revision"
+        );
+    }
+
+    // ── ApplyFailed audit emission tests ─────────────────────────────────────
+
+    #[tokio::test]
+    async fn patch_tool_overrides_apply_failure_emits_apply_failed_audit_event() {
+        use awaken_contract::{BuiltinSeedSet, BuiltinSpec, RecordMeta};
+
+        // Step 1: seed a config store with a builtin tool, apply successfully.
+        let config_store: Arc<dyn awaken_contract::contract::config_store::ConfigStore> =
+            Arc::new(awaken_stores::InMemoryStore::new());
+        let audit_store: Arc<dyn awaken_contract::contract::config_store::ConfigStore> =
+            Arc::new(awaken_stores::InMemoryStore::new());
+        let audit_logger = Arc::new(AuditLogger::new(audit_store));
+
+        let thread_store = Arc::new(awaken_stores::InMemoryStore::new());
+        let runtime = Arc::new(
+            AgentRuntimeBuilder::new()
+                .with_provider("bootstrap", Arc::new(ImmediateExecutor))
+                .with_thread_run_store(thread_store.clone())
+                .with_tool(
+                    "echo",
+                    Arc::new(StubTool {
+                        id: "echo".to_string(),
+                        desc: "stock".to_string(),
+                    }),
+                )
+                .build()
+                .expect("build runtime"),
+        );
+
+        let manager_ok = Arc::new(
+            crate::services::config_runtime::ConfigRuntimeManager::new(
+                runtime.clone(),
+                config_store.clone(),
+            )
+            .expect("config runtime manager")
+            .with_provider_factory(Arc::new(TestProviderFactory)),
+        );
+        let seed = BuiltinSeedSet {
+            binary_version: "test".to_string(),
+            specs: vec![
+                BuiltinSpec::provider(ProviderSpec {
+                    id: "bootstrap".into(),
+                    adapter: "stub".into(),
+                    ..Default::default()
+                }),
+                BuiltinSpec::model(awaken_contract::ModelBindingSpec {
+                    id: "bootstrap".into(),
+                    provider_id: "bootstrap".into(),
+                    upstream_model: "bootstrap-model".into(),
+                    created_at: None,
+                    updated_at: None,
+                }),
+                BuiltinSpec::agent(bootstrap_agent()),
+            ],
+        };
+        manager_ok.apply_seed(&seed).await.expect("apply_seed");
+        manager_ok.apply().await.expect("initial apply");
+
+        // Write a builtin tool record directly.
+        let tool_spec = ToolSpec {
+            id: "echo".to_string(),
+            name: "echo".to_string(),
+            description: "stock".to_string(),
+            ..Default::default()
+        };
+        let mut meta = RecordMeta::new_builtin("test");
+        meta.user_overrides = None;
+        meta.revision = 1;
+        let record = awaken_contract::ConfigRecord {
+            spec: tool_spec,
+            meta,
+        };
+        let envelope = record.to_value().expect("serialize tool record");
+        awaken_contract::contract::config_store::ConfigStore::put_if_absent(
+            config_store.as_ref(),
+            "tools",
+            "echo",
+            &envelope,
+        )
+        .await
+        .expect("put tool record");
+
+        // Step 2: build a second manager with FailingProviderFactory over the same store.
+        let runtime_failing = Arc::new(
+            AgentRuntimeBuilder::new()
+                .with_provider("bootstrap", Arc::new(ImmediateExecutor))
+                .with_thread_run_store(thread_store.clone())
+                .build()
+                .expect("build failing runtime"),
+        );
+        let manager_failing = Arc::new(
+            crate::services::config_runtime::ConfigRuntimeManager::new(
+                runtime_failing.clone(),
+                config_store.clone(),
+            )
+            .expect("config runtime manager")
+            .with_provider_factory(Arc::new(FailingProviderFactory)),
+        );
+        let mailbox = Arc::new(crate::mailbox::Mailbox::new(
+            runtime_failing.clone(),
+            Arc::new(awaken_stores::InMemoryMailboxStore::new()),
+            thread_store.clone(),
+            "apply-failed-test".into(),
+            crate::mailbox::MailboxConfig::default(),
+        ));
+        let state = AppState::new(
+            runtime_failing.clone(),
+            mailbox,
+            thread_store,
+            runtime_failing.resolver_arc(),
+            crate::app::ServerConfig::default(),
+        )
+        .with_config_store(config_store.clone())
+        .with_config_runtime_manager(manager_failing)
+        .with_audit_log(audit_logger.clone());
+
+        let state: &'static AppState = Box::leak(Box::new(state));
+        let service = ConfigService::new(state).expect("failing config service");
+
+        // Step 3: attempt patch_tool_overrides — apply_locked fails.
+        let result = service
+            .patch_tool_overrides(
+                "echo",
+                serde_json::json!({"description": "patched"}),
+                &axum::http::HeaderMap::new(),
+            )
+            .await;
+        assert!(result.is_err(), "patch must fail when apply_locked fails");
+
+        // Step 4: assert ApplyFailed event was emitted with the correct fields.
+        let page = audit_logger
+            .query(crate::services::audit_log::AuditQuery::default())
+            .await
+            .expect("audit query");
+        let failed_events: Vec<_> = page
+            .items
+            .iter()
+            .filter(|e| e.action == awaken_contract::AuditAction::ApplyFailed)
+            .collect();
+        assert_eq!(
+            failed_events.len(),
+            1,
+            "exactly one ApplyFailed event must be emitted"
+        );
+        let ev = &failed_events[0];
+        assert!(
+            ev.resource.contains("tools/echo"),
+            "resource must reference tools/echo, got: {}",
+            ev.resource
+        );
+        assert!(
+            ev.error.is_some(),
+            "ApplyFailed event must carry an error string"
+        );
+        assert!(
+            ev.before.is_some(),
+            "ApplyFailed event must carry the before spec"
         );
     }
 }

@@ -120,6 +120,7 @@ impl AuditLogger {
             ip,
             request_id,
             restored_from: None,
+            error: None,
         };
 
         let value = match serde_json::to_value(&event) {
@@ -142,6 +143,61 @@ impl AuditLogger {
             .and_then(|v| v.as_str().map(str::to_string))
             .unwrap_or_else(|| "unknown".to_string());
         metrics::counter!("awaken_audit_events_total", "action" => action_label).increment(1);
+    }
+
+    /// Emit an `ApplyFailed` audit event with an attached error string.
+    ///
+    /// Best-effort — same failure semantics as [`AuditLogger::emit`].
+    pub async fn emit_apply_failed(
+        &self,
+        resource: &str,
+        before: Option<Value>,
+        after: Option<Value>,
+        error_msg: String,
+        headers: &HeaderMap,
+    ) {
+        let id = ulid::Ulid::new().to_string();
+        let ts = Utc::now().to_rfc3339();
+        let actor = derive_actor(headers);
+        let ip = extract_client_ip(headers);
+        let request_id = headers
+            .get("x-request-id")
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_string);
+
+        let before = before.map(redact_secrets);
+        let after = after.map(redact_secrets);
+
+        let event = AuditEvent {
+            id: id.clone(),
+            ts,
+            actor,
+            action: AuditAction::ApplyFailed,
+            resource: resource.to_string(),
+            before,
+            after,
+            ip,
+            request_id,
+            restored_from: None,
+            error: Some(error_msg),
+        };
+
+        let value = match serde_json::to_value(&event) {
+            Ok(v) => v,
+            Err(error) => {
+                tracing::warn!(error = %error, "audit: failed to serialize apply_failed event");
+                metrics::counter!("awaken_audit_write_failures_total").increment(1);
+                return;
+            }
+        };
+
+        if let Err(error) = self.store.put(AUDIT_NAMESPACE, &id, &value).await {
+            tracing::warn!(error = %error, "audit: failed to write apply_failed event");
+            metrics::counter!("awaken_audit_write_failures_total").increment(1);
+            return;
+        }
+
+        metrics::counter!("awaken_audit_events_total", "action" => "apply_failed").increment(1);
     }
 
     /// Look up a single audit event by its ULID id.
@@ -186,6 +242,7 @@ impl AuditLogger {
             ip,
             request_id,
             restored_from: Some(restored_from),
+            error: None,
         };
 
         let value = match serde_json::to_value(&event) {
@@ -253,6 +310,7 @@ impl AuditLogger {
                 ip: None,
                 request_id: None,
                 restored_from: None,
+                error: None,
             };
 
             let value = match serde_json::to_value(&event) {
@@ -834,6 +892,7 @@ mod tests {
             unchanged: vec![],
             deleted,
             preserved_user: vec![],
+            preserved_overridden: vec![],
         }
     }
 

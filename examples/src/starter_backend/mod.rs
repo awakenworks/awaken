@@ -50,10 +50,9 @@ use awaken_runtime::policies::{
 };
 use awaken_server::app::{
     AppState, ServerConfig, SkillCatalogArgument, SkillCatalogContext, SkillCatalogEntry,
-    SkillCatalogProvider,
+    SkillCatalogProvider, build_service_router, serve_with_shutdown,
 };
 use awaken_server::mailbox::{Mailbox, MailboxConfig};
-use awaken_server::routes::build_router;
 use awaken_server::services::config_runtime::{
     ConfigRuntimeError, ConfigRuntimeManager, ProviderExecutorFactory,
 };
@@ -113,6 +112,24 @@ pub struct StarterBackendArgs {
     /// Reasoning effort level: none, low, medium, high, max, or a numeric budget.
     #[arg(long, env = "AGENT_REASONING_EFFORT")]
     pub reasoning_effort: Option<String>,
+
+    /// When true (default), this replica runs `manager.apply_seed(...)` at
+    /// boot. Set to false on non-leader replicas in multi-replica deploys
+    /// so only the leader writes Builtin records to the shared ConfigStore;
+    /// followers rely on `start_periodic_refresh` (and any future
+    /// `ConfigChangeNotifier`) to pull the seeded state.
+    ///
+    /// Seed writes use ConfigStore CAS, but a single seed writer still avoids
+    /// unnecessary startup conflicts in multi-replica deployments.
+    #[arg(
+        long,
+        env = "AWAKEN_LEADER_SEED",
+        default_value_t = true,
+        num_args = 0..=1,
+        default_missing_value = "true",
+        value_parser = clap::builder::BoolishValueParser::new()
+    )]
+    pub leader_seed: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -1095,24 +1112,39 @@ Always greet the user warmly and ask how you can help today.
         for mcp in &managed_mcp_servers {
             specs.push(BuiltinSpec::mcp_server(mcp.clone()));
         }
+        // Tool description records (ADR-0029): seed every registered tool so
+        // the admin UI can surface and override them. Must come AFTER the
+        // ConfigRuntimeManager is built (it owns the static tool registry).
+        for tool_spec in config_runtime_manager.snapshot_tool_specs() {
+            specs.push(tool_spec);
+        }
         BuiltinSeedSet {
             binary_version: env!("CARGO_PKG_VERSION").to_string(),
             specs,
         }
     };
 
-    let seed_report = config_runtime_manager
-        .apply_seed(&seed)
-        .await
-        .expect("failed to apply built-in seed");
-    tracing::info!(
-        created = seed_report.created.len(),
-        updated = seed_report.updated.len(),
-        unchanged = seed_report.unchanged.len(),
-        deleted = seed_report.deleted.len(),
-        preserved_user = seed_report.preserved_user.len(),
-        "built-in seed applied"
-    );
+    if args.leader_seed {
+        let seed_report = config_runtime_manager
+            .apply_seed(&seed)
+            .await
+            .expect("failed to apply built-in seed");
+        tracing::info!(
+            leader = true,
+            created = seed_report.created.len(),
+            updated = seed_report.updated.len(),
+            unchanged = seed_report.unchanged.len(),
+            deleted = seed_report.deleted.len(),
+            preserved_user = seed_report.preserved_user.len(),
+            preserved_overridden = seed_report.preserved_overridden.len(),
+            "built-in seed applied"
+        );
+    } else {
+        tracing::info!(
+            leader = false,
+            "non-leader replica: skipping apply_seed; relying on periodic_refresh + ConfigStore catch-up"
+        );
+    }
 
     let config_version = config_runtime_manager
         .apply()
@@ -1160,17 +1192,8 @@ Always greet the user warmly and ask how you can help today.
             as Arc<dyn SkillCatalogProvider>,
     );
 
-    let state = if let Ok(token) = std::env::var("AWAKEN_ADMIN_BEARER_TOKEN") {
-        if !token.is_empty() {
-            state.with_admin_api_bearer_token(token)
-        } else {
-            state
-        }
-    } else {
-        state
-    };
-
-    let mut app = build_router(&state).with_state(state);
+    let shutdown_timeout = Duration::from_secs(state.config.shutdown.timeout_secs);
+    let mut app = build_service_router(state).expect("failed to build server router");
 
     if config.enable_cors {
         let cors = CorsLayer::new()
@@ -1189,10 +1212,7 @@ Always greet the user warmly and ask how you can help today.
         "starter backend listening"
     );
 
-    axum::serve(listener, app)
-        .with_graceful_shutdown(async {
-            let _ = tokio::signal::ctrl_c().await;
-        })
+    serve_with_shutdown(listener, app, shutdown_timeout)
         .await
         .expect("server crashed");
 }
@@ -1339,5 +1359,24 @@ mod build_genai_client_tests {
             resolve_openai_compatible_adapter("gpt-5.4", Some("unknown")),
             AdapterKind::OpenAIResp
         );
+    }
+
+    #[test]
+    fn leader_seed_flag_defaults_true() {
+        use clap::Parser as _;
+        let args = super::StarterBackendArgs::parse_from(["binary"]);
+        assert!(
+            args.leader_seed,
+            "default must be true for single-replica back-compat"
+        );
+    }
+
+    #[test]
+    fn leader_seed_flag_can_be_disabled_via_env() {
+        use clap::Parser as _;
+        // Use the long-form flag rather than env to avoid global env contention
+        // in parallel tests.
+        let args = super::StarterBackendArgs::parse_from(["binary", "--leader-seed=false"]);
+        assert!(!args.leader_seed);
     }
 }

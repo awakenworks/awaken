@@ -13,7 +13,7 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, OnceLock, Weak};
 
 use async_trait::async_trait;
-use awaken_contract::contract::config_store::ConfigStore;
+use awaken_contract::contract::config_store::{ConfigStore, extract_meta_revision};
 use awaken_contract::contract::message::Message;
 use awaken_contract::contract::profile_store::{ProfileEntry, ProfileOwner, ProfileStore};
 use awaken_contract::contract::storage::{
@@ -31,6 +31,11 @@ use tokio::sync::Mutex;
 pub struct FileStore {
     base_path: PathBuf,
     hierarchy_lock: Arc<Mutex<()>>,
+    /// In-process mutex serialising config CAS (read-check-write) operations.
+    ///
+    /// FileStore's CAS is process-local; cross-process atomicity is not
+    /// guaranteed. For multi-process deployments use PostgresStore.
+    config_cas_lock: Arc<Mutex<()>>,
 }
 
 impl FileStore {
@@ -48,6 +53,7 @@ impl FileStore {
         cleanup_orphan_checkpoint_backups_sync(&base_path);
         Self {
             hierarchy_lock: shared_hierarchy_lock(&base_path),
+            config_cas_lock: shared_config_cas_lock(&base_path),
             base_path,
         }
     }
@@ -224,6 +230,25 @@ impl FileStore {
 
         Ok(())
     }
+}
+
+fn shared_config_cas_lock(base_path: &Path) -> Arc<Mutex<()>> {
+    static LOCKS: OnceLock<std::sync::Mutex<HashMap<String, Weak<Mutex<()>>>>> = OnceLock::new();
+
+    let key = hierarchy_lock_key(base_path);
+    let locks = LOCKS.get_or_init(|| std::sync::Mutex::new(HashMap::new()));
+    let mut guard = locks
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    guard.retain(|_, lock| lock.strong_count() > 0);
+
+    if let Some(lock) = guard.get(&key).and_then(Weak::upgrade) {
+        return lock;
+    }
+
+    let lock = Arc::new(Mutex::new(()));
+    guard.insert(key, Arc::downgrade(&lock));
+    lock
 }
 
 fn shared_hierarchy_lock(base_path: &Path) -> Arc<Mutex<()>> {
@@ -1159,15 +1184,101 @@ impl ConfigStore for FileStore {
     ) -> Result<(), StorageError> {
         validate_id(namespace, "config namespace")?;
         validate_id(id, "config id")?;
+        let _guard = self.config_cas_lock.lock().await;
         let payload = serde_json::to_string_pretty(value)
             .map_err(|error| StorageError::Serialization(error.to_string()))?;
         atomic_write(&self.config_dir(namespace), &format!("{id}.json"), &payload).await
     }
 
+    async fn put_if_absent(
+        &self,
+        namespace: &str,
+        id: &str,
+        value: &serde_json::Value,
+    ) -> Result<(), StorageError> {
+        validate_id(namespace, "config namespace")?;
+        validate_id(id, "config id")?;
+        let _guard = self.config_cas_lock.lock().await;
+        let payload = serde_json::to_string_pretty(value)
+            .map_err(|error| StorageError::Serialization(error.to_string()))?;
+        atomic_write_exclusive(
+            &self.config_dir(namespace),
+            &format!("{id}.json"),
+            &payload,
+            &format!("{namespace}/{id}"),
+        )
+        .await
+    }
+
     async fn delete(&self, namespace: &str, id: &str) -> Result<(), StorageError> {
         validate_id(namespace, "config namespace")?;
         validate_id(id, "config id")?;
+        let _guard = self.config_cas_lock.lock().await;
         let path = self.config_dir(namespace).join(format!("{id}.json"));
+        if path.exists() {
+            tokio::fs::remove_file(&path)
+                .await
+                .map_err(|error| StorageError::Io(error.to_string()))?;
+        }
+        Ok(())
+    }
+
+    /// Atomic compare-and-set for the config revision field.
+    ///
+    /// Atomicity is in-process only (via `config_cas_lock`). Cross-process
+    /// writers to the same file-system path are not protected. For multi-process
+    /// deployments use `PostgresStore` which uses `SELECT FOR UPDATE`.
+    async fn put_if_revision(
+        &self,
+        namespace: &str,
+        id: &str,
+        value: &serde_json::Value,
+        expected_revision: u64,
+    ) -> Result<(), StorageError> {
+        validate_id(namespace, "config namespace")?;
+        validate_id(id, "config id")?;
+        let _guard = self.config_cas_lock.lock().await;
+
+        // Re-read under the lock to avoid TOCTOU.
+        let path = self.config_dir(namespace).join(format!("{id}.json"));
+        let existing: Option<serde_json::Value> = read_json(&path).await?;
+        let actual = existing
+            .as_ref()
+            .and_then(extract_meta_revision)
+            .unwrap_or(0);
+        if actual != expected_revision {
+            return Err(StorageError::VersionConflict {
+                expected: expected_revision,
+                actual,
+            });
+        }
+
+        let payload = serde_json::to_string_pretty(value)
+            .map_err(|error| StorageError::Serialization(error.to_string()))?;
+        atomic_write(&self.config_dir(namespace), &format!("{id}.json"), &payload).await
+    }
+
+    async fn delete_if_revision(
+        &self,
+        namespace: &str,
+        id: &str,
+        expected_revision: u64,
+    ) -> Result<(), StorageError> {
+        validate_id(namespace, "config namespace")?;
+        validate_id(id, "config id")?;
+        let _guard = self.config_cas_lock.lock().await;
+        let path = self.config_dir(namespace).join(format!("{id}.json"));
+        let existing: Option<serde_json::Value> = read_json(&path).await?;
+        let actual = existing
+            .as_ref()
+            .and_then(extract_meta_revision)
+            .unwrap_or(0);
+        if actual != expected_revision {
+            return Err(StorageError::VersionConflict {
+                expected: expected_revision,
+                actual,
+            });
+        }
         if path.exists() {
             tokio::fs::remove_file(&path)
                 .await
@@ -1872,5 +1983,78 @@ mod tests {
 
         // Bob's entries are isolated
         assert_eq!(ProfileStore::list(&store, &bob).await.unwrap().len(), 1);
+    }
+
+    // ── ConfigStore::put_if_revision ──
+
+    #[tokio::test]
+    async fn file_store_put_if_revision_basic() {
+        use awaken_contract::contract::config_store::ConfigStore;
+        use awaken_contract::contract::storage::StorageError;
+
+        let td = TempDir::new().unwrap();
+        let store = FileStore::new(td.path());
+
+        let value_r1 = serde_json::json!({"spec": {"id": "k"}, "meta": {"source": {"kind": "user"}, "revision": 1}});
+        // Insert: no record, expected=0 → succeeds.
+        store
+            .put_if_revision("ns", "k", &value_r1, 0)
+            .await
+            .unwrap();
+        let stored = ConfigStore::get(&store, "ns", "k").await.unwrap().unwrap();
+        assert_eq!(stored["meta"]["revision"], 1);
+
+        // Conflict: expected=0 again should fail.
+        let err = store
+            .put_if_revision("ns", "k", &value_r1, 0)
+            .await
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            StorageError::VersionConflict {
+                expected: 0,
+                actual: 1
+            }
+        ));
+
+        // Correct CAS: expected=1 → update to revision 2.
+        let value_r2 = serde_json::json!({"spec": {"id": "k"}, "meta": {"source": {"kind": "user"}, "revision": 2}});
+        store
+            .put_if_revision("ns", "k", &value_r2, 1)
+            .await
+            .unwrap();
+        let stored = ConfigStore::get(&store, "ns", "k").await.unwrap().unwrap();
+        assert_eq!(stored["meta"]["revision"], 2);
+    }
+
+    #[tokio::test]
+    async fn file_store_put_if_absent_and_delete_if_revision() {
+        use awaken_contract::contract::config_store::ConfigStore;
+        use awaken_contract::contract::storage::StorageError;
+
+        let td = TempDir::new().unwrap();
+        let store = FileStore::new(td.path());
+
+        let value = serde_json::json!({
+            "spec": {"id": "k"},
+            "meta": {"source": {"kind": "user"}, "revision": 7}
+        });
+        store.put_if_absent("ns", "k", &value).await.unwrap();
+
+        let err = store.put_if_absent("ns", "k", &value).await.unwrap_err();
+        assert!(matches!(err, StorageError::AlreadyExists(id) if id == "ns/k"));
+
+        let err = store.delete_if_revision("ns", "k", 6).await.unwrap_err();
+        assert!(matches!(
+            err,
+            StorageError::VersionConflict {
+                expected: 6,
+                actual: 7
+            }
+        ));
+        assert!(ConfigStore::get(&store, "ns", "k").await.unwrap().is_some());
+
+        store.delete_if_revision("ns", "k", 7).await.unwrap();
+        assert!(ConfigStore::get(&store, "ns", "k").await.unwrap().is_none());
     }
 }

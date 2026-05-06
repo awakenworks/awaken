@@ -32,6 +32,12 @@ pub struct RecordMeta {
     pub created_at: u64,
     #[serde(default)]
     pub updated_at: u64,
+    /// Monotonic revision number for optimistic concurrency control.
+    /// Bumped by `ConfigStore::put_if_revision` on each successful CAS write.
+    /// Legacy records deserialise as 0; first `put_if_revision(... expected=0)`
+    /// promotes them to 1.
+    #[serde(default)]
+    pub revision: u64,
 }
 
 /// Who wrote this record into ConfigStore.
@@ -82,6 +88,7 @@ impl RecordMeta {
             user_overrides: None,
             created_at: 0,
             updated_at: 0,
+            revision: 0,
         }
     }
 
@@ -94,6 +101,7 @@ impl RecordMeta {
             user_overrides: None,
             created_at: now,
             updated_at: now,
+            revision: 0,
         }
     }
 
@@ -108,10 +116,53 @@ impl RecordMeta {
             user_overrides: None,
             created_at: now,
             updated_at: now,
+            revision: 0,
         }
     }
 }
 
 fn is_envelope(value: &serde_json::Value) -> bool {
     matches!(value, serde_json::Value::Object(map) if map.contains_key("spec") && map.contains_key("meta"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn legacy_json_without_revision_deserialises_to_zero() {
+        // Simulate a legacy RecordMeta JSON that has no `revision` field.
+        let json = serde_json::json!({
+            "source": {"kind": "user"},
+            "hidden": false,
+            "created_at": 1000,
+            "updated_at": 2000
+        });
+        let meta: RecordMeta = serde_json::from_value(json).unwrap();
+        assert_eq!(meta.revision, 0);
+        assert_eq!(meta.created_at, 1000);
+        assert_eq!(meta.updated_at, 2000);
+    }
+
+    #[test]
+    fn round_trip_preserves_revision() {
+        let meta = RecordMeta {
+            source: RecordSource::User,
+            hidden: false,
+            user_overrides: None,
+            created_at: 100,
+            updated_at: 200,
+            revision: 7,
+        };
+        let serialized = serde_json::to_value(&meta).unwrap();
+        let deserialized: RecordMeta = serde_json::from_value(serialized).unwrap();
+        assert_eq!(deserialized.revision, 7);
+    }
+
+    #[test]
+    fn constructors_default_revision_to_zero() {
+        assert_eq!(RecordMeta::legacy_user().revision, 0);
+        assert_eq!(RecordMeta::new_user().revision, 0);
+        assert_eq!(RecordMeta::new_builtin("1.0.0").revision, 0);
+    }
 }

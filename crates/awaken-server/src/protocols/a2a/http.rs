@@ -35,6 +35,9 @@ pub use awaken_protocol_a2a::{
 
 use crate::app::AppState;
 use crate::http_sse::{format_sse_data, sse_body_stream, sse_response};
+use crate::message_convert::{
+    content_block_from_media_base64, content_block_from_media_url, infer_media_type_from_url,
+};
 use awaken_runtime::RunRequest;
 
 const A2A_VERSION: &str = "1.0";
@@ -2671,36 +2674,7 @@ fn a2a_part_to_content_block(part: &Part) -> Result<ContentBlock, A2aError> {
 }
 
 fn url_part_to_content_block(url: &str, part: &Part) -> ContentBlock {
-    let media_type = part
-        .media_type
-        .clone()
-        .unwrap_or_else(|| infer_media_type_from_url(url));
-    if media_type.starts_with("image/") {
-        ContentBlock::Image {
-            source: ImageSource::Url {
-                url: url.to_string(),
-            },
-        }
-    } else if media_type.starts_with("audio/") {
-        ContentBlock::Audio {
-            source: AudioSource::Url {
-                url: url.to_string(),
-            },
-        }
-    } else if media_type.starts_with("video/") {
-        ContentBlock::Video {
-            source: VideoSource::Url {
-                url: url.to_string(),
-            },
-        }
-    } else {
-        ContentBlock::Document {
-            source: DocumentSource::Url {
-                url: url.to_string(),
-            },
-            title: part.filename.clone(),
-        }
-    }
+    content_block_from_media_url(url, part.media_type.as_deref(), part.filename.clone())
 }
 
 fn raw_part_to_content_block(raw: &str, part: &Part) -> ContentBlock {
@@ -2708,59 +2682,7 @@ fn raw_part_to_content_block(raw: &str, part: &Part) -> ContentBlock {
         .media_type
         .clone()
         .unwrap_or_else(|| "application/octet-stream".to_string());
-    if media_type.starts_with("image/") {
-        ContentBlock::Image {
-            source: ImageSource::Base64 {
-                media_type,
-                data: raw.to_string(),
-            },
-        }
-    } else if media_type.starts_with("audio/") {
-        ContentBlock::Audio {
-            source: AudioSource::Base64 {
-                media_type,
-                data: raw.to_string(),
-            },
-        }
-    } else if media_type.starts_with("video/") {
-        ContentBlock::Video {
-            source: VideoSource::Base64 {
-                media_type,
-                data: raw.to_string(),
-            },
-        }
-    } else {
-        ContentBlock::Document {
-            source: DocumentSource::Base64 {
-                media_type,
-                data: raw.to_string(),
-            },
-            title: part.filename.clone(),
-        }
-    }
-}
-
-fn infer_media_type_from_url(url: &str) -> String {
-    let lower = url.to_ascii_lowercase();
-    if lower.ends_with(".png") {
-        "image/png".to_string()
-    } else if lower.ends_with(".jpg") || lower.ends_with(".jpeg") {
-        "image/jpeg".to_string()
-    } else if lower.ends_with(".gif") {
-        "image/gif".to_string()
-    } else if lower.ends_with(".webp") {
-        "image/webp".to_string()
-    } else if lower.ends_with(".mp3") {
-        "audio/mpeg".to_string()
-    } else if lower.ends_with(".wav") {
-        "audio/wav".to_string()
-    } else if lower.ends_with(".mp4") {
-        "video/mp4".to_string()
-    } else if lower.ends_with(".pdf") {
-        "application/pdf".to_string()
-    } else {
-        "application/octet-stream".to_string()
-    }
+    content_block_from_media_base64(raw, media_type, part.filename.clone())
 }
 
 fn awaken_message_to_a2a_message(

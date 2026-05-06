@@ -28,8 +28,12 @@ where
     async_stream::stream! {
         // Emit prologue
         for item in encoder.prologue() {
-            if let Ok(bytes) = serde_json::to_vec(&item) {
-                yield bytes;
+            match serde_json::to_vec(&item) {
+                Ok(bytes) => yield bytes,
+                Err(error) => tracing::warn!(
+                    error = %error,
+                    "failed to serialize relay prologue item"
+                ),
             }
         }
 
@@ -38,8 +42,12 @@ where
         while let Some(event) = event_stream.next().await {
             let is_terminal = event.is_terminal();
             for item in encoder.transcode(&event) {
-                if let Ok(bytes) = serde_json::to_vec(&item) {
-                    yield bytes;
+                match serde_json::to_vec(&item) {
+                    Ok(bytes) => yield bytes,
+                    Err(error) => tracing::warn!(
+                        error = %error,
+                        "failed to serialize relay event item"
+                    ),
                 }
             }
             if is_terminal {
@@ -49,8 +57,12 @@ where
 
         // Emit epilogue
         for item in encoder.epilogue() {
-            if let Ok(bytes) = serde_json::to_vec(&item) {
-                yield bytes;
+            match serde_json::to_vec(&item) {
+                Ok(bytes) => yield bytes,
+                Err(error) => tracing::warn!(
+                    error = %error,
+                    "failed to serialize relay epilogue item"
+                ),
             }
         }
     }

@@ -9,6 +9,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::registry_spec::{AgentSpec, McpServerSpec, ModelBindingSpec, ProviderSpec};
+use crate::tool_spec::ToolSpec;
 
 /// A single spec the binary wants to seed into ConfigStore.
 ///
@@ -23,6 +24,7 @@ pub enum BuiltinSpec {
     Provider(ProviderSpec),
     Model(ModelBindingSpec),
     McpServer(McpServerSpec),
+    Tool(ToolSpec),
 }
 
 impl BuiltinSpec {
@@ -46,6 +48,11 @@ impl BuiltinSpec {
         Self::McpServer(spec)
     }
 
+    /// Wrap a `ToolSpec`.
+    pub fn tool(spec: ToolSpec) -> Self {
+        Self::Tool(spec)
+    }
+
     /// ConfigStore namespace this spec belongs to.
     ///
     /// Must match the namespace strings used by `ConfigService` /
@@ -56,6 +63,7 @@ impl BuiltinSpec {
             Self::Provider(_) => "providers",
             Self::Model(_) => "models",
             Self::McpServer(_) => "mcp-servers",
+            Self::Tool(_) => "tools",
         }
     }
 
@@ -66,6 +74,7 @@ impl BuiltinSpec {
             Self::Provider(s) => &s.id,
             Self::Model(s) => &s.id,
             Self::McpServer(s) => &s.id,
+            Self::Tool(s) => &s.id,
         }
     }
 }
@@ -145,5 +154,29 @@ mod tests {
             BuiltinSpec::mcp_server(spec),
             BuiltinSpec::McpServer(_)
         ));
+    }
+
+    #[test]
+    fn constructor_tool_wraps() {
+        let spec = crate::tool_spec::ToolSpec {
+            id: "t1".into(),
+            name: "Tool 1".into(),
+            description: "x".into(),
+            ..Default::default()
+        };
+        assert!(matches!(BuiltinSpec::tool(spec), BuiltinSpec::Tool(_)));
+    }
+
+    #[test]
+    fn tool_namespace_and_id() {
+        let spec = crate::tool_spec::ToolSpec {
+            id: "t1".into(),
+            name: "x".into(),
+            description: "x".into(),
+            ..Default::default()
+        };
+        let bi = BuiltinSpec::tool(spec);
+        assert_eq!(bi.namespace(), "tools");
+        assert_eq!(bi.id(), "t1");
     }
 }

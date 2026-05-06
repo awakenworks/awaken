@@ -6,7 +6,7 @@
 
 use awaken_contract::{
     AgentSpec, AgentSpecPatch, ConfigRecord, McpServerSpec, ModelBindingSpec, ProviderSpec,
-    RecordMeta, merge_agent_spec,
+    RecordMeta, ToolSpec, ToolSpecPatch, merge_agent_spec, merge_tool_spec,
 };
 use serde_json::Value;
 
@@ -29,6 +29,13 @@ impl ApplyPatch for AgentSpec {
     type Patch = AgentSpecPatch;
     fn apply(self, patch: AgentSpecPatch) -> Self {
         merge_agent_spec(self, patch)
+    }
+}
+
+impl ApplyPatch for ToolSpec {
+    type Patch = ToolSpecPatch;
+    fn apply(self, patch: ToolSpecPatch) -> Self {
+        merge_tool_spec(self, patch)
     }
 }
 
@@ -83,6 +90,7 @@ pub(crate) fn extract_timestamps(spec: &Value) -> (u64, u64) {
 /// The spec's own `created_at`/`updated_at` are lifted into `RecordMeta` for
 /// provenance. This does **not** modify the spec itself — the spec timestamps
 /// remain authoritative for UI display.
+#[cfg(test)]
 pub(crate) fn wrap_user(spec: &Value) -> Result<Value, serde_json::Error> {
     let (created_at, updated_at) = extract_timestamps(spec);
     let mut meta = RecordMeta::new_user();
@@ -115,6 +123,7 @@ pub(crate) fn wrap_builtin(spec: &Value, binary_version: &str) -> Result<Value, 
 ///
 /// Used for rollback paths where the value being restored may have been
 /// written by an earlier writer (envelope) or an older binary (bare spec).
+#[cfg(test)]
 pub(crate) fn ensure_envelope(value: Value) -> Result<Value, serde_json::Error> {
     if value.is_object()
         && value
@@ -312,5 +321,42 @@ mod tests {
             err.is_err(),
             "unknown field in overrides must produce a decode error"
         );
+    }
+
+    #[test]
+    fn apply_overrides_for_tool_spec_replaces_description_when_some() {
+        use awaken_contract::ToolSpec;
+        let spec = ToolSpec {
+            id: "echo".into(),
+            name: "Echo".into(),
+            description: "stock".into(),
+            ..Default::default()
+        };
+        let overrides = json!({"description": "custom"});
+        let result = apply_overrides(spec, Some(&overrides)).unwrap();
+        assert_eq!(result.description, "custom");
+    }
+
+    #[test]
+    fn apply_overrides_for_tool_spec_keeps_base_when_none() {
+        use awaken_contract::ToolSpec;
+        let spec = ToolSpec {
+            id: "echo".into(),
+            description: "stock".into(),
+            ..Default::default()
+        };
+        let result = apply_overrides(spec, None).unwrap();
+        assert_eq!(result.description, "stock");
+    }
+
+    #[test]
+    fn apply_overrides_for_tool_spec_rejects_unknown_field() {
+        use awaken_contract::ToolSpec;
+        let spec = ToolSpec {
+            id: "echo".into(),
+            ..Default::default()
+        };
+        let bad = json!({"name": "renamed"});
+        assert!(apply_overrides(spec, Some(&bad)).is_err());
     }
 }

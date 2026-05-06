@@ -23,6 +23,11 @@ pub struct SeedReport {
     pub unchanged: Vec<RecordRef>,
     pub deleted: Vec<RecordRef>,
     pub preserved_user: Vec<RecordRef>,
+    /// Builtin records orphaned by this seed (id no longer registered) but
+    /// carrying a non-empty `user_overrides`. Marked `hidden=true` instead
+    /// of being deleted, so re-introducing the spec in a later binary
+    /// transparently restores the override.
+    pub preserved_overridden: Vec<RecordRef>,
 }
 
 /// Identifies a single record in a ConfigStore.
@@ -58,19 +63,22 @@ pub enum SeedError {
 /// - No existing record → create new Builtin record. (created)
 /// - Existing Builtin, same binary_version, spec equal → no-op. (unchanged)
 /// - Existing Builtin, same binary_version, spec differs → replace spec, refresh updated_at. (updated)
-/// - Existing Builtin, different binary_version → replace spec + version, preserve hidden, refresh updated_at. (updated)
+/// - Existing Builtin, different binary_version → replace spec + version, clear hidden, refresh updated_at. (updated)
 /// - Existing User → leave entirely untouched. (preserved_user)
 ///
-/// After processing seed entries, scans all four spec namespaces
-/// (`agents`, `providers`, `models`, `mcp-servers`) and deletes any
-/// Builtin record whose ID is not in this seed (orphan cleanup).
+/// After processing seed entries, scans all five spec namespaces
+/// (`agents`, `providers`, `models`, `mcp-servers`, `tools`) and processes
+/// each Builtin record whose ID is not in this seed:
+///
+/// - If it carries a `user_overrides` payload → marks it `hidden=true` instead
+///   of deleting, so re-introducing the spec in a later binary transparently
+///   restores the override (preserved_overridden).
+/// - Otherwise → hard-deletes it (deleted).
+///
 /// User records are never deleted by orphan cleanup.
 ///
-/// **Concurrency precondition:** Must not run concurrently with any other
-/// writer to the four spec namespaces (`agents`, `providers`, `models`,
-/// `mcp-servers`). Intended for boot-time invocation before
-/// `ConfigRuntimeManager::apply()`. With this precondition, the
-/// snapshot-then-delete orphan-cleanup pattern is safe.
+/// Seed writes use ConfigStore CAS primitives so a concurrent writer surfaces as
+/// a storage conflict instead of silently overwriting records.
 pub async fn apply_builtin_seed(
     store: &dyn ConfigStore,
     seed: &BuiltinSeedSet,
@@ -96,11 +104,14 @@ pub async fn apply_builtin_seed(
         match existing_raw {
             None => {
                 // Create new Builtin record.
-                let record = ConfigRecord {
+                let mut record = ConfigRecord {
                     spec: new_spec_value,
                     meta: RecordMeta::new_builtin(&seed.binary_version),
                 };
-                store.put(namespace, id, &record.to_value()?).await?;
+                record.meta.revision = 1;
+                store
+                    .put_if_absent(namespace, id, &record.to_value()?)
+                    .await?;
                 report.created.push(RecordRef::new(namespace, id));
             }
             Some(raw) => {
@@ -122,21 +133,33 @@ pub async fn apply_builtin_seed(
                             report.unchanged.push(RecordRef::new(namespace, id));
                         } else {
                             // Update: refresh spec and/or version; preserve
-                            // hidden flag, user_overrides, and created_at.
+                            // user_overrides and created_at.
+                            // Reintroducing a previously-orphaned spec clears
+                            // `hidden`; the user override (if any) flows
+                            // through unchanged.
                             let now = awaken_contract::time::now_ms();
+                            let expected_revision = existing.meta.revision;
                             let record = ConfigRecord {
                                 spec: new_spec_value,
                                 meta: RecordMeta {
                                     source: RecordSource::Builtin {
                                         binary_version: seed.binary_version.clone(),
                                     },
-                                    hidden: existing.meta.hidden,
+                                    hidden: false,
                                     user_overrides: existing.meta.user_overrides,
                                     created_at: existing.meta.created_at,
                                     updated_at: now,
+                                    revision: expected_revision + 1,
                                 },
                             };
-                            store.put(namespace, id, &record.to_value()?).await?;
+                            store
+                                .put_if_revision(
+                                    namespace,
+                                    id,
+                                    &record.to_value()?,
+                                    expected_revision,
+                                )
+                                .await?;
                             report.updated.push(RecordRef::new(namespace, id));
                         }
                     }
@@ -185,10 +208,34 @@ pub async fn apply_builtin_seed(
             offset += page_len;
         }
 
-        // Pass 2: delete all candidates collected above.
+        // Pass 2: delete or hide each candidate based on whether it carries
+        // a user override. Hard-delete records with no override; soft-delete
+        // (hidden=true) records that DO have an override so that re-introducing
+        // the spec in a later binary transparently restores the override.
         for id in candidates {
-            store.delete(namespace, &id).await?;
-            report.deleted.push(RecordRef::new(namespace, &id));
+            let Some(raw) = store.get(namespace, &id).await? else {
+                continue;
+            };
+            let mut record: ConfigRecord<serde_json::Value> = ConfigRecord::from_value(raw)?;
+            let expected_revision = record.meta.revision;
+
+            if record.meta.user_overrides.is_some() {
+                // Soft-delete: preserve the override under hidden=true.
+                record.meta.hidden = true;
+                record.meta.updated_at = awaken_contract::time::now_ms();
+                record.meta.revision = expected_revision + 1;
+                store
+                    .put_if_revision(namespace, &id, &record.to_value()?, expected_revision)
+                    .await?;
+                report
+                    .preserved_overridden
+                    .push(RecordRef::new(namespace, &id));
+            } else {
+                store
+                    .delete_if_revision(namespace, &id, expected_revision)
+                    .await?;
+                report.deleted.push(RecordRef::new(namespace, &id));
+            }
         }
     }
 
@@ -207,6 +254,7 @@ fn builtin_spec_to_value(spec: &BuiltinSpec) -> Result<serde_json::Value, serde_
         BuiltinSpec::Provider(s) => serde_json::to_value(s),
         BuiltinSpec::Model(s) => serde_json::to_value(s),
         BuiltinSpec::McpServer(s) => serde_json::to_value(s),
+        BuiltinSpec::Tool(s) => serde_json::to_value(s),
     }
 }
 
@@ -499,7 +547,7 @@ mod tests {
     // ── test 8 ───────────────────────────────────────────────────────────────
 
     #[tokio::test]
-    async fn hidden_flag_preserved_across_upgrade() {
+    async fn reintroduced_spec_clears_hidden_flag() {
         let s = store();
 
         apply_builtin_seed(
@@ -509,7 +557,7 @@ mod tests {
         .await
         .unwrap();
 
-        // Set hidden = true on stored record.
+        // Set hidden = true on stored record (simulates an orphan-preserved state).
         let raw = s.get("agents", "a1").await.unwrap().unwrap();
         let mut rec: ConfigRecord<serde_json::Value> = ConfigRecord::from_value(raw).unwrap();
         rec.meta.hidden = true;
@@ -517,7 +565,7 @@ mod tests {
             .await
             .unwrap();
 
-        // Apply v2 with new content.
+        // Apply v2 with new content — reintroduces the spec, must clear hidden.
         apply_builtin_seed(
             &s,
             &seed_v2(vec![BuiltinSpec::Agent(Box::new(agent_spec("a1", "v2")))]),
@@ -527,7 +575,7 @@ mod tests {
 
         let raw = s.get("agents", "a1").await.unwrap().unwrap();
         let rec: ConfigRecord<serde_json::Value> = ConfigRecord::from_value(raw).unwrap();
-        assert!(rec.meta.hidden, "hidden flag must be preserved");
+        assert!(!rec.meta.hidden, "reintroduced spec must clear hidden");
         assert_eq!(
             rec.meta.source,
             RecordSource::Builtin {
@@ -731,5 +779,126 @@ mod tests {
                 "{ns}/{id} must be removed from the store"
             );
         }
+    }
+
+    // ── test 13 ──────────────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn orphan_with_override_is_hidden_not_deleted() {
+        let store = InMemoryStore::new();
+        // Apply v1 seeding agent "a1" then patch in a user override.
+        let v1 = seed_v1(vec![BuiltinSpec::Agent(Box::new(agent_spec(
+            "a1",
+            "v1-prompt",
+        )))]);
+        apply_builtin_seed(&store, &v1).await.unwrap();
+
+        // Set user override directly on the stored envelope.
+        let raw = store.get("agents", "a1").await.unwrap().unwrap();
+        let mut record: ConfigRecord<serde_json::Value> = ConfigRecord::from_value(raw).unwrap();
+        record.meta.user_overrides = Some(serde_json::json!({"system_prompt": "patched"}));
+        store
+            .put("agents", "a1", &record.to_value().unwrap())
+            .await
+            .unwrap();
+
+        // Apply v2 seed without "a1" — orphan path triggers.
+        let v2 = BuiltinSeedSet {
+            binary_version: "v2".into(),
+            specs: vec![],
+        };
+        let report = apply_builtin_seed(&store, &v2).await.unwrap();
+
+        // The orphan was preserved, not deleted.
+        assert!(
+            report
+                .preserved_overridden
+                .iter()
+                .any(|r| r.namespace == "agents" && r.id == "a1")
+        );
+        assert!(!report.deleted.iter().any(|r| r.id == "a1"));
+
+        // Record still exists, hidden=true, override intact.
+        let raw = store.get("agents", "a1").await.unwrap().unwrap();
+        let record: ConfigRecord<serde_json::Value> = ConfigRecord::from_value(raw).unwrap();
+        assert!(record.meta.hidden);
+        assert_eq!(
+            record.meta.user_overrides,
+            Some(serde_json::json!({"system_prompt": "patched"}))
+        );
+    }
+
+    // ── test 14 ──────────────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn orphan_without_override_is_hard_deleted() {
+        let store = InMemoryStore::new();
+        let v1 = seed_v1(vec![BuiltinSpec::Agent(Box::new(agent_spec(
+            "a1",
+            "v1-prompt",
+        )))]);
+        apply_builtin_seed(&store, &v1).await.unwrap();
+
+        // Apply v2 with no specs — orphan with no override.
+        let v2 = BuiltinSeedSet {
+            binary_version: "v2".into(),
+            specs: vec![],
+        };
+        let report = apply_builtin_seed(&store, &v2).await.unwrap();
+
+        assert!(
+            report
+                .deleted
+                .iter()
+                .any(|r| r.namespace == "agents" && r.id == "a1")
+        );
+        assert!(report.preserved_overridden.is_empty());
+        assert!(store.get("agents", "a1").await.unwrap().is_none());
+    }
+
+    // ── test 15 ──────────────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn reintroduced_spec_clears_hidden_and_keeps_override() {
+        let store = InMemoryStore::new();
+        // v1 seed + override, then v2 orphans it (hidden), then v3 brings it back.
+        let v1 = seed_v1(vec![BuiltinSpec::Agent(Box::new(agent_spec(
+            "a1",
+            "v1-prompt",
+        )))]);
+        apply_builtin_seed(&store, &v1).await.unwrap();
+
+        let raw = store.get("agents", "a1").await.unwrap().unwrap();
+        let mut record: ConfigRecord<serde_json::Value> = ConfigRecord::from_value(raw).unwrap();
+        record.meta.user_overrides = Some(serde_json::json!({"system_prompt": "patched"}));
+        store
+            .put("agents", "a1", &record.to_value().unwrap())
+            .await
+            .unwrap();
+
+        // v2: orphan
+        let v2 = BuiltinSeedSet {
+            binary_version: "v2".into(),
+            specs: vec![],
+        };
+        apply_builtin_seed(&store, &v2).await.unwrap();
+        let raw = store.get("agents", "a1").await.unwrap().unwrap();
+        let record: ConfigRecord<serde_json::Value> = ConfigRecord::from_value(raw).unwrap();
+        assert!(record.meta.hidden, "should be hidden after v2 orphans it");
+
+        // v3: re-introduce a1 with new prompt.
+        let v3 = BuiltinSeedSet {
+            binary_version: "v3".into(),
+            specs: vec![BuiltinSpec::Agent(Box::new(agent_spec("a1", "v3-prompt")))],
+        };
+        apply_builtin_seed(&store, &v3).await.unwrap();
+        let raw = store.get("agents", "a1").await.unwrap().unwrap();
+        let record: ConfigRecord<serde_json::Value> = ConfigRecord::from_value(raw).unwrap();
+        assert!(!record.meta.hidden, "reintroduced spec must be live again");
+        assert_eq!(
+            record.meta.user_overrides,
+            Some(serde_json::json!({"system_prompt": "patched"})),
+            "override must survive the orphan→reintroduce cycle"
+        );
     }
 }

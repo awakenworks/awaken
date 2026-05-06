@@ -121,16 +121,7 @@ fn convert_messages(msgs: Vec<AgUiMessage>) -> Vec<Message> {
     msgs.into_iter()
         .filter_map(|m| {
             let blocks = parse_ag_ui_content(&m.content)?;
-            match m.role.as_str() {
-                "user" => Some(Message::user_with_content(blocks)),
-                "assistant" => Some(Message::assistant(
-                    awaken_contract::contract::content::extract_text(&blocks),
-                )),
-                "system" => Some(Message::system(
-                    awaken_contract::contract::content::extract_text(&blocks),
-                )),
-                _ => None,
-            }
+            crate::message_convert::message_from_role_blocks(m.role.as_str(), blocks, true)
         })
         .collect()
 }
@@ -166,34 +157,28 @@ fn input_part_to_block(
     part: super::types::InputContentPart,
 ) -> Option<awaken_contract::contract::content::ContentBlock> {
     use super::types::{InputContentPart, InputContentSource};
-    use awaken_contract::contract::content::ContentBlock;
+    use crate::message_convert::{MediaKind, content_block_from_base64, content_block_from_url};
+
+    fn source_to_block(
+        kind: MediaKind,
+        source: InputContentSource,
+    ) -> Option<awaken_contract::contract::content::ContentBlock> {
+        Some(match source {
+            InputContentSource::Data { value, mime_type } => {
+                content_block_from_base64(kind, mime_type, value, None)
+            }
+            InputContentSource::Url { value, .. } => content_block_from_url(kind, value, None),
+        })
+    }
 
     match part {
-        InputContentPart::Text { text } => Some(ContentBlock::text(text)),
-        InputContentPart::Image { source, .. } => Some(match source {
-            InputContentSource::Data { value, mime_type } => {
-                ContentBlock::image_base64(mime_type, value)
-            }
-            InputContentSource::Url { value, .. } => ContentBlock::image_url(value),
-        }),
-        InputContentPart::Audio { source, .. } => Some(match source {
-            InputContentSource::Data { value, mime_type } => {
-                ContentBlock::audio_base64(mime_type, value)
-            }
-            InputContentSource::Url { value, .. } => ContentBlock::audio_url(value),
-        }),
-        InputContentPart::Video { source, .. } => Some(match source {
-            InputContentSource::Data { value, mime_type } => {
-                ContentBlock::video_base64(mime_type, value)
-            }
-            InputContentSource::Url { value, .. } => ContentBlock::video_url(value),
-        }),
-        InputContentPart::Document { source, .. } => Some(match source {
-            InputContentSource::Data { value, mime_type } => {
-                ContentBlock::document_base64(mime_type, value, None)
-            }
-            InputContentSource::Url { value, .. } => ContentBlock::document_url(value, None),
-        }),
+        InputContentPart::Text { text } => {
+            Some(awaken_contract::contract::content::ContentBlock::text(text))
+        }
+        InputContentPart::Image { source, .. } => source_to_block(MediaKind::Image, source),
+        InputContentPart::Audio { source, .. } => source_to_block(MediaKind::Audio, source),
+        InputContentPart::Video { source, .. } => source_to_block(MediaKind::Video, source),
+        InputContentPart::Document { source, .. } => source_to_block(MediaKind::Document, source),
     }
 }
 

@@ -41,6 +41,7 @@ const NS_AGENTS: &str = "agents";
 const NS_MODELS: &str = "models";
 const NS_PROVIDERS: &str = "providers";
 const NS_MCP_SERVERS: &str = "mcp-servers";
+const NS_TOOLS: &str = "tools";
 
 /// Per-provider executor cache entry: the spec used to build the cached
 /// executor and the executor itself.
@@ -321,6 +322,7 @@ struct ManagedConfigSnapshot {
     models: Vec<ModelBindingSpec>,
     agents: Vec<AgentSpec>,
     mcp_servers: Vec<McpServerSpec>,
+    tools: Vec<awaken_contract::ToolSpec>,
     fingerprint: u64,
 }
 
@@ -581,12 +583,40 @@ impl ConfigRuntimeManager {
         }
     }
 
+    /// Snapshot the static tool registry into [`BuiltinSpec::Tool`] entries.
+    ///
+    /// Callers splice these into their `BuiltinSeedSet::specs` to make every
+    /// registered tool a first-class config record (ADR-0029). Dynamic
+    /// (MCP-sourced) tools are intentionally excluded — they are governed by
+    /// the MCP namespace lifecycle.
+    pub fn snapshot_tool_specs(&self) -> Vec<awaken_contract::BuiltinSpec> {
+        let mut out = Vec::new();
+        for id in self.tools.tool_ids() {
+            let Some(tool) = self.tools.get_tool(&id) else {
+                continue;
+            };
+            let descriptor = tool.descriptor();
+            out.push(awaken_contract::BuiltinSpec::tool(
+                awaken_contract::ToolSpec {
+                    id: descriptor.id,
+                    name: descriptor.name,
+                    description: descriptor.description,
+                    category: descriptor.category,
+                    parameters_schema: descriptor.parameters,
+                },
+            ));
+        }
+        out.sort_by(|a, b| a.id().cmp(b.id()));
+        out
+    }
+
     async fn publish(&self, managed: ManagedConfigSnapshot) -> Result<u64, ConfigRuntimeError> {
         let prepared_mcp = self.prepare_mcp_registry(&managed.mcp_servers).await?;
         let candidate = match self.compile_registry_set(
             &managed.providers,
             &managed.models,
             &managed.agents,
+            &managed.tools,
             prepared_mcp.tool_registry.clone(),
         ) {
             Ok(candidate) => candidate,
@@ -833,12 +863,14 @@ impl ConfigRuntimeManager {
         let model_values = self.load_namespace_entries(NS_MODELS).await?;
         let agent_values = self.load_namespace_entries(NS_AGENTS).await?;
         let mcp_values = self.load_namespace_entries(NS_MCP_SERVERS).await?;
+        let tool_values = self.load_namespace_entries(NS_TOOLS).await?;
 
         let fingerprint = fingerprint_config(&[
             (NS_PROVIDERS, &provider_values),
             (NS_MODELS, &model_values),
             (NS_AGENTS, &agent_values),
             (NS_MCP_SERVERS, &mcp_values),
+            (NS_TOOLS, &tool_values),
         ])?;
 
         Ok(ManagedConfigSnapshot {
@@ -846,6 +878,7 @@ impl ConfigRuntimeManager {
             models: deserialize_namespace(&model_values)?,
             agents: deserialize_namespace(&agent_values)?,
             mcp_servers: deserialize_namespace(&mcp_values)?,
+            tools: deserialize_namespace(&tool_values)?,
             fingerprint,
         })
     }
@@ -882,6 +915,7 @@ impl ConfigRuntimeManager {
         providers: &[ProviderSpec],
         models: &[ModelBindingSpec],
         agents: &[AgentSpec],
+        tool_specs: &[awaken_contract::ToolSpec],
         dynamic_tools: Option<Arc<dyn ToolRegistry>>,
     ) -> Result<RegistrySet, ConfigRuntimeError> {
         let mut provider_registry = MapProviderRegistry::new();
@@ -927,7 +961,18 @@ impl ConfigRuntimeManager {
             None => local_agents,
         };
 
-        let tools = self.compose_tool_registry(dynamic_tools)?;
+        let overrides: std::collections::HashMap<String, String> = tool_specs
+            .iter()
+            .filter_map(|spec| {
+                let live = self.tools.get_tool(&spec.id)?;
+                if live.descriptor().description != spec.description {
+                    Some((spec.id.clone(), spec.description.clone()))
+                } else {
+                    None
+                }
+            })
+            .collect();
+        let tools = self.compose_tool_registry(dynamic_tools, overrides)?;
 
         Ok(RegistrySet {
             agents,
@@ -942,12 +987,24 @@ impl ConfigRuntimeManager {
     fn compose_tool_registry(
         &self,
         dynamic_tools: Option<Arc<dyn ToolRegistry>>,
+        description_overrides: std::collections::HashMap<String, String>,
     ) -> Result<Arc<dyn ToolRegistry>, ConfigRuntimeError> {
-        let Some(dynamic_tools) = dynamic_tools else {
-            return Ok(Arc::clone(&self.tools));
+        let base: Arc<dyn ToolRegistry> = if description_overrides.is_empty() {
+            Arc::clone(&self.tools)
+        } else {
+            Arc::new(
+                crate::services::tool_overrides::DescriptionOverrideRegistry::new(
+                    Arc::clone(&self.tools),
+                    description_overrides,
+                ),
+            ) as Arc<dyn ToolRegistry>
         };
 
-        let base_ids: HashSet<_> = self.tools.tool_ids().into_iter().collect();
+        let Some(dynamic_tools) = dynamic_tools else {
+            return Ok(base);
+        };
+
+        let base_ids: HashSet<_> = base.tool_ids().into_iter().collect();
         for tool_id in dynamic_tools.tool_ids() {
             if base_ids.contains(&tool_id) {
                 return Err(ConfigRuntimeError::InvalidConfig(format!(
@@ -956,10 +1013,7 @@ impl ConfigRuntimeManager {
             }
         }
 
-        Ok(Arc::new(OverlayToolRegistry::new(
-            Arc::clone(&self.tools),
-            dynamic_tools,
-        )) as Arc<dyn ToolRegistry>)
+        Ok(Arc::new(OverlayToolRegistry::new(base, dynamic_tools)) as Arc<dyn ToolRegistry>)
     }
 
     fn validate_candidate(
@@ -2800,5 +2854,209 @@ mod tests {
             spec.max_rounds, 10,
             "max_rounds must use v2 base (not overridden)"
         );
+    }
+
+    /// Build an `AgentRuntime` with one stub tool registered plus a
+    /// `ConfigRuntimeManager` backed by an `InMemoryStore`. Seeds a minimal
+    /// provider/model/agent/tool set and calls `apply_seed`.
+    ///
+    /// Returns `(manager, runtime, store)` so callers can write to the store
+    /// directly without needing a `#[cfg(test)]` accessor.
+    async fn bootstrap_with_static_tool(
+        tool_id: &str,
+        tool_description: &str,
+    ) -> (
+        Arc<ConfigRuntimeManager>,
+        Arc<awaken_runtime::AgentRuntime>,
+        Arc<dyn awaken_contract::contract::config_store::ConfigStore>,
+    ) {
+        use awaken_contract::contract::executor::{
+            InferenceExecutionError, InferenceRequest, LlmExecutor,
+        };
+        use awaken_contract::contract::inference::{StopReason, StreamResult, TokenUsage};
+        use awaken_contract::contract::tool::{
+            Tool, ToolCallContext, ToolDescriptor, ToolError, ToolOutput, ToolResult,
+        };
+        use awaken_contract::{
+            BuiltinSeedSet, BuiltinSpec, ModelBindingSpec, ProviderSpec, ToolSpec,
+        };
+        use awaken_stores::InMemoryStore;
+        use serde_json::json;
+
+        struct Stub;
+        #[async_trait::async_trait]
+        impl LlmExecutor for Stub {
+            async fn execute(
+                &self,
+                _: InferenceRequest,
+            ) -> Result<StreamResult, InferenceExecutionError> {
+                Ok(StreamResult {
+                    content: vec![],
+                    tool_calls: vec![],
+                    usage: Some(TokenUsage::default()),
+                    stop_reason: Some(StopReason::EndTurn),
+                    has_incomplete_tool_calls: false,
+                })
+            }
+            fn name(&self) -> &str {
+                "stub"
+            }
+        }
+
+        struct StubTool {
+            id: String,
+            description: String,
+        }
+        #[async_trait::async_trait]
+        impl Tool for StubTool {
+            fn descriptor(&self) -> ToolDescriptor {
+                ToolDescriptor::new(&self.id, &self.id, &self.description)
+            }
+            async fn execute(
+                &self,
+                _args: serde_json::Value,
+                _ctx: &ToolCallContext,
+            ) -> Result<ToolOutput, ToolError> {
+                Ok(ToolResult::success(&self.id, json!({})).into())
+            }
+        }
+
+        struct StubFactory;
+        impl ProviderExecutorFactory for StubFactory {
+            fn build(
+                &self,
+                _spec: &ProviderSpec,
+            ) -> Result<Arc<dyn awaken_contract::contract::executor::LlmExecutor>, ConfigRuntimeError>
+            {
+                Ok(Arc::new(Stub))
+            }
+        }
+
+        let store = Arc::new(InMemoryStore::new())
+            as Arc<dyn awaken_contract::contract::config_store::ConfigStore>;
+        let thread_store = Arc::new(InMemoryStore::new());
+
+        let runtime = Arc::new(
+            awaken_runtime::builder::AgentRuntimeBuilder::new()
+                .with_provider("boot", Arc::new(Stub))
+                .with_model_binding(
+                    "boot",
+                    awaken_runtime::registry::traits::ModelBinding {
+                        provider_id: "boot".into(),
+                        upstream_model: "boot-model".into(),
+                    },
+                )
+                .with_tool(
+                    tool_id,
+                    Arc::new(StubTool {
+                        id: tool_id.to_owned(),
+                        description: tool_description.to_owned(),
+                    }),
+                )
+                .with_thread_run_store(thread_store)
+                .build()
+                .expect("build runtime"),
+        );
+
+        let manager = Arc::new(
+            ConfigRuntimeManager::new(runtime.clone(), store.clone())
+                .expect("manager")
+                .with_provider_factory(Arc::new(StubFactory)),
+        );
+
+        let seed = BuiltinSeedSet {
+            binary_version: "test".to_owned(),
+            specs: vec![
+                BuiltinSpec::Provider(ProviderSpec {
+                    id: "test-prov".into(),
+                    adapter: "openai".into(),
+                    ..Default::default()
+                }),
+                BuiltinSpec::Model(ModelBindingSpec {
+                    id: "test-model".into(),
+                    provider_id: "test-prov".into(),
+                    upstream_model: "gpt-4o".into(),
+                    created_at: None,
+                    updated_at: None,
+                }),
+                BuiltinSpec::Agent(Box::new(AgentSpec {
+                    id: "agent-using-echo".into(),
+                    model_id: "test-model".into(),
+                    system_prompt: "you are a test".into(),
+                    max_rounds: 1,
+                    allowed_tools: None,
+                    endpoint: None,
+                    ..Default::default()
+                })),
+                BuiltinSpec::Tool(ToolSpec {
+                    id: tool_id.to_owned(),
+                    name: tool_id.to_owned(),
+                    description: tool_description.to_owned(),
+                    ..Default::default()
+                }),
+            ],
+        };
+        manager.apply_seed(&seed).await.expect("apply_seed");
+
+        (manager, runtime, store)
+    }
+
+    #[tokio::test]
+    async fn tool_description_override_applied_to_resolved_agent() {
+        let (manager, runtime, store) =
+            bootstrap_with_static_tool("echo", "stock description").await;
+
+        manager.apply().await.expect("initial apply");
+
+        let envelope = serde_json::json!({
+            "spec": {
+                "id": "echo",
+                "name": "Echo",
+                "description": "stock description",
+                "category": null,
+                "parameters_schema": {}
+            },
+            "meta": {
+                "source": { "kind": "builtin", "binary_version": "test" },
+                "user_overrides": { "description": "patched description" },
+                "hidden": false,
+                "created_at": 1,
+                "updated_at": 2
+            }
+        });
+        awaken_contract::contract::config_store::ConfigStore::put(
+            store.as_ref(),
+            "tools",
+            "echo",
+            &envelope,
+        )
+        .await
+        .expect("write override");
+
+        manager.apply().await.expect("apply with override");
+
+        let resolver = runtime.resolver_arc();
+        let resolved = resolver.resolve("agent-using-echo").expect("resolve");
+        let descs = resolved.tool_descriptors();
+        let echo = descs
+            .iter()
+            .find(|d| d.id == "echo")
+            .expect("echo descriptor present");
+        assert_eq!(echo.description, "patched description");
+    }
+
+    #[tokio::test]
+    async fn snapshot_tool_specs_emits_one_entry_per_registered_tool() {
+        let (manager, _runtime, _store) =
+            bootstrap_with_static_tool("echo", "stock description").await;
+        let specs = manager.snapshot_tool_specs();
+        assert_eq!(specs.len(), 1);
+        match &specs[0] {
+            awaken_contract::BuiltinSpec::Tool(t) => {
+                assert_eq!(t.id, "echo");
+                assert_eq!(t.description, "stock description");
+            }
+            other => panic!("expected Tool variant, got {other:?}"),
+        }
     }
 }

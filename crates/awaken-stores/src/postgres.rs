@@ -5,6 +5,7 @@
 use async_trait::async_trait;
 use awaken_contract::contract::config_store::{
     ConfigChangeEvent, ConfigChangeKind, ConfigChangeNotifier, ConfigChangeSubscriber, ConfigStore,
+    extract_meta_revision,
 };
 use awaken_contract::contract::message::Message;
 use awaken_contract::contract::storage::{
@@ -1205,6 +1206,13 @@ impl ConfigStore for PostgresStore {
             .await
             .map_err(|error| StorageError::Io(error.to_string()))?;
 
+        sqlx::query("SELECT pg_advisory_xact_lock(hashtext($1), hashtext($2))")
+            .bind(namespace)
+            .bind(id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|error| StorageError::Io(error.to_string()))?;
+
         let sql = format!(
             "INSERT INTO {} (namespace, id, data) VALUES ($1, $2, $3)
              ON CONFLICT (namespace, id) DO UPDATE SET data = $3, updated_at = now()",
@@ -1237,11 +1245,79 @@ impl ConfigStore for PostgresStore {
         Ok(())
     }
 
+    async fn put_if_absent(
+        &self,
+        namespace: &str,
+        id: &str,
+        value: &serde_json::Value,
+    ) -> Result<(), StorageError> {
+        self.ensure_schema().await?;
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|error| StorageError::Io(error.to_string()))?;
+
+        sqlx::query("SELECT pg_advisory_xact_lock(hashtext($1), hashtext($2))")
+            .bind(namespace)
+            .bind(id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|error| StorageError::Io(error.to_string()))?;
+
+        let sql = format!(
+            "INSERT INTO {} (namespace, id, data) VALUES ($1, $2, $3)",
+            self.configs_table
+        );
+        let result = sqlx::query(&sql)
+            .bind(namespace)
+            .bind(id)
+            .bind(value)
+            .execute(&mut *tx)
+            .await;
+        if let Err(error) = result {
+            if error
+                .as_database_error()
+                .and_then(|db_error| db_error.code())
+                .as_deref()
+                == Some("23505")
+            {
+                return Err(StorageError::AlreadyExists(format!("{namespace}/{id}")));
+            }
+            return Err(StorageError::Io(error.to_string()));
+        }
+
+        let payload = serde_json::to_string(&ConfigChangeEvent {
+            namespace: namespace.to_string(),
+            id: id.to_string(),
+            kind: ConfigChangeKind::Put,
+        })
+        .map_err(|error| StorageError::Serialization(error.to_string()))?;
+        sqlx::query("SELECT pg_notify($1, $2)")
+            .bind(&self.config_notify_channel)
+            .bind(payload)
+            .execute(&mut *tx)
+            .await
+            .map_err(|error| StorageError::Io(error.to_string()))?;
+
+        tx.commit()
+            .await
+            .map_err(|error| StorageError::Io(error.to_string()))?;
+        Ok(())
+    }
+
     async fn delete(&self, namespace: &str, id: &str) -> Result<(), StorageError> {
         self.ensure_schema().await?;
         let mut tx = self
             .pool
             .begin()
+            .await
+            .map_err(|error| StorageError::Io(error.to_string()))?;
+
+        sqlx::query("SELECT pg_advisory_xact_lock(hashtext($1), hashtext($2))")
+            .bind(namespace)
+            .bind(id)
+            .execute(&mut *tx)
             .await
             .map_err(|error| StorageError::Io(error.to_string()))?;
 
@@ -1274,6 +1350,162 @@ impl ConfigStore for PostgresStore {
         tx.commit()
             .await
             .map_err(|error| StorageError::Io(error.to_string()))?;
+        Ok(())
+    }
+
+    async fn put_if_revision(
+        &self,
+        namespace: &str,
+        id: &str,
+        value: &serde_json::Value,
+        expected_revision: u64,
+    ) -> Result<(), StorageError> {
+        self.ensure_schema().await?;
+
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|e| StorageError::Io(e.to_string()))?;
+
+        sqlx::query("SELECT pg_advisory_xact_lock(hashtext($1), hashtext($2))")
+            .bind(namespace)
+            .bind(id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| StorageError::Io(e.to_string()))?;
+
+        // Lock the row (or its absence) so that concurrent writers cannot race
+        // between the read and the upsert within this transaction.
+        let select_sql = format!(
+            "SELECT data FROM {} WHERE namespace = $1 AND id = $2 FOR UPDATE",
+            self.configs_table
+        );
+        let row: Option<(serde_json::Value,)> = sqlx::query_as(&select_sql)
+            .bind(namespace)
+            .bind(id)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(|e| StorageError::Io(e.to_string()))?;
+
+        let actual = row
+            .as_ref()
+            .map(|(v,)| v)
+            .and_then(extract_meta_revision)
+            .unwrap_or(0);
+        if actual != expected_revision {
+            return Err(StorageError::VersionConflict {
+                expected: expected_revision,
+                actual,
+            });
+        }
+
+        let upsert_sql = format!(
+            "INSERT INTO {} (namespace, id, data) VALUES ($1, $2, $3) \
+             ON CONFLICT (namespace, id) DO UPDATE SET data = EXCLUDED.data, updated_at = now()",
+            self.configs_table
+        );
+        sqlx::query(&upsert_sql)
+            .bind(namespace)
+            .bind(id)
+            .bind(value)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| StorageError::Io(e.to_string()))?;
+
+        // Fire NOTIFY inside the same transaction, matching put semantics.
+        let payload = serde_json::to_string(&ConfigChangeEvent {
+            namespace: namespace.to_string(),
+            id: id.to_string(),
+            kind: ConfigChangeKind::Put,
+        })
+        .map_err(|e| StorageError::Serialization(e.to_string()))?;
+        sqlx::query("SELECT pg_notify($1, $2)")
+            .bind(&self.config_notify_channel)
+            .bind(payload)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| StorageError::Io(e.to_string()))?;
+
+        tx.commit()
+            .await
+            .map_err(|e| StorageError::Io(e.to_string()))?;
+        Ok(())
+    }
+
+    async fn delete_if_revision(
+        &self,
+        namespace: &str,
+        id: &str,
+        expected_revision: u64,
+    ) -> Result<(), StorageError> {
+        self.ensure_schema().await?;
+
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|e| StorageError::Io(e.to_string()))?;
+
+        sqlx::query("SELECT pg_advisory_xact_lock(hashtext($1), hashtext($2))")
+            .bind(namespace)
+            .bind(id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| StorageError::Io(e.to_string()))?;
+
+        let select_sql = format!(
+            "SELECT data FROM {} WHERE namespace = $1 AND id = $2 FOR UPDATE",
+            self.configs_table
+        );
+        let row: Option<(serde_json::Value,)> = sqlx::query_as(&select_sql)
+            .bind(namespace)
+            .bind(id)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(|e| StorageError::Io(e.to_string()))?;
+
+        let actual = row
+            .as_ref()
+            .map(|(v,)| v)
+            .and_then(extract_meta_revision)
+            .unwrap_or(0);
+        if actual != expected_revision {
+            return Err(StorageError::VersionConflict {
+                expected: expected_revision,
+                actual,
+            });
+        }
+
+        let delete_sql = format!(
+            "DELETE FROM {} WHERE namespace = $1 AND id = $2",
+            self.configs_table
+        );
+        let result = sqlx::query(&delete_sql)
+            .bind(namespace)
+            .bind(id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| StorageError::Io(e.to_string()))?;
+
+        if result.rows_affected() > 0 {
+            let payload = serde_json::to_string(&ConfigChangeEvent {
+                namespace: namespace.to_string(),
+                id: id.to_string(),
+                kind: ConfigChangeKind::Delete,
+            })
+            .map_err(|e| StorageError::Serialization(e.to_string()))?;
+            sqlx::query("SELECT pg_notify($1, $2)")
+                .bind(&self.config_notify_channel)
+                .bind(payload)
+                .execute(&mut *tx)
+                .await
+                .map_err(|e| StorageError::Io(e.to_string()))?;
+        }
+
+        tx.commit()
+            .await
+            .map_err(|e| StorageError::Io(e.to_string()))?;
         Ok(())
     }
 }
@@ -1491,5 +1723,40 @@ mod tests {
         assert_eq!(loaded_msgs.len(), 1);
         let loaded_run = store.load_run(&run.run_id).await.unwrap().unwrap();
         assert_eq!(loaded_run.thread_id, thread_id);
+    }
+
+    #[tokio::test]
+    #[ignore = "requires PG_TEST_URL"]
+    async fn put_if_revision_atomic_cas() {
+        let url = std::env::var("PG_TEST_URL")
+            .unwrap_or_else(|_| "postgres://localhost/awaken_test".to_string());
+        let pool = PgPool::connect(&url).await.unwrap();
+        let store = PostgresStore::with_prefix(pool, "test_cas");
+        store.ensure_schema().await.unwrap();
+
+        let v1 = serde_json::json!({"spec": {"id": "cas-key"}, "meta": {"source": {"kind": "user"}, "revision": 1}});
+        // First write: no record → expected 0 succeeds.
+        store
+            .put_if_revision("cas_ns", "cas-key", &v1, 0)
+            .await
+            .unwrap();
+        let stored = ConfigStore::get(&store, "cas_ns", "cas-key")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(stored["meta"]["revision"], 1);
+
+        // Conflict: re-try with expected 0 should fail.
+        let err = store
+            .put_if_revision("cas_ns", "cas-key", &v1, 0)
+            .await
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            StorageError::VersionConflict {
+                expected: 0,
+                actual: 1
+            }
+        ));
     }
 }
