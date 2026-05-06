@@ -58,7 +58,6 @@ export type AgentRuntimeStatsResult =
   | { kind: "not_found"; agent_id: string }
   | { kind: "error"; status: number; message: string };
 
-const REGISTRY_DISABLED_HINT = "runtime_stats registry not configured";
 
 export type FetchAgentRuntimeStatsOptions = {
   /** Optional window string forwarded as `?window=`, e.g. `"1h"`, `"7d"`. */

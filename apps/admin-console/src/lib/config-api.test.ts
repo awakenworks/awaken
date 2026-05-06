@@ -2,7 +2,6 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   ADMIN_TOKEN_STORAGE_KEY,
   BACKEND_URL,
-  ConfigApiError,
   configApi,
   deriveSourceState,
   type RecordMeta,
