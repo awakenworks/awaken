@@ -166,12 +166,18 @@ but you'll get a much better experience with them on.
 
 ### Enable the audit log
 
-In the server config (or via `AdminApiConfig`):
+Wire an audit logger into `AppState`; retention is configured separately from
+`AdminApiConfig` to keep that security struct source-compatible with 0.4.0:
 
-```toml
-[admin_api]
-audit_log_enabled = true
-audit_retention_days = 90      # optional, default 90
+```rust,ignore
+use awaken_server::app::AuditLogConfig;
+
+let state = state
+    .with_audit_log_config(AuditLogConfig {
+        retention_days: 90,
+        ..AuditLogConfig::default()
+    })
+    .with_audit_log_from_config();
 ```
 
 Without this:
