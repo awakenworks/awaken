@@ -1,5 +1,7 @@
 use std::collections::HashMap;
 
+use awaken_contract::contract::inference::{ContextWindowPolicy, ReasoningEffort};
+use awaken_contract::registry_spec::RemoteEndpoint;
 use awaken_contract::{AgentSpec, AgentSpecPatch, merge_agent_spec};
 use serde_json::{Value, json};
 
@@ -52,6 +54,12 @@ fn is_empty_false_when_any_field_set() {
     assert!(!patch.is_empty());
 
     let patch = AgentSpecPatch {
+        context_policy: Some(Some(ContextWindowPolicy::default())),
+        ..Default::default()
+    };
+    assert!(!patch.is_empty());
+
+    let patch = AgentSpecPatch {
         sections: Some(HashMap::new()),
         ..Default::default()
     };
@@ -70,12 +78,15 @@ fn serde_round_trip_full_patch() {
         system_prompt: Some("You are helpful.".into()),
         max_rounds: Some(10),
         max_continuation_retries: Some(3),
+        context_policy: Some(Some(ContextWindowPolicy::default())),
         plugin_ids: Some(vec!["plugin-a".into(), "plugin-b".into()]),
+        active_hook_filter: Some(["plugin-a".to_string()].into_iter().collect()),
         sections: Some(sections),
-        allowed_tools: Some(vec!["weather".into()]),
-        excluded_tools: Some(vec!["dangerous".into()]),
+        allowed_tools: Some(Some(vec!["weather".into()])),
+        excluded_tools: Some(Some(vec!["dangerous".into()])),
         delegates: Some(vec!["delegate-a".into()]),
         reasoning_effort: None,
+        endpoint: None,
     };
 
     let json_str = serde_json::to_string(&patch).unwrap();
@@ -183,6 +194,88 @@ fn merge_replaces_plugin_ids_when_patch_some() {
     };
     let result = merge_agent_spec(base, patch);
     assert_eq!(result.plugin_ids, vec!["d"]);
+}
+
+// 12a. merge_overrides_context_policy
+#[test]
+fn merge_overrides_context_policy() {
+    let base = AgentSpec {
+        context_policy: None,
+        ..base_spec()
+    };
+    let policy = ContextWindowPolicy {
+        max_context_tokens: 10_000,
+        ..Default::default()
+    };
+    let patch = AgentSpecPatch {
+        context_policy: Some(Some(policy.clone())),
+        ..Default::default()
+    };
+    let result = merge_agent_spec(base, patch);
+    assert_eq!(result.context_policy, Some(policy));
+}
+
+#[test]
+fn merge_clears_nullable_fields_when_patch_value_is_null() {
+    let base = AgentSpec {
+        context_policy: Some(ContextWindowPolicy::default()),
+        allowed_tools: Some(vec!["safe".into()]),
+        excluded_tools: Some(vec!["danger".into()]),
+        reasoning_effort: Some(ReasoningEffort::High),
+        endpoint: Some(RemoteEndpoint {
+            base_url: "https://example.com".into(),
+            ..Default::default()
+        }),
+        ..base_spec()
+    };
+
+    let patch: AgentSpecPatch = serde_json::from_value(json!({
+        "context_policy": null,
+        "allowed_tools": null,
+        "excluded_tools": null,
+        "reasoning_effort": null,
+        "endpoint": null
+    }))
+    .expect("nullable fields must accept explicit null");
+
+    let result = merge_agent_spec(base, patch);
+    assert_eq!(result.context_policy, None);
+    assert_eq!(result.allowed_tools, None);
+    assert_eq!(result.excluded_tools, None);
+    assert_eq!(result.reasoning_effort, None);
+    assert_eq!(result.endpoint, None);
+}
+
+#[test]
+fn serde_preserves_nullable_field_clear_values() {
+    let patch: AgentSpecPatch = serde_json::from_value(json!({
+        "endpoint": null,
+        "allowed_tools": null
+    }))
+    .expect("nullable fields must accept explicit null");
+
+    let encoded = serde_json::to_value(&patch).expect("patch serializes");
+    assert_eq!(encoded["endpoint"], Value::Null);
+    assert_eq!(encoded["allowed_tools"], Value::Null);
+}
+
+// 12b. merge_overrides_active_hook_filter
+#[test]
+fn merge_overrides_active_hook_filter() {
+    let mut base_filter = std::collections::HashSet::new();
+    base_filter.insert("base".to_string());
+    let base = AgentSpec {
+        active_hook_filter: base_filter,
+        ..base_spec()
+    };
+    let mut patch_filter = std::collections::HashSet::new();
+    patch_filter.insert("patched".to_string());
+    let patch = AgentSpecPatch {
+        active_hook_filter: Some(patch_filter.clone()),
+        ..Default::default()
+    };
+    let result = merge_agent_spec(base, patch);
+    assert_eq!(result.active_hook_filter, patch_filter);
 }
 
 // 12. merge_keeps_plugin_ids_when_patch_none
@@ -299,8 +392,6 @@ fn merge_preserves_pass_through_fields() {
         delegates: vec!["sub-agent".into()],
         active_hook_filter,
         registry: Some("cloud".into()),
-        created_at: Some(1_000_000),
-        updated_at: Some(2_000_000),
         ..Default::default()
     };
 

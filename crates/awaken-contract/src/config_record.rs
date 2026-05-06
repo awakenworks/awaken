@@ -1,12 +1,16 @@
 //! Metadata envelope wrapping any spec stored in ConfigStore.
 //!
 //! Today most ConfigStore entries are bare specs (e.g. `AgentSpec` JSON).
-//! Phase 1 introduces this envelope so we can carry provenance (was this
-//! seeded by the binary, or written by a user?) and lifecycle flags
-//! (`hidden`) without breaking existing on-disk data. The decoder accepts
-//! both shapes; the encoder always emits the envelope.
+//! This envelope carries provenance (was this seeded by the binary, or written
+//! by a user?) and lifecycle flags (`hidden`) without breaking existing on-disk
+//! data. The decoder accepts both shapes; the encoder always emits the envelope.
 
 use serde::{Deserialize, Serialize};
+
+use crate::agent_spec_patch::{AgentSpecPatch, merge_agent_spec};
+use crate::registry_spec::{AgentSpec, McpServerSpec, ModelBindingSpec, ProviderSpec};
+use crate::tool_spec::ToolSpec;
+use crate::tool_spec_patch::{ToolSpecPatch, merge_tool_spec};
 
 /// Wrapper carrying a spec plus provenance + lifecycle metadata.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -21,7 +25,7 @@ pub struct RecordMeta {
     pub source: RecordSource,
     #[serde(default)]
     pub hidden: bool,
-    /// Field-level overrides for Builtin records (Phase 3).
+    /// Field-level overrides for Builtin records.
     /// Decoded by spec-type-specific helpers downstream; opaque at this layer.
     /// `None` for User records and for Builtin records that have not been customized.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -51,6 +55,71 @@ pub enum RecordSource {
     User,
 }
 
+/// Empty patch for spec types that do not support field-level overrides.
+///
+/// The empty patch rejects unknown fields, so a non-empty `user_overrides`
+/// payload on a non-patchable spec fails validation instead of being silently
+/// ignored.
+#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct NoConfigPatch {}
+
+/// Spec types that can apply `RecordMeta::user_overrides` at read time.
+pub trait ConfigRecordMerge: Sized {
+    type Patch: serde::de::DeserializeOwned;
+
+    fn merge_patch(self, patch: Self::Patch) -> Self;
+}
+
+impl ConfigRecordMerge for AgentSpec {
+    type Patch = AgentSpecPatch;
+
+    fn merge_patch(self, patch: AgentSpecPatch) -> Self {
+        merge_agent_spec(self, patch)
+    }
+}
+
+impl ConfigRecordMerge for ToolSpec {
+    type Patch = ToolSpecPatch;
+
+    fn merge_patch(self, patch: ToolSpecPatch) -> Self {
+        merge_tool_spec(self, patch)
+    }
+}
+
+impl ConfigRecordMerge for ProviderSpec {
+    type Patch = NoConfigPatch;
+
+    fn merge_patch(self, _patch: NoConfigPatch) -> Self {
+        self
+    }
+}
+
+impl ConfigRecordMerge for ModelBindingSpec {
+    type Patch = NoConfigPatch;
+
+    fn merge_patch(self, _patch: NoConfigPatch) -> Self {
+        self
+    }
+}
+
+impl ConfigRecordMerge for McpServerSpec {
+    type Patch = NoConfigPatch;
+
+    fn merge_patch(self, _patch: NoConfigPatch) -> Self {
+        self
+    }
+}
+
+/// Error returned while decoding a [`ConfigRecord`] or applying its overrides.
+#[derive(Debug, thiserror::Error)]
+pub enum ConfigRecordError {
+    #[error("invalid config record: {0}")]
+    Decode(#[source] serde_json::Error),
+    #[error("invalid config record overrides: {0}")]
+    Overrides(#[source] serde_json::Error),
+}
+
 impl<T: serde::de::DeserializeOwned> ConfigRecord<T> {
     /// Decode a JSON value, accepting either the new envelope shape OR a
     /// legacy bare-spec shape (in which case the record is synthesized as
@@ -69,6 +138,77 @@ impl<T: serde::de::DeserializeOwned> ConfigRecord<T> {
             })
         }
     }
+}
+
+/// Decode a value into [`ConfigRecord<T>`], accepting either an envelope or a
+/// legacy bare spec. This does not validate `RecordMeta::user_overrides`.
+pub fn decode_config_record<T>(
+    value: serde_json::Value,
+) -> Result<ConfigRecord<T>, ConfigRecordError>
+where
+    T: serde::de::DeserializeOwned,
+{
+    ConfigRecord::from_value(value).map_err(ConfigRecordError::Decode)
+}
+
+/// Decode a [`ConfigRecord<T>`] and validate its `RecordMeta::user_overrides`
+/// against the patch type for `T`.
+pub fn validate_config_record<T>(
+    value: serde_json::Value,
+) -> Result<ConfigRecord<T>, ConfigRecordError>
+where
+    T: serde::de::DeserializeOwned + ConfigRecordMerge,
+{
+    let record = decode_config_record::<T>(value)?;
+    validate_config_record_overrides::<T>(&record)?;
+    Ok(record)
+}
+
+/// Validate `RecordMeta::user_overrides` for an already decoded record.
+pub fn validate_config_record_overrides<T>(
+    record: &ConfigRecord<T>,
+) -> Result<(), ConfigRecordError>
+where
+    T: ConfigRecordMerge,
+{
+    if let Some(overrides) = &record.meta.user_overrides {
+        serde_json::from_value::<T::Patch>(overrides.clone())
+            .map_err(ConfigRecordError::Overrides)?;
+    }
+    Ok(())
+}
+
+/// Apply `RecordMeta::user_overrides` to the record's base spec.
+pub fn effective_config_record<T>(record: ConfigRecord<T>) -> Result<T, ConfigRecordError>
+where
+    T: ConfigRecordMerge,
+{
+    let Some(overrides) = record.meta.user_overrides else {
+        return Ok(record.spec);
+    };
+    let patch: T::Patch =
+        serde_json::from_value(overrides).map_err(ConfigRecordError::Overrides)?;
+    Ok(record.spec.merge_patch(patch))
+}
+
+/// Decode visible records and return their effective specs.
+///
+/// Hidden records are skipped. Legacy bare specs are accepted and treated as
+/// user-source records with no overrides.
+pub fn effective_visible_config_records<T, I>(records: I) -> Result<Vec<T>, ConfigRecordError>
+where
+    T: serde::de::DeserializeOwned + ConfigRecordMerge,
+    I: IntoIterator<Item = serde_json::Value>,
+{
+    let mut out = Vec::new();
+    for value in records {
+        let record = validate_config_record::<T>(value)?;
+        if record.meta.hidden {
+            continue;
+        }
+        out.push(effective_config_record(record)?);
+    }
+    Ok(out)
 }
 
 impl<T: Serialize> ConfigRecord<T> {

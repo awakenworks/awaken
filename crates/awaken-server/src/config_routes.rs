@@ -18,7 +18,10 @@ use crate::routes::ApiError;
 use crate::services::audit_log::{AuditQuery, AuditQueryError};
 use crate::services::config_service::{
     ConfigNamespace, ConfigService, ConfigServiceError, ProviderTestResult, RestoreError,
+    is_overrides_not_supported_for_user_record, tool_schema_json,
 };
+
+const TOOLS_NAMESPACE: &str = "tools";
 
 #[derive(Deserialize)]
 struct ListParams {
@@ -30,6 +33,40 @@ struct ListParams {
 
 fn default_limit() -> usize {
     100
+}
+
+#[derive(Clone, Copy)]
+enum RouteConfigNamespace {
+    Managed(ConfigNamespace),
+    Tools,
+}
+
+impl RouteConfigNamespace {
+    fn parse(value: &str) -> Result<Self, ConfigServiceError> {
+        if value == TOOLS_NAMESPACE {
+            Ok(Self::Tools)
+        } else {
+            ConfigNamespace::parse(value).map(Self::Managed)
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Managed(namespace) => namespace.as_str(),
+            Self::Tools => TOOLS_NAMESPACE,
+        }
+    }
+
+    fn read_only_error(self) -> ConfigServiceError {
+        match self {
+            Self::Managed(_) => {
+                ConfigServiceError::InvalidPayload("namespace is not read-only".into())
+            }
+            Self::Tools => ConfigServiceError::InvalidPayload(
+                "tools namespace is read-only; use PATCH /v1/config/tools/:id/overrides".into(),
+            ),
+        }
+    }
 }
 
 pub fn config_routes() -> Router<AppState> {
@@ -48,6 +85,11 @@ pub fn config_routes() -> Router<AppState> {
         .route("/v1/config/:namespace/:id/meta", get(get_config_meta))
         .route("/v1/config/:namespace/meta", get(list_config_meta))
         .route("/v1/config/:namespace/$schema", get(get_schema))
+        .route("/v1/config/diagnostics", get(get_config_diagnostics))
+        .route(
+            "/v1/config/providers/:id/removal-preview",
+            get(preview_provider_removal),
+        )
         .route("/v1/agents", get(list_agents))
         .route("/v1/agents/:id", get(get_agent))
         .route(
@@ -89,8 +131,37 @@ async fn get_schema(
     Path(namespace): Path<String>,
 ) -> Result<impl IntoResponse, ConfigRouteError> {
     ensure_admin_auth(&state, &headers)?;
-    let namespace = ConfigNamespace::parse(&namespace).map_err(map_service_error)?;
-    Ok(Json(namespace.schema_json().map_err(map_service_error)?))
+    let namespace = RouteConfigNamespace::parse(&namespace).map_err(map_service_error)?;
+    let schema = match namespace {
+        RouteConfigNamespace::Managed(namespace) => namespace.schema_json(),
+        RouteConfigNamespace::Tools => tool_schema_json(),
+    }
+    .map_err(map_service_error)?;
+    Ok(Json(schema))
+}
+
+async fn get_config_diagnostics(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse, ConfigRouteError> {
+    ensure_admin_auth(&state, &headers)?;
+    let service = ConfigService::new(&state).map_err(map_service_error)?;
+    let diagnostics = service.registry_diagnostics().map_err(map_service_error)?;
+    Ok(Json(json!({ "diagnostics": diagnostics })))
+}
+
+async fn preview_provider_removal(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> Result<impl IntoResponse, ConfigRouteError> {
+    ensure_admin_auth(&state, &headers)?;
+    let service = ConfigService::new(&state).map_err(map_service_error)?;
+    let preview = service
+        .preview_remove_provider(&id)
+        .await
+        .map_err(map_service_error)?;
+    Ok(Json(preview))
 }
 
 async fn list_agents(
@@ -126,12 +197,15 @@ async fn list_config_inner(
     namespace: String,
     params: ListParams,
 ) -> Result<impl IntoResponse, ConfigRouteError> {
-    let namespace = ConfigNamespace::parse(&namespace).map_err(map_service_error)?;
+    let namespace = RouteConfigNamespace::parse(&namespace).map_err(map_service_error)?;
     let service = ConfigService::new(&state).map_err(map_service_error)?;
-    let items = service
-        .list(namespace, params.offset, params.limit)
-        .await
-        .map_err(map_service_error)?;
+    let items = match namespace {
+        RouteConfigNamespace::Managed(namespace) => {
+            service.list(namespace, params.offset, params.limit).await
+        }
+        RouteConfigNamespace::Tools => service.list_tools(params.offset, params.limit).await,
+    }
+    .map_err(map_service_error)?;
     Ok(Json(json!({
         "namespace": namespace.as_str(),
         "items": items,
@@ -147,10 +221,16 @@ async fn create_config(
     Json(body): Json<Value>,
 ) -> Result<impl IntoResponse, ConfigRouteError> {
     ensure_admin_auth(&state, &headers)?;
-    let namespace = ConfigNamespace::parse(&namespace).map_err(map_service_error)?;
+    let namespace = RouteConfigNamespace::parse(&namespace).map_err(map_service_error)?;
+    let namespace = match namespace {
+        RouteConfigNamespace::Managed(namespace) => namespace,
+        RouteConfigNamespace::Tools => {
+            return Err(map_service_error(namespace.read_only_error()).into());
+        }
+    };
     let service = ConfigService::new(&state).map_err(map_service_error)?;
     let created = service
-        .create(namespace, body, &headers)
+        .create_with_headers(namespace, body, &headers)
         .await
         .map_err(map_service_error)?;
     Ok((StatusCode::CREATED, Json(created)))
@@ -172,7 +252,13 @@ async fn validate_config(
     Json(body): Json<Value>,
 ) -> Result<impl IntoResponse, ConfigRouteError> {
     ensure_admin_auth(&state, &headers)?;
-    let namespace = ConfigNamespace::parse(&namespace).map_err(map_service_error)?;
+    let namespace = RouteConfigNamespace::parse(&namespace).map_err(map_service_error)?;
+    let namespace = match namespace {
+        RouteConfigNamespace::Managed(namespace) => namespace,
+        RouteConfigNamespace::Tools => {
+            return Err(map_service_error(namespace.read_only_error()).into());
+        }
+    };
     let service = ConfigService::new(&state).map_err(map_service_error)?;
     let normalized = service
         .validate(namespace, params.id.as_deref(), body)
@@ -198,13 +284,14 @@ async fn get_config_inner(
     namespace: String,
     id: String,
 ) -> Result<impl IntoResponse, ConfigRouteError> {
-    let namespace = ConfigNamespace::parse(&namespace).map_err(map_service_error)?;
+    let namespace = RouteConfigNamespace::parse(&namespace).map_err(map_service_error)?;
     let service = ConfigService::new(&state).map_err(map_service_error)?;
-    let value = service
-        .get(namespace, &id)
-        .await
-        .map_err(map_service_error)?
-        .ok_or_else(|| ApiError::NotFound(format!("{}/{}", namespace.as_str(), id)))?;
+    let value = match namespace {
+        RouteConfigNamespace::Managed(namespace) => service.get(namespace, &id).await,
+        RouteConfigNamespace::Tools => service.get_tool(&id).await,
+    }
+    .map_err(map_service_error)?
+    .ok_or_else(|| ApiError::NotFound(format!("{}/{}", namespace.as_str(), id)))?;
     Ok(Json(value))
 }
 
@@ -214,13 +301,14 @@ async fn get_config_meta(
     Path((namespace, id)): Path<(String, String)>,
 ) -> Result<impl IntoResponse, ConfigRouteError> {
     ensure_admin_auth(&state, &headers)?;
-    let namespace = ConfigNamespace::parse(&namespace).map_err(map_service_error)?;
+    let namespace = RouteConfigNamespace::parse(&namespace).map_err(map_service_error)?;
     let service = ConfigService::new(&state).map_err(map_service_error)?;
-    let meta = service
-        .get_meta(namespace, &id)
-        .await
-        .map_err(map_service_error)?
-        .ok_or_else(|| ApiError::NotFound(format!("{}/{}", namespace.as_str(), id)))?;
+    let meta = match namespace {
+        RouteConfigNamespace::Managed(namespace) => service.get_meta(namespace, &id).await,
+        RouteConfigNamespace::Tools => service.get_tool_meta(&id).await,
+    }
+    .map_err(map_service_error)?
+    .ok_or_else(|| ApiError::NotFound(format!("{}/{}", namespace.as_str(), id)))?;
     Ok(Json(meta))
 }
 
@@ -231,12 +319,17 @@ async fn list_config_meta(
     Query(params): Query<ListParams>,
 ) -> Result<impl IntoResponse, ConfigRouteError> {
     ensure_admin_auth(&state, &headers)?;
-    let namespace = ConfigNamespace::parse(&namespace).map_err(map_service_error)?;
+    let namespace = RouteConfigNamespace::parse(&namespace).map_err(map_service_error)?;
     let service = ConfigService::new(&state).map_err(map_service_error)?;
-    let items = service
-        .list_meta(namespace, params.offset, params.limit)
-        .await
-        .map_err(map_service_error)?;
+    let items = match namespace {
+        RouteConfigNamespace::Managed(namespace) => {
+            service
+                .list_meta(namespace, params.offset, params.limit)
+                .await
+        }
+        RouteConfigNamespace::Tools => service.list_tool_meta(params.offset, params.limit).await,
+    }
+    .map_err(map_service_error)?;
     let response: Vec<_> = items
         .into_iter()
         .map(|(id, meta)| json!({ "id": id, "meta": meta }))
@@ -251,10 +344,16 @@ async fn put_config(
     Json(body): Json<Value>,
 ) -> Result<impl IntoResponse, ConfigRouteError> {
     ensure_admin_auth(&state, &headers)?;
-    let namespace = ConfigNamespace::parse(&namespace).map_err(map_service_error)?;
+    let namespace = RouteConfigNamespace::parse(&namespace).map_err(map_service_error)?;
+    let namespace = match namespace {
+        RouteConfigNamespace::Managed(namespace) => namespace,
+        RouteConfigNamespace::Tools => {
+            return Err(map_service_error(namespace.read_only_error()).into());
+        }
+    };
     let service = ConfigService::new(&state).map_err(map_service_error)?;
     let updated = service
-        .update(namespace, &id, body, &headers)
+        .update_with_headers(namespace, &id, body, &headers)
         .await
         .map_err(map_service_error)?;
     Ok(Json(updated))
@@ -269,26 +368,67 @@ async fn delete_config(
     if let Err(err) = ensure_admin_auth(&state, &headers) {
         return err.into_response();
     }
-    let namespace = match ConfigNamespace::parse(&namespace) {
+    let namespace = match RouteConfigNamespace::parse(&namespace) {
         Ok(ns) => ns,
         Err(e) => return ConfigRouteError::Api(map_service_error(e)).into_response(),
+    };
+    let namespace = match namespace {
+        RouteConfigNamespace::Managed(namespace) => namespace,
+        RouteConfigNamespace::Tools => {
+            return ConfigRouteError::Api(map_service_error(namespace.read_only_error()))
+                .into_response();
+        }
     };
     let service = match ConfigService::new(&state) {
         Ok(s) => s,
         Err(e) => return ConfigRouteError::Api(map_service_error(e)).into_response(),
     };
-    match service.delete(namespace, &id, params.force, &headers).await {
-        Ok(()) => StatusCode::NO_CONTENT.into_response(),
-        Err(ConfigServiceError::Blocked { used_by }) => (
+    let blockers = match delete_blockers_for_route(&service, namespace, &id, params.force).await {
+        Ok(blockers) => blockers,
+        Err(e) => return ConfigRouteError::Api(map_service_error(e)).into_response(),
+    };
+    if !blockers.is_empty() {
+        return (
             StatusCode::CONFLICT,
             Json(json!({
                 "error": "cannot delete: other records depend on this resource",
-                "used_by": used_by,
+                "used_by": blockers,
             })),
         )
-            .into_response(),
+            .into_response();
+    }
+    match service
+        .delete_with_options(namespace, &id, params.force, &headers)
+        .await
+    {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
         Err(e) => ConfigRouteError::Api(map_service_error(e)).into_response(),
     }
+}
+
+async fn delete_blockers_for_route(
+    service: &ConfigService<'_>,
+    namespace: ConfigNamespace,
+    id: &str,
+    force: bool,
+) -> Result<Vec<crate::services::config_service::DependentRef>, ConfigServiceError> {
+    let provider_force = force && matches!(namespace, ConfigNamespace::Providers);
+    if !provider_force {
+        return service.find_dependents(namespace, id).await;
+    }
+
+    let provider_models = service
+        .find_dependents(ConfigNamespace::Providers, id)
+        .await?;
+    let mut agent_blockers = Vec::new();
+    for model_ref in provider_models {
+        agent_blockers.extend(
+            service
+                .find_dependents(ConfigNamespace::Models, &model_ref.id)
+                .await?,
+        );
+    }
+    Ok(agent_blockers)
 }
 
 /// Body accepted by `POST /v1/config/:namespace/:id/restore`.
@@ -306,9 +446,16 @@ async fn restore_config(
     if let Err(err) = ensure_admin_auth(&state, &headers) {
         return err.into_response();
     }
-    let namespace = match ConfigNamespace::parse(&namespace) {
+    let namespace = match RouteConfigNamespace::parse(&namespace) {
         Ok(ns) => ns,
         Err(e) => return ConfigRouteError::Api(map_service_error(e)).into_response(),
+    };
+    let namespace = match namespace {
+        RouteConfigNamespace::Managed(namespace) => namespace,
+        RouteConfigNamespace::Tools => {
+            return ConfigRouteError::Api(map_service_error(namespace.read_only_error()))
+                .into_response();
+        }
     };
     let service = match ConfigService::new(&state) {
         Ok(s) => s,
@@ -376,9 +523,7 @@ async fn get_mcp_server_status(
 
     // 503 when no MCP runtime is configured.
     let manager = state.config_runtime_manager.as_ref().ok_or_else(|| {
-        ConfigRouteError::Api(ApiError::ServiceUnavailable(
-            "MCP runtime is not configured".into(),
-        ))
+        ConfigRouteError::ServiceUnavailable("MCP runtime is not configured".into())
     })?;
 
     // 404 when the id is unknown to the active registry.
@@ -416,9 +561,7 @@ async fn post_mcp_server_restart(
 
     // 503 when no MCP runtime is configured.
     let manager = state.config_runtime_manager.as_ref().ok_or_else(|| {
-        ConfigRouteError::Api(ApiError::ServiceUnavailable(
-            "MCP runtime is not configured".into(),
-        ))
+        ConfigRouteError::ServiceUnavailable("MCP runtime is not configured".into())
     })?;
 
     manager.mcp_server_reconnect(&id).await.map_err(|e| {
@@ -426,7 +569,7 @@ async fn post_mcp_server_restart(
         let msg = e.to_string();
         if msg.contains("unknown server") || msg.contains("no MCP registry is active") {
             if msg.contains("no MCP registry") {
-                ConfigRouteError::Api(ApiError::ServiceUnavailable(msg))
+                ConfigRouteError::ServiceUnavailable(msg)
             } else {
                 ConfigRouteError::Api(ApiError::NotFound(format!("mcp-server/{id}")))
             }
@@ -436,7 +579,7 @@ async fn post_mcp_server_restart(
     })?;
 
     // Emit audit event after successful restart.
-    if let Some(audit) = &state.audit_log {
+    if let Some(audit) = state.audit_log() {
         let resource = format!("mcp-servers/{id}");
         audit
             .emit(
@@ -458,10 +601,8 @@ async fn list_audit_log(
     Query(query): Query<AuditQuery>,
 ) -> Result<impl IntoResponse, ConfigRouteError> {
     ensure_admin_auth(&state, &headers)?;
-    let audit = state.audit_log.as_ref().ok_or_else(|| {
-        ConfigRouteError::Api(ApiError::ServiceUnavailable(
-            "audit log is not configured".into(),
-        ))
+    let audit = state.audit_log().ok_or_else(|| {
+        ConfigRouteError::ServiceUnavailable("audit log is not configured".into())
     })?;
     let mut effective_query = query;
     effective_query.limit = effective_query.limit.clamp(1, 1000);
@@ -479,6 +620,7 @@ async fn list_audit_log(
 #[derive(Debug)]
 pub(crate) enum ConfigRouteError {
     Api(ApiError),
+    ServiceUnavailable(String),
     Unauthorized(String),
 }
 
@@ -492,6 +634,11 @@ impl IntoResponse for ConfigRouteError {
     fn into_response(self) -> Response {
         match self {
             ConfigRouteError::Api(error) => error.into_response(),
+            ConfigRouteError::ServiceUnavailable(message) => (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(json!({ "error": message })),
+            )
+                .into_response(),
             ConfigRouteError::Unauthorized(message) => {
                 (StatusCode::UNAUTHORIZED, Json(json!({ "error": message }))).into_response()
             }
@@ -564,11 +711,7 @@ async fn patch_agent_overrides_handler(
     };
     match service.patch_agent_overrides(&id, body, &headers).await {
         Ok(spec) => Json(spec).into_response(),
-        Err(ConfigServiceError::OverridesNotSupportedForUserRecord) => (
-            StatusCode::UNPROCESSABLE_ENTITY,
-            Json(json!({ "error": ConfigServiceError::OverridesNotSupportedForUserRecord.to_string() })),
-        )
-            .into_response(),
+        Err(e) if is_overrides_not_supported_for_user_record(&e) => unprocessable_error(e),
         Err(e) => ConfigRouteError::Api(map_service_error(e)).into_response(),
     }
 }
@@ -587,11 +730,7 @@ async fn clear_agent_overrides_handler(
     };
     match service.clear_agent_overrides(&id, &headers).await {
         Ok(spec) => Json(spec).into_response(),
-        Err(ConfigServiceError::OverridesNotSupportedForUserRecord) => (
-            StatusCode::UNPROCESSABLE_ENTITY,
-            Json(json!({ "error": ConfigServiceError::OverridesNotSupportedForUserRecord.to_string() })),
-        )
-            .into_response(),
+        Err(e) if is_overrides_not_supported_for_user_record(&e) => unprocessable_error(e),
         Err(e) => ConfigRouteError::Api(map_service_error(e)).into_response(),
     }
 }
@@ -613,11 +752,7 @@ async fn clear_agent_override_field_handler(
         .await
     {
         Ok(spec) => Json(spec).into_response(),
-        Err(ConfigServiceError::OverridesNotSupportedForUserRecord) => (
-            StatusCode::UNPROCESSABLE_ENTITY,
-            Json(json!({ "error": ConfigServiceError::OverridesNotSupportedForUserRecord.to_string() })),
-        )
-            .into_response(),
+        Err(e) if is_overrides_not_supported_for_user_record(&e) => unprocessable_error(e),
         Err(e) => ConfigRouteError::Api(map_service_error(e)).into_response(),
     }
 }
@@ -637,11 +772,7 @@ async fn patch_tool_overrides_handler(
     };
     match service.patch_tool_overrides(&id, body, &headers).await {
         Ok(spec) => Json(spec).into_response(),
-        Err(ConfigServiceError::OverridesNotSupportedForUserRecord) => (
-            StatusCode::UNPROCESSABLE_ENTITY,
-            Json(json!({ "error": ConfigServiceError::OverridesNotSupportedForUserRecord.to_string() })),
-        )
-            .into_response(),
+        Err(e) if is_overrides_not_supported_for_user_record(&e) => unprocessable_error(e),
         Err(e) => ConfigRouteError::Api(map_service_error(e)).into_response(),
     }
 }
@@ -660,11 +791,7 @@ async fn clear_tool_overrides_handler(
     };
     match service.clear_tool_overrides(&id, &headers).await {
         Ok(spec) => Json(spec).into_response(),
-        Err(ConfigServiceError::OverridesNotSupportedForUserRecord) => (
-            StatusCode::UNPROCESSABLE_ENTITY,
-            Json(json!({ "error": ConfigServiceError::OverridesNotSupportedForUserRecord.to_string() })),
-        )
-            .into_response(),
+        Err(e) if is_overrides_not_supported_for_user_record(&e) => unprocessable_error(e),
         Err(e) => ConfigRouteError::Api(map_service_error(e)).into_response(),
     }
 }
@@ -686,13 +813,17 @@ async fn clear_tool_override_field_handler(
         .await
     {
         Ok(spec) => Json(spec).into_response(),
-        Err(ConfigServiceError::OverridesNotSupportedForUserRecord) => (
-            StatusCode::UNPROCESSABLE_ENTITY,
-            Json(json!({ "error": ConfigServiceError::OverridesNotSupportedForUserRecord.to_string() })),
-        )
-            .into_response(),
+        Err(e) if is_overrides_not_supported_for_user_record(&e) => unprocessable_error(e),
         Err(e) => ConfigRouteError::Api(map_service_error(e)).into_response(),
     }
+}
+
+fn unprocessable_error(error: ConfigServiceError) -> Response {
+    (
+        StatusCode::UNPROCESSABLE_ENTITY,
+        Json(json!({ "error": error.to_string() })),
+    )
+        .into_response()
 }
 
 fn map_service_error(error: ConfigServiceError) -> ApiError {
@@ -710,12 +841,6 @@ fn map_service_error(error: ConfigServiceError) -> ApiError {
         ConfigServiceError::Serialization(_)
         | ConfigServiceError::Apply(_)
         | ConfigServiceError::Storage(_) => ApiError::Internal(error.to_string()),
-        // Blocked is matched inline in delete_config before reaching this function.
-        ConfigServiceError::Blocked { .. } => ApiError::Conflict(error.to_string()),
-        // OverridesNotSupportedForUserRecord is matched inline in patch/clear handlers.
-        ConfigServiceError::OverridesNotSupportedForUserRecord => {
-            ApiError::BadRequest(error.to_string())
-        }
     }
 }
 
@@ -918,8 +1043,6 @@ mod tests {
                         id: "bootstrap".into(),
                         provider_id: "bootstrap".into(),
                         upstream_model: "bootstrap-model".into(),
-                        created_at: None,
-                        updated_at: None,
                     }),
                     BuiltinSpec::agent(bootstrap_agent()),
                 ],
@@ -1007,6 +1130,23 @@ mod tests {
             (status, body)
         }
 
+        async fn get_json(app: &axum::Router, uri: &str) -> (StatusCode, Value) {
+            let req = Request::builder()
+                .method("GET")
+                .uri(uri)
+                .body(Body::empty())
+                .unwrap();
+            let resp = app.clone().oneshot(req).await.unwrap();
+            let status = resp.status();
+            let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+            let body: Value = if bytes.is_empty() {
+                Value::Null
+            } else {
+                serde_json::from_slice(&bytes).unwrap_or(Value::Null)
+            };
+            (status, body)
+        }
+
         #[tokio::test]
         async fn validate_returns_normalized_payload_without_persisting() {
             let app = build_test_app().await;
@@ -1015,7 +1155,10 @@ mod tests {
             assert_eq!(status, StatusCode::OK);
             assert_eq!(body["ok"], Value::Bool(true));
             assert_eq!(body["normalized"]["id"], Value::String("draft-prov".into()));
-            assert!(body["normalized"]["created_at"].is_number());
+            assert!(
+                body["normalized"].get("created_at").is_none(),
+                "normalized spec should not inject runtime metadata fields"
+            );
             // Confirm nothing was persisted: GET should 404.
             let get_req = Request::builder()
                 .method("GET")
@@ -1031,6 +1174,90 @@ mod tests {
             let app = build_test_app().await;
             let (status, _) = validate_record(&app, "providers", r#"{"adapter":"stub"}"#).await;
             assert_eq!(status, StatusCode::BAD_REQUEST);
+        }
+
+        #[tokio::test]
+        async fn validate_rejects_unknown_provider_and_empty_model_fields() {
+            let app = build_test_app().await;
+
+            let (status, body) = validate_record(
+                &app,
+                "providers",
+                r#"{"id":"draft-prov","adapter":"stub","future_top_level":true}"#,
+            )
+            .await;
+            assert_eq!(status, StatusCode::BAD_REQUEST);
+            assert!(body["error"].as_str().unwrap().contains("future_top_level"));
+
+            let (status, body) = validate_record(
+                &app,
+                "models",
+                r#"{"id":"draft-model","provider_id":"","upstream_model":"gpt-4"}"#,
+            )
+            .await;
+            assert_eq!(status, StatusCode::BAD_REQUEST);
+            assert!(body["error"].as_str().unwrap().contains("provider_id"));
+        }
+
+        #[tokio::test]
+        async fn provider_removal_preview_reports_model_and_agent_impact() {
+            let app = build_test_app().await;
+
+            assert_eq!(
+                create_record(
+                    &app,
+                    "providers",
+                    r#"{"id":"prov-preview","adapter":"stub"}"#
+                )
+                .await,
+                StatusCode::CREATED
+            );
+            assert_eq!(
+                create_record(
+                    &app,
+                    "models",
+                    r#"{"id":"model-preview","provider_id":"prov-preview","upstream_model":"gpt-4"}"#
+                )
+                .await,
+                StatusCode::CREATED
+            );
+            assert_eq!(
+                create_record(
+                    &app,
+                    "agents",
+                    r#"{"id":"agent-preview","model_id":"model-preview","system_prompt":"hi","max_rounds":1}"#
+                )
+                .await,
+                StatusCode::CREATED
+            );
+
+            let (status, body) =
+                get_json(&app, "/v1/config/providers/prov-preview/removal-preview").await;
+            assert_eq!(status, StatusCode::OK, "body: {body}");
+            assert_eq!(body["provider_id"], "prov-preview");
+            assert_eq!(body["model_ids"], serde_json::json!(["model-preview"]));
+            assert_eq!(body["agent_ids"], serde_json::json!(["agent-preview"]));
+            assert_eq!(body["block_if_referenced_allowed"], false);
+            assert_eq!(body["cascade_unused_model_bindings_allowed"], false);
+        }
+
+        #[tokio::test]
+        async fn provider_removal_preview_returns_404_for_missing_provider() {
+            let app = build_test_app().await;
+            let (status, _) = get_json(&app, "/v1/config/providers/no-such/removal-preview").await;
+            assert_eq!(status, StatusCode::NOT_FOUND);
+        }
+
+        #[tokio::test]
+        async fn config_diagnostics_returns_serializable_registry_diagnostics() {
+            let app = build_test_app().await;
+
+            let (status, body) = get_json(&app, "/v1/config/diagnostics").await;
+            assert_eq!(status, StatusCode::OK, "body: {body}");
+            assert!(
+                body["diagnostics"].as_array().is_some(),
+                "diagnostics should be an array"
+            );
         }
 
         #[tokio::test]
@@ -1060,7 +1287,7 @@ mod tests {
         }
 
         #[tokio::test]
-        async fn delete_provider_with_force_true_succeeds_despite_dependents() {
+        async fn delete_provider_with_force_true_cascades_unused_models() {
             let app = build_test_app().await;
 
             assert_eq!(
@@ -1079,6 +1306,22 @@ mod tests {
 
             let (status, _) = delete_record(&app, "providers", "prov-y", true).await;
             assert_eq!(status, StatusCode::NO_CONTENT);
+        }
+
+        #[tokio::test]
+        async fn delete_model_with_force_true_still_reports_agent_blockers() {
+            let app = build_test_app().await;
+
+            let (status, body) = delete_record(&app, "models", "bootstrap", true).await;
+
+            assert_eq!(status, StatusCode::CONFLICT, "body: {body}");
+            let used_by = body["used_by"].as_array().expect("used_by array");
+            assert!(
+                used_by
+                    .iter()
+                    .any(|record| record["namespace"] == "agents" && record["id"] == "bootstrap"),
+                "should report the agent that keeps the model in use: {body}"
+            );
         }
 
         #[tokio::test]
@@ -1279,8 +1522,6 @@ mod tests {
                         id: "bootstrap".into(),
                         provider_id: "bootstrap".into(),
                         upstream_model: "bootstrap-model".into(),
-                        created_at: None,
-                        updated_at: None,
                     }),
                     BuiltinSpec::agent(bootstrap_agent()),
                     BuiltinSpec::tool(ToolSpec {
@@ -1354,9 +1595,7 @@ mod tests {
                 .body(Body::from(r#"{"id":"x","name":"x","description":"x"}"#))
                 .unwrap();
             let resp = app.clone().oneshot(req).await.unwrap();
-            // Task 6 emits ConfigServiceError::InvalidPayload, which the
-            // existing `map_service_error` maps to 400 BAD_REQUEST. The plan
-            // mentioned 422 nominally; 400 is what actually gets emitted.
+            // ConfigServiceError::InvalidPayload maps to 400 BAD_REQUEST.
             assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
         }
     }

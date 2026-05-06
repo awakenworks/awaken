@@ -51,6 +51,13 @@ pub use phase::{
     ToolPolicyHook, TypedEffectHandler, TypedScheduledActionHandler,
 };
 pub use plugins::{Plugin, PluginDescriptor, PluginRegistrar};
-pub use registry::{AgentResolver, ExecutionResolver, ResolvedAgent, ResolvedExecution};
+pub use registry::{
+    AgentResolver, ExecutionResolver, ProviderRemovalImpact, ProviderRemovalPolicy,
+    ProviderRemovalPreview, RegistryDiagnostic, RegistryDiagnosticSeverity, RegistryResourceRef,
+    RegistryUpdateError, RegistryValidationError, ResolvedAgent, ResolvedExecution,
+    RuntimeRegistryUpdate, SerializableRegistryDiagnostic, diagnose_agent_spec,
+    diagnose_registry_set, diagnose_registry_set_serializable, preview_provider_removal,
+    rebuild_agent_model_provider_registries,
+};
 pub use runtime::{AgentRuntime, RunRequest, ThreadContextSnapshot};
 pub use state::{CommitEvent, CommitHook, MutationBatch, StateCommand, StateStore};

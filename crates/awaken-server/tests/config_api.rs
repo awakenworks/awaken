@@ -589,8 +589,6 @@ async fn make_runtime_manager_custom(
                 id: "bootstrap".into(),
                 provider_id: "bootstrap".into(),
                 upstream_model: "bootstrap-model".into(),
-                created_at: None,
-                updated_at: None,
             }),
             BuiltinSpec::agent(agent_spec("bootstrap", "bootstrap")),
         ],
@@ -767,6 +765,24 @@ async fn admin_config_routes_require_bearer_token_when_configured() {
     .await;
     assert_eq!(status, StatusCode::OK);
     assert!(body["namespaces"].is_array());
+
+    for uri in [
+        "/v1/config/diagnostics",
+        "/v1/config/providers/bootstrap/removal-preview",
+    ] {
+        let (status, body) = request_json(&app.router, Method::GET, uri, None).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "uri: {uri}, body: {body}");
+
+        let (status, body) = request_json_with_headers(
+            &app.router,
+            Method::GET,
+            uri,
+            None,
+            &[("authorization", "Bearer admin-token")],
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "uri: {uri}, body: {body}");
+    }
 }
 
 #[tokio::test]
@@ -1625,12 +1641,11 @@ async fn delete_provider_with_dependents_returns_409() {
 }
 
 #[tokio::test]
-async fn delete_rolls_back_when_runtime_apply_would_break_graph() {
+async fn force_delete_provider_blocks_when_agent_uses_provider_model() {
     let app = make_app().await;
 
-    // With force=true, the dependency check is bypassed and the runtime apply
-    // is attempted.  Removing the bootstrap provider while the bootstrap model
-    // still references it breaks the runtime graph → 400 + rollback.
+    // force=true may cascade unused model bindings, but it must not remove a
+    // provider when an agent still uses one of those model bindings.
     let (status, body) = request_json(
         &app.router,
         Method::DELETE,
@@ -1639,20 +1654,21 @@ async fn delete_rolls_back_when_runtime_apply_would_break_graph() {
     )
     .await;
 
-    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(status, StatusCode::CONFLICT);
+    let used_by = body["used_by"].as_array().expect("used_by array");
     assert!(
-        body["error"]
-            .as_str()
-            .expect("error string")
-            .contains("invalid managed config")
+        used_by
+            .iter()
+            .any(|record| record["namespace"] == "agents" && record["id"] == "bootstrap"),
+        "should report the agent that keeps the provider model in use: {body}"
     );
 
     let stored = ConfigStore::get(app.store.as_ref(), "providers", "bootstrap")
         .await
-        .expect("read provider after rollback");
+        .expect("read provider after blocked delete");
     assert!(
         stored.is_some(),
-        "provider should be restored after rollback"
+        "provider should remain after blocked delete"
     );
 }
 
@@ -1845,8 +1861,6 @@ async fn change_listener_coalesces_event_bursts_within_min_apply_interval() {
                 id: "bootstrap".into(),
                 provider_id: "bootstrap".into(),
                 upstream_model: "bootstrap-model".into(),
-                created_at: None,
-                updated_at: None,
             }),
             BuiltinSpec::agent(agent_spec("bootstrap", "bootstrap")),
         ],
@@ -2215,6 +2229,43 @@ async fn patch_overrides_null_clears_field() {
 }
 
 #[tokio::test]
+async fn patch_overrides_null_clears_nullable_base_field() {
+    let app = make_app().await;
+
+    use awaken_contract::contract::config_store::ConfigStore;
+
+    let mut raw = ConfigStore::get(app.store.as_ref(), "agents", "bootstrap")
+        .await
+        .expect("store read")
+        .expect("entry present");
+    raw["spec"]["endpoint"] = json!({
+        "backend": "a2a",
+        "base_url": "http://127.0.0.1:1",
+        "target": "remote-agent"
+    });
+    ConfigStore::put(app.store.as_ref(), "agents", "bootstrap", &raw)
+        .await
+        .expect("store write");
+
+    let (status, body) = patch_overrides(&app.router, "bootstrap", json!({"endpoint": null})).await;
+    assert_eq!(status, StatusCode::OK, "body: {body}");
+    assert!(
+        body.get("endpoint").is_none() || body["endpoint"].is_null(),
+        "effective endpoint must be cleared"
+    );
+
+    let raw = ConfigStore::get(app.store.as_ref(), "agents", "bootstrap")
+        .await
+        .expect("store read")
+        .expect("entry present");
+    let overrides = &raw["meta"]["user_overrides"];
+    assert!(
+        overrides.get("endpoint").is_some_and(Value::is_null),
+        "endpoint null must be preserved in user_overrides"
+    );
+}
+
+#[tokio::test]
 async fn patch_overrides_rejects_unknown_field() {
     let app = make_app().await;
 
@@ -2351,8 +2402,6 @@ async fn audit_event_emitted_for_patch_and_delete() {
                 id: "bootstrap".into(),
                 provider_id: "bootstrap".into(),
                 upstream_model: "bootstrap-model".into(),
-                created_at: None,
-                updated_at: None,
             }),
             BuiltinSpec::agent(agent_spec("bootstrap", "bootstrap")),
         ],
@@ -2391,7 +2440,7 @@ async fn audit_event_emitted_for_patch_and_delete() {
         .expect("patch_agent_overrides");
 
     // Verify state has audit_log
-    assert!(state.audit_log.is_some(), "state should have audit_log");
+    assert!(state.audit_log().is_some(), "state should have audit_log");
 
     // 2. DELETE all overrides
     let service = ConfigService::new(&state).expect("service");

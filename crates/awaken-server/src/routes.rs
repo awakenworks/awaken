@@ -37,7 +37,6 @@ pub enum ApiError {
     ThreadNotFound(String),
     RunNotFound(String),
     Internal(String),
-    ServiceUnavailable(String),
 }
 
 impl IntoResponse for ApiError {
@@ -51,7 +50,6 @@ impl IntoResponse for ApiError {
             }
             ApiError::RunNotFound(id) => (StatusCode::NOT_FOUND, format!("run not found: {id}")),
             ApiError::Internal(msg) => (StatusCode::INTERNAL_SERVER_ERROR, msg),
-            ApiError::ServiceUnavailable(msg) => (StatusCode::SERVICE_UNAVAILABLE, msg),
         };
         (status, Json(json!({"error": message}))).into_response()
     }
@@ -194,7 +192,7 @@ async fn get_agent_runtime_stats(
     if let Err(err) = crate::config_routes::ensure_admin_auth(&state, &headers) {
         return err.into_response();
     }
-    let Some(registry) = state.runtime_stats.as_ref() else {
+    let Some(registry) = state.runtime_stats() else {
         return (
             StatusCode::SERVICE_UNAVAILABLE,
             Json(json!({ "error": "runtime_stats registry not configured" })),
@@ -230,7 +228,7 @@ async fn list_agents_runtime_stats(State(state): State<AppState>, headers: Heade
     if let Err(err) = crate::config_routes::ensure_admin_auth(&state, &headers) {
         return err.into_response();
     }
-    let Some(registry) = state.runtime_stats.as_ref() else {
+    let Some(registry) = state.runtime_stats() else {
         return (
             StatusCode::SERVICE_UNAVAILABLE,
             Json(json!({ "error": "runtime_stats registry not configured" })),
@@ -266,13 +264,13 @@ async fn system_info(State(state): State<AppState>, headers: HeaderMap) -> Respo
     if let Err(err) = crate::config_routes::ensure_admin_auth(&state, &headers) {
         return err.into_response();
     }
-    let uptime_secs = state.started_at.elapsed().as_secs();
+    let uptime_secs = state.started_at().elapsed().as_secs();
     Json(json!({
         "version": env!("CARGO_PKG_VERSION"),
         "uptime_seconds": uptime_secs,
         "config_store_enabled": state.config_store.is_some(),
-        "audit_log_enabled": state.audit_log.is_some(),
-        "runtime_stats_enabled": state.runtime_stats.is_some(),
+        "audit_log_enabled": state.audit_log().is_some(),
+        "runtime_stats_enabled": state.runtime_stats().is_some(),
     }))
     .into_response()
 }

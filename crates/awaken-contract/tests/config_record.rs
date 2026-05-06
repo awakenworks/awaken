@@ -1,4 +1,7 @@
-use awaken_contract::{AgentSpec, ConfigRecord, RecordMeta, RecordSource};
+use awaken_contract::{
+    AgentSpec, ConfigRecord, ProviderSpec, RecordMeta, RecordSource, decode_config_record,
+    effective_config_record, effective_visible_config_records, validate_config_record,
+};
 use serde_json::json;
 
 #[test]
@@ -217,4 +220,89 @@ fn new_user_and_new_builtin_set_non_zero_timestamps() {
         builtin_meta.updated_at > 0,
         "new_builtin updated_at must be non-zero"
     );
+}
+
+#[test]
+fn effective_config_record_applies_agent_overrides() {
+    let mut meta = RecordMeta::new_builtin("v1");
+    meta.user_overrides = Some(json!({"system_prompt": "patched"}));
+    let record = ConfigRecord {
+        spec: sample_agent_spec(),
+        meta,
+    };
+
+    let effective = effective_config_record(record).expect("overrides must merge");
+    assert_eq!(effective.system_prompt, "patched");
+    assert_eq!(effective.model_id, "y");
+}
+
+#[test]
+fn decode_config_record_does_not_validate_user_overrides() {
+    let mut meta = RecordMeta::new_builtin("v1");
+    meta.user_overrides = Some(json!({"unknown_patch_field": true}));
+    let record = ConfigRecord {
+        spec: sample_agent_spec(),
+        meta,
+    };
+
+    let decoded = decode_config_record::<AgentSpec>(record.to_value().unwrap())
+        .expect("decode-only API accepts opaque overrides");
+    assert_eq!(
+        decoded.meta.user_overrides,
+        Some(json!({"unknown_patch_field": true}))
+    );
+}
+
+#[test]
+fn validate_config_record_rejects_invalid_user_overrides() {
+    let mut meta = RecordMeta::new_builtin("v1");
+    meta.user_overrides = Some(json!({"unknown_patch_field": true}));
+    let record = ConfigRecord {
+        spec: sample_agent_spec(),
+        meta,
+    };
+
+    let err = validate_config_record::<AgentSpec>(record.to_value().unwrap())
+        .expect_err("invalid overrides must fail validation");
+    assert!(err.to_string().contains("overrides"));
+}
+
+#[test]
+fn effective_config_record_rejects_overrides_for_non_patchable_specs() {
+    let mut meta = RecordMeta::new_builtin("v1");
+    meta.user_overrides = Some(json!({"adapter": "patched"}));
+    let record = ConfigRecord {
+        spec: ProviderSpec {
+            id: "p".into(),
+            adapter: "openai".into(),
+            ..Default::default()
+        },
+        meta,
+    };
+
+    let err = effective_config_record(record).expect_err("provider overrides must be rejected");
+    assert!(err.to_string().contains("overrides"));
+}
+
+#[test]
+fn effective_visible_config_records_skips_hidden_records() {
+    let visible = ConfigRecord {
+        spec: sample_agent_spec(),
+        meta: RecordMeta::new_user(),
+    };
+    let mut hidden_meta = RecordMeta::new_user();
+    hidden_meta.hidden = true;
+    let hidden = ConfigRecord {
+        spec: AgentSpec {
+            id: "hidden".into(),
+            ..sample_agent_spec()
+        },
+        meta: hidden_meta,
+    };
+
+    let values = vec![visible.to_value().unwrap(), hidden.to_value().unwrap()];
+    let records: Vec<AgentSpec> =
+        effective_visible_config_records(values).expect("records must decode");
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].id, "x");
 }

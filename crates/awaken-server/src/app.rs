@@ -1,13 +1,14 @@
 //! Application state and server startup.
 
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock, Weak};
 use std::time::Instant;
 
 use awaken_contract::RedactedString;
 use awaken_contract::contract::config_store::ConfigStore;
 use awaken_contract::contract::storage::ThreadRunStore;
 use awaken_ext_observability::RuntimeStatsRegistry;
+use awaken_runtime::credentials::{AwakenCredentialBroker, CredentialBroker};
 use awaken_runtime::{AgentResolver, AgentRuntime};
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
@@ -18,6 +19,13 @@ use crate::transport::replay_buffer::EventReplayBuffer;
 
 pub type ReplayBufferEntry = (Arc<EventReplayBuffer>, Instant);
 pub type ReplayBufferMap = Arc<Mutex<HashMap<String, ReplayBufferEntry>>>;
+type AppStateExtrasRegistry = HashMap<
+    usize,
+    (
+        Weak<Mutex<HashMap<String, ReplayBufferEntry>>>,
+        AppStateExtras,
+    ),
+>;
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -110,19 +118,25 @@ pub struct AdminApiConfig {
     /// `false` to keep the HTTP surface free of those endpoints entirely.
     #[serde(default = "default_expose_config_routes")]
     pub expose_config_routes: bool,
-    /// Whether the audit log is enabled. Defaults to `true`.
+}
+
+/// Audit-log retention settings attached to [`AppState`] via
+/// [`AppState::with_audit_log_config`].
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AuditLogConfig {
+    /// Whether [`AppState::with_audit_log_from_config`] should attach an audit logger.
     #[serde(default = "default_audit_log_enabled")]
-    pub audit_log_enabled: bool,
+    pub enabled: bool,
     /// Retention window for audit events in days. Default 90 days.
     #[serde(default = "default_audit_retention_days")]
-    pub audit_retention_days: u32,
+    pub retention_days: u32,
     /// Interval in seconds between audit retention sweeps. Default 3600 (1 hour).
     ///
     /// A value of `0` is treated as misconfiguration: the server will warn and
     /// clamp to 60 seconds. Values between 1 and 9 emit a warning but are
     /// respected as the operator may have a specific reason.
     #[serde(default = "default_audit_sweep_interval_secs")]
-    pub audit_sweep_interval_secs: u64,
+    pub sweep_interval_secs: u64,
 }
 
 const fn default_expose_config_routes() -> bool {
@@ -139,6 +153,16 @@ const fn default_audit_retention_days() -> u32 {
 
 const fn default_audit_sweep_interval_secs() -> u64 {
     3600
+}
+
+impl Default for AuditLogConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_audit_log_enabled(),
+            retention_days: default_audit_retention_days(),
+            sweep_interval_secs: default_audit_sweep_interval_secs(),
+        }
+    }
 }
 
 /// Compute the effective sweep interval, emitting warnings for suspicious values.
@@ -168,9 +192,6 @@ impl Default for AdminApiConfig {
             bearer_token: None,
             cors_allowed_origins: default_admin_cors_allowed_origins(),
             expose_config_routes: default_expose_config_routes(),
-            audit_log_enabled: default_audit_log_enabled(),
-            audit_retention_days: default_audit_retention_days(),
-            audit_sweep_interval_secs: default_audit_sweep_interval_secs(),
         }
     }
 }
@@ -218,6 +239,73 @@ fn default_max_concurrent() -> usize {
 
 pub const ADMIN_API_BEARER_TOKEN_ENV: &str = "AWAKEN_ADMIN_API_BEARER_TOKEN";
 const ADMIN_CORS_ALLOWED_ORIGINS_ENV: &str = "AWAKEN_ADMIN_CORS_ALLOWED_ORIGINS";
+static APP_STATE_EXTRAS: OnceLock<Mutex<AppStateExtrasRegistry>> = OnceLock::new();
+
+#[derive(Clone)]
+struct AppStateExtras {
+    admin_api_config: AdminApiConfig,
+    audit_log_config: AuditLogConfig,
+    runtime_stats: Option<Arc<RuntimeStatsRegistry>>,
+    audit_log: Option<Arc<AuditLogger>>,
+    started_at: Instant,
+    credential_broker: Arc<dyn CredentialBroker>,
+}
+
+impl Default for AppStateExtras {
+    fn default() -> Self {
+        Self {
+            admin_api_config: AdminApiConfig::default(),
+            audit_log_config: AuditLogConfig::default(),
+            runtime_stats: None,
+            audit_log: None,
+            started_at: Instant::now(),
+            credential_broker: Arc::new(AwakenCredentialBroker::new()),
+        }
+    }
+}
+
+fn app_state_extras_registry() -> &'static Mutex<AppStateExtrasRegistry> {
+    APP_STATE_EXTRAS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn app_state_extras_key(replay_buffers: &ReplayBufferMap) -> usize {
+    Arc::as_ptr(replay_buffers) as usize
+}
+
+fn prune_app_state_extras(registry: &mut AppStateExtrasRegistry) {
+    registry.retain(|_, (weak, _)| weak.upgrade().is_some());
+}
+
+fn register_default_app_state_extras(replay_buffers: &ReplayBufferMap) {
+    let key = app_state_extras_key(replay_buffers);
+    let weak = Arc::downgrade(replay_buffers);
+    let mut registry = app_state_extras_registry().lock();
+    prune_app_state_extras(&mut registry);
+    registry
+        .entry(key)
+        .or_insert_with(|| (weak, AppStateExtras::default()));
+}
+
+fn app_state_extras(state: &AppState) -> AppStateExtras {
+    let key = app_state_extras_key(&state.replay_buffers);
+    let mut registry = app_state_extras_registry().lock();
+    prune_app_state_extras(&mut registry);
+    registry
+        .get(&key)
+        .map(|(_, extras)| extras.clone())
+        .unwrap_or_default()
+}
+
+fn update_app_state_extras(state: &AppState, update: impl FnOnce(&mut AppStateExtras)) {
+    let key = app_state_extras_key(&state.replay_buffers);
+    let weak = Arc::downgrade(&state.replay_buffers);
+    let mut registry = app_state_extras_registry().lock();
+    prune_app_state_extras(&mut registry);
+    let (_, extras) = registry
+        .entry(key)
+        .or_insert_with(|| (weak, AppStateExtras::default()));
+    update(extras);
+}
 
 fn admin_api_bearer_token_from_env() -> Option<RedactedString> {
     std::env::var(ADMIN_API_BEARER_TOKEN_ENV)
@@ -249,7 +337,7 @@ fn default_admin_cors_allowed_origins() -> Vec<String> {
 }
 
 pub(crate) fn admin_api_config(state: &AppState) -> AdminApiConfig {
-    let mut config = state.admin_api_config.clone();
+    let mut config = app_state_extras(state).admin_api_config;
 
     if let Some(token) = admin_api_bearer_token_from_env() {
         config.bearer_token = Some(token);
@@ -303,21 +391,6 @@ pub struct AppState {
     pub replay_buffers: ReplayBufferMap,
     /// MCP Streamable HTTP session state.
     pub mcp_http: Arc<crate::protocols::mcp::http::McpHttpState>,
-    /// Optional per-agent runtime stats registry used by
-    /// `/v1/agents/:id/runtime-stats`.  When `None`, the endpoint returns
-    /// 503 so embedders can opt out.
-    pub runtime_stats: Option<Arc<RuntimeStatsRegistry>>,
-    /// Optional audit logger.  When `Some`, admin mutations emit events.
-    pub audit_log: Option<Arc<AuditLogger>>,
-    /// Wall-clock instant the AppState was constructed.  Used by
-    /// `/v1/system/info` to report uptime.
-    pub started_at: Instant,
-    /// Process-wide credential broker. All provider auth flows through
-    /// this single instance so token caches and metrics are unified
-    /// (vs. each `build_genai_provider_executor` call creating its own).
-    pub credential_broker: Arc<dyn awaken_runtime::credentials::CredentialBroker>,
-    /// Admin/configuration API policy for this state.
-    admin_api_config: AdminApiConfig,
 }
 
 impl AppState {
@@ -329,7 +402,7 @@ impl AppState {
         resolver: Arc<dyn AgentResolver>,
         config: ServerConfig,
     ) -> Self {
-        Self {
+        let state = Self {
             runtime,
             mailbox,
             store,
@@ -340,12 +413,9 @@ impl AppState {
             skill_catalog_provider: None,
             replay_buffers: Arc::new(Mutex::new(HashMap::new())),
             mcp_http: Arc::new(crate::protocols::mcp::http::McpHttpState::new()),
-            runtime_stats: None,
-            audit_log: None,
-            started_at: Instant::now(),
-            credential_broker: Arc::new(awaken_runtime::credentials::AwakenCredentialBroker::new()),
-            admin_api_config: AdminApiConfig::default(),
-        }
+        };
+        register_default_app_state_extras(&state.replay_buffers);
+        state
     }
 
     /// Override the credential broker (e.g. inject a test double).
@@ -353,20 +423,34 @@ impl AppState {
     /// runtime is wired will leave existing executors pointing at the
     /// previous broker.
     pub fn with_credential_broker(
-        mut self,
+        self,
         broker: Arc<dyn awaken_runtime::credentials::CredentialBroker>,
     ) -> Self {
-        self.credential_broker = broker;
+        update_app_state_extras(&self, |extras| {
+            extras.credential_broker = broker;
+        });
         self
+    }
+
+    /// Return the process-wide credential broker for this state.
+    pub fn credential_broker(&self) -> Arc<dyn CredentialBroker> {
+        app_state_extras(self).credential_broker
     }
 
     /// Attach a runtime stats registry. The same `Arc` should already be
     /// wired into the embedder's `ObservabilityPlugin` sink list so that
     /// recording and reading share state.
     #[must_use]
-    pub fn with_runtime_stats(mut self, registry: Arc<RuntimeStatsRegistry>) -> Self {
-        self.runtime_stats = Some(registry);
+    pub fn with_runtime_stats(self, registry: Arc<RuntimeStatsRegistry>) -> Self {
+        update_app_state_extras(&self, |extras| {
+            extras.runtime_stats = Some(registry);
+        });
         self
+    }
+
+    /// Return the attached runtime stats registry, if configured.
+    pub fn runtime_stats(&self) -> Option<Arc<RuntimeStatsRegistry>> {
+        app_state_extras(self).runtime_stats
     }
 
     /// Attach the config store used by config management routes.
@@ -392,8 +476,10 @@ impl AppState {
 
     /// Attach admin/configuration API security settings without changing the
     /// 0.2-compatible `ServerConfig` struct shape.
-    pub fn with_admin_api_config(mut self, config: AdminApiConfig) -> Self {
-        self.admin_api_config = config;
+    pub fn with_admin_api_config(self, config: AdminApiConfig) -> Self {
+        update_app_state_extras(&self, |extras| {
+            extras.admin_api_config = config;
+        });
         self
     }
 
@@ -417,43 +503,67 @@ impl AppState {
         admin_api_config(self)
     }
 
+    /// Attach audit-log retention settings used by
+    /// [`AppState::with_audit_log_from_config`].
+    #[must_use]
+    pub fn with_audit_log_config(self, config: AuditLogConfig) -> Self {
+        update_app_state_extras(&self, |extras| {
+            extras.audit_log_config = config;
+        });
+        self
+    }
+
+    /// Return the audit-log retention settings for this state.
+    pub fn audit_log_config(&self) -> AuditLogConfig {
+        app_state_extras(self).audit_log_config
+    }
+
     /// Enable the audit logger.  When a `config_store` is already attached and
-    /// `audit_log_enabled` is `true` in [`AdminApiConfig`], pass an
-    /// `AuditLogger` constructed from that store.  This method is an explicit
+    /// [`AuditLogConfig::enabled`] is `true`, pass an `AuditLogger` constructed
+    /// from that store.  This method is an explicit
     /// opt-in; existing embedders are unaffected unless they call it.
     #[must_use]
-    pub fn with_audit_log(mut self, logger: Arc<AuditLogger>) -> Self {
-        self.audit_log = Some(logger);
+    pub fn with_audit_log(self, logger: Arc<AuditLogger>) -> Self {
+        update_app_state_extras(&self, |extras| {
+            extras.audit_log = Some(logger);
+        });
         self
+    }
+
+    /// Return the attached audit logger, if configured.
+    pub fn audit_log(&self) -> Option<Arc<AuditLogger>> {
+        app_state_extras(self).audit_log
     }
 
     /// Builder convenience: create an `AuditLogger` from the already-attached
     /// `config_store` (if any) and the effective `AdminApiConfig` settings.
     ///
-    /// If `audit_log_enabled` is `false` or no config store is attached, this
+    /// If [`AuditLogConfig::enabled`] is `false` or no config store is attached, this
     /// is a no-op.  Also spawns the background retention sweeper task.
     #[must_use]
-    pub fn with_audit_log_from_config(mut self) -> Self {
-        let admin_config = admin_api_config(&self);
-        if !admin_config.audit_log_enabled {
+    pub fn with_audit_log_from_config(self) -> Self {
+        let audit_config = self.audit_log_config();
+        if !audit_config.enabled {
             return self;
         }
 
-        let logger = match &self.audit_log {
-            Some(existing) => existing.clone(),
+        let logger = match self.audit_log() {
+            Some(existing) => existing,
             None => {
                 let Some(store) = self.config_store.clone() else {
                     return self;
                 };
                 let new_logger = Arc::new(AuditLogger::new(store));
-                self.audit_log = Some(new_logger.clone());
+                update_app_state_extras(&self, |extras| {
+                    extras.audit_log = Some(new_logger.clone());
+                });
                 new_logger
             }
         };
 
         let logger_for_sweeper = logger.clone();
-        let retention_days = admin_config.audit_retention_days;
-        let sweep_interval = effective_sweep_interval(admin_config.audit_sweep_interval_secs);
+        let retention_days = audit_config.retention_days;
+        let sweep_interval = effective_sweep_interval(audit_config.sweep_interval_secs);
         // Spawn retention sweeper (fire-and-forget; leaked on shutdown, acceptable for v1).
         tokio::spawn(async move {
             let interval = sweep_interval;
@@ -471,6 +581,20 @@ impl AppState {
                     }
                 }
             }
+        });
+        self
+    }
+
+    /// Return the wall-clock instant this state was constructed.
+    pub fn started_at(&self) -> Instant {
+        app_state_extras(self).started_at
+    }
+
+    /// Override the construction instant, primarily for deterministic tests.
+    #[must_use]
+    pub fn with_started_at(self, started_at: Instant) -> Self {
+        update_app_state_extras(&self, |extras| {
+            extras.started_at = started_at;
         });
         self
     }
@@ -677,8 +801,8 @@ pub fn validate_admin_surface(state: &AppState) -> std::io::Result<()> {
 fn admin_surface_has_sensitive_state(state: &AppState) -> bool {
     state.config_store.is_some()
         || state.config_runtime_manager.is_some()
-        || state.audit_log.is_some()
-        || state.runtime_stats.is_some()
+        || state.audit_log().is_some()
+        || state.runtime_stats().is_some()
         || state.skill_catalog_provider.is_some()
 }
 
@@ -825,7 +949,7 @@ mod tests {
         let mut state = state_for_admin_surface_test("0.0.0.0:3000", AdminApiConfig::default());
         state.config_store = None;
         state.config_runtime_manager = None;
-        state.runtime_stats = Some(Arc::new(RuntimeStatsRegistry::new()));
+        let state = state.with_runtime_stats(Arc::new(RuntimeStatsRegistry::new()));
 
         let error = build_service_router(state).unwrap_err();
         assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
@@ -840,7 +964,7 @@ mod tests {
         let mut state = state_for_admin_surface_test("0.0.0.0:3000", AdminApiConfig::default());
         state.config_store = None;
         state.config_runtime_manager = None;
-        state.audit_log = Some(Arc::new(AuditLogger::new(Arc::new(
+        let state = state.with_audit_log(Arc::new(AuditLogger::new(Arc::new(
             awaken_stores::InMemoryStore::new(),
         ))));
 
@@ -1137,7 +1261,7 @@ mod tests {
         .with_audit_log_from_config();
 
         let stored = state
-            .audit_log
+            .audit_log()
             .expect("audit_log must be Some after with_audit_log_from_config");
         assert_eq!(
             Arc::as_ptr(&stored),

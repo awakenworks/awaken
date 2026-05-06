@@ -55,6 +55,21 @@ let runtime = AgentRuntimeBuilder::new()
 
 `build()` 会解析每个已注册 agent，提前发现缺失 model、provider 或 plugin 的问题。
 
+测试和本地开发可以用 `MockProviderProfile` 显式接入 mock provider，避免依赖全局环境变量切换执行器：
+
+```rust,ignore
+use awaken::{AgentRuntimeBuilder, MockProviderProfile};
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let runtime = AgentRuntimeBuilder::new()
+        .with_mock_provider_profile(MockProviderProfile::new("mock", "mock-model"))
+        .build()?;
+
+    let _runtime = runtime;
+    Ok(())
+}
+```
+
 ## 托管配置路径
 
 当服务端通过 `ConfigStore` 管理动态配置时使用这条路径。
@@ -107,6 +122,11 @@ let runtime = AgentRuntimeBuilder::new()
 | `base_url` | `Option<String>` | `None` | 代理或自托管部署的 base URL 覆盖。空字符串输入反序列化为 `None` |
 | `timeout_secs` | `u64` | `300` | 请求超时（秒） |
 | `adapter_options` | `BTreeMap<String, Value>` | `{}` | 适配器专属、非密的扩展选项。当前 OpenAI 兼容适配器识别 `headers`（一个 string→string 的对象，作为默认请求头加进去）。Schema 接受未知 key，但构建时会被忽略。秘密值必须用 `api_key`，不要塞到这里 |
+
+为兼容已存储配置，`ProviderSpec` 反序列化会忽略未知顶层字段。配置写入和
+validate surface 会调用 `validate_provider_spec` 并拒绝未知字段，避免新记录
+持久化会被静默忽略的设置。Model binding 可使用
+`validate_model_binding_spec` 进行同样的 canonical 校验。
 
 带自定义 header 的示例：
 
@@ -181,6 +201,44 @@ ConfigStore change -> compile RegistrySet -> validate -> replace runtime snapsho
 ```
 
 新 run 使用最新发布的快照。已经开始的 run 保持启动时绑定的快照。
+
+## Runtime Registry 更新
+
+对在代码中管理 provider executor 的应用，`RegistryHandle` 暴露 provider 更新操作：
+
+这些操作只更新当前内存中的 runtime 快照，不会写入 `ConfigStore`；下一次
+managed config 发布可能会用从 `ConfigStore` 编译出的状态替换该快照。
+
+| 方法 | 行为 |
+|---|---|
+| `register_provider(id, executor)` | 新增 provider，并发布已验证的快照 |
+| `replace_provider(id, executor)` | 替换已有 provider executor，不重建无关注册表 |
+| `preview_remove_provider(id)` | 只返回依赖的 model 和 agent id，不修改快照 |
+| `remove_provider(id, policy)` | 删除 provider 前检查依赖它的 model binding 和 agent |
+
+`ProviderRemovalPolicy::BlockIfReferenced` 会在仍有 model binding 指向该
+provider 时拒绝删除。`ProviderRemovalPolicy::CascadeUnusedModelBindings`
+会同时删除指向该 provider 的 model binding，但前提是没有 agent 使用这些
+binding。`ProviderRemovalPreview` 会返回 provider id、引用它的 `model_ids`、
+受影响的 `agent_ids`，以及每个策略当前是否允许。成功时，
+`ProviderRemovalImpact` 会返回 provider id 和被删除的 model binding id；
+存在依赖冲突时，`RegistryUpdateError::ProviderInUse` 会包含相关 model 和
+agent id。
+
+当配置来源已经生成完整的 agents、models 和 providers 替换集合时，使用
+`rebuild_agent_model_provider_registries(base, update)`。它会保留 base
+注册表中的 tools、plugins 和 execution backends，只替换 agents、models 和
+providers，并在返回前验证候选注册表。
+
+诊断函数可以在发布快照前使用：
+
+| 函数 | 报告内容 |
+|---|---|
+| `diagnose_registry_set(registries)` | 缺失的 model binding、provider、plugin 和 delegate agent |
+| `diagnose_registry_set_serializable(registries)` | 同样的 diagnostics，但输出带 `code`、`severity`、`resource`、可选 `depends_on` 和 `message` 的稳定 payload |
+| `validate_registry_set(registries)` | 以错误结果返回相同检查 |
+| `diagnose_agent_spec(registries, spec)` | 单个 agent 相对当前注册表的问题 |
+| `validate_agent_spec(registries, spec)` | 以错误结果返回相同 agent 检查 |
 
 ## 推理覆盖
 

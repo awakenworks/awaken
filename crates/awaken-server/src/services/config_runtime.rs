@@ -52,6 +52,10 @@ pub enum ConfigRuntimeError {
     #[error("runtime does not expose a configurable registry snapshot")]
     RuntimeNotConfigurable,
     #[error(
+        "config store is partially initialized; bootstrap requires all managed namespaces to be empty or all core namespaces populated"
+    )]
+    PartialBootstrap,
+    #[error(
         "unsupported provider adapter: {0} (valid names mirror genai::adapter::AdapterKind — see https://docs.rs/genai/latest/genai/adapter/enum.AdapterKind.html)"
     )]
     UnsupportedProviderAdapter(String),
@@ -69,7 +73,7 @@ pub enum ConfigRuntimeError {
 /// set). Built once from the runtime's pre-apply registry; subsequent
 /// `ConfigRuntimeManager::apply()` calls overlay these on top of the
 /// ConfigStore-derived registry. Pure code-defined regular agents flow
-/// only via ConfigStore (Phase 2 unification) and do NOT appear here.
+/// only via ConfigStore and do NOT appear here.
 #[derive(Default)]
 struct DiscoveredAgentRegistry {
     exact: HashMap<String, AgentSpec>,
@@ -183,15 +187,16 @@ pub trait ProviderExecutorFactory: Send + Sync {
 /// across all providers in this process. The default constructor creates
 /// a fresh broker, suitable for tests; production wiring should pass the
 /// `AppState`-scoped broker via [`with_broker`](Self::with_broker).
-pub struct GenaiProviderExecutorFactory {
+pub struct GenaiProviderExecutorFactory;
+
+/// Provider executor factory backed by genai and a caller-supplied credential broker.
+pub struct BrokeredGenaiProviderExecutorFactory {
     broker: Arc<dyn awaken_runtime::credentials::CredentialBroker>,
 }
 
 impl Default for GenaiProviderExecutorFactory {
     fn default() -> Self {
-        Self {
-            broker: Arc::new(awaken_runtime::credentials::AwakenCredentialBroker::new()),
-        }
+        Self
     }
 }
 
@@ -199,14 +204,22 @@ impl GenaiProviderExecutorFactory {
     /// Construct a factory bound to the given broker. The broker is
     /// shared across all executors this factory builds, which is what
     /// production wiring wants.
-    pub fn with_broker(broker: Arc<dyn awaken_runtime::credentials::CredentialBroker>) -> Self {
-        Self { broker }
+    pub fn with_broker(
+        broker: Arc<dyn awaken_runtime::credentials::CredentialBroker>,
+    ) -> BrokeredGenaiProviderExecutorFactory {
+        BrokeredGenaiProviderExecutorFactory { broker }
     }
 }
 
 impl ProviderExecutorFactory for GenaiProviderExecutorFactory {
     fn build(&self, spec: &ProviderSpec) -> Result<Arc<dyn LlmExecutor>, ConfigRuntimeError> {
-        build_genai_provider_executor(spec, Arc::clone(&self.broker))
+        build_genai_provider_executor(spec)
+    }
+}
+
+impl ProviderExecutorFactory for BrokeredGenaiProviderExecutorFactory {
+    fn build(&self, spec: &ProviderSpec) -> Result<Arc<dyn LlmExecutor>, ConfigRuntimeError> {
+        build_genai_provider_executor_with_broker(spec, Arc::clone(&self.broker))
     }
 }
 
@@ -216,8 +229,14 @@ pub trait ManagedMcpRegistry: Send + Sync {
     fn periodic_refresh_running(&self) -> bool;
     fn start_periodic_refresh(&self, interval: Duration) -> Result<(), ConfigRuntimeError>;
     async fn stop_periodic_refresh(&self) -> bool;
-    fn server_status(&self, server_name: &str) -> Option<McpServerStatusSnapshot>;
-    async fn reconnect(&self, server_name: &str) -> Result<(), ConfigRuntimeError>;
+    fn server_status(&self, _server_name: &str) -> Option<McpServerStatusSnapshot> {
+        None
+    }
+    async fn reconnect(&self, server_name: &str) -> Result<(), ConfigRuntimeError> {
+        Err(ConfigRuntimeError::InvalidConfig(format!(
+            "MCP registry does not support reconnect for server '{server_name}'"
+        )))
+    }
 }
 
 #[async_trait]
@@ -382,7 +401,7 @@ impl ConfigRuntimeManager {
             plugins: registries.plugins,
             backends: registries.backends,
             discovered_agents,
-            provider_factory: Arc::new(GenaiProviderExecutorFactory::default()),
+            provider_factory: Arc::new(GenaiProviderExecutorFactory),
             change_notifier: None,
             mcp_registry_factory: Arc::new(DefaultMcpRegistryFactory),
             apply_lock: tokio::sync::Mutex::new(()),
@@ -470,6 +489,61 @@ impl ConfigRuntimeManager {
             audit.emit_seed_report(&report).await;
         }
         Ok(report)
+    }
+
+    /// Backward-compatible 0.4.0 bootstrap entry point.
+    ///
+    /// New code should prefer [`Self::apply_seed`], which preserves built-in
+    /// provenance and supports field-level user overrides.
+    pub async fn bootstrap_if_empty(
+        &self,
+        providers: &[ProviderSpec],
+        models: &[ModelBindingSpec],
+        agents: &[AgentSpec],
+        mcp_servers: &[McpServerSpec],
+    ) -> Result<bool, ConfigRuntimeError> {
+        let has_providers = !self.store.list(NS_PROVIDERS, 0, 1).await?.is_empty();
+        let has_models = !self.store.list(NS_MODELS, 0, 1).await?.is_empty();
+        let has_agents = !self.store.list(NS_AGENTS, 0, 1).await?.is_empty();
+        let has_mcp_servers = !self.store.list(NS_MCP_SERVERS, 0, 1).await?.is_empty();
+
+        if has_providers || has_models || has_agents || has_mcp_servers {
+            if has_providers && has_models && has_agents {
+                return Ok(false);
+            }
+            return Err(ConfigRuntimeError::PartialBootstrap);
+        }
+
+        let specs = providers
+            .iter()
+            .cloned()
+            .map(awaken_contract::BuiltinSpec::provider)
+            .chain(
+                models
+                    .iter()
+                    .cloned()
+                    .map(awaken_contract::BuiltinSpec::model),
+            )
+            .chain(
+                agents
+                    .iter()
+                    .cloned()
+                    .map(awaken_contract::BuiltinSpec::agent),
+            )
+            .chain(
+                mcp_servers
+                    .iter()
+                    .cloned()
+                    .map(awaken_contract::BuiltinSpec::mcp_server),
+            )
+            .collect();
+
+        let seed = awaken_contract::BuiltinSeedSet {
+            binary_version: "bootstrap_if_empty".into(),
+            specs,
+        };
+        self.apply_seed(&seed).await?;
+        Ok(true)
     }
 
     pub async fn apply(&self) -> Result<u64, ConfigRuntimeError> {
@@ -612,7 +686,7 @@ impl ConfigRuntimeManager {
 
     async fn publish(&self, managed: ManagedConfigSnapshot) -> Result<u64, ConfigRuntimeError> {
         let prepared_mcp = self.prepare_mcp_registry(&managed.mcp_servers).await?;
-        let candidate = match self.compile_registry_set(
+        let (candidate, next_provider_cache) = match self.compile_registry_set(
             &managed.providers,
             &managed.models,
             &managed.agents,
@@ -638,6 +712,8 @@ impl ConfigRuntimeManager {
                 return Err(ConfigRuntimeError::RuntimeNotConfigurable);
             }
         };
+
+        *self.provider_executor_cache.lock() = next_provider_cache;
 
         let previous_mcp = if prepared_mcp.state_changed {
             let mut active = self.active_mcp_registry.lock();
@@ -917,7 +993,7 @@ impl ConfigRuntimeManager {
         agents: &[AgentSpec],
         tool_specs: &[awaken_contract::ToolSpec],
         dynamic_tools: Option<Arc<dyn ToolRegistry>>,
-    ) -> Result<RegistrySet, ConfigRuntimeError> {
+    ) -> Result<(RegistrySet, ProviderExecutorCache), ConfigRuntimeError> {
         let mut provider_registry = MapProviderRegistry::new();
         let mut next_cache: ProviderExecutorCache = HashMap::with_capacity(providers.len());
         let prior_cache = self.provider_executor_cache.lock().clone();
@@ -936,7 +1012,6 @@ impl ConfigRuntimeManager {
                 .register_provider(provider.id.clone(), executor)
                 .map_err(|error| ConfigRuntimeError::InvalidConfig(error.to_string()))?;
         }
-        *self.provider_executor_cache.lock() = next_cache;
 
         let mut model_registry = MapModelRegistry::new();
         for model in models {
@@ -974,14 +1049,17 @@ impl ConfigRuntimeManager {
             .collect();
         let tools = self.compose_tool_registry(dynamic_tools, overrides)?;
 
-        Ok(RegistrySet {
-            agents,
-            tools,
-            models: Arc::new(model_registry),
-            providers: Arc::new(provider_registry),
-            plugins: Arc::clone(&self.plugins),
-            backends: Arc::clone(&self.backends),
-        })
+        Ok((
+            RegistrySet {
+                agents,
+                tools,
+                models: Arc::new(model_registry),
+                providers: Arc::new(provider_registry),
+                plugins: Arc::clone(&self.plugins),
+                backends: Arc::clone(&self.backends),
+            },
+            next_cache,
+        ))
     }
 
     fn compose_tool_registry(
@@ -1021,6 +1099,36 @@ impl ConfigRuntimeManager {
         candidate: &RegistrySet,
         local_agents: &[AgentSpec],
     ) -> Result<(), ConfigRuntimeError> {
+        let mut diagnostics = Vec::new();
+        for model_id in candidate.models.model_ids() {
+            let Some(binding) = candidate.models.get_model(&model_id) else {
+                continue;
+            };
+            if candidate
+                .providers
+                .get_provider(&binding.provider_id)
+                .is_none()
+            {
+                diagnostics.push(
+                    awaken_runtime::registry::RegistryDiagnostic::ModelMissingProvider {
+                        model_id,
+                        provider_id: binding.provider_id,
+                    },
+                );
+            }
+        }
+        for agent in local_agents {
+            diagnostics.extend(awaken_runtime::registry::diagnose_agent_spec(
+                candidate, agent,
+            ));
+        }
+        if !diagnostics.is_empty() {
+            return Err(ConfigRuntimeError::InvalidConfig(
+                awaken_runtime::registry::RegistryValidationError::from_diagnostics(diagnostics)
+                    .to_string(),
+            ));
+        }
+
         let resolver = RegistrySetResolver::new(candidate.clone());
         for agent in local_agents {
             if agent.endpoint.is_some() {
@@ -1055,7 +1163,7 @@ impl ConfigRuntimeManager {
 /// than at first inference. The provided broker is shared with all
 /// dynamic providers built by the same caller; passing the
 /// `AppState::credential_broker` is the production wiring.
-pub fn build_genai_provider_executor(
+pub fn build_genai_provider_executor_with_broker(
     spec: &ProviderSpec,
     broker: Arc<dyn awaken_runtime::credentials::CredentialBroker>,
 ) -> Result<Arc<dyn LlmExecutor>, ConfigRuntimeError> {
@@ -1149,6 +1257,20 @@ pub fn build_genai_provider_executor(
     Ok(Arc::new(executor))
 }
 
+/// Build a genai-backed provider executor using a fresh credential broker.
+///
+/// This preserves the 0.4.0 public API. Production code that wants broker
+/// sharing should call [`build_genai_provider_executor_with_broker`] or use
+/// [`GenaiProviderExecutorFactory::with_broker`].
+pub fn build_genai_provider_executor(
+    spec: &ProviderSpec,
+) -> Result<Arc<dyn LlmExecutor>, ConfigRuntimeError> {
+    build_genai_provider_executor_with_broker(
+        spec,
+        Arc::new(awaken_runtime::credentials::AwakenCredentialBroker::new()),
+    )
+}
+
 /// Default OAuth scope used when the provider does not list any in
 /// `adapter_options.scopes`. `cloud-platform` covers Vertex AI's needs.
 const DEFAULT_OAUTH_SCOPE: &str = "https://www.googleapis.com/auth/cloud-platform";
@@ -1227,7 +1349,7 @@ fn build_default_headers_from_options(
 /// Probe-style candidate list for adapter discovery.
 ///
 /// Each entry is a lowercase adapter name we *want* to expose if genai
-/// recognises it. Authoritative validation happens via
+/// recognises it. Final validation happens via
 /// [`AdapterKind::from_lower_str`]: unknown candidates are silently filtered
 /// out, so adding a forward-looking name here is safe even before genai
 /// ships support — the entry becomes a no-op.
@@ -1355,16 +1477,20 @@ fn restart_policy_to_connection_policy(policy: &McpRestartPolicy) -> mcp::transp
 
 fn deserialize_namespace<T>(entries: &[(String, Value)]) -> Result<Vec<T>, ConfigRuntimeError>
 where
-    T: serde::de::DeserializeOwned + crate::services::config_envelope::ApplyPatch,
+    T: serde::de::DeserializeOwned + awaken_contract::ConfigRecordMerge,
 {
     let mut out = Vec::with_capacity(entries.len());
     for (_, value) in entries {
-        let record: ConfigRecord<T> = ConfigRecord::from_value(value.clone())
+        let raw_record: ConfigRecord<Value> = ConfigRecord::from_value(value.clone())
             .map_err(|error| StorageError::Serialization(error.to_string()))
             .map_err(ConfigRuntimeError::Storage)?;
-        if record.meta.hidden {
+        if raw_record.meta.hidden {
             continue;
         }
+
+        let record: ConfigRecord<T> = awaken_contract::validate_config_record(value.clone())
+            .map_err(|error| StorageError::Serialization(error.to_string()))
+            .map_err(ConfigRuntimeError::Storage)?;
         let effective = crate::services::config_envelope::apply_overrides(
             record.spec,
             record.meta.user_overrides.as_ref(),
@@ -1454,7 +1580,8 @@ mod tests {
         let mut options = BTreeMap::new();
         options.insert("headers".into(), json!({"OpenAI-Organization": "org-xyz"}));
         let spec = provider_spec_with_options(options);
-        build_genai_provider_executor(&spec, test_broker()).expect("valid headers must build");
+        build_genai_provider_executor_with_broker(&spec, test_broker())
+            .expect("valid headers must build");
     }
 
     #[test]
@@ -1462,7 +1589,7 @@ mod tests {
         let mut options = BTreeMap::new();
         options.insert("headers".into(), json!("not-an-object"));
         let spec = provider_spec_with_options(options);
-        let err = match build_genai_provider_executor(&spec, test_broker()) {
+        let err = match build_genai_provider_executor_with_broker(&spec, test_broker()) {
             Ok(_) => panic!("expected build to fail"),
             Err(e) => e,
         };
@@ -1477,7 +1604,7 @@ mod tests {
         let mut options = BTreeMap::new();
         options.insert("headers".into(), json!({"X-Numeric-Value": 42}));
         let spec = provider_spec_with_options(options);
-        let err = match build_genai_provider_executor(&spec, test_broker()) {
+        let err = match build_genai_provider_executor_with_broker(&spec, test_broker()) {
             Ok(_) => panic!("expected build to fail"),
             Err(e) => e,
         };
@@ -1492,7 +1619,7 @@ mod tests {
         let mut options = BTreeMap::new();
         options.insert("future_extension_key".into(), json!({"anything": true}));
         let spec = provider_spec_with_options(options);
-        build_genai_provider_executor(&spec, test_broker())
+        build_genai_provider_executor_with_broker(&spec, test_broker())
             .expect("unknown adapter_options keys must not break the build");
     }
 
@@ -1627,7 +1754,7 @@ mod tests {
                 adapter: name.to_string(),
                 ..ProviderSpec::default()
             };
-            build_genai_provider_executor(&spec, test_broker()).unwrap_or_else(|err| {
+            build_genai_provider_executor_with_broker(&spec, test_broker()).unwrap_or_else(|err| {
                 panic!("supported adapter `{name}` failed to build executor: {err:?}")
             });
         }
@@ -1644,7 +1771,7 @@ mod tests {
                 api_key: Some("test-secret-key".to_string().into()),
                 ..ProviderSpec::default()
             };
-            build_genai_provider_executor(&spec, test_broker()).unwrap_or_else(|err| {
+            build_genai_provider_executor_with_broker(&spec, test_broker()).unwrap_or_else(|err| {
                 panic!("supported adapter `{name}` (with api_key) failed to build: {err:?}")
             });
         }
@@ -1661,7 +1788,7 @@ mod tests {
                 base_url: Some("https://example.invalid/v1".to_string()),
                 ..ProviderSpec::default()
             };
-            build_genai_provider_executor(&spec, test_broker()).unwrap_or_else(|err| {
+            build_genai_provider_executor_with_broker(&spec, test_broker()).unwrap_or_else(|err| {
                 panic!("supported adapter `{name}` (with base_url) failed to build: {err:?}")
             });
         }
@@ -1686,9 +1813,8 @@ mod tests {
                 base_url: Some("https://example.invalid/v1".to_string()),
                 timeout_secs: 60,
                 adapter_options,
-                ..ProviderSpec::default()
             };
-            build_genai_provider_executor(&spec, test_broker()).unwrap_or_else(|err| {
+            build_genai_provider_executor_with_broker(&spec, test_broker()).unwrap_or_else(|err| {
                 panic!("supported adapter `{name}` (full options) failed to build: {err:?}")
             });
         }
@@ -1705,7 +1831,7 @@ mod tests {
                 timeout_secs: 0,
                 ..ProviderSpec::default()
             };
-            build_genai_provider_executor(&spec, test_broker()).unwrap_or_else(|err| {
+            build_genai_provider_executor_with_broker(&spec, test_broker()).unwrap_or_else(|err| {
                 panic!("supported adapter `{name}` (zero timeout) failed to build: {err:?}")
             });
         }
@@ -1801,14 +1927,15 @@ mod tests {
         // genai's adapter will read VENDOR_API_KEY at request time. The
         // broker integration must not break this.
         let spec = provider_spec_with_kind_and_key("openai", None, None);
-        build_genai_provider_executor(&spec, test_broker())
+        build_genai_provider_executor_with_broker(&spec, test_broker())
             .expect("env-fallback bearer must build");
     }
 
     #[test]
     fn build_genai_explicit_bearer_succeeds() {
         let spec = provider_spec_with_kind_and_key("openai", Some("bearer"), Some("sk-test-123"));
-        build_genai_provider_executor(&spec, test_broker()).expect("explicit bearer must build");
+        build_genai_provider_executor_with_broker(&spec, test_broker())
+            .expect("explicit bearer must build");
     }
 
     #[test]
@@ -1818,7 +1945,7 @@ mod tests {
             Some("never-heard-of-it"),
             Some("sk-test-123"),
         );
-        let err = build_genai_provider_executor(&spec, test_broker())
+        let err = build_genai_provider_executor_with_broker(&spec, test_broker())
             .err()
             .expect("expected error");
         assert!(
@@ -1834,7 +1961,7 @@ mod tests {
             Some("service_account_json"),
             Some(r#"{"client_email":"x@y","private_key":"-----BEGIN PRIVATE KEY-----"}"#),
         );
-        let err = build_genai_provider_executor(&spec, test_broker())
+        let err = build_genai_provider_executor_with_broker(&spec, test_broker())
             .err()
             .expect("expected error");
         assert!(
@@ -1888,7 +2015,7 @@ mod tests {
             Arc::clone(&recording) as _;
 
         let spec = provider_spec_with_kind_and_key("openai", Some("bearer"), Some("sk-x"));
-        build_genai_provider_executor(&spec, broker).expect("static bearer must build");
+        build_genai_provider_executor_with_broker(&spec, broker).expect("static bearer must build");
 
         assert!(
             recording.registered.lock().is_empty(),
@@ -1905,7 +2032,7 @@ mod tests {
             Arc::clone(&recording) as _;
 
         let spec = provider_spec_with_kind_and_key("openai", None, None);
-        build_genai_provider_executor(&spec, broker).expect("env-fallback must build");
+        build_genai_provider_executor_with_broker(&spec, broker).expect("env-fallback must build");
 
         assert!(
             recording.registered.lock().is_empty(),
@@ -2031,6 +2158,28 @@ mod tests {
     }
 
     #[test]
+    fn deserialize_namespace_skips_hidden_before_effective_validation() {
+        use awaken_contract::{ConfigRecord, RecordMeta};
+
+        let mut hidden_meta = RecordMeta::new_user();
+        hidden_meta.hidden = true;
+        hidden_meta.user_overrides = Some(json!({ "unknown_patch_field": true }));
+
+        let hidden_record = ConfigRecord {
+            spec: json!({ "not": "an agent spec" }),
+            meta: hidden_meta,
+        };
+        let entries = vec![(
+            "hidden".to_string(),
+            hidden_record.to_value().expect("serialize hidden"),
+        )];
+
+        let result: Vec<AgentSpec> =
+            deserialize_namespace(&entries).expect("hidden invalid record must be skipped");
+        assert!(result.is_empty());
+    }
+
+    #[test]
     fn deserialize_namespace_mixes_legacy_and_envelope() {
         use awaken_contract::ConfigRecord;
         let bare_spec = minimal_agent_spec("bare");
@@ -2093,8 +2242,6 @@ mod tests {
                     id: "m1".into(),
                     provider_id: "p1".into(),
                     upstream_model: "m1-model".into(),
-                    created_at: None,
-                    updated_at: None,
                 }),
                 BuiltinSpec::Agent(Box::new(AgentSpec {
                     id: "a1".into(),
@@ -2257,8 +2404,6 @@ mod tests {
                     id: "seed-model".into(),
                     provider_id: "seed-provider".into(),
                     upstream_model: "gpt-4o".into(),
-                    created_at: None,
-                    updated_at: None,
                 }),
             ],
         };
@@ -2313,8 +2458,6 @@ mod tests {
                     id: "idem-model".into(),
                     provider_id: "idem-provider".into(),
                     upstream_model: "gpt-4o".into(),
-                    created_at: None,
-                    updated_at: None,
                 }),
             ],
         };
@@ -2491,8 +2634,6 @@ mod tests {
                     id: "boot-model".into(),
                     provider_id: "boot-prov".into(),
                     upstream_model: "gpt-4o".into(),
-                    created_at: None,
-                    updated_at: None,
                 }),
                 BuiltinSpec::Agent(Box::new(AgentSpec {
                     id: "shared".into(),
@@ -2576,8 +2717,6 @@ mod tests {
                     id: "m".into(),
                     provider_id: "p".into(),
                     upstream_model: "gpt-4o".into(),
-                    created_at: None,
-                    updated_at: None,
                 }),
                 BuiltinSpec::Agent(Box::new(AgentSpec {
                     id: "x".into(),
@@ -2625,6 +2764,100 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn failed_candidate_validation_does_not_commit_provider_executor_cache() {
+        use awaken_contract::{BuiltinSeedSet, BuiltinSpec, ConfigRecord, RecordMeta};
+
+        let (manager, store) = make_manager_with_store().await;
+
+        let seed = BuiltinSeedSet {
+            binary_version: "cache-test".to_owned(),
+            specs: vec![
+                BuiltinSpec::Provider(ProviderSpec {
+                    id: "p".into(),
+                    adapter: "openai".into(),
+                    ..Default::default()
+                }),
+                BuiltinSpec::Model(ModelBindingSpec {
+                    id: "m".into(),
+                    provider_id: "p".into(),
+                    upstream_model: "gpt-4o".into(),
+                }),
+                BuiltinSpec::Agent(Box::new(AgentSpec {
+                    id: "a".into(),
+                    model_id: "m".into(),
+                    system_prompt: "base".into(),
+                    max_rounds: 1,
+                    ..Default::default()
+                })),
+            ],
+        };
+        manager.apply_seed(&seed).await.expect("apply seed");
+        manager.apply().await.expect("initial apply");
+
+        let initial_cached_provider = manager
+            .provider_executor_cache
+            .lock()
+            .get("p")
+            .expect("provider cache entry")
+            .0
+            .clone();
+
+        let changed_provider = ConfigRecord {
+            spec: ProviderSpec {
+                id: "p".into(),
+                adapter: "openai".into(),
+                base_url: Some("https://provider-cache-candidate.example".into()),
+                timeout_secs: 17,
+                ..Default::default()
+            },
+            meta: RecordMeta::new_builtin("cache-test"),
+        };
+        store
+            .put(
+                "providers",
+                "p",
+                &changed_provider
+                    .to_value()
+                    .expect("serialize changed provider"),
+            )
+            .await
+            .expect("write changed provider");
+
+        let invalid_agent = ConfigRecord {
+            spec: AgentSpec {
+                id: "a".into(),
+                model_id: "missing-model".into(),
+                system_prompt: "invalid".into(),
+                max_rounds: 1,
+                ..Default::default()
+            },
+            meta: RecordMeta::new_builtin("cache-test"),
+        };
+        store
+            .put(
+                "agents",
+                "a",
+                &invalid_agent.to_value().expect("serialize invalid agent"),
+            )
+            .await
+            .expect("write invalid agent");
+
+        manager
+            .apply()
+            .await
+            .expect_err("invalid candidate must fail validation");
+
+        let cached_provider = manager
+            .provider_executor_cache
+            .lock()
+            .get("p")
+            .expect("provider cache entry must remain")
+            .0
+            .clone();
+        assert_eq!(cached_provider, initial_cached_provider);
+    }
+
+    #[tokio::test]
     async fn apply_overrides_no_user_overrides_uses_base() {
         use awaken_contract::{BuiltinSeedSet, BuiltinSpec};
 
@@ -2642,8 +2875,6 @@ mod tests {
                     id: "m".into(),
                     provider_id: "p".into(),
                     upstream_model: "gpt-4o".into(),
-                    created_at: None,
-                    updated_at: None,
                 }),
                 BuiltinSpec::Agent(Box::new(AgentSpec {
                     id: "y".into(),
@@ -2681,7 +2912,7 @@ mod tests {
     async fn apply_overrides_on_user_record_applies_overrides() {
         // At read time, user_overrides is applied regardless of source.
         // The semantic guard (only Builtin records should have overrides set)
-        // is enforced at the write path (Task 131), not at read time.
+        // is enforced at the write path, not at read time.
         use awaken_contract::{BuiltinSeedSet, BuiltinSpec};
         use awaken_contract::{ConfigRecord, RecordMeta};
 
@@ -2700,8 +2931,6 @@ mod tests {
                     id: "m".into(),
                     provider_id: "p".into(),
                     upstream_model: "gpt-4o".into(),
-                    created_at: None,
-                    updated_at: None,
                 }),
             ],
         };
@@ -2741,7 +2970,7 @@ mod tests {
         // Overrides are applied even for User-source records at read time.
         assert_eq!(
             spec.system_prompt, "user-override",
-            "user_overrides applied at read time regardless of source (write-path enforcement is Task 131)"
+            "user_overrides applied at read time regardless of source"
         );
     }
 
@@ -2764,8 +2993,6 @@ mod tests {
                     id: "m".into(),
                     provider_id: "p".into(),
                     upstream_model: "gpt-4o".into(),
-                    created_at: None,
-                    updated_at: None,
                 }),
                 BuiltinSpec::Agent(Box::new(AgentSpec {
                     id: "a".into(),
@@ -2801,8 +3028,6 @@ mod tests {
                     id: "m".into(),
                     provider_id: "p".into(),
                     upstream_model: "gpt-4o".into(),
-                    created_at: None,
-                    updated_at: None,
                 }),
                 BuiltinSpec::Agent(Box::new(AgentSpec {
                     id: "a".into(),
@@ -2976,8 +3201,6 @@ mod tests {
                     id: "test-model".into(),
                     provider_id: "test-prov".into(),
                     upstream_model: "gpt-4o".into(),
-                    created_at: None,
-                    updated_at: None,
                 }),
                 BuiltinSpec::Agent(Box::new(AgentSpec {
                     id: "agent-using-echo".into(),

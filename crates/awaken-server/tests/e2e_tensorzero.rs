@@ -35,7 +35,7 @@ use awaken_runtime::credentials::{AwakenCredentialBroker, CredentialBroker};
 use awaken_runtime::registry::traits::ModelBinding;
 use awaken_server::app::{AppState, ServerConfig};
 use awaken_server::routes::build_router;
-use awaken_server::services::config_runtime::build_genai_provider_executor;
+use awaken_server::services::config_runtime::build_genai_provider_executor_with_broker;
 use std::sync::Arc as StdArc;
 
 fn tz_test_broker() -> StdArc<dyn CredentialBroker> {
@@ -478,10 +478,8 @@ async fn tz_router_provider_compiles_smoke() {
         )),
         timeout_secs: 60,
         adapter_options: Default::default(),
-        created_at: None,
-        updated_at: None,
     };
-    let executor = build_genai_provider_executor(&provider_spec, tz_test_broker())
+    let executor = build_genai_provider_executor_with_broker(&provider_spec, tz_test_broker())
         .expect("genai executor builds for TZ");
 
     let store = Arc::new(InMemoryStore::new());
@@ -760,10 +758,8 @@ mod helper_tests {
             base_url: Some("http://127.0.0.1:3000/openai/v1/".into()),
             timeout_secs: 30,
             adapter_options: Default::default(),
-            created_at: None,
-            updated_at: None,
         };
-        let _executor = build_genai_provider_executor(&spec, tz_test_broker())
+        let _executor = build_genai_provider_executor_with_broker(&spec, tz_test_broker())
             .expect("genai executor builds for TensorZero base URL");
     }
 
@@ -776,10 +772,8 @@ mod helper_tests {
             base_url: Some("http://127.0.0.1:3000/openai/v1".into()),
             timeout_secs: 30,
             adapter_options: Default::default(),
-            created_at: None,
-            updated_at: None,
         };
-        let _executor = build_genai_provider_executor(&spec, tz_test_broker())
+        let _executor = build_genai_provider_executor_with_broker(&spec, tz_test_broker())
             .expect("base URL without trailing slash should build");
     }
 
@@ -795,10 +789,9 @@ mod helper_tests {
             base_url: Some("http://127.0.0.1:3000/openai/v1/".into()),
             timeout_secs: 30,
             adapter_options: Default::default(),
-            created_at: None,
-            updated_at: None,
         };
-        let executor = build_genai_provider_executor(&spec, tz_test_broker()).expect("executor");
+        let executor =
+            build_genai_provider_executor_with_broker(&spec, tz_test_broker()).expect("executor");
         let store = Arc::new(InMemoryStore::new());
         let runtime = AgentRuntimeBuilder::new()
             .with_provider("tz", executor)

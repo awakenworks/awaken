@@ -83,6 +83,13 @@ config。
 未列在 `plugin_ids` 中，section 会继续保存，但插件不会被加载，因此对应 hook、
 tool 和 request transform 都不会运行。
 
+admin surface 还提供只读预检端点，方便集成方在执行破坏性操作前解释影响面：
+
+| 端点 | 用途 |
+|---|---|
+| `GET /v1/config/providers/:id/removal-preview` | 返回引用该 provider 的 `model_ids`、受影响的 `agent_ids`，以及 strict / cascade 删除策略是否允许 |
+| `GET /v1/config/diagnostics` | 以稳定可序列化结构返回 registry diagnostics，包含 `code`、`severity`、`resource`、可选 `depends_on` 和 `message` |
+
 starter runtime 当前暴露的可配置插件 section：
 
 | Plugin ID | Section key | Admin editor |
@@ -91,6 +98,50 @@ starter runtime 当前暴露的可配置插件 section：
 | `reminder` | `reminder` | 专用 reminder 规则编辑器 |
 | `generative-ui` | `generative-ui` | 专用 A2UI prompt/catalog 编辑器 |
 | `ext-deferred-tools` | `deferred_tools` | 通用 JSON Schema 表单 |
+
+## AgentSpecPatch
+
+`AgentSpecPatch` 是内置 agent 定制用的字段级覆盖类型。所有字段都是可选的：
+缺失字段继承基础 `AgentSpec`，出现的字段通过 `merge_agent_spec(base, patch)`
+覆盖基础值。对于 `AgentSpec` 里的可选字段，JSON `null` 会清空基础值。
+
+可覆盖字段包括 `model_id`、`system_prompt`、`max_rounds`、
+`max_continuation_retries`、`context_policy`、`plugin_ids`、
+`active_hook_filter`、`sections`、`allowed_tools`、`excluded_tools`、
+`delegates`、`reasoning_effort` 和 `endpoint`。
+
+`sections` 使用按 key 浅合并。patch 中某个 section key 的值为 JSON `null`
+时，会从 effective spec 中删除这个 section。`endpoint`、`allowed_tools`、
+`excluded_tools`、`context_policy`、`reasoning_effort` 等可选字段是三态：
+缺失表示继承，`null` 表示清空，给出值表示覆盖。其他列表和标量字段在出现时
+整体替换基础值。
+
+未知 patch 字段会被拒绝。调用方需要在保存 patch 前复用 Awaken 的 canonical
+解析和未知字段策略时，可使用 `validate_agent_spec_patch(value)`。
+
+## ConfigRecord 辅助函数
+
+`ConfigRecord<T>` 用 provenance、可见性、时间戳、revision 和可选
+`user_overrides` 包装一个已存储 spec。解码器同时接受 envelope 形状和旧的裸
+spec；`to_value()` 始终写出 envelope 形状。
+
+| 辅助函数 | 用途 |
+|---|---|
+| `validate_agent_spec(value)` | 解码 `AgentSpec` 并拒绝未知字段 |
+| `validate_agent_spec_patch(value)` | 解码 `AgentSpecPatch` 并拒绝未知字段 |
+| `validate_provider_spec(value)` | 解码 `ProviderSpec`，拒绝写入面未知字段，并拒绝空 `id` / `adapter` |
+| `validate_model_binding_spec(value)` | 解码 `ModelBindingSpec`，拒绝未知字段，并拒绝空 `id` / `provider_id` / `upstream_model` |
+| `decode_config_record<T>(value)` | 解码 `ConfigRecord<T>`，接受旧的裸 spec，但不检查 `user_overrides` |
+| `validate_config_record<T>(value)` | 解码 `ConfigRecord<T>`，并按 `T` 的 patch 类型校验 `meta.user_overrides` |
+| `effective_config_record(record)` | 对单条记录应用 `meta.user_overrides` |
+| `effective_visible_config_records<T>(records)` | 解码记录、跳过 hidden 记录，并返回 effective specs |
+
+`AgentSpec`、`AgentSpecPatch`、provider 写入面和 model binding 写入面使用
+`UnknownFieldPolicy::Reject`；导出的 `AGENT_SPEC_UNKNOWN_FIELD_POLICY`、
+`AGENT_SPEC_PATCH_UNKNOWN_FIELD_POLICY`、`PROVIDER_SPEC_UNKNOWN_FIELD_POLICY`
+和 `MODEL_BINDING_SPEC_UNKNOWN_FIELD_POLICY` 常量让集成方可以显式读取该行为。
+`ProviderSpec` 反序列化本身仍为兼容性保留宽松读取；config 写入和 validate
+surface 使用 `validate_provider_spec(value)` 拒绝会被静默忽略的字段。
 
 ## ContextWindowPolicy
 
@@ -252,6 +303,23 @@ pub struct AdminApiConfig {
 |---|---|
 | `AWAKEN_ADMIN_API_BEARER_TOKEN` | admin/configuration API 要求的 bearer token |
 | `AWAKEN_ADMIN_CORS_ALLOWED_ORIGINS` | 浏览器 admin API 的 CORS 来源，逗号分隔 |
+
+## AuditLogConfig
+
+审计日志保留策略从 `AdminApiConfig` 中拆出，避免破坏 0.4.0 中
+`AdminApiConfig` 的 struct literal 兼容性。调用
+`AppState::with_audit_log_from_config` 之前，可通过
+`AppState::with_audit_log_config` 挂到 `AppState`。
+
+```rust,ignore
+use awaken_server::app::AuditLogConfig;
+
+pub struct AuditLogConfig {
+    pub enabled: bool,              // default: true
+    pub retention_days: u32,        // default: 90
+    pub sweep_interval_secs: u64,   // default: 3600
+}
+```
 
 ### 凭据处理
 

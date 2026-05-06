@@ -9,9 +9,9 @@ use awaken_contract::{
     BuiltinSeedSet, BuiltinSpec, ConfigRecord, ConfigStore, RecordMeta, RecordSource,
 };
 
-use crate::services::config_service::ConfigNamespace;
-
 const SEED_LIST_PAGE_SIZE: usize = 256;
+const BUILTIN_SEED_NAMESPACES: [&str; 5] =
+    ["agents", "providers", "models", "mcp-servers", "tools"];
 
 // ── public types ─────────────────────────────────────────────────────────────
 
@@ -87,7 +87,7 @@ pub async fn apply_builtin_seed(
 
     // Track seeded (namespace, id) pairs for orphan cleanup.
     let mut seeded: HashMap<&str, HashSet<String>> = HashMap::new();
-    for ns in ConfigNamespace::iter_str() {
+    for ns in BUILTIN_SEED_NAMESPACES {
         seeded.insert(ns, HashSet::new());
     }
 
@@ -179,7 +179,7 @@ pub async fn apply_builtin_seed(
     // Pass 2 (write): delete each candidate.
     //
     // Safe under the boot-time single-writer precondition documented above.
-    for namespace in ConfigNamespace::iter_str() {
+    for namespace in BUILTIN_SEED_NAMESPACES {
         let empty = HashSet::new();
         let seeded_ids: &HashSet<String> = seeded.get(namespace).unwrap_or(&empty);
 
@@ -291,8 +291,6 @@ mod tests {
             id: id.to_owned(),
             provider_id: "openai".to_owned(),
             upstream_model: "gpt-4o".to_owned(),
-            created_at: None,
-            updated_at: None,
         }
     }
 
@@ -735,10 +733,9 @@ mod tests {
 
     // ── test 12 ──────────────────────────────────────────────────────────────
 
-    /// Sanity check: orphan cleanup iterates every namespace via
-    /// `ConfigNamespace::iter_str()`. Pre-populate one Builtin orphan in each
-    /// of the four namespaces, apply an empty seed, and assert all four are
-    /// deleted — proving the loop visited every namespace.
+    /// Sanity check: orphan cleanup iterates every built-in seed namespace.
+    /// Pre-populate one Builtin orphan in each namespace, apply an empty seed,
+    /// and assert all are deleted.
     #[tokio::test]
     async fn orphan_cleanup_uses_config_namespace_iter() {
         let s = store();
@@ -748,6 +745,7 @@ mod tests {
             ("providers", "orphan-provider"),
             ("models", "orphan-model"),
             ("mcp-servers", "orphan-mcp"),
+            ("tools", "orphan-tool"),
         ];
 
         for (ns, id) in namespaces_and_ids {
@@ -763,7 +761,7 @@ mod tests {
 
         assert_eq!(
             report.deleted.len(),
-            4,
+            namespaces_and_ids.len(),
             "expected one deleted orphan per namespace"
         );
         for (ns, id) in namespaces_and_ids {

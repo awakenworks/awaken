@@ -2,82 +2,33 @@
 //!
 //! Both the ConfigService writer path and the ConfigRuntimeManager bootstrap
 //! path operate on the envelope; centralizing the helpers here prevents
-//! drift and lets future Phase 3 patch logic reuse the same primitives.
+//! drift across config read/write paths.
 
 use awaken_contract::{
-    AgentSpec, AgentSpecPatch, ConfigRecord, McpServerSpec, ModelBindingSpec, ProviderSpec,
-    RecordMeta, ToolSpec, ToolSpecPatch, merge_agent_spec, merge_tool_spec,
+    ConfigRecord, ConfigRecordError, ConfigRecordMerge, RecordMeta, effective_config_record,
 };
 use serde_json::Value;
-
-// ── ApplyPatch trait ──────────────────────────────────────────────────────────
-
-/// Spec types that support field-level patch overrides at read time.
-///
-/// Phase 3 implements this for `AgentSpec` (with `AgentSpecPatch`).
-/// Other spec types use [`NoPatch`] which is a no-op.
-pub(crate) trait ApplyPatch: Sized {
-    type Patch: serde::de::DeserializeOwned;
-    fn apply(self, patch: Self::Patch) -> Self;
-}
-
-/// No-op patch type for spec types that don't yet support overrides.
-#[derive(Debug, Default, serde::Deserialize)]
-pub(crate) struct NoPatch;
-
-impl ApplyPatch for AgentSpec {
-    type Patch = AgentSpecPatch;
-    fn apply(self, patch: AgentSpecPatch) -> Self {
-        merge_agent_spec(self, patch)
-    }
-}
-
-impl ApplyPatch for ToolSpec {
-    type Patch = ToolSpecPatch;
-    fn apply(self, patch: ToolSpecPatch) -> Self {
-        merge_tool_spec(self, patch)
-    }
-}
-
-impl ApplyPatch for ProviderSpec {
-    type Patch = NoPatch;
-    fn apply(self, _patch: NoPatch) -> Self {
-        self
-    }
-}
-
-impl ApplyPatch for ModelBindingSpec {
-    type Patch = NoPatch;
-    fn apply(self, _patch: NoPatch) -> Self {
-        self
-    }
-}
-
-impl ApplyPatch for McpServerSpec {
-    type Patch = NoPatch;
-    fn apply(self, _patch: NoPatch) -> Self {
-        self
-    }
-}
 
 /// If `overrides` is `Some(json)`, decode it as `T::Patch` and merge into
 /// `spec`. Returns `Err` only if decode fails (forward compat: unknown
 /// fields cause `deny_unknown_fields` rejection — surfaces as decode error).
 ///
 /// `None` overrides → `spec` returned unchanged.
-pub(crate) fn apply_overrides<T>(spec: T, overrides: Option<&Value>) -> Result<T, serde_json::Error>
+pub(crate) fn apply_overrides<T>(spec: T, overrides: Option<&Value>) -> Result<T, ConfigRecordError>
 where
-    T: ApplyPatch,
+    T: ConfigRecordMerge,
 {
-    let Some(overrides) = overrides else {
-        return Ok(spec);
+    let mut record = ConfigRecord {
+        spec,
+        meta: RecordMeta::legacy_user(),
     };
-    let patch: T::Patch = serde_json::from_value(overrides.clone())?;
-    Ok(spec.apply(patch))
+    record.meta.user_overrides = overrides.cloned();
+    effective_config_record(record)
 }
 
 /// Pull `created_at` and `updated_at` from a bare-spec or envelope-shaped Value.
 /// Returns (0, 0) when the spec layer doesn't carry timestamps.
+#[cfg(test)]
 pub(crate) fn extract_timestamps(spec: &Value) -> (u64, u64) {
     let created = spec.get("created_at").and_then(Value::as_u64).unwrap_or(0);
     let updated = spec.get("updated_at").and_then(Value::as_u64).unwrap_or(0);
@@ -108,7 +59,6 @@ pub(crate) fn wrap_user(spec: &Value) -> Result<Value, serde_json::Error> {
 }
 
 /// Wrap a bare spec Value into a Builtin-source envelope.
-// Not yet called from production code; reserved for Task 130 patch logic.
 #[allow(dead_code)]
 pub(crate) fn wrap_builtin(spec: &Value, binary_version: &str) -> Result<Value, serde_json::Error> {
     let record = ConfigRecord {
@@ -152,6 +102,7 @@ pub(crate) fn unwrap_spec(value: Value) -> Value {
 }
 
 /// Look up a top-level field on a value that may be either a bare spec or an envelope.
+#[cfg(test)]
 pub(crate) fn spec_field<'a>(value: &'a Value, field: &str) -> Option<&'a Value> {
     if value
         .as_object()
@@ -304,11 +255,18 @@ mod tests {
             adapter: "openai".to_owned(),
             ..Default::default()
         };
-        // NoPatch deserializes an empty object; any non-empty JSON would fail
-        // if NoPatch had deny_unknown_fields, but it doesn't — it's a unit
-        // struct that ignores all fields.
         let result = apply_overrides(spec.clone(), None).unwrap();
         assert_eq!(result.id, "p");
+    }
+
+    #[test]
+    fn apply_overrides_for_provider_rejects_non_empty_overrides() {
+        let spec = ProviderSpec {
+            id: "p".to_owned(),
+            adapter: "openai".to_owned(),
+            ..Default::default()
+        };
+        assert!(apply_overrides(spec, Some(&json!({"adapter": "stub"}))).is_err());
     }
 
     #[test]
