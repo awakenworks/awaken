@@ -171,7 +171,7 @@ impl ProviderExecutorFactory for StarterProviderFactory {
             return Ok(executor);
         }
 
-        awaken_server::services::config_runtime::build_genai_provider_executor(
+        awaken_server::services::config_runtime::build_genai_provider_executor_with_broker(
             spec,
             Arc::clone(&self.broker),
         )
@@ -862,8 +862,6 @@ Deterministic compatibility directives:\n\
         id: DEFAULT_MODEL_ID.into(),
         provider_id: DEFAULT_PROVIDER_ID.into(),
         upstream_model: args.model.clone(),
-        created_at: None,
-        updated_at: None,
     };
     // -- MCP managed defaults --
 

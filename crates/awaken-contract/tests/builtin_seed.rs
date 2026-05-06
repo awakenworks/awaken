@@ -25,8 +25,6 @@ fn model_binding_spec() -> ModelBindingSpec {
         id: "gpt-4o".into(),
         provider_id: "openai".into(),
         upstream_model: "gpt-4o-mini".into(),
-        created_at: None,
-        updated_at: None,
     }
 }
 

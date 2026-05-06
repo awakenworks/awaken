@@ -17,6 +17,7 @@ pub mod builtin_seed;
 pub mod cancellation;
 pub mod config_loader;
 pub mod config_record;
+pub mod config_validation;
 pub mod contract;
 mod error;
 pub mod model;
@@ -103,7 +104,17 @@ pub use periodic_refresh::PeriodicRefresher;
 pub use contract::audit_log::{AuditAction, AuditEvent};
 
 // ── config record envelope ──
-pub use config_record::{ConfigRecord, RecordMeta, RecordSource};
+pub use config_record::{
+    ConfigRecord, ConfigRecordError, ConfigRecordMerge, NoConfigPatch, RecordMeta, RecordSource,
+    decode_config_record, effective_config_record, effective_visible_config_records,
+    validate_config_record_overrides,
+};
+pub use config_validation::{
+    AGENT_SPEC_PATCH_UNKNOWN_FIELD_POLICY, AGENT_SPEC_UNKNOWN_FIELD_POLICY, ConfigValidationError,
+    MODEL_BINDING_SPEC_UNKNOWN_FIELD_POLICY, PROVIDER_SPEC_UNKNOWN_FIELD_POLICY,
+    UnknownFieldPolicy, validate_agent_spec, validate_agent_spec_patch, validate_config_record,
+    validate_model_binding_spec, validate_provider_spec,
+};
 
 // ── builtin seed ──
 pub use builtin_seed::{BuiltinSeedSet, BuiltinSpec};

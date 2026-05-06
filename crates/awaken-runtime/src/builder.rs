@@ -136,6 +136,28 @@ impl AgentRuntimeBuilder {
         self
     }
 
+    /// Register an explicit mock provider and model binding.
+    pub fn with_mock_provider_profile(
+        mut self,
+        profile: crate::engine::MockProviderProfile,
+    ) -> Self {
+        let provider_id = profile.provider_id.clone();
+        let model_id = profile.model_id.clone();
+        if let Err(e) = self
+            .providers
+            .register_provider(provider_id, profile.executor())
+        {
+            self.errors.push(e);
+        }
+        if let Err(e) = self
+            .models
+            .register_model(model_id, profile.model_binding())
+        {
+            self.errors.push(e);
+        }
+        self
+    }
+
     /// Set the thread run store for persistence.
     pub fn with_thread_run_store(mut self, store: Arc<dyn ThreadRunStore>) -> Self {
         self.thread_run_store = Some(store);
@@ -495,6 +517,27 @@ mod tests {
             .build();
 
         assert!(runtime.is_ok());
+    }
+
+    #[test]
+    fn builder_with_mock_provider_profile_registers_provider_and_model() {
+        let runtime = AgentRuntimeBuilder::new()
+            .with_agent_spec(AgentSpec {
+                id: "mock-agent".into(),
+                model_id: "mock-model".into(),
+                system_prompt: "sys".into(),
+                ..Default::default()
+            })
+            .with_mock_provider_profile(
+                crate::engine::MockProviderProfile::new("mock-provider", "mock-model")
+                    .with_responses(vec!["ok".into()]),
+            )
+            .build()
+            .unwrap();
+
+        let resolved = runtime.resolver().resolve("mock-agent").unwrap();
+        assert_eq!(resolved.upstream_model, "mock-model");
+        assert_eq!(resolved.llm_executor.name(), "mock");
     }
 
     #[test]

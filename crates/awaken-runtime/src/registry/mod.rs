@@ -5,6 +5,8 @@
 #[cfg(feature = "a2a")]
 pub mod composite;
 pub mod config;
+pub mod diagnostics;
+pub mod lifecycle;
 pub mod memory;
 pub mod resolve;
 pub mod resolver;
@@ -15,6 +17,15 @@ pub use awaken_contract::registry_spec::AgentSpec;
 #[cfg(feature = "a2a")]
 pub use composite::{CompositeAgentSpecRegistry, DiscoveryError, RemoteAgentSource};
 pub use config::AgentSystemConfig;
+pub use diagnostics::{
+    RegistryDiagnostic, RegistryDiagnosticSeverity, RegistryResourceRef, RegistryValidationError,
+    SerializableRegistryDiagnostic, diagnose_agent_spec, diagnose_registry_set,
+    diagnose_registry_set_serializable, validate_agent_spec, validate_registry_set,
+};
+pub use lifecycle::{
+    ProviderRemovalImpact, ProviderRemovalPolicy, ProviderRemovalPreview, RegistryUpdateError,
+    RuntimeRegistryUpdate, preview_provider_removal, rebuild_agent_model_provider_registries,
+};
 #[cfg(feature = "a2a")]
 pub use memory::MapBackendRegistry;
 pub use memory::{

@@ -138,8 +138,6 @@ mod tests {
             id: "m1".to_owned(),
             provider_id: "openai".to_owned(),
             upstream_model: "gpt-4o".to_owned(),
-            created_at: None,
-            updated_at: None,
         };
         assert!(matches!(BuiltinSpec::model(spec), BuiltinSpec::Model(_)));
     }

@@ -14,5 +14,5 @@ pub mod streaming;
 
 pub use circuit_breaker::{CircuitBreaker, CircuitBreakerConfig};
 pub use executor::GenaiExecutor;
-pub use mock::MockLlmExecutor;
+pub use mock::{MockLlmExecutor, MockProviderProfile};
 pub use retry::{LlmRetryPolicy, RetryConfigKey, RetryingExecutor};

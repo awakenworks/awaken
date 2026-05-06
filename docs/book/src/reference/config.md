@@ -90,6 +90,13 @@ after the config write validates and publishes a new registry snapshot. If the
 plugin is not listed in `plugin_ids`, the section remains stored but the plugin
 is not loaded, so its hooks, tools, and request transforms do not run.
 
+The admin surface also exposes read-only preflight endpoints for integrations:
+
+| Endpoint | Purpose |
+|---|---|
+| `GET /v1/config/providers/:id/removal-preview` | Returns the provider's referencing `model_ids`, affected `agent_ids`, and whether strict or cascade removal policies are allowed |
+| `GET /v1/config/diagnostics` | Returns registry diagnostics in a stable serializable shape with `code`, `severity`, `resource`, optional `depends_on`, and `message` |
+
 Current configurable plugin sections exposed by the starter runtime:
 
 | Plugin ID | Section key | Admin editor |
@@ -98,6 +105,56 @@ Current configurable plugin sections exposed by the starter runtime:
 | `reminder` | `reminder` | Dedicated reminder rules editor |
 | `generative-ui` | `generative-ui` | Dedicated A2UI prompt/catalog editor |
 | `ext-deferred-tools` | `deferred_tools` | Generic JSON Schema form |
+
+## AgentSpecPatch
+
+`AgentSpecPatch` is the field-level override type for built-in agent
+customization. Every field is optional: missing fields inherit from the base
+`AgentSpec`, and present fields override the corresponding base value through
+`merge_agent_spec(base, patch)`. For optional `AgentSpec` fields, JSON `null`
+clears the base value.
+
+Patchable fields are `model_id`, `system_prompt`, `max_rounds`,
+`max_continuation_retries`, `context_policy`, `plugin_ids`,
+`active_hook_filter`, `sections`, `allowed_tools`, `excluded_tools`,
+`delegates`, `reasoning_effort`, and `endpoint`.
+
+`sections` uses a shallow per-key merge. A JSON `null` value in the patch
+removes that section key from the effective spec. Optional fields such as
+`endpoint`, `allowed_tools`, `excluded_tools`, `context_policy`, and
+`reasoning_effort` are tri-state: missing means inherit, `null` means clear,
+and a value means override. Other list and scalar fields replace the base value
+when present.
+
+Unknown patch fields are rejected. Use `validate_agent_spec_patch(value)` when a
+caller needs to apply Awaken's canonical parsing and unknown-field policy before
+storing a patch.
+
+## ConfigRecord Helpers
+
+`ConfigRecord<T>` wraps a stored spec with provenance, visibility, timestamps,
+revision, and optional `user_overrides`. The decoder accepts both the envelope
+shape and legacy bare specs; `to_value()` always writes the envelope shape.
+
+| Helper | Purpose |
+|---|---|
+| `validate_agent_spec(value)` | Decode an `AgentSpec` and reject unknown fields |
+| `validate_agent_spec_patch(value)` | Decode an `AgentSpecPatch` and reject unknown fields |
+| `validate_provider_spec(value)` | Decode a `ProviderSpec`, reject unknown write-surface fields, and reject empty `id` / `adapter` |
+| `validate_model_binding_spec(value)` | Decode a `ModelBindingSpec`, reject unknown fields, and reject empty `id` / `provider_id` / `upstream_model` |
+| `decode_config_record<T>(value)` | Decode a `ConfigRecord<T>`, accepting legacy bare specs, without checking `user_overrides` |
+| `validate_config_record<T>(value)` | Decode a `ConfigRecord<T>` and validate `meta.user_overrides` against `T`'s patch type |
+| `effective_config_record(record)` | Apply `meta.user_overrides` to a single record |
+| `effective_visible_config_records<T>(records)` | Decode records, skip hidden entries, and return effective specs |
+
+`AgentSpec`, `AgentSpecPatch`, provider writes, and model binding writes use
+`UnknownFieldPolicy::Reject`; the exported constants
+`AGENT_SPEC_UNKNOWN_FIELD_POLICY`, `AGENT_SPEC_PATCH_UNKNOWN_FIELD_POLICY`,
+`PROVIDER_SPEC_UNKNOWN_FIELD_POLICY`, and
+`MODEL_BINDING_SPEC_UNKNOWN_FIELD_POLICY` make that behavior explicit for
+integrations. `ProviderSpec` deserialization remains lenient for read-time
+compatibility, but config write and validate surfaces use
+`validate_provider_spec(value)` to reject silently ignored fields.
 
 ## ContextWindowPolicy
 
@@ -285,6 +342,23 @@ Environment variables override the `AppState` admin settings:
 |---|---|
 | `AWAKEN_ADMIN_API_BEARER_TOKEN` | Bearer token required for admin/configuration APIs |
 | `AWAKEN_ADMIN_CORS_ALLOWED_ORIGINS` | Comma-separated CORS origins for browser admin APIs |
+
+## AuditLogConfig
+
+Audit-log retention settings are kept separate from `AdminApiConfig` so the
+admin security struct remains source-compatible with 0.4.0 struct literals.
+Attach them to `AppState` with `AppState::with_audit_log_config` before calling
+`AppState::with_audit_log_from_config`.
+
+```rust,ignore
+use awaken_server::app::AuditLogConfig;
+
+pub struct AuditLogConfig {
+    pub enabled: bool,              // default: true
+    pub retention_days: u32,        // default: 90
+    pub sweep_interval_secs: u64,   // default: 3600
+}
+```
 
 ### Secret handling
 

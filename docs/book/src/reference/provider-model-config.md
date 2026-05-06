@@ -60,6 +60,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 `build()` validates every registered agent by resolving its model id and provider id. Missing models, providers, or plugins fail at startup.
 
+For tests and local development, `MockProviderProfile` gives explicit mock
+provider wiring without global environment switches:
+
+```rust,no_run
+use awaken::{AgentRuntimeBuilder, MockProviderProfile};
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let runtime = AgentRuntimeBuilder::new()
+        .with_mock_provider_profile(MockProviderProfile::new("mock", "mock-model"))
+        .build()?;
+
+    let _runtime = runtime;
+    Ok(())
+}
+```
+
 ## Managed config path
 
 Use this path when the server owns dynamic config through `ConfigStore`.
@@ -112,6 +128,12 @@ Example config documents:
 | `base_url` | `Option<String>` | `None` | Override base URL for proxies or self-hosted deployments. Empty-string input deserializes as `None` |
 | `timeout_secs` | `u64` | `300` | Request timeout in seconds |
 | `adapter_options` | `BTreeMap<String, Value>` | `{}` | Adapter-specific non-secret options. Today the OpenAI-compatible adapter recognizes `headers` (an object of string→string pairs added as default request headers). Unknown keys are accepted by the schema and ignored at build time. Secrets must use `api_key`; do not store credentials here |
+
+`ProviderSpec` deserialization ignores unknown top-level fields for stored-config
+compatibility. Config write and validate surfaces call `validate_provider_spec`
+and reject unknown fields so new records cannot persist silently ignored
+settings. Use `validate_model_binding_spec` for the same canonical validation on
+model bindings.
 
 Example with custom headers:
 
@@ -187,6 +209,46 @@ ConfigStore change -> compile RegistrySet -> validate -> replace runtime snapsho
 ```
 
 New runs use the latest published snapshot. Active runs keep the snapshot they started with.
+
+## Runtime Registry Updates
+
+`RegistryHandle` exposes provider update operations for applications that
+manage provider executors programmatically:
+
+These operations update only the current in-memory runtime snapshot. They do
+not write to `ConfigStore`; the next managed config publish can replace the
+snapshot with the state compiled from `ConfigStore`.
+
+| Method | Behavior |
+|---|---|
+| `register_provider(id, executor)` | Add a new provider and publish a validated snapshot |
+| `replace_provider(id, executor)` | Replace an existing provider executor without rebuilding unrelated registries |
+| `preview_remove_provider(id)` | Return dependent model and agent ids without mutating the snapshot |
+| `remove_provider(id, policy)` | Remove a provider after checking dependent model bindings and agents |
+
+`ProviderRemovalPolicy::BlockIfReferenced` rejects removal while any model
+binding points at the provider. `ProviderRemovalPolicy::CascadeUnusedModelBindings`
+also removes model bindings that point at the provider, but only when no agent
+uses those bindings. `ProviderRemovalPreview` reports the provider id,
+referencing `model_ids`, affected `agent_ids`, and whether each policy is
+currently allowed. On success, `ProviderRemovalImpact` reports the provider id
+and removed model binding ids; on dependency conflicts,
+`RegistryUpdateError::ProviderInUse` includes the referenced model and agent ids.
+
+Use `rebuild_agent_model_provider_registries(base, update)` when a config source
+has produced a full replacement set for agents, models, and providers. It
+preserves tools, plugins, and execution backends from the base registry set,
+then validates the candidate before returning it.
+
+Diagnostics are available without publishing a snapshot:
+
+| Function | Reports |
+|---|---|
+| `diagnose_registry_set(registries)` | Missing model bindings, providers, plugins, and delegate agents |
+| `diagnose_registry_set_serializable(registries)` | Same diagnostics as stable payloads with `code`, `severity`, `resource`, optional `depends_on`, and `message` |
+| `validate_registry_set(registries)` | Same checks as an error result |
+| `diagnose_agent_spec(registries, spec)` | Problems for one agent against an existing registry set |
+| `validate_agent_spec(registries, spec)` | Same agent checks as an error result |
 
 ## Inference overrides
 

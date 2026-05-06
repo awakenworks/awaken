@@ -8,6 +8,8 @@ use awaken_contract::contract::content::ContentBlock;
 use awaken_contract::contract::executor::{InferenceExecutionError, InferenceRequest, LlmExecutor};
 use awaken_contract::contract::inference::{StopReason, StreamResult, TokenUsage};
 
+use crate::registry::ModelBinding;
+
 /// A mock LLM executor that returns canned responses without calling any API.
 /// Used for testing and development.
 pub struct MockLlmExecutor {
@@ -45,6 +47,57 @@ impl MockLlmExecutor {
 impl Default for MockLlmExecutor {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// Explicit mock provider wiring for tests and local development.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MockProviderProfile {
+    pub provider_id: String,
+    pub model_id: String,
+    pub upstream_model: String,
+    pub responses: Vec<String>,
+}
+
+impl MockProviderProfile {
+    pub fn new(provider_id: impl Into<String>, model_id: impl Into<String>) -> Self {
+        let provider_id = provider_id.into();
+        let model_id = model_id.into();
+        Self {
+            provider_id,
+            upstream_model: model_id.clone(),
+            model_id,
+            responses: Vec::new(),
+        }
+    }
+
+    #[must_use]
+    pub fn with_upstream_model(mut self, upstream_model: impl Into<String>) -> Self {
+        self.upstream_model = upstream_model.into();
+        self
+    }
+
+    #[must_use]
+    pub fn with_responses(mut self, responses: Vec<String>) -> Self {
+        self.responses = responses;
+        self
+    }
+
+    pub fn executor(&self) -> std::sync::Arc<dyn LlmExecutor> {
+        std::sync::Arc::new(MockLlmExecutor::new().with_responses(self.responses.clone()))
+    }
+
+    pub fn model_binding(&self) -> ModelBinding {
+        ModelBinding {
+            provider_id: self.provider_id.clone(),
+            upstream_model: self.upstream_model.clone(),
+        }
+    }
+}
+
+impl Default for MockProviderProfile {
+    fn default() -> Self {
+        Self::new("mock", "mock")
     }
 }
 
@@ -153,6 +206,17 @@ mod tests {
         let d = MockLlmExecutor::default();
         assert_eq!(d.name(), "mock");
         assert!(d.responses.is_empty());
+    }
+
+    #[test]
+    fn mock_provider_profile_produces_binding_and_executor() {
+        let profile = MockProviderProfile::new("mock-provider", "mock-model")
+            .with_upstream_model("upstream")
+            .with_responses(vec!["ok".into()]);
+        let binding = profile.model_binding();
+        assert_eq!(binding.provider_id, "mock-provider");
+        assert_eq!(binding.upstream_model, "upstream");
+        assert_eq!(profile.executor().name(), "mock");
     }
 
     #[tokio::test]

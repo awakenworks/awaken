@@ -138,17 +138,30 @@ pub mod state {
 
 // contract types
 pub use awaken_contract::{
-    AgentSpec, EffectSpec, FailedScheduledActions, JsonValue, KeyScope, MergeStrategy,
-    PendingScheduledActions, PersistedState, Phase, PluginConfigKey, RedactedString,
-    ScheduledActionSpec, Snapshot, StateError, StateKey, StateKeyOptions, StateMap, TypedEffect,
-    TypedTool, UnknownKeyPolicy, generate_tool_schema, sanitize_for_llm, validate_against_schema,
+    AGENT_SPEC_PATCH_UNKNOWN_FIELD_POLICY, AGENT_SPEC_UNKNOWN_FIELD_POLICY, AgentSpec,
+    AgentSpecPatch, ConfigRecord, ConfigRecordError, ConfigRecordMerge, ConfigValidationError,
+    EffectSpec, FailedScheduledActions, JsonValue, KeyScope,
+    MODEL_BINDING_SPEC_UNKNOWN_FIELD_POLICY, MergeStrategy, NoConfigPatch,
+    PROVIDER_SPEC_UNKNOWN_FIELD_POLICY, PendingScheduledActions, PersistedState, Phase,
+    PluginConfigKey, RecordMeta, RecordSource, RedactedString, ScheduledActionSpec, Snapshot,
+    StateError, StateKey, StateKeyOptions, StateMap, TypedEffect, TypedTool, UnknownFieldPolicy,
+    UnknownKeyPolicy, decode_config_record, effective_config_record,
+    effective_visible_config_records, generate_tool_schema, merge_agent_spec, sanitize_for_llm,
+    validate_against_schema, validate_agent_spec, validate_agent_spec_patch,
+    validate_config_record, validate_config_record_overrides, validate_model_binding_spec,
+    validate_provider_spec,
 };
 
 // runtime types
+pub use awaken_runtime::engine::MockProviderProfile;
 pub use awaken_runtime::{
     AgentResolver, AgentRuntime, AgentRuntimeBuilder, BuildError, CancellationToken, CommitEvent,
     CommitHook, DEFAULT_MAX_PHASE_ROUNDS, ExecutionEnv, MutationBatch, PhaseContext, PhaseHook,
-    PhaseRuntime, Plugin, PluginDescriptor, PluginRegistrar, ResolvedAgent, RunRequest,
-    RuntimeError, StateCommand, StateStore, ToolGateHook, TypedEffectHandler,
-    TypedScheduledActionHandler,
+    PhaseRuntime, Plugin, PluginDescriptor, PluginRegistrar, ProviderRemovalImpact,
+    ProviderRemovalPolicy, ProviderRemovalPreview, RegistryDiagnostic, RegistryDiagnosticSeverity,
+    RegistryResourceRef, RegistryUpdateError, RegistryValidationError, ResolvedAgent, RunRequest,
+    RuntimeError, RuntimeRegistryUpdate, SerializableRegistryDiagnostic, StateCommand, StateStore,
+    ToolGateHook, TypedEffectHandler, TypedScheduledActionHandler, diagnose_agent_spec,
+    diagnose_registry_set, diagnose_registry_set_serializable, preview_provider_removal,
+    rebuild_agent_model_provider_registries,
 };

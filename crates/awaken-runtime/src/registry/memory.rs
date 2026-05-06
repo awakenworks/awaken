@@ -60,6 +60,18 @@ impl<V> MapRegistry<V> {
         self.items.get(id)
     }
 
+    pub fn contains_key(&self, id: &str) -> bool {
+        self.items.contains_key(id)
+    }
+
+    pub fn replace(&mut self, id: impl Into<String>, value: V) -> Option<V> {
+        self.items.insert(id.into(), value)
+    }
+
+    pub fn remove(&mut self, id: &str) -> Option<V> {
+        self.items.remove(id)
+    }
+
     pub fn ids(&self) -> Vec<String> {
         self.items.keys().cloned().collect()
     }
@@ -120,6 +132,18 @@ impl MapProviderRegistry {
         self.register(id, executor, |msg| {
             BuildError::ProviderRegistryConflict(format!("provider {msg}"))
         })
+    }
+
+    pub fn replace_provider(
+        &mut self,
+        id: impl Into<String>,
+        executor: Arc<dyn LlmExecutor>,
+    ) -> Option<Arc<dyn LlmExecutor>> {
+        self.replace(id, executor)
+    }
+
+    pub fn remove_provider(&mut self, id: &str) -> Option<Arc<dyn LlmExecutor>> {
+        self.remove(id)
     }
 }
 

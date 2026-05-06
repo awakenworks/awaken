@@ -114,7 +114,7 @@ impl LLMResponse {
 // ---------------------------------------------------------------------------
 
 /// Context window management policy.
-#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct ContextWindowPolicy {
     /// Model's total context window size in tokens.
     pub max_context_tokens: usize,

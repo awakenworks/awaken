@@ -59,6 +59,17 @@ impl RegistryHandle {
         *snapshot = RegistrySnapshot::new(version, registries);
         version
     }
+
+    pub fn update<E>(
+        &self,
+        update: impl FnOnce(&RegistrySet) -> Result<RegistrySet, E>,
+    ) -> Result<u64, E> {
+        let mut snapshot = self.snapshot.write();
+        let registries = update(snapshot.registries())?;
+        let version = snapshot.version().saturating_add(1);
+        *snapshot = RegistrySnapshot::new(version, registries);
+        Ok(version)
+    }
 }
 
 #[cfg(test)]
@@ -116,6 +127,18 @@ mod tests {
     fn replace_publishes_new_version() {
         let handle = RegistryHandle::new(make_registry_set("agent-a"));
         let version = handle.replace(make_registry_set("agent-b"));
+        assert_eq!(version, 2);
+        let snapshot = handle.snapshot();
+        assert_eq!(snapshot.version(), 2);
+        assert_eq!(snapshot.registries().agents.agent_ids(), vec!["agent-b"]);
+    }
+
+    #[test]
+    fn update_publishes_new_version() {
+        let handle = RegistryHandle::new(make_registry_set("agent-a"));
+        let version = handle
+            .update::<()>(|_| Ok(make_registry_set("agent-b")))
+            .expect("update succeeds");
         assert_eq!(version, 2);
         let snapshot = handle.snapshot();
         assert_eq!(snapshot.version(), 2);

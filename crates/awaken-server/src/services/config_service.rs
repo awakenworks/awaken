@@ -1,23 +1,28 @@
 use std::sync::Arc;
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use std::time::Instant;
 
 use awaken_contract::AuditAction;
 use awaken_contract::contract::config_store::ConfigStore;
 use awaken_contract::contract::storage::StorageError;
 use awaken_contract::{
-    AgentSpec, AgentSpecPatch, ConfigRecord, McpServerSpec, ModelBindingSpec, ProviderSpec,
-    RecordMeta, RecordSource, ToolSpec, ToolSpecPatch, now_ms,
+    AgentSpec, ConfigRecord, McpServerSpec, ModelBindingSpec, ProviderSpec, RecordMeta,
+    RecordSource, ToolSpec, ToolSpecPatch, now_ms,
+};
+use awaken_runtime::registry::{
+    ProviderRemovalPreview, SerializableRegistryDiagnostic, diagnose_registry_set_serializable,
 };
 use axum::http::HeaderMap;
 use serde_json::{Map, Value, json};
 
 use crate::app::AppState;
 use crate::services::audit_log::AuditLogger;
-use crate::services::config_envelope::{
-    apply_overrides, extract_timestamps, spec_field, unwrap_spec,
-};
+use crate::services::config_envelope::{apply_overrides, unwrap_spec};
 
 use super::config_runtime::ConfigRuntimeError;
+
+const TOOLS_NAMESPACE: &str = "tools";
+const OVERRIDES_NOT_SUPPORTED_FOR_USER_RECORD: &str =
+    "overrides are not supported for user-source records; use PUT to update";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConfigNamespace {
@@ -25,25 +30,23 @@ pub enum ConfigNamespace {
     Models,
     Providers,
     McpServers,
-    Tools,
 }
 
 impl ConfigNamespace {
-    /// All five managed namespaces in a fixed order.
-    pub const ALL: [Self; 5] = [
+    /// All 0.4-compatible public managed namespaces in a fixed order.
+    pub const ALL: [Self; 4] = [
         Self::Agents,
         Self::Providers,
         Self::Models,
         Self::McpServers,
-        Self::Tools,
     ];
 
-    /// Slice over all five namespace variants.
+    /// Slice over all public namespace variants.
     pub fn all() -> &'static [Self] {
         &Self::ALL
     }
 
-    /// Iterator over the `&'static str` names of all five namespaces.
+    /// Iterator over the `&'static str` names of all public namespaces.
     pub fn iter_str() -> impl Iterator<Item = &'static str> + 'static {
         Self::ALL.iter().copied().map(Self::as_str)
     }
@@ -54,7 +57,6 @@ impl ConfigNamespace {
             "models" => Ok(Self::Models),
             "providers" => Ok(Self::Providers),
             "mcp-servers" => Ok(Self::McpServers),
-            "tools" => Ok(Self::Tools),
             _ => Err(ConfigServiceError::UnknownNamespace(value.to_string())),
         }
     }
@@ -65,7 +67,6 @@ impl ConfigNamespace {
             Self::Models => "models",
             Self::Providers => "providers",
             Self::McpServers => "mcp-servers",
-            Self::Tools => "tools",
         }
     }
 
@@ -75,11 +76,15 @@ impl ConfigNamespace {
             Self::Models => schemars::schema_for!(ModelBindingSpec),
             Self::Providers => schemars::schema_for!(ProviderSpec),
             Self::McpServers => schemars::schema_for!(McpServerSpec),
-            Self::Tools => schemars::schema_for!(ToolSpec),
         };
         serde_json::to_value(schema)
             .map_err(|error| ConfigServiceError::Serialization(error.to_string()))
     }
+}
+
+pub(crate) fn tool_schema_json() -> Result<Value, ConfigServiceError> {
+    serde_json::to_value(schemars::schema_for!(ToolSpec))
+        .map_err(|error| ConfigServiceError::Serialization(error.to_string()))
 }
 
 /// A record that depends on the resource being deleted.
@@ -107,12 +112,22 @@ pub enum ConfigServiceError {
     Serialization(String),
     #[error("runtime apply failed: {0}")]
     Apply(String),
-    #[error("blocked: {used_by:?} record(s) depend on this resource")]
-    Blocked { used_by: Vec<DependentRef> },
-    #[error("overrides are not supported for user-source records; use PUT to update")]
-    OverridesNotSupportedForUserRecord,
     #[error("storage error: {0}")]
     Storage(#[from] StorageError),
+}
+
+fn blocked_by_dependents(used_by: Vec<DependentRef>) -> ConfigServiceError {
+    ConfigServiceError::Conflict(format!(
+        "blocked: {used_by:?} record(s) depend on this resource"
+    ))
+}
+
+fn overrides_not_supported_for_user_record() -> ConfigServiceError {
+    ConfigServiceError::InvalidPayload(OVERRIDES_NOT_SUPPORTED_FOR_USER_RECORD.into())
+}
+
+pub(crate) fn is_overrides_not_supported_for_user_record(error: &ConfigServiceError) -> bool {
+    matches!(error, ConfigServiceError::InvalidPayload(message) if message == OVERRIDES_NOT_SUPPORTED_FOR_USER_RECORD)
 }
 
 /// Error type for the config restore operation.
@@ -164,7 +179,7 @@ impl<'a> ConfigService<'a> {
         Ok(Self {
             state,
             store,
-            audit: state.audit_log.clone(),
+            audit: state.audit_log(),
         })
     }
 
@@ -260,7 +275,7 @@ impl<'a> ConfigService<'a> {
                 { "namespace": "models", "schema": ConfigNamespace::Models.schema_json()? },
                 { "namespace": "providers", "schema": ConfigNamespace::Providers.schema_json()? },
                 { "namespace": "mcp-servers", "schema": ConfigNamespace::McpServers.schema_json()? },
-                { "namespace": "tools", "schema": ConfigNamespace::Tools.schema_json()? }
+                { "namespace": TOOLS_NAMESPACE, "schema": tool_schema_json()? }
             ],
         }))
     }
@@ -289,6 +304,26 @@ impl<'a> ConfigService<'a> {
             .transpose()
     }
 
+    pub(crate) async fn list_tools(
+        &self,
+        offset: usize,
+        limit: usize,
+    ) -> Result<Vec<Value>, ConfigServiceError> {
+        let values = self.store.list(TOOLS_NAMESPACE, offset, limit).await?;
+        values
+            .into_iter()
+            .map(|(_, value)| effective_tool_spec(value))
+            .collect()
+    }
+
+    pub(crate) async fn get_tool(&self, id: &str) -> Result<Option<Value>, ConfigServiceError> {
+        self.store
+            .get(TOOLS_NAMESPACE, id)
+            .await?
+            .map(effective_tool_spec)
+            .transpose()
+    }
+
     /// Return just the `RecordMeta` for a stored entry. Returns `None` when
     /// the record does not exist.  Does not apply redaction (meta contains no
     /// secrets) and does not apply overrides (meta is the raw provenance).
@@ -303,6 +338,20 @@ impl<'a> ConfigService<'a> {
         };
         // For non-Agent namespaces the envelope may not have been written yet
         // (legacy bare-spec). ConfigRecord::from_value handles both shapes.
+        let meta = awaken_contract::ConfigRecord::<Value>::from_value(value)
+            .map_err(|e| ConfigServiceError::Serialization(e.to_string()))?
+            .meta;
+        Ok(Some(meta))
+    }
+
+    pub(crate) async fn get_tool_meta(
+        &self,
+        id: &str,
+    ) -> Result<Option<awaken_contract::RecordMeta>, ConfigServiceError> {
+        let value = self.store.get(TOOLS_NAMESPACE, id).await?;
+        let Some(value) = value else {
+            return Ok(None);
+        };
         let meta = awaken_contract::ConfigRecord::<Value>::from_value(value)
             .map_err(|e| ConfigServiceError::Serialization(e.to_string()))?
             .meta;
@@ -326,6 +375,66 @@ impl<'a> ConfigService<'a> {
             out.push((id, meta));
         }
         Ok(out)
+    }
+
+    pub(crate) async fn list_tool_meta(
+        &self,
+        offset: usize,
+        limit: usize,
+    ) -> Result<Vec<(String, awaken_contract::RecordMeta)>, ConfigServiceError> {
+        let values = self.store.list(TOOLS_NAMESPACE, offset, limit).await?;
+        let mut out = Vec::with_capacity(values.len());
+        for (id, value) in values {
+            let meta = awaken_contract::ConfigRecord::<Value>::from_value(value)
+                .map_err(|e| ConfigServiceError::Serialization(e.to_string()))?
+                .meta;
+            out.push((id, meta));
+        }
+        Ok(out)
+    }
+
+    pub async fn preview_remove_provider(
+        &self,
+        id: &str,
+    ) -> Result<ProviderRemovalPreview, ConfigServiceError> {
+        if self
+            .store
+            .get(ConfigNamespace::Providers.as_str(), id)
+            .await?
+            .is_none()
+        {
+            return Err(ConfigServiceError::NotFound(format!("providers/{id}")));
+        }
+
+        let model_refs = self.find_dependents(ConfigNamespace::Providers, id).await?;
+        let model_ids = model_refs
+            .iter()
+            .map(|reference| reference.id.clone())
+            .collect::<Vec<_>>();
+        let mut agent_ids = Vec::new();
+        for model_id in &model_ids {
+            agent_ids.extend(
+                self.find_dependents(ConfigNamespace::Models, model_id)
+                    .await?
+                    .into_iter()
+                    .map(|reference| reference.id),
+            );
+        }
+
+        Ok(ProviderRemovalPreview::new(id, model_ids, agent_ids))
+    }
+
+    pub fn registry_diagnostics(
+        &self,
+    ) -> Result<Vec<SerializableRegistryDiagnostic>, ConfigServiceError> {
+        let registries = self
+            .state
+            .runtime
+            .registry_set()
+            .ok_or(ConfigServiceError::Apply(
+                "runtime does not expose a configurable registry snapshot".into(),
+            ))?;
+        Ok(diagnose_registry_set_serializable(&registries))
     }
 
     /// Dry-run validation. Runs the same `prepare_body` + `validate_payload`
@@ -358,13 +467,17 @@ impl<'a> ConfigService<'a> {
         &self,
         namespace: ConfigNamespace,
         body: Value,
+    ) -> Result<Value, ConfigServiceError> {
+        self.create_with_headers(namespace, body, &HeaderMap::new())
+            .await
+    }
+
+    pub async fn create_with_headers(
+        &self,
+        namespace: ConfigNamespace,
+        body: Value,
         headers: &HeaderMap,
     ) -> Result<Value, ConfigServiceError> {
-        if matches!(namespace, ConfigNamespace::Tools) {
-            return Err(ConfigServiceError::InvalidPayload(
-                "tools namespace is read-only; use PATCH /v1/config/tools/:id/overrides".into(),
-            ));
-        }
         let manager = self.runtime_manager()?;
         let _apply_guard = manager.lock_apply().await;
         let (id, body) = self.prepare_body(namespace, None, body).await?;
@@ -405,13 +518,18 @@ impl<'a> ConfigService<'a> {
         namespace: ConfigNamespace,
         id: &str,
         body: Value,
+    ) -> Result<Value, ConfigServiceError> {
+        self.update_with_headers(namespace, id, body, &HeaderMap::new())
+            .await
+    }
+
+    pub async fn update_with_headers(
+        &self,
+        namespace: ConfigNamespace,
+        id: &str,
+        body: Value,
         headers: &HeaderMap,
     ) -> Result<Value, ConfigServiceError> {
-        if matches!(namespace, ConfigNamespace::Tools) {
-            return Err(ConfigServiceError::InvalidPayload(
-                "tools namespace is read-only; use PATCH /v1/config/tools/:id/overrides".into(),
-            ));
-        }
         let manager = self.runtime_manager()?;
         let _apply_guard = manager.lock_apply().await;
         let (body_id, body) = self.prepare_body(namespace, Some(id), body).await?;
@@ -450,14 +568,18 @@ impl<'a> ConfigService<'a> {
         &self,
         namespace: ConfigNamespace,
         id: &str,
+    ) -> Result<(), ConfigServiceError> {
+        self.delete_with_options(namespace, id, false, &HeaderMap::new())
+            .await
+    }
+
+    pub async fn delete_with_options(
+        &self,
+        namespace: ConfigNamespace,
+        id: &str,
         force: bool,
         headers: &HeaderMap,
     ) -> Result<(), ConfigServiceError> {
-        if matches!(namespace, ConfigNamespace::Tools) {
-            return Err(ConfigServiceError::InvalidPayload(
-                "tools namespace is read-only; use PATCH /v1/config/tools/:id/overrides".into(),
-            ));
-        }
         let manager = self.runtime_manager()?;
         let _apply_guard = manager.lock_apply().await;
         let previous = self
@@ -468,19 +590,71 @@ impl<'a> ConfigService<'a> {
                 ConfigServiceError::NotFound(format!("{}/{}", namespace.as_str(), id))
             })?;
 
-        if !force {
+        let provider_force = force && matches!(namespace, ConfigNamespace::Providers);
+        if !provider_force {
             let blockers = self.find_dependents(namespace, id).await?;
             if !blockers.is_empty() {
-                return Err(ConfigServiceError::Blocked { used_by: blockers });
+                return Err(blocked_by_dependents(blockers));
             }
+        }
+
+        let cascade_model_ids = if provider_force {
+            let provider_models = self.find_dependents(ConfigNamespace::Providers, id).await?;
+            let mut agent_blockers = Vec::new();
+            for model_ref in &provider_models {
+                agent_blockers.extend(
+                    self.find_dependents(ConfigNamespace::Models, &model_ref.id)
+                        .await?,
+                );
+            }
+            if !agent_blockers.is_empty() {
+                return Err(blocked_by_dependents(agent_blockers));
+            }
+            provider_models
+                .into_iter()
+                .map(|model_ref| model_ref.id)
+                .collect::<Vec<_>>()
+        } else {
+            Vec::new()
+        };
+
+        let mut records_to_delete: Vec<(ConfigNamespace, String, Value, u64)> = Vec::new();
+        for model_id in cascade_model_ids {
+            let raw = self
+                .store
+                .get(ConfigNamespace::Models.as_str(), &model_id)
+                .await?
+                .ok_or_else(|| ConfigServiceError::NotFound(format!("models/{model_id}")))?;
+            let revision = ConfigRecord::<Value>::from_value(raw.clone())
+                .map_err(|e| ConfigServiceError::Serialization(e.to_string()))?
+                .meta
+                .revision;
+            records_to_delete.push((ConfigNamespace::Models, model_id, raw, revision));
         }
 
         let expected_revision = ConfigRecord::<Value>::from_value(previous.clone())
             .map_err(|e| ConfigServiceError::Serialization(e.to_string()))?
             .meta
             .revision;
-        self.cas_delete_record(namespace, id, expected_revision)
-            .await?;
+        records_to_delete.push((
+            namespace,
+            id.to_string(),
+            previous.clone(),
+            expected_revision,
+        ));
+
+        let mut deleted_records: Vec<(ConfigNamespace, String, Value, u64)> = Vec::new();
+        for (delete_namespace, delete_id, raw, revision) in records_to_delete {
+            if let Err(error) = self
+                .cas_delete_record(delete_namespace, &delete_id, revision)
+                .await
+            {
+                self.rollback_deleted_records(deleted_records).await?;
+                return Err(error);
+            }
+            deleted_records.push((delete_namespace, delete_id, raw, revision));
+        }
+
         let apply_result = manager
             .apply_locked()
             .await
@@ -497,22 +671,21 @@ impl<'a> ConfigService<'a> {
                 headers,
             )
             .await;
-            let mut rollback = ConfigRecord::<Value>::from_value(previous.clone())
-                .map_err(|e| ConfigServiceError::Serialization(e.to_string()))?;
-            self.insert_record_absent(namespace, id, &mut rollback, expected_revision + 1)
-                .await?;
+            self.rollback_deleted_records(deleted_records).await?;
             return Err(error);
         }
 
-        self.emit_audit(
-            AuditAction::Delete,
-            namespace,
-            id,
-            Some(unwrap_spec(previous)),
-            None,
-            headers,
-        )
-        .await;
+        for (deleted_namespace, deleted_id, raw, _) in deleted_records {
+            self.emit_audit(
+                AuditAction::Delete,
+                deleted_namespace,
+                &deleted_id,
+                Some(unwrap_spec(raw)),
+                None,
+                headers,
+            )
+            .await;
+        }
 
         Ok(())
     }
@@ -606,8 +779,7 @@ impl<'a> ConfigService<'a> {
             .map_err(RestoreError::Service)?
         } else {
             // Resource does not exist — restore from a deleted state.
-            // We need to preserve created_at from the restored payload.
-            let (body_id, mut prepared) = self
+            let (body_id, prepared) = self
                 .prepare_body(namespace, None, payload.clone())
                 .await
                 .map_err(RestoreError::Service)?;
@@ -615,17 +787,6 @@ impl<'a> ConfigService<'a> {
                 return Err(RestoreError::Service(ConfigServiceError::InvalidPayload(
                     format!("restored payload id '{body_id}' does not match URL id '{id}'"),
                 )));
-            }
-
-            // Restore created_at from the original payload if present.
-            if let (Some(original_created_at), Some(obj)) = (
-                payload
-                    .as_object()
-                    .and_then(|o| o.get("created_at"))
-                    .cloned(),
-                prepared.as_object_mut(),
-            ) {
-                obj.insert("created_at".to_string(), original_created_at);
             }
 
             if self
@@ -673,7 +834,7 @@ impl<'a> ConfigService<'a> {
     /// - Providers: scans models for `provider_id == id`
     /// - Models: scans agents for `model_id == id`
     /// - Agents / McpServers: leaf nodes, no dependents
-    async fn find_dependents(
+    pub(crate) async fn find_dependents(
         &self,
         namespace: ConfigNamespace,
         id: &str,
@@ -681,39 +842,37 @@ impl<'a> ConfigService<'a> {
         match namespace {
             ConfigNamespace::Providers => {
                 let models = self.store.list("models", 0, usize::MAX).await?;
-                let refs = models
-                    .into_iter()
-                    .filter(|(_, value)| {
-                        spec_field(value, "provider_id")
-                            .and_then(Value::as_str)
-                            .is_some_and(|pid| pid == id)
-                    })
-                    .map(|(model_id, _)| DependentRef {
-                        namespace: "models",
-                        id: model_id,
-                    })
-                    .collect();
+                let mut refs = Vec::new();
+                for (model_id, value) in models {
+                    let Some(model) = effective_visible_record::<ModelBindingSpec>(value)? else {
+                        continue;
+                    };
+                    if model.provider_id == id {
+                        refs.push(DependentRef {
+                            namespace: "models",
+                            id: model_id,
+                        });
+                    }
+                }
                 Ok(refs)
             }
             ConfigNamespace::Models => {
                 let agents = self.store.list("agents", 0, usize::MAX).await?;
-                let refs = agents
-                    .into_iter()
-                    .filter(|(_, value)| {
-                        spec_field(value, "model_id")
-                            .and_then(Value::as_str)
-                            .is_some_and(|mid| mid == id)
-                    })
-                    .map(|(agent_id, _)| DependentRef {
-                        namespace: "agents",
-                        id: agent_id,
-                    })
-                    .collect();
+                let mut refs = Vec::new();
+                for (agent_id, value) in agents {
+                    let Some(agent) = effective_visible_record::<AgentSpec>(value)? else {
+                        continue;
+                    };
+                    if agent.endpoint.is_none() && agent.model_id == id {
+                        refs.push(DependentRef {
+                            namespace: "agents",
+                            id: agent_id,
+                        });
+                    }
+                }
                 Ok(refs)
             }
-            ConfigNamespace::Agents | ConfigNamespace::McpServers | ConfigNamespace::Tools => {
-                Ok(vec![])
-            }
+            ConfigNamespace::Agents | ConfigNamespace::McpServers => Ok(vec![]),
         }
     }
 
@@ -744,13 +903,36 @@ impl<'a> ConfigService<'a> {
         after: Option<Value>,
         headers: &HeaderMap,
     ) {
+        self.emit_audit_with_suffix_in_namespace(
+            action,
+            namespace.as_str(),
+            id,
+            suffix,
+            before,
+            after,
+            headers,
+        )
+        .await;
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn emit_audit_with_suffix_in_namespace(
+        &self,
+        action: AuditAction,
+        namespace: &str,
+        id: &str,
+        suffix: &str,
+        before: Option<Value>,
+        after: Option<Value>,
+        headers: &HeaderMap,
+    ) {
         let Some(audit) = &self.audit else {
             return;
         };
         let resource = if suffix.is_empty() {
-            format!("{}/{}", namespace.as_str(), id)
+            format!("{namespace}/{id}")
         } else {
-            format!("{}/{}/{}", namespace.as_str(), id, suffix)
+            format!("{namespace}/{id}/{suffix}")
         };
         audit.emit(action, &resource, before, after, headers).await;
     }
@@ -766,13 +948,36 @@ impl<'a> ConfigService<'a> {
         error_msg: String,
         headers: &HeaderMap,
     ) {
+        self.emit_audit_apply_failed_in_namespace(
+            namespace.as_str(),
+            id,
+            suffix,
+            before,
+            after,
+            error_msg,
+            headers,
+        )
+        .await;
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn emit_audit_apply_failed_in_namespace(
+        &self,
+        namespace: &str,
+        id: &str,
+        suffix: &str,
+        before: Option<Value>,
+        after: Option<Value>,
+        error_msg: String,
+        headers: &HeaderMap,
+    ) {
         let Some(audit) = &self.audit else {
             return;
         };
         let resource = if suffix.is_empty() {
-            format!("{}/{}", namespace.as_str(), id)
+            format!("{namespace}/{id}")
         } else {
-            format!("{}/{}/{}", namespace.as_str(), id, suffix)
+            format!("{namespace}/{id}/{suffix}")
         };
         audit
             .emit_apply_failed(&resource, before, after, error_msg, headers)
@@ -789,14 +994,13 @@ impl<'a> ConfigService<'a> {
             .ok_or(ConfigServiceError::NotEnabled)
     }
 
-    fn user_record_from_body(body: &Value) -> ConfigRecord<Value> {
-        let (created_at, updated_at) = extract_timestamps(body);
+    fn user_record_from_body(body: &Value, previous: Option<&Value>) -> ConfigRecord<Value> {
         let mut meta = RecordMeta::new_user();
-        if created_at != 0 {
-            meta.created_at = created_at;
-        }
-        if updated_at != 0 {
-            meta.updated_at = updated_at;
+        if let Some(previous) = previous
+            && let Ok(previous_record) = ConfigRecord::<Value>::from_value(previous.clone())
+            && previous_record.meta.created_at != 0
+        {
+            meta.created_at = previous_record.meta.created_at;
         }
         ConfigRecord {
             spec: body.clone(),
@@ -809,17 +1013,22 @@ impl<'a> ConfigService<'a> {
         id: &str,
         error: StorageError,
     ) -> ConfigServiceError {
+        Self::storage_write_error_for_namespace(namespace.as_str(), id, error)
+    }
+
+    fn storage_write_error_for_namespace(
+        namespace: &str,
+        id: &str,
+        error: StorageError,
+    ) -> ConfigServiceError {
         match error {
-            StorageError::AlreadyExists(_) => ConfigServiceError::Conflict(format!(
-                "{}/{} already exists",
-                namespace.as_str(),
-                id
-            )),
+            StorageError::AlreadyExists(_) => {
+                ConfigServiceError::Conflict(format!("{namespace}/{id} already exists"))
+            }
             StorageError::VersionConflict { expected, actual } => {
                 ConfigServiceError::Conflict(format!(
                     "{}/{} was modified by another writer (expected revision {expected}, found {actual}); retry the mutation",
-                    namespace.as_str(),
-                    id,
+                    namespace, id,
                 ))
             }
             other => ConfigServiceError::Storage(other),
@@ -854,16 +1063,27 @@ impl<'a> ConfigService<'a> {
         record: &mut ConfigRecord<T>,
         expected_revision: u64,
     ) -> Result<u64, ConfigServiceError> {
+        self.cas_put_record_in_namespace(namespace.as_str(), id, record, expected_revision)
+            .await
+    }
+
+    async fn cas_put_record_in_namespace<T: serde::Serialize + serde::de::DeserializeOwned>(
+        &self,
+        namespace: &str,
+        id: &str,
+        record: &mut ConfigRecord<T>,
+        expected_revision: u64,
+    ) -> Result<u64, ConfigServiceError> {
         let next_revision = expected_revision.saturating_add(1);
         record.meta.revision = next_revision;
         let envelope = record
             .to_value()
             .map_err(|e| ConfigServiceError::Serialization(e.to_string()))?;
         self.store
-            .put_if_revision(namespace.as_str(), id, &envelope, expected_revision)
+            .put_if_revision(namespace, id, &envelope, expected_revision)
             .await
             .map(|()| next_revision)
-            .map_err(|error| Self::storage_write_error(namespace, id, error))
+            .map_err(|error| Self::storage_write_error_for_namespace(namespace, id, error))
     }
 
     async fn cas_delete_record(
@@ -891,6 +1111,37 @@ impl<'a> ConfigService<'a> {
             .await
     }
 
+    async fn rollback_to_raw_after_revision_in_namespace(
+        &self,
+        namespace: &str,
+        id: &str,
+        raw: Value,
+        expected_revision: u64,
+    ) -> Result<u64, ConfigServiceError> {
+        let mut rollback = ConfigRecord::<Value>::from_value(raw)
+            .map_err(|e| ConfigServiceError::Serialization(e.to_string()))?;
+        self.cas_put_record_in_namespace(namespace, id, &mut rollback, expected_revision)
+            .await
+    }
+
+    async fn rollback_deleted_records(
+        &self,
+        deleted_records: Vec<(ConfigNamespace, String, Value, u64)>,
+    ) -> Result<(), ConfigServiceError> {
+        for (rollback_namespace, rollback_id, raw, revision) in deleted_records.into_iter().rev() {
+            let mut rollback = ConfigRecord::<Value>::from_value(raw)
+                .map_err(|e| ConfigServiceError::Serialization(e.to_string()))?;
+            self.insert_record_absent(
+                rollback_namespace,
+                &rollback_id,
+                &mut rollback,
+                revision + 1,
+            )
+            .await?;
+        }
+        Ok(())
+    }
+
     async fn persist_and_apply_locked(
         &self,
         manager: &crate::services::config_runtime::ConfigRuntimeManager,
@@ -901,7 +1152,7 @@ impl<'a> ConfigService<'a> {
         headers: &HeaderMap,
     ) -> Result<Value, ConfigServiceError> {
         self.validate_payload(namespace, &body)?;
-        let mut record = Self::user_record_from_body(&body);
+        let mut record = Self::user_record_from_body(&body, previous.as_ref());
         let write_revision = match previous.as_ref() {
             Some(previous) => {
                 let expected_revision = ConfigRecord::<Value>::from_value(previous.clone())
@@ -984,41 +1235,11 @@ impl<'a> ConfigService<'a> {
                 self.normalize_mcp_server_payload(path_id, &mut object)
                     .await?;
             }
-            ConfigNamespace::Agents | ConfigNamespace::Models | ConfigNamespace::Tools => {}
+            ConfigNamespace::Agents | ConfigNamespace::Models => {}
         }
 
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_millis() as u64)
-            .unwrap_or(0);
-
-        if path_id.is_none() {
-            // Create: set both timestamps.
-            object.insert("created_at".into(), Value::Number(now.into()));
-            object.insert("updated_at".into(), Value::Number(now.into()));
-        } else {
-            // Update: preserve existing created_at if present; always refresh updated_at.
-            // The stored value may be either a bare spec or a ConfigRecord envelope
-            // ({"spec": {...}, "meta": {...}}); extract created_at from whichever layer
-            // holds it.
-            if !object.contains_key("created_at") {
-                if let Ok(Some(existing)) = self.store.get(namespace.as_str(), &id).await {
-                    let spec_layer = unwrap_spec(existing);
-                    if let Some(existing_created_at) = spec_layer
-                        .as_object()
-                        .and_then(|obj| obj.get("created_at"))
-                        .cloned()
-                    {
-                        object.insert("created_at".into(), existing_created_at);
-                    } else {
-                        object.insert("created_at".into(), Value::Number(now.into()));
-                    }
-                } else {
-                    object.insert("created_at".into(), Value::Number(now.into()));
-                }
-            }
-            object.insert("updated_at".into(), Value::Number(now.into()));
-        }
+        object.remove("created_at");
+        object.remove("updated_at");
 
         Ok((id, Value::Object(object)))
     }
@@ -1068,18 +1289,16 @@ impl<'a> ConfigService<'a> {
     ) -> Result<(), ConfigServiceError> {
         match namespace {
             ConfigNamespace::Agents => {
-                let _: AgentSpec = from_value(body)?;
+                awaken_contract::validate_agent_spec(body.clone())
+                    .map_err(|e| ConfigServiceError::InvalidPayload(e.to_string()))?;
             }
             ConfigNamespace::Models => {
-                let _: ModelBindingSpec = from_value(body)?;
+                awaken_contract::validate_model_binding_spec(body.clone())
+                    .map_err(|e| ConfigServiceError::InvalidPayload(e.to_string()))?;
             }
             ConfigNamespace::Providers => {
-                let spec: ProviderSpec = from_value(body)?;
-                if spec.adapter.trim().is_empty() {
-                    return Err(ConfigServiceError::InvalidPayload(
-                        "provider adapter cannot be empty".into(),
-                    ));
-                }
+                let spec = awaken_contract::validate_provider_spec(body.clone())
+                    .map_err(|e| ConfigServiceError::InvalidPayload(e.to_string()))?;
                 // Eager credential validation: parse `credentials_kind` and the
                 // (kind × adapter × api_key) shape so misconfigured providers
                 // are rejected at write time, not at first inference. The
@@ -1132,9 +1351,6 @@ impl<'a> ConfigService<'a> {
                     }
                 }
             }
-            ConfigNamespace::Tools => {
-                let _: ToolSpec = from_value(body)?;
-            }
         }
         Ok(())
     }
@@ -1178,7 +1394,7 @@ impl<'a> ConfigService<'a> {
                 }
                 Ok(Value::Object(object))
             }
-            ConfigNamespace::Agents | ConfigNamespace::Models | ConfigNamespace::Tools => Ok(value),
+            ConfigNamespace::Agents | ConfigNamespace::Models => Ok(value),
         }
     }
 
@@ -1221,10 +1437,11 @@ impl<'a> ConfigService<'a> {
         let start = Instant::now();
         let broker: std::sync::Arc<dyn awaken_runtime::credentials::CredentialBroker> =
             std::sync::Arc::new(awaken_runtime::credentials::AwakenCredentialBroker::new());
-        let build_result = crate::services::config_runtime::build_genai_provider_executor(
-            &spec,
-            std::sync::Arc::clone(&broker),
-        );
+        let build_result =
+            crate::services::config_runtime::build_genai_provider_executor_with_broker(
+                &spec,
+                std::sync::Arc::clone(&broker),
+            );
         let mut latency_ms = start.elapsed().as_millis() as u64;
 
         if let Err(e) = build_result {
@@ -1232,7 +1449,7 @@ impl<'a> ConfigService<'a> {
                 ok: false,
                 latency_ms,
                 network_tested: false,
-                error: Some(e.to_string()),
+                error: Some(redact_provider_error(&e.to_string(), &spec)),
             });
         }
 
@@ -1268,7 +1485,7 @@ impl<'a> ConfigService<'a> {
                     ok: false,
                     latency_ms,
                     network_tested,
-                    error: Some(err.to_string()),
+                    error: Some(redact_provider_error(&err.to_string(), &spec)),
                 });
             }
         }
@@ -1314,8 +1531,9 @@ impl<'a> ConfigService<'a> {
     /// PATCH /v1/config/agents/:id/overrides
     ///
     /// Merges the patch body into the existing `user_overrides` of a Builtin
-    /// agent record. Null-valued keys in the patch remove overrides; non-null
-    /// keys overwrite. Returns the effective AgentSpec after the merge.
+    /// agent record. JSON null clears nullable AgentSpec fields; for other
+    /// fields it removes the existing override. Non-null keys overwrite.
+    /// Returns the effective AgentSpec after the merge.
     pub async fn patch_agent_overrides(
         &self,
         id: &str,
@@ -1335,7 +1553,7 @@ impl<'a> ConfigService<'a> {
             .map_err(|e| ConfigServiceError::InvalidPayload(e.to_string()))?;
 
         if matches!(record.meta.source, RecordSource::User) {
-            return Err(ConfigServiceError::OverridesNotSupportedForUserRecord);
+            return Err(overrides_not_supported_for_user_record());
         }
 
         let expected_revision = record.meta.revision;
@@ -1351,13 +1569,14 @@ impl<'a> ConfigService<'a> {
                 ));
             }
         };
-        // Null values for Option fields are valid (they mean "clear this override").
+        // Null values for nullable AgentSpec fields are valid (they mean
+        // "clear the base value").
         // Pass the body as-is; deny_unknown_fields catches unknown field names.
-        let _: AgentSpecPatch = serde_json::from_value(body.clone())
+        awaken_contract::validate_agent_spec_patch(body.clone())
             .map_err(|e| ConfigServiceError::InvalidPayload(e.to_string()))?;
 
         // Merge patch INTO existing user_overrides (shallow key-level merge).
-        // Use the raw body Value to preserve nulls (null = clear the key).
+        // Use the raw body Value to preserve nullable-field nulls.
         let mut existing_map: Map<String, Value> = record
             .meta
             .user_overrides
@@ -1368,7 +1587,11 @@ impl<'a> ConfigService<'a> {
 
         for (k, v) in body_map {
             if v.is_null() {
-                existing_map.remove(k);
+                if is_nullable_agent_patch_field(k) {
+                    existing_map.insert(k.clone(), Value::Null);
+                } else {
+                    existing_map.remove(k);
+                }
             } else {
                 existing_map.insert(k.clone(), v.clone());
             }
@@ -1376,7 +1599,7 @@ impl<'a> ConfigService<'a> {
 
         // Validate the merged overrides by round-tripping through AgentSpecPatch.
         let merged_value = Value::Object(existing_map.clone());
-        let _: AgentSpecPatch = serde_json::from_value(merged_value.clone())
+        awaken_contract::validate_agent_spec_patch(merged_value.clone())
             .map_err(|e| ConfigServiceError::InvalidPayload(e.to_string()))?;
 
         let proposed_overrides: Option<Value> = if existing_map.is_empty() {
@@ -1468,7 +1691,7 @@ impl<'a> ConfigService<'a> {
             .map_err(|e| ConfigServiceError::InvalidPayload(e.to_string()))?;
 
         if matches!(record.meta.source, RecordSource::User) {
-            return Err(ConfigServiceError::OverridesNotSupportedForUserRecord);
+            return Err(overrides_not_supported_for_user_record());
         }
 
         // Short-circuit: if overrides are already None, this is a no-op — skip
@@ -1555,7 +1778,7 @@ impl<'a> ConfigService<'a> {
             .map_err(|e| ConfigServiceError::InvalidPayload(e.to_string()))?;
 
         if matches!(record.meta.source, RecordSource::User) {
-            return Err(ConfigServiceError::OverridesNotSupportedForUserRecord);
+            return Err(overrides_not_supported_for_user_record());
         }
 
         let expected_revision = record.meta.revision;
@@ -1573,7 +1796,7 @@ impl<'a> ConfigService<'a> {
             m.insert(field.to_string(), Value::Null);
             m
         });
-        let _: AgentSpecPatch = serde_json::from_value(probe).map_err(|_| {
+        awaken_contract::validate_agent_spec_patch(probe).map_err(|_| {
             ConfigServiceError::InvalidPayload(format!("unknown override field: {field}"))
         })?;
 
@@ -1663,7 +1886,7 @@ impl<'a> ConfigService<'a> {
 
         let raw = self
             .store
-            .get(ConfigNamespace::Tools.as_str(), id)
+            .get(TOOLS_NAMESPACE, id)
             .await?
             .ok_or_else(|| ConfigServiceError::NotFound(format!("tools/{id}")))?;
 
@@ -1671,7 +1894,7 @@ impl<'a> ConfigService<'a> {
             .map_err(|e| ConfigServiceError::InvalidPayload(e.to_string()))?;
 
         if matches!(record.meta.source, RecordSource::User) {
-            return Err(ConfigServiceError::OverridesNotSupportedForUserRecord);
+            return Err(overrides_not_supported_for_user_record());
         }
 
         let expected_revision = record.meta.revision;
@@ -1747,7 +1970,7 @@ impl<'a> ConfigService<'a> {
         record.meta.updated_at = now_ms();
 
         let write_revision = self
-            .cas_put_record(ConfigNamespace::Tools, id, &mut record, expected_revision)
+            .cas_put_record_in_namespace(TOOLS_NAMESPACE, id, &mut record, expected_revision)
             .await?;
 
         if let Err(error) = manager
@@ -1756,8 +1979,8 @@ impl<'a> ConfigService<'a> {
             .map(|_| ())
             .map_err(map_runtime_error)
         {
-            self.emit_audit_apply_failed(
-                ConfigNamespace::Tools,
+            self.emit_audit_apply_failed_in_namespace(
+                TOOLS_NAMESPACE,
                 id,
                 "overrides",
                 Some(before.clone()),
@@ -1766,8 +1989,13 @@ impl<'a> ConfigService<'a> {
                 headers,
             )
             .await;
-            self.rollback_to_raw_after_revision(ConfigNamespace::Tools, id, raw, write_revision)
-                .await?;
+            self.rollback_to_raw_after_revision_in_namespace(
+                TOOLS_NAMESPACE,
+                id,
+                raw,
+                write_revision,
+            )
+            .await?;
             return Err(error);
         }
 
@@ -1776,9 +2004,9 @@ impl<'a> ConfigService<'a> {
         let after = serde_json::to_value(&after_spec)
             .map_err(|e| ConfigServiceError::Serialization(e.to_string()))?;
 
-        self.emit_audit_with_suffix(
+        self.emit_audit_with_suffix_in_namespace(
             AuditAction::Update,
-            ConfigNamespace::Tools,
+            TOOLS_NAMESPACE,
             id,
             "overrides",
             Some(before),
@@ -1804,7 +2032,7 @@ impl<'a> ConfigService<'a> {
 
         let raw = self
             .store
-            .get(ConfigNamespace::Tools.as_str(), id)
+            .get(TOOLS_NAMESPACE, id)
             .await?
             .ok_or_else(|| ConfigServiceError::NotFound(format!("tools/{id}")))?;
 
@@ -1812,7 +2040,7 @@ impl<'a> ConfigService<'a> {
             .map_err(|e| ConfigServiceError::InvalidPayload(e.to_string()))?;
 
         if matches!(record.meta.source, RecordSource::User) {
-            return Err(ConfigServiceError::OverridesNotSupportedForUserRecord);
+            return Err(overrides_not_supported_for_user_record());
         }
 
         // Short-circuit: if overrides are already None, this is a no-op — skip
@@ -1833,7 +2061,7 @@ impl<'a> ConfigService<'a> {
         record.meta.updated_at = now_ms();
 
         let write_revision = self
-            .cas_put_record(ConfigNamespace::Tools, id, &mut record, expected_revision)
+            .cas_put_record_in_namespace(TOOLS_NAMESPACE, id, &mut record, expected_revision)
             .await?;
 
         let apply_result = manager
@@ -1842,8 +2070,8 @@ impl<'a> ConfigService<'a> {
             .map(|_| ())
             .map_err(map_runtime_error);
         if let Err(error) = apply_result {
-            self.emit_audit_apply_failed(
-                ConfigNamespace::Tools,
+            self.emit_audit_apply_failed_in_namespace(
+                TOOLS_NAMESPACE,
                 id,
                 "overrides",
                 Some(before.clone()),
@@ -1852,17 +2080,22 @@ impl<'a> ConfigService<'a> {
                 headers,
             )
             .await;
-            self.rollback_to_raw_after_revision(ConfigNamespace::Tools, id, raw, write_revision)
-                .await?;
+            self.rollback_to_raw_after_revision_in_namespace(
+                TOOLS_NAMESPACE,
+                id,
+                raw,
+                write_revision,
+            )
+            .await?;
             return Err(error);
         }
 
         let after = serde_json::to_value(&record.spec)
             .map_err(|e| ConfigServiceError::Serialization(e.to_string()))?;
 
-        self.emit_audit_with_suffix(
+        self.emit_audit_with_suffix_in_namespace(
             AuditAction::Update,
-            ConfigNamespace::Tools,
+            TOOLS_NAMESPACE,
             id,
             "overrides",
             Some(before),
@@ -1891,7 +2124,7 @@ impl<'a> ConfigService<'a> {
 
         let raw = self
             .store
-            .get(ConfigNamespace::Tools.as_str(), id)
+            .get(TOOLS_NAMESPACE, id)
             .await?
             .ok_or_else(|| ConfigServiceError::NotFound(format!("tools/{id}")))?;
 
@@ -1899,7 +2132,7 @@ impl<'a> ConfigService<'a> {
             .map_err(|e| ConfigServiceError::InvalidPayload(e.to_string()))?;
 
         if matches!(record.meta.source, RecordSource::User) {
-            return Err(ConfigServiceError::OverridesNotSupportedForUserRecord);
+            return Err(overrides_not_supported_for_user_record());
         }
 
         let expected_revision = record.meta.revision;
@@ -1950,7 +2183,7 @@ impl<'a> ConfigService<'a> {
         record.meta.updated_at = now_ms();
 
         let write_revision = self
-            .cas_put_record(ConfigNamespace::Tools, id, &mut record, expected_revision)
+            .cas_put_record_in_namespace(TOOLS_NAMESPACE, id, &mut record, expected_revision)
             .await?;
 
         let apply_result = manager
@@ -1959,8 +2192,8 @@ impl<'a> ConfigService<'a> {
             .map(|_| ())
             .map_err(map_runtime_error);
         if let Err(error) = apply_result {
-            self.emit_audit_apply_failed(
-                ConfigNamespace::Tools,
+            self.emit_audit_apply_failed_in_namespace(
+                TOOLS_NAMESPACE,
                 id,
                 &format!("overrides/{field}"),
                 Some(before.clone()),
@@ -1969,8 +2202,13 @@ impl<'a> ConfigService<'a> {
                 headers,
             )
             .await;
-            self.rollback_to_raw_after_revision(ConfigNamespace::Tools, id, raw, write_revision)
-                .await?;
+            self.rollback_to_raw_after_revision_in_namespace(
+                TOOLS_NAMESPACE,
+                id,
+                raw,
+                write_revision,
+            )
+            .await?;
             return Err(error);
         }
 
@@ -1979,9 +2217,9 @@ impl<'a> ConfigService<'a> {
         let after = serde_json::to_value(&after_spec)
             .map_err(|e| ConfigServiceError::Serialization(e.to_string()))?;
 
-        self.emit_audit_with_suffix(
+        self.emit_audit_with_suffix_in_namespace(
             AuditAction::Update,
-            ConfigNamespace::Tools,
+            TOOLS_NAMESPACE,
             id,
             &format!("overrides/{field}"),
             Some(before),
@@ -1994,8 +2232,15 @@ impl<'a> ConfigService<'a> {
     }
 }
 
+fn is_nullable_agent_patch_field(field: &str) -> bool {
+    matches!(
+        field,
+        "context_policy" | "allowed_tools" | "excluded_tools" | "reasoning_effort" | "endpoint"
+    )
+}
+
 /// Return the effective spec Value for a stored entry, applying `user_overrides`
-/// when the namespace supports it (currently only Agents).
+/// when the namespace supports it (currently Agents and tools).
 ///
 /// For non-Agent namespaces this is equivalent to `unwrap_spec`.
 fn effective_spec(namespace: ConfigNamespace, value: Value) -> Result<Value, ConfigServiceError> {
@@ -2008,15 +2253,112 @@ fn effective_spec(namespace: ConfigNamespace, value: Value) -> Result<Value, Con
             serde_json::to_value(&effective)
                 .map_err(|e| ConfigServiceError::Serialization(e.to_string()))
         }
-        ConfigNamespace::Tools => {
-            let record = ConfigRecord::<ToolSpec>::from_value(value)
-                .map_err(|e| ConfigServiceError::InvalidPayload(e.to_string()))?;
-            let effective = apply_overrides(record.spec, record.meta.user_overrides.as_ref())
-                .map_err(|e| ConfigServiceError::InvalidPayload(e.to_string()))?;
-            serde_json::to_value(&effective)
-                .map_err(|e| ConfigServiceError::Serialization(e.to_string()))
-        }
         _ => Ok(unwrap_spec(value)),
+    }
+}
+
+fn effective_visible_record<T>(value: Value) -> Result<Option<T>, ConfigServiceError>
+where
+    T: serde::de::DeserializeOwned + awaken_contract::ConfigRecordMerge,
+{
+    let record = ConfigRecord::<T>::from_value(value)
+        .map_err(|e| ConfigServiceError::InvalidPayload(e.to_string()))?;
+    if record.meta.hidden {
+        return Ok(None);
+    }
+    apply_overrides(record.spec, record.meta.user_overrides.as_ref())
+        .map(Some)
+        .map_err(|e| ConfigServiceError::InvalidPayload(e.to_string()))
+}
+
+fn effective_tool_spec(value: Value) -> Result<Value, ConfigServiceError> {
+    let record = ConfigRecord::<ToolSpec>::from_value(value)
+        .map_err(|e| ConfigServiceError::InvalidPayload(e.to_string()))?;
+    let effective = apply_overrides(record.spec, record.meta.user_overrides.as_ref())
+        .map_err(|e| ConfigServiceError::InvalidPayload(e.to_string()))?;
+    serde_json::to_value(&effective).map_err(|e| ConfigServiceError::Serialization(e.to_string()))
+}
+
+fn redact_provider_error(message: &str, spec: &ProviderSpec) -> String {
+    let mut needles = Vec::new();
+    if let Some(api_key) = spec.api_key.as_ref() {
+        let secret = api_key.expose_secret();
+        push_redaction_needle(&mut needles, secret);
+        if let Ok(value) = serde_json::from_str::<Value>(secret) {
+            collect_string_value_needles(&value, &mut needles);
+        }
+    }
+    collect_adapter_option_error_needles(&spec.adapter_options, &mut needles);
+
+    needles.sort_by_key(|needle| std::cmp::Reverse(needle.len()));
+    needles.dedup();
+
+    let mut redacted = message.to_owned();
+    for needle in needles {
+        redacted = redacted.replace(&needle, "***");
+    }
+    redacted
+}
+
+fn collect_adapter_option_error_needles(
+    options: &std::collections::BTreeMap<String, Value>,
+    needles: &mut Vec<String>,
+) {
+    for (key, value) in options {
+        let lower = key.to_lowercase();
+        if lower == "headers" {
+            collect_string_key_and_value_needles(value, needles);
+        } else if lower.contains("api_key")
+            || lower.contains("bearer")
+            || lower.contains("private_key")
+            || lower.contains("token")
+            || lower.contains("password")
+            || lower.contains("secret")
+        {
+            collect_string_value_needles(value, needles);
+        }
+    }
+}
+
+fn collect_string_value_needles(value: &Value, needles: &mut Vec<String>) {
+    match value {
+        Value::String(value) => push_redaction_needle(needles, value),
+        Value::Array(values) => {
+            for value in values {
+                collect_string_value_needles(value, needles);
+            }
+        }
+        Value::Object(values) => {
+            for value in values.values() {
+                collect_string_value_needles(value, needles);
+            }
+        }
+        Value::Null | Value::Bool(_) | Value::Number(_) => {}
+    }
+}
+
+fn collect_string_key_and_value_needles(value: &Value, needles: &mut Vec<String>) {
+    match value {
+        Value::String(value) => push_redaction_needle(needles, value),
+        Value::Array(values) => {
+            for value in values {
+                collect_string_key_and_value_needles(value, needles);
+            }
+        }
+        Value::Object(values) => {
+            for (key, value) in values {
+                push_redaction_needle(needles, key);
+                collect_string_key_and_value_needles(value, needles);
+            }
+        }
+        Value::Null | Value::Bool(_) | Value::Number(_) => {}
+    }
+}
+
+fn push_redaction_needle(needles: &mut Vec<String>, value: &str) {
+    let value = value.trim();
+    if value.len() >= 4 {
+        needles.push(value.to_owned());
     }
 }
 
@@ -2041,6 +2383,7 @@ fn map_runtime_error(error: ConfigRuntimeError) -> ConfigServiceError {
             ConfigServiceError::InvalidPayload(error.to_string())
         }
         ConfigRuntimeError::RuntimeNotConfigurable
+        | ConfigRuntimeError::PartialBootstrap
         | ConfigRuntimeError::PeriodicRefresh(_)
         | ConfigRuntimeError::ChangeListener(_) => ConfigServiceError::Apply(error.to_string()),
         ConfigRuntimeError::Storage(error) => ConfigServiceError::Storage(error),
@@ -2067,7 +2410,7 @@ where
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
-    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::time::Duration;
 
     use async_trait::async_trait;
@@ -2086,7 +2429,9 @@ mod tests {
     use crate::mailbox::{Mailbox, MailboxConfig};
     use crate::services::config_runtime::{ConfigRuntimeManager, ProviderExecutorFactory};
 
-    use super::{ConfigNamespace, ConfigService, ConfigServiceError};
+    use super::{
+        ConfigNamespace, ConfigService, ConfigServiceError, TOOLS_NAMESPACE, tool_schema_json,
+    };
 
     struct ImmediateExecutor;
 
@@ -2135,6 +2480,22 @@ mod tests {
         block_lists: AtomicBool,
         list_started: AtomicBool,
         release_lists: Notify,
+    }
+
+    struct FailingModelDeleteConfigStore {
+        inner: Arc<awaken_stores::InMemoryStore>,
+        fail_model_delete_call: usize,
+        model_delete_calls: AtomicUsize,
+    }
+
+    impl FailingModelDeleteConfigStore {
+        fn new(inner: Arc<awaken_stores::InMemoryStore>, fail_model_delete_call: usize) -> Self {
+            Self {
+                inner,
+                fail_model_delete_call,
+                model_delete_calls: AtomicUsize::new(0),
+            }
+        }
     }
 
     impl BlockingConfigStore {
@@ -2205,6 +2566,88 @@ mod tests {
         }
     }
 
+    #[async_trait]
+    impl ConfigStore for FailingModelDeleteConfigStore {
+        async fn get(
+            &self,
+            namespace: &str,
+            id: &str,
+        ) -> Result<Option<Value>, awaken_contract::contract::storage::StorageError> {
+            ConfigStore::get(self.inner.as_ref(), namespace, id).await
+        }
+
+        async fn list(
+            &self,
+            namespace: &str,
+            offset: usize,
+            limit: usize,
+        ) -> Result<Vec<(String, Value)>, awaken_contract::contract::storage::StorageError>
+        {
+            ConfigStore::list(self.inner.as_ref(), namespace, offset, limit).await
+        }
+
+        async fn put(
+            &self,
+            namespace: &str,
+            id: &str,
+            value: &Value,
+        ) -> Result<(), awaken_contract::contract::storage::StorageError> {
+            ConfigStore::put(self.inner.as_ref(), namespace, id, value).await
+        }
+
+        async fn delete(
+            &self,
+            namespace: &str,
+            id: &str,
+        ) -> Result<(), awaken_contract::contract::storage::StorageError> {
+            ConfigStore::delete(self.inner.as_ref(), namespace, id).await
+        }
+
+        async fn put_if_absent(
+            &self,
+            namespace: &str,
+            id: &str,
+            value: &Value,
+        ) -> Result<(), awaken_contract::contract::storage::StorageError> {
+            ConfigStore::put_if_absent(self.inner.as_ref(), namespace, id, value).await
+        }
+
+        async fn put_if_revision(
+            &self,
+            namespace: &str,
+            id: &str,
+            value: &Value,
+            expected_revision: u64,
+        ) -> Result<(), awaken_contract::contract::storage::StorageError> {
+            ConfigStore::put_if_revision(
+                self.inner.as_ref(),
+                namespace,
+                id,
+                value,
+                expected_revision,
+            )
+            .await
+        }
+
+        async fn delete_if_revision(
+            &self,
+            namespace: &str,
+            id: &str,
+            expected_revision: u64,
+        ) -> Result<(), awaken_contract::contract::storage::StorageError> {
+            if namespace == ConfigNamespace::Models.as_str() {
+                let call = self.model_delete_calls.fetch_add(1, Ordering::SeqCst) + 1;
+                if call == self.fail_model_delete_call {
+                    return Err(awaken_contract::contract::storage::StorageError::Io(
+                        format!("forced model delete failure for {id}"),
+                    ));
+                }
+            }
+            ConfigStore::delete_if_revision(self.inner.as_ref(), namespace, id, expected_revision)
+                .await
+        }
+    }
+
     fn bootstrap_agent() -> AgentSpec {
         AgentSpec {
             id: "bootstrap".into(),
@@ -2245,8 +2688,6 @@ mod tests {
                     id: "bootstrap".into(),
                     provider_id: "bootstrap".into(),
                     upstream_model: "bootstrap-model".into(),
-                    created_at: None,
-                    updated_at: None,
                 }),
                 BuiltinSpec::agent(bootstrap_agent()),
             ],
@@ -2321,7 +2762,7 @@ mod tests {
             async move {
                 let service = ConfigService::new(&state).expect("config service");
                 service
-                    .create(
+                    .create_with_headers(
                         ConfigNamespace::Providers,
                         json!({
                             "id": "serialized",
@@ -2410,7 +2851,7 @@ mod tests {
 
         let service = ConfigService::new(&state).expect("config service");
         let error = service
-            .create(
+            .create_with_headers(
                 ConfigNamespace::Providers,
                 json!({
                     "id": "missing-manager",
@@ -2433,7 +2874,7 @@ mod tests {
 
         // Create a model that references provider "bootstrap"
         service
-            .create(
+            .create_with_headers(
                 ConfigNamespace::Models,
                 json!({
                     "id": "model-ref-bootstrap",
@@ -2466,7 +2907,7 @@ mod tests {
 
         // Create an agent referencing the bootstrap model
         service
-            .create(
+            .create_with_headers(
                 ConfigNamespace::Agents,
                 json!({
                     "id": "agent-ref-bootstrap",
@@ -2490,6 +2931,203 @@ mod tests {
         for d in &dependents {
             assert_eq!(d.namespace, "agents");
         }
+    }
+
+    #[tokio::test]
+    async fn find_dependents_model_uses_effective_agent_model_override() {
+        let config_store = Arc::new(awaken_stores::InMemoryStore::new());
+        let (state, _manager) = build_state(config_store.clone()).await;
+        let service = ConfigService::new(&state).expect("config service");
+
+        service
+            .create_with_headers(
+                ConfigNamespace::Providers,
+                json!({ "id": "prov-b", "adapter": "stub" }),
+                &axum::http::HeaderMap::new(),
+            )
+            .await
+            .expect("create provider-b");
+        service
+            .create_with_headers(
+                ConfigNamespace::Models,
+                json!({
+                    "id": "model-b",
+                    "provider_id": "prov-b",
+                    "upstream_model": "gpt-4"
+                }),
+                &axum::http::HeaderMap::new(),
+            )
+            .await
+            .expect("create model-b");
+
+        let raw = ConfigStore::get(config_store.as_ref(), "agents", "bootstrap")
+            .await
+            .expect("read bootstrap agent")
+            .expect("bootstrap agent exists");
+        let mut record = awaken_contract::ConfigRecord::<AgentSpec>::from_value(raw)
+            .expect("parse bootstrap agent record");
+        record.meta.user_overrides = Some(json!({ "model_id": "model-b" }));
+        ConfigStore::put(
+            config_store.as_ref(),
+            "agents",
+            "bootstrap",
+            &record.to_value().expect("serialize bootstrap override"),
+        )
+        .await
+        .expect("write bootstrap override");
+
+        let effective_deps = service
+            .find_dependents(ConfigNamespace::Models, "model-b")
+            .await
+            .expect("find effective model dependents");
+        assert!(effective_deps.iter().any(|dep| dep.id == "bootstrap"));
+
+        let base_deps = service
+            .find_dependents(ConfigNamespace::Models, "bootstrap")
+            .await
+            .expect("find base model dependents");
+        assert!(!base_deps.iter().any(|dep| dep.id == "bootstrap"));
+
+        let preview = service
+            .preview_remove_provider("prov-b")
+            .await
+            .expect("preview provider removal");
+        assert_eq!(preview.model_ids, vec!["model-b"]);
+        assert_eq!(preview.agent_ids, vec!["bootstrap"]);
+    }
+
+    #[tokio::test]
+    async fn find_dependents_model_ignores_effective_remote_endpoint_agents() {
+        let config_store = Arc::new(awaken_stores::InMemoryStore::new());
+        let (state, _manager) = build_state(config_store.clone()).await;
+        let service = ConfigService::new(&state).expect("config service");
+
+        let raw = ConfigStore::get(config_store.as_ref(), "agents", "bootstrap")
+            .await
+            .expect("read bootstrap agent")
+            .expect("bootstrap agent exists");
+        let mut record = awaken_contract::ConfigRecord::<AgentSpec>::from_value(raw)
+            .expect("parse bootstrap agent record");
+        record.meta.user_overrides = Some(json!({
+            "endpoint": {
+                "base_url": "http://remote-agent.example/"
+            }
+        }));
+        ConfigStore::put(
+            config_store.as_ref(),
+            "agents",
+            "bootstrap",
+            &record.to_value().expect("serialize endpoint override"),
+        )
+        .await
+        .expect("write endpoint override");
+
+        let dependents = service
+            .find_dependents(ConfigNamespace::Models, "bootstrap")
+            .await
+            .expect("find model dependents");
+        assert!(!dependents.iter().any(|dep| dep.id == "bootstrap"));
+    }
+
+    #[tokio::test]
+    async fn provider_removal_preview_ignores_effective_remote_endpoint_agents() {
+        let config_store = Arc::new(awaken_stores::InMemoryStore::new());
+        let (state, _manager) = build_state(config_store.clone()).await;
+        let service = ConfigService::new(&state).expect("config service");
+
+        service
+            .create_with_headers(
+                ConfigNamespace::Providers,
+                json!({ "id": "prov-remote", "adapter": "stub" }),
+                &axum::http::HeaderMap::new(),
+            )
+            .await
+            .expect("create provider");
+        service
+            .create_with_headers(
+                ConfigNamespace::Models,
+                json!({
+                    "id": "model-remote",
+                    "provider_id": "prov-remote",
+                    "upstream_model": "gpt-4"
+                }),
+                &axum::http::HeaderMap::new(),
+            )
+            .await
+            .expect("create model");
+        service
+            .create_with_headers(
+                ConfigNamespace::Agents,
+                json!({
+                    "id": "agent-remote",
+                    "model_id": "model-remote",
+                    "system_prompt": "remote",
+                    "max_rounds": 1,
+                    "endpoint": {
+                        "base_url": "http://remote-agent.example/"
+                    }
+                }),
+                &axum::http::HeaderMap::new(),
+            )
+            .await
+            .expect("create remote endpoint agent");
+
+        let preview = service
+            .preview_remove_provider("prov-remote")
+            .await
+            .expect("preview provider removal");
+        assert_eq!(preview.model_ids, vec!["model-remote"]);
+        assert!(
+            preview.agent_ids.is_empty(),
+            "remote endpoint agents must not block provider model cascade"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_provider_redacts_provider_secrets_from_error() {
+        let config_store = Arc::new(awaken_stores::InMemoryStore::new());
+        let (state, _manager) = build_state(config_store.clone()).await;
+        let service = ConfigService::new(&state).expect("config service");
+
+        let secret = "sk-provider-test-secret-redaction";
+        let mut headers = serde_json::Map::new();
+        headers.insert(format!("{secret} invalid"), json!("header-value"));
+        let mut adapter_options = std::collections::BTreeMap::new();
+        adapter_options.insert("headers".to_string(), Value::Object(headers));
+        let record = awaken_contract::ConfigRecord {
+            spec: ProviderSpec {
+                id: "leaky-provider".into(),
+                adapter: "openai".into(),
+                api_key: Some(secret.to_string().into()),
+                adapter_options,
+                ..Default::default()
+            },
+            meta: awaken_contract::RecordMeta::new_user(),
+        };
+        ConfigStore::put(
+            config_store.as_ref(),
+            "providers",
+            "leaky-provider",
+            &record.to_value().expect("serialize provider"),
+        )
+        .await
+        .expect("write provider");
+
+        let result = service
+            .test_provider("leaky-provider")
+            .await
+            .expect("test provider");
+
+        assert!(!result.ok);
+        let error = result.error.expect("provider test error");
+        assert!(
+            !error.contains(secret),
+            "provider preflight error leaked secret: {error}"
+        );
+        assert!(
+            error.contains("***"),
+            "provider preflight error should include a redaction marker: {error}"
+        );
     }
 
     #[tokio::test]
@@ -2519,7 +3157,7 @@ mod tests {
 
         // Create a second provider and a model referencing it
         service
-            .create(
+            .create_with_headers(
                 ConfigNamespace::Providers,
                 json!({ "id": "prov-b", "adapter": "stub" }),
                 &axum::http::HeaderMap::new(),
@@ -2528,7 +3166,7 @@ mod tests {
             .expect("create provider-b");
 
         service
-            .create(
+            .create_with_headers(
                 ConfigNamespace::Models,
                 json!({
                     "id": "model-b",
@@ -2541,7 +3179,7 @@ mod tests {
             .expect("create model-b");
 
         let err = service
-            .delete(
+            .delete_with_options(
                 ConfigNamespace::Providers,
                 "prov-b",
                 false,
@@ -2551,19 +3189,19 @@ mod tests {
             .expect_err("should be blocked");
 
         assert!(
-            matches!(err, ConfigServiceError::Blocked { ref used_by } if !used_by.is_empty()),
-            "expected Blocked error"
+            matches!(err, ConfigServiceError::Conflict(ref message) if message.contains("model-b")),
+            "expected dependency conflict, got {err:?}"
         );
     }
 
     #[tokio::test]
-    async fn delete_with_force_removes_despite_dependents() {
+    async fn delete_with_force_cascades_unused_provider_models() {
         let config_store = Arc::new(awaken_stores::InMemoryStore::new());
         let (state, _manager) = build_state(config_store.clone()).await;
         let service = ConfigService::new(&state).expect("config service");
 
         service
-            .create(
+            .create_with_headers(
                 ConfigNamespace::Providers,
                 json!({ "id": "prov-c", "adapter": "stub" }),
                 &axum::http::HeaderMap::new(),
@@ -2572,7 +3210,7 @@ mod tests {
             .expect("create provider-c");
 
         service
-            .create(
+            .create_with_headers(
                 ConfigNamespace::Models,
                 json!({
                     "id": "model-c",
@@ -2584,9 +3222,8 @@ mod tests {
             .await
             .expect("create model-c");
 
-        // Force delete should succeed even with dependents
         service
-            .delete(
+            .delete_with_options(
                 ConfigNamespace::Providers,
                 "prov-c",
                 true,
@@ -2594,6 +3231,130 @@ mod tests {
             )
             .await
             .expect("force delete should succeed");
+
+        assert!(
+            config_store
+                .get(ConfigNamespace::Models.as_str(), "model-c")
+                .await
+                .unwrap()
+                .is_none(),
+            "provider force delete must remove model bindings that point to it"
+        );
+    }
+
+    #[tokio::test]
+    async fn delete_with_force_rolls_back_cascade_when_model_delete_fails() {
+        let raw_store = Arc::new(awaken_stores::InMemoryStore::new());
+        let failing_store = Arc::new(FailingModelDeleteConfigStore::new(raw_store.clone(), 2));
+        let config_store = failing_store.clone() as Arc<dyn ConfigStore>;
+        let (state, _manager) = build_state(config_store).await;
+        let service = ConfigService::new(&state).expect("config service");
+
+        service
+            .create_with_headers(
+                ConfigNamespace::Providers,
+                json!({ "id": "prov-e", "adapter": "stub" }),
+                &axum::http::HeaderMap::new(),
+            )
+            .await
+            .expect("create provider-e");
+
+        for model_id in ["model-e-a", "model-e-b"] {
+            service
+                .create_with_headers(
+                    ConfigNamespace::Models,
+                    json!({
+                        "id": model_id,
+                        "provider_id": "prov-e",
+                        "upstream_model": "gpt-4"
+                    }),
+                    &axum::http::HeaderMap::new(),
+                )
+                .await
+                .expect("create provider model");
+        }
+
+        let err = service
+            .delete_with_options(
+                ConfigNamespace::Providers,
+                "prov-e",
+                true,
+                &axum::http::HeaderMap::new(),
+            )
+            .await
+            .expect_err("forced model delete failure must reject the delete");
+        assert!(err.to_string().contains("forced model delete failure"));
+
+        for (namespace, id) in [
+            (ConfigNamespace::Providers.as_str(), "prov-e"),
+            (ConfigNamespace::Models.as_str(), "model-e-a"),
+            (ConfigNamespace::Models.as_str(), "model-e-b"),
+        ] {
+            assert!(
+                ConfigStore::get(raw_store.as_ref(), namespace, id)
+                    .await
+                    .expect("read after rollback")
+                    .is_some(),
+                "{namespace}/{id} should be restored after cascade failure"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn delete_provider_with_force_blocks_when_agents_use_provider_models() {
+        let config_store = Arc::new(awaken_stores::InMemoryStore::new());
+        let (state, _manager) = build_state(config_store.clone()).await;
+        let service = ConfigService::new(&state).expect("config service");
+
+        service
+            .create_with_headers(
+                ConfigNamespace::Providers,
+                json!({ "id": "prov-d", "adapter": "stub" }),
+                &axum::http::HeaderMap::new(),
+            )
+            .await
+            .expect("create provider-d");
+
+        service
+            .create_with_headers(
+                ConfigNamespace::Models,
+                json!({
+                    "id": "model-d",
+                    "provider_id": "prov-d",
+                    "upstream_model": "gpt-4"
+                }),
+                &axum::http::HeaderMap::new(),
+            )
+            .await
+            .expect("create model-d");
+
+        service
+            .create_with_headers(
+                ConfigNamespace::Agents,
+                json!({
+                    "id": "agent-d",
+                    "model_id": "model-d",
+                    "system_prompt": "test"
+                }),
+                &axum::http::HeaderMap::new(),
+            )
+            .await
+            .expect("create agent-d");
+
+        let err = service
+            .delete_with_options(
+                ConfigNamespace::Providers,
+                "prov-d",
+                true,
+                &axum::http::HeaderMap::new(),
+            )
+            .await
+            .expect_err("force delete must not orphan agent model references");
+
+        assert!(
+            matches!(err, ConfigServiceError::Conflict(ref message) if message.contains("agent-d")),
+            "expected agent dependency blocker, got {err:?}"
+        );
     }
 
     struct FailingProviderFactory;
@@ -2621,7 +3382,7 @@ mod tests {
         let service = ConfigService::new(&state).expect("config service");
 
         service
-            .create(
+            .create_with_headers(
                 ConfigNamespace::Providers,
                 json!({ "id": "rollback-prov", "adapter": "stub" }),
                 &axum::http::HeaderMap::new(),
@@ -2677,7 +3438,7 @@ mod tests {
         // Step 4: attempt DELETE via the failing service — apply_locked will fail.
         let service_failing = ConfigService::new(&state_failing).expect("failing config service");
         let delete_result = service_failing
-            .delete(
+            .delete_with_options(
                 ConfigNamespace::Providers,
                 "rollback-prov",
                 true,
@@ -2716,7 +3477,7 @@ mod tests {
     #[test]
     fn namespace_all_lists_every_variant() {
         let all = ConfigNamespace::all();
-        assert_eq!(all.len(), 5, "exactly five namespaces");
+        assert_eq!(all.len(), 4, "exactly four 0.4-compatible namespaces");
 
         // Each variant must appear exactly once.
         let has = |v: ConfigNamespace| all.iter().filter(|&&x| x == v).count();
@@ -2724,12 +3485,11 @@ mod tests {
         assert_eq!(has(ConfigNamespace::Providers), 1);
         assert_eq!(has(ConfigNamespace::Models), 1);
         assert_eq!(has(ConfigNamespace::McpServers), 1);
-        assert_eq!(has(ConfigNamespace::Tools), 1);
     }
 
     #[test]
     fn namespace_all_matches_builtin_spec_namespace() {
-        use awaken_contract::{BuiltinSpec, McpServerSpec, ToolSpec};
+        use awaken_contract::{BuiltinSpec, McpServerSpec};
 
         for &ns in ConfigNamespace::all() {
             let spec = match ns {
@@ -2748,17 +3508,9 @@ mod tests {
                     id: "x".into(),
                     provider_id: "p".into(),
                     upstream_model: "m".into(),
-                    created_at: None,
-                    updated_at: None,
                 }),
                 ConfigNamespace::McpServers => BuiltinSpec::McpServer(McpServerSpec {
                     id: "x".into(),
-                    ..Default::default()
-                }),
-                ConfigNamespace::Tools => BuiltinSpec::Tool(ToolSpec {
-                    id: "x".into(),
-                    name: "x".into(),
-                    description: "x".into(),
                     ..Default::default()
                 }),
             };
@@ -2793,7 +3545,7 @@ mod tests {
 
             let service = ConfigService::new(&state).expect("service");
             service
-                .create(
+                .create_with_headers(
                     ConfigNamespace::Providers,
                     json!({ "id": "audit-prov", "adapter": "stub" }),
                     &HeaderMap::new(),
@@ -2818,7 +3570,7 @@ mod tests {
 
             let service = ConfigService::new(&state).expect("service");
             service
-                .create(
+                .create_with_headers(
                     ConfigNamespace::Agents,
                     json!({ "id": "upd-agent", "model_id": "bootstrap", "system_prompt": "v1", "max_rounds": 1 }),
                     &HeaderMap::new(),
@@ -2827,7 +3579,7 @@ mod tests {
                 .expect("create");
 
             service
-                .update(
+                .update_with_headers(
                     ConfigNamespace::Agents,
                     "upd-agent",
                     json!({ "id": "upd-agent", "model_id": "bootstrap", "system_prompt": "v2", "max_rounds": 1 }),
@@ -2858,7 +3610,7 @@ mod tests {
 
             let service = ConfigService::new(&state).expect("service");
             service
-                .create(
+                .create_with_headers(
                     ConfigNamespace::Agents,
                     json!({ "id": "del-agent", "model_id": "bootstrap", "system_prompt": "hi", "max_rounds": 1 }),
                     &HeaderMap::new(),
@@ -2867,7 +3619,7 @@ mod tests {
                 .expect("create");
 
             service
-                .delete(
+                .delete_with_options(
                     ConfigNamespace::Agents,
                     "del-agent",
                     false,
@@ -2897,6 +3649,76 @@ mod tests {
         }
 
         #[tokio::test]
+        async fn provider_force_delete_emits_audit_for_cascaded_model_delete() {
+            let config_store = Arc::new(awaken_stores::InMemoryStore::new());
+            let (state, _manager) = build_state(config_store.clone()).await;
+            let audit_logger = Arc::new(AuditLogger::new(config_store.clone()));
+            let state = state.with_audit_log(audit_logger.clone());
+
+            let service = ConfigService::new(&state).expect("service");
+            service
+                .create_with_headers(
+                    ConfigNamespace::Providers,
+                    json!({ "id": "audit-cascade-prov", "adapter": "stub" }),
+                    &HeaderMap::new(),
+                )
+                .await
+                .expect("create provider");
+            service
+                .create_with_headers(
+                    ConfigNamespace::Models,
+                    json!({
+                        "id": "audit-cascade-model",
+                        "provider_id": "audit-cascade-prov",
+                        "upstream_model": "gpt-4"
+                    }),
+                    &HeaderMap::new(),
+                )
+                .await
+                .expect("create model");
+
+            service
+                .delete_with_options(
+                    ConfigNamespace::Providers,
+                    "audit-cascade-prov",
+                    true,
+                    &HeaderMap::new(),
+                )
+                .await
+                .expect("force delete provider");
+
+            let page = audit_logger
+                .query(AuditQuery {
+                    action: Some(AuditAction::Delete),
+                    ..Default::default()
+                })
+                .await
+                .unwrap();
+            let mut resources = page
+                .items
+                .iter()
+                .map(|event| event.resource.as_str())
+                .collect::<Vec<_>>();
+            resources.sort_unstable();
+            assert_eq!(
+                resources,
+                vec!["models/audit-cascade-model", "providers/audit-cascade-prov"]
+            );
+            for event in page.items {
+                assert!(
+                    event.before.is_some(),
+                    "delete audit for {} must include before payload",
+                    event.resource
+                );
+                assert!(
+                    event.after.is_none(),
+                    "delete audit for {} must omit after payload",
+                    event.resource
+                );
+            }
+        }
+
+        #[tokio::test]
         async fn config_write_succeeds_even_when_audit_store_separate_and_no_logger() {
             // Verify that without an audit logger, create still succeeds.
             let config_store = Arc::new(awaken_stores::InMemoryStore::new());
@@ -2905,7 +3727,7 @@ mod tests {
 
             let service = ConfigService::new(&state).expect("service");
             service
-                .create(
+                .create_with_headers(
                     ConfigNamespace::Agents,
                     json!({ "id": "no-audit-agent", "model_id": "bootstrap", "system_prompt": "hi", "max_rounds": 1 }),
                     &HeaderMap::new(),
@@ -2935,7 +3757,7 @@ mod tests {
         let service = ConfigService::new(&state).expect("service");
 
         service
-            .create(
+            .create_with_headers(
                 ConfigNamespace::Agents,
                 json!({
                     "id": "env-agent",
@@ -2987,7 +3809,7 @@ mod tests {
         let service = ConfigService::new(&state).expect("service");
 
         service
-            .create(
+            .create_with_headers(
                 ConfigNamespace::Agents,
                 json!({
                     "id": "ts-agent",
@@ -3015,7 +3837,7 @@ mod tests {
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
 
         service
-            .update(
+            .update_with_headers(
                 ConfigNamespace::Agents,
                 "ts-agent",
                 json!({
@@ -3066,7 +3888,7 @@ mod tests {
 
         let service = ConfigService::new(&state).expect("service");
         service
-            .create(
+            .create_with_headers(
                 ConfigNamespace::Agents,
                 json!({
                     "id": "audit-env-agent",
@@ -3102,81 +3924,20 @@ mod tests {
     }
 
     #[test]
-    fn config_namespace_parses_tools() {
-        assert_eq!(
-            ConfigNamespace::parse("tools").unwrap(),
-            ConfigNamespace::Tools
-        );
-        assert_eq!(ConfigNamespace::Tools.as_str(), "tools");
+    fn config_namespace_rejects_tools_to_keep_public_enum_compatible() {
+        assert!(ConfigNamespace::parse("tools").is_err());
     }
 
     #[test]
-    fn config_namespace_all_includes_tools() {
-        assert!(ConfigNamespace::ALL.contains(&ConfigNamespace::Tools));
+    fn config_namespace_all_excludes_tools_to_keep_public_enum_compatible() {
+        assert_eq!(ConfigNamespace::ALL.len(), 4);
     }
 
     #[test]
     fn config_namespace_schema_for_tools_is_object() {
-        let schema = ConfigNamespace::Tools.schema_json().expect("schema");
+        let schema = tool_schema_json().expect("schema");
         // schemars 0.8: top-level object schema shape
         assert!(schema.get("$defs").is_some() || schema.get("type").is_some());
-    }
-
-    #[tokio::test]
-    async fn tools_namespace_rejects_create() {
-        let config_store = Arc::new(awaken_stores::InMemoryStore::new());
-        let (state, _manager) = build_state(config_store).await;
-        let service = ConfigService::new(&state).expect("config service");
-        let body = json!({"id": "x", "name": "x", "description": "x"});
-        let err = service
-            .create(ConfigNamespace::Tools, body, &axum::http::HeaderMap::new())
-            .await
-            .expect_err("tools namespace must reject create");
-        match err {
-            ConfigServiceError::InvalidPayload(msg) => assert!(msg.contains("tools")),
-            other => panic!("expected InvalidPayload, got {other:?}"),
-        }
-    }
-
-    #[tokio::test]
-    async fn tools_namespace_rejects_update() {
-        let config_store = Arc::new(awaken_stores::InMemoryStore::new());
-        let (state, _manager) = build_state(config_store).await;
-        let service = ConfigService::new(&state).expect("config service");
-        let body = json!({"id": "x", "name": "x", "description": "x"});
-        let err = service
-            .update(
-                ConfigNamespace::Tools,
-                "x",
-                body,
-                &axum::http::HeaderMap::new(),
-            )
-            .await
-            .expect_err("tools namespace must reject update");
-        match err {
-            ConfigServiceError::InvalidPayload(msg) => assert!(msg.contains("tools")),
-            other => panic!("expected InvalidPayload, got {other:?}"),
-        }
-    }
-
-    #[tokio::test]
-    async fn tools_namespace_rejects_delete() {
-        let config_store = Arc::new(awaken_stores::InMemoryStore::new());
-        let (state, _manager) = build_state(config_store).await;
-        let service = ConfigService::new(&state).expect("config service");
-        let err = service
-            .delete(
-                ConfigNamespace::Tools,
-                "x",
-                false,
-                &axum::http::HeaderMap::new(),
-            )
-            .await
-            .expect_err("tools namespace must reject delete");
-        match err {
-            ConfigServiceError::InvalidPayload(msg) => assert!(msg.contains("tools")),
-            other => panic!("expected InvalidPayload, got {other:?}"),
-        }
     }
 
     // ── patch_tool_overrides helpers ──────────────────────────────────────────
@@ -3256,8 +4017,6 @@ mod tests {
                     id: "bootstrap".into(),
                     provider_id: "bootstrap".into(),
                     upstream_model: "bootstrap-model".into(),
-                    created_at: None,
-                    updated_at: None,
                 }),
                 BuiltinSpec::agent(bootstrap_agent()),
             ],
@@ -3366,7 +4125,7 @@ mod tests {
             .await
             .expect("patch ok");
         let value = service
-            .get(ConfigNamespace::Tools, "echo")
+            .get_tool("echo")
             .await
             .expect("get ok")
             .expect("present");
@@ -3493,7 +4252,7 @@ mod tests {
         let (service, _audit) = build_test_service_with_tool("echo", "stock").await;
 
         let meta_before = service
-            .get_meta(ConfigNamespace::Tools, "echo")
+            .get_tool_meta("echo")
             .await
             .expect("get_meta")
             .expect("present");
@@ -3512,7 +4271,7 @@ mod tests {
             .expect("first patch ok");
 
         let meta_after = service
-            .get_meta(ConfigNamespace::Tools, "echo")
+            .get_tool_meta("echo")
             .await
             .expect("get_meta")
             .expect("present");
@@ -3561,18 +4320,13 @@ mod tests {
 
         stale_record.spec.description = "stale".into();
         let err = service
-            .cas_put_record(
-                ConfigNamespace::Tools,
-                "echo",
-                &mut stale_record,
-                stale_expected,
-            )
+            .cas_put_record_in_namespace(TOOLS_NAMESPACE, "echo", &mut stale_record, stale_expected)
             .await
             .expect_err("stale write must conflict");
         assert!(matches!(err, ConfigServiceError::Conflict(_)));
 
         let meta_final = service
-            .get_meta(ConfigNamespace::Tools, "echo")
+            .get_tool_meta("echo")
             .await
             .expect("get_meta final")
             .expect("present final");
@@ -3632,8 +4386,6 @@ mod tests {
                     id: "bootstrap".into(),
                     provider_id: "bootstrap".into(),
                     upstream_model: "bootstrap-model".into(),
-                    created_at: None,
-                    updated_at: None,
                 }),
                 BuiltinSpec::agent(bootstrap_agent()),
             ],
