@@ -81,6 +81,7 @@ export function AdminSidebar({
                   key={item.id}
                   item={item}
                   health={pickHealth(health, item.healthSource)}
+                  onNavigate={onCloseDrawer}
                 />
               ))}
             </div>
@@ -120,9 +121,11 @@ export function AdminSidebar({
 function SidebarLink({
   item,
   health,
+  onNavigate,
 }: {
   item: NavItem;
   health: { count?: number; tone: "ok" | "warn" | "error" | "neutral"; hint?: string };
+  onNavigate?: () => void;
 }) {
   const { t } = useTranslation();
   const showHealth = item.healthSource !== undefined && health.tone !== "neutral";
@@ -132,6 +135,7 @@ function SidebarLink({
     <NavLink
       to={item.path}
       end={item.end}
+      onClick={onNavigate}
       className={({ isActive }) =>
         [
           "group relative flex min-w-0 items-center gap-2 rounded-md px-3 py-2 text-sm transition-colors",

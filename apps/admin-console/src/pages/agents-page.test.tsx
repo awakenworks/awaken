@@ -1,16 +1,13 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
-import {
-  RouterProvider,
-  createMemoryRouter,
-  createRoutesFromElements,
-} from "react-router";
+import { RouterProvider, createMemoryRouter, createRoutesFromElements } from "react-router";
 import { appRoutes } from "../app";
 import { AuthProvider } from "../components/auth-provider";
 import { ConfirmDialogProvider } from "../components/confirm-dialog";
 import { ToastProvider } from "../components/toast-provider";
 import { __resetAuthInterceptorForTesting } from "../lib/auth-interceptor";
+import { withQueryClient } from "../test/query";
 
 function agentItem(id: string, modelId = "bootstrap") {
   return {
@@ -33,9 +30,7 @@ function metaItem(
     id,
     meta: {
       source:
-        sourceKind === "builtin"
-          ? { kind: "builtin", binary_version: "test" }
-          : { kind: "user" },
+        sourceKind === "builtin" ? { kind: "builtin", binary_version: "test" } : { kind: "user" },
       hidden: false,
       user_overrides: userOverrides ?? null,
       created_at: 0,
@@ -102,13 +97,15 @@ function renderAgentsPage() {
     initialEntries: ["/agents"],
   });
   render(
-    <ToastProvider>
-      <ConfirmDialogProvider>
-        <AuthProvider>
-          <RouterProvider router={router} />
-        </AuthProvider>
-      </ConfirmDialogProvider>
-    </ToastProvider>,
+    withQueryClient(
+      <ToastProvider>
+        <ConfirmDialogProvider>
+          <AuthProvider>
+            <RouterProvider router={router} />
+          </AuthProvider>
+        </ConfirmDialogProvider>
+      </ToastProvider>,
+    ),
   );
 }
 
@@ -126,10 +123,7 @@ describe("AgentsPage source badges", () => {
   it("shows Built-in badge for builtin agent", async () => {
     vi.stubGlobal(
       "fetch",
-      buildFetchMock(
-        [agentItem("builtin-agent")],
-        [metaItem("builtin-agent", "builtin")],
-      ),
+      buildFetchMock([agentItem("builtin-agent")], [metaItem("builtin-agent", "builtin")]),
     );
 
     renderAgentsPage();
@@ -160,10 +154,7 @@ describe("AgentsPage source badges", () => {
   it("shows User-defined badge for user-created agent", async () => {
     vi.stubGlobal(
       "fetch",
-      buildFetchMock(
-        [agentItem("user-agent")],
-        [metaItem("user-agent", "user")],
-      ),
+      buildFetchMock([agentItem("user-agent")], [metaItem("user-agent", "user")]),
     );
 
     renderAgentsPage();

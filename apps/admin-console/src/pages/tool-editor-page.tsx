@@ -1,12 +1,10 @@
 import { useEffect, useState } from "react";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useParams, Link } from "react-router";
 import { useTranslation } from "react-i18next";
-import {
-  type ToolSpec,
-  type RecordMeta,
-  configApi,
-  deriveSourceState,
-} from "@/lib/config-api";
+import { configResourceApi, deriveSourceState, toolsApi, type ToolSpec } from "@/lib/api";
+import { useConfigMetaQuery, useConfigRecordQuery } from "@/lib/query/hooks/config";
+import { qk } from "@/lib/query/keys";
 import { adminRoutes } from "@/lib/routes";
 
 const SOFT_WARN_LEN = 400;
@@ -14,26 +12,49 @@ const SOFT_WARN_LEN = 400;
 export function ToolEditorPage() {
   const { t } = useTranslation();
   const { id = "" } = useParams();
+  const queryClient = useQueryClient();
 
-  const [builtin, setBuiltin] = useState<ToolSpec | null>(null);
-  const [meta, setMeta] = useState<RecordMeta | null>(null);
   const [draft, setDraft] = useState<string>("");
-  const [saving, setSaving] = useState(false);
+  const toolQuery = useConfigRecordQuery<ToolSpec>("tools", id);
+  const metaQuery = useConfigMetaQuery("tools", id);
 
   useEffect(() => {
-    let mounted = true;
-    Promise.all([configApi.getTool(id), configApi.getMeta("tools", id)]).then(
-      ([spec, m]) => {
-        if (!mounted) return;
-        setBuiltin(spec);
-        setMeta(m);
-        setDraft(spec.description);
-      },
-    );
-    return () => {
-      mounted = false;
-    };
-  }, [id]);
+    if (toolQuery.data) {
+      setDraft(toolQuery.data.description);
+    }
+  }, [toolQuery.data]);
+
+  const patchMutation = useMutation({
+    mutationFn: async (description: string) => {
+      const next = await toolsApi.patchToolOverrides(id, { description });
+      const nextMeta = await configResourceApi.getMeta("tools", id);
+      return { next, nextMeta };
+    },
+    onSuccess: ({ next, nextMeta }) => {
+      queryClient.setQueryData(qk.config.get("tools", id), next);
+      queryClient.setQueryData(qk.config.meta("tools", id), nextMeta);
+      void queryClient.invalidateQueries({ queryKey: qk.config.list("tools") });
+      void queryClient.invalidateQueries({ queryKey: qk.config.listMeta("tools") });
+    },
+  });
+
+  const clearMutation = useMutation({
+    mutationFn: async () => {
+      const next = await toolsApi.clearToolOverrides(id);
+      const nextMeta = await configResourceApi.getMeta("tools", id);
+      return { next, nextMeta };
+    },
+    onSuccess: ({ next, nextMeta }) => {
+      queryClient.setQueryData(qk.config.get("tools", id), next);
+      queryClient.setQueryData(qk.config.meta("tools", id), nextMeta);
+      void queryClient.invalidateQueries({ queryKey: qk.config.list("tools") });
+      void queryClient.invalidateQueries({ queryKey: qk.config.listMeta("tools") });
+    },
+  });
+
+  const builtin = toolQuery.data ?? null;
+  const meta = metaQuery.data ?? null;
+  const saving = patchMutation.isPending || clearMutation.isPending;
 
   if (!builtin || !meta) return <p className="p-6 text-fg-soft">Loading…</p>;
 
@@ -42,28 +63,11 @@ export function ToolEditorPage() {
 
   async function onSave() {
     if (!dirty) return;
-    setSaving(true);
-    try {
-      const next = await configApi.patchToolOverrides(id, { description: draft });
-      const nextMeta = await configApi.getMeta("tools", id);
-      setBuiltin(next);
-      setMeta(nextMeta);
-    } finally {
-      setSaving(false);
-    }
+    await patchMutation.mutateAsync(draft);
   }
 
   async function onRevert() {
-    setSaving(true);
-    try {
-      const next = await configApi.clearToolOverrides(id);
-      const nextMeta = await configApi.getMeta("tools", id);
-      setBuiltin(next);
-      setDraft(next.description);
-      setMeta(nextMeta);
-    } finally {
-      setSaving(false);
-    }
+    await clearMutation.mutateAsync();
   }
 
   return (
@@ -81,9 +85,7 @@ export function ToolEditorPage() {
           <h2 className="text-xs font-medium uppercase text-fg-soft">
             {t("tools.editor.builtin", { defaultValue: "Built-in" })}
           </h2>
-          <p className="mt-2 whitespace-pre-wrap text-sm text-fg-soft">
-            {builtin.description}
-          </p>
+          <p className="mt-2 whitespace-pre-wrap text-sm text-fg-soft">{builtin.description}</p>
         </div>
         <div className="border border-line rounded p-3">
           <h2 className="text-xs font-medium uppercase text-fg-soft">
@@ -95,9 +97,7 @@ export function ToolEditorPage() {
             onChange={(e) => setDraft(e.target.value)}
             disabled={saving}
           />
-          <p className="mt-1 text-[11px] text-fg-faint">
-            {draft.length} chars
-          </p>
+          <p className="mt-1 text-[11px] text-fg-faint">{draft.length} chars</p>
           {overLength && (
             <p className="mt-1 text-[11px] text-state-progress">
               {t("tools.editor.lengthWarning", {

@@ -1,6 +1,6 @@
-import { useEffect, useRef, useState } from "react";
+import { useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { ConfigApiError, configApi } from "@/lib/config-api";
+import { ConfigApiError } from "@/lib/api";
 
 /** Quote a CSV cell per RFC 4180 (double-quote any cell containing , " or \n). */
 function csvCell(v: string): string {
@@ -14,8 +14,10 @@ import {
   type AuditAction,
   type AuditEvent,
   type AuditPage,
+  type AuditQuery,
 } from "@/lib/audit-log";
 import { useAuditFilterUrlState } from "@/lib/list-url-state";
+import { useAuditLogInfiniteQuery } from "@/lib/query/hooks/audit";
 
 const ACTION_OPTIONS: Array<{ value: AuditAction | ""; label: string }> = [
   { value: "", label: "All actions" },
@@ -36,64 +38,50 @@ const ACTION_BADGE: Record<AuditAction, string> = {
   restore: "bg-purple-100 text-purple-800",
 };
 
+type AuditFilterState = Omit<ReturnType<typeof useAuditFilterUrlState>, "apply">;
+
+function toAuditQuery(filter: AuditFilterState): AuditQuery {
+  return {
+    since: filter.since || undefined,
+    until: filter.until || undefined,
+    action: filter.action || undefined,
+    resource: filter.resource || undefined,
+    actor: filter.actor || undefined,
+  };
+}
+
 export function AuditLogPage() {
   const { t } = useTranslation();
   const { apply, ...filter } = useAuditFilterUrlState();
 
-  const [page, setPage] = useState<AuditPage | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [notConfigured, setNotConfigured] = useState(false);
+  const [submittedFilter, setSubmittedFilter] = useState(filter);
   const [selectedEvent, setSelectedEvent] = useState<AuditEvent | null>(null);
-  const [hasLoaded, setHasLoaded] = useState(false);
+  const auditQuery = useAuditLogInfiniteQuery(toAuditQuery(submittedFilter));
+  const page = useMemo<AuditPage | null>(() => {
+    if (!auditQuery.data) return null;
+    const items = auditQuery.data.pages.flatMap((p) => p.items);
+    const lastPage = auditQuery.data.pages[auditQuery.data.pages.length - 1];
+    return { items, next_cursor: lastPage?.next_cursor };
+  }, [auditQuery.data]);
+  const loading = auditQuery.isFetching;
+  const hasLoaded = auditQuery.data !== undefined;
+  const notConfigured =
+    auditQuery.error instanceof ConfigApiError && auditQuery.error.status === 503;
+  const error =
+    auditQuery.error && !notConfigured
+      ? auditQuery.error instanceof Error
+        ? auditQuery.error.message
+        : String(auditQuery.error)
+      : null;
 
-  async function load(cursor?: string, override?: Partial<typeof filter>) {
-    setLoading(true);
-    setError(null);
-    setNotConfigured(false);
-    const f = { ...filter, ...(override ?? {}) };
-    try {
-      const result = await configApi.auditLog({
-        since: f.since || undefined,
-        until: f.until || undefined,
-        action: f.action || undefined,
-        resource: f.resource || undefined,
-        actor: f.actor || undefined,
-        cursor,
-      });
-      if (cursor) {
-        setPage((prev) => ({
-          items: [...(prev?.items ?? []), ...result.items],
-          next_cursor: result.next_cursor,
-        }));
-      } else {
-        setPage(result);
-      }
-      setHasLoaded(true);
-    } catch (err) {
-      if (err instanceof ConfigApiError && err.status === 503) {
-        setNotConfigured(true);
-      } else {
-        setError(err instanceof Error ? err.message : String(err));
-      }
-    } finally {
-      setLoading(false);
-    }
+  function load(override?: Partial<typeof filter>) {
+    setSubmittedFilter({ ...filter, ...(override ?? {}) });
   }
-
-  const initialLoad = useRef(false);
-  useEffect(() => {
-    if (initialLoad.current) return;
-    initialLoad.current = true;
-    void load();
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
 
   const hasActiveFilters =
     filter.since || filter.until || filter.action || filter.resource || filter.actor;
 
-  const emptyMessage =
-    hasActiveFilters ? t("audit.noMatches") : t("audit.empty");
+  const emptyMessage = hasActiveFilters ? t("audit.noMatches") : t("audit.empty");
 
   function handleExportCsv() {
     if (!page || page.items.length === 0) return;
@@ -123,10 +111,13 @@ export function AuditLogPage() {
     <div className="mx-auto max-w-6xl p-6 md:p-8">
       <header className="mb-4 flex items-baseline justify-between gap-3">
         <div className="flex items-baseline gap-3">
-          <h2 className="text-2xl font-semibold tracking-title-em text-fg-strong">{t("audit.title")}</h2>
+          <h2 className="text-2xl font-semibold tracking-title-em text-fg-strong">
+            {t("audit.title")}
+          </h2>
           {page && (
             <span aria-hidden className="font-mono text-sm text-fg-faint">
-              {page.items.length}{page.next_cursor ? "+" : ""}
+              {page.items.length}
+              {page.next_cursor ? "+" : ""}
             </span>
           )}
         </div>
@@ -209,7 +200,7 @@ export function AuditLogPage() {
 
           <button
             type="button"
-            onClick={() => void load()}
+            onClick={() => load()}
             disabled={loading}
             className="rounded-xl bg-accent px-4 py-2 text-sm font-medium text-accent-text transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
           >
@@ -220,11 +211,15 @@ export function AuditLogPage() {
             <button
               type="button"
               onClick={() => {
-                const empty = { since: "", until: "", action: "" as const, resource: "", actor: "" };
+                const empty = {
+                  since: "",
+                  until: "",
+                  action: "" as const,
+                  resource: "",
+                  actor: "",
+                };
                 apply(empty);
-                // Refetch immediately with explicit empties so the table
-                // doesn't go blank waiting for the next render's stale closure.
-                void load(undefined, empty);
+                load(empty);
               }}
               className="rounded-xl border border-line-strong px-4 py-2 text-sm font-medium text-fg transition hover:bg-soft"
             >
@@ -256,20 +251,13 @@ export function AuditLogPage() {
             <tbody className="divide-y divide-line">
               {page?.items.length === 0 ? (
                 <tr>
-                  <td
-                    colSpan={6}
-                    className="px-4 py-8 text-center text-sm text-fg-soft"
-                  >
+                  <td colSpan={6} className="px-4 py-8 text-center text-sm text-fg-soft">
                     {emptyMessage}
                   </td>
                 </tr>
               ) : (
                 page?.items.map((event) => (
-                  <AuditRow
-                    key={event.id}
-                    event={event}
-                    onView={() => setSelectedEvent(event)}
-                  />
+                  <AuditRow key={event.id} event={event} onView={() => setSelectedEvent(event)} />
                 ))
               )}
             </tbody>
@@ -279,8 +267,8 @@ export function AuditLogPage() {
             <div className="border-t border-line px-4 py-3">
               <button
                 type="button"
-                onClick={() => void load(page.next_cursor)}
-                disabled={loading}
+                onClick={() => void auditQuery.fetchNextPage()}
+                disabled={loading || !auditQuery.hasNextPage}
                 className="text-sm font-medium text-fg transition hover:text-fg-strong disabled:opacity-60"
               >
                 {loading ? "Loading…" : "Load more"}
@@ -296,20 +284,12 @@ export function AuditLogPage() {
         </div>
       )}
 
-      {selectedEvent && (
-        <EventPanel event={selectedEvent} onClose={() => setSelectedEvent(null)} />
-      )}
+      {selectedEvent && <EventPanel event={selectedEvent} onClose={() => setSelectedEvent(null)} />}
     </div>
   );
 }
 
-function AuditRow({
-  event,
-  onView,
-}: {
-  event: AuditEvent;
-  onView: () => void;
-}) {
+function AuditRow({ event, onView }: { event: AuditEvent; onView: () => void }) {
   const actor = formatActor(event.actor);
   const ts = new Date(event.ts);
   const fromAgent = isAgentActor(event.actor);
@@ -317,20 +297,17 @@ function AuditRow({
   return (
     <tr
       className={
-        fromAgent ? "border-l-2 border-agent-stripe bg-agent-tint hover:bg-agent-tint/80" : "hover:bg-soft"
+        fromAgent
+          ? "border-l-2 border-agent-stripe bg-agent-tint hover:bg-agent-tint/80"
+          : "hover:bg-soft"
       }
     >
-      <td className="px-4 py-3 font-mono text-xs text-fg">
-        {ts.toLocaleString()}
-      </td>
+      <td className="px-4 py-3 font-mono text-xs text-fg">{ts.toLocaleString()}</td>
       <td className="px-4 py-3 text-sm text-fg" title={event.actor}>
         <span className="font-mono text-xs">{actor.hash.slice(0, 8)}</span>
         {actor.label && (
           <span
-            className={[
-              "ml-1",
-              fromAgent ? "font-medium text-agent-fg" : "text-fg-soft",
-            ].join(" ")}
+            className={["ml-1", fromAgent ? "font-medium text-agent-fg" : "text-fg-soft"].join(" ")}
           >
             /{actor.label}
           </span>
@@ -349,9 +326,7 @@ function AuditRow({
       <td className="max-w-xs truncate px-4 py-3 font-mono text-xs text-fg-strong">
         {event.resource}
       </td>
-      <td className="max-w-xs truncate px-4 py-3 text-xs text-fg-soft">
-        {summarizeChange(event)}
-      </td>
+      <td className="max-w-xs truncate px-4 py-3 text-xs text-fg-soft">{summarizeChange(event)}</td>
       <td className="px-4 py-3">
         <button
           type="button"
@@ -365,13 +340,7 @@ function AuditRow({
   );
 }
 
-function EventPanel({
-  event,
-  onClose,
-}: {
-  event: AuditEvent;
-  onClose: () => void;
-}) {
+function EventPanel({ event, onClose }: { event: AuditEvent; onClose: () => void }) {
   const actor = formatActor(event.actor);
 
   return (
@@ -434,23 +403,23 @@ function EventPanel({
 
         <div className="grid gap-4 px-6 pb-6 md:grid-cols-2">
           <div>
-            <p className="mb-2 text-xs font-medium uppercase tracking-wide text-fg-soft">
-              Before
-            </p>
+            <p className="mb-2 text-xs font-medium uppercase tracking-wide text-fg-soft">Before</p>
             <pre className="overflow-auto rounded-xl border border-line bg-soft p-3 text-xs leading-relaxed text-fg">
-              {event.before != null
-                ? JSON.stringify(event.before, null, 2)
-                : <span className="text-fg-faint">—</span>}
+              {event.before != null ? (
+                JSON.stringify(event.before, null, 2)
+              ) : (
+                <span className="text-fg-faint">—</span>
+              )}
             </pre>
           </div>
           <div>
-            <p className="mb-2 text-xs font-medium uppercase tracking-wide text-fg-soft">
-              After
-            </p>
+            <p className="mb-2 text-xs font-medium uppercase tracking-wide text-fg-soft">After</p>
             <pre className="overflow-auto rounded-xl border border-line bg-soft p-3 text-xs leading-relaxed text-fg">
-              {event.after != null
-                ? JSON.stringify(event.after, null, 2)
-                : <span className="text-fg-faint">—</span>}
+              {event.after != null ? (
+                JSON.stringify(event.after, null, 2)
+              ) : (
+                <span className="text-fg-faint">—</span>
+              )}
             </pre>
           </div>
         </div>
@@ -459,13 +428,7 @@ function EventPanel({
   );
 }
 
-function Row({
-  label,
-  children,
-}: {
-  label: string;
-  children: React.ReactNode;
-}) {
+function Row({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div className="flex items-baseline gap-3">
       <dt className="w-24 shrink-0 text-xs font-medium text-fg-soft">{label}</dt>

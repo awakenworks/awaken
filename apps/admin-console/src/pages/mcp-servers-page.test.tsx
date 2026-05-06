@@ -1,16 +1,13 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
-import {
-  RouterProvider,
-  createMemoryRouter,
-  createRoutesFromElements,
-} from "react-router";
+import { RouterProvider, createMemoryRouter, createRoutesFromElements } from "react-router";
 import { appRoutes } from "../app";
 import { AuthProvider } from "../components/auth-provider";
 import { ConfirmDialogProvider } from "../components/confirm-dialog";
 import { ToastProvider } from "../components/toast-provider";
 import { __resetAuthInterceptorForTesting } from "../lib/auth-interceptor";
+import { withQueryClient } from "../test/query";
 
 // Minimal MCP server record returned by the list endpoint.
 function mcpServerItem(id: string) {
@@ -26,7 +23,10 @@ function mcpServerItem(id: string) {
   };
 }
 
-function mcpStatusResponse(connected: boolean, tools: Array<{ name: string; description?: string }> = []) {
+function mcpStatusResponse(
+  connected: boolean,
+  tools: Array<{ name: string; description?: string }> = [],
+) {
   return { connected, last_error: connected ? null : "connection refused", tools };
 }
 
@@ -48,12 +48,24 @@ function buildFetchMock(overrides?: {
         ok: true,
         status: 200,
         text: async () =>
-          JSON.stringify({ agents: [], tools: [], plugins: [], skills: [], models: [], providers: [], namespaces: [] }),
+          JSON.stringify({
+            agents: [],
+            tools: [],
+            plugins: [],
+            skills: [],
+            models: [],
+            providers: [],
+            namespaces: [],
+          }),
       };
     }
 
     // list mcp-servers
-    if (href.includes("/v1/config/mcp-servers") && !href.includes("/status") && !href.includes("/restart")) {
+    if (
+      href.includes("/v1/config/mcp-servers") &&
+      !href.includes("/status") &&
+      !href.includes("/restart")
+    ) {
       return {
         ok: true,
         status: 200,
@@ -77,18 +89,19 @@ function buildFetchMock(overrides?: {
 }
 
 function renderMcpPage() {
-  const memRouter = createMemoryRouter(
-    createRoutesFromElements(appRoutes()),
-    { initialEntries: ["/mcp-servers"] },
-  );
+  const memRouter = createMemoryRouter(createRoutesFromElements(appRoutes()), {
+    initialEntries: ["/mcp-servers"],
+  });
   return render(
-    <ToastProvider>
-      <ConfirmDialogProvider>
-        <AuthProvider>
-          <RouterProvider router={memRouter} />
-        </AuthProvider>
-      </ConfirmDialogProvider>
-    </ToastProvider>,
+    withQueryClient(
+      <ToastProvider>
+        <ConfirmDialogProvider>
+          <AuthProvider>
+            <RouterProvider router={memRouter} />
+          </AuthProvider>
+        </ConfirmDialogProvider>
+      </ToastProvider>,
+    ),
   );
 }
 
@@ -134,7 +147,9 @@ describe("MCP servers page — status badge", () => {
   it("shows a loading badge (grey) before status is fetched", async () => {
     // Use a fetch that hangs for status to observe the loading state.
     let resolveStatus!: () => void;
-    const statusPending = new Promise<void>((r) => { resolveStatus = r; });
+    const statusPending = new Promise<void>((r) => {
+      resolveStatus = r;
+    });
 
     const fetchMock = vi.fn(async (url: string | URL | Request) => {
       const href = typeof url === "string" ? url : url instanceof URL ? url.href : url.url;
@@ -144,7 +159,15 @@ describe("MCP servers page — status badge", () => {
           ok: true,
           status: 200,
           text: async () =>
-            JSON.stringify({ agents: [], tools: [], plugins: [], skills: [], models: [], providers: [], namespaces: [] }),
+            JSON.stringify({
+              agents: [],
+              tools: [],
+              plugins: [],
+              skills: [],
+              models: [],
+              providers: [],
+              namespaces: [],
+            }),
         };
       }
       if (href.includes("/v1/config/mcp-servers")) {
@@ -152,7 +175,12 @@ describe("MCP servers page — status badge", () => {
           ok: true,
           status: 200,
           text: async () =>
-            JSON.stringify({ namespace: "mcp-servers", items: [mcpServerItem("my-server")], offset: 0, limit: 100 }),
+            JSON.stringify({
+              namespace: "mcp-servers",
+              items: [mcpServerItem("my-server")],
+              offset: 0,
+              limit: 100,
+            }),
         };
       }
       if (href.includes("/v1/mcp-servers/") && href.includes("/status")) {

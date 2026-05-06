@@ -2,12 +2,13 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Link } from "react-router";
 import {
+  capabilitiesApi,
   ConfigApiError,
-  configApi,
+  providersApi,
   type ProviderRecord,
   type ProviderSpec,
   type ProviderTestResponse,
-} from "@/lib/config-api";
+} from "@/lib/api";
 import { useToast } from "@/components/toast-provider";
 import { useCrudPage } from "@/lib/use-crud-page";
 import { Field } from "@/components/form-components";
@@ -109,9 +110,7 @@ type CredentialsKind = "bearer" | "service_account_json";
 /** Adapters where Awaken can mint OAuth tokens from a service account. */
 const SERVICE_ACCOUNT_ADAPTERS = new Set(["vertex"]);
 
-function readCredentialsKind(
-  options: Record<string, unknown> | undefined,
-): CredentialsKind {
+function readCredentialsKind(options: Record<string, unknown> | undefined): CredentialsKind {
   const raw = options?.credentials_kind;
   return raw === "service_account_json" ? "service_account_json" : "bearer";
 }
@@ -178,9 +177,7 @@ export function ProvidersPage() {
     entityLabel: "provider",
     prepareSave,
     auxiliaryLoaders: () =>
-      configApi
-        .capabilities()
-        .then((caps) => [caps.supported_adapters ?? FALLBACK_ADAPTERS]),
+      capabilitiesApi.capabilities().then((caps) => [caps.supported_adapters ?? FALLBACK_ADAPTERS]),
   });
 
   const serverAdapters = crud.auxiliaryData[0] as string[] | undefined;
@@ -201,7 +198,13 @@ export function ProvidersPage() {
     return Array.from(options).sort((left, right) => left.localeCompare(right));
   }, [crud.draft?.adapter, serverAdapters]);
 
-  const { search, sort, pageSize, page, apply: applyListState } = useListUrlState<ProviderSortKey>(LIST_OPTIONS);
+  const {
+    search,
+    sort,
+    pageSize,
+    page,
+    apply: applyListState,
+  } = useListUrlState<ProviderSortKey>(LIST_OPTIONS);
 
   const filtered = useMemo(
     () =>
@@ -212,10 +215,7 @@ export function ProvidersPage() {
       ]),
     [crud.items, search],
   );
-  const sorted = useMemo(
-    () => sortItems(filtered, sort, SORT_CONFIG),
-    [filtered, sort],
-  );
+  const sorted = useMemo(() => sortItems(filtered, sort, SORT_CONFIG), [filtered, sort]);
   const view = useMemo(
     () => paginate(sorted, { page, pageSize, totalItems: sorted.length }),
     [sorted, page, pageSize],
@@ -223,7 +223,7 @@ export function ProvidersPage() {
 
   useEffect(() => {
     if (view.page !== page) applyListState({ page: view.page });
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [view.page, page]);
 
   function startCreate() {
@@ -262,7 +262,7 @@ export function ProvidersPage() {
     testingIdRef.current = id;
     setTesting(true);
     try {
-      const result = await configApi.testProvider(id);
+      const result = await providersApi.testProvider(id);
       if (testingIdRef.current !== id) return;
       setTestStatus({ ...result, testedAt: Date.now() });
       if (result.ok) {
@@ -272,8 +272,7 @@ export function ProvidersPage() {
       }
     } catch (err) {
       if (testingIdRef.current !== id) return;
-      const message =
-        err instanceof ConfigApiError ? err.message : "Provider test failed";
+      const message = err instanceof ConfigApiError ? err.message : "Provider test failed";
       setTestStatus({
         ok: false,
         latency_ms: 0,
@@ -320,7 +319,7 @@ export function ProvidersPage() {
   async function handleRowTest(providerId: string) {
     setRowTestingId(providerId);
     try {
-      const result = await configApi.testProvider(providerId);
+      const result = await providersApi.testProvider(providerId);
       if (result.ok) {
         toast.success(
           result.network_tested
@@ -331,9 +330,7 @@ export function ProvidersPage() {
         toast.error(`${providerId}: ${result.error ?? "test failed"}`);
       }
     } catch (err) {
-      toast.error(
-        `${providerId}: ${err instanceof Error ? err.message : "test failed"}`,
-      );
+      toast.error(`${providerId}: ${err instanceof Error ? err.message : "test failed"}`);
     } finally {
       setRowTestingId((current) => (current === providerId ? null : current));
     }
@@ -343,7 +340,9 @@ export function ProvidersPage() {
     <div className="mx-auto max-w-6xl p-6 md:p-8">
       <div className="mb-4 flex items-end justify-between gap-4">
         <div className="flex items-baseline gap-3">
-          <h2 className="text-2xl font-semibold tracking-title-em text-fg-strong">{t("providers.title")}</h2>
+          <h2 className="text-2xl font-semibold tracking-title-em text-fg-strong">
+            {t("providers.title")}
+          </h2>
           <span aria-hidden className="font-mono text-sm text-fg-faint">
             {crud.items.length}
           </span>
@@ -361,7 +360,9 @@ export function ProvidersPage() {
         <section className="mb-6 rounded-md border border-line bg-surface p-5 shadow-sm">
           <div className="flex items-center justify-between">
             <h3 className="text-lg font-semibold text-fg-strong">
-              {crud.isEditingExisting ? t("providers.formTitle.edit") : t("providers.formTitle.create")}
+              {crud.isEditingExisting
+                ? t("providers.formTitle.edit")
+                : t("providers.formTitle.create")}
             </h3>
             {crud.isEditingExisting && crud.draft.id && (
               <Link
@@ -381,9 +382,7 @@ export function ProvidersPage() {
                 aria-invalid={Boolean(errors.id)}
                 onChange={(event) => {
                   const value = event.target.value;
-                  crud.setDraft((current) =>
-                    current ? { ...current, id: value } : current,
-                  );
+                  crud.setDraft((current) => (current ? { ...current, id: value } : current));
                   if (errors.id) setErrors((e) => ({ ...e, id: undefined }));
                 }}
                 className="w-full rounded-xl border border-line-strong px-3 py-2 text-sm text-fg-strong outline-none transition focus:border-line-strong disabled:bg-muted disabled:text-fg-soft aria-[invalid=true]:border-tone-error"
@@ -408,8 +407,7 @@ export function ProvidersPage() {
                     return {
                       ...current,
                       adapter: nextAdapter,
-                      adapter_options:
-                        Object.keys(opts).length > 0 ? opts : undefined,
+                      adapter_options: Object.keys(opts).length > 0 ? opts : undefined,
                     };
                   });
                 }}
@@ -439,8 +437,7 @@ export function ProvidersPage() {
                       }
                       return {
                         ...current,
-                        adapter_options:
-                          Object.keys(opts).length > 0 ? opts : undefined,
+                        adapter_options: Object.keys(opts).length > 0 ? opts : undefined,
                       };
                     });
                     // Cross-mode pivot: clear the other field's draft so
@@ -500,15 +497,11 @@ export function ProvidersPage() {
           <div className="mt-5">
             <SecretField
               mode={apiKeyMode === "preserve" ? "keep" : apiKeyMode}
-              onModeChange={(next) =>
-                setApiKeyMode(next === "keep" ? "preserve" : next)
-              }
+              onModeChange={(next) => setApiKeyMode(next === "keep" ? "preserve" : next)}
               currentlyHasValue={Boolean(crud.isEditingExisting && crud.draft.has_api_key)}
               statusPill={
                 crud.draft.has_api_key ? (
-                  <SecretStatusPill
-                    state={apiKeyMode === "clear" ? "will-clear" : "stored"}
-                  />
+                  <SecretStatusPill state={apiKeyMode === "clear" ? "will-clear" : "stored"} />
                 ) : crud.isEditingExisting ? (
                   <SecretStatusPill state="no-value" />
                 ) : (
@@ -540,16 +533,15 @@ export function ProvidersPage() {
                 keepBody: (
                   <>
                     <strong>Existing credential is preserved.</strong>{" "}
-                    <span>
-                      Save will not modify the secret; other fields update normally.
-                    </span>
+                    <span>Save will not modify the secret; other fields update normally.</span>
                   </>
                 ),
                 clearBody: (
                   <>
                     <strong>Credential will be removed on save.</strong>{" "}
                     <span>
-                      Subsequent calls fall back to the adapter's host environment variable, or fail if none is present.
+                      Subsequent calls fall back to the adapter's host environment variable, or fail
+                      if none is present.
                     </span>
                   </>
                 ),
@@ -559,7 +551,8 @@ export function ProvidersPage() {
                   <>{t("providers.fields.saJsonHint")}</>
                 ) : (
                   <>
-                    Redacted in the UI and audit payloads. Submitting saves the new value and rotates the runtime client; in-flight requests continue with the prior key.
+                    Redacted in the UI and audit payloads. Submitting saves the new value and
+                    rotates the runtime client; in-flight requests continue with the prior key.
                   </>
                 )
               }
@@ -675,63 +668,60 @@ export function ProvidersPage() {
               <SortableHeader
                 columns={COLUMNS}
                 sort={sort}
-                onSort={(key) =>
-                  applyListState({ sort: toggleSort(sort, key), page: 1 })
-                }
+                onSort={(key) => applyListState({ sort: toggleSort(sort, key), page: 1 })}
               />
               <tbody>
                 {crud.loading && <SkeletonRows rows={4} cols={COLUMNS.length} />}
                 {!crud.loading && view.items.length === 0 && (
                   <tr>
-                    <td colSpan={COLUMNS.length} className="px-5 py-8 text-center text-sm text-fg-soft">
+                    <td
+                      colSpan={COLUMNS.length}
+                      className="px-5 py-8 text-center text-sm text-fg-soft"
+                    >
                       No providers match the current filter.
                     </td>
                   </tr>
                 )}
-                {!crud.loading && view.items.map((provider) => (
-                  <tr
-                    key={provider.id}
-                    className="border-t border-line text-sm text-fg"
-                  >
-                    <td className="px-5 py-4 font-mono text-fg-strong">{provider.id}</td>
-                    <td className="px-5 py-4">{provider.adapter}</td>
-                    <td className="px-5 py-4 text-fg-soft">
-                      {provider.base_url ?? "Default"}
-                    </td>
-                    <td className="px-5 py-4 text-fg-soft">
-                      {provider.has_api_key ? "Stored" : "Environment / none"}
-                    </td>
-                    <td className="px-5 py-4 text-fg-soft">
-                      {formatRelativeTime(provider.updated_at)}
-                    </td>
-                    <td className="px-5 py-4">
-                      <div className="flex gap-4 text-sm">
-                        <button
-                          type="button"
-                          onClick={() => void handleRowTest(provider.id)}
-                          disabled={rowTestingId === provider.id}
-                          className="font-medium text-fg-soft transition-colors hover:text-fg-strong disabled:cursor-not-allowed disabled:opacity-60"
-                        >
-                          {rowTestingId === provider.id ? "Testing…" : "Test"}
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => startEdit(provider)}
-                          className="font-medium text-fg-soft transition-colors hover:text-fg-strong"
-                        >
-                          Edit
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => void crud.handleDelete(provider.id)}
-                          className="font-medium text-tone-error/80 transition-colors hover:text-tone-error"
-                        >
-                          Delete
-                        </button>
-                      </div>
-                    </td>
-                  </tr>
-                ))}
+                {!crud.loading &&
+                  view.items.map((provider) => (
+                    <tr key={provider.id} className="border-t border-line text-sm text-fg">
+                      <td className="px-5 py-4 font-mono text-fg-strong">{provider.id}</td>
+                      <td className="px-5 py-4">{provider.adapter}</td>
+                      <td className="px-5 py-4 text-fg-soft">{provider.base_url ?? "Default"}</td>
+                      <td className="px-5 py-4 text-fg-soft">
+                        {provider.has_api_key ? "Stored" : "Environment / none"}
+                      </td>
+                      <td className="px-5 py-4 text-fg-soft">
+                        {formatRelativeTime(provider.updated_at)}
+                      </td>
+                      <td className="px-5 py-4">
+                        <div className="flex gap-4 text-sm">
+                          <button
+                            type="button"
+                            onClick={() => void handleRowTest(provider.id)}
+                            disabled={rowTestingId === provider.id}
+                            className="font-medium text-fg-soft transition-colors hover:text-fg-strong disabled:cursor-not-allowed disabled:opacity-60"
+                          >
+                            {rowTestingId === provider.id ? "Testing…" : "Test"}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => startEdit(provider)}
+                            className="font-medium text-fg-soft transition-colors hover:text-fg-strong"
+                          >
+                            Edit
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => void crud.handleDelete(provider.id)}
+                            className="font-medium text-tone-error/80 transition-colors hover:text-tone-error"
+                          >
+                            Delete
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
               </tbody>
             </table>
             {view.pageCount > 1 || view.totalItems > pageSize ? (

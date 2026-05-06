@@ -1,10 +1,6 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import {
-  Link,
-  useNavigate,
-  useParams,
-  useSearchParams,
-} from "react-router";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
+import { Link, useNavigate, useParams, useSearchParams } from "react-router";
 import {
   type AgentSpec,
   type Capabilities,
@@ -13,7 +9,7 @@ import {
   configApi,
   deriveSourceState,
 } from "@/lib/config-api";
-import { type AuditEvent, type AuditPage, formatActor, summarizeChange } from "@/lib/audit-log";
+import { type AuditEvent, formatActor, summarizeChange } from "@/lib/audit-log";
 import { Field } from "@/components/form-components";
 import { AgentPreviewPanel } from "@/components/agent-preview-panel";
 import { PluginConfigWorkspace } from "@/components/plugin-config-workspace";
@@ -35,6 +31,10 @@ import {
   reasoningEffortValue,
 } from "@/lib/reasoning-effort";
 import { adminRoutes } from "@/lib/routes";
+import { useCapabilitiesQuery } from "@/lib/query/hooks/capabilities";
+import { useConfigMetaQuery, useConfigRecordQuery } from "@/lib/query/hooks/config";
+import { useAuditLogInfiniteQuery } from "@/lib/query/hooks/audit";
+import { qk } from "@/lib/query/keys";
 
 const EMPTY_AGENT: AgentSpec = {
   id: "",
@@ -60,10 +60,7 @@ const PATCHABLE_FIELDS: Array<keyof AgentSpec> = [
   "reasoning_effort",
 ];
 
-function diffPatchableFields(
-  current: AgentSpec,
-  original: AgentSpec,
-): Record<string, unknown> {
+function diffPatchableFields(current: AgentSpec, original: AgentSpec): Record<string, unknown> {
   const patch: Record<string, unknown> = {};
   for (const key of PATCHABLE_FIELDS) {
     const a = current[key];
@@ -75,10 +72,20 @@ function diffPatchableFields(
   return patch;
 }
 
+function hydrateAgentSpec(spec: AgentSpec): AgentSpec {
+  return {
+    sections: {},
+    plugin_ids: [],
+    delegates: [],
+    ...spec,
+  };
+}
+
 export function AgentEditorPage() {
   const navigate = useNavigate();
   const { id } = useParams();
   const isNew = id === "new";
+  const queryClient = useQueryClient();
 
   const [searchParams, setSearchParams] = useSearchParams();
   const activeTab = readTabFromSearch(searchParams);
@@ -90,8 +97,6 @@ export function AgentEditorPage() {
   const [savedSpec, setSavedSpec] = useState<AgentSpec | null>(null);
   const [originalSpec, setOriginalSpec] = useState<AgentSpec | null>(null);
   const [agentMeta, setAgentMeta] = useState<RecordMeta | null>(null);
-  const [capabilities, setCapabilities] = useState<Capabilities | null>(null);
-  const [loading, setLoading] = useState(!isNew);
   const [saving, setSaving] = useState(false);
   const [activePluginConfig, setActivePluginConfig] = useState<string | null>(null);
   const [historyRefreshKey, setHistoryRefreshKey] = useState(0);
@@ -99,6 +104,18 @@ export function AgentEditorPage() {
   const { t } = useTranslation();
   const toast = useToast();
   const confirmDialog = useConfirmDialog();
+  const capabilitiesQuery = useCapabilitiesQuery();
+  const agentQuery = useConfigRecordQuery<AgentSpec>("agents", id, {
+    enabled: !isNew && Boolean(id),
+  });
+  const agentMetaQuery = useConfigMetaQuery("agents", id, {
+    enabled: !isNew && Boolean(id),
+    optional: true,
+  });
+  const capabilities = capabilitiesQuery.data ?? null;
+  const loading =
+    capabilitiesQuery.isPending || (!isNew && (agentQuery.isPending || agentMetaQuery.isPending));
+  const initializedAgentIdRef = useRef<string | null>(null);
 
   const isDirty = useMemo(() => {
     if (saving) return false;
@@ -116,71 +133,40 @@ export function AgentEditorPage() {
 
   useUnsavedChangesGuard({ enabled: isDirty });
 
-  const sourceState: ConfigSourceState | null = agentMeta
-    ? deriveSourceState(agentMeta)
-    : null;
+  const sourceState: ConfigSourceState | null = agentMeta ? deriveSourceState(agentMeta) : null;
 
   useEffect(() => {
-    let cancelled = false;
-
-    async function loadCapabilities() {
-      try {
-        const nextCapabilities = await configApi.capabilities();
-        if (!cancelled) {
-          setCapabilities(nextCapabilities);
-        }
-      } catch (loadError) {
-        if (!cancelled) {
-          toast.error(
-            loadError instanceof Error ? loadError.message : String(loadError),
-          );
-        }
-      }
+    if (capabilitiesQuery.error) {
+      toast.error(
+        capabilitiesQuery.error instanceof Error
+          ? capabilitiesQuery.error.message
+          : String(capabilitiesQuery.error),
+      );
     }
+  }, [capabilitiesQuery.error, toast]);
 
-    async function loadAgent() {
-      if (isNew || !id) {
-        setLoading(false);
-        return;
-      }
-
-      setLoading(true);
-      try {
-        const [nextSpec, nextMeta] = await Promise.all([
-          configApi.get<AgentSpec>("agents", id),
-          configApi.getMeta("agents", id).catch(() => null),
-        ]);
-        if (!cancelled) {
-          const hydrated = {
-            sections: {},
-            plugin_ids: [],
-            delegates: [],
-            ...nextSpec,
-          };
-          setSpec(hydrated);
-          setSavedSpec(hydrated);
-          setOriginalSpec(hydrated);
-          setAgentMeta(nextMeta);
-        }
-      } catch (loadError) {
-        if (!cancelled) {
-          toast.error(
-            loadError instanceof Error ? loadError.message : String(loadError),
-          );
-        }
-      } finally {
-        if (!cancelled) {
-          setLoading(false);
-        }
-      }
+  useEffect(() => {
+    if (agentQuery.error) {
+      toast.error(
+        agentQuery.error instanceof Error ? agentQuery.error.message : String(agentQuery.error),
+      );
     }
+  }, [agentQuery.error, toast]);
 
-    void Promise.all([loadCapabilities(), loadAgent()]);
-
-    return () => {
-      cancelled = true;
-    };
-  }, [id, isNew]);
+  useEffect(() => {
+    if (isNew || !id) {
+      initializedAgentIdRef.current = "new";
+      return;
+    }
+    if (!agentQuery.data || agentMetaQuery.isPending) return;
+    if (initializedAgentIdRef.current === id) return;
+    const hydrated = hydrateAgentSpec(agentQuery.data);
+    setSpec(hydrated);
+    setSavedSpec(hydrated);
+    setOriginalSpec(hydrated);
+    setAgentMeta(agentMetaQuery.data ?? null);
+    initializedAgentIdRef.current = id;
+  }, [agentMetaQuery.data, agentMetaQuery.isPending, agentQuery.data, id, isNew]);
 
   function validateSpec(current: AgentSpec): typeof errors {
     const next: typeof errors = {};
@@ -210,12 +196,12 @@ export function AgentEditorPage() {
       };
 
       if (isNew) {
-        const created = await configApi.create<typeof payload, AgentSpec>(
-          "agents",
-          payload,
-        );
+        const created = await configApi.create<typeof payload, AgentSpec>("agents", payload);
         setSavedSpec(created);
         setOriginalSpec(created);
+        queryClient.setQueryData(qk.config.get("agents", created.id), created);
+        void queryClient.invalidateQueries({ queryKey: qk.config.list("agents") });
+        void queryClient.invalidateQueries({ queryKey: qk.navHealth() });
         toast.success(`Agent "${created.id}" created`);
         navigate(adminRoutes.agent(created.id), { replace: true });
       } else if (sourceState === "builtin" || sourceState === "customized") {
@@ -232,16 +218,15 @@ export function AgentEditorPage() {
             configApi.get<AgentSpec>("agents", spec.id),
             configApi.getMeta("agents", spec.id).catch(() => null),
           ]);
-          const hydrated: AgentSpec = {
-            sections: {},
-            plugin_ids: [],
-            delegates: [],
-            ...nextSpec,
-          };
+          const hydrated = hydrateAgentSpec(nextSpec);
           setSpec(hydrated);
           setSavedSpec(hydrated);
           setOriginalSpec(hydrated);
           setAgentMeta(nextMeta);
+          queryClient.setQueryData(qk.config.get("agents", spec.id), hydrated);
+          queryClient.setQueryData(qk.config.meta("agents", spec.id), nextMeta);
+          void queryClient.invalidateQueries({ queryKey: qk.config.list("agents") });
+          void queryClient.invalidateQueries({ queryKey: qk.config.listMeta("agents") });
           toast.success(`Agent "${spec.id}" saved`);
           setHistoryRefreshKey((k) => k + 1);
         }
@@ -254,13 +239,13 @@ export function AgentEditorPage() {
         setSpec(updated);
         setSavedSpec(updated);
         setOriginalSpec(updated);
+        queryClient.setQueryData(qk.config.get("agents", updated.id), updated);
+        void queryClient.invalidateQueries({ queryKey: qk.config.list("agents") });
         toast.success(`Agent "${updated.id}" saved`);
         setHistoryRefreshKey((k) => k + 1);
       }
     } catch (saveError) {
-      toast.error(
-        saveError instanceof Error ? saveError.message : String(saveError),
-      );
+      toast.error(saveError instanceof Error ? saveError.message : String(saveError));
     } finally {
       setSaving(false);
     }
@@ -282,11 +267,15 @@ export function AgentEditorPage() {
         configApi.get<AgentSpec>("agents", id),
         configApi.getMeta("agents", id).catch(() => null),
       ]);
-      const hydrated: AgentSpec = { sections: {}, plugin_ids: [], delegates: [], ...nextSpec };
+      const hydrated = hydrateAgentSpec(nextSpec);
       setSpec(hydrated);
       setSavedSpec(hydrated);
       setOriginalSpec(hydrated);
       setAgentMeta(nextMeta);
+      queryClient.setQueryData(qk.config.get("agents", id), hydrated);
+      queryClient.setQueryData(qk.config.meta("agents", id), nextMeta);
+      void queryClient.invalidateQueries({ queryKey: qk.config.list("agents") });
+      void queryClient.invalidateQueries({ queryKey: qk.config.listMeta("agents") });
       toast.success(`Agent "${id}" overrides cleared`);
     } catch (err) {
       toast.error(err instanceof Error ? err.message : String(err));
@@ -301,16 +290,15 @@ export function AgentEditorPage() {
         configApi.get<AgentSpec>("agents", id),
         configApi.getMeta("agents", id).catch(() => null),
       ]);
-      const hydrated: AgentSpec = {
-        sections: {},
-        plugin_ids: [],
-        delegates: [],
-        ...nextSpec,
-      };
+      const hydrated = hydrateAgentSpec(nextSpec);
       setSpec(hydrated);
       setSavedSpec(hydrated);
       setOriginalSpec(hydrated);
       setAgentMeta(nextMeta);
+      queryClient.setQueryData(qk.config.get("agents", id), hydrated);
+      queryClient.setQueryData(qk.config.meta("agents", id), nextMeta);
+      void queryClient.invalidateQueries({ queryKey: qk.config.list("agents") });
+      void queryClient.invalidateQueries({ queryKey: qk.config.listMeta("agents") });
       toast.success(t("agents.resetOverrideFieldDone", { field }));
       setHistoryRefreshKey((k) => k + 1);
     } catch (err) {
@@ -421,8 +409,7 @@ export function AgentEditorPage() {
     const activeEntryExists =
       activePluginConfig &&
       visiblePluginSchemas.some(
-        (entry) =>
-          pluginConfigEntryKey(entry.plugin.id, entry.schema.key) === activePluginConfig,
+        (entry) => pluginConfigEntryKey(entry.plugin.id, entry.schema.key) === activePluginConfig,
       );
 
     if (activeEntryExists) {
@@ -491,11 +478,7 @@ export function AgentEditorPage() {
                 />
               )}
               {tab.id === "tools" && (
-                <ToolsPanel
-                  spec={spec}
-                  capabilities={capabilities}
-                  updateField={updateField}
-                />
+                <ToolsPanel spec={spec} capabilities={capabilities} updateField={updateField} />
               )}
               {tab.id === "plugins" && (
                 <PluginsPanel
@@ -525,6 +508,9 @@ export function AgentEditorPage() {
                   onSpecRestored={(updated) => {
                     setSpec(updated);
                     setSavedSpec(updated);
+                    setOriginalSpec(updated);
+                    queryClient.setQueryData(qk.config.get("agents", updated.id), updated);
+                    void queryClient.invalidateQueries({ queryKey: qk.config.list("agents") });
                     setHistoryRefreshKey((k) => k + 1);
                   }}
                 />
@@ -576,9 +562,7 @@ function EditorSaveBar({
       await configApi.validateConfig("agents", spec, isNew ? undefined : { id: spec.id });
       toast.success("Validation passed — payload is safe to publish.");
     } catch (err) {
-      toast.error(
-        `Validation failed: ${err instanceof Error ? err.message : String(err)}`,
-      );
+      toast.error(`Validation failed: ${err instanceof Error ? err.message : String(err)}`);
     } finally {
       setValidating(false);
     }
@@ -595,9 +579,7 @@ function EditorSaveBar({
             ) : (
               <span className="text-fg-strong">{t("editor.unsavedChanges")}</span>
             )}
-            <span className="ml-2 text-fg-soft">
-              Save will publish to the runtime config.
-            </span>
+            <span className="ml-2 text-fg-soft">Save will publish to the runtime config.</span>
           </div>
           <div className="ml-auto flex items-center gap-2">
             {!isNew && savedSpec && (
@@ -645,7 +627,10 @@ function DiffModal({
   previous: AgentSpec;
   onClose: () => void;
 }) {
-  const changes = computeDiff(previous as unknown as Record<string, unknown>, current as unknown as Record<string, unknown>);
+  const changes = computeDiff(
+    previous as unknown as Record<string, unknown>,
+    current as unknown as Record<string, unknown>,
+  );
   return (
     <div
       role="dialog"
@@ -676,25 +661,27 @@ function DiffModal({
         <div className="overflow-y-auto p-5">
           {changes.length === 0 ? (
             <p className="text-sm text-fg-soft">
-              No semantic changes. (The dirty flag may be set because of a transient form edit; saving is safe.)
+              No semantic changes. (The dirty flag may be set because of a transient form edit;
+              saving is safe.)
             </p>
           ) : (
             <ul className="space-y-3">
               {changes.map((change) => (
-                <li
-                  key={change.path}
-                  className="rounded-md border border-line bg-soft p-3"
-                >
+                <li key={change.path} className="rounded-md border border-line bg-soft p-3">
                   <div className="font-mono text-xs font-medium text-fg-strong">{change.path}</div>
                   <div className="mt-2 grid gap-2 md:grid-cols-2">
                     <div>
-                      <div className="text-[10px] font-medium uppercase tracking-eyebrow text-tone-error">Was</div>
+                      <div className="text-[10px] font-medium uppercase tracking-eyebrow text-tone-error">
+                        Was
+                      </div>
                       <pre className="mt-1 overflow-auto rounded border border-tone-error/20 bg-tone-error/5 px-2 py-1 font-mono text-xs text-fg">
                         {formatDiffValue(change.before)}
                       </pre>
                     </div>
                     <div>
-                      <div className="text-[10px] font-medium uppercase tracking-eyebrow text-tone-success">Will be</div>
+                      <div className="text-[10px] font-medium uppercase tracking-eyebrow text-tone-success">
+                        Will be
+                      </div>
                       <pre className="mt-1 overflow-auto rounded border border-tone-success/20 bg-tone-success/5 px-2 py-1 font-mono text-xs text-fg">
                         {formatDiffValue(change.after)}
                       </pre>
@@ -736,13 +723,7 @@ function computeDiff(
       !Array.isArray(a) &&
       !Array.isArray(b)
     ) {
-      out.push(
-        ...computeDiff(
-          a as Record<string, unknown>,
-          b as Record<string, unknown>,
-          path,
-        ),
-      );
+      out.push(...computeDiff(a as Record<string, unknown>, b as Record<string, unknown>, path));
     } else {
       out.push({ path, before: a, after: b });
     }
@@ -848,7 +829,16 @@ function StickyEditorHeader({
               title="Back to agents"
               className="inline-flex h-7 w-7 items-center justify-center rounded-md text-fg-soft transition hover:bg-soft hover:text-fg"
             >
-              <svg aria-hidden viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <svg
+                aria-hidden
+                viewBox="0 0 24 24"
+                className="h-4 w-4"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              >
                 <path d="M15 18l-6-6 6-6" />
               </svg>
             </Link>
@@ -886,7 +876,7 @@ function StickyEditorHeader({
             </div>
           )}
         </div>
-        {(isDirty || isNew) ? null : (
+        {isDirty || isNew ? null : (
           <button
             type="button"
             onClick={onSave}
@@ -994,12 +984,7 @@ function BasicsPanel({
             className="w-full rounded-xl border border-line-strong px-3 py-2 text-sm text-fg-strong outline-none transition focus:border-line-strong disabled:bg-muted disabled:text-fg-soft aria-[invalid=true]:border-tone-error"
           />
         </Field>
-        <Field
-          label="Model"
-          required
-          error={errors?.model_id}
-          {...fieldResetProps("model_id")}
-        >
+        <Field label="Model" required error={errors?.model_id} {...fieldResetProps("model_id")}>
           <select
             value={String(spec.model_id ?? "")}
             aria-invalid={Boolean(errors?.model_id)}
@@ -1019,25 +1004,17 @@ function BasicsPanel({
             type="number"
             min={1}
             value={Number(spec.max_rounds ?? 16)}
-            onChange={(event) =>
-              updateField("max_rounds", Number(event.target.value) || 16)
-            }
+            onChange={(event) => updateField("max_rounds", Number(event.target.value) || 16)}
             className="w-full rounded-xl border border-line-strong px-3 py-2 text-sm text-fg-strong outline-none transition focus:border-line-strong"
           />
         </Field>
-        <Field
-          label="Max continuation retries"
-          {...fieldResetProps("max_continuation_retries")}
-        >
+        <Field label="Max continuation retries" {...fieldResetProps("max_continuation_retries")}>
           <input
             type="number"
             min={0}
             value={Number(spec.max_continuation_retries ?? 2)}
             onChange={(event) =>
-              updateField(
-                "max_continuation_retries",
-                Number(event.target.value) || 0,
-              )
+              updateField("max_continuation_retries", Number(event.target.value) || 0)
             }
             className="w-full rounded-xl border border-line-strong px-3 py-2 text-sm text-fg-strong outline-none transition focus:border-line-strong"
           />
@@ -1057,11 +1034,7 @@ function BasicsPanel({
                 if (choice === "__default__") {
                   updateField(
                     "reasoning_effort",
-                    reasoningEffortValue({ kind: "default" }) as
-                      | string
-                      | number
-                      | null
-                      | undefined,
+                    reasoningEffortValue({ kind: "default" }) as string | number | null | undefined,
                   );
                   return;
                 }
@@ -1070,10 +1043,7 @@ function BasicsPanel({
                     "reasoning_effort",
                     reasoningEffortValue({
                       kind: "custom",
-                      value:
-                        reasoningMode.kind === "custom"
-                          ? reasoningMode.value
-                          : "",
+                      value: reasoningMode.kind === "custom" ? reasoningMode.value : "",
                     }) as string | number | null | undefined,
                   );
                   return;
@@ -1143,8 +1113,8 @@ function ToolsPanel({
   if (!capabilities || capabilities.tools.length === 0) {
     return (
       <div className="rounded-md border border-dashed border-line bg-surface p-6 text-sm text-fg-soft">
-        No tools are currently published. Once plugins or MCP servers register
-        tools, they will appear here.
+        No tools are currently published. Once plugins or MCP servers register tools, they will
+        appear here.
       </div>
     );
   }
@@ -1200,8 +1170,8 @@ function PluginsPanel({
     <section className="rounded-md border border-line bg-surface p-5 shadow-sm">
       <h3 className="text-lg font-semibold text-fg-strong">Plugins</h3>
       <p className="mt-2 text-sm text-fg-soft">
-        Enable agent plugins here. Plugins with agent-level settings expose
-        their configuration forms below.
+        Enable agent plugins here. Plugins with agent-level settings expose their configuration
+        forms below.
       </p>
       <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-3">
         {capabilities.plugins.map((plugin) => (
@@ -1217,9 +1187,7 @@ function PluginsPanel({
               />
               <div>
                 <div className="flex flex-wrap items-center gap-2">
-                  <div className="font-mono text-fg-strong">
-                    {pluginDisplayName(plugin.id)}
-                  </div>
+                  <div className="font-mono text-fg-strong">{pluginDisplayName(plugin.id)}</div>
                   <span className="rounded-full bg-muted px-2 py-0.5 text-xs font-medium text-fg-soft">
                     {plugin.id}
                   </span>
@@ -1243,13 +1211,10 @@ function PluginsPanel({
       </div>
 
       <div className="mt-6 border-t border-line pt-5">
-        <h4 className="text-base font-semibold text-fg-strong">
-          Plugin Configuration
-        </h4>
+        <h4 className="text-base font-semibold text-fg-strong">Plugin Configuration</h4>
         <p className="mt-2 text-sm text-fg-soft">
-          Existing saved sections stay visible even if a plugin is currently
-          disabled, so you can inspect and edit them before re-enabling the
-          plugin.
+          Existing saved sections stay visible even if a plugin is currently disabled, so you can
+          inspect and edit them before re-enabling the plugin.
         </p>
       </div>
 
@@ -1293,9 +1258,8 @@ function DelegatesPanel({
         <div>
           <h3 className="text-lg font-semibold text-fg-strong">Delegates</h3>
           <p className="mt-2 max-w-xl text-sm text-fg-soft">
-            Pick agents this one can hand work off to. Self-loops are blocked
-            statically; longer cycles (A → B → A) are detected at runtime by the
-            scheduler.
+            Pick agents this one can hand work off to. Self-loops are blocked statically; longer
+            cycles (A → B → A) are detected at runtime by the scheduler.
           </p>
         </div>
         {selected.length > 0 && (
@@ -1331,9 +1295,7 @@ function DelegatesPanel({
                   <input
                     type="checkbox"
                     checked={checked}
-                    onChange={(event) =>
-                      toggleDelegate(agentId, event.target.checked)
-                    }
+                    onChange={(event) => toggleDelegate(agentId, event.target.checked)}
                   />
                   <span className="font-mono text-fg-strong">{agentId}</span>
                 </div>
@@ -1350,8 +1312,8 @@ function AdvancedPanel({ spec }: { spec: AgentSpec }) {
     <section className="rounded-md border border-line bg-surface p-5 shadow-sm">
       <h3 className="text-lg font-semibold text-fg-strong">JSON Preview</h3>
       <p className="mt-2 text-sm text-fg-soft">
-        The exact payload that will be PUT to the config API. Useful for sanity
-        checking before publish.
+        The exact payload that will be PUT to the config API. Useful for sanity checking before
+        publish.
       </p>
       <pre className="mt-4 max-h-[36rem] overflow-auto rounded-xl bg-code-bg p-4 text-xs text-code-fg">
         {JSON.stringify(spec, null, 2)}
@@ -1382,32 +1344,26 @@ function HistoryPanel({
 }) {
   const toast = useToast();
   const confirm = useConfirmDialog();
-  const [page, setPage] = useState<AuditPage | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
   const [selectedEvent, setSelectedEvent] = useState<AuditEvent | null>(null);
   const [restoring, setRestoring] = useState<string | null>(null);
-
-  const load = useCallback(async () => {
-    if (isNew || !spec.id) return;
-    setLoading(true);
-    setError(null);
-    try {
-      const result = await configApi.auditLog({ resource: `agents/${spec.id}`, limit: 50 });
-      setPage(result);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setLoading(false);
-    }
-  }, [isNew, spec.id]);
+  const historyQuery = useAuditLogInfiniteQuery(
+    { resource: `agents/${spec.id}`, limit: 50 },
+    { enabled: !isNew && Boolean(spec.id) },
+  );
+  const page = historyQuery.data?.pages[0] ?? null;
+  const loading = historyQuery.isFetching;
+  const error = historyQuery.error
+    ? historyQuery.error instanceof Error
+      ? historyQuery.error.message
+      : String(historyQuery.error)
+    : null;
+  const refetchHistory = historyQuery.refetch;
 
   useEffect(() => {
-    void load();
-    // refreshKey is intentionally included: bumping it triggers a re-fetch
-    // after a successful save or restore without causing a re-render loop.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [load, refreshKey]);
+    if (refreshKey > 0) {
+      void refetchHistory();
+    }
+  }, [refetchHistory, refreshKey]);
 
   async function handleRestore(event: AuditEvent) {
     const targetSpec = event.action === "delete" ? event.before : event.after;
@@ -1416,17 +1372,22 @@ function HistoryPanel({
       description: (
         <div className="space-y-3">
           <p className="text-xs text-fg-soft">
-            Restoring will overwrite the current agent configuration with the version from this event.
+            Restoring will overwrite the current agent configuration with the version from this
+            event.
           </p>
           <div className="grid grid-cols-2 gap-3">
             <div>
-              <p className="mb-1 text-xs font-medium uppercase tracking-wide text-fg-soft">Current</p>
+              <p className="mb-1 text-xs font-medium uppercase tracking-wide text-fg-soft">
+                Current
+              </p>
               <pre className="max-h-48 overflow-auto rounded-xl border border-line bg-soft p-2 text-xs text-fg">
                 {JSON.stringify(spec, null, 2)}
               </pre>
             </div>
             <div>
-              <p className="mb-1 text-xs font-medium uppercase tracking-wide text-fg-soft">This version</p>
+              <p className="mb-1 text-xs font-medium uppercase tracking-wide text-fg-soft">
+                This version
+              </p>
               <pre className="max-h-48 overflow-auto rounded-xl border border-line bg-soft p-2 text-xs text-fg">
                 {targetSpec != null ? JSON.stringify(targetSpec, null, 2) : "—"}
               </pre>
@@ -1446,9 +1407,9 @@ function HistoryPanel({
       const shortId = event.id.slice(0, 8);
       toast.success(`Agent restored to version ${shortId}`);
       const refreshed = await configApi.get<AgentSpec>("agents", spec.id);
-      const hydrated: AgentSpec = { sections: {}, plugin_ids: [], delegates: [], ...refreshed };
+      const hydrated = hydrateAgentSpec(refreshed);
       onSpecRestored(hydrated);
-      void load();
+      void refetchHistory();
     } catch (err) {
       toast.error(err instanceof Error ? err.message : String(err));
     } finally {
@@ -1470,7 +1431,7 @@ function HistoryPanel({
         <h3 className="text-lg font-semibold text-fg-strong">History</h3>
         <button
           type="button"
-          onClick={() => void load()}
+          onClick={() => void refetchHistory()}
           disabled={loading}
           className="text-xs font-medium text-fg-soft transition hover:text-fg-strong disabled:opacity-60"
         >
@@ -1478,9 +1439,7 @@ function HistoryPanel({
         </button>
       </div>
 
-      {error && (
-        <div className="px-5 py-3 text-sm text-tone-error">{error}</div>
-      )}
+      {error && <div className="px-5 py-3 text-sm text-tone-error">{error}</div>}
 
       {!error && page && (
         <table className="min-w-full text-sm">
@@ -1506,14 +1465,10 @@ function HistoryPanel({
                 const ts = new Date(event.ts);
                 return (
                   <tr key={event.id} className="hover:bg-soft">
-                    <td className="px-4 py-3 font-mono text-xs text-fg">
-                      {ts.toLocaleString()}
-                    </td>
+                    <td className="px-4 py-3 font-mono text-xs text-fg">{ts.toLocaleString()}</td>
                     <td className="px-4 py-3 text-sm text-fg">
                       <span className="font-mono text-xs">{actor.hash}</span>
-                      {actor.label && (
-                        <span className="ml-1 text-fg-soft">/{actor.label}</span>
-                      )}
+                      {actor.label && <span className="ml-1 text-fg-soft">/{actor.label}</span>}
                     </td>
                     <td className="px-4 py-3">
                       <span
@@ -1564,13 +1519,7 @@ function HistoryPanel({
   );
 }
 
-function HistoryEventPanel({
-  event,
-  onClose,
-}: {
-  event: AuditEvent;
-  onClose: () => void;
-}) {
+function HistoryEventPanel({ event, onClose }: { event: AuditEvent; onClose: () => void }) {
   const actor = formatActor(event.actor);
   return (
     <div

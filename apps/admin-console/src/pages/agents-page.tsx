@@ -1,13 +1,14 @@
 import { useEffect, useMemo, useState } from "react";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { Link, useNavigate } from "react-router";
 import {
   type AgentRuntimeSnapshot,
   type AgentSpec,
-  type ConfigMetaItem,
   type ConfigSourceState,
-  configApi,
+  configResourceApi,
   deriveSourceState,
+  type ListResponse,
 } from "@/lib/config-api";
 import { useConfirmDialog } from "@/components/confirm-dialog";
 import { useToast } from "@/components/toast-provider";
@@ -36,6 +37,9 @@ import {
 import { useListUrlState } from "@/lib/list-url-state";
 import { adminRoutes } from "@/lib/routes";
 import { formatRelativeTime } from "@/lib/format-time";
+import { useAgentsRuntimeStatsQuery } from "@/lib/query/hooks/agent-stats";
+import { useConfigListQuery, useConfigMetaListQuery } from "@/lib/query/hooks/config";
+import { qk } from "@/lib/query/keys";
 
 type AgentSortKey = "id" | "model_id" | "plugin_count" | "updated_at";
 
@@ -52,8 +56,7 @@ const RANGE_OPTIONS: { value: ModifiedRange; label: string; seconds: number }[] 
 const SORT_CONFIG: SortConfig<AgentSpec, AgentSortKey> = {
   id: (a, b) => compareString(a.id, b.id),
   model_id: (a, b) => compareString(a.model_id, b.model_id),
-  plugin_count: (a, b) =>
-    compareNumber(a.plugin_ids?.length ?? 0, b.plugin_ids?.length ?? 0),
+  plugin_count: (a, b) => compareNumber(a.plugin_ids?.length ?? 0, b.plugin_ids?.length ?? 0),
   updated_at: (a, b) => compareNumber(a.updated_at ?? 0, b.updated_at ?? 0),
 };
 
@@ -72,92 +75,78 @@ const LIST_OPTIONS = {
   defaultSort: { key: "updated_at" as AgentSortKey, direction: "desc" as const },
 } as const;
 
+const EMPTY_AGENTS: AgentSpec[] = [];
+
 export function AgentsPage() {
   const { t } = useTranslation();
   const navigate = useNavigate();
   const toast = useToast();
   const confirmDialog = useConfirmDialog();
-  const [agents, setAgents] = useState<AgentSpec[]>([]);
-  const [loading, setLoading] = useState(true);
+  const queryClient = useQueryClient();
   const [modelFilter, setModelFilter] = useState<string>("any");
   const [pluginFilter, setPluginFilter] = useState<string>("any");
   const [modifiedRange, setModifiedRange] = useState<ModifiedRange>("any");
-  const [metaMap, setMetaMap] = useState<Map<string, ConfigSourceState>>(new Map());
-  const [runtimeStats, setRuntimeStats] = useState<
-    Map<string, AgentRuntimeSnapshot> | null
-  >(null);
-  const [runtimeUnavailable, setRuntimeUnavailable] = useState(false);
 
-  const { search, sort, pageSize, page, apply: applyListState } =
-    useListUrlState<AgentSortKey>(LIST_OPTIONS);
+  const {
+    search,
+    sort,
+    pageSize,
+    page,
+    apply: applyListState,
+  } = useListUrlState<AgentSortKey>(LIST_OPTIONS);
 
-  useEffect(() => {
-    let cancelled = false;
-    async function load() {
-      setLoading(true);
-      try {
-        const [agentResponse, metaItems] = await Promise.all([
-          configApi.list<AgentSpec>("agents"),
-          configApi.listMeta("agents").catch(() => [] as ConfigMetaItem[]),
-        ]);
-        if (!cancelled) {
-          setAgents(agentResponse.items);
-          const map = new Map<string, ConfigSourceState>();
-          for (const item of metaItems) {
-            map.set(item.id, deriveSourceState(item.meta));
-          }
-          setMetaMap(map);
-        }
-      } catch (loadError) {
-        if (!cancelled) {
-          toast.error(
-            loadError instanceof Error ? loadError.message : String(loadError),
-          );
-          setAgents([]);
-        }
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
+  const agentsQuery = useConfigListQuery<AgentSpec>("agents");
+  const metaQuery = useConfigMetaListQuery("agents");
+  const runtimeQuery = useAgentsRuntimeStatsQuery();
+  const deleteAgent = useMutation({
+    mutationFn: (id: string) => configResourceApi.delete("agents", id),
+    onSuccess: (_result, id) => {
+      queryClient.setQueryData<ListResponse<AgentSpec>>(qk.config.list("agents"), (current) =>
+        current ? { ...current, items: current.items.filter((agent) => agent.id !== id) } : current,
+      );
+      void queryClient.invalidateQueries({ queryKey: qk.navHealth() });
+      toast.success(`Agent "${id}" deleted`);
+    },
+    onError: (deleteError) => {
+      toast.error(deleteError instanceof Error ? deleteError.message : String(deleteError));
+    },
+  });
+
+  const agents = agentsQuery.data?.items ?? EMPTY_AGENTS;
+  const loading = agentsQuery.isPending;
+  const metaMap = useMemo(() => {
+    const map = new Map<string, ConfigSourceState>();
+    for (const item of metaQuery.data ?? []) {
+      map.set(item.id, deriveSourceState(item.meta));
     }
-    void load();
-    return () => {
-      cancelled = true;
-    };
-  }, [toast]);
+    return map;
+  }, [metaQuery.data]);
+  const runtimeUnavailable = runtimeQuery.data === null;
+  const runtimeStats = useMemo(() => {
+    if (runtimeQuery.isPending) return null;
+    const map = new Map<string, AgentRuntimeSnapshot>();
+    for (const snap of runtimeQuery.data?.agents ?? []) {
+      map.set(snap.agent_id, snap);
+    }
+    return map;
+  }, [runtimeQuery.data, runtimeQuery.isPending]);
 
   useEffect(() => {
-    let cancelled = false;
-    void configApi
-      .agentsRuntimeStats()
-      .then((res) => {
-        if (cancelled) return;
-        if (!res) {
-          setRuntimeStats(new Map());
-          setRuntimeUnavailable(true);
-          return;
-        }
-        const map = new Map<string, AgentRuntimeSnapshot>();
-        for (const snap of res.agents) map.set(snap.agent_id, snap);
-        setRuntimeStats(map);
-        setRuntimeUnavailable(false);
-      })
-      .catch(() => {
-        if (!cancelled) {
-          setRuntimeStats(new Map());
-          setRuntimeUnavailable(false);
-        }
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
+    if (agentsQuery.error) {
+      toast.error(
+        agentsQuery.error instanceof Error ? agentsQuery.error.message : String(agentsQuery.error),
+      );
+    }
+  }, [agentsQuery.error, toast]);
 
   const modelOptions = useMemo(() => {
     const set = new Set<string>();
     for (const a of agents) set.add(a.model_id);
     return [
       { value: "any", label: "any" },
-      ...Array.from(set).sort().map((m) => ({ value: m, label: m })),
+      ...Array.from(set)
+        .sort()
+        .map((m) => ({ value: m, label: m })),
     ];
   }, [agents]);
 
@@ -166,25 +155,22 @@ export function AgentsPage() {
     for (const a of agents) for (const p of a.plugin_ids ?? []) set.add(p);
     return [
       { value: "any", label: "any" },
-      ...Array.from(set).sort().map((p) => ({ value: p, label: p })),
+      ...Array.from(set)
+        .sort()
+        .map((p) => ({ value: p, label: p })),
     ];
   }, [agents]);
 
   const filtered = useMemo(() => {
     const nowSec = Math.floor(Date.now() / 1000);
-    const rangeSec =
-      RANGE_OPTIONS.find((r) => r.value === modifiedRange)?.seconds ?? 0;
+    const rangeSec = RANGE_OPTIONS.find((r) => r.value === modifiedRange)?.seconds ?? 0;
     return filterBySearch(agents, search, (agent) => [
       agent.id,
       agent.model_id,
       ...(agent.plugin_ids ?? []),
     ]).filter((a) => {
       if (modelFilter !== "any" && a.model_id !== modelFilter) return false;
-      if (
-        pluginFilter !== "any" &&
-        !(a.plugin_ids ?? []).includes(pluginFilter)
-      )
-        return false;
+      if (pluginFilter !== "any" && !(a.plugin_ids ?? []).includes(pluginFilter)) return false;
       if (rangeSec > 0) {
         const updated = a.updated_at ?? 0;
         if (updated === 0 || nowSec - updated > rangeSec) return false;
@@ -193,10 +179,7 @@ export function AgentsPage() {
     });
   }, [agents, search, modelFilter, pluginFilter, modifiedRange]);
 
-  const sorted = useMemo(
-    () => sortItems(filtered, sort, SORT_CONFIG),
-    [filtered, sort],
-  );
+  const sorted = useMemo(() => sortItems(filtered, sort, SORT_CONFIG), [filtered, sort]);
 
   const view = useMemo(
     () =>
@@ -218,23 +201,14 @@ export function AgentsPage() {
       title: "Delete agent?",
       description: (
         <>
-          This permanently removes <span className="font-mono">{id}</span> from
-          the runtime catalog.
+          This permanently removes <span className="font-mono">{id}</span> from the runtime catalog.
         </>
       ),
       confirmLabel: "Delete",
       tone: "destructive",
     });
     if (!accepted) return;
-    try {
-      await configApi.delete("agents", id);
-      setAgents((current) => current.filter((agent) => agent.id !== id));
-      toast.success(`Agent "${id}" deleted`);
-    } catch (deleteError) {
-      toast.error(
-        deleteError instanceof Error ? deleteError.message : String(deleteError),
-      );
-    }
+    deleteAgent.mutate(id);
   }
 
   const sortLabelMap: Record<AgentSortKey, string> = {
@@ -313,10 +287,11 @@ export function AgentsPage() {
 
       {runtimeUnavailable && (
         <div className="mb-3 rounded-md border border-tone-warn/30 bg-tone-warn/10 px-3 py-2 text-xs text-fg-soft">
-          <span className="font-medium text-fg-strong">Runtime stats disabled.</span>{" "}
-          The "Inferences (24h)" column shows <span className="font-mono">n/a</span> because the server
+          <span className="font-medium text-fg-strong">Runtime stats disabled.</span> The
+          "Inferences (24h)" column shows <span className="font-mono">n/a</span> because the server
           has no <span className="font-mono">RuntimeStatsRegistry</span> installed (install the
-          observability plugin or wire <span className="font-mono">AppState::with_runtime_stats</span>).
+          observability plugin or wire{" "}
+          <span className="font-mono">AppState::with_runtime_stats</span>).
         </div>
       )}
 
@@ -339,15 +314,16 @@ export function AgentsPage() {
             <SortableHeader
               columns={COLUMNS}
               sort={sort}
-              onSort={(key) =>
-                applyListState({ sort: toggleSort(sort, key), page: 1 })
-              }
+              onSort={(key) => applyListState({ sort: toggleSort(sort, key), page: 1 })}
             />
             <tbody>
               {loading && <SkeletonRows rows={4} cols={COLUMNS.length} />}
               {!loading && noMatches && (
                 <tr>
-                  <td colSpan={COLUMNS.length} className="px-5 py-8 text-center text-sm text-fg-soft">
+                  <td
+                    colSpan={COLUMNS.length}
+                    className="px-5 py-8 text-center text-sm text-fg-soft"
+                  >
                     {t("agents.noMatches")}
                   </td>
                 </tr>
@@ -364,11 +340,7 @@ export function AgentsPage() {
                     </td>
                     <td className="px-5 py-4 font-mono text-fg">{agent.model_id}</td>
                     <td className="px-5 py-4">
-                      <PillStack
-                        items={agent.plugin_ids ?? []}
-                        max={3}
-                        empty="None"
-                      />
+                      <PillStack items={agent.plugin_ids ?? []} max={3} empty="None" />
                     </td>
                     <td className="px-5 py-4 text-fg-soft">
                       {formatRelativeTime(agent.updated_at)}
@@ -473,16 +445,12 @@ function InferenceCount({
   // Derive a tiny trend from the latency histogram bucket counts when present.
   // It's not the literal req-per-bucket but it gives a sense of distribution
   // shape without needing a per-time-series endpoint.
-  const trend = (snapshot.inference_duration_histogram ?? [])
-    .slice(0, 12)
-    .map((b) => b.count);
+  const trend = (snapshot.inference_duration_histogram ?? []).slice(0, 12).map((b) => b.count);
   return (
     <div className="flex items-center gap-3">
       <div className="flex flex-col gap-0.5">
         <div className="inline-flex items-baseline gap-2">
-          <span className="font-semibold text-fg-strong">
-            {snapshot.inference_count}
-          </span>
+          <span className="font-semibold text-fg-strong">{snapshot.inference_count}</span>
           {hasErrors && (
             <span
               className="text-xs text-tone-error"
@@ -500,7 +468,10 @@ function InferenceCount({
       </div>
       {hasInferences && trend.length >= 2 && (
         <span className="text-fg-faint" aria-hidden>
-          <Sparkline values={trend} ariaLabel={`latency distribution sparkline (${trend.length} buckets)`} />
+          <Sparkline
+            values={trend}
+            ariaLabel={`latency distribution sparkline (${trend.length} buckets)`}
+          />
         </span>
       )}
     </div>

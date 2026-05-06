@@ -1,17 +1,14 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
-import {
-  RouterProvider,
-  createMemoryRouter,
-  createRoutesFromElements,
-} from "react-router";
+import { RouterProvider, createMemoryRouter, createRoutesFromElements } from "react-router";
 import { appRoutes } from "../app";
 import { AuthProvider } from "../components/auth-provider";
 import { ConfirmDialogProvider } from "../components/confirm-dialog";
 import { ToastProvider } from "../components/toast-provider";
 import { ADMIN_TOKEN_STORAGE_KEY } from "../lib/config-api";
 import { __resetAuthInterceptorForTesting } from "../lib/auth-interceptor";
+import { withQueryClient } from "../test/query";
 
 function stubCapabilitiesFetch() {
   const fetchSpy = vi.fn(async () => ({
@@ -33,18 +30,19 @@ function stubCapabilitiesFetch() {
 }
 
 function renderEditorRoute(path = "/agents/new") {
-  const memRouter = createMemoryRouter(
-    createRoutesFromElements(appRoutes()),
-    { initialEntries: [path] },
-  );
+  const memRouter = createMemoryRouter(createRoutesFromElements(appRoutes()), {
+    initialEntries: [path],
+  });
   return render(
-    <ToastProvider>
-      <ConfirmDialogProvider>
-        <AuthProvider>
-          <RouterProvider router={memRouter} />
-        </AuthProvider>
-      </ConfirmDialogProvider>
-    </ToastProvider>,
+    withQueryClient(
+      <ToastProvider>
+        <ConfirmDialogProvider>
+          <AuthProvider>
+            <RouterProvider router={memRouter} />
+          </AuthProvider>
+        </ConfirmDialogProvider>
+      </ToastProvider>,
+    ),
   );
 }
 
@@ -211,7 +209,8 @@ describe("agent editor save validation", () => {
     expect(alerts.some((node) => /required/i.test(node.textContent ?? ""))).toBe(true);
 
     // No POST issued — Save was gated client-side.
-    const postCall = fetchSpy.mock.calls.find(([url, init]) => {
+    const postCall = fetchSpy.mock.calls.find((call) => {
+      const [url, init] = call as unknown as Parameters<typeof fetch>;
       const method = (init as RequestInit | undefined)?.method?.toUpperCase();
       return method === "POST" && String(url).includes("/v1/config/agents");
     });
@@ -262,7 +261,10 @@ describe("agent editor History tab", () => {
               }),
           };
         }
-        if (String(url).includes("/v1/config/agents/existing-agent") && !String(url).includes("audit")) {
+        if (
+          String(url).includes("/v1/config/agents/existing-agent") &&
+          !String(url).includes("audit")
+        ) {
           return {
             ok: true,
             status: 200,
@@ -330,7 +332,11 @@ describe("agent editor History tab auto-refresh after Save", () => {
               }),
           };
         }
-        if (u.includes("/v1/config/agents/refresh-agent") && !u.includes("audit") && init?.method === "PUT") {
+        if (
+          u.includes("/v1/config/agents/refresh-agent") &&
+          !u.includes("audit") &&
+          init?.method === "PUT"
+        ) {
           return {
             ok: true,
             status: 200,
@@ -564,7 +570,12 @@ describe("agent editor source badges", () => {
         (init as RequestInit | undefined)?.method === "DELETE"
       ) {
         deleteOverridesCalled = true;
-        return { ok: true, status: 200, text: async () => JSON.stringify({ id: "reset-me", model_id: "m1", system_prompt: "", max_rounds: 8 }) };
+        return {
+          ok: true,
+          status: 200,
+          text: async () =>
+            JSON.stringify({ id: "reset-me", model_id: "m1", system_prompt: "", max_rounds: 8 }),
+        };
       }
       if (String(url).endsWith("/v1/config/agents/reset-me/meta")) {
         return {
@@ -585,7 +596,12 @@ describe("agent editor source badges", () => {
           ok: true,
           status: 200,
           text: async () =>
-            JSON.stringify({ id: "reset-me", model_id: "m1", system_prompt: "custom", max_rounds: 8 }),
+            JSON.stringify({
+              id: "reset-me",
+              model_id: "m1",
+              system_prompt: "custom",
+              max_rounds: 8,
+            }),
         };
       }
       if (String(url).includes("/v1/audit-log")) {
@@ -678,8 +694,7 @@ describe("agent editor Save → PATCH vs PUT branching", () => {
           return {
             ok: true,
             status: 200,
-            text: async () =>
-              JSON.stringify({ ...agentBody, system_prompt: "updated-prompt" }),
+            text: async () => JSON.stringify({ ...agentBody, system_prompt: "updated-prompt" }),
           };
         }
         if (u.includes(`/v1/config/agents/${agentId}`) && init?.method === "PUT") {
@@ -785,8 +800,7 @@ describe("agent editor Save → PATCH vs PUT branching", () => {
           return {
             ok: true,
             status: 200,
-            text: async () =>
-              JSON.stringify({ ...agentBody, system_prompt: "updated-prompt" }),
+            text: async () => JSON.stringify({ ...agentBody, system_prompt: "updated-prompt" }),
           };
         }
         if (u.includes(`/v1/config/agents/${agentId}`)) {

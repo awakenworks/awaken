@@ -1,10 +1,11 @@
 // @vitest-environment jsdom
-import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, waitFor, fireEvent } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router";
 import { ToolEditorPage } from "./tool-editor-page";
+import { withQueryClient } from "../test/query";
 
-const stockTool = {
+const tool = {
   id: "echo",
   name: "Echo",
   description: "Stock description",
@@ -12,73 +13,112 @@ const stockTool = {
   parameters_schema: {},
 };
 
-vi.mock("@/lib/config-api", async () => {
-  const actual = await vi.importActual<typeof import("@/lib/config-api")>("@/lib/config-api");
-  const tool = {
-    id: "echo",
-    name: "Echo",
-    description: "Stock description",
-    category: "debug",
-    parameters_schema: {},
-  };
+const meta = {
+  source: { kind: "builtin", binary_version: "v1" },
+  user_overrides: { description: "customized" },
+  hidden: false,
+  created_at: 0,
+  updated_at: 0,
+};
+
+function hrefOf(input: string | URL | Request): string {
+  if (typeof input === "string") return input;
+  if (input instanceof URL) return input.href;
+  return input.url;
+}
+
+function jsonResponse(data: unknown) {
   return {
-    ...actual,
-    configApi: {
-      getTool: vi.fn().mockResolvedValue(tool),
-      getMeta: vi.fn().mockResolvedValue({
-        source: { kind: "builtin", binary_version: "v1" },
-        user_overrides: { description: "customized" },
-        hidden: false,
-        created_at: 0,
-        updated_at: 0,
-      }),
-      patchToolOverrides: vi.fn().mockResolvedValue({ ...tool, description: "patched" }),
-      clearToolOverrides: vi.fn().mockResolvedValue(tool),
-    },
+    ok: true,
+    status: 200,
+    text: async () => JSON.stringify(data),
   };
-});
+}
+
+function stubToolFetch() {
+  const fetchSpy = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+    const href = hrefOf(url);
+    const method = init?.method?.toUpperCase() ?? "GET";
+    if (href.includes("/v1/config/tools/echo/overrides") && method === "PATCH") {
+      return jsonResponse({ ...tool, description: "patched" });
+    }
+    if (href.includes("/v1/config/tools/echo/overrides") && method === "DELETE") {
+      return jsonResponse(tool);
+    }
+    if (href.endsWith("/v1/config/tools/echo/meta")) {
+      return jsonResponse(meta);
+    }
+    if (href.endsWith("/v1/config/tools/echo")) {
+      return jsonResponse(tool);
+    }
+    return { ok: false, status: 404, text: async () => "" };
+  });
+  vi.stubGlobal("fetch", fetchSpy);
+  return fetchSpy;
+}
+
+function findFetchCall(fetchSpy: ReturnType<typeof vi.fn>, pattern: string, method: string) {
+  return fetchSpy.mock.calls.find(([url, init]) => {
+    const requestMethod = (init as RequestInit | undefined)?.method?.toUpperCase() ?? "GET";
+    return hrefOf(url as string | URL | Request).includes(pattern) && requestMethod === method;
+  });
+}
 
 function renderEditor() {
   return render(
-    <MemoryRouter initialEntries={["/tools/echo"]}>
-      <Routes>
-        <Route path="/tools/:id" element={<ToolEditorPage />} />
-      </Routes>
-    </MemoryRouter>,
+    withQueryClient(
+      <MemoryRouter initialEntries={["/tools/echo"]}>
+        <Routes>
+          <Route path="/tools/:id" element={<ToolEditorPage />} />
+        </Routes>
+      </MemoryRouter>,
+    ),
   );
 }
 
 describe("ToolEditorPage", () => {
-  beforeEach(() => vi.clearAllMocks());
+  beforeEach(() => {
+    stubToolFetch();
+  });
+
+  afterEach(() => {
+    cleanup();
+    vi.unstubAllGlobals();
+    vi.clearAllMocks();
+  });
 
   it("shows builtin and editable description side-by-side", async () => {
     renderEditor();
     await waitFor(() => expect(screen.getByDisplayValue("Stock description")).toBeDefined());
-    // Both the readonly builtin <p> and the editable textarea show the same text
     const matches = screen.getAllByText("Stock description");
     expect(matches.length).toBeGreaterThanOrEqual(1);
-    // The builtin readonly view is a <p>
     expect(matches.some((el) => el.tagName === "P")).toBe(true);
   });
 
-  it("save button calls patchToolOverrides only with changed description", async () => {
-    const { configApi } = await import("@/lib/config-api");
+  it("save button patches only the changed description", async () => {
+    const fetchSpy = stubToolFetch();
     renderEditor();
     const textarea = await waitFor(() => screen.getByDisplayValue("Stock description"));
     fireEvent.change(textarea, { target: { value: "Custom description" } });
     fireEvent.click(screen.getByRole("button", { name: /save/i }));
+
     await waitFor(() => {
-      expect(configApi.patchToolOverrides).toHaveBeenCalledWith("echo", { description: "Custom description" });
+      const patchCall = findFetchCall(fetchSpy, "/overrides", "PATCH");
+      expect(patchCall).toBeDefined();
+      expect(JSON.parse(String((patchCall?.[1] as RequestInit).body))).toEqual({
+        description: "Custom description",
+      });
     });
   });
 
-  it("revert button calls clearToolOverrides", async () => {
-    const { configApi } = await import("@/lib/config-api");
+  it("revert button clears tool overrides", async () => {
+    const fetchSpy = stubToolFetch();
     renderEditor();
     await waitFor(() => screen.getByDisplayValue("Stock description"));
     fireEvent.click(screen.getByRole("button", { name: /revert/i }));
+
     await waitFor(() => {
-      expect(configApi.clearToolOverrides).toHaveBeenCalledWith("echo");
+      expect(findFetchCall(fetchSpy, "/overrides", "DELETE")).toBeDefined();
     });
   });
 

@@ -1,25 +1,19 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
-import {
-  RouterProvider,
-  createMemoryRouter,
-  createRoutesFromElements,
-} from "react-router";
+import { RouterProvider, createMemoryRouter, createRoutesFromElements } from "react-router";
 import { appRoutes } from "../app";
 import { AuthProvider } from "../components/auth-provider";
 import { ConfirmDialogProvider } from "../components/confirm-dialog";
 import { ToastProvider } from "../components/toast-provider";
 import { __resetAuthInterceptorForTesting } from "../lib/auth-interceptor";
+import { withQueryClient } from "../test/query";
 
 function toolItem(id: string, name: string, description?: string, category?: string) {
   return { id, name, description: description ?? `${name} description`, category };
 }
 
-function metaItem(
-  id: string,
-  userOverrides?: Record<string, unknown>,
-) {
+function metaItem(id: string, userOverrides?: Record<string, unknown>) {
   return {
     id,
     meta: {
@@ -87,13 +81,15 @@ function renderToolsPage() {
     initialEntries: ["/tools"],
   });
   render(
-    <ToastProvider>
-      <ConfirmDialogProvider>
-        <AuthProvider>
-          <RouterProvider router={router} />
-        </AuthProvider>
-      </ConfirmDialogProvider>
-    </ToastProvider>,
+    withQueryClient(
+      <ToastProvider>
+        <ConfirmDialogProvider>
+          <AuthProvider>
+            <RouterProvider router={router} />
+          </AuthProvider>
+        </ConfirmDialogProvider>
+      </ToastProvider>,
+    ),
   );
 }
 
@@ -114,10 +110,7 @@ describe("ToolsPage", () => {
           toolItem("echo", "Echo", "Stock echo", "debug"),
           toolItem("shell", "Shell", "Run a shell command"),
         ],
-        [
-          metaItem("echo", { description: "patched" }),
-          metaItem("shell"),
-        ],
+        [metaItem("echo", { description: "patched" }), metaItem("shell")],
       ),
     );
 
@@ -136,10 +129,7 @@ describe("ToolsPage", () => {
   it("shows builtin label for tools without overrides", async () => {
     vi.stubGlobal(
       "fetch",
-      buildFetchMock(
-        [toolItem("grep", "Grep", "Search files")],
-        [metaItem("grep")],
-      ),
+      buildFetchMock([toolItem("grep", "Grep", "Search files")], [metaItem("grep")]),
     );
 
     renderToolsPage();
@@ -178,10 +168,10 @@ describe("ToolsPage", () => {
 
   it("renders server supplied tool text as inert text, not HTML", async () => {
     const payload = `<img src=x onerror="globalThis.__xss = true">`;
-    vi.stubGlobal("fetch", buildFetchMock(
-      [toolItem("xss-tool", payload, payload, payload)],
-      [metaItem("xss-tool")],
-    ));
+    vi.stubGlobal(
+      "fetch",
+      buildFetchMock([toolItem("xss-tool", payload, payload, payload)], [metaItem("xss-tool")]),
+    );
 
     renderToolsPage();
 

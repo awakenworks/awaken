@@ -1,19 +1,18 @@
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
+import { useMutation } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { Link, useNavigate, useParams } from "react-router";
-import {
-  ConfigApiError,
-  type AgentSpec,
-  type McpServerRecord,
-  type McpServerStatusResponse,
-  configApi,
-} from "@/lib/config-api";
+import { ConfigApiError, type AgentSpec, type McpServerRecord, mcpApi } from "@/lib/config-api";
 import { useToast } from "@/components/toast-provider";
 import { useConfirmDialog } from "@/components/confirm-dialog";
 import { Pill } from "@/components/ui/pill";
 import { Sparkline } from "@/components/ui/sparkline";
 import { adminRoutes } from "@/lib/routes";
 import { formatRelativeTime } from "@/lib/format-time";
+import { useConfigListQuery, useConfigRecordQuery } from "@/lib/query/hooks/config";
+import { useMcpStatusQuery } from "@/lib/query/hooks/mcp";
+
+const EMPTY_AGENTS: AgentSpec[] = [];
 
 /**
  * MCP Server detail — drill-in for one server. Mirrors the design's
@@ -28,42 +27,37 @@ export function McpServerDetailPage() {
   const navigate = useNavigate();
   const toast = useToast();
   const confirm = useConfirmDialog();
-  const [server, setServer] = useState<McpServerRecord | null>(null);
-  const [status, setStatus] = useState<McpServerStatusResponse | null | undefined>(undefined);
-  const [agents, setAgents] = useState<AgentSpec[]>([]);
-  const [error, setError] = useState<string | null>(null);
-  const [notFound, setNotFound] = useState(false);
-  const [restarting, setRestarting] = useState(false);
   const [copied, setCopied] = useState(false);
-
-  useEffect(() => {
-    if (!id) return;
-    let cancelled = false;
-    setError(null);
-    setNotFound(false);
-    void Promise.all([
-      configApi.get<McpServerRecord>("mcp-servers", id),
-      configApi.mcpStatus(id).catch(() => null),
-      configApi.list<AgentSpec>("agents").catch(() => ({ items: [] as AgentSpec[] })),
-    ])
-      .then(([rec, st, ag]) => {
-        if (cancelled) return;
-        setServer(rec);
-        setStatus(st);
-        setAgents(ag.items);
-      })
-      .catch((err) => {
-        if (cancelled) return;
-        if (err instanceof ConfigApiError && err.status === 404) {
-          setNotFound(true);
-          return;
-        }
-        setError(err instanceof Error ? err.message : String(err));
+  const serverQuery = useConfigRecordQuery<McpServerRecord>("mcp-servers", id);
+  const statusQuery = useMcpStatusQuery(id);
+  const agentsQuery = useConfigListQuery<AgentSpec>("agents", { enabled: Boolean(id) });
+  const restartMutation = useMutation({
+    mutationFn: async () => {
+      if (!id) throw new Error("Missing MCP server id");
+      await mcpApi.mcpRestart(id);
+    },
+    onSuccess: () => {
+      toast.push({ message: `Restart triggered for "${id}".`, tone: "success" });
+      void statusQuery.refetch();
+    },
+    onError: (err) => {
+      toast.push({
+        message: `Restart failed: ${err instanceof Error ? err.message : String(err)}`,
+        tone: "error",
       });
-    return () => {
-      cancelled = true;
-    };
-  }, [id]);
+    },
+  });
+  const server = serverQuery.data ?? null;
+  const status = statusQuery.data;
+  const agents = agentsQuery.data?.items ?? EMPTY_AGENTS;
+  const notFound = serverQuery.error instanceof ConfigApiError && serverQuery.error.status === 404;
+  const error =
+    serverQuery.error && !notFound
+      ? serverQuery.error instanceof Error
+        ? serverQuery.error.message
+        : String(serverQuery.error)
+      : null;
+  const restarting = restartMutation.isPending;
 
   const usedByAgents = useMemo(() => {
     if (!id) return [] as AgentSpec[];
@@ -78,20 +72,7 @@ export function McpServerDetailPage() {
       confirmLabel: "Restart",
     });
     if (!ok) return;
-    setRestarting(true);
-    try {
-      await configApi.mcpRestart(id);
-      toast.push({ message: `Restart triggered for "${id}".`, tone: "success" });
-      const fresh = await configApi.mcpStatus(id).catch(() => null);
-      setStatus(fresh);
-    } catch (err) {
-      toast.push({
-        message: `Restart failed: ${err instanceof Error ? err.message : String(err)}`,
-        tone: "error",
-      });
-    } finally {
-      setRestarting(false);
-    }
+    restartMutation.mutate();
   }
 
   async function handleCopyCommand() {
@@ -109,9 +90,7 @@ export function McpServerDetailPage() {
 
   if (!id) {
     return (
-      <div className="mx-auto max-w-5xl p-6 md:p-8 text-sm text-fg-soft">
-        Missing server id.
-      </div>
+      <div className="mx-auto max-w-5xl p-6 md:p-8 text-sm text-fg-soft">Missing server id.</div>
     );
   }
   if (notFound) {
@@ -145,9 +124,7 @@ export function McpServerDetailPage() {
   }
   if (!server) {
     return (
-      <div className="mx-auto max-w-5xl p-6 md:p-8 text-sm text-fg-soft">
-        {t("common.loading")}
-      </div>
+      <div className="mx-auto max-w-5xl p-6 md:p-8 text-sm text-fg-soft">{t("common.loading")}</div>
     );
   }
 
@@ -168,9 +145,7 @@ export function McpServerDetailPage() {
         </div>
         <div className="flex items-baseline justify-between gap-4">
           <div className="flex items-baseline gap-3">
-            <h2 className="text-2xl font-semibold tracking-title-em text-fg-strong">
-              {server.id}
-            </h2>
+            <h2 className="text-2xl font-semibold tracking-title-em text-fg-strong">{server.id}</h2>
             <span className="rounded bg-soft px-1.5 font-mono text-[10px] text-fg-soft">
               {server.transport}
             </span>
@@ -278,9 +253,7 @@ export function McpServerDetailPage() {
       <section className="mt-4 rounded-md border border-line bg-surface p-5 shadow-card">
         <div className="flex items-baseline justify-between">
           <h3 className="text-sm font-semibold text-fg-strong">Tools exposed</h3>
-          <span className="font-mono text-xs text-fg-faint">
-            {(status?.tools ?? []).length}
-          </span>
+          <span className="font-mono text-xs text-fg-faint">{(status?.tools ?? []).length}</span>
         </div>
         {(status?.tools ?? []).length === 0 ? (
           <p className="mt-2 text-sm text-fg-soft">
@@ -293,10 +266,7 @@ export function McpServerDetailPage() {
         ) : (
           <ul className="mt-3 space-y-2">
             {(status?.tools ?? []).map((tool) => (
-              <li
-                key={tool.name}
-                className="rounded-md border border-line bg-soft px-3 py-2"
-              >
+              <li key={tool.name} className="rounded-md border border-line bg-soft px-3 py-2">
                 <div className="font-mono text-sm text-fg-strong">{tool.name}</div>
                 {tool.description && (
                   <div className="mt-0.5 text-xs text-fg-soft">{tool.description}</div>
@@ -315,8 +285,14 @@ export function McpServerDetailPage() {
         ) : (
           <ul className="mt-3 space-y-1.5">
             {usedByAgents.map((a) => (
-              <li key={a.id} className="flex items-center justify-between gap-3 rounded-md border border-line bg-soft px-3 py-2">
-                <Link to={adminRoutes.agent(a.id)} className="font-mono text-sm text-fg-strong hover:underline">
+              <li
+                key={a.id}
+                className="flex items-center justify-between gap-3 rounded-md border border-line bg-soft px-3 py-2"
+              >
+                <Link
+                  to={adminRoutes.agent(a.id)}
+                  className="font-mono text-sm text-fg-strong hover:underline"
+                >
                   {a.id}
                 </Link>
                 <span className="font-mono text-xs text-fg-soft">{a.model_id}</span>

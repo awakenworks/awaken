@@ -1,51 +1,63 @@
-import { useEffect, useMemo, useState } from "react";
+import { useMemo } from "react";
 import { useTranslation } from "react-i18next";
 import { Link, useParams } from "react-router";
-import {
-  type AgentSpec,
-  type SkillInfo,
-  configApi,
-} from "@/lib/config-api";
+import type { AgentSpec, SkillInfo } from "@/lib/api";
 import { Pill } from "@/components/ui/pill";
+import { useCapabilitiesQuery } from "@/lib/query/hooks/capabilities";
+import { useConfigListQuery } from "@/lib/query/hooks/config";
 import { adminRoutes } from "@/lib/routes";
+
+const EMPTY_AGENTS: AgentSpec[] = [];
 
 export function SkillDetailPage() {
   const { t } = useTranslation();
   const { id } = useParams<{ id: string }>();
-  const [skill, setSkill] = useState<SkillInfo | null | undefined>(undefined);
-  const [agents, setAgents] = useState<AgentSpec[]>([]);
-  const [error, setError] = useState<string | null>(null);
+  const enabled = Boolean(id);
+  const capabilitiesQuery = useCapabilitiesQuery({ enabled });
+  const agentsQuery = useConfigListQuery<AgentSpec>("agents", { enabled });
 
-  useEffect(() => {
-    if (!id) return;
-    let cancelled = false;
-    setError(null);
-    void Promise.all([
-      configApi.capabilities(),
-      configApi.list<AgentSpec>("agents").catch(() => ({ items: [] as AgentSpec[] })),
-    ])
-      .then(([caps, ag]) => {
-        if (cancelled) return;
-        setSkill(caps.skills.find((s) => s.id === id) ?? null);
-        setAgents(ag.items);
-      })
-      .catch((err) => {
-        if (!cancelled) setError(err instanceof Error ? err.message : String(err));
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [id]);
+  const error = capabilitiesQuery.error
+    ? capabilitiesQuery.error instanceof Error
+      ? capabilitiesQuery.error.message
+      : String(capabilitiesQuery.error)
+    : null;
+  const skill = useMemo(() => {
+    if (!id || !capabilitiesQuery.data) return undefined;
+    return capabilitiesQuery.data.skills.find((s) => s.id === id) ?? null;
+  }, [capabilitiesQuery.data, id]);
+  const agents = agentsQuery.data?.items ?? EMPTY_AGENTS;
 
   const usedByAgents = useMemo(() => {
     if (!id) return [] as AgentSpec[];
     return agents.filter((a) => mentionsSkill(a, id));
   }, [agents, id]);
 
-  if (!id) return <Shell><p className="text-sm text-fg-soft">Missing skill id.</p></Shell>;
-  if (error) return <Shell><div className="rounded-md border border-tone-error/30 bg-tone-error/10 p-4 text-sm text-tone-error">{error}</div></Shell>;
-  if (skill === undefined) return <Shell><p className="text-sm text-fg-soft">{t("common.loading")}</p></Shell>;
-  if (skill === null) return <Shell><p className="text-sm text-fg-soft">{t("trace.notFound")}</p></Shell>;
+  if (!id)
+    return (
+      <Shell>
+        <p className="text-sm text-fg-soft">Missing skill id.</p>
+      </Shell>
+    );
+  if (error)
+    return (
+      <Shell>
+        <div className="rounded-md border border-tone-error/30 bg-tone-error/10 p-4 text-sm text-tone-error">
+          {error}
+        </div>
+      </Shell>
+    );
+  if (skill === undefined)
+    return (
+      <Shell>
+        <p className="text-sm text-fg-soft">{t("common.loading")}</p>
+      </Shell>
+    );
+  if (skill === null)
+    return (
+      <Shell>
+        <p className="text-sm text-fg-soft">{t("trace.notFound")}</p>
+      </Shell>
+    );
 
   return (
     <Shell>
@@ -65,7 +77,9 @@ export function SkillDetailPage() {
             </h2>
           </div>
           <div className="flex items-center gap-2 text-xs">
-            <Pill tone="info" title={`Context: ${skill.context}`}>{t(`skills.${skill.context}` as const) || skill.context}</Pill>
+            <Pill tone="info" title={`Context: ${skill.context}`}>
+              {t(`skills.${skill.context}` as const) || skill.context}
+            </Pill>
             {skill.user_invocable && <Pill tone="neutral">{t("skills.user")}</Pill>}
             {skill.model_invocable && <Pill tone="agent">{t("skills.model")}</Pill>}
           </div>
@@ -104,7 +118,9 @@ export function SkillDetailPage() {
             <p className="text-sm text-fg-soft">{t("skills.unscopedPath")}</p>
           ) : (
             <ul className="space-y-0.5 font-mono text-xs text-fg">
-              {skill.paths.map((p) => <li key={p}>{p}</li>)}
+              {skill.paths.map((p) => (
+                <li key={p}>{p}</li>
+              ))}
             </ul>
           )}
         </Card>
@@ -124,9 +140,7 @@ export function SkillDetailPage() {
                     {a.required ? t("skills.required") : t("skills.optional")}
                   </Pill>
                 </div>
-                {a.description && (
-                  <p className="mt-1 text-sm text-fg-soft">{a.description}</p>
-                )}
+                {a.description && <p className="mt-1 text-sm text-fg-soft">{a.description}</p>}
               </li>
             ))}
           </ul>
@@ -140,8 +154,14 @@ export function SkillDetailPage() {
         ) : (
           <ul className="mt-3 space-y-1.5">
             {usedByAgents.map((a) => (
-              <li key={a.id} className="flex items-center justify-between gap-3 rounded-md border border-line bg-soft px-3 py-2">
-                <Link to={adminRoutes.agent(a.id)} className="font-mono text-sm text-fg-strong hover:underline">
+              <li
+                key={a.id}
+                className="flex items-center justify-between gap-3 rounded-md border border-line bg-soft px-3 py-2"
+              >
+                <Link
+                  to={adminRoutes.agent(a.id)}
+                  className="font-mono text-sm text-fg-strong hover:underline"
+                >
                   {a.id}
                 </Link>
                 <span className="font-mono text-xs text-fg-soft">{a.model_id}</span>
@@ -190,7 +210,9 @@ function renderInjectionPreview(skill: SkillInfo): string {
     lines.push("");
     lines.push("Arguments:");
     for (const a of skill.arguments) {
-      lines.push(`  - ${a.name} (${a.required ? "required" : "optional"})${a.description ? ": " + a.description : ""}`);
+      lines.push(
+        `  - ${a.name} (${a.required ? "required" : "optional"})${a.description ? ": " + a.description : ""}`,
+      );
     }
   }
   return lines.join("\n");

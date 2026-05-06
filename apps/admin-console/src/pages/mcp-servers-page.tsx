@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { Link } from "react-router";
 import {
   type McpRestartPolicy,
   type McpServerRecord,
   type McpServerSpec,
-  configApi,
+  mcpApi,
 } from "@/lib/config-api";
 import { useCrudPage } from "@/lib/use-crud-page";
 import { useConfirmDialog } from "@/components/confirm-dialog";
@@ -40,6 +41,8 @@ import {
   stringifyJsonObject,
   stringifyLineList,
 } from "@/lib/config-form-helpers";
+import { useMcpStatusQueries } from "@/lib/query/hooks/mcp";
+import { qk } from "@/lib/query/keys";
 
 type McpSortKey = "id" | "transport" | "endpoint" | "updated_at";
 
@@ -138,9 +141,7 @@ function StatusBadge({ status }: { status: McpServerStatus | null | undefined })
     );
   }
   if (status.connected) {
-    return (
-      <span className="inline-block h-2 w-2 rounded-pill bg-state-done" title="Connected" />
-    );
+    return <span className="inline-block h-2 w-2 rounded-pill bg-state-done" title="Connected" />;
   }
   return (
     <span
@@ -156,9 +157,9 @@ export function McpServersPage() {
   const [configDraft, setConfigDraft] = useState("{}");
   const [envDraft, setEnvDraft] = useState("{}");
   const [envMode, setEnvMode] = useState<EnvMode>("replace");
-  const [statuses, setStatuses] = useState<Record<string, McpServerStatus | null>>({});
-  const [restarting, setRestarting] = useState(false);
+  const [restartingId, setRestartingId] = useState<string | null>(null);
   const [errors, setErrors] = useState<Partial<Record<"id" | "command" | "url", string>>>({});
+  const queryClient = useQueryClient();
   const confirm = useConfirmDialog();
   const toast = useToast();
 
@@ -193,31 +194,43 @@ export function McpServersPage() {
     entityLabel: "MCP server",
     prepareSave,
   });
+  const statusIds = useMemo(() => crud.items.map((server) => server.id), [crud.items]);
+  const statusQueries = useMcpStatusQueries(statusIds);
+  const statuses: Record<string, McpServerStatus | null | undefined> = {};
+  for (let i = 0; i < statusIds.length; i += 1) {
+    const query = statusQueries[i];
+    statuses[statusIds[i]] = query?.isPending ? undefined : (query?.data ?? null);
+  }
+  const restartMutation = useMutation({
+    mutationFn: async (id: string) => {
+      await mcpApi.mcpRestart(id);
+      return id;
+    },
+    onMutate: (id) => {
+      setRestartingId(id);
+    },
+    onSuccess: (id) => {
+      toast.push({ message: `MCP server "${id}" restart triggered.`, tone: "success" });
+      void queryClient.invalidateQueries({ queryKey: qk.mcp.status(id) });
+    },
+    onError: (err) => {
+      toast.push({
+        message: `Restart failed: ${err instanceof Error ? err.message : String(err)}`,
+        tone: "error",
+      });
+    },
+    onSettled: () => {
+      setRestartingId(null);
+    },
+  });
 
-  const { search, sort, pageSize, page, apply: applyListState } = useListUrlState<McpSortKey>(LIST_OPTIONS);
-
-  // Fetch live status for all loaded servers in parallel.
-  useEffect(() => {
-    if (crud.items.length === 0) return;
-    const ids = crud.items.map((s) => s.id);
-    // Initialise to undefined (loading) for unknown ids.
-    setStatuses((prev) => {
-      const next = { ...prev };
-      for (const id of ids) {
-        if (!(id in next)) next[id] = undefined as unknown as null;
-      }
-      return next;
-    });
-    void Promise.allSettled(
-      ids.map((id) =>
-        configApi.mcpStatus(id).then(
-          (s) => setStatuses((prev) => ({ ...prev, [id]: s })),
-          () => setStatuses((prev) => ({ ...prev, [id]: null })),
-        ),
-      ),
-    );
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [crud.items.length]);
+  const {
+    search,
+    sort,
+    pageSize,
+    page,
+    apply: applyListState,
+  } = useListUrlState<McpSortKey>(LIST_OPTIONS);
 
   async function handleRestart(id: string) {
     const ok = await confirm({
@@ -226,22 +239,7 @@ export function McpServersPage() {
       confirmLabel: "Restart",
     });
     if (!ok) return;
-    setRestarting(true);
-    try {
-      await configApi.mcpRestart(id);
-      toast.push({ message: `MCP server "${id}" restart triggered.`, tone: "success" });
-      // Re-fetch status after restart.
-      try {
-        const s = await configApi.mcpStatus(id);
-        setStatuses((prev) => ({ ...prev, [id]: s }));
-      } catch {
-        setStatuses((prev) => ({ ...prev, [id]: null }));
-      }
-    } catch (err) {
-      toast.push({ message: `Restart failed: ${err instanceof Error ? err.message : String(err)}`, tone: "error" });
-    } finally {
-      setRestarting(false);
-    }
+    restartMutation.mutate(id);
   }
 
   const filtered = useMemo(
@@ -254,10 +252,7 @@ export function McpServersPage() {
       ]),
     [crud.items, search],
   );
-  const sorted = useMemo(
-    () => sortItems(filtered, sort, SORT_CONFIG),
-    [filtered, sort],
-  );
+  const sorted = useMemo(() => sortItems(filtered, sort, SORT_CONFIG), [filtered, sort]);
   const view = useMemo(
     () => paginate(sorted, { page, pageSize, totalItems: sorted.length }),
     [sorted, page, pageSize],
@@ -265,7 +260,7 @@ export function McpServersPage() {
 
   useEffect(() => {
     if (view.page !== page) applyListState({ page: view.page });
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [view.page, page]);
 
   function startCreate() {
@@ -328,7 +323,9 @@ export function McpServersPage() {
     <div className="mx-auto max-w-6xl p-6 md:p-8">
       <div className="mb-4 flex items-end justify-between gap-4">
         <div className="flex items-baseline gap-3">
-          <h2 className="text-2xl font-semibold tracking-title-em text-fg-strong">{t("mcp.title")}</h2>
+          <h2 className="text-2xl font-semibold tracking-title-em text-fg-strong">
+            {t("mcp.title")}
+          </h2>
           <span aria-hidden className="font-mono text-sm text-fg-faint">
             {crud.items.length}
           </span>
@@ -366,9 +363,7 @@ export function McpServersPage() {
                 aria-invalid={Boolean(errors.id)}
                 onChange={(event) => {
                   const value = event.target.value;
-                  crud.setDraft((current) =>
-                    current ? { ...current, id: value } : current,
-                  );
+                  crud.setDraft((current) => (current ? { ...current, id: value } : current));
                   if (errors.id) setErrors((e) => ({ ...e, id: undefined }));
                 }}
                 className="w-full rounded-xl border border-line-strong px-3 py-2 text-sm text-fg-strong outline-none transition focus:border-line-strong disabled:bg-muted disabled:text-fg-soft aria-[invalid=true]:border-tone-error"
@@ -427,9 +422,7 @@ export function McpServersPage() {
                   aria-invalid={Boolean(errors.url)}
                   onChange={(event) => {
                     const value = event.target.value;
-                    crud.setDraft((current) =>
-                      current ? { ...current, url: value } : current,
-                    );
+                    crud.setDraft((current) => (current ? { ...current, url: value } : current));
                     if (errors.url) setErrors((e) => ({ ...e, url: undefined }));
                   }}
                   className="w-full rounded-xl border border-line-strong px-3 py-2 text-sm text-fg-strong outline-none transition focus:border-line-strong aria-[invalid=true]:border-tone-error"
@@ -469,15 +462,11 @@ export function McpServersPage() {
 
             <SecretField
               mode={envMode === "preserve" ? "keep" : envMode}
-              onModeChange={(next) =>
-                setEnvMode(next === "keep" ? "preserve" : next)
-              }
+              onModeChange={(next) => setEnvMode(next === "keep" ? "preserve" : next)}
               currentlyHasValue={Boolean(crud.isEditingExisting && crud.draft.has_env)}
               statusPill={
                 crud.draft.has_env ? (
-                  <SecretStatusPill
-                    state={envMode === "clear" ? "will-clear" : "stored"}
-                  />
+                  <SecretStatusPill state={envMode === "clear" ? "will-clear" : "stored"} />
                 ) : (
                   <SecretStatusPill state="no-value" />
                 )
@@ -505,7 +494,8 @@ export function McpServersPage() {
               }}
               hint={
                 <>
-                  Must parse as a flat <code className="font-mono">{`{[k]: string}`}</code> object. Validation runs on save; invalid JSON surfaces a 400 error from the server.
+                  Must parse as a flat <code className="font-mono">{`{[k]: string}`}</code> object.
+                  Validation runs on save; invalid JSON surfaces a 400 error from the server.
                 </>
               }
             >
@@ -571,9 +561,7 @@ export function McpServersPage() {
                               ...DEFAULT_RESTART_POLICY,
                               ...(current.restart_policy ?? {}),
                               max_attempts:
-                                event.target.value === ""
-                                  ? undefined
-                                  : Number(event.target.value),
+                                event.target.value === "" ? undefined : Number(event.target.value),
                             },
                           }
                         : current,
@@ -620,8 +608,7 @@ export function McpServersPage() {
                             restart_policy: {
                               ...DEFAULT_RESTART_POLICY,
                               ...(current.restart_policy ?? {}),
-                              backoff_multiplier:
-                                Number(event.target.value) || 1,
+                              backoff_multiplier: Number(event.target.value) || 1,
                             },
                           }
                         : current,
@@ -662,7 +649,7 @@ export function McpServersPage() {
             <LiveStatusSection
               draft={crud.draft}
               status={statuses[crud.draft.id]}
-              restarting={restarting}
+              restarting={restartingId === crud.draft.id}
               onRestart={() => void handleRestart(crud.draft!.id)}
             />
           ) : null}
@@ -720,64 +707,61 @@ export function McpServersPage() {
               <SortableHeader
                 columns={COLUMNS}
                 sort={sort}
-                onSort={(key) =>
-                  applyListState({ sort: toggleSort(sort, key), page: 1 })
-                }
+                onSort={(key) => applyListState({ sort: toggleSort(sort, key), page: 1 })}
               />
               <tbody>
                 {crud.loading && <SkeletonRows rows={3} cols={COLUMNS.length} />}
                 {!crud.loading && view.items.length === 0 && (
                   <tr>
-                    <td colSpan={COLUMNS.length} className="px-5 py-8 text-center text-sm text-fg-soft">
+                    <td
+                      colSpan={COLUMNS.length}
+                      className="px-5 py-8 text-center text-sm text-fg-soft"
+                    >
                       No MCP servers match the current filter.
                     </td>
                   </tr>
                 )}
-                {!crud.loading && view.items.map((server) => (
-                  <tr
-                    key={server.id}
-                    className="border-t border-line text-sm text-fg"
-                  >
-                    <td className="px-5 py-4 font-mono text-fg-strong">
-                      <Link to={adminRoutes.mcpServer(server.id)} className="hover:underline">
-                        {server.id}
-                      </Link>
-                    </td>
-                    <td className="px-5 py-4">{server.transport}</td>
-                    <td className="px-5 py-4">
-                      <EndpointCell server={server} />
-                    </td>
-                    <td className="px-5 py-4 text-fg-soft">
-                      {server.has_env
-                        ? (server.env_keys ?? []).join(", ") || "Stored"
-                        : "None"}
-                    </td>
-                    <td className="px-5 py-4 text-fg-soft">
-                      {formatRelativeTime(server.updated_at)}
-                    </td>
-                    <td className="px-5 py-4">
-                      <StatusBadge status={statuses[server.id]} />
-                    </td>
-                    <td className="px-5 py-4">
-                      <div className="flex gap-4">
-                        <button
-                          type="button"
-                          onClick={() => startEdit(server)}
-                          className="font-medium text-fg transition hover:text-fg-strong"
-                        >
-                          Edit
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => void crud.handleDelete(server.id)}
-                          className="font-medium text-tone-error transition hover:text-tone-error"
-                        >
-                          Delete
-                        </button>
-                      </div>
-                    </td>
-                  </tr>
-                ))}
+                {!crud.loading &&
+                  view.items.map((server) => (
+                    <tr key={server.id} className="border-t border-line text-sm text-fg">
+                      <td className="px-5 py-4 font-mono text-fg-strong">
+                        <Link to={adminRoutes.mcpServer(server.id)} className="hover:underline">
+                          {server.id}
+                        </Link>
+                      </td>
+                      <td className="px-5 py-4">{server.transport}</td>
+                      <td className="px-5 py-4">
+                        <EndpointCell server={server} />
+                      </td>
+                      <td className="px-5 py-4 text-fg-soft">
+                        {server.has_env ? (server.env_keys ?? []).join(", ") || "Stored" : "None"}
+                      </td>
+                      <td className="px-5 py-4 text-fg-soft">
+                        {formatRelativeTime(server.updated_at)}
+                      </td>
+                      <td className="px-5 py-4">
+                        <StatusBadge status={statuses[server.id]} />
+                      </td>
+                      <td className="px-5 py-4">
+                        <div className="flex gap-4">
+                          <button
+                            type="button"
+                            onClick={() => startEdit(server)}
+                            className="font-medium text-fg transition hover:text-fg-strong"
+                          >
+                            Edit
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => void crud.handleDelete(server.id)}
+                            className="font-medium text-tone-error transition hover:text-tone-error"
+                          >
+                            Delete
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
               </tbody>
             </table>
             {view.pageCount > 1 || view.totalItems > pageSize ? (
@@ -796,7 +780,6 @@ export function McpServersPage() {
     </div>
   );
 }
-
 
 function LiveStatusSection({
   draft,
@@ -818,16 +801,8 @@ function LiveStatusSection({
           ? "Connected"
           : "Disconnected";
   const stateTone: "success" | "neutral" | "error" =
-    status === undefined || status === null
-      ? "neutral"
-      : status.connected
-        ? "success"
-        : "error";
-  const handshake = status === undefined || status === null
-    ? "—"
-    : status.connected
-      ? "ok"
-      : "—";
+    status === undefined || status === null ? "neutral" : status.connected ? "success" : "error";
+  const handshake = status === undefined || status === null ? "—" : status.connected ? "ok" : "—";
   const toolCount = status?.tools?.length ?? 0;
   const restartHint = draft.restart_policy?.enabled
     ? `auto · max ${draft.restart_policy?.max_attempts ?? "∞"}`
@@ -874,14 +849,10 @@ function LiveStatusSection({
       {status && (status.last_attempt_at || status.last_success_at) && (
         <div className="mt-2 flex flex-wrap gap-x-4 text-[11px] text-fg-faint">
           {status.last_attempt_at && (
-            <span>
-              last attempt {formatRelativeTime(status.last_attempt_at)}
-            </span>
+            <span>last attempt {formatRelativeTime(status.last_attempt_at)}</span>
           )}
           {status.last_success_at && (
-            <span>
-              last success {formatRelativeTime(status.last_success_at)}
-            </span>
+            <span>last success {formatRelativeTime(status.last_success_at)}</span>
           )}
         </div>
       )}
@@ -902,9 +873,7 @@ function LiveStatusSection({
               {status.tools.map((tool) => (
                 <tr key={tool.name} className="border-t border-line text-sm first:border-t-0">
                   <td className="w-1/3 px-3 py-2 font-mono text-xs text-fg-strong">{tool.name}</td>
-                  <td className="px-3 py-2 text-xs text-fg-soft">
-                    {tool.description ?? "—"}
-                  </td>
+                  <td className="px-3 py-2 text-xs text-fg-soft">{tool.description ?? "—"}</td>
                 </tr>
               ))}
             </tbody>
@@ -929,28 +898,31 @@ function StatusStat({
   const valueClass = [
     "mt-1 text-sm font-semibold",
     mono ? "font-mono" : "",
-    tone === "success" ? "text-tone-success" : tone === "error" ? "text-tone-error" : tone === "warn" ? "text-tone-warn" : "text-fg-strong",
+    tone === "success"
+      ? "text-tone-success"
+      : tone === "error"
+        ? "text-tone-error"
+        : tone === "warn"
+          ? "text-tone-warn"
+          : "text-fg-strong",
   ]
     .join(" ")
     .trim();
   return (
     <div className="rounded-md border border-line bg-surface px-3 py-2">
-      <div className="text-[10px] font-medium uppercase tracking-[0.18em] text-fg-faint">{label}</div>
+      <div className="text-[10px] font-medium uppercase tracking-[0.18em] text-fg-faint">
+        {label}
+      </div>
       <div className={valueClass}>{value}</div>
     </div>
   );
 }
 
-function RestartScheduleHint({
-  policy,
-}: {
-  policy: McpRestartPolicy | undefined;
-}) {
+function RestartScheduleHint({ policy }: { policy: McpRestartPolicy | undefined }) {
   if (!policy?.enabled) {
     return (
       <p className="mt-3 text-xs text-fg-faint">
-        Auto-restart is off. The server stays down on crash and waits for a
-        manual restart.
+        Auto-restart is off. The server stays down on crash and waits for a manual restart.
       </p>
     );
   }
@@ -975,14 +947,10 @@ function RestartScheduleHint({
         </span>
       ))}
       {max > slots && (
-        <span className="ml-1 text-fg-faint">
-          (… capped at {formatBackoffMs(cap)})
-        </span>
+        <span className="ml-1 text-fg-faint">(… capped at {formatBackoffMs(cap)})</span>
       )}
       <span className="ml-1 text-fg-faint">
-        {max > 0
-          ? `· gives up after attempt ${max}`
-          : `· retries forever (no max attempts)`}
+        {max > 0 ? `· gives up after attempt ${max}` : `· retries forever (no max attempts)`}
       </span>
     </p>
   );

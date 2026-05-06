@@ -1,17 +1,14 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, act } from "@testing-library/react";
-import {
-  RouterProvider,
-  createMemoryRouter,
-  createRoutesFromElements,
-} from "react-router";
+import { RouterProvider, createMemoryRouter, createRoutesFromElements } from "react-router";
 import { appRoutes } from "../app";
 import { AuthProvider } from "../components/auth-provider";
 import { ConfirmDialogProvider } from "../components/confirm-dialog";
 import { ToastProvider } from "../components/toast-provider";
 import { ADMIN_TOKEN_STORAGE_KEY } from "../lib/config-api";
 import { __resetAuthInterceptorForTesting } from "../lib/auth-interceptor";
+import { withQueryClient } from "../test/query";
 
 const PROVIDER_RECORD = {
   id: "my-openai",
@@ -83,18 +80,19 @@ function stubFetch(overrides?: Record<string, unknown>) {
 }
 
 function renderProviders() {
-  const memRouter = createMemoryRouter(
-    createRoutesFromElements(appRoutes()),
-    { initialEntries: ["/providers"] },
-  );
+  const memRouter = createMemoryRouter(createRoutesFromElements(appRoutes()), {
+    initialEntries: ["/providers"],
+  });
   return render(
-    <ToastProvider>
-      <ConfirmDialogProvider>
-        <AuthProvider>
-          <RouterProvider router={memRouter} />
-        </AuthProvider>
-      </ConfirmDialogProvider>
-    </ToastProvider>,
+    withQueryClient(
+      <ToastProvider>
+        <ConfirmDialogProvider>
+          <AuthProvider>
+            <RouterProvider router={memRouter} />
+          </AuthProvider>
+        </ConfirmDialogProvider>
+      </ToastProvider>,
+    ),
   );
 }
 

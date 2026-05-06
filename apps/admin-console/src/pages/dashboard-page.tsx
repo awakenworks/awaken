@@ -1,104 +1,33 @@
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Link } from "react-router";
 import {
   type AgentSpec,
-  type Capabilities,
   type McpServerRecord,
   type ProviderRecord,
   type ModelBindingSpec,
   type SystemInfo,
-  configApi,
 } from "@/lib/config-api";
-import {
-  formatActor,
-  isAgentActor,
-  type AuditEvent,
-  type AuditPage,
-} from "@/lib/audit-log";
-import { ConfigApiError } from "@/lib/config-api";
+import { formatActor, isAgentActor, type AuditEvent, type AuditPage } from "@/lib/audit-log";
 import { adminRoutes } from "@/lib/routes";
 import { formatRelativeTime } from "@/lib/format-time";
 import { PageHeader } from "@/components/ui/page-header";
 import { Eyebrow } from "@/components/ui/eyebrow";
 import { Pill } from "@/components/ui/pill";
-import {
-  ReferenceGraph,
-  type GraphColumn,
-  type GraphEdge,
-} from "@/components/ui/reference-graph";
-import {
-  TimeRangeSwitcher,
-  TIME_RANGE_SECONDS,
-  type TimeRange,
-} from "@/components/ui/time-range-switcher";
-
-type DashboardData = {
-  capabilities: Capabilities;
-  mcpServers: McpServerRecord[];
-  providers: ProviderRecord[];
-  models: ModelBindingSpec[];
-  agents: AgentSpec[];
-  auditPage: AuditPage | null;
-  auditDisabled: boolean;
-  systemInfo: SystemInfo | null;
-};
+import { ReferenceGraph, type GraphColumn, type GraphEdge } from "@/components/ui/reference-graph";
+import { TimeRangeSwitcher, type TimeRange } from "@/components/ui/time-range-switcher";
+import { useDashboardQuery } from "@/lib/query/hooks/dashboard";
 
 export function DashboardPage() {
   const { t } = useTranslation();
-  const [data, setData] = useState<DashboardData | null>(null);
-  const [error, setError] = useState<string | null>(null);
   const [range, setRange] = useState<TimeRange>("24h");
-
-  useEffect(() => {
-    let cancelled = false;
-    async function load() {
-      try {
-        const sinceMs = Date.now() - TIME_RANGE_SECONDS[range] * 1000;
-        const since = new Date(sinceMs).toISOString();
-        const auditPromise = configApi
-          .auditLog({ limit: 50, since })
-          .then((page) => ({ page, disabled: false }))
-          .catch((err) => {
-            if (err instanceof ConfigApiError && err.status === 503) {
-              return { page: null, disabled: true };
-            }
-            throw err;
-          });
-        const [capabilities, mcp, providers, models, agents, audit, systemInfo] =
-          await Promise.all([
-            configApi.capabilities(),
-            configApi.list<McpServerRecord>("mcp-servers"),
-            configApi.list<ProviderRecord>("providers"),
-            configApi.list<ModelBindingSpec>("models"),
-            configApi.list<AgentSpec>("agents"),
-            auditPromise,
-            configApi.systemInfo().catch(() => null),
-          ]);
-        if (!cancelled) {
-          setData({
-            capabilities,
-            mcpServers: mcp.items,
-            providers: providers.items,
-            models: models.items,
-            agents: agents.items,
-            auditPage: audit.page,
-            auditDisabled: audit.disabled,
-            systemInfo,
-          });
-          setError(null);
-        }
-      } catch (loadError) {
-        if (!cancelled) {
-          setError(loadError instanceof Error ? loadError.message : String(loadError));
-        }
-      }
-    }
-    void load();
-    return () => {
-      cancelled = true;
-    };
-  }, [range]);
+  const dashboardQuery = useDashboardQuery(range);
+  const data = dashboardQuery.data ?? null;
+  const error = dashboardQuery.error
+    ? dashboardQuery.error instanceof Error
+      ? dashboardQuery.error.message
+      : String(dashboardQuery.error)
+    : null;
 
   if (error) return <PageError message={error} />;
   if (!data) return <PageLoading />;
@@ -128,14 +57,36 @@ export function DashboardPage() {
         actions={
           <div className="flex items-center gap-3">
             <TimeRangeSwitcher value={range} onChange={setRange} />
-            <CountRibbon stats={[
-              { label: t("dashboard.counters.agents"), count: agents.length, to: adminRoutes.agents },
-              { label: t("dashboard.counters.skills"), count: capabilities.skills.length, to: adminRoutes.skills },
-              { label: t("dashboard.counters.models"), count: models.length, to: adminRoutes.models },
-              { label: t("dashboard.counters.providers"), count: providers.length, to: adminRoutes.providers },
-              { label: t("dashboard.counters.mcp"), count: mcpServers.length, to: adminRoutes.mcpServers },
-              { label: t("dashboard.counters.tools"), count: capabilities.tools.length },
-            ]} />
+            <CountRibbon
+              stats={[
+                {
+                  label: t("dashboard.counters.agents"),
+                  count: agents.length,
+                  to: adminRoutes.agents,
+                },
+                {
+                  label: t("dashboard.counters.skills"),
+                  count: capabilities.skills.length,
+                  to: adminRoutes.skills,
+                },
+                {
+                  label: t("dashboard.counters.models"),
+                  count: models.length,
+                  to: adminRoutes.models,
+                },
+                {
+                  label: t("dashboard.counters.providers"),
+                  count: providers.length,
+                  to: adminRoutes.providers,
+                },
+                {
+                  label: t("dashboard.counters.mcp"),
+                  count: mcpServers.length,
+                  to: adminRoutes.mcpServers,
+                },
+                { label: t("dashboard.counters.tools"), count: capabilities.tools.length },
+              ]}
+            />
           </div>
         }
       />
@@ -153,11 +104,7 @@ export function DashboardPage() {
           </h3>
         </div>
         <div className="mt-3">
-          <DependencyGraph
-            agents={agents}
-            models={models}
-            providers={providers}
-          />
+          <DependencyGraph agents={agents} models={models} providers={providers} />
         </div>
         {agents.length > 8 && (
           <div className="mt-3 text-right text-xs text-fg-soft">
@@ -188,10 +135,7 @@ export function DashboardPage() {
           ) : (
             <ul className="mt-4 space-y-3">
               {capabilities.plugins.map((plugin) => (
-                <li
-                  key={plugin.id}
-                  className="rounded-md border border-line bg-soft px-4 py-3"
-                >
+                <li key={plugin.id} className="rounded-md border border-line bg-soft px-4 py-3">
                   <div className="font-mono text-sm text-fg-strong">{plugin.id}</div>
                   <div className="mt-1 text-sm text-fg-soft">
                     {plugin.config_schemas.length === 0
@@ -209,21 +153,18 @@ export function DashboardPage() {
         <div className="rounded-md border border-line bg-surface p-5 shadow-card">
           <div className="flex items-center justify-between">
             <h3 className="text-lg font-semibold text-fg-strong">{t("dashboard.tools.title")}</h3>
-            <span className="text-sm text-fg-soft">{t("dashboard.tools.meta", { count: capabilities.tools.length })}</span>
+            <span className="text-sm text-fg-soft">
+              {t("dashboard.tools.meta", { count: capabilities.tools.length })}
+            </span>
           </div>
           {capabilities.tools.length === 0 ? (
             <p className="mt-4 text-sm text-fg-soft">{t("dashboard.tools.empty")}</p>
           ) : (
             <ul className="mt-4 max-h-[24rem] space-y-3 overflow-auto">
               {capabilities.tools.map((tool) => (
-                <li
-                  key={tool.id}
-                  className="rounded-md border border-line bg-soft px-4 py-3"
-                >
+                <li key={tool.id} className="rounded-md border border-line bg-soft px-4 py-3">
                   <div className="font-mono text-sm text-fg-strong">{tool.id}</div>
-                  <div className="mt-1 text-sm text-fg-soft">
-                    {tool.description || tool.name}
-                  </div>
+                  <div className="mt-1 text-sm text-fg-soft">{tool.description || tool.name}</div>
                 </li>
               ))}
             </ul>
@@ -293,7 +234,9 @@ function DependencyGraph({
     return out;
   }, [agents, models, columns]);
 
-  return <ReferenceGraph columns={columns} edges={edges} ariaLabel="agents to models to providers" />;
+  return (
+    <ReferenceGraph columns={columns} edges={edges} ariaLabel="agents to models to providers" />
+  );
 }
 
 function HealthCard({
@@ -320,7 +263,10 @@ function HealthCard({
         ) : (
           <ul className="mt-2 space-y-1.5">
             {providers.map((p) => (
-              <li key={p.id} className="flex items-center justify-between gap-3 rounded-md border border-line bg-soft px-3 py-2">
+              <li
+                key={p.id}
+                className="flex items-center justify-between gap-3 rounded-md border border-line bg-soft px-3 py-2"
+              >
                 <div className="min-w-0">
                   <div className="font-mono text-sm text-fg-strong">{p.id}</div>
                   <div className="text-xs text-fg-soft">{p.adapter}</div>
@@ -341,7 +287,10 @@ function HealthCard({
         ) : (
           <ul className="mt-2 space-y-1.5">
             {mcpServers.map((s) => (
-              <li key={s.id} className="flex items-center justify-between gap-3 rounded-md border border-line bg-soft px-3 py-2">
+              <li
+                key={s.id}
+                className="flex items-center justify-between gap-3 rounded-md border border-line bg-soft px-3 py-2"
+              >
                 <div className="min-w-0">
                   <div className="font-mono text-sm text-fg-strong">{s.id}</div>
                   <div className="text-xs text-fg-soft">
@@ -349,7 +298,9 @@ function HealthCard({
                   </div>
                 </div>
                 <Pill tone={s.restart_policy?.enabled ? "success" : "neutral"}>
-                  {s.restart_policy?.enabled ? t("dashboard.health.autoRestart") : t("dashboard.health.manual")}
+                  {s.restart_policy?.enabled
+                    ? t("dashboard.health.autoRestart")
+                    : t("dashboard.health.manual")}
                 </Pill>
               </li>
             ))}
@@ -367,10 +318,15 @@ function SystemCard({ info }: { info: SystemInfo }) {
       <Eyebrow>{t("dashboard.system.title")}</Eyebrow>
       <div className="mt-3 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
         <SystemStat label={t("dashboard.system.version")} value={info.version} mono />
-        <SystemStat label={t("dashboard.system.uptime")} value={formatUptime(info.uptime_seconds)} />
+        <SystemStat
+          label={t("dashboard.system.uptime")}
+          value={formatUptime(info.uptime_seconds)}
+        />
         <SystemStat
           label={t("dashboard.system.configStore")}
-          value={info.config_store_enabled ? t("dashboard.system.wired") : t("dashboard.system.none")}
+          value={
+            info.config_store_enabled ? t("dashboard.system.wired") : t("dashboard.system.none")
+          }
           tone={info.config_store_enabled ? "success" : "neutral"}
         />
         <SystemStat
@@ -509,12 +465,13 @@ function ActivityRow({ event }: { event: AuditEvent }) {
     <li
       className={[
         "flex items-start gap-3 rounded-md border-l-2 px-2 py-1",
-        fromAgent
-          ? "border-agent-stripe bg-agent-tint"
-          : "border-transparent",
+        fromAgent ? "border-agent-stripe bg-agent-tint" : "border-transparent",
       ].join(" ")}
     >
-      <span aria-hidden className={`mt-1.5 inline-block h-2 w-2 shrink-0 rounded-pill ${dotClass}`} />
+      <span
+        aria-hidden
+        className={`mt-1.5 inline-block h-2 w-2 shrink-0 rounded-pill ${dotClass}`}
+      />
       <div className="min-w-0 flex-1">
         <div className={`text-sm ${fromAgent ? "text-agent-fg" : "text-fg"}`}>
           <span className="font-medium text-fg-strong">{event.action}</span>{" "}
@@ -562,7 +519,11 @@ function CountRibbon({ stats }: { stats: { label: string; count: number; to?: st
         );
         return (
           <span key={s.label} className="flex items-center gap-x-4">
-            {idx > 0 && <span aria-hidden className="text-fg-faint">·</span>}
+            {idx > 0 && (
+              <span aria-hidden className="text-fg-faint">
+                ·
+              </span>
+            )}
             {s.to ? (
               <Link to={s.to} className="transition-colors hover:text-fg-strong">
                 {inner}
