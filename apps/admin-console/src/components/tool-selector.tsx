@@ -300,7 +300,7 @@ function ModeRadio({
 function summariseSelection(
   state: "all" | "some" | "none",
   total: number,
-  value: string[] | undefined,
+  value: string[] | null | undefined,
   groupToolIds: string[],
 ): string {
   if (total === 0) return "0 tools";
