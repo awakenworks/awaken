@@ -257,6 +257,10 @@ pre-push:
     validate:
       run: |
         cargo clippy --workspace --lib --bins --examples --locked -- -D clippy::correctness
+    admin-console-ci:
+      run: |
+        cd apps/admin-console
+        npm run ci
 
 commit-msg:
   commands:

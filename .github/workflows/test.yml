@@ -66,8 +66,8 @@ jobs:
       - run: npm ci
       - run: npm run build
 
-  admin-console-build-test:
-    name: Admin Console Build + Test
+  admin-console-ci:
+    name: Admin Console CI
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -80,8 +80,7 @@ jobs:
           cache: npm
           cache-dependency-path: apps/admin-console/package-lock.json
       - run: npm ci
-      - run: npm run build
-      - run: npm test
+      - run: npm run ci
 
   msrv:
     name: MSRV Check
