@@ -9,6 +9,7 @@ use awaken_contract::contract::content::ContentBlock;
 use awaken_contract::contract::inference::{StopReason, TokenUsage};
 use awaken_contract::contract::message::{Message, Role, ToolCall};
 use awaken_contract::contract::tool::ToolDescriptor;
+use awaken_contract::contract::tool_schema::sanitize_for_llm;
 
 // ---------------------------------------------------------------------------
 // Message → ChatMessage
@@ -141,9 +142,12 @@ fn to_genai_tool_call(call: &ToolCall) -> GenaiToolCall {
 
 /// Convert an awaken `ToolDescriptor` to a genai `Tool`.
 pub fn to_genai_tool(desc: &ToolDescriptor) -> GenaiTool {
+    let mut schema = desc.parameters.clone();
+    sanitize_for_llm(&mut schema);
+
     GenaiTool::new(&desc.id)
         .with_description(&desc.description)
-        .with_schema(desc.parameters.clone())
+        .with_schema(schema)
 }
 
 // ---------------------------------------------------------------------------
@@ -245,6 +249,52 @@ mod tests {
         let desc = ToolDescriptor::new("calc", "calculator", "Evaluates math");
         let tool = to_genai_tool(&desc);
         assert_eq!(tool.name, "calc".into());
+    }
+
+    #[test]
+    fn tool_descriptor_schema_rewrites_const_for_provider_compatibility() {
+        let desc = ToolDescriptor::new("cancel_task", "cancel_task", "Cancel a task")
+            .with_parameters(json!({
+                "type": "object",
+                "properties": {
+                    "target": {
+                        "oneOf": [
+                            {
+                                "type": "object",
+                                "properties": {
+                                    "relation": { "const": "self" }
+                                },
+                                "required": ["relation"]
+                            },
+                            {
+                                "type": "object",
+                                "properties": {
+                                    "relation": { "const": "child" },
+                                    "name": { "type": "string" }
+                                },
+                                "required": ["relation", "name"]
+                            }
+                        ]
+                    }
+                },
+                "required": ["target"]
+            }));
+
+        let tool = to_genai_tool(&desc);
+        let schema = tool.schema.expect("schema should be preserved");
+        let output = serde_json::to_string(&schema).unwrap();
+        assert!(
+            !output.contains("\"const\""),
+            "Gemini rejects JSON Schema `const` in function declarations"
+        );
+        assert_eq!(
+            schema["properties"]["target"]["oneOf"][0]["properties"]["relation"]["enum"],
+            json!(["self"])
+        );
+        assert_eq!(
+            schema["properties"]["target"]["oneOf"][1]["properties"]["relation"]["enum"],
+            json!(["child"])
+        );
     }
 
     #[test]

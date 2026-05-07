@@ -33,11 +33,35 @@ pub fn generate_tool_schema<T: schemars::JsonSchema>() -> Value {
 
 /// Sanitize a JSON Schema value in-place to be LLM-friendly.
 ///
+/// - Rewrites `const` to an equivalent single-value `enum` because Gemini's
+///   OpenAPI schema subset rejects `const`
 /// - Simplifies `anyOf: [T, {type: null}]` patterns produced by `Option<T>`
 /// - Ensures arrays have `items` and objects have `properties`
 pub fn sanitize_for_llm(schema: &mut Value) {
+    rewrite_const_as_enum(schema);
     simplify_any_of(schema);
     fix_missing_fields(schema);
+}
+
+/// Recursively rewrite JSON Schema `const` keywords to `enum: [value]`.
+///
+/// `const` and a single-value `enum` are equivalent for JSON Schema
+/// validation, while the latter is accepted by Gemini's function declaration
+/// schema. If a schema contains both, `const` is narrower and therefore wins.
+fn rewrite_const_as_enum(value: &mut Value) {
+    if let Some(obj) = value.as_object_mut() {
+        for v in obj.values_mut() {
+            rewrite_const_as_enum(v);
+        }
+
+        if let Some(const_value) = obj.remove("const") {
+            obj.insert("enum".to_string(), Value::Array(vec![const_value]));
+        }
+    } else if let Some(arr) = value.as_array_mut() {
+        for item in arr.iter_mut() {
+            rewrite_const_as_enum(item);
+        }
+    }
 }
 
 /// Validate `args` against a JSON Schema, returning an error with joined messages on failure.
@@ -245,6 +269,55 @@ mod tests {
         let required = schema["required"].as_array().unwrap();
         assert!(required.contains(&json!("query")));
         assert!(!required.contains(&json!("limit")));
+    }
+
+    #[test]
+    fn const_keyword_rewritten_to_single_enum() {
+        let mut schema = json!({
+            "type": "object",
+            "properties": {
+                "target": {
+                    "oneOf": [
+                        {
+                            "type": "object",
+                            "properties": {
+                                "relation": { "const": "self" }
+                            },
+                            "required": ["relation"]
+                        },
+                        {
+                            "type": "object",
+                            "properties": {
+                                "relation": { "const": "child" },
+                                "name": { "type": "string" }
+                            },
+                            "required": ["relation", "name"]
+                        }
+                    ]
+                }
+            },
+            "required": ["target"]
+        });
+
+        sanitize_for_llm(&mut schema);
+        let output = serde_json::to_string(&schema).unwrap();
+        assert!(
+            !output.contains("\"const\""),
+            "Gemini rejects JSON Schema `const` in function declarations"
+        );
+        assert_eq!(
+            schema["properties"]["target"]["oneOf"][0]["properties"]["relation"]["enum"],
+            json!(["self"])
+        );
+        assert_eq!(
+            schema["properties"]["target"]["oneOf"][1]["properties"]["relation"]["enum"],
+            json!(["child"])
+        );
+        assert!(jsonschema::validator_for(&schema).is_ok());
+        assert!(validate_against_schema(&schema, &json!({"target": {"relation": "self"}})).is_ok());
+        assert!(
+            validate_against_schema(&schema, &json!({"target": {"relation": "other"}})).is_err()
+        );
     }
 
     #[test]
