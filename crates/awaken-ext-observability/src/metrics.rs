@@ -386,8 +386,10 @@ impl AgentMetrics {
         result
     }
 
-    /// Get all `MetricsEvent`-compatible events as a unified stream, ordered
-    /// All events captured during the run, grouped by type.
+    /// All events captured during the run, **grouped by type** (not by time).
+    /// Order: inferences → tools → suspensions → handoffs → delegations →
+    /// evaluations → background_tasks. Callers that need chronological order
+    /// must sort by the per-event timestamp themselves.
     pub fn events(&self) -> Vec<MetricsEvent> {
         let mut events = Vec::with_capacity(
             self.inferences.len()
@@ -668,6 +670,25 @@ mod tests {
             }
             .is_terminal()
         );
+    }
+
+    #[test]
+    fn background_task_status_deserializes_legacy_lowercase_string() {
+        // Pre-enum builds wrote raw lowercase strings on the wire; new clients
+        // must keep accepting them so already-persisted spans replay cleanly.
+        let raw = r#"{
+            "run_id": "r-legacy",
+            "thread_id": "t",
+            "agent_id": "a",
+            "task_id": "bg-1",
+            "task_type": "sub_agent",
+            "description": "legacy",
+            "status": "completed",
+            "created_at_ms": 1
+        }"#;
+        let span: BackgroundTaskSpan = serde_json::from_str(raw).unwrap();
+        assert_eq!(span.status, TaskStatus::Completed);
+        assert!(span.is_terminal());
     }
 
     #[test]

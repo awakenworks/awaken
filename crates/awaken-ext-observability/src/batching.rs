@@ -452,6 +452,57 @@ mod tests {
     }
 
     #[test]
+    fn batching_sink_forwards_evaluation_and_background_task_events() {
+        // Regression: an earlier revision of BatchingSink kept its own
+        // `BufferedEvent` enum with three variants; if a future change
+        // forgets to wire EvaluationResult or BackgroundTask through `record`
+        // they would be silently dropped.  Pin both variants here.
+        use crate::metrics::{BackgroundTaskSpan, EvaluationResultEvent, SpanContext};
+        use awaken_runtime::extensions::background::TaskStatus;
+
+        let inner = Arc::new(InMemorySink::new());
+        let sink = BatchingSink::new(
+            inner.clone(),
+            BatchingConfig {
+                max_batch_size: 100,
+                max_buffer_size: 10_000,
+                ..Default::default()
+            },
+        );
+        sink.record(&MetricsEvent::EvaluationResult(EvaluationResultEvent {
+            context: SpanContext::default(),
+            name: "judge".into(),
+            score_value: Some(0.9),
+            score_label: None,
+            explanation: None,
+            response_id: None,
+            error_type: None,
+            timestamp_ms: 1,
+        }));
+        sink.record(&MetricsEvent::BackgroundTask(BackgroundTaskSpan {
+            context: SpanContext::default(),
+            task_id: "bg".into(),
+            task_type: "sub".into(),
+            task_name: None,
+            description: "x".into(),
+            status: TaskStatus::Completed,
+            parent_task_id: None,
+            error_message: None,
+            created_at_ms: 1,
+            completed_at_ms: Some(2),
+        }));
+        // Still buffered.
+        let snapshot = inner.metrics();
+        assert!(snapshot.evaluations.is_empty());
+        assert!(snapshot.background_tasks.is_empty());
+
+        sink.flush().unwrap();
+        let snapshot = inner.metrics();
+        assert_eq!(snapshot.evaluations.len(), 1);
+        assert_eq!(snapshot.background_tasks.len(), 1);
+    }
+
+    #[test]
     fn batching_sink_buffered_count() {
         let inner = Arc::new(InMemorySink::new());
         let sink = BatchingSink::with_defaults(inner);
