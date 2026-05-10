@@ -156,9 +156,11 @@ pub(crate) struct Inner {
     pub(crate) tool_tracing_span: Mutex<HashMap<String, tracing::Span>>,
     /// Execution context captured from RunIdentity at RunStart.
     pub(crate) span_context: Mutex<SpanContext>,
-    /// Last exported background task status keyed by task id.
+    /// Last exported background task status keyed by (owner_thread_id, task_id).
+    /// Pairing the thread id avoids false dedup hits when independent task
+    /// managers reuse the same `bg_N` counter.
     pub(crate) background_task_statuses:
-        Mutex<HashMap<String, awaken_runtime::extensions::background::TaskStatus>>,
+        Mutex<HashMap<(String, String), awaken_runtime::extensions::background::TaskStatus>>,
     /// Step counter incremented per inference (0-based).
     pub(crate) step_counter: AtomicU32,
 }

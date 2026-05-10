@@ -187,8 +187,27 @@ impl OtelMetricsSink {
         Self::context_key(run_key, call_id)
     }
 
-    fn task_context_key(task_id: &str) -> String {
-        task_id.to_string()
+    /// Compose a stable key for background-task lookups. The effective run
+    /// key (parent run when present) is paired with `task_id` so two task
+    /// managers running for different parent runs cannot collide in
+    /// `current_background_tasks` / `background_task_contexts`.
+    ///
+    /// Note: tasks that share the same run yet are minted by independent
+    /// managers (e.g. two threads with no parent_run_id) can still collide.
+    /// Plugin-level dedup (`background_task_statuses`) carries
+    /// `owner_thread_id` for that case; the OTel sink intentionally keeps a
+    /// simpler key so lazy parent lookups (which only see the child's span
+    /// context) stay consistent with the explicit lifecycle path (which sees
+    /// the parent's span context).
+    fn task_context_key(run_key: &str, task_id: &str) -> String {
+        format!("{run_key}\u{1f}{task_id}")
+    }
+
+    /// Convenience: build the task key from a span context + task id, using
+    /// the same effective run key (`parent_run_id` when set) we use elsewhere
+    /// for background-task lineage.
+    fn background_task_key_from_context(ctx: &SpanContext, task_id: &str) -> String {
+        Self::task_context_key(&Self::run_key_for_background_context(ctx), task_id)
     }
 
     fn new_span_id() -> SpanId {
@@ -716,13 +735,16 @@ impl OtelMetricsSink {
         attrs
     }
 
-    fn background_task_context(&self, task_id: &str) -> Option<opentelemetry::Context> {
-        if let Some(active) = self.current_background_tasks.lock().get(task_id).cloned() {
+    fn background_task_context(
+        &self,
+        ctx: &SpanContext,
+        task_id: &str,
+    ) -> Option<opentelemetry::Context> {
+        let key = Self::background_task_key_from_context(ctx, task_id);
+        if let Some(active) = self.current_background_tasks.lock().get(&key).cloned() {
             return Some(active.cx);
         }
-        self.background_task_contexts
-            .lock()
-            .get(&Self::task_context_key(task_id))
+        self.background_task_contexts.lock().get(&key)
     }
 
     fn run_key_for_background_context(ctx: &SpanContext) -> String {
@@ -841,7 +863,7 @@ impl OtelMetricsSink {
         ctx: &SpanContext,
         task_id: &str,
     ) -> opentelemetry::Context {
-        if let Some(cx) = self.background_task_context(task_id) {
+        if let Some(cx) = self.background_task_context(ctx, task_id) {
             return cx;
         }
 
@@ -856,11 +878,12 @@ impl OtelMetricsSink {
             .start_with_context(&self.tracer, &parent_cx);
         let cx = parent_cx.with_span(otel_span);
 
+        let key = Self::background_task_key_from_context(ctx, task_id);
         self.background_task_contexts
             .lock()
-            .insert(Self::task_context_key(task_id), cx.clone());
+            .insert(key.clone(), cx.clone());
         self.current_background_tasks.lock().insert(
-            task_id.to_string(),
+            key,
             ActiveBackgroundTask {
                 cx: cx.clone(),
                 run_key: Self::run_key_for_background_context(ctx),
@@ -874,7 +897,7 @@ impl OtelMetricsSink {
         span: &BackgroundTaskSpan,
     ) -> opentelemetry::Context {
         if let Some(parent_task_id) = span.parent_task_id.as_deref().filter(|id| !id.is_empty())
-            && let Some(cx) = self.background_task_context(parent_task_id)
+            && let Some(cx) = self.background_task_context(&span.context, parent_task_id)
         {
             return cx;
         }
@@ -884,7 +907,10 @@ impl OtelMetricsSink {
             .as_deref()
             .filter(|id| !id.is_empty())
         {
-            let run_key = Self::run_key(&span.context);
+            // Honor `parent_run_id` when present so a sub-agent run whose own
+            // run_id differs from the spawning run still attaches to the
+            // parent run's tool span instead of a stranded one in its own run.
+            let run_key = Self::run_key_for_background_context(&span.context);
             let key = Self::tool_context_key(&run_key, parent_tool_call_id);
             if let Some(cx) = self.tool_contexts.lock().get(&key) {
                 return cx;
@@ -913,12 +939,8 @@ impl OtelMetricsSink {
             .map(|ms| std::time::UNIX_EPOCH + std::time::Duration::from_millis(ms))
             .unwrap_or_else(std::time::SystemTime::now);
 
-        let active = {
-            self.current_background_tasks
-                .lock()
-                .get(&span.task_id)
-                .cloned()
-        };
+        let key = Self::background_task_key_from_context(&span.context, &span.task_id);
+        let active = { self.current_background_tasks.lock().get(&key).cloned() };
         if let Some(active) = active {
             active.cx.span().set_attributes(attrs);
             if span.error_message.is_some() {
@@ -927,7 +949,7 @@ impl OtelMetricsSink {
                 ));
             }
             if span.is_terminal() {
-                self.current_background_tasks.lock().remove(&span.task_id);
+                self.current_background_tasks.lock().remove(&key);
                 active.cx.span().end_with_timestamp(end_time);
                 self.end_deferred_root_if_background_idle(&active.run_key);
             }
@@ -952,7 +974,7 @@ impl OtelMetricsSink {
 
         self.background_task_contexts
             .lock()
-            .insert(Self::task_context_key(&span.task_id), cx.clone());
+            .insert(key.clone(), cx.clone());
 
         if span.is_terminal() {
             cx.span().end_with_timestamp(end_time);
@@ -961,7 +983,7 @@ impl OtelMetricsSink {
             ));
         } else {
             self.current_background_tasks.lock().insert(
-                span.task_id.clone(),
+                key,
                 ActiveBackgroundTask {
                     cx,
                     run_key: Self::run_key_for_background_context(&span.context),
@@ -2788,6 +2810,161 @@ mod tests {
             end_ms,
             started_at_ms + duration_ms,
             "OTel end should equal started_at_ms + duration"
+        );
+    }
+
+    #[test]
+    fn background_tasks_with_same_id_in_different_runs_get_independent_spans() {
+        // Two tasks happen to share `task_id = "bg-1"` but live in different
+        // runs. Each must produce its own OTel span; completing one must not
+        // close the other's span. Earlier the OTel maps were keyed by
+        // `task_id` alone, which would silently merge them.
+        use awaken_runtime::extensions::background::TaskStatus;
+
+        let (sink, exporter, provider) = make_capturing_sink();
+
+        let make_ctx = |run: &str, thread: &str| SpanContext {
+            run_id: run.to_string(),
+            thread_id: thread.to_string(),
+            agent_id: "agent".to_string(),
+            parent_run_id: None,
+            parent_tool_call_id: None,
+        };
+
+        // Open both runs' roots, then record one Running event in each.
+        sink.record(&MetricsEvent::Inference(GenAISpan {
+            context: make_ctx("run-a", "thread-a"),
+            ..sample_genai_span()
+        }));
+        sink.record(&MetricsEvent::Inference(GenAISpan {
+            context: make_ctx("run-b", "thread-b"),
+            ..sample_genai_span()
+        }));
+        let mut shared = sample_background_task_span(TaskStatus::Running);
+        shared.task_id = "bg-1".to_string();
+        let task_a = BackgroundTaskSpan {
+            context: make_ctx("run-a", "thread-a"),
+            ..shared.clone()
+        };
+        let task_b = BackgroundTaskSpan {
+            context: make_ctx("run-b", "thread-b"),
+            ..shared
+        };
+        sink.record_background_task(&task_a);
+        sink.record_background_task(&task_b);
+
+        // Completing run-a's task must not affect run-b's task.
+        let completed_a = BackgroundTaskSpan {
+            status: TaskStatus::Completed,
+            completed_at_ms: Some(2_000),
+            ..task_a
+        };
+        sink.record_background_task(&completed_a);
+
+        // run-b stays running; close it via flush_run after run-end.
+        sink.on_run_end(&AgentMetrics::default());
+        let run_b_key = OtelMetricsSink::run_key(&make_ctx("run-b", "thread-b"));
+        sink.flush_run(&run_b_key, "abandoned");
+
+        drop(sink);
+        let _ = provider.shutdown();
+
+        let bg_spans: Vec<_> = exporter
+            .finished_spans()
+            .into_iter()
+            .filter(|s| s.name.as_ref() == "awaken.background_task")
+            .collect();
+        assert_eq!(
+            bg_spans.len(),
+            2,
+            "same-id tasks in different runs must each get their own span"
+        );
+
+        let close_reasons: Vec<_> = bg_spans
+            .iter()
+            .filter_map(|s| {
+                attr_map(s)
+                    .get("awaken.background_task.close_reason")
+                    .map(|v| v.to_string())
+            })
+            .collect();
+        assert_eq!(
+            close_reasons,
+            vec!["abandoned".to_string()],
+            "only run-b's task should carry close_reason; run-a completed cleanly"
+        );
+    }
+
+    #[test]
+    fn background_task_with_parent_run_id_attaches_to_parent_run_tool_span() {
+        // The spawning agent runs a tool in `parent-run`; that tool spawns a
+        // background task with its own `run_id = child-run` but the parent
+        // lineage is conveyed via `parent_run_id`. The background task span
+        // MUST nest under the parent-run tool span, not under a stranded
+        // synthetic context in `child-run`.
+        use awaken_runtime::extensions::background::TaskStatus;
+
+        let (sink, exporter, provider) = make_capturing_sink();
+        let parent_context = SpanContext {
+            run_id: "parent-run".to_string(),
+            thread_id: "thread-parent".to_string(),
+            agent_id: "agent-parent".to_string(),
+            parent_run_id: None,
+            parent_tool_call_id: None,
+        };
+
+        // Open the parent run's root + a tool span that has the call_id we
+        // are going to reference from the background task.
+        sink.record(&MetricsEvent::Inference(GenAISpan {
+            context: parent_context.clone(),
+            ..sample_genai_span()
+        }));
+        let tool = ToolSpan {
+            context: parent_context.clone(),
+            call_id: "call-cross-run".to_string(),
+            ..sample_tool_span()
+        };
+        sink.record(&MetricsEvent::Tool(tool.clone()));
+
+        // Background task lives in a different run (`child-run`) but points at
+        // the parent run via `parent_run_id` and the parent tool via
+        // `parent_tool_call_id`.
+        let bg_context = SpanContext {
+            run_id: "child-run".to_string(),
+            thread_id: "thread-child".to_string(),
+            agent_id: "agent-child".to_string(),
+            parent_run_id: Some("parent-run".to_string()),
+            parent_tool_call_id: Some("call-cross-run".to_string()),
+        };
+        let completed = BackgroundTaskSpan {
+            context: bg_context,
+            status: TaskStatus::Completed,
+            completed_at_ms: Some(2_000),
+            ..sample_background_task_span(TaskStatus::Completed)
+        };
+        sink.record_background_task(&completed);
+        sink.on_run_end(&AgentMetrics::default());
+        drop(sink);
+        let _ = provider.shutdown();
+
+        let spans = exporter.finished_spans();
+        let tool_span = spans
+            .iter()
+            .find(|s| s.name.starts_with("execute_tool"))
+            .expect("parent tool span exported");
+        let bg_span = spans
+            .iter()
+            .find(|s| s.name.as_ref() == "awaken.background_task")
+            .expect("background task span exported");
+        assert_eq!(
+            bg_span.parent_span_id,
+            tool_span.span_context.span_id(),
+            "background task must parent under the parent-run tool span"
+        );
+        assert_eq!(
+            bg_span.span_context.trace_id(),
+            tool_span.span_context.trace_id(),
+            "background task must share parent run's trace id"
         );
     }
 }

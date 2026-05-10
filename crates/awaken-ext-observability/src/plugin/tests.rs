@@ -179,7 +179,54 @@ async fn background_task_state_records_lifecycle_once_per_status() {
 }
 
 #[tokio::test]
-async fn run_end_resets_run_scoped_metrics_and_background_statuses() {
+async fn background_task_dedup_distinguishes_owner_thread() {
+    // Two task managers on different owner threads can both mint `bg-0`. The
+    // dedup map must treat them as distinct so the second event is recorded
+    // instead of being silently absorbed.
+    let sink = InMemorySink::new();
+    let plugin = ObservabilityPlugin::new(sink.clone());
+
+    let make = |thread: &str| PersistedTaskMeta {
+        task_id: "bg-0".to_string(),
+        owner_thread_id: thread.to_string(),
+        task_type: "sub_agent".to_string(),
+        name: Some("worker".to_string()),
+        description: "shared id, different owners".to_string(),
+        status: TaskStatus::Running,
+        error: None,
+        result: None,
+        created_at_ms: 10,
+        completed_at_ms: None,
+        parent_context: TaskParentContext::default(),
+    };
+
+    let ctx = PhaseContext::new(
+        Phase::StepEnd,
+        snapshot_with_background_task(make("thread-a")),
+    );
+    run_phase(&plugin, &ctx).await;
+    let ctx = PhaseContext::new(
+        Phase::StepEnd,
+        snapshot_with_background_task(make("thread-b")),
+    );
+    run_phase(&plugin, &ctx).await;
+
+    let metrics = sink.metrics();
+    assert_eq!(metrics.background_tasks.len(), 2);
+    let owners: Vec<&str> = metrics
+        .background_tasks
+        .iter()
+        .map(|s| s.context.thread_id.as_str())
+        .collect();
+    assert!(owners.contains(&"thread-a"));
+    assert!(owners.contains(&"thread-b"));
+}
+
+#[tokio::test]
+async fn run_end_resets_per_run_metrics_but_keeps_background_task_dedup() {
+    // Regression: persisted background-task snapshots can survive across
+    // runs; the per-run metrics MUST reset, but the dedup map MUST NOT, or
+    // already-emitted (status, task) pairs would be re-recorded each run.
     let sink = InMemorySink::new();
     let plugin = ObservabilityPlugin::new(sink.clone()).with_model("m");
 
@@ -197,6 +244,7 @@ async fn run_end_resets_run_scoped_metrics_and_background_statuses() {
         parent_context: TaskParentContext::default(),
     };
 
+    // Run 1: observe Running once.
     let ctx =
         PhaseContext::new(Phase::RunStart, empty_snapshot()).with_run_identity(identity("agent-a"));
     run_phase(&plugin, &ctx).await;
@@ -214,25 +262,48 @@ async fn run_end_resets_run_scoped_metrics_and_background_statuses() {
         1
     );
 
+    // RunEnd resets the per-run metric Vec but preserves the dedup map.
     let ctx =
         PhaseContext::new(Phase::RunEnd, empty_snapshot()).with_run_identity(identity("agent-a"));
     run_phase(&plugin, &ctx).await;
     assert!(
         lock_unpoison(&plugin.inner.metrics)
             .background_tasks
-            .is_empty()
+            .is_empty(),
+        "per-run metrics must reset",
     );
-    assert!(lock_unpoison(&plugin.inner.background_task_statuses).is_empty());
+    assert_eq!(
+        lock_unpoison(&plugin.inner.background_task_statuses).len(),
+        1,
+        "dedup map must persist across runs"
+    );
 
+    // Run 2: snapshot still contains the same Running task. Dedup MUST
+    // suppress re-emission.
     let ctx =
         PhaseContext::new(Phase::RunStart, empty_snapshot()).with_run_identity(identity("agent-a"));
     run_phase(&plugin, &ctx).await;
-    let ctx = PhaseContext::new(Phase::StepEnd, snapshot_with_background_task(running));
-    run_phase(&plugin, &ctx).await;
-    assert_eq!(
-        lock_unpoison(&plugin.inner.metrics).background_tasks.len(),
-        1
+    let ctx = PhaseContext::new(
+        Phase::StepEnd,
+        snapshot_with_background_task(running.clone()),
     );
+    run_phase(&plugin, &ctx).await;
+    assert!(
+        lock_unpoison(&plugin.inner.metrics)
+            .background_tasks
+            .is_empty(),
+        "Running was already emitted in run 1; run 2 must not duplicate it",
+    );
+
+    // Status transition Running -> Completed MUST still be recorded.
+    let mut completed = running;
+    completed.status = TaskStatus::Completed;
+    completed.completed_at_ms = Some(40);
+    let ctx = PhaseContext::new(Phase::StepEnd, snapshot_with_background_task(completed));
+    run_phase(&plugin, &ctx).await;
+    let metrics = lock_unpoison(&plugin.inner.metrics);
+    assert_eq!(metrics.background_tasks.len(), 1);
+    assert_eq!(metrics.background_tasks[0].status, TaskStatus::Completed);
 }
 
 #[test]

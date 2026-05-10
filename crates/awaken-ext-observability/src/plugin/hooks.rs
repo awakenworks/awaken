@@ -32,7 +32,13 @@ impl PhaseHook for RunStartHook {
     async fn run(&self, ctx: &PhaseContext) -> Result<StateCommand, StateError> {
         *self.0.run_start.lock().await = Some(Instant::now());
         *self.0.metrics.lock().await = crate::metrics::AgentMetrics::default();
-        self.0.background_task_statuses.lock().await.clear();
+        // `background_task_statuses` is intentionally NOT cleared here. Its
+        // role is to remember which (owner_thread_id, task_id, status)
+        // tuples have already been emitted to the sink. Persisted background
+        // task snapshots may survive across runs, so clearing on RunStart
+        // would cause already-completed tasks to be re-emitted as new events.
+        // The map is bounded by total background tasks ever observed, which
+        // is small for any realistic workload.
         self.0.inference_tracing_span.lock().await.take();
         self.0.tool_tracing_span.lock().await.clear();
         self.0.tool_start.lock().await.clear();
@@ -499,7 +505,7 @@ impl PhaseHook for RunEndHook {
         crate::prometheus::record_run_end(&metrics);
         s.sink.on_run_end(&metrics);
         *s.metrics.lock().await = crate::metrics::AgentMetrics::default();
-        s.background_task_statuses.lock().await.clear();
+        // See `RunStartHook` for why `background_task_statuses` is not cleared.
 
         Ok(StateCommand::new())
     }
@@ -517,12 +523,13 @@ impl PhaseHook for BackgroundTaskObserveHook {
         let s = &self.0;
         for meta in snapshot.tasks.values() {
             let status = meta.status;
+            let key = (meta.owner_thread_id.clone(), meta.task_id.clone());
             let should_record = {
                 let mut seen = s.background_task_statuses.lock().await;
-                if seen.get(&meta.task_id) == Some(&status) {
+                if seen.get(&key) == Some(&status) {
                     false
                 } else {
-                    seen.insert(meta.task_id.clone(), status);
+                    seen.insert(key, status);
                     true
                 }
             };
