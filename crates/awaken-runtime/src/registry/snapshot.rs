@@ -4,6 +4,8 @@ use std::sync::Arc;
 
 use parking_lot::{Mutex, RwLock};
 
+use awaken_contract::identity::{agent_prompt_id, tool_desc_id};
+
 use super::traits::RegistrySet;
 
 #[derive(Clone)]
@@ -31,6 +33,31 @@ impl RegistrySnapshot {
     pub fn into_registries(self) -> RegistrySet {
         self.registries
     }
+
+    /// Content-addressed id of the agent's system prompt at this snapshot's
+    /// version. `None` when the agent isn't registered.
+    pub fn agent_prompt_id(&self, agent_id: &str) -> Option<String> {
+        let spec = self.registries.agents.get_agent(agent_id)?;
+        Some(agent_prompt_id(agent_id, "system", &spec.system_prompt))
+    }
+
+    /// Content-addressed id of the tool's descriptor at this snapshot's
+    /// version. `None` when the tool isn't registered.
+    pub fn tool_desc_id(&self, tool_id: &str) -> Option<String> {
+        let tool = self.registries.tools.get_tool(tool_id)?;
+        let descriptor = tool.descriptor();
+        let schema = serde_json::to_string(&descriptor.parameters).ok()?;
+        Some(tool_desc_id(tool_id, &descriptor.description, &schema))
+    }
+
+    // skill_content_id is intentionally NOT implemented here. ADR-0030 D1
+    // names a `skill_content_id` accessor symmetric with the two above, but
+    // skills live in `awaken-ext-skills` (its own `SkillRegistry`) and do
+    // not flow through `RegistrySet` / `PluginSource`. Surfacing skill text
+    // through the runtime registry would either widen the `PluginSource`
+    // trait or wire the skills crate into `RegistrySet` — a cross-crate
+    // design decision deferred to a follow-up ADR. Hooks (T6) populate
+    // `SpanContext::skill_ids` as an empty Vec until then.
 }
 
 #[derive(Clone)]
@@ -126,6 +153,37 @@ mod tests {
             plugins: Arc::new(MapPluginSource::new()),
             backends: Arc::new(MapBackendRegistry::new()),
         }
+    }
+
+    #[test]
+    fn snapshot_exposes_agent_prompt_id() {
+        let handle = RegistryHandle::new(make_registry_set("weather"));
+        let snapshot = handle.snapshot();
+        let id = snapshot
+            .agent_prompt_id("weather")
+            .expect("registered agent has a prompt id");
+        assert_eq!(id.len(), 12);
+        // Stability: a second call with the same prompt yields the same id.
+        let id_again = snapshot.agent_prompt_id("weather").unwrap();
+        assert_eq!(id, id_again);
+    }
+
+    #[test]
+    fn snapshot_returns_none_for_unknown_agent() {
+        let handle = RegistryHandle::new(make_registry_set("weather"));
+        let snapshot = handle.snapshot();
+        assert!(snapshot.agent_prompt_id("nope").is_none());
+    }
+
+    #[test]
+    fn snapshot_returns_none_for_unknown_tool() {
+        // The positive-path hashing behaviour is tested in
+        // `awaken_contract::identity::tests` against the free function this
+        // method delegates to; the registry layer only adds the lookup step,
+        // and that step is what this test pins down.
+        let handle = RegistryHandle::new(make_registry_set("weather"));
+        let snapshot = handle.snapshot();
+        assert!(snapshot.tool_desc_id("no-such-tool").is_none());
     }
 
     #[test]
