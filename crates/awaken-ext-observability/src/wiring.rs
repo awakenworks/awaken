@@ -240,14 +240,6 @@ impl MetricsSink for ArcSink {
         self.0.record(event);
     }
 
-    fn record_evaluation_result(&self, event: &crate::metrics::EvaluationResultEvent) {
-        self.0.record_evaluation_result(event);
-    }
-
-    fn record_background_task(&self, span: &crate::metrics::BackgroundTaskSpan) {
-        self.0.record_background_task(span);
-    }
-
     fn on_run_end(&self, metrics: &crate::metrics::AgentMetrics) {
         self.0.on_run_end(metrics);
     }

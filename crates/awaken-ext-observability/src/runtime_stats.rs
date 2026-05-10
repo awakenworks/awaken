@@ -340,6 +340,8 @@ impl RuntimeStatsRegistry {
             MetricsEvent::Suspension(s) => s.context.agent_id.clone(),
             MetricsEvent::Handoff(s) => s.context.agent_id.clone(),
             MetricsEvent::Delegation(s) => s.context.agent_id.clone(),
+            MetricsEvent::EvaluationResult(e) => e.context.agent_id.clone(),
+            MetricsEvent::BackgroundTask(s) => s.context.agent_id.clone(),
         };
         if agent_id.is_empty() {
             return;
@@ -366,6 +368,9 @@ impl RuntimeStatsRegistry {
             MetricsEvent::Suspension(_) => bucket.suspensions += 1,
             MetricsEvent::Handoff(_) => bucket.handoffs += 1,
             MetricsEvent::Delegation(_) => bucket.delegations += 1,
+            // Evaluations and background tasks are not aggregated into the
+            // per-agent runtime windows yet.
+            MetricsEvent::EvaluationResult(_) | MetricsEvent::BackgroundTask(_) => {}
         }
     }
 }

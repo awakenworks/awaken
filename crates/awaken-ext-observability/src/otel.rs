@@ -1123,15 +1123,13 @@ impl MetricsSink for OtelMetricsSink {
             MetricsEvent::Suspension(span) => self.record_suspension(span),
             MetricsEvent::Handoff(span) => self.record_handoff(span),
             MetricsEvent::Delegation(span) => self.record_delegation(span),
+            MetricsEvent::EvaluationResult(event) => {
+                OtelMetricsSink::record_evaluation_result(self, event);
+            }
+            MetricsEvent::BackgroundTask(span) => {
+                OtelMetricsSink::record_background_task(self, span);
+            }
         }
-    }
-
-    fn record_evaluation_result(&self, event: &EvaluationResultEvent) {
-        OtelMetricsSink::record_evaluation_result(self, event);
-    }
-
-    fn record_background_task(&self, span: &BackgroundTaskSpan) {
-        OtelMetricsSink::record_background_task(self, span);
     }
 
     fn on_run_end(&self, metrics: &AgentMetrics) {
@@ -1211,6 +1209,8 @@ impl OtelMetricsSink {
                 MetricsEvent::Suspension(span) => &span.context,
                 MetricsEvent::Handoff(span) => &span.context,
                 MetricsEvent::Delegation(span) => &span.context,
+                MetricsEvent::EvaluationResult(event) => &event.context,
+                MetricsEvent::BackgroundTask(span) => &span.context,
             };
             run_keys.insert(Self::run_key(ctx));
         }

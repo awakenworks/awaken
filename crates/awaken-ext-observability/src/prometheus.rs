@@ -36,11 +36,11 @@ impl MetricsSink for PrometheusSink {
             MetricsEvent::Suspension(span) => record_suspension(span),
             MetricsEvent::Handoff(span) => record_handoff(span),
             MetricsEvent::Delegation(span) => record_delegation(span),
+            MetricsEvent::EvaluationResult(_) => {
+                // No prometheus counters for evaluation results yet.
+            }
+            MetricsEvent::BackgroundTask(span) => record_background_task(span),
         }
-    }
-
-    fn record_background_task(&self, span: &BackgroundTaskSpan) {
-        record_background_task(span);
     }
 
     fn on_run_end(&self, metrics: &AgentMetrics) {

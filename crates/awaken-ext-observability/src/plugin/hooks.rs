@@ -532,7 +532,7 @@ impl PhaseHook for BackgroundTaskObserveHook {
             }
 
             let span = background_task_span_from_meta(meta);
-            s.sink.record_background_task(&span);
+            s.sink.record(&MetricsEvent::BackgroundTask(span.clone()));
             s.metrics.lock().await.background_tasks.push(span);
         }
 

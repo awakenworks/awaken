@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use parking_lot::Mutex;
 
-use super::metrics::{AgentMetrics, BackgroundTaskSpan, EvaluationResultEvent, MetricsEvent};
+use super::metrics::{AgentMetrics, MetricsEvent};
 
 /// Error type for sink operations (flush, shutdown).
 #[derive(Debug)]
@@ -46,14 +46,10 @@ impl SinkError {
 
 /// Trait for consuming telemetry data.
 pub trait MetricsSink: Send + Sync {
-    /// Record a single metrics event.
+    /// Record a single metrics event. Implementations must handle every
+    /// `MetricsEvent` variant — there is no default no-op fallback so a
+    /// missing arm becomes a compile error rather than silently dropped data.
     fn record(&self, event: &MetricsEvent);
-
-    /// Record a GenAI evaluation event.
-    fn record_evaluation_result(&self, _event: &EvaluationResultEvent) {}
-
-    /// Record a background task lifecycle event.
-    fn record_background_task(&self, _span: &BackgroundTaskSpan) {}
 
     /// Called at end of run with aggregated metrics.
     fn on_run_end(&self, metrics: &AgentMetrics);
@@ -94,15 +90,9 @@ impl MetricsSink for InMemorySink {
             MetricsEvent::Suspension(s) => inner.suspensions.push(s.clone()),
             MetricsEvent::Handoff(s) => inner.handoffs.push(s.clone()),
             MetricsEvent::Delegation(s) => inner.delegations.push(s.clone()),
+            MetricsEvent::EvaluationResult(e) => inner.evaluations.push(e.clone()),
+            MetricsEvent::BackgroundTask(s) => inner.background_tasks.push(s.clone()),
         }
-    }
-
-    fn record_evaluation_result(&self, event: &EvaluationResultEvent) {
-        self.inner.lock().evaluations.push(event.clone());
-    }
-
-    fn record_background_task(&self, span: &BackgroundTaskSpan) {
-        self.inner.lock().background_tasks.push(span.clone());
     }
 
     fn on_run_end(&self, metrics: &AgentMetrics) {
@@ -323,6 +313,64 @@ mod tests {
         let sink = InMemorySink::new();
         assert!(sink.flush().is_ok());
         assert!(sink.shutdown().is_ok());
+    }
+
+    #[test]
+    fn minimal_sink_must_handle_every_event_variant() {
+        // A custom sink that only implements `record` and `on_run_end` MUST
+        // observe evaluation results and background-task spans — they are
+        // delivered through `MetricsEvent`, not through forgotten default
+        // trait methods.
+        use crate::metrics::{BackgroundTaskSpan, EvaluationResultEvent, SpanContext};
+        use awaken_runtime::extensions::background::TaskStatus;
+        use parking_lot::Mutex;
+        use std::sync::Arc;
+
+        #[derive(Default)]
+        struct CountingSink {
+            seen: Arc<Mutex<Vec<&'static str>>>,
+        }
+        impl MetricsSink for CountingSink {
+            fn record(&self, event: &MetricsEvent) {
+                let label = match event {
+                    MetricsEvent::Inference(_) => "inference",
+                    MetricsEvent::Tool(_) => "tool",
+                    MetricsEvent::Suspension(_) => "suspension",
+                    MetricsEvent::Handoff(_) => "handoff",
+                    MetricsEvent::Delegation(_) => "delegation",
+                    MetricsEvent::EvaluationResult(_) => "evaluation_result",
+                    MetricsEvent::BackgroundTask(_) => "background_task",
+                };
+                self.seen.lock().push(label);
+            }
+            fn on_run_end(&self, _: &AgentMetrics) {}
+        }
+
+        let sink = CountingSink::default();
+        sink.record(&MetricsEvent::EvaluationResult(EvaluationResultEvent {
+            context: SpanContext::default(),
+            name: "judge".into(),
+            score_value: None,
+            score_label: None,
+            explanation: None,
+            response_id: None,
+            error_type: None,
+            timestamp_ms: 0,
+        }));
+        sink.record(&MetricsEvent::BackgroundTask(BackgroundTaskSpan {
+            context: SpanContext::default(),
+            task_id: "bg".into(),
+            task_type: "sub".into(),
+            task_name: None,
+            description: "x".into(),
+            status: TaskStatus::Running,
+            parent_task_id: None,
+            error_message: None,
+            created_at_ms: 0,
+            completed_at_ms: None,
+        }));
+        let seen = sink.seen.lock().clone();
+        assert_eq!(seen, vec!["evaluation_result", "background_task"]);
     }
 
     #[test]

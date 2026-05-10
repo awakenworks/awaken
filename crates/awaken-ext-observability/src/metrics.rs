@@ -44,6 +44,8 @@ pub enum MetricsEvent {
     Suspension(SuspensionSpan),
     Handoff(HandoffSpan),
     Delegation(DelegationSpan),
+    EvaluationResult(EvaluationResultEvent),
+    BackgroundTask(BackgroundTaskSpan),
 }
 
 /// Opt-in capture policy for potentially sensitive tool call payloads.
@@ -384,14 +386,16 @@ impl AgentMetrics {
     }
 
     /// Get all `MetricsEvent`-compatible events as a unified stream, ordered
-    /// by type (inferences, tools, suspensions, handoffs, delegations).
+    /// All events captured during the run, grouped by type.
     pub fn events(&self) -> Vec<MetricsEvent> {
         let mut events = Vec::with_capacity(
             self.inferences.len()
                 + self.tools.len()
                 + self.suspensions.len()
                 + self.handoffs.len()
-                + self.delegations.len(),
+                + self.delegations.len()
+                + self.evaluations.len()
+                + self.background_tasks.len(),
         );
         events.extend(self.inferences.iter().cloned().map(MetricsEvent::Inference));
         events.extend(self.tools.iter().cloned().map(MetricsEvent::Tool));
@@ -407,6 +411,18 @@ impl AgentMetrics {
                 .iter()
                 .cloned()
                 .map(MetricsEvent::Delegation),
+        );
+        events.extend(
+            self.evaluations
+                .iter()
+                .cloned()
+                .map(MetricsEvent::EvaluationResult),
+        );
+        events.extend(
+            self.background_tasks
+                .iter()
+                .cloned()
+                .map(MetricsEvent::BackgroundTask),
         );
         events
     }

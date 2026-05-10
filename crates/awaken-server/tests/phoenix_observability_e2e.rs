@@ -694,8 +694,8 @@ async fn phoenix_via_helpers_background_task_span_correlated_with_parent_tool() 
     let inference = build_inference_span(&model, &run_id);
     sink.record(&MetricsEvent::Inference(inference.clone()));
     sink.record(&MetricsEvent::Tool(tool_span.clone()));
-    sink.record_background_task(&running);
-    sink.record_background_task(&completed);
+    sink.record(&MetricsEvent::BackgroundTask(running.clone()));
+    sink.record(&MetricsEvent::BackgroundTask(completed.clone()));
     sink.on_run_end(&AgentMetrics {
         inferences: vec![inference],
         tools: vec![tool_span],
@@ -864,7 +864,7 @@ async fn phoenix_via_helpers_background_subagent_run_nested_under_task() {
         created_at_ms,
         Some(created_at_ms + 250),
     );
-    sink.record_background_task(&completed);
+    sink.record(&MetricsEvent::BackgroundTask(completed.clone()));
     sink.on_run_end(&AgentMetrics {
         inferences: vec![inference],
         tools: vec![tool_span],
@@ -952,7 +952,7 @@ async fn phoenix_via_helpers_evaluation_event_exported() {
     };
 
     sink.record(&MetricsEvent::Inference(inference.clone()));
-    sink.record_evaluation_result(&event);
+    sink.record(&MetricsEvent::EvaluationResult(event.clone()));
     sink.on_run_end(&AgentMetrics {
         inferences: vec![inference],
         evaluations: vec![event],

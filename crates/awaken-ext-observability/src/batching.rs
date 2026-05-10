@@ -6,7 +6,7 @@ use parking_lot::Mutex;
 
 use tokio::sync::Notify;
 
-use crate::metrics::{AgentMetrics, BackgroundTaskSpan, EvaluationResultEvent, MetricsEvent};
+use crate::metrics::{AgentMetrics, MetricsEvent};
 use crate::sink::{MetricsSink, SinkError};
 
 /// Configuration for [`BatchingSink`].
@@ -29,17 +29,10 @@ impl Default for BatchingConfig {
     }
 }
 
-/// Internal buffer holding all event types as a unified stream.
+/// Internal buffer holding telemetry events as a unified stream.
 #[derive(Default)]
 struct Buffer {
-    events: Vec<BufferedEvent>,
-}
-
-#[derive(Clone)]
-enum BufferedEvent {
-    Metrics(MetricsEvent),
-    EvaluationResult(EvaluationResultEvent),
-    BackgroundTask(BackgroundTaskSpan),
+    events: Vec<MetricsEvent>,
 }
 
 impl Buffer {
@@ -51,7 +44,7 @@ impl Buffer {
         self.events.is_empty()
     }
 
-    fn take(&mut self) -> Vec<BufferedEvent> {
+    fn take(&mut self) -> Vec<MetricsEvent> {
         std::mem::take(&mut self.events)
     }
 }
@@ -137,11 +130,7 @@ fn flush_to_inner(buffer: &Mutex<Buffer>, inner: &Arc<dyn MetricsSink>) {
     };
 
     for event in &batch {
-        match event {
-            BufferedEvent::Metrics(event) => inner.record(event),
-            BufferedEvent::EvaluationResult(event) => inner.record_evaluation_result(event),
-            BufferedEvent::BackgroundTask(span) => inner.record_background_task(span),
-        }
+        inner.record(event);
     }
 }
 
@@ -149,30 +138,7 @@ impl MetricsSink for BatchingSink {
     fn record(&self, event: &MetricsEvent) {
         let mut buf = self.buffer.lock();
         if buf.len() < self.config.max_buffer_size {
-            buf.events.push(BufferedEvent::Metrics(event.clone()));
-            if buf.len() >= self.config.max_batch_size {
-                drop(buf);
-                self.flush_notify.notify_one();
-            }
-        }
-    }
-
-    fn record_evaluation_result(&self, event: &EvaluationResultEvent) {
-        let mut buf = self.buffer.lock();
-        if buf.len() < self.config.max_buffer_size {
-            buf.events
-                .push(BufferedEvent::EvaluationResult(event.clone()));
-            if buf.len() >= self.config.max_batch_size {
-                drop(buf);
-                self.flush_notify.notify_one();
-            }
-        }
-    }
-
-    fn record_background_task(&self, span: &BackgroundTaskSpan) {
-        let mut buf = self.buffer.lock();
-        if buf.len() < self.config.max_buffer_size {
-            buf.events.push(BufferedEvent::BackgroundTask(span.clone()));
+            buf.events.push(event.clone());
             if buf.len() >= self.config.max_batch_size {
                 drop(buf);
                 self.flush_notify.notify_one();

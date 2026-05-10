@@ -6,6 +6,9 @@ use std::time::Duration;
 use parking_lot::Mutex;
 
 use super::metrics::{AgentMetrics, BackgroundTaskSpan, EvaluationResultEvent, MetricsEvent};
+// `BackgroundTaskSpan` and `EvaluationResultEvent` are still referenced by the
+// legacy `PersistedLine` variants kept around so previously-spilled NDJSON
+// files keep deserialising after the trait API was simplified.
 use super::sink::{MetricsSink, SinkError};
 
 /// Configuration for [`PersistentSink`].
@@ -124,10 +127,12 @@ impl PersistentSink {
         match line {
             PersistedLine::Event(event) => self.inner.record(event.as_ref()),
             PersistedLine::EvaluationResult { event, .. } => {
-                self.inner.record_evaluation_result(event.as_ref());
+                self.inner
+                    .record(&MetricsEvent::EvaluationResult(event.as_ref().clone()));
             }
             PersistedLine::BackgroundTask { span, .. } => {
-                self.inner.record_background_task(span.as_ref());
+                self.inner
+                    .record(&MetricsEvent::BackgroundTask(span.as_ref().clone()));
             }
             PersistedLine::RunEnd {
                 session_duration_ms,
@@ -200,22 +205,6 @@ impl MetricsSink for PersistentSink {
         self.pending
             .lock()
             .push(PersistedLine::Event(Box::new(event.clone())));
-    }
-
-    fn record_evaluation_result(&self, event: &EvaluationResultEvent) {
-        self.inner.record_evaluation_result(event);
-        self.pending.lock().push(PersistedLine::EvaluationResult {
-            line_type: EvaluationResultMarker::EvaluationResult,
-            event: Box::new(event.clone()),
-        });
-    }
-
-    fn record_background_task(&self, span: &BackgroundTaskSpan) {
-        self.inner.record_background_task(span);
-        self.pending.lock().push(PersistedLine::BackgroundTask {
-            line_type: BackgroundTaskMarker::BackgroundTask,
-            span: Box::new(span.clone()),
-        });
     }
 
     fn on_run_end(&self, metrics: &AgentMetrics) {

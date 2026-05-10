@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use crate::metrics::{AgentMetrics, BackgroundTaskSpan, EvaluationResultEvent, MetricsEvent};
+use crate::metrics::{AgentMetrics, MetricsEvent};
 use crate::sink::{MetricsSink, SinkError};
 
 /// Dispatches metrics to multiple sinks sequentially.
@@ -50,18 +50,6 @@ impl MetricsSink for CompositeSink {
     fn record(&self, event: &MetricsEvent) {
         for sink in &self.sinks {
             sink.record(event);
-        }
-    }
-
-    fn record_evaluation_result(&self, event: &EvaluationResultEvent) {
-        for sink in &self.sinks {
-            sink.record_evaluation_result(event);
-        }
-    }
-
-    fn record_background_task(&self, span: &BackgroundTaskSpan) {
-        for sink in &self.sinks {
-            sink.record_background_task(span);
         }
     }
 
