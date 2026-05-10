@@ -50,6 +50,31 @@ fn manager_with_store_and_inbox() -> (
 }
 
 #[test]
+fn duplicate_background_task_plugin_install_is_rejected() {
+    // Pin the "1 BackgroundTaskManager per StateStore" invariant that the
+    // simple `HashMap<TaskId, _>` keying in BackgroundTaskStateSnapshot and
+    // OtelMetricsSink::task_context_key both depend on. If this test ever
+    // starts succeeding, those keys must be promoted to a composite that
+    // disambiguates managers.
+    let store = StateStore::new();
+    let manager_a = Arc::new(BackgroundTaskManager::new());
+    manager_a.set_store(store.clone());
+    store
+        .install_plugin(BackgroundTaskPlugin::new(manager_a))
+        .expect("first install should succeed");
+
+    let manager_b = Arc::new(BackgroundTaskManager::new());
+    let err = store
+        .install_plugin(BackgroundTaskPlugin::new(manager_b))
+        .expect_err("second install must be rejected");
+    assert!(
+        format!("{err:?}").contains("PluginAlreadyInstalled")
+            || format!("{err:?}").contains("KeyAlreadyRegistered"),
+        "expected PluginAlreadyInstalled / KeyAlreadyRegistered, got {err:?}",
+    );
+}
+
+#[test]
 fn task_status_terminal_check() {
     assert!(!TaskStatus::Running.is_terminal());
     assert!(TaskStatus::Completed.is_terminal());

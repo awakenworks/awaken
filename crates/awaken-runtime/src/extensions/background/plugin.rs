@@ -14,6 +14,20 @@ use super::types::BACKGROUND_TASKS_PLUGIN_ID;
 
 /// Plugin that registers the background task view state key and
 /// the persisted task metadata state key.
+///
+/// # Single-manager invariant
+///
+/// Each `StateStore` MUST have exactly one `BackgroundTaskPlugin`, and
+/// therefore one `BackgroundTaskManager`. The plugin install path
+/// ([`StateStore::install_plugin`]) enforces this by rejecting a second
+/// install of the same plugin TypeId, and `BackgroundTaskManager::set_store`
+/// uses a `OnceLock` so each manager binds to at most one store.
+///
+/// This invariant is what makes `bg_{n}` task ids unique within a store —
+/// downstream code (`BackgroundTaskStateSnapshot::tasks`,
+/// `OtelMetricsSink::task_context_key`) keys by `TaskId` alone and depends
+/// on it. Allowing multiple managers per store would require composite keys
+/// throughout that path.
 pub struct BackgroundTaskPlugin {
     manager: Arc<BackgroundTaskManager>,
 }
