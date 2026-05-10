@@ -13,10 +13,31 @@ use crate::metrics::{
     SuspensionSpan, ToolSpan, is_tool_payload_truncated,
 };
 
+use awaken_contract::contract::inference::StopReason;
+
 use super::shared::{Inner, extract_cache_tokens, extract_token_counts};
 
 /// Prefix used by AgentTool descriptors (`agent_run_{agent_id}`).
 const DELEGATION_TOOL_PREFIX: &str = "agent_run_";
+
+// GenAI semantic-convention finish_reason wire strings, kept as named
+// constants so the OTel-bound values live in one place.
+const FINISH_REASON_END_TURN: &str = "end_turn";
+const FINISH_REASON_MAX_TOKENS: &str = "max_tokens";
+const FINISH_REASON_TOOL_USE: &str = "tool_use";
+const FINISH_REASON_STOP_SEQUENCE: &str = "stop_sequence";
+
+/// Map an upstream `StopReason` to its GenAI semantic-convention wire
+/// representation. Single source of truth for the four finish-reason
+/// strings emitted on inference spans.
+fn stop_reason_to_finish_reason(reason: StopReason) -> &'static str {
+    match reason {
+        StopReason::EndTurn => FINISH_REASON_END_TURN,
+        StopReason::MaxTokens => FINISH_REASON_MAX_TOKENS,
+        StopReason::ToolUse => FINISH_REASON_TOOL_USE,
+        StopReason::StopSequence => FINISH_REASON_STOP_SEQUENCE,
+    }
+}
 
 fn now_epoch_ms() -> u64 {
     std::time::SystemTime::now()
@@ -174,14 +195,21 @@ impl PhaseHook for AfterInferenceHook {
             .unwrap_or((0, now_epoch_ms()));
         let ended_at_ms = started_at_ms.saturating_add(duration_ms);
 
-        // Extract usage and error from the LLM response.
-        let (usage, error) = match &ctx.llm_response {
+        // Extract usage, error, and the success result from the LLM response.
+        let (usage, error, ok_result) = match &ctx.llm_response {
             Some(resp) => match &resp.outcome {
-                Ok(result) => (result.usage.as_ref(), None),
-                Err(err) => (None, Some(err)),
+                Ok(result) => (result.usage.as_ref(), None, Some(result)),
+                Err(err) => (None, Some(err), None),
             },
-            None => (None, None),
+            None => (None, None, None),
         };
+
+        // Map the upstream stop_reason to the GenAI semantic-convention
+        // finish_reasons list.
+        let finish_reasons: Vec<String> = ok_result
+            .and_then(|r| r.stop_reason)
+            .map(|reason| vec![stop_reason_to_finish_reason(reason).to_string()])
+            .unwrap_or_default();
 
         let (input_tokens, output_tokens, total_tokens, thinking_tokens) =
             extract_token_counts(usage);
@@ -197,9 +225,14 @@ impl PhaseHook for AfterInferenceHook {
             model,
             provider,
             operation: s.operation.clone(),
+            // Not surfaced by `StreamResult` (see
+            // `awaken_contract::contract::inference::StreamResult`); the
+            // upstream provider's model id and response id are dropped on the
+            // floor by `StreamCollector::finish`, so populating these requires
+            // a contract extension. Tracked as the next step on ADR-0030 D8.
             response_model: None,
             response_id: None,
-            finish_reasons: Vec::new(),
+            finish_reasons,
             error_type: error.map(|e| e.error_type.clone()),
             error_class: error.and_then(|e| e.error_class.clone()),
             input_tokens,

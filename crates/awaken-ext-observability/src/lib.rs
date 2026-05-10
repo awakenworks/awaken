@@ -50,6 +50,9 @@ pub use stats::{AgentToolStats, ModelStats, ToolStats};
 use plugin::{extract_cache_tokens, extract_token_counts};
 
 #[cfg(test)]
+mod genai_backfill_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use awaken_contract::contract::inference::{
