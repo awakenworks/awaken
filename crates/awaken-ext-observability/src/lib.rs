@@ -1054,7 +1054,9 @@ mod tests {
     // ---- after_tool_execute with no tool result ----
 
     #[tokio::test]
-    async fn test_after_tool_execute_no_result_is_noop() {
+    async fn test_after_tool_execute_no_result_records_failure() {
+        // A missing tool result is a real failure mode; the hook records a
+        // synthetic failure span so downstream sinks don't lose the call.
         let sink = InMemorySink::new();
         let plugin = ObservabilityPlugin::new(sink.clone());
 
@@ -1062,7 +1064,12 @@ mod tests {
             .with_tool_info("search", "c1", None);
         run_phase(&plugin, &ctx).await;
 
-        assert_eq!(sink.metrics().tool_count(), 0);
+        let m = sink.metrics();
+        assert_eq!(m.tool_count(), 1);
+        assert_eq!(
+            m.tools[0].error_type.as_deref(),
+            Some("missing_tool_result")
+        );
     }
 
     // ---- InMemorySink thread safety ----

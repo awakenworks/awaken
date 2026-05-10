@@ -363,7 +363,50 @@ impl PhaseHook for AfterToolExecuteHook {
             .unwrap_or((0, now_epoch_ms()));
         let ended_at_ms = started_at_ms.saturating_add(duration_ms);
 
+        let tracing_span = s.tool_tracing_span.lock().await.remove(&call_id);
+
+        // Treat a missing `tool_result` as a synthetic tool failure so the
+        // sink, Prometheus counters, and any pending OTel tool context all
+        // see one terminal event for this call. Without this fallback the
+        // only signal would be a silent tracing-span drop, which masks the
+        // failure from downstream consumers.
+        let context = s.span_context.lock().await.clone();
+        let step = s.step_counter.load(Ordering::Relaxed).saturating_sub(1);
+        let captured_args = if s.tool_io_capture.captures_arguments() {
+            ctx.tool_args
+                .as_ref()
+                .map(|value| s.sanitize_tool_payload(value))
+        } else {
+            None
+        };
         let Some(result) = ctx.tool_result.as_ref() else {
+            let tool_name = ctx.tool_name.clone().unwrap_or_default();
+            let span = ToolSpan {
+                context,
+                step_index: Some(step),
+                name: tool_name,
+                operation: "execute_tool".to_string(),
+                call_id: call_id.clone(),
+                tool_type: "function".to_string(),
+                call_arguments: captured_args,
+                call_result: None,
+                error_type: Some("missing_tool_result".to_string()),
+                duration_ms,
+                started_at_ms,
+                ended_at_ms,
+            };
+            if let Some(tracing_span) = tracing_span {
+                tracing_span.record("error.type", "missing_tool_result");
+                tracing_span.record("otel.status_code", "ERROR");
+                tracing_span.record(
+                    "otel.status_description",
+                    "AfterToolExecute fired without tool_result",
+                );
+                drop(tracing_span);
+            }
+            crate::prometheus::record_tool(&span);
+            s.sink.record(&MetricsEvent::Tool(span.clone()));
+            s.metrics.lock().await.tools.push(span);
             return Ok(StateCommand::new());
         };
 
@@ -374,8 +417,6 @@ impl PhaseHook for AfterToolExecuteHook {
         };
         let error_message = result.message.clone().filter(|_| error_type.is_some());
 
-        let context = s.span_context.lock().await.clone();
-        let step = s.step_counter.load(Ordering::Relaxed).saturating_sub(1);
         let span = ToolSpan {
             context,
             step_index: Some(step),
@@ -383,14 +424,12 @@ impl PhaseHook for AfterToolExecuteHook {
             operation: "execute_tool".to_string(),
             call_id: call_id.clone(),
             tool_type: "function".to_string(),
-            call_arguments: if s.tool_io_capture.captures_arguments() {
-                ctx.tool_args
-                    .as_ref()
-                    .map(|value| s.sanitize_tool_payload(value))
-            } else {
-                None
-            },
-            call_result: if s.tool_io_capture.captures_results() && result.is_success() {
+            call_arguments: captured_args,
+            // Capture both successful and error results when result capture is
+            // enabled — error payloads are often the most useful for debugging
+            // tool failures, and they go through the same sanitize pipeline
+            // (allowlist → custom redactor → default redactor → size limit).
+            call_result: if s.tool_io_capture.captures_results() {
                 Some(s.sanitize_tool_payload(&result.data))
             } else {
                 None
@@ -401,7 +440,6 @@ impl PhaseHook for AfterToolExecuteHook {
             ended_at_ms,
         };
 
-        let tracing_span = s.tool_tracing_span.lock().await.remove(&call_id);
         if let Some(tracing_span) = tracing_span {
             if let Some(value) = &span.call_result
                 && let Ok(serialized) = serde_json::to_string(value)

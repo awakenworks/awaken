@@ -552,6 +552,50 @@ async fn tool_io_capture_redacts_sensitive_fields() {
 }
 
 #[tokio::test]
+async fn tool_io_capture_records_error_results_through_sanitizer() {
+    // Error tool results were previously dropped from `call_result`; debugging
+    // tool failures needs them. Verify error data is captured AND still goes
+    // through the default redactor.
+    use awaken_contract::contract::tool::{ToolResult, ToolStatus};
+    let sink = InMemorySink::new();
+    let plugin = ObservabilityPlugin::new(sink.clone())
+        .with_tool_io_capture(ToolIoCapture::ArgumentsAndResults);
+
+    let ctx = PhaseContext::new(Phase::BeforeToolExecute, empty_snapshot()).with_tool_info(
+        "fetch",
+        "c1",
+        Some(serde_json::json!({})),
+    );
+    run_phase(&plugin, &ctx).await;
+
+    let error_data = serde_json::json!({
+        "error": "upstream 401",
+        "details": { "Authorization": "Bearer leaked-bearer" }
+    });
+    let mut result = ToolResult::error("fetch", "auth failed");
+    result.status = ToolStatus::Error;
+    result.data = error_data;
+
+    let ctx = PhaseContext::new(Phase::AfterToolExecute, empty_snapshot())
+        .with_tool_info("fetch", "c1", Some(serde_json::json!({})))
+        .with_tool_result(result);
+    run_phase(&plugin, &ctx).await;
+
+    let metrics = lock_unpoison(&plugin.inner.metrics);
+    let captured = metrics.tools[0]
+        .call_result
+        .as_ref()
+        .expect("error result must still be captured");
+    let rendered = serde_json::to_string(captured).unwrap();
+    assert!(rendered.contains("\"error\":\"upstream 401\""));
+    assert!(
+        !rendered.contains("leaked-bearer"),
+        "bearer must be redacted in error result: {rendered}"
+    );
+    assert_eq!(metrics.tools[0].error_type.as_deref(), Some("tool_error"));
+}
+
+#[tokio::test]
 async fn tool_io_capture_allows_fields_and_truncates_oversized_payloads() {
     let sink = InMemorySink::new();
     let plugin = ObservabilityPlugin::new(sink.clone())
@@ -597,7 +641,11 @@ async fn tool_io_capture_allows_fields_and_truncates_oversized_payloads() {
 }
 
 #[tokio::test]
-async fn on_after_tool_execute_no_result_skips_recording() {
+async fn on_after_tool_execute_no_result_records_synthetic_failure_span() {
+    // Missing `tool_result` is a real failure mode (executor crash, dropped
+    // result channel, ...). The hook must still emit a terminal ToolSpan so
+    // the sink, Prometheus counters, and any pending OTel context all see
+    // one event for this call.
     let sink = InMemorySink::new();
     let plugin = ObservabilityPlugin::new(sink.clone());
 
@@ -608,7 +656,6 @@ async fn on_after_tool_execute_no_result_skips_recording() {
     );
     run_phase(&plugin, &ctx).await;
 
-    // AfterToolExecute without tool_result
     let ctx = PhaseContext::new(Phase::AfterToolExecute, empty_snapshot()).with_tool_info(
         "search",
         "c1",
@@ -617,7 +664,36 @@ async fn on_after_tool_execute_no_result_skips_recording() {
     run_phase(&plugin, &ctx).await;
 
     let metrics = lock_unpoison(&plugin.inner.metrics);
-    assert!(metrics.tools.is_empty());
+    assert_eq!(
+        metrics.tools.len(),
+        1,
+        "synthetic failure span must be recorded"
+    );
+    assert_eq!(metrics.tools[0].name, "search");
+    assert_eq!(metrics.tools[0].call_id, "c1");
+    assert_eq!(
+        metrics.tools[0].error_type.as_deref(),
+        Some("missing_tool_result")
+    );
+    assert!(metrics.tools[0].call_result.is_none());
+    drop(metrics);
+
+    let sink_metrics = sink.metrics();
+    assert_eq!(
+        sink_metrics.tool_count(),
+        1,
+        "sink must observe the failure too"
+    );
+    assert_eq!(sink_metrics.tool_failures(), 1);
+
+    assert!(
+        plugin.inner.tool_tracing_span.lock().await.is_empty(),
+        "tracing span must be released even when tool_result is missing",
+    );
+    assert!(
+        plugin.inner.tool_start.lock().await.is_empty(),
+        "tool_start must be released even when tool_result is missing",
+    );
 }
 
 #[tokio::test]
