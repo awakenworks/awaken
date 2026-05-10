@@ -19,7 +19,7 @@ use crate::metrics::{
     HandoffSpan, MetricsEvent, SpanContext, SuspensionSpan, ToolSpan,
 };
 use crate::otel_config::OtelConfig;
-use crate::sink::MetricsSink;
+use crate::sink::{MetricsSink, SinkError};
 
 const MAX_RETAINED_CONTEXTS: usize = 4096;
 const DEFAULT_RUN_KEY: &str = "__awaken_default_run__";
@@ -188,17 +188,18 @@ impl OtelMetricsSink {
     }
 
     /// Compose a stable key for background-task lookups. The effective run
-    /// key (parent run when present) is paired with `task_id` so two task
-    /// managers running for different parent runs cannot collide in
-    /// `current_background_tasks` / `background_task_contexts`.
+    /// key (parent run when present) is paired with `task_id`.
     ///
-    /// Note: tasks that share the same run yet are minted by independent
-    /// managers (e.g. two threads with no parent_run_id) can still collide.
-    /// Plugin-level dedup (`background_task_statuses`) carries
-    /// `owner_thread_id` for that case; the OTel sink intentionally keeps a
-    /// simpler key so lazy parent lookups (which only see the child's span
-    /// context) stay consistent with the explicit lifecycle path (which sees
-    /// the parent's span context).
+    /// Why no `owner_thread_id` in the key? The lazy lookup path (a child
+    /// inference recording with an ambient `parent_task_id`) only has the
+    /// child's `SpanContext`, whose `thread_id` differs from the parent
+    /// task's owner thread. Including thread in the key would break that
+    /// lookup. Cross-manager `bg_N` collision is prevented one layer up by
+    /// the **1 `BackgroundTaskManager` per `StateStore`** invariant
+    /// documented on `BackgroundTaskPlugin`, so within a single sink all
+    /// `task_id`s are unique. The orthogonal plugin-level dedup
+    /// (`background_task_statuses`) still carries `owner_thread_id` as
+    /// defense in depth at that layer.
     fn task_context_key(run_key: &str, task_id: &str) -> String {
         format!("{run_key}\u{1f}{task_id}")
     }
@@ -1090,6 +1091,42 @@ impl OtelMetricsSink {
             self.end_root_context_with_attrs(run_key, attrs);
         }
     }
+
+    /// Force-close any background-task spans, pending tool spans, and the
+    /// deferred root for `run_key`, marking them with `close_reason`. Useful
+    /// when a caller knows no more events will arrive (process shutdown,
+    /// abandoned run) and wants the trace to surface the abandonment instead
+    /// of holding spans open indefinitely.
+    pub fn flush_run(&self, run_key: &str, close_reason: &'static str) {
+        let stale: Vec<(String, ActiveBackgroundTask)> = self
+            .current_background_tasks
+            .lock()
+            .iter()
+            .filter(|(_, active)| active.run_key == run_key)
+            .map(|(id, active)| (id.clone(), active.clone()))
+            .collect();
+
+        for (key, active) in stale {
+            active.cx.span().set_attribute(KeyValue::new(
+                "awaken.background_task.close_reason",
+                close_reason,
+            ));
+            active.cx.span().set_status(Status::error(format!(
+                "background task closed before terminal status: {close_reason}"
+            )));
+            active.cx.span().end();
+            self.current_background_tasks.lock().remove(&key);
+        }
+
+        self.end_pending_tool_spans_for_run(run_key);
+        if let Some(attrs) = self.deferred_root_ends.lock().remove(run_key) {
+            self.end_root_context_with_attrs(run_key, attrs);
+        } else if let Some(cx) = self.root_contexts.lock().remove(run_key) {
+            cx.span()
+                .set_attribute(KeyValue::new("awaken.root.close_reason", close_reason));
+            cx.span().end();
+        }
+    }
 }
 
 /// Initialise an OTLP HTTP tracer from the given configuration.
@@ -1206,6 +1243,11 @@ impl MetricsSink for OtelMetricsSink {
             }
         }
     }
+
+    fn flush_run(&self, run_key: &str, close_reason: &'static str) -> Result<(), SinkError> {
+        OtelMetricsSink::flush_run(self, run_key, close_reason);
+        Ok(())
+    }
 }
 
 impl Drop for OtelMetricsSink {
@@ -1213,9 +1255,15 @@ impl Drop for OtelMetricsSink {
         self.end_all_pending_tool_spans();
         self.end_all_current_inferences();
         for (_, active) in self.current_background_tasks.lock().drain() {
+            active.cx.span().set_attribute(KeyValue::new(
+                "awaken.background_task.close_reason",
+                "shutdown",
+            ));
             active.cx.span().end();
         }
         for (_, cx) in self.root_contexts.lock().drain() {
+            cx.span()
+                .set_attribute(KeyValue::new("awaken.root.close_reason", "shutdown"));
             cx.span().end();
         }
     }
@@ -2814,6 +2862,61 @@ mod tests {
     }
 
     #[test]
+    fn drop_marks_running_background_task_with_shutdown_close_reason() {
+        // Sink is dropped while a background task is still running. The
+        // exported span must surface that abandonment via close_reason
+        // instead of being silently truncated, so dashboards can tell
+        // shutdown-killed tasks apart from natural completions.
+        use awaken_runtime::extensions::background::TaskStatus;
+
+        let exporter = capture::InMemorySpanExporter::new();
+        let provider = opentelemetry_sdk::trace::SdkTracerProvider::builder()
+            .with_simple_exporter(exporter.clone())
+            .build();
+        let tracer = {
+            use opentelemetry::trace::TracerProvider;
+            provider.tracer("awaken-test")
+        };
+        let sink = OtelMetricsSink::new(tracer);
+
+        let context = SpanContext {
+            run_id: "run-shutdown".to_string(),
+            thread_id: "thread-shutdown".to_string(),
+            agent_id: "agent-shutdown".to_string(),
+            parent_run_id: None,
+            parent_tool_call_id: None,
+        };
+        sink.record(&MetricsEvent::Inference(GenAISpan {
+            context: context.clone(),
+            ..sample_genai_span()
+        }));
+        let running = BackgroundTaskSpan {
+            context: context.clone(),
+            status: TaskStatus::Running,
+            ..sample_background_task_span(TaskStatus::Running)
+        };
+        sink.record_background_task(&running);
+
+        // Drop without ever flushing or completing the task.
+        drop(sink);
+        let _ = provider.shutdown();
+
+        let spans = exporter.finished_spans();
+        let bg = spans
+            .iter()
+            .find(|s| s.name.as_ref() == "awaken.background_task")
+            .expect("background span should still be exported on drop");
+        let attrs = attr_map(bg);
+        assert_eq!(
+            attrs
+                .get("awaken.background_task.close_reason")
+                .map(|v| v.to_string()),
+            Some("shutdown".to_string()),
+            "Drop path must mark abandoned background tasks with close_reason=shutdown",
+        );
+    }
+
+    #[test]
     fn background_tasks_with_same_id_in_different_runs_get_independent_spans() {
         // Two tasks happen to share `task_id = "bg-1"` but live in different
         // runs. Each must produce its own OTel span; completing one must not
@@ -2965,6 +3068,210 @@ mod tests {
             bg_span.span_context.trace_id(),
             tool_span.span_context.trace_id(),
             "background task must share parent run's trace id"
+        );
+    }
+
+    #[test]
+    fn synthetic_tool_span_anchors_at_earliest_child_timestamp() {
+        // Background task arrives before the real tool span; the real one
+        // never shows up. The synthetic parent span must start at the
+        // earliest child's `created_at_ms`, not at run-end's "now", so the
+        // exported trace stays causal.
+        use awaken_runtime::extensions::background::TaskStatus;
+
+        let (sink, exporter, provider) = make_capturing_sink();
+        let context = SpanContext {
+            run_id: "run-synth".to_string(),
+            thread_id: "thread-synth".to_string(),
+            agent_id: "agent-synth".to_string(),
+            parent_run_id: None,
+            parent_tool_call_id: None,
+        };
+
+        // Open a root via an inference, then a background task that
+        // references a tool call id whose ToolSpan we never emit.
+        sink.record(&MetricsEvent::Inference(GenAISpan {
+            context: context.clone(),
+            ..sample_genai_span()
+        }));
+        let child_created_at_ms: u64 = 1_700_000_000_500;
+        let bg_context = SpanContext {
+            parent_tool_call_id: Some("call-missing".to_string()),
+            ..context.clone()
+        };
+        let running = BackgroundTaskSpan {
+            context: bg_context.clone(),
+            created_at_ms: child_created_at_ms,
+            status: TaskStatus::Running,
+            ..sample_background_task_span(TaskStatus::Running)
+        };
+        sink.record_background_task(&running);
+        let completed = BackgroundTaskSpan {
+            context: bg_context,
+            created_at_ms: child_created_at_ms,
+            completed_at_ms: Some(child_created_at_ms + 50),
+            status: TaskStatus::Completed,
+            ..sample_background_task_span(TaskStatus::Completed)
+        };
+        sink.record_background_task(&completed);
+        sink.on_run_end(&AgentMetrics::default());
+        drop(sink);
+        let _ = provider.shutdown();
+
+        let spans = exporter.finished_spans();
+        let synthetic = spans
+            .iter()
+            .find(|s| {
+                s.name.as_ref() == "execute_tool"
+                    && attr_map(s)
+                        .get("awaken.tool.synthetic_parent")
+                        .is_some_and(|v| v.to_string() == "true")
+            })
+            .expect("synthetic execute_tool span not found");
+        let start_ms = synthetic
+            .start_time
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64;
+        assert_eq!(
+            start_ms, child_created_at_ms,
+            "synthetic parent must start at earliest child"
+        );
+        assert!(
+            synthetic.end_time >= synthetic.start_time,
+            "synthetic span must not end before it starts"
+        );
+    }
+
+    #[test]
+    fn flush_run_reaches_otel_sink_through_batching_and_composite() {
+        // Pin: a caller holding only `Arc<dyn MetricsSink>` (CompositeSink
+        // wrapping a BatchingSink wrapping the OTel sink) can still trigger
+        // the close-reason path. The trait method must forward, and any
+        // buffered events must drain before close so the OTel sink sees the
+        // running task before being asked to close it.
+        use std::sync::Arc;
+
+        use awaken_runtime::extensions::background::TaskStatus;
+
+        use crate::{BatchingConfig, BatchingSink, CompositeSink};
+
+        let exporter = capture::InMemorySpanExporter::new();
+        let provider = opentelemetry_sdk::trace::SdkTracerProvider::builder()
+            .with_simple_exporter(exporter.clone())
+            .build();
+        let tracer = {
+            use opentelemetry::trace::TracerProvider;
+            provider.tracer("awaken-flush-run-test")
+        };
+        let otel: Arc<dyn MetricsSink> = Arc::new(OtelMetricsSink::new(tracer));
+        let batching: Arc<dyn MetricsSink> = Arc::new(BatchingSink::new(
+            otel,
+            BatchingConfig {
+                max_batch_size: 1024,
+                max_buffer_size: 4096,
+                ..Default::default()
+            },
+        ));
+        let composite: Arc<dyn MetricsSink> = Arc::new(CompositeSink::new(vec![batching]));
+
+        let context = SpanContext {
+            run_id: "run-trait".to_string(),
+            thread_id: "thread-trait".to_string(),
+            agent_id: "agent-trait".to_string(),
+            parent_run_id: None,
+            parent_tool_call_id: None,
+        };
+        composite.record(&MetricsEvent::Inference(GenAISpan {
+            context: context.clone(),
+            ..sample_genai_span()
+        }));
+        composite.record(&MetricsEvent::BackgroundTask(BackgroundTaskSpan {
+            context: context.clone(),
+            status: TaskStatus::Running,
+            ..sample_background_task_span(TaskStatus::Running)
+        }));
+
+        composite
+            .flush_run(&OtelMetricsSink::run_key(&context), "abandoned")
+            .expect("flush_run via trait must succeed");
+
+        drop(composite);
+        let _ = provider.shutdown();
+
+        let spans = exporter.finished_spans();
+        let bg = spans
+            .iter()
+            .find(|s| s.name.as_ref() == "awaken.background_task")
+            .expect("background span must exist");
+        let attrs = attr_map(bg);
+        assert_eq!(
+            attrs
+                .get("awaken.background_task.close_reason")
+                .map(|v| v.to_string()),
+            Some("abandoned".to_string())
+        );
+    }
+
+    #[test]
+    fn flush_run_force_closes_running_background_task_with_close_reason() {
+        use awaken_runtime::extensions::background::TaskStatus;
+
+        let (sink, exporter, provider) = make_capturing_sink();
+        let context = SpanContext {
+            run_id: "run-abandoned".to_string(),
+            thread_id: "thread-bg".to_string(),
+            agent_id: "agent-bg".to_string(),
+            parent_run_id: None,
+            parent_tool_call_id: Some("call-bg".to_string()),
+        };
+
+        // Inference creates the root, then a never-terminal background task.
+        sink.record(&MetricsEvent::Inference(GenAISpan {
+            context: context.clone(),
+            ..sample_genai_span()
+        }));
+        let running = BackgroundTaskSpan {
+            context: context.clone(),
+            status: TaskStatus::Running,
+            ..sample_background_task_span(TaskStatus::Running)
+        };
+        sink.record_background_task(&running);
+        // Run ends but background task never reports terminal status.
+        sink.on_run_end(&AgentMetrics {
+            inferences: vec![GenAISpan {
+                context: context.clone(),
+                ..sample_genai_span()
+            }],
+            session_duration_ms: 100,
+            ..Default::default()
+        });
+        assert!(
+            sink.has_running_background_tasks_for_run(&OtelMetricsSink::run_key(&context)),
+            "background task should still be tracked before flush"
+        );
+
+        sink.flush_run(&OtelMetricsSink::run_key(&context), "abandoned");
+
+        assert!(
+            !sink.has_running_background_tasks_for_run(&OtelMetricsSink::run_key(&context)),
+            "flush_run must clear active background tasks"
+        );
+
+        drop(sink);
+        let _ = provider.shutdown();
+
+        let spans = exporter.finished_spans();
+        let bg = spans
+            .iter()
+            .find(|s| s.name.as_ref() == "awaken.background_task")
+            .expect("background task span should be flushed");
+        let attrs = attr_map(bg);
+        assert_eq!(
+            attrs
+                .get("awaken.background_task.close_reason")
+                .map(|v| v.to_string()),
+            Some("abandoned".to_string())
         );
     }
 }

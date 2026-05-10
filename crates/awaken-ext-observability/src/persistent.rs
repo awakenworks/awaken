@@ -236,6 +236,10 @@ impl MetricsSink for PersistentSink {
         let _ = self.inner.shutdown();
         flush_result
     }
+
+    fn flush_run(&self, run_key: &str, close_reason: &'static str) -> Result<(), SinkError> {
+        self.inner.flush_run(run_key, close_reason)
+    }
 }
 
 #[cfg(test)]

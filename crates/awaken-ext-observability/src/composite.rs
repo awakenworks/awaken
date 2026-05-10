@@ -92,6 +92,23 @@ impl MetricsSink for CompositeSink {
             )))
         }
     }
+
+    fn flush_run(&self, run_key: &str, close_reason: &'static str) -> Result<(), SinkError> {
+        let mut errors = Vec::new();
+        for sink in &self.sinks {
+            if let Err(e) = sink.flush_run(run_key, close_reason) {
+                errors.push(e);
+            }
+        }
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(SinkError::new(format!(
+                "{} sink(s) failed to flush_run",
+                errors.len()
+            )))
+        }
+    }
 }
 
 #[cfg(test)]

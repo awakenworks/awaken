@@ -63,6 +63,15 @@ pub trait MetricsSink: Send + Sync {
     fn shutdown(&self) -> Result<(), SinkError> {
         Ok(())
     }
+
+    /// Force-close any sink state still held for `run_key`, marking abandoned
+    /// spans with `close_reason`. The default no-op is correct for sinks that
+    /// have no per-run lifetime state (`InMemorySink`, `PrometheusSink`); the
+    /// OTel sink overrides it to end deferred root spans and pending tool
+    /// contexts.
+    fn flush_run(&self, _run_key: &str, _close_reason: &'static str) -> Result<(), SinkError> {
+        Ok(())
+    }
 }
 
 /// In-memory sink for testing and inspection.

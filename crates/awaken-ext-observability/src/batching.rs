@@ -162,6 +162,13 @@ impl MetricsSink for BatchingSink {
         self.flush_buffer();
         self.inner.shutdown()
     }
+
+    fn flush_run(&self, run_key: &str, close_reason: &'static str) -> Result<(), SinkError> {
+        // Drain any buffered events first so the inner sink has the full
+        // picture for `run_key` before we ask it to close abandoned state.
+        self.flush_buffer();
+        self.inner.flush_run(run_key, close_reason)
+    }
 }
 
 #[cfg(test)]

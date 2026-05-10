@@ -251,6 +251,14 @@ impl MetricsSink for ArcSink {
     fn shutdown(&self) -> Result<(), crate::sink::SinkError> {
         self.0.shutdown()
     }
+
+    fn flush_run(
+        &self,
+        run_key: &str,
+        close_reason: &'static str,
+    ) -> Result<(), crate::sink::SinkError> {
+        self.0.flush_run(run_key, close_reason)
+    }
 }
 
 fn env_truthy(key: &str) -> bool {
