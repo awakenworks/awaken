@@ -516,7 +516,7 @@ impl PhaseHook for BackgroundTaskObserveHook {
 
         let s = &self.0;
         for meta in snapshot.tasks.values() {
-            let status = meta.status.as_str().to_string();
+            let status = meta.status;
             let should_record = {
                 let mut seen = s.background_task_statuses.lock().await;
                 if seen.get(&meta.task_id) == Some(&status) {
@@ -554,7 +554,7 @@ fn background_task_span_from_meta(meta: &PersistedTaskMeta) -> BackgroundTaskSpa
         task_type: meta.task_type.clone(),
         task_name: meta.name.clone(),
         description: meta.description.clone(),
-        status: meta.status.as_str().to_string(),
+        status: meta.status,
         parent_task_id: meta.parent_context.task_id.clone(),
         error_message: meta.error.clone(),
         created_at_ms: meta.created_at_ms,

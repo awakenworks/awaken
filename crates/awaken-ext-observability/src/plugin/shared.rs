@@ -157,7 +157,8 @@ pub(crate) struct Inner {
     /// Execution context captured from RunIdentity at RunStart.
     pub(crate) span_context: Mutex<SpanContext>,
     /// Last exported background task status keyed by task id.
-    pub(crate) background_task_statuses: Mutex<HashMap<String, String>>,
+    pub(crate) background_task_statuses:
+        Mutex<HashMap<String, awaken_runtime::extensions::background::TaskStatus>>,
     /// Step counter incremented per inference (0-based).
     pub(crate) step_counter: AtomicU32,
 }

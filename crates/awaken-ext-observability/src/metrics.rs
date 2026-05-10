@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 
+use awaken_runtime::extensions::background::TaskStatus;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -258,7 +259,7 @@ pub struct BackgroundTaskSpan {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub task_name: Option<String>,
     pub description: String,
-    pub status: String,
+    pub status: TaskStatus,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent_task_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -270,7 +271,7 @@ pub struct BackgroundTaskSpan {
 
 impl BackgroundTaskSpan {
     pub fn is_terminal(&self) -> bool {
-        matches!(self.status.as_str(), "completed" | "failed" | "cancelled")
+        self.status.is_terminal()
     }
 }
 
@@ -541,7 +542,7 @@ mod tests {
             task_type: "sub_agent".to_string(),
             task_name: None,
             description: "background task".to_string(),
-            status: "running".to_string(),
+            status: TaskStatus::Running,
             parent_task_id: None,
             error_message: None,
             created_at_ms: 1_000,
@@ -647,24 +648,43 @@ mod tests {
 
     #[test]
     fn background_task_terminal_statuses_are_explicit() {
-        for status in ["completed", "failed", "cancelled"] {
+        for status in [
+            TaskStatus::Completed,
+            TaskStatus::Failed,
+            TaskStatus::Cancelled,
+        ] {
             assert!(
                 BackgroundTaskSpan {
-                    status: status.to_string(),
+                    status,
                     ..make_background_task_span()
                 }
                 .is_terminal()
             );
         }
-        for status in ["running", "queued", "scheduled", "retrying", "typo"] {
-            assert!(
-                !BackgroundTaskSpan {
-                    status: status.to_string(),
-                    ..make_background_task_span()
-                }
-                .is_terminal()
-            );
-        }
+        assert!(
+            !BackgroundTaskSpan {
+                status: TaskStatus::Running,
+                ..make_background_task_span()
+            }
+            .is_terminal()
+        );
+    }
+
+    #[test]
+    fn background_task_status_round_trips_lowercase_wire_format() {
+        let span = BackgroundTaskSpan {
+            status: TaskStatus::Cancelled,
+            ..make_background_task_span()
+        };
+        let json = serde_json::to_string(&span).unwrap();
+        // Wire format must remain `"cancelled"` (lowercase) so existing
+        // dashboards and persisted spans keep working.
+        assert!(
+            json.contains("\"status\":\"cancelled\""),
+            "expected lowercase status, got {json}"
+        );
+        let restored: BackgroundTaskSpan = serde_json::from_str(&json).unwrap();
+        assert_eq!(restored.status, TaskStatus::Cancelled);
     }
 
     // ---- total_input_tokens() ----

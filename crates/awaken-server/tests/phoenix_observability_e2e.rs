@@ -274,7 +274,7 @@ fn build_background_task_span(
     run_id: &str,
     task_id: &str,
     parent_tool_call_id: &str,
-    status: &str,
+    status: awaken_runtime::extensions::background::TaskStatus,
     created_at_ms: u64,
     completed_at_ms: Option<u64>,
 ) -> BackgroundTaskSpan {
@@ -290,7 +290,7 @@ fn build_background_task_span(
         task_type: "sub_agent".to_string(),
         task_name: Some("worker".to_string()),
         description: "background worker".to_string(),
-        status: status.to_string(),
+        status,
         parent_task_id: None,
         error_message: None,
         created_at_ms,
@@ -678,7 +678,7 @@ async fn phoenix_via_helpers_background_task_span_correlated_with_parent_tool() 
         &run_id,
         &task_id,
         &tool_call_id,
-        "running",
+        awaken_runtime::extensions::background::TaskStatus::Running,
         created_at_ms,
         None,
     );
@@ -686,7 +686,7 @@ async fn phoenix_via_helpers_background_task_span_correlated_with_parent_tool() 
         &run_id,
         &task_id,
         &tool_call_id,
-        "completed",
+        awaken_runtime::extensions::background::TaskStatus::Completed,
         created_at_ms,
         Some(created_at_ms + 125),
     );
@@ -860,7 +860,7 @@ async fn phoenix_via_helpers_background_subagent_run_nested_under_task() {
         &run_id,
         &task_id,
         &tool_call_id,
-        "completed",
+        awaken_runtime::extensions::background::TaskStatus::Completed,
         created_at_ms,
         Some(created_at_ms + 250),
     );

@@ -156,7 +156,7 @@ pub(crate) fn record_background_task(span: &BackgroundTaskSpan) {
     counter!(
         "awaken_background_tasks_total",
         "task_type" => span.task_type.clone(),
-        "status" => span.status.clone()
+        "status" => span.status.as_str().to_string()
     )
     .increment(1);
     if let Some(completed_at_ms) = span.completed_at_ms {
@@ -164,7 +164,7 @@ pub(crate) fn record_background_task(span: &BackgroundTaskSpan) {
         histogram!(
             "awaken_background_task_duration_seconds",
             "task_type" => span.task_type.clone(),
-            "status" => span.status.clone()
+            "status" => span.status.as_str().to_string()
         )
         .record(duration_ms as f64 / 1000.0);
     }

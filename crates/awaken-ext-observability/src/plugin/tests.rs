@@ -163,8 +163,8 @@ async fn background_task_state_records_lifecycle_once_per_status() {
 
     let metrics = sink.metrics();
     assert_eq!(metrics.background_tasks.len(), 2);
-    assert_eq!(metrics.background_tasks[0].status, "running");
-    assert_eq!(metrics.background_tasks[1].status, "completed");
+    assert_eq!(metrics.background_tasks[0].status, TaskStatus::Running);
+    assert_eq!(metrics.background_tasks[1].status, TaskStatus::Completed);
     assert_eq!(
         metrics.background_tasks[1].context.run_id,
         "run-parent".to_string()

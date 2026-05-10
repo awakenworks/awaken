@@ -678,7 +678,7 @@ impl OtelMetricsSink {
             KeyValue::new("awaken.operation.name", "background_task"),
             KeyValue::new("awaken.background_task.id", span.task_id.clone()),
             KeyValue::new("awaken.background_task.type", span.task_type.clone()),
-            KeyValue::new("awaken.background_task.status", span.status.clone()),
+            KeyValue::new("awaken.background_task.status", span.status.as_str()),
             KeyValue::new(
                 "awaken.background_task.description",
                 span.description.clone(),
@@ -1276,22 +1276,26 @@ mod tests {
         }
     }
 
-    fn sample_background_task_span(status: &str) -> BackgroundTaskSpan {
+    fn sample_background_task_span(
+        status: awaken_runtime::extensions::background::TaskStatus,
+    ) -> BackgroundTaskSpan {
+        use awaken_runtime::extensions::background::TaskStatus;
+        let completed_at_ms = if matches!(status, TaskStatus::Running) {
+            None
+        } else {
+            Some(1_500)
+        };
         BackgroundTaskSpan {
             context: SpanContext::default(),
             task_id: "bg_1".to_string(),
             task_type: "sub_agent".to_string(),
             task_name: Some("worker".to_string()),
             description: "background worker".to_string(),
-            status: status.to_string(),
+            status,
             parent_task_id: None,
             error_message: None,
             created_at_ms: 1_000,
-            completed_at_ms: if status == "running" {
-                None
-            } else {
-                Some(1_500)
-            },
+            completed_at_ms,
         }
     }
 
@@ -1846,11 +1850,13 @@ mod tests {
         };
         let running = BackgroundTaskSpan {
             context: background_context.clone(),
-            ..sample_background_task_span("running")
+            ..sample_background_task_span(
+                awaken_runtime::extensions::background::TaskStatus::Running,
+            )
         };
         let completed = BackgroundTaskSpan {
             context: background_context,
-            status: "completed".to_string(),
+            status: awaken_runtime::extensions::background::TaskStatus::Completed,
             completed_at_ms: Some(1_500),
             ..running.clone()
         };
@@ -1937,11 +1943,13 @@ mod tests {
         let running = BackgroundTaskSpan {
             context: background_context.clone(),
             task_id: "bg-early".to_string(),
-            ..sample_background_task_span("running")
+            ..sample_background_task_span(
+                awaken_runtime::extensions::background::TaskStatus::Running,
+            )
         };
         let completed = BackgroundTaskSpan {
             context: background_context,
-            status: "completed".to_string(),
+            status: awaken_runtime::extensions::background::TaskStatus::Completed,
             completed_at_ms: Some(1_500),
             ..running.clone()
         };
@@ -2016,11 +2024,13 @@ mod tests {
         let running = BackgroundTaskSpan {
             context: background_context.clone(),
             task_id: "bg-open".to_string(),
-            ..sample_background_task_span("running")
+            ..sample_background_task_span(
+                awaken_runtime::extensions::background::TaskStatus::Running,
+            )
         };
         let completed = BackgroundTaskSpan {
             context: background_context,
-            status: "completed".to_string(),
+            status: awaken_runtime::extensions::background::TaskStatus::Completed,
             completed_at_ms: Some(1_500),
             ..running.clone()
         };
@@ -2156,9 +2166,11 @@ mod tests {
                 ..parent_context.clone()
             },
             task_id: task_id.clone(),
-            status: "completed".to_string(),
+            status: awaken_runtime::extensions::background::TaskStatus::Completed,
             completed_at_ms: Some(1_500),
-            ..sample_background_task_span("completed")
+            ..sample_background_task_span(
+                awaken_runtime::extensions::background::TaskStatus::Completed,
+            )
         };
         sink.record(&MetricsEvent::Tool(tool.clone()));
         sink.record_background_task(&completed);
