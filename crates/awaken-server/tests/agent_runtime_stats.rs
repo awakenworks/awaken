@@ -123,6 +123,8 @@ fn inference(agent: &str, input: i32, output: i32, duration_ms: u64, err: bool) 
         max_tokens: None,
         stop_sequences: Vec::new(),
         duration_ms,
+        started_at_ms: 0,
+        ended_at_ms: 0,
     }
 }
 
@@ -138,6 +140,8 @@ fn tool(agent: &str, name: &str) -> ToolSpan {
         call_result: None,
         error_type: None,
         duration_ms: 5,
+        started_at_ms: 0,
+        ended_at_ms: 0,
     }
 }
 

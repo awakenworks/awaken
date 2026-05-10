@@ -228,6 +228,8 @@ mod tests {
             max_tokens: None,
             stop_sequences: Vec::new(),
             duration_ms: 100,
+            started_at_ms: 0,
+            ended_at_ms: 0,
         }
     }
 
@@ -243,6 +245,8 @@ mod tests {
             call_result: None,
             error_type: None,
             duration_ms: 50,
+            started_at_ms: 0,
+            ended_at_ms: 0,
         }
     }
 

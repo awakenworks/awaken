@@ -645,6 +645,8 @@ mod tests {
             max_tokens: None,
             stop_sequences: Vec::new(),
             duration_ms,
+            started_at_ms: 0,
+            ended_at_ms: 0,
         }
     }
 
@@ -660,6 +662,8 @@ mod tests {
             call_result: None,
             error_type: if err { Some("err".into()) } else { None },
             duration_ms,
+            started_at_ms: 0,
+            ended_at_ms: 0,
         }
     }
 

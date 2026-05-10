@@ -112,6 +112,8 @@ impl Replayer for MockReplayer {
             max_tokens: None,
             stop_sequences: Vec::new(),
             duration_ms: 0,
+            started_at_ms: 0,
+            ended_at_ms: 0,
         };
         sink.record(&MetricsEvent::Inference(span.clone()));
 

@@ -116,6 +116,13 @@ pub struct GenAISpan {
     pub stop_sequences: Vec<String>,
     /// Local duration used to set the exported span start/end timestamps.
     pub duration_ms: u64,
+    /// Wall-clock start (epoch ms). Defaults to 0 for legacy payloads — OTel
+    /// sinks that need a real start time fall back to `ended_at_ms - duration`.
+    #[serde(default)]
+    pub started_at_ms: u64,
+    /// Wall-clock end (epoch ms). Defaults to 0 for legacy payloads.
+    #[serde(default)]
+    pub ended_at_ms: u64,
 }
 
 /// A single tool execution span (OTel GenAI aligned).
@@ -144,6 +151,12 @@ pub struct ToolSpan {
     /// OTel: `error.type`.
     pub error_type: Option<String>,
     pub duration_ms: u64,
+    /// Wall-clock start (epoch ms). Defaults to 0 for legacy payloads.
+    #[serde(default)]
+    pub started_at_ms: u64,
+    /// Wall-clock end (epoch ms). Defaults to 0 for legacy payloads.
+    #[serde(default)]
+    pub ended_at_ms: u64,
 }
 
 impl ToolSpan {
@@ -479,6 +492,8 @@ mod tests {
             max_tokens: None,
             stop_sequences: Vec::new(),
             duration_ms: 100,
+            started_at_ms: 0,
+            ended_at_ms: 0,
         }
     }
 
@@ -498,6 +513,8 @@ mod tests {
                 None
             },
             duration_ms: 50,
+            started_at_ms: 0,
+            ended_at_ms: 0,
         }
     }
 
@@ -942,10 +959,14 @@ mod tests {
             tools: vec![
                 ToolSpan {
                     duration_ms: 30,
+                    started_at_ms: 0,
+                    ended_at_ms: 0,
                     ..make_tool_span_for_agent("search", "x", false)
                 },
                 ToolSpan {
                     duration_ms: 70,
+                    started_at_ms: 0,
+                    ended_at_ms: 0,
                     ..make_tool_span_for_agent("search", "x", false)
                 },
             ],
@@ -1033,10 +1054,14 @@ mod tests {
         let m = AgentMetrics {
             inferences: vec![GenAISpan {
                 duration_ms: 0,
+                started_at_ms: 0,
+                ended_at_ms: 0,
                 ..make_genai_span("m", Some(10), Some(5))
             }],
             tools: vec![ToolSpan {
                 duration_ms: 0,
+                started_at_ms: 0,
+                ended_at_ms: 0,
                 ..make_tool_span("t", false)
             }],
             ..Default::default()

@@ -137,6 +137,8 @@ mod tests {
             max_tokens: None,
             stop_sequences: Vec::new(),
             duration_ms: 100,
+            started_at_ms: 0,
+            ended_at_ms: 0,
         }
     }
 
@@ -152,6 +154,8 @@ mod tests {
             call_result: None,
             error_type: None,
             duration_ms: 10,
+            started_at_ms: 0,
+            ended_at_ms: 0,
         }
     }
 
@@ -203,6 +207,8 @@ mod tests {
                     output_tokens: None,
                     total_tokens: Some(8),
                     duration_ms: 50,
+                    started_at_ms: 0,
+                    ended_at_ms: 0,
                     ..make_span("m", "openai")
                 },
             ],
@@ -560,6 +566,8 @@ mod tests {
                     output_tokens: Some(3),
                     total_tokens: Some(8),
                     duration_ms: 50,
+                    started_at_ms: 0,
+                    ended_at_ms: 0,
                     ..make_span("gpt-4", "openai")
                 },
             ],
@@ -587,6 +595,8 @@ mod tests {
                     output_tokens: Some(25),
                     total_tokens: Some(75),
                     duration_ms: 200,
+                    started_at_ms: 0,
+                    ended_at_ms: 0,
                     ..make_span("claude-3", "anthropic")
                 },
             ],
@@ -635,6 +645,8 @@ mod tests {
                 make_tool_span("search", "c1"),
                 ToolSpan {
                     duration_ms: 20,
+                    started_at_ms: 0,
+                    ended_at_ms: 0,
                     ..make_tool_span("search", "c2")
                 },
             ],
@@ -718,6 +730,8 @@ mod tests {
                 make_span("m", "p"), // 100ms
                 GenAISpan {
                     duration_ms: 200,
+                    started_at_ms: 0,
+                    ended_at_ms: 0,
                     ..make_span("m", "p")
                 },
             ],
@@ -725,6 +739,8 @@ mod tests {
                 make_tool_span("a", "c1"), // 10ms
                 ToolSpan {
                     duration_ms: 30,
+                    started_at_ms: 0,
+                    ended_at_ms: 0,
                     ..make_tool_span("b", "c2")
                 },
             ],

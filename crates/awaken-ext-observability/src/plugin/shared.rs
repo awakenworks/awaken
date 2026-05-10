@@ -135,8 +135,12 @@ pub(crate) struct Inner {
     pub(crate) sink: Arc<dyn MetricsSink>,
     pub(crate) run_start: Mutex<Option<Instant>>,
     pub(crate) metrics: Mutex<AgentMetrics>,
-    pub(crate) inference_start: Mutex<Option<Instant>>,
-    pub(crate) tool_start: Mutex<HashMap<String, Instant>>,
+    /// Inference start: monotonic instant for duration + epoch ms for wall
+    /// clock anchor. The pair is set together so the absolute end time is
+    /// `started_at_ms + duration_ms` and immune to clock drift.
+    pub(crate) inference_start: Mutex<Option<(Instant, u64)>>,
+    /// Tool start: see [`Self::inference_start`] for the pair semantics.
+    pub(crate) tool_start: Mutex<HashMap<String, (Instant, u64)>>,
     pub(crate) model: Mutex<String>,
     pub(crate) provider: Mutex<String>,
     pub(crate) operation: String,

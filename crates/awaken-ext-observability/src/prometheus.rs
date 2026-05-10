@@ -232,6 +232,8 @@ mod tests {
             max_tokens: None,
             stop_sequences: Vec::new(),
             duration_ms: 250,
+            started_at_ms: 0,
+            ended_at_ms: 0,
         }
     }
 
@@ -250,6 +252,8 @@ mod tests {
             call_result: None,
             error_type: None,
             duration_ms: 125,
+            started_at_ms: 0,
+            ended_at_ms: 0,
         });
 
         let output = handle.render();
@@ -277,6 +281,8 @@ mod tests {
             call_result: None,
             error_type: None,
             duration_ms: 7,
+            started_at_ms: 0,
+            ended_at_ms: 0,
         }));
         sink.on_run_end(&AgentMetrics {
             session_duration_ms: 1234,

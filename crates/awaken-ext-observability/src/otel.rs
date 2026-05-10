@@ -74,6 +74,10 @@ struct PendingToolSpan {
     span_id: SpanId,
     parent_run_id: String,
     call_id: String,
+    /// Earliest observed child timestamp (epoch ms) used as the synthetic
+    /// start when no real `ToolSpan` ever arrives. Synthesizing with `now`
+    /// would place the parent later than its child in the trace timeline.
+    earliest_child_ms: Option<u64>,
 }
 
 #[derive(Clone)]
@@ -442,8 +446,8 @@ impl OtelMetricsSink {
         let attrs = Self::genai_attributes(span);
         let span_name = format!("{} {}", span.operation, span.model);
 
-        let end_time = std::time::SystemTime::now();
-        let start_time = end_time - std::time::Duration::from_millis(span.duration_ms);
+        let (start_time, end_time) =
+            Self::span_window(span.started_at_ms, span.ended_at_ms, span.duration_ms);
 
         let root_cx = self.ensure_root_context(RootSpanSeed {
             context: &span.context,
@@ -518,7 +522,13 @@ impl OtelMetricsSink {
     }
 
     fn end_synthetic_tool_span(&self, pending: PendingToolSpan) {
-        let now = std::time::SystemTime::now();
+        let end = std::time::SystemTime::now();
+        // Anchor the synthetic span at the earliest observed child so the
+        // parent never appears later than its child in the trace timeline.
+        let start = pending
+            .earliest_child_ms
+            .map(|ms| std::time::UNIX_EPOCH + std::time::Duration::from_millis(ms))
+            .unwrap_or(end);
         let mut attrs = Self::lazy_tool_attributes(&pending.parent_run_id, &pending.call_id);
         attrs.push(KeyValue::new("awaken.tool.synthetic_parent", true));
         let span = self
@@ -527,21 +537,21 @@ impl OtelMetricsSink {
             .with_kind(SpanKind::Internal)
             .with_span_id(pending.span_id)
             .with_attributes(attrs)
-            .with_start_time(now)
+            .with_start_time(start)
             .start_with_context(&self.tracer, &pending.parent_cx);
         pending
             .parent_cx
             .with_span(span)
             .span()
-            .end_with_timestamp(now);
+            .end_with_timestamp(end);
     }
 
     fn record_tool(&self, span: &ToolSpan) {
         let attrs = Self::tool_attributes(span);
         let span_name = format!("execute_tool {}", span.name);
 
-        let end_time = std::time::SystemTime::now();
-        let start_time = end_time - std::time::Duration::from_millis(span.duration_ms);
+        let (start_time, end_time) =
+            Self::span_window(span.started_at_ms, span.ended_at_ms, span.duration_ms);
         let tool_key = if span.call_id.is_empty() {
             None
         } else {
@@ -772,6 +782,7 @@ impl OtelMetricsSink {
                 span_id,
                 parent_run_id: parent_run_id.to_string(),
                 call_id: parent_tool_call_id.to_string(),
+                earliest_child_ms: None,
             },
         );
         Some(cx)
@@ -879,6 +890,14 @@ impl OtelMetricsSink {
                 return cx;
             }
             if let Some(cx) = self.ensure_lazy_tool_context(&run_key, parent_tool_call_id) {
+                // Stamp the earliest child time so a synthetic parent can be
+                // anchored at the right point on the timeline.
+                if let Some(pending) = self.pending_tool_spans.lock().get_mut(&key) {
+                    pending.earliest_child_ms = Some(match pending.earliest_child_ms {
+                        Some(prev) => prev.min(span.created_at_ms),
+                        None => span.created_at_ms,
+                    });
+                }
                 return cx;
             }
         }
@@ -1000,6 +1019,25 @@ impl OtelMetricsSink {
             .lock()
             .values()
             .any(|active| active.run_key == run_key)
+    }
+
+    /// Resolve a (start, end) `SystemTime` pair for a span using its absolute
+    /// `started_at_ms`/`ended_at_ms` when available, falling back to
+    /// `now - duration_ms` for legacy payloads that only carry a duration.
+    fn span_window(
+        started_at_ms: u64,
+        ended_at_ms: u64,
+        duration_ms: u64,
+    ) -> (std::time::SystemTime, std::time::SystemTime) {
+        if started_at_ms != 0 && ended_at_ms >= started_at_ms {
+            return (
+                std::time::UNIX_EPOCH + std::time::Duration::from_millis(started_at_ms),
+                std::time::UNIX_EPOCH + std::time::Duration::from_millis(ended_at_ms),
+            );
+        }
+        let end_time = std::time::SystemTime::now();
+        let start_time = end_time - std::time::Duration::from_millis(duration_ms);
+        (start_time, end_time)
     }
 
     fn end_root_context_with_attrs(&self, run_key: &str, attrs: Vec<KeyValue>) {
@@ -1216,6 +1254,8 @@ mod tests {
             max_tokens: Some(4096),
             stop_sequences: Vec::new(),
             duration_ms: 1200,
+            started_at_ms: 0,
+            ended_at_ms: 0,
         }
     }
 
@@ -1231,6 +1271,8 @@ mod tests {
             call_result: None,
             error_type: None,
             duration_ms: 50,
+            started_at_ms: 0,
+            ended_at_ms: 0,
         }
     }
 
@@ -1298,6 +1340,8 @@ mod tests {
             max_tokens: None,
             stop_sequences: Vec::new(),
             duration_ms: 100,
+            started_at_ms: 0,
+            ended_at_ms: 0,
         };
         let attrs = OtelMetricsSink::genai_attributes(&span);
 
@@ -1479,6 +1523,8 @@ mod tests {
             },
             step_index: Some(3),
             duration_ms: 1200,
+            started_at_ms: 0,
+            ended_at_ms: 0,
             ..sample_genai_span()
         };
 
@@ -1880,6 +1926,8 @@ mod tests {
             name: "spawn_background".to_string(),
             call_id: "call-bg-early".to_string(),
             duration_ms: 250,
+            started_at_ms: 0,
+            ended_at_ms: 0,
             ..sample_tool_span()
         };
         let background_context = SpanContext {
@@ -2674,5 +2722,60 @@ mod tests {
                 s.name
             );
         }
+    }
+
+    #[test]
+    fn tool_span_uses_absolute_timestamps_when_provided() {
+        let (sink, exporter, provider) = make_capturing_sink();
+        let context = SpanContext {
+            run_id: "run-time".to_string(),
+            thread_id: "thread-time".to_string(),
+            agent_id: "agent-time".to_string(),
+            parent_run_id: None,
+            parent_tool_call_id: None,
+        };
+        sink.record(&MetricsEvent::Inference(GenAISpan {
+            context: context.clone(),
+            ..sample_genai_span()
+        }));
+        let started_at_ms: u64 = 1_700_000_000_000;
+        let duration_ms: u64 = 150;
+        let tool = ToolSpan {
+            context: context.clone(),
+            step_index: Some(0),
+            duration_ms,
+            started_at_ms,
+            ended_at_ms: started_at_ms + duration_ms,
+            ..sample_tool_span()
+        };
+        sink.record(&MetricsEvent::Tool(tool));
+        sink.on_run_end(&AgentMetrics::default());
+        drop(sink);
+        let _ = provider.shutdown();
+
+        let spans = exporter.finished_spans();
+        let tool_span = spans
+            .iter()
+            .find(|s| s.name.starts_with("execute_tool"))
+            .expect("tool span exported");
+        let start_ms = tool_span
+            .start_time
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64;
+        let end_ms = tool_span
+            .end_time
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64;
+        assert_eq!(
+            start_ms, started_at_ms,
+            "OTel start should equal started_at_ms"
+        );
+        assert_eq!(
+            end_ms,
+            started_at_ms + duration_ms,
+            "OTel end should equal started_at_ms + duration"
+        );
     }
 }

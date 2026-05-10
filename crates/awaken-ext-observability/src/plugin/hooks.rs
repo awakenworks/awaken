@@ -97,7 +97,7 @@ impl PhaseHook for BeforeInferenceHook {
             drop(previous_span);
         }
 
-        *s.inference_start.lock().await = Some(Instant::now());
+        *s.inference_start.lock().await = Some((Instant::now(), now_epoch_ms()));
 
         let model = s.model.lock().await.clone();
         let provider = s.provider.lock().await.clone();
@@ -158,13 +158,14 @@ impl PhaseHook for AfterInferenceHook {
     async fn run(&self, ctx: &PhaseContext) -> Result<StateCommand, StateError> {
         let s = &self.0;
 
-        let duration_ms = s
+        let (duration_ms, started_at_ms) = s
             .inference_start
             .lock()
             .await
             .take()
-            .map(|start| start.elapsed().as_millis() as u64)
-            .unwrap_or(0);
+            .map(|(instant, started_at_ms)| (instant.elapsed().as_millis() as u64, started_at_ms))
+            .unwrap_or((0, now_epoch_ms()));
+        let ended_at_ms = started_at_ms.saturating_add(duration_ms);
 
         // Extract usage and error from the LLM response.
         let (usage, error) = match &ctx.llm_response {
@@ -205,6 +206,8 @@ impl PhaseHook for AfterInferenceHook {
             max_tokens: *s.max_tokens.lock().await,
             stop_sequences: s.stop_sequences.lock().await.clone(),
             duration_ms,
+            started_at_ms,
+            ended_at_ms,
         };
 
         // Record tracing span attributes.
@@ -270,7 +273,7 @@ impl PhaseHook for BeforeToolExecuteHook {
             s.tool_start
                 .lock()
                 .await
-                .insert(call_id.clone(), Instant::now());
+                .insert(call_id.clone(), (Instant::now(), now_epoch_ms()));
         }
 
         let provider = s.provider.lock().await.clone();
@@ -345,13 +348,14 @@ impl PhaseHook for AfterToolExecuteHook {
         let s = &self.0;
 
         let call_id = ctx.tool_call_id.as_deref().unwrap_or_default().to_string();
-        let duration_ms = s
+        let (duration_ms, started_at_ms) = s
             .tool_start
             .lock()
             .await
             .remove(&call_id)
-            .map(|start| start.elapsed().as_millis() as u64)
-            .unwrap_or(0);
+            .map(|(instant, started_at_ms)| (instant.elapsed().as_millis() as u64, started_at_ms))
+            .unwrap_or((0, now_epoch_ms()));
+        let ended_at_ms = started_at_ms.saturating_add(duration_ms);
 
         let Some(result) = ctx.tool_result.as_ref() else {
             return Ok(StateCommand::new());
@@ -387,6 +391,8 @@ impl PhaseHook for AfterToolExecuteHook {
             },
             error_type,
             duration_ms,
+            started_at_ms,
+            ended_at_ms,
         };
 
         let tracing_span = s.tool_tracing_span.lock().await.remove(&call_id);
