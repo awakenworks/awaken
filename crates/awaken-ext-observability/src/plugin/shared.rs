@@ -70,16 +70,31 @@ fn redact_sensitive_fields(value: Value) -> Value {
 }
 
 fn is_sensitive_key(key: &str) -> bool {
-    let lower = key.to_ascii_lowercase();
-    lower.contains("secret")
-        || lower.contains("token")
-        || lower.contains("password")
-        || lower.contains("api_key")
-        || lower.contains("apikey")
-        || lower.contains("authorization")
-        || lower.contains("credential")
-        || lower.contains("bearer")
-        || lower.contains("private_key")
+    // Substring match against a normalized copy of the key (lowercased,
+    // hyphens collapsed to underscores) so `Cookie`, `set-cookie`,
+    // `x-api-key`, and `refresh_token` all hit. The list intentionally
+    // stays narrow — we want to catch the obvious cases without redacting
+    // business fields by accident. Callers needing a tighter contract can
+    // layer `with_tool_io_allowed_fields` on top.
+    let lower = key.to_ascii_lowercase().replace('-', "_");
+    [
+        "secret",
+        "token", // catches refresh_token, id_token, access_token
+        "password",
+        "api_key",
+        "apikey",
+        "authorization",
+        "auth", // bare `auth: ...` headers / payloads
+        "credential",
+        "bearer",
+        "private_key",
+        "access_key",
+        "cookie",
+        "session",
+        "jwt",
+    ]
+    .iter()
+    .any(|needle| lower.contains(needle))
 }
 
 fn apply_field_allowlist(value: Value, allowlist: &HashSet<String>) -> Value {
@@ -171,8 +186,10 @@ impl Inner {
         if let Some(allowlist) = &self.tool_io_allowed_fields {
             sanitized = apply_field_allowlist(sanitized, allowlist);
         }
-        sanitized = default_tool_io_redactor(sanitized);
+        // Run the user redactor first, then enforce the default redactor as the
+        // last step so a custom redactor cannot reintroduce sensitive fields.
         sanitized = (self.tool_io_redactor)(sanitized);
+        sanitized = default_tool_io_redactor(sanitized);
         enforce_payload_limit(sanitized, self.tool_io_max_payload_bytes)
     }
 }

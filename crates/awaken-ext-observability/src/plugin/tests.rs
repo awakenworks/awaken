@@ -596,6 +596,66 @@ async fn tool_io_capture_records_error_results_through_sanitizer() {
 }
 
 #[tokio::test]
+async fn tool_io_capture_redacts_extended_sensitive_keys_case_insensitive_nested() {
+    // Pin the extended sensitive-key list across casing, nesting, arrays.
+    // Each leaked-* literal MUST disappear; each *-redacted-here marker
+    // shows where redaction landed.
+    let sink = InMemorySink::new();
+    let plugin = ObservabilityPlugin::new(sink.clone())
+        .with_tool_io_capture(ToolIoCapture::ArgumentsAndResults);
+    let args = serde_json::json!({
+        "Cookie": "leaked-cookie",
+        "Set-Cookie": "leaked-set-cookie",
+        "session_id": "leaked-session",
+        "JWT": "leaked-jwt",
+        "access_key": "leaked-access-key",
+        "client_secret": "leaked-client-secret",
+        "refresh_token": "leaked-refresh",
+        "id_token": "leaked-id-token",
+        "Auth": "leaked-auth-header",
+        "headers": [
+            { "Authorization": "Bearer leaked-bearer" },
+            { "x-api-key": "leaked-x-api" }
+        ],
+        "deeply": { "nested": { "Password": "leaked-deep" } },
+        "kept": "ok"
+    });
+    let ctx = PhaseContext::new(Phase::BeforeToolExecute, empty_snapshot()).with_tool_info(
+        "search",
+        "c1",
+        Some(args.clone()),
+    );
+    run_phase(&plugin, &ctx).await;
+    let ctx = PhaseContext::new(Phase::AfterToolExecute, empty_snapshot())
+        .with_tool_info("search", "c1", Some(args))
+        .with_tool_result(ToolResult::success(
+            "search",
+            serde_json::json!({ "ok": true }),
+        ));
+    run_phase(&plugin, &ctx).await;
+
+    let metrics = lock_unpoison(&plugin.inner.metrics);
+    let rendered = serde_json::to_string(&metrics.tools[0]).unwrap();
+    for leaked in [
+        "leaked-cookie",
+        "leaked-set-cookie",
+        "leaked-session",
+        "leaked-jwt",
+        "leaked-access-key",
+        "leaked-client-secret",
+        "leaked-refresh",
+        "leaked-id-token",
+        "leaked-auth-header",
+        "leaked-bearer",
+        "leaked-x-api",
+        "leaked-deep",
+    ] {
+        assert!(!rendered.contains(leaked), "found {leaked} in {rendered}");
+    }
+    assert!(rendered.contains("\"kept\":\"ok\""));
+}
+
+#[tokio::test]
 async fn tool_io_capture_allows_fields_and_truncates_oversized_payloads() {
     let sink = InMemorySink::new();
     let plugin = ObservabilityPlugin::new(sink.clone())
@@ -638,6 +698,49 @@ async fn tool_io_capture_allows_fields_and_truncates_oversized_payloads() {
     assert!(!rendered.contains("sample-api-key"));
     assert!(!rendered.contains("dropped"));
     assert!(metrics.tools[0].has_truncated_payload());
+}
+
+#[tokio::test]
+async fn default_redactor_runs_after_custom_redactor() {
+    let sink = InMemorySink::new();
+    // A pathological custom redactor that re-introduces a sensitive field.
+    let plugin = ObservabilityPlugin::new(sink.clone())
+        .with_tool_io_capture(ToolIoCapture::ArgumentsAndResults)
+        .with_tool_io_redactor(|value| match value {
+            serde_json::Value::Object(mut map) => {
+                map.insert(
+                    "api_key".to_string(),
+                    serde_json::Value::String("leaked-by-custom".into()),
+                );
+                serde_json::Value::Object(map)
+            }
+            other => other,
+        });
+    let args = serde_json::json!({ "query": "search" });
+
+    let ctx = PhaseContext::new(Phase::BeforeToolExecute, empty_snapshot()).with_tool_info(
+        "search",
+        "c1",
+        Some(args.clone()),
+    );
+    run_phase(&plugin, &ctx).await;
+
+    let ctx = PhaseContext::new(Phase::AfterToolExecute, empty_snapshot())
+        .with_tool_info("search", "c1", Some(args))
+        .with_tool_result(ToolResult::success(
+            "search",
+            serde_json::json!({ "ok": true }),
+        ));
+    run_phase(&plugin, &ctx).await;
+
+    let metrics = lock_unpoison(&plugin.inner.metrics);
+    let rendered =
+        serde_json::to_string(metrics.tools[0].call_arguments.as_ref().unwrap()).unwrap();
+    assert!(
+        !rendered.contains("leaked-by-custom"),
+        "default redactor must mask after custom: {rendered}"
+    );
+    assert!(rendered.contains("\"api_key\":\"***\""));
 }
 
 #[tokio::test]
