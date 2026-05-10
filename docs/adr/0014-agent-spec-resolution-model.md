@@ -27,6 +27,24 @@ Re-resolution occurs at step boundaries only when `ActiveAgentIdKey` indicates t
 
 A persisted `ConfigStore` may exist to hold serializable `AgentSpec` / `ModelBindingSpec` / `ProviderSpec` / `McpServerSpec` documents, but runtime execution does not query it directly at every boundary. Config changes are compiled into versioned registry snapshots; new runs see the latest published snapshot, while active runs and in-flight steps keep their pinned snapshot. Dynamic config changes still require either a handoff (agent switch) or a new run to observe different agent specs.
 
+### D5: Content-Addressed Identity on Resolved Entries (extension by ADR-0030)
+
+`ResolvedAgent` carries a `prompt_id` derived as
+`sha256(agent_id | role | content)[:12]` from the system prompt active at
+resolve time. Tool descriptors carry a `tool_desc_id` derived analogously
+from `tool_name | description | schema_json`. These ids are stamped onto
+`SpanContext` so every span can answer "which version of the prompt /
+tool description produced this?" without a registry round-trip.
+
+The "snapshot at run start" rule from D2 / D3 applies unchanged: the
+ids reflect the content captured at run start (or at handoff for
+re-resolved agents). Mid-run config changes do not retroactively alter
+the attribution recorded on in-flight runs.
+
+The `RegistrySnapshot::version: u64` monotonic counter is retained as a
+snapshot-wide cache key. The new content_ids are an additive layer of
+fine-grained attribution and do not replace the snapshot version.
+
 ## Consequences
 
 - Plugins access configuration via `ctx.agent_spec` — a single, consistent snapshot for the entire step.

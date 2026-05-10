@@ -1,8 +1,21 @@
 # ADR-0027: Server-Side Eval History
 
-- **Status**: 📐 Proposed
+- **Status**: ❌ Superseded by ADR-0032
 - **Date**: 2026-05-02
 - **Depends on**: ADR-0018, ADR-0023
+
+## Supersession Note
+
+ADR-0032 reframes server-side eval as **execution** rather than
+**ingestion**. The chosen path below — `POST /v1/eval/reports`
+accepting NDJSON pushed by the CLI — is no longer the intended surface;
+the server now runs replays through `awaken-runtime` directly and
+reports become a view over the trace store (ADR-0030). The
+offline-first constraint highlighted here is preserved as a hard
+requirement of ADR-0032 and satisfied by an embedded-server fallback
+in the CLI.
+
+The original analysis is retained below for historical context.
 
 ## Context
 

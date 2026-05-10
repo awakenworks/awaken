@@ -297,3 +297,39 @@ breaking changes thanks to `deny_unknown_fields` on the patch type.
 - Localisation: a single `description` string assumes one
   audience-language-at-a-time. Multi-language tooling would extend the
   patch shape later (e.g. `description: Map<Locale, String>`).
+
+## Attribution and A/B Routing (extensions by ADR-0030 / ADR-0031)
+
+ADR-0030 derives a `tool_desc_id = sha256(tool_name | description |
+schema_json)[:12]` from the **effective** description (post-merge).
+This id is stamped onto every `ToolSpan` via `SpanContext`, so an
+override applied through D2's PATCH surface immediately becomes
+observable on the trace stream as a new id. Operators can correlate
+a behavioural change to the exact description revision that caused
+it without inspecting the override record.
+
+ADR-0031 makes a description's `tool_desc_id` the unit of A/B
+routing for tools. An `Experiment` whose target is `Tool { tool_id }`
+declares two or more variants, each pointing at a `tool_desc_id`. The
+`ExperimentResolver` step in `registry/resolve` (ADR-0010 D10)
+substitutes the resolved description at resolve time without touching
+the override record. Shipping a winning variant calls back into D2's
+PATCH path with the winning `content_id` as the new override, so a
+shipped experiment is indistinguishable from a manual override of
+the same content. Rollback after ship continues to work through the
+existing `DELETE /v1/config/tools/:id/overrides` surface (D4).
+
+Two operational consequences:
+
+- **Audit chains**: an override applied via experiment ship carries a
+  `provenance: ExperimentShipped { id }` marker on its `RecordMeta`.
+  The standard audit / restore mechanisms (D7) are unchanged; the
+  marker is metadata that the admin console surfaces to distinguish
+  manually-edited overrides from shipped experiment outcomes.
+- **Concurrent overrides + experiments**: the resolver applies the
+  experiment substitution to whatever resolution would otherwise
+  occur, including any active override. An override of the
+  description that is also the experiment's "control" variant is
+  semantically the same as no override at all, so the two
+  mechanisms compose cleanly. Two `Ramping` experiments on the same
+  `tool_id` are rejected at experiment creation time (ADR-0031 D1).

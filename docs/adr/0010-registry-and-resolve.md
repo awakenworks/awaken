@@ -216,6 +216,31 @@ The loop runner accepts `&dyn AgentResolver` and resolves dynamically at startup
 
 Handoff is resolved inside the loop at step boundaries via `ActiveAgentKey` check + `AgentResolver::resolve()`. No external orchestration needed.
 
+### D10: ExperimentResolver Step (extension by ADR-0031)
+
+ADR-0031 adds a single new step to `resolve(...)` that runs after canonical
+resolution but before the resolved entity is materialised:
+
+```
+canonical resolve  →  ExperimentResolver  →  finalise resolved entity
+```
+
+The step looks up an active `Ramping` experiment for the target, picks a
+variant by consistent hash on the experiment's `bucket_key`, and substitutes
+the variant's content into the result. Substitution is opaque: the output is
+still a regular `ResolvedAgent` / `ToolDescriptor` whose `invoke()` and
+inference paths are unchanged. When no experiment matches the target, the
+step is a no-op and resolution proceeds as decided in D4–D6.
+
+The resolver also stamps `experiment_id` + `variant_name` onto the resolution
+context so `awaken-ext-observability` hooks can fill the corresponding
+`SpanContext` fields (ADR-0030 D2). This is the only way variant assignment
+reaches the trace stream; downstream code never sees the experiment record.
+
+The resolve algorithm in D4 is unchanged. ExperimentResolver is a single
+deterministic, constant-time step with no side effects beyond span
+attribution.
+
 ## Consequences
 
 ### Replaces
