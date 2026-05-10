@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -408,20 +409,37 @@ impl<'a> ConfigService<'a> {
 
         let model_refs = self.find_dependents(ConfigNamespace::Providers, id).await?;
         let model_ids = model_refs
-            .iter()
-            .map(|reference| reference.id.clone())
+            .into_iter()
+            .map(|reference| reference.id)
             .collect::<Vec<_>>();
-        let mut agent_ids = Vec::new();
-        for model_id in &model_ids {
-            agent_ids.extend(
-                self.find_dependents(ConfigNamespace::Models, model_id)
-                    .await?
-                    .into_iter()
-                    .map(|reference| reference.id),
-            );
-        }
+        let agent_ids = self.agents_referencing_models(&model_ids).await?;
 
         Ok(ProviderRemovalPreview::new(id, model_ids, agent_ids))
+    }
+
+    /// Single-pass scan: returns agent ids whose effective spec references
+    /// any of the supplied `model_ids` and does not declare a remote endpoint.
+    /// Avoids the previous O(model_ids × agents) double scan in
+    /// `preview_remove_provider` and the provider force-cascade path.
+    async fn agents_referencing_models(
+        &self,
+        model_ids: &[String],
+    ) -> Result<Vec<String>, ConfigServiceError> {
+        if model_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let model_id_set: HashSet<&str> = model_ids.iter().map(String::as_str).collect();
+        let agents = self.store.list("agents", 0, usize::MAX).await?;
+        let mut refs = Vec::new();
+        for (agent_id, value) in agents {
+            let Some(agent) = effective_visible_record::<AgentSpec>(value)? else {
+                continue;
+            };
+            if agent.endpoint.is_none() && model_id_set.contains(agent.model_id.as_str()) {
+                refs.push(agent_id);
+            }
+        }
+        Ok(refs)
     }
 
     pub fn registry_diagnostics(
@@ -600,20 +618,23 @@ impl<'a> ConfigService<'a> {
 
         let cascade_model_ids = if provider_force {
             let provider_models = self.find_dependents(ConfigNamespace::Providers, id).await?;
-            let mut agent_blockers = Vec::new();
-            for model_ref in &provider_models {
-                agent_blockers.extend(
-                    self.find_dependents(ConfigNamespace::Models, &model_ref.id)
-                        .await?,
-                );
-            }
+            let model_ids = provider_models
+                .into_iter()
+                .map(|model_ref| model_ref.id)
+                .collect::<Vec<_>>();
+            let agent_blockers = self
+                .agents_referencing_models(&model_ids)
+                .await?
+                .into_iter()
+                .map(|agent_id| DependentRef {
+                    namespace: "agents",
+                    id: agent_id,
+                })
+                .collect::<Vec<_>>();
             if !agent_blockers.is_empty() {
                 return Err(blocked_by_dependents(agent_blockers));
             }
-            provider_models
-                .into_iter()
-                .map(|model_ref| model_ref.id)
-                .collect::<Vec<_>>()
+            model_ids
         } else {
             Vec::new()
         };
@@ -3081,6 +3102,85 @@ mod tests {
             preview.agent_ids.is_empty(),
             "remote endpoint agents must not block provider model cascade"
         );
+    }
+
+    #[tokio::test]
+    async fn provider_removal_preview_collects_dependents_across_multiple_models() {
+        let config_store = Arc::new(awaken_stores::InMemoryStore::new());
+        let (state, _manager) = build_state(config_store.clone()).await;
+        let service = ConfigService::new(&state).expect("config service");
+
+        for provider_id in ["prov-fanout", "prov-other"] {
+            service
+                .create_with_headers(
+                    ConfigNamespace::Providers,
+                    json!({ "id": provider_id, "adapter": "stub" }),
+                    &axum::http::HeaderMap::new(),
+                )
+                .await
+                .expect("create provider");
+        }
+        for (model_id, provider_id) in [
+            ("fanout-a", "prov-fanout"),
+            ("fanout-b", "prov-fanout"),
+            ("fanout-c", "prov-fanout"),
+            ("other-a", "prov-other"),
+        ] {
+            service
+                .create_with_headers(
+                    ConfigNamespace::Models,
+                    json!({
+                        "id": model_id,
+                        "provider_id": provider_id,
+                        "upstream_model": "gpt-4"
+                    }),
+                    &axum::http::HeaderMap::new(),
+                )
+                .await
+                .expect("create model");
+        }
+        for (agent_id, model_id) in [
+            ("agent-uses-a", "fanout-a"),
+            ("agent-uses-b", "fanout-b"),
+            ("agent-uses-c-1", "fanout-c"),
+            ("agent-uses-c-2", "fanout-c"),
+            ("agent-uses-other", "other-a"),
+        ] {
+            service
+                .create_with_headers(
+                    ConfigNamespace::Agents,
+                    json!({
+                        "id": agent_id,
+                        "model_id": model_id,
+                        "system_prompt": "fanout",
+                        "max_rounds": 1
+                    }),
+                    &axum::http::HeaderMap::new(),
+                )
+                .await
+                .expect("create agent");
+        }
+
+        let preview = service
+            .preview_remove_provider("prov-fanout")
+            .await
+            .expect("preview provider removal");
+        assert_eq!(
+            preview.model_ids,
+            vec!["fanout-a".to_string(), "fanout-b".into(), "fanout-c".into()]
+        );
+        assert_eq!(
+            preview.agent_ids,
+            vec![
+                "agent-uses-a".to_string(),
+                "agent-uses-b".into(),
+                "agent-uses-c-1".into(),
+                "agent-uses-c-2".into(),
+            ],
+            "preview must collect dependents across all provider models in a single pass"
+        );
+        assert!(!preview.block_if_referenced_allowed);
+        assert!(!preview.cascade_unused_model_bindings_allowed);
     }
 
     #[tokio::test]

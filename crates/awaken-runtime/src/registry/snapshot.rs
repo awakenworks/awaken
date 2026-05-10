@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use parking_lot::RwLock;
+use parking_lot::{Mutex, RwLock};
 
 use super::traits::RegistrySet;
 
@@ -36,12 +36,17 @@ impl RegistrySnapshot {
 #[derive(Clone)]
 pub struct RegistryHandle {
     snapshot: Arc<RwLock<RegistrySnapshot>>,
+    /// Serializes mutations so that build/validate done by `update` cannot
+    /// observe a stale base snapshot relative to a concurrent `replace` or
+    /// `update`. Held only by writers; readers go straight to `snapshot`.
+    update_lock: Arc<Mutex<()>>,
 }
 
 impl RegistryHandle {
     pub fn new(registries: RegistrySet) -> Self {
         Self {
             snapshot: Arc::new(RwLock::new(RegistrySnapshot::new(1, registries))),
+            update_lock: Arc::new(Mutex::new(())),
         }
     }
 
@@ -54,18 +59,28 @@ impl RegistryHandle {
     }
 
     pub fn replace(&self, registries: RegistrySet) -> u64 {
+        let _writer = self.update_lock.lock();
         let mut snapshot = self.snapshot.write();
         let version = snapshot.version().saturating_add(1);
         *snapshot = RegistrySnapshot::new(version, registries);
         version
     }
 
+    /// Build the next registry set from the current snapshot and publish it.
+    ///
+    /// The closure runs OUTSIDE the snapshot's write lock so that heavy work
+    /// (deep copies, validation) does not block readers calling `snapshot()`
+    /// or `version()`. Concurrent writers are serialized by `update_lock`,
+    /// preserving the invariant that each update observes the predecessor's
+    /// committed state — see `concurrent_provider_registration_preserves_all_updates`.
     pub fn update<E>(
         &self,
         update: impl FnOnce(&RegistrySet) -> Result<RegistrySet, E>,
     ) -> Result<u64, E> {
+        let _writer = self.update_lock.lock();
+        let base = self.snapshot.read().clone();
+        let registries = update(base.registries())?;
         let mut snapshot = self.snapshot.write();
-        let registries = update(snapshot.registries())?;
         let version = snapshot.version().saturating_add(1);
         *snapshot = RegistrySnapshot::new(version, registries);
         Ok(version)
@@ -140,6 +155,51 @@ mod tests {
             .update::<()>(|_| Ok(make_registry_set("agent-b")))
             .expect("update succeeds");
         assert_eq!(version, 2);
+        let snapshot = handle.snapshot();
+        assert_eq!(snapshot.version(), 2);
+        assert_eq!(snapshot.registries().agents.agent_ids(), vec!["agent-b"]);
+    }
+
+    #[test]
+    fn update_does_not_block_readers_while_closure_runs() {
+        use std::sync::mpsc;
+
+        let handle = Arc::new(RegistryHandle::new(make_registry_set("agent-a")));
+        let (closure_started_tx, closure_started_rx) = mpsc::channel::<()>();
+        let (release_closure_tx, release_closure_rx) = mpsc::channel::<()>();
+
+        let writer_handle = Arc::clone(&handle);
+        let writer = std::thread::spawn(move || {
+            writer_handle
+                .update::<()>(|registries| {
+                    closure_started_tx
+                        .send(())
+                        .expect("notify reader closure has started");
+                    release_closure_rx
+                        .recv()
+                        .expect("reader must release closure before commit");
+                    assert_eq!(registries.agents.agent_ids(), vec!["agent-a"]);
+                    Ok(make_registry_set("agent-b"))
+                })
+                .expect("update succeeds");
+        });
+
+        closure_started_rx
+            .recv()
+            .expect("update closure must signal start");
+        // Old implementation held the snapshot's write lock for the closure body,
+        // which would block these reads indefinitely. New implementation only
+        // takes the write lock to publish, so readers proceed immediately.
+        let snapshot = handle.snapshot();
+        assert_eq!(snapshot.version(), 1);
+        assert_eq!(snapshot.registries().agents.agent_ids(), vec!["agent-a"]);
+        assert_eq!(handle.version(), 1);
+
+        release_closure_tx
+            .send(())
+            .expect("release update closure to publish");
+        writer.join().expect("writer thread must not panic");
+
         let snapshot = handle.snapshot();
         assert_eq!(snapshot.version(), 2);
         assert_eq!(snapshot.registries().agents.agent_ids(), vec!["agent-b"]);
