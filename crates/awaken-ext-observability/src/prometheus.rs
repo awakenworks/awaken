@@ -1,7 +1,8 @@
 use metrics::{counter, histogram};
 
 use crate::metrics::{
-    AgentMetrics, DelegationSpan, GenAISpan, HandoffSpan, MetricsEvent, SuspensionSpan, ToolSpan,
+    AgentMetrics, BackgroundTaskSpan, DelegationSpan, GenAISpan, HandoffSpan, MetricsEvent,
+    SuspensionSpan, ToolSpan,
 };
 use crate::sink::MetricsSink;
 
@@ -35,6 +36,10 @@ impl MetricsSink for PrometheusSink {
             MetricsEvent::Suspension(span) => record_suspension(span),
             MetricsEvent::Handoff(span) => record_handoff(span),
             MetricsEvent::Delegation(span) => record_delegation(span),
+            MetricsEvent::EvaluationResult(_) => {
+                // No prometheus counters for evaluation results yet.
+            }
+            MetricsEvent::BackgroundTask(span) => record_background_task(span),
         }
     }
 
@@ -144,6 +149,27 @@ pub(crate) fn record_delegation(span: &DelegationSpan) {
     }
 }
 
+pub(crate) fn record_background_task(span: &BackgroundTaskSpan) {
+    if !span.is_terminal() {
+        return;
+    }
+    counter!(
+        "awaken_background_tasks_total",
+        "task_type" => span.task_type.clone(),
+        "status" => span.status.as_str().to_string()
+    )
+    .increment(1);
+    if let Some(completed_at_ms) = span.completed_at_ms {
+        let duration_ms = completed_at_ms.saturating_sub(span.created_at_ms);
+        histogram!(
+            "awaken_background_task_duration_seconds",
+            "task_type" => span.task_type.clone(),
+            "status" => span.status.as_str().to_string()
+        )
+        .record(duration_ms as f64 / 1000.0);
+    }
+}
+
 pub(crate) fn record_run_end(metrics: &AgentMetrics) {
     histogram!("awaken_agent_session_duration_seconds")
         .record(metrics.session_duration_ms as f64 / 1000.0);
@@ -206,6 +232,8 @@ mod tests {
             max_tokens: None,
             stop_sequences: Vec::new(),
             duration_ms: 250,
+            started_at_ms: 0,
+            ended_at_ms: 0,
         }
     }
 
@@ -220,8 +248,12 @@ mod tests {
             operation: "execute_tool".to_string(),
             call_id: "call-1".to_string(),
             tool_type: "function".to_string(),
+            call_arguments: None,
+            call_result: None,
             error_type: None,
             duration_ms: 125,
+            started_at_ms: 0,
+            ended_at_ms: 0,
         });
 
         let output = handle.render();
@@ -245,8 +277,12 @@ mod tests {
             operation: "execute_tool".to_string(),
             call_id: "call-sink".to_string(),
             tool_type: "function".to_string(),
+            call_arguments: None,
+            call_result: None,
             error_type: None,
             duration_ms: 7,
+            started_at_ms: 0,
+            ended_at_ms: 0,
         }));
         sink.on_run_end(&AgentMetrics {
             session_duration_ms: 1234,

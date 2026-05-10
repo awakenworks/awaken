@@ -95,7 +95,10 @@ impl PhoenixConfig {
             })
             .unwrap_or_else(|| format!("{}/v1/traces", base_url.trim_end_matches('/')));
 
-        let project_spans_url = format!("{}/v1/spans", base_url.trim_end_matches('/'));
+        let project_spans_url = format!(
+            "{}/v1/projects/default/spans",
+            base_url.trim_end_matches('/')
+        );
 
         Self {
             base_url,
@@ -203,8 +206,9 @@ const DEFAULT_POLL_INTERVAL: Duration = Duration::from_millis(200);
 /// Poll Phoenix's spans REST endpoint until `predicate` returns `Some(span)`
 /// or attempts run out.
 ///
-/// `spans_url` is typically `{base}/v1/spans`. The body is expected to be a
-/// JSON array (or `{"data": [...]}`); both shapes are unwrapped.
+/// `spans_url` is typically `{base}/v1/projects/default/spans`. The body is
+/// expected to be a JSON array (or `{"data": [...]}`); both shapes are
+/// unwrapped.
 pub async fn wait_for_span<F>(spans_url: &str, predicate: F) -> Option<Value>
 where
     F: Fn(&Value) -> bool,
@@ -292,7 +296,10 @@ mod tests {
         // We assert structural shape only.
         let cfg = PhoenixConfig::from_env();
         assert!(cfg.is_configured());
-        assert!(cfg.project_spans_url.ends_with("/v1/spans"));
+        assert!(
+            cfg.project_spans_url
+                .ends_with("/v1/projects/default/spans")
+        );
         assert!(cfg.otlp_traces_endpoint.contains("/v1/traces"));
     }
 

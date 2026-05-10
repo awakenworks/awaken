@@ -5,10 +5,12 @@ use std::time::Instant;
 use async_trait::async_trait;
 use awaken_contract::StateError;
 use awaken_contract::contract::tool::ToolStatus;
+use awaken_runtime::extensions::background::{BackgroundTaskStateKey, PersistedTaskMeta};
 use awaken_runtime::{PhaseContext, PhaseHook, StateCommand};
 
 use crate::metrics::{
-    DelegationSpan, GenAISpan, HandoffSpan, MetricsEvent, SpanContext, SuspensionSpan, ToolSpan,
+    BackgroundTaskSpan, DelegationSpan, GenAISpan, HandoffSpan, MetricsEvent, SpanContext,
+    SuspensionSpan, ToolSpan, is_tool_payload_truncated,
 };
 
 use super::shared::{Inner, extract_cache_tokens, extract_token_counts};
@@ -29,6 +31,17 @@ pub(crate) struct RunStartHook(pub(crate) Arc<Inner>);
 impl PhaseHook for RunStartHook {
     async fn run(&self, ctx: &PhaseContext) -> Result<StateCommand, StateError> {
         *self.0.run_start.lock().await = Some(Instant::now());
+        *self.0.metrics.lock().await = crate::metrics::AgentMetrics::default();
+        // `background_task_statuses` is intentionally NOT cleared here. Its
+        // role is to remember which (owner_thread_id, task_id, status)
+        // tuples have already been emitted to the sink. Persisted background
+        // task snapshots may survive across runs, so clearing on RunStart
+        // would cause already-completed tasks to be re-emitted as new events.
+        // The map is bounded by total background tasks ever observed, which
+        // is small for any realistic workload.
+        self.0.inference_tracing_span.lock().await.take();
+        self.0.tool_tracing_span.lock().await.clear();
+        self.0.tool_start.lock().await.clear();
 
         // Capture execution context from RunIdentity for all subsequent spans.
         let ri = &ctx.run_identity;
@@ -37,6 +50,7 @@ impl PhaseHook for RunStartHook {
             thread_id: ri.thread_id.clone(),
             agent_id: ri.agent_id.clone(),
             parent_run_id: ri.parent_run_id.clone(),
+            parent_tool_call_id: ri.parent_tool_call_id.clone(),
         };
         // Reset step counter for the new run.
         self.0.step_counter.store(0, Ordering::Relaxed);
@@ -89,7 +103,7 @@ impl PhaseHook for BeforeInferenceHook {
             drop(previous_span);
         }
 
-        *s.inference_start.lock().await = Some(Instant::now());
+        *s.inference_start.lock().await = Some((Instant::now(), now_epoch_ms()));
 
         let model = s.model.lock().await.clone();
         let provider = s.provider.lock().await.clone();
@@ -108,7 +122,7 @@ impl PhaseHook for BeforeInferenceHook {
             "gen_ai.request.stop_sequences" = tracing::field::Empty,
             "gen_ai.response.model" = tracing::field::Empty,
             "gen_ai.response.id" = tracing::field::Empty,
-            "gen_ai.usage.thinking_tokens" = tracing::field::Empty,
+            "gen_ai.usage.reasoning.output_tokens" = tracing::field::Empty,
             "gen_ai.usage.input_tokens" = tracing::field::Empty,
             "gen_ai.usage.output_tokens" = tracing::field::Empty,
             "gen_ai.response.finish_reasons" = tracing::field::Empty,
@@ -150,13 +164,14 @@ impl PhaseHook for AfterInferenceHook {
     async fn run(&self, ctx: &PhaseContext) -> Result<StateCommand, StateError> {
         let s = &self.0;
 
-        let duration_ms = s
+        let (duration_ms, started_at_ms) = s
             .inference_start
             .lock()
             .await
             .take()
-            .map(|start| start.elapsed().as_millis() as u64)
-            .unwrap_or(0);
+            .map(|(instant, started_at_ms)| (instant.elapsed().as_millis() as u64, started_at_ms))
+            .unwrap_or((0, now_epoch_ms()));
+        let ended_at_ms = started_at_ms.saturating_add(duration_ms);
 
         // Extract usage and error from the LLM response.
         let (usage, error) = match &ctx.llm_response {
@@ -197,12 +212,14 @@ impl PhaseHook for AfterInferenceHook {
             max_tokens: *s.max_tokens.lock().await,
             stop_sequences: s.stop_sequences.lock().await.clone(),
             duration_ms,
+            started_at_ms,
+            ended_at_ms,
         };
 
         // Record tracing span attributes.
         if let Some(tracing_span) = s.inference_tracing_span.lock().await.take() {
             if let Some(v) = span.thinking_tokens {
-                tracing_span.record("gen_ai.usage.thinking_tokens", v);
+                tracing_span.record("gen_ai.usage.reasoning.output_tokens", v);
             }
             if let Some(v) = span.input_tokens {
                 tracing_span.record("gen_ai.usage.input_tokens", v);
@@ -262,7 +279,7 @@ impl PhaseHook for BeforeToolExecuteHook {
             s.tool_start
                 .lock()
                 .await
-                .insert(call_id.clone(), Instant::now());
+                .insert(call_id.clone(), (Instant::now(), now_epoch_ms()));
         }
 
         let provider = s.provider.lock().await.clone();
@@ -277,9 +294,24 @@ impl PhaseHook for BeforeToolExecuteHook {
             "gen_ai.tool.name" = %tool_name,
             "gen_ai.tool.call.id" = %call_id,
             "gen_ai.tool.type" = "function",
+            "gen_ai.tool.call.arguments" = tracing::field::Empty,
+            "gen_ai.tool.call.result" = tracing::field::Empty,
+            "awaken.tool.payload.truncated" = tracing::field::Empty,
             "error.type" = tracing::field::Empty,
             "error.message" = tracing::field::Empty,
         );
+
+        if s.tool_io_capture.captures_arguments()
+            && let Some(args) = &ctx.tool_args
+        {
+            let sanitized = s.sanitize_tool_payload(args);
+            if is_tool_payload_truncated(&sanitized) {
+                span.record("awaken.tool.payload.truncated", true);
+            }
+            if let Ok(serialized) = serde_json::to_string(&sanitized) {
+                span.record("gen_ai.tool.call.arguments", serialized.as_str());
+            }
+        }
 
         if !call_id.is_empty() {
             s.tool_tracing_span
@@ -322,15 +354,59 @@ impl PhaseHook for AfterToolExecuteHook {
         let s = &self.0;
 
         let call_id = ctx.tool_call_id.as_deref().unwrap_or_default().to_string();
-        let duration_ms = s
+        let (duration_ms, started_at_ms) = s
             .tool_start
             .lock()
             .await
             .remove(&call_id)
-            .map(|start| start.elapsed().as_millis() as u64)
-            .unwrap_or(0);
+            .map(|(instant, started_at_ms)| (instant.elapsed().as_millis() as u64, started_at_ms))
+            .unwrap_or((0, now_epoch_ms()));
+        let ended_at_ms = started_at_ms.saturating_add(duration_ms);
 
+        let tracing_span = s.tool_tracing_span.lock().await.remove(&call_id);
+
+        // Treat a missing `tool_result` as a synthetic tool failure so the
+        // sink, Prometheus counters, and any pending OTel tool context all
+        // see one terminal event for this call. Without this fallback the
+        // only signal would be a silent tracing-span drop, which masks the
+        // failure from downstream consumers.
+        let context = s.span_context.lock().await.clone();
+        let step = s.step_counter.load(Ordering::Relaxed).saturating_sub(1);
+        let captured_args = if s.tool_io_capture.captures_arguments() {
+            ctx.tool_args
+                .as_ref()
+                .map(|value| s.sanitize_tool_payload(value))
+        } else {
+            None
+        };
         let Some(result) = ctx.tool_result.as_ref() else {
+            let tool_name = ctx.tool_name.clone().unwrap_or_default();
+            let span = ToolSpan {
+                context,
+                step_index: Some(step),
+                name: tool_name,
+                operation: "execute_tool".to_string(),
+                call_id: call_id.clone(),
+                tool_type: "function".to_string(),
+                call_arguments: captured_args,
+                call_result: None,
+                error_type: Some("missing_tool_result".to_string()),
+                duration_ms,
+                started_at_ms,
+                ended_at_ms,
+            };
+            if let Some(tracing_span) = tracing_span {
+                tracing_span.record("error.type", "missing_tool_result");
+                tracing_span.record("otel.status_code", "ERROR");
+                tracing_span.record(
+                    "otel.status_description",
+                    "AfterToolExecute fired without tool_result",
+                );
+                drop(tracing_span);
+            }
+            crate::prometheus::record_tool(&span);
+            s.sink.record(&MetricsEvent::Tool(span.clone()));
+            s.metrics.lock().await.tools.push(span);
             return Ok(StateCommand::new());
         };
 
@@ -341,8 +417,6 @@ impl PhaseHook for AfterToolExecuteHook {
         };
         let error_message = result.message.clone().filter(|_| error_type.is_some());
 
-        let context = s.span_context.lock().await.clone();
-        let step = s.step_counter.load(Ordering::Relaxed).saturating_sub(1);
         let span = ToolSpan {
             context,
             step_index: Some(step),
@@ -350,12 +424,31 @@ impl PhaseHook for AfterToolExecuteHook {
             operation: "execute_tool".to_string(),
             call_id: call_id.clone(),
             tool_type: "function".to_string(),
+            call_arguments: captured_args,
+            // Capture both successful and error results when result capture is
+            // enabled — error payloads are often the most useful for debugging
+            // tool failures, and they go through the same sanitize pipeline
+            // (allowlist → custom redactor → default redactor → size limit).
+            call_result: if s.tool_io_capture.captures_results() {
+                Some(s.sanitize_tool_payload(&result.data))
+            } else {
+                None
+            },
             error_type,
             duration_ms,
+            started_at_ms,
+            ended_at_ms,
         };
 
-        let tracing_span = s.tool_tracing_span.lock().await.remove(&call_id);
         if let Some(tracing_span) = tracing_span {
+            if let Some(value) = &span.call_result
+                && let Ok(serialized) = serde_json::to_string(value)
+            {
+                tracing_span.record("gen_ai.tool.call.result", serialized.as_str());
+            }
+            if span.has_truncated_payload() {
+                tracing_span.record("awaken.tool.payload.truncated", true);
+            }
             if let (Some(v), Some(msg)) = (&span.error_type, &error_message) {
                 tracing_span.record("error.type", v.as_str());
                 tracing_span.record("error.message", msg.as_str());
@@ -449,7 +542,67 @@ impl PhaseHook for RunEndHook {
         metrics.session_duration_ms = session_duration_ms;
         crate::prometheus::record_run_end(&metrics);
         s.sink.on_run_end(&metrics);
+        *s.metrics.lock().await = crate::metrics::AgentMetrics::default();
+        // See `RunStartHook` for why `background_task_statuses` is not cleared.
 
         Ok(StateCommand::new())
+    }
+}
+
+pub(crate) struct BackgroundTaskObserveHook(pub(crate) Arc<Inner>);
+
+#[async_trait]
+impl PhaseHook for BackgroundTaskObserveHook {
+    async fn run(&self, ctx: &PhaseContext) -> Result<StateCommand, StateError> {
+        let Some(snapshot) = ctx.state::<BackgroundTaskStateKey>() else {
+            return Ok(StateCommand::new());
+        };
+
+        let s = &self.0;
+        for meta in snapshot.tasks.values() {
+            let status = meta.status;
+            let key = (meta.owner_thread_id.clone(), meta.task_id.clone());
+            let should_record = {
+                let mut seen = s.background_task_statuses.lock().await;
+                if seen.get(&key) == Some(&status) {
+                    false
+                } else {
+                    seen.insert(key, status);
+                    true
+                }
+            };
+
+            if !should_record {
+                continue;
+            }
+
+            let span = background_task_span_from_meta(meta);
+            s.sink.record(&MetricsEvent::BackgroundTask(span.clone()));
+            s.metrics.lock().await.background_tasks.push(span);
+        }
+
+        Ok(StateCommand::new())
+    }
+}
+
+fn background_task_span_from_meta(meta: &PersistedTaskMeta) -> BackgroundTaskSpan {
+    let parent = &meta.parent_context;
+    BackgroundTaskSpan {
+        context: SpanContext {
+            run_id: parent.run_id.clone().unwrap_or_default(),
+            thread_id: meta.owner_thread_id.clone(),
+            agent_id: parent.agent_id.clone().unwrap_or_default(),
+            parent_run_id: None,
+            parent_tool_call_id: parent.call_id.clone(),
+        },
+        task_id: meta.task_id.clone(),
+        task_type: meta.task_type.clone(),
+        task_name: meta.name.clone(),
+        description: meta.description.clone(),
+        status: meta.status,
+        parent_task_id: meta.parent_context.task_id.clone(),
+        error_message: meta.error.clone(),
+        created_at_ms: meta.created_at_ms,
+        completed_at_ms: meta.completed_at_ms,
     }
 }

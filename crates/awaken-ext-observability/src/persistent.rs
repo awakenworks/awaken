@@ -5,7 +5,10 @@ use std::time::Duration;
 
 use parking_lot::Mutex;
 
-use super::metrics::{AgentMetrics, MetricsEvent};
+use super::metrics::{AgentMetrics, BackgroundTaskSpan, EvaluationResultEvent, MetricsEvent};
+// `BackgroundTaskSpan` and `EvaluationResultEvent` are still referenced by the
+// legacy `PersistedLine` variants kept around so previously-spilled NDJSON
+// files keep deserialising after the trait API was simplified.
 use super::sink::{MetricsSink, SinkError};
 
 /// Configuration for [`PersistentSink`].
@@ -43,6 +46,18 @@ enum PersistedLine {
         line_type: RunEndMarker,
         session_duration_ms: u64,
     },
+    EvaluationResult {
+        #[serde(rename = "type")]
+        line_type: EvaluationResultMarker,
+        #[serde(flatten)]
+        event: Box<EvaluationResultEvent>,
+    },
+    BackgroundTask {
+        #[serde(rename = "type")]
+        line_type: BackgroundTaskMarker,
+        #[serde(flatten)]
+        span: Box<BackgroundTaskSpan>,
+    },
     Event(Box<MetricsEvent>),
 }
 
@@ -50,6 +65,18 @@ enum PersistedLine {
 enum RunEndMarker {
     #[serde(rename = "run_end")]
     RunEnd,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+enum EvaluationResultMarker {
+    #[serde(rename = "evaluation_result")]
+    EvaluationResult,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+enum BackgroundTaskMarker {
+    #[serde(rename = "background_task")]
+    BackgroundTask,
 }
 
 /// A [`MetricsSink`] wrapper that persists events to disk on flush failure.
@@ -99,6 +126,14 @@ impl PersistentSink {
     fn replay_line(&self, line: &PersistedLine) {
         match line {
             PersistedLine::Event(event) => self.inner.record(event.as_ref()),
+            PersistedLine::EvaluationResult { event, .. } => {
+                self.inner
+                    .record(&MetricsEvent::EvaluationResult(event.as_ref().clone()));
+            }
+            PersistedLine::BackgroundTask { span, .. } => {
+                self.inner
+                    .record(&MetricsEvent::BackgroundTask(span.as_ref().clone()));
+            }
             PersistedLine::RunEnd {
                 session_duration_ms,
                 ..
@@ -201,6 +236,10 @@ impl MetricsSink for PersistentSink {
         let _ = self.inner.shutdown();
         flush_result
     }
+
+    fn flush_run(&self, run_key: &str, close_reason: &'static str) -> Result<(), SinkError> {
+        self.inner.flush_run(run_key, close_reason)
+    }
 }
 
 #[cfg(test)]
@@ -273,6 +312,8 @@ mod tests {
             max_tokens: None,
             stop_sequences: Vec::new(),
             duration_ms: 200,
+            started_at_ms: 0,
+            ended_at_ms: 0,
         }
     }
 
@@ -284,8 +325,12 @@ mod tests {
             operation: "execute".to_string(),
             call_id: "call_1".to_string(),
             tool_type: "function".to_string(),
+            call_arguments: None,
+            call_result: None,
             error_type: None,
             duration_ms: 50,
+            started_at_ms: 0,
+            ended_at_ms: 0,
         }
     }
 

@@ -36,6 +36,8 @@ fn make_genai_span(model: &str, provider: &str, input: i32, output: i32) -> GenA
         max_tokens: None,
         stop_sequences: vec![],
         duration_ms: 100,
+        started_at_ms: 0,
+        ended_at_ms: 0,
     }
 }
 
@@ -73,12 +75,16 @@ fn make_tool_span(name: &str, error: bool) -> ToolSpan {
         operation: "execute_tool".into(),
         call_id: format!("call_{name}"),
         tool_type: "function".into(),
+        call_arguments: None,
+        call_result: None,
         error_type: if error {
             Some("tool_error".into())
         } else {
             None
         },
         duration_ms: 50,
+        started_at_ms: 0,
+        ended_at_ms: 0,
     }
 }
 
@@ -338,20 +344,28 @@ fn total_durations_accumulate() {
         inferences: vec![
             GenAISpan {
                 duration_ms: 200,
+                started_at_ms: 0,
+                ended_at_ms: 0,
                 ..make_genai_span("m", "p", 10, 5)
             },
             GenAISpan {
                 duration_ms: 300,
+                started_at_ms: 0,
+                ended_at_ms: 0,
                 ..make_genai_span("m", "p", 10, 5)
             },
         ],
         tools: vec![
             ToolSpan {
                 duration_ms: 50,
+                started_at_ms: 0,
+                ended_at_ms: 0,
                 ..make_tool_span("t1", false)
             },
             ToolSpan {
                 duration_ms: 75,
+                started_at_ms: 0,
+                ended_at_ms: 0,
                 ..make_tool_span("t2", false)
             },
         ],
@@ -486,10 +500,14 @@ fn zero_duration_spans_handled() {
     let m = AgentMetrics {
         inferences: vec![GenAISpan {
             duration_ms: 0,
+            started_at_ms: 0,
+            ended_at_ms: 0,
             ..make_genai_span("m", "p", 10, 5)
         }],
         tools: vec![ToolSpan {
             duration_ms: 0,
+            started_at_ms: 0,
+            ended_at_ms: 0,
             ..make_tool_span("t", false)
         }],
         session_duration_ms: 0,

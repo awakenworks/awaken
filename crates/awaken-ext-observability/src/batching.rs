@@ -29,7 +29,7 @@ impl Default for BatchingConfig {
     }
 }
 
-/// Internal buffer holding all event types as a unified stream.
+/// Internal buffer holding telemetry events as a unified stream.
 #[derive(Default)]
 struct Buffer {
     events: Vec<MetricsEvent>,
@@ -162,6 +162,13 @@ impl MetricsSink for BatchingSink {
         self.flush_buffer();
         self.inner.shutdown()
     }
+
+    fn flush_run(&self, run_key: &str, close_reason: &'static str) -> Result<(), SinkError> {
+        // Drain any buffered events first so the inner sink has the full
+        // picture for `run_key` before we ask it to close abandoned state.
+        self.flush_buffer();
+        self.inner.flush_run(run_key, close_reason)
+    }
 }
 
 #[cfg(test)]
@@ -194,6 +201,8 @@ mod tests {
             max_tokens: None,
             stop_sequences: Vec::new(),
             duration_ms: 100,
+            started_at_ms: 0,
+            ended_at_ms: 0,
         }
     }
 
@@ -205,8 +214,12 @@ mod tests {
             operation: "execute_tool".to_string(),
             call_id: "c1".to_string(),
             tool_type: "function".to_string(),
+            call_arguments: None,
+            call_result: None,
             error_type: None,
             duration_ms: 50,
+            started_at_ms: 0,
+            ended_at_ms: 0,
         }
     }
 
@@ -436,6 +449,57 @@ mod tests {
         assert_eq!(sink.config.max_batch_size, 100);
         assert_eq!(sink.config.flush_interval, Duration::from_secs(5));
         assert_eq!(sink.config.max_buffer_size, 10_000);
+    }
+
+    #[test]
+    fn batching_sink_forwards_evaluation_and_background_task_events() {
+        // Regression: an earlier revision of BatchingSink kept its own
+        // `BufferedEvent` enum with three variants; if a future change
+        // forgets to wire EvaluationResult or BackgroundTask through `record`
+        // they would be silently dropped.  Pin both variants here.
+        use crate::metrics::{BackgroundTaskSpan, EvaluationResultEvent, SpanContext};
+        use awaken_runtime::extensions::background::TaskStatus;
+
+        let inner = Arc::new(InMemorySink::new());
+        let sink = BatchingSink::new(
+            inner.clone(),
+            BatchingConfig {
+                max_batch_size: 100,
+                max_buffer_size: 10_000,
+                ..Default::default()
+            },
+        );
+        sink.record(&MetricsEvent::EvaluationResult(EvaluationResultEvent {
+            context: SpanContext::default(),
+            name: "judge".into(),
+            score_value: Some(0.9),
+            score_label: None,
+            explanation: None,
+            response_id: None,
+            error_type: None,
+            timestamp_ms: 1,
+        }));
+        sink.record(&MetricsEvent::BackgroundTask(BackgroundTaskSpan {
+            context: SpanContext::default(),
+            task_id: "bg".into(),
+            task_type: "sub".into(),
+            task_name: None,
+            description: "x".into(),
+            status: TaskStatus::Completed,
+            parent_task_id: None,
+            error_message: None,
+            created_at_ms: 1,
+            completed_at_ms: Some(2),
+        }));
+        // Still buffered.
+        let snapshot = inner.metrics();
+        assert!(snapshot.evaluations.is_empty());
+        assert!(snapshot.background_tasks.is_empty());
+
+        sink.flush().unwrap();
+        let snapshot = inner.metrics();
+        assert_eq!(snapshot.evaluations.len(), 1);
+        assert_eq!(snapshot.background_tasks.len(), 1);
     }
 
     #[test]

@@ -37,6 +37,12 @@ pub(crate) fn current_background_task_context() -> Option<BackgroundTaskExecutio
     CURRENT_BACKGROUND_TASK_CONTEXT.try_with(Clone::clone).ok()
 }
 
+pub fn current_background_task_id() -> Option<TaskId> {
+    CURRENT_BACKGROUND_TASK_CONTEXT
+        .try_with(|context| context.task_id.clone())
+        .ok()
+}
+
 pub(crate) async fn scope_tool_lineage_context<Fut>(
     context: ToolLineageContext,
     future: Fut,

@@ -92,8 +92,10 @@ impl MetricsSink for MySink {
 | `BeforeInference` | model、provider、开始时间 |
 | `AfterInference` | token usage、finish reason、耗时 |
 | `BeforeToolExecute` | tool 开始时间 |
-| `AfterToolExecute` | tool 耗时、失败状态 |
+| `AfterToolExecute` | tool 耗时、失败状态；启用 `ToolIoCapture` 时可记录 tool 参数/结果 |
 | `RunEnd` | session 总时长 |
+
+OTel span 遵循 GenAI 语义约定：根 agent span 使用 `gen_ai.operation.name=invoke_agent`；推理 span 使用 `gen_ai.provider.name`、`gen_ai.request.model`、`gen_ai.conversation.id`、token usage 等属性；tool span 使用 `gen_ai.operation.name=execute_tool` 与 `gen_ai.tool.*` 属性。
 
 ## 验证
 

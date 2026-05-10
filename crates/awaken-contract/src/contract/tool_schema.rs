@@ -33,11 +33,56 @@ pub fn generate_tool_schema<T: schemars::JsonSchema>() -> Value {
 
 /// Sanitize a JSON Schema value in-place to be LLM-friendly.
 ///
+/// - Rewrites `const` to an equivalent single-value `enum` because Gemini's
+///   OpenAPI schema subset rejects `const`
 /// - Simplifies `anyOf: [T, {type: null}]` patterns produced by `Option<T>`
 /// - Ensures arrays have `items` and objects have `properties`
 pub fn sanitize_for_llm(schema: &mut Value) {
+    rewrite_const_as_enum(schema);
     simplify_any_of(schema);
     fix_missing_fields(schema);
+}
+
+/// Recursively rewrite JSON Schema `const` keywords to `enum: [value]`.
+///
+/// `const` and a single-value `enum` are equivalent for JSON Schema
+/// validation, while the latter is accepted by Gemini's function declaration
+/// schema. If a schema contains both keywords and they intersect (the const
+/// value is one of the enum values) we narrow to `enum: [const_value]`. If
+/// they are incompatible the original schema is unsatisfiable; replace the
+/// subschema with the JSON Schema `false` boolean so the rewrite does not
+/// silently widen the constraint.
+fn rewrite_const_as_enum(value: &mut Value) {
+    if let Some(arr) = value.as_array_mut() {
+        for item in arr.iter_mut() {
+            rewrite_const_as_enum(item);
+        }
+        return;
+    }
+
+    let conflict = if let Some(obj) = value.as_object_mut() {
+        for v in obj.values_mut() {
+            rewrite_const_as_enum(v);
+        }
+
+        let Some(const_value) = obj.remove("const") else {
+            return;
+        };
+        let conflict = match obj.get("enum").and_then(|v| v.as_array()) {
+            Some(arr) => !arr.iter().any(|v| v == &const_value),
+            None => false,
+        };
+        if !conflict {
+            obj.insert("enum".to_string(), Value::Array(vec![const_value]));
+            return;
+        }
+        conflict
+    } else {
+        return;
+    };
+
+    debug_assert!(conflict);
+    *value = Value::Bool(false);
 }
 
 /// Validate `args` against a JSON Schema, returning an error with joined messages on failure.
@@ -245,6 +290,102 @@ mod tests {
         let required = schema["required"].as_array().unwrap();
         assert!(required.contains(&json!("query")));
         assert!(!required.contains(&json!("limit")));
+    }
+
+    #[test]
+    fn const_keyword_rewritten_to_single_enum() {
+        let mut schema = json!({
+            "type": "object",
+            "properties": {
+                "target": {
+                    "oneOf": [
+                        {
+                            "type": "object",
+                            "properties": {
+                                "relation": { "const": "self" }
+                            },
+                            "required": ["relation"]
+                        },
+                        {
+                            "type": "object",
+                            "properties": {
+                                "relation": { "const": "child" },
+                                "name": { "type": "string" }
+                            },
+                            "required": ["relation", "name"]
+                        }
+                    ]
+                }
+            },
+            "required": ["target"]
+        });
+
+        sanitize_for_llm(&mut schema);
+        let output = serde_json::to_string(&schema).unwrap();
+        assert!(
+            !output.contains("\"const\""),
+            "Gemini rejects JSON Schema `const` in function declarations"
+        );
+        assert_eq!(
+            schema["properties"]["target"]["oneOf"][0]["properties"]["relation"]["enum"],
+            json!(["self"])
+        );
+        assert_eq!(
+            schema["properties"]["target"]["oneOf"][1]["properties"]["relation"]["enum"],
+            json!(["child"])
+        );
+        assert!(jsonschema::validator_for(&schema).is_ok());
+        assert!(validate_against_schema(&schema, &json!({"target": {"relation": "self"}})).is_ok());
+        assert!(
+            validate_against_schema(&schema, &json!({"target": {"relation": "other"}})).is_err()
+        );
+    }
+
+    #[test]
+    fn const_with_matching_enum_narrows_to_const() {
+        let mut schema = json!({
+            "type": "string",
+            "const": "self",
+            "enum": ["self", "child"]
+        });
+        sanitize_for_llm(&mut schema);
+        assert_eq!(schema["enum"], json!(["self"]));
+        assert!(schema.get("const").is_none());
+        assert!(jsonschema::validator_for(&schema).is_ok());
+    }
+
+    #[test]
+    fn const_with_contradictory_enum_becomes_unsatisfiable() {
+        let mut schema = json!({
+            "type": "object",
+            "properties": {
+                "relation": {
+                    "const": "self",
+                    "enum": ["child"]
+                }
+            },
+            "required": ["relation"]
+        });
+        sanitize_for_llm(&mut schema);
+        // The contradictory subschema collapses to the JSON Schema `false`
+        // boolean so any value at this position is rejected.
+        assert_eq!(schema["properties"]["relation"], Value::Bool(false));
+        let validator = jsonschema::validator_for(&schema).expect("valid schema");
+        assert!(!validator.is_valid(&json!({"relation": "self"})));
+        assert!(!validator.is_valid(&json!({"relation": "child"})));
+    }
+
+    #[test]
+    fn const_inside_one_of_handles_each_branch_independently() {
+        let mut schema = json!({
+            "oneOf": [
+                { "const": "a", "enum": ["a", "b"] },
+                { "const": "c", "enum": ["d"] }
+            ]
+        });
+        sanitize_for_llm(&mut schema);
+        assert_eq!(schema["oneOf"][0]["enum"], json!(["a"]));
+        assert_eq!(schema["oneOf"][1], Value::Bool(false));
     }
 
     #[test]

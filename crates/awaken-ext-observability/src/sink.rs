@@ -46,7 +46,9 @@ impl SinkError {
 
 /// Trait for consuming telemetry data.
 pub trait MetricsSink: Send + Sync {
-    /// Record a single metrics event.
+    /// Record a single metrics event. Implementations must handle every
+    /// `MetricsEvent` variant — there is no default no-op fallback so a
+    /// missing arm becomes a compile error rather than silently dropped data.
     fn record(&self, event: &MetricsEvent);
 
     /// Called at end of run with aggregated metrics.
@@ -59,6 +61,15 @@ pub trait MetricsSink: Send + Sync {
 
     /// Graceful shutdown. Returns `Ok(())` by default.
     fn shutdown(&self) -> Result<(), SinkError> {
+        Ok(())
+    }
+
+    /// Force-close any sink state still held for `run_key`, marking abandoned
+    /// spans with `close_reason`. The default no-op is correct for sinks that
+    /// have no per-run lifetime state (`InMemorySink`, `PrometheusSink`); the
+    /// OTel sink overrides it to end deferred root spans and pending tool
+    /// contexts.
+    fn flush_run(&self, _run_key: &str, _close_reason: &'static str) -> Result<(), SinkError> {
         Ok(())
     }
 }
@@ -88,6 +99,8 @@ impl MetricsSink for InMemorySink {
             MetricsEvent::Suspension(s) => inner.suspensions.push(s.clone()),
             MetricsEvent::Handoff(s) => inner.handoffs.push(s.clone()),
             MetricsEvent::Delegation(s) => inner.delegations.push(s.clone()),
+            MetricsEvent::EvaluationResult(e) => inner.evaluations.push(e.clone()),
+            MetricsEvent::BackgroundTask(s) => inner.background_tasks.push(s.clone()),
         }
     }
 
@@ -125,6 +138,8 @@ mod tests {
             max_tokens: None,
             stop_sequences: Vec::new(),
             duration_ms: 100,
+            started_at_ms: 0,
+            ended_at_ms: 0,
         }
     }
 
@@ -136,12 +151,16 @@ mod tests {
             operation: "execute".to_string(),
             call_id: "call_1".to_string(),
             tool_type: "function".to_string(),
+            call_arguments: None,
+            call_result: None,
             error_type: if error {
                 Some("timeout".to_string())
             } else {
                 None
             },
             duration_ms: 50,
+            started_at_ms: 0,
+            ended_at_ms: 0,
         }
     }
 
@@ -303,6 +322,64 @@ mod tests {
         let sink = InMemorySink::new();
         assert!(sink.flush().is_ok());
         assert!(sink.shutdown().is_ok());
+    }
+
+    #[test]
+    fn minimal_sink_must_handle_every_event_variant() {
+        // A custom sink that only implements `record` and `on_run_end` MUST
+        // observe evaluation results and background-task spans — they are
+        // delivered through `MetricsEvent`, not through forgotten default
+        // trait methods.
+        use crate::metrics::{BackgroundTaskSpan, EvaluationResultEvent, SpanContext};
+        use awaken_runtime::extensions::background::TaskStatus;
+        use parking_lot::Mutex;
+        use std::sync::Arc;
+
+        #[derive(Default)]
+        struct CountingSink {
+            seen: Arc<Mutex<Vec<&'static str>>>,
+        }
+        impl MetricsSink for CountingSink {
+            fn record(&self, event: &MetricsEvent) {
+                let label = match event {
+                    MetricsEvent::Inference(_) => "inference",
+                    MetricsEvent::Tool(_) => "tool",
+                    MetricsEvent::Suspension(_) => "suspension",
+                    MetricsEvent::Handoff(_) => "handoff",
+                    MetricsEvent::Delegation(_) => "delegation",
+                    MetricsEvent::EvaluationResult(_) => "evaluation_result",
+                    MetricsEvent::BackgroundTask(_) => "background_task",
+                };
+                self.seen.lock().push(label);
+            }
+            fn on_run_end(&self, _: &AgentMetrics) {}
+        }
+
+        let sink = CountingSink::default();
+        sink.record(&MetricsEvent::EvaluationResult(EvaluationResultEvent {
+            context: SpanContext::default(),
+            name: "judge".into(),
+            score_value: None,
+            score_label: None,
+            explanation: None,
+            response_id: None,
+            error_type: None,
+            timestamp_ms: 0,
+        }));
+        sink.record(&MetricsEvent::BackgroundTask(BackgroundTaskSpan {
+            context: SpanContext::default(),
+            task_id: "bg".into(),
+            task_type: "sub".into(),
+            task_name: None,
+            description: "x".into(),
+            status: TaskStatus::Running,
+            parent_task_id: None,
+            error_message: None,
+            created_at_ms: 0,
+            completed_at_ms: None,
+        }));
+        let seen = sink.seen.lock().clone();
+        assert_eq!(seen, vec!["evaluation_result", "background_task"]);
     }
 
     #[test]

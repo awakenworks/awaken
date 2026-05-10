@@ -110,6 +110,8 @@ mod tests {
             max_tokens: None,
             stop_sequences: Vec::new(),
             duration_ms: 1,
+            started_at_ms: 0,
+            ended_at_ms: 0,
         }
     }
 
@@ -121,8 +123,12 @@ mod tests {
             operation: "execute_tool".into(),
             call_id: format!("call-{name}"),
             tool_type: "function".into(),
+            call_arguments: None,
+            call_result: None,
             error_type: if error { Some("err".into()) } else { None },
             duration_ms: 1,
+            started_at_ms: 0,
+            ended_at_ms: 0,
         }
     }
 
@@ -249,14 +255,19 @@ mod tests {
                 thread_id: "t".into(),
                 agent_id: agent_id.into(),
                 parent_run_id: None,
+                parent_tool_call_id: None,
             },
             step_index: None,
             name: name.into(),
             operation: "execute_tool".into(),
             call_id: format!("call-{name}-{agent_id}"),
             tool_type: "function".into(),
+            call_arguments: None,
+            call_result: None,
             error_type: if error { Some("err".into()) } else { None },
             duration_ms: 1,
+            started_at_ms: 0,
+            ended_at_ms: 0,
         }
     }
 

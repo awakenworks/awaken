@@ -251,6 +251,14 @@ impl MetricsSink for ArcSink {
     fn shutdown(&self) -> Result<(), crate::sink::SinkError> {
         self.0.shutdown()
     }
+
+    fn flush_run(
+        &self,
+        run_key: &str,
+        close_reason: &'static str,
+    ) -> Result<(), crate::sink::SinkError> {
+        self.0.flush_run(run_key, close_reason)
+    }
 }
 
 fn env_truthy(key: &str) -> bool {
@@ -331,6 +339,8 @@ mod tests {
             max_tokens: None,
             stop_sequences: Vec::new(),
             duration_ms: 1,
+            started_at_ms: 0,
+            ended_at_ms: 0,
         }
     }
 
@@ -342,8 +352,12 @@ mod tests {
             operation: "execute_tool".to_string(),
             call_id: "call-wiring".to_string(),
             tool_type: "function".to_string(),
+            call_arguments: None,
+            call_result: None,
             error_type: None,
             duration_ms: 1,
+            started_at_ms: 0,
+            ended_at_ms: 0,
         }
     }
 

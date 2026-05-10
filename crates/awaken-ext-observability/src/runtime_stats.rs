@@ -340,6 +340,8 @@ impl RuntimeStatsRegistry {
             MetricsEvent::Suspension(s) => s.context.agent_id.clone(),
             MetricsEvent::Handoff(s) => s.context.agent_id.clone(),
             MetricsEvent::Delegation(s) => s.context.agent_id.clone(),
+            MetricsEvent::EvaluationResult(e) => e.context.agent_id.clone(),
+            MetricsEvent::BackgroundTask(s) => s.context.agent_id.clone(),
         };
         if agent_id.is_empty() {
             return;
@@ -366,6 +368,9 @@ impl RuntimeStatsRegistry {
             MetricsEvent::Suspension(_) => bucket.suspensions += 1,
             MetricsEvent::Handoff(_) => bucket.handoffs += 1,
             MetricsEvent::Delegation(_) => bucket.delegations += 1,
+            // Evaluations and background tasks are not aggregated into the
+            // per-agent runtime windows yet.
+            MetricsEvent::EvaluationResult(_) | MetricsEvent::BackgroundTask(_) => {}
         }
     }
 }
@@ -618,6 +623,7 @@ mod tests {
             thread_id: "t".into(),
             agent_id: agent.into(),
             parent_run_id: None,
+            parent_tool_call_id: None,
         }
     }
 
@@ -644,6 +650,8 @@ mod tests {
             max_tokens: None,
             stop_sequences: Vec::new(),
             duration_ms,
+            started_at_ms: 0,
+            ended_at_ms: 0,
         }
     }
 
@@ -655,8 +663,12 @@ mod tests {
             operation: "execute_tool".into(),
             call_id: format!("call-{name}-{agent}"),
             tool_type: "function".into(),
+            call_arguments: None,
+            call_result: None,
             error_type: if err { Some("err".into()) } else { None },
             duration_ms,
+            started_at_ms: 0,
+            ended_at_ms: 0,
         }
     }
 

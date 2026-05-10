@@ -22,8 +22,8 @@ mod otel_config;
 pub use batching::{BatchingConfig, BatchingSink};
 pub use composite::{CompositeSink, CompositeSinkBuilder};
 pub use metrics::{
-    AgentMetrics, DelegationSpan, GenAISpan, HandoffSpan, MetricsEvent, SpanContext,
-    SuspensionSpan, ToolSpan,
+    AgentMetrics, BackgroundTaskSpan, DelegationSpan, EvaluationResultEvent, GenAISpan,
+    HandoffSpan, MetricsEvent, SpanContext, SuspensionSpan, ToolIoCapture, ToolSpan,
 };
 pub use persistent::{PersistenceConfig, PersistentSink};
 pub use plugin::{OBSERVABILITY_PLUGIN_ID, ObservabilityPlugin};
@@ -137,6 +137,8 @@ mod tests {
             max_tokens: None,
             stop_sequences: Vec::new(),
             duration_ms: 100,
+            started_at_ms: 0,
+            ended_at_ms: 0,
         }
     }
 
@@ -148,8 +150,12 @@ mod tests {
             operation: "execute_tool".into(),
             call_id: call_id.into(),
             tool_type: "function".into(),
+            call_arguments: None,
+            call_result: None,
             error_type: None,
             duration_ms: 10,
+            started_at_ms: 0,
+            ended_at_ms: 0,
         }
     }
 
@@ -201,6 +207,8 @@ mod tests {
                     output_tokens: None,
                     total_tokens: Some(8),
                     duration_ms: 50,
+                    started_at_ms: 0,
+                    ended_at_ms: 0,
                     ..make_span("m", "openai")
                 },
             ],
@@ -558,6 +566,8 @@ mod tests {
                     output_tokens: Some(3),
                     total_tokens: Some(8),
                     duration_ms: 50,
+                    started_at_ms: 0,
+                    ended_at_ms: 0,
                     ..make_span("gpt-4", "openai")
                 },
             ],
@@ -585,6 +595,8 @@ mod tests {
                     output_tokens: Some(25),
                     total_tokens: Some(75),
                     duration_ms: 200,
+                    started_at_ms: 0,
+                    ended_at_ms: 0,
                     ..make_span("claude-3", "anthropic")
                 },
             ],
@@ -633,6 +645,8 @@ mod tests {
                 make_tool_span("search", "c1"),
                 ToolSpan {
                     duration_ms: 20,
+                    started_at_ms: 0,
+                    ended_at_ms: 0,
                     ..make_tool_span("search", "c2")
                 },
             ],
@@ -716,6 +730,8 @@ mod tests {
                 make_span("m", "p"), // 100ms
                 GenAISpan {
                     duration_ms: 200,
+                    started_at_ms: 0,
+                    ended_at_ms: 0,
                     ..make_span("m", "p")
                 },
             ],
@@ -723,6 +739,8 @@ mod tests {
                 make_tool_span("a", "c1"), // 10ms
                 ToolSpan {
                     duration_ms: 30,
+                    started_at_ms: 0,
+                    ended_at_ms: 0,
                     ..make_tool_span("b", "c2")
                 },
             ],
@@ -1036,7 +1054,9 @@ mod tests {
     // ---- after_tool_execute with no tool result ----
 
     #[tokio::test]
-    async fn test_after_tool_execute_no_result_is_noop() {
+    async fn test_after_tool_execute_no_result_records_failure() {
+        // A missing tool result is a real failure mode; the hook records a
+        // synthetic failure span so downstream sinks don't lose the call.
         let sink = InMemorySink::new();
         let plugin = ObservabilityPlugin::new(sink.clone());
 
@@ -1044,7 +1064,12 @@ mod tests {
             .with_tool_info("search", "c1", None);
         run_phase(&plugin, &ctx).await;
 
-        assert_eq!(sink.metrics().tool_count(), 0);
+        let m = sink.metrics();
+        assert_eq!(m.tool_count(), 1);
+        assert_eq!(
+            m.tools[0].error_type.as_deref(),
+            Some("missing_tool_result")
+        );
     }
 
     // ---- InMemorySink thread safety ----

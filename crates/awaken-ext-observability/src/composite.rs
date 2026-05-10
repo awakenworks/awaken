@@ -92,6 +92,23 @@ impl MetricsSink for CompositeSink {
             )))
         }
     }
+
+    fn flush_run(&self, run_key: &str, close_reason: &'static str) -> Result<(), SinkError> {
+        let mut errors = Vec::new();
+        for sink in &self.sinks {
+            if let Err(e) = sink.flush_run(run_key, close_reason) {
+                errors.push(e);
+            }
+        }
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(SinkError::new(format!(
+                "{} sink(s) failed to flush_run",
+                errors.len()
+            )))
+        }
+    }
 }
 
 #[cfg(test)]
@@ -124,6 +141,8 @@ mod tests {
             max_tokens: None,
             stop_sequences: Vec::new(),
             duration_ms: 100,
+            started_at_ms: 0,
+            ended_at_ms: 0,
         }
     }
 
@@ -135,8 +154,12 @@ mod tests {
             operation: "execute_tool".to_string(),
             call_id: "c1".to_string(),
             tool_type: "function".to_string(),
+            call_arguments: None,
+            call_result: None,
             error_type: None,
             duration_ms: 50,
+            started_at_ms: 0,
+            ended_at_ms: 0,
         }
     }
 
@@ -217,6 +240,9 @@ mod tests {
 
     #[test]
     fn composite_dispatches_to_all_sinks() {
+        use crate::metrics::{BackgroundTaskSpan, EvaluationResultEvent, SpanContext};
+        use awaken_runtime::extensions::background::TaskStatus;
+
         let sink_a = Arc::new(InMemorySink::new());
         let sink_b = Arc::new(InMemorySink::new());
         let composite = CompositeSink::new(vec![sink_a.clone(), sink_b.clone()]);
@@ -226,6 +252,28 @@ mod tests {
         composite.record(&MetricsEvent::Suspension(sample_suspension_span()));
         composite.record(&MetricsEvent::Handoff(sample_handoff_span()));
         composite.record(&MetricsEvent::Delegation(sample_delegation_span()));
+        composite.record(&MetricsEvent::EvaluationResult(EvaluationResultEvent {
+            context: SpanContext::default(),
+            name: "judge".into(),
+            score_value: None,
+            score_label: None,
+            explanation: None,
+            response_id: None,
+            error_type: None,
+            timestamp_ms: 0,
+        }));
+        composite.record(&MetricsEvent::BackgroundTask(BackgroundTaskSpan {
+            context: SpanContext::default(),
+            task_id: "bg".into(),
+            task_type: "sub".into(),
+            task_name: None,
+            description: "x".into(),
+            status: TaskStatus::Completed,
+            parent_task_id: None,
+            error_message: None,
+            created_at_ms: 0,
+            completed_at_ms: Some(1),
+        }));
         composite.on_run_end(&AgentMetrics {
             session_duration_ms: 1000,
             ..Default::default()
@@ -238,6 +286,8 @@ mod tests {
             assert_eq!(m.total_suspensions(), 1);
             assert_eq!(m.total_handoffs(), 1);
             assert_eq!(m.total_delegations(), 1);
+            assert_eq!(m.evaluations.len(), 1);
+            assert_eq!(m.background_tasks.len(), 1);
             assert_eq!(m.session_duration_ms, 1000);
         }
     }

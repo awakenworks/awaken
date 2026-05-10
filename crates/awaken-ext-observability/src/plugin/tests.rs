@@ -6,19 +6,32 @@ use awaken_contract::contract::suspension::{ResumeDecisionAction, ToolCallResume
 use awaken_contract::contract::tool::ToolResult;
 use awaken_contract::model::Phase;
 use awaken_contract::state::{Snapshot, StateMap};
+use awaken_runtime::extensions::background::{
+    BackgroundTaskStateKey, BackgroundTaskStateSnapshot, PersistedTaskMeta, TaskParentContext,
+    TaskStatus,
+};
 use awaken_runtime::{PhaseContext, PhaseHook, Plugin};
 
+use crate::metrics::{TOOL_PAYLOAD_TRUNCATED_MARKER, ToolIoCapture};
 use crate::sink::InMemorySink;
 
 use super::ObservabilityPlugin;
 use super::hooks::{
-    AfterInferenceHook, AfterToolExecuteHook, BeforeInferenceHook, BeforeToolExecuteHook,
-    RunEndHook, RunStartHook,
+    AfterInferenceHook, AfterToolExecuteHook, BackgroundTaskObserveHook, BeforeInferenceHook,
+    BeforeToolExecuteHook, RunEndHook, RunStartHook,
 };
 use super::shared::{extract_cache_tokens, extract_token_counts, lock_unpoison};
 
 fn empty_snapshot() -> Snapshot {
     Snapshot::new(0, Arc::new(StateMap::default()))
+}
+
+fn snapshot_with_background_task(meta: PersistedTaskMeta) -> Snapshot {
+    let mut state = StateMap::default();
+    let mut tasks = std::collections::HashMap::new();
+    tasks.insert(meta.task_id.clone(), meta);
+    state.insert::<BackgroundTaskStateKey>(BackgroundTaskStateSnapshot { tasks });
+    Snapshot::new(0, Arc::new(state))
 }
 
 fn usage(prompt: i32, completion: i32, total: i32) -> TokenUsage {
@@ -53,6 +66,7 @@ async fn run_phase(plugin: &ObservabilityPlugin, ctx: &PhaseContext) {
         Phase::BeforeToolExecute => BeforeToolExecuteHook(inner).run(ctx).await.unwrap(),
         Phase::AfterToolExecute => AfterToolExecuteHook(inner).run(ctx).await.unwrap(),
         Phase::RunEnd => RunEndHook(inner).run(ctx).await.unwrap(),
+        Phase::StepEnd => BackgroundTaskObserveHook(inner).run(ctx).await.unwrap(),
         _ => return,
     };
 }
@@ -105,6 +119,194 @@ fn new_defaults_metrics_empty() {
 }
 
 #[test]
+fn new_defaults_tool_io_capture_disabled() {
+    let plugin = ObservabilityPlugin::new(InMemorySink::new());
+    assert_eq!(plugin.inner.tool_io_capture, ToolIoCapture::Disabled);
+}
+
+#[tokio::test]
+async fn background_task_state_records_lifecycle_once_per_status() {
+    let sink = InMemorySink::new();
+    let plugin = ObservabilityPlugin::new(sink.clone());
+
+    let running = PersistedTaskMeta {
+        task_id: "bg-1".to_string(),
+        owner_thread_id: "thread-bg".to_string(),
+        task_type: "sub_agent".to_string(),
+        name: Some("worker".to_string()),
+        description: "background worker".to_string(),
+        status: TaskStatus::Running,
+        error: None,
+        result: None,
+        created_at_ms: 10,
+        completed_at_ms: None,
+        parent_context: TaskParentContext {
+            run_id: Some("run-parent".to_string()),
+            call_id: Some("call-bg".to_string()),
+            agent_id: Some("agent-parent".to_string()),
+            ..Default::default()
+        },
+    };
+
+    let ctx = PhaseContext::new(
+        Phase::StepEnd,
+        snapshot_with_background_task(running.clone()),
+    );
+    run_phase(&plugin, &ctx).await;
+    run_phase(&plugin, &ctx).await;
+
+    let mut completed = running;
+    completed.status = TaskStatus::Completed;
+    completed.completed_at_ms = Some(40);
+    let ctx = PhaseContext::new(Phase::StepEnd, snapshot_with_background_task(completed));
+    run_phase(&plugin, &ctx).await;
+
+    let metrics = sink.metrics();
+    assert_eq!(metrics.background_tasks.len(), 2);
+    assert_eq!(metrics.background_tasks[0].status, TaskStatus::Running);
+    assert_eq!(metrics.background_tasks[1].status, TaskStatus::Completed);
+    assert_eq!(
+        metrics.background_tasks[1].context.run_id,
+        "run-parent".to_string()
+    );
+    assert_eq!(
+        metrics.background_tasks[1]
+            .context
+            .parent_tool_call_id
+            .as_deref(),
+        Some("call-bg")
+    );
+}
+
+#[tokio::test]
+async fn background_task_dedup_distinguishes_owner_thread() {
+    // Two task managers on different owner threads can both mint `bg-0`. The
+    // dedup map must treat them as distinct so the second event is recorded
+    // instead of being silently absorbed.
+    let sink = InMemorySink::new();
+    let plugin = ObservabilityPlugin::new(sink.clone());
+
+    let make = |thread: &str| PersistedTaskMeta {
+        task_id: "bg-0".to_string(),
+        owner_thread_id: thread.to_string(),
+        task_type: "sub_agent".to_string(),
+        name: Some("worker".to_string()),
+        description: "shared id, different owners".to_string(),
+        status: TaskStatus::Running,
+        error: None,
+        result: None,
+        created_at_ms: 10,
+        completed_at_ms: None,
+        parent_context: TaskParentContext::default(),
+    };
+
+    let ctx = PhaseContext::new(
+        Phase::StepEnd,
+        snapshot_with_background_task(make("thread-a")),
+    );
+    run_phase(&plugin, &ctx).await;
+    let ctx = PhaseContext::new(
+        Phase::StepEnd,
+        snapshot_with_background_task(make("thread-b")),
+    );
+    run_phase(&plugin, &ctx).await;
+
+    let metrics = sink.metrics();
+    assert_eq!(metrics.background_tasks.len(), 2);
+    let owners: Vec<&str> = metrics
+        .background_tasks
+        .iter()
+        .map(|s| s.context.thread_id.as_str())
+        .collect();
+    assert!(owners.contains(&"thread-a"));
+    assert!(owners.contains(&"thread-b"));
+}
+
+#[tokio::test]
+async fn run_end_resets_per_run_metrics_but_keeps_background_task_dedup() {
+    // Regression: persisted background-task snapshots can survive across
+    // runs; the per-run metrics MUST reset, but the dedup map MUST NOT, or
+    // already-emitted (status, task) pairs would be re-recorded each run.
+    let sink = InMemorySink::new();
+    let plugin = ObservabilityPlugin::new(sink.clone()).with_model("m");
+
+    let running = PersistedTaskMeta {
+        task_id: "bg-reset".to_string(),
+        owner_thread_id: "thread-bg".to_string(),
+        task_type: "sub_agent".to_string(),
+        name: Some("worker".to_string()),
+        description: "background worker".to_string(),
+        status: TaskStatus::Running,
+        error: None,
+        result: None,
+        created_at_ms: 10,
+        completed_at_ms: None,
+        parent_context: TaskParentContext::default(),
+    };
+
+    // Run 1: observe Running once.
+    let ctx =
+        PhaseContext::new(Phase::RunStart, empty_snapshot()).with_run_identity(identity("agent-a"));
+    run_phase(&plugin, &ctx).await;
+    let ctx = PhaseContext::new(
+        Phase::StepEnd,
+        snapshot_with_background_task(running.clone()),
+    );
+    run_phase(&plugin, &ctx).await;
+    assert_eq!(
+        lock_unpoison(&plugin.inner.metrics).background_tasks.len(),
+        1
+    );
+    assert_eq!(
+        lock_unpoison(&plugin.inner.background_task_statuses).len(),
+        1
+    );
+
+    // RunEnd resets the per-run metric Vec but preserves the dedup map.
+    let ctx =
+        PhaseContext::new(Phase::RunEnd, empty_snapshot()).with_run_identity(identity("agent-a"));
+    run_phase(&plugin, &ctx).await;
+    assert!(
+        lock_unpoison(&plugin.inner.metrics)
+            .background_tasks
+            .is_empty(),
+        "per-run metrics must reset",
+    );
+    assert_eq!(
+        lock_unpoison(&plugin.inner.background_task_statuses).len(),
+        1,
+        "dedup map must persist across runs"
+    );
+
+    // Run 2: snapshot still contains the same Running task. Dedup MUST
+    // suppress re-emission.
+    let ctx =
+        PhaseContext::new(Phase::RunStart, empty_snapshot()).with_run_identity(identity("agent-a"));
+    run_phase(&plugin, &ctx).await;
+    let ctx = PhaseContext::new(
+        Phase::StepEnd,
+        snapshot_with_background_task(running.clone()),
+    );
+    run_phase(&plugin, &ctx).await;
+    assert!(
+        lock_unpoison(&plugin.inner.metrics)
+            .background_tasks
+            .is_empty(),
+        "Running was already emitted in run 1; run 2 must not duplicate it",
+    );
+
+    // Status transition Running -> Completed MUST still be recorded.
+    let mut completed = running;
+    completed.status = TaskStatus::Completed;
+    completed.completed_at_ms = Some(40);
+    let ctx = PhaseContext::new(Phase::StepEnd, snapshot_with_background_task(completed));
+    run_phase(&plugin, &ctx).await;
+    let metrics = lock_unpoison(&plugin.inner.metrics);
+    assert_eq!(metrics.background_tasks.len(), 1);
+    assert_eq!(metrics.background_tasks[0].status, TaskStatus::Completed);
+}
+
+#[test]
 fn with_model_sets_model() {
     let plugin = ObservabilityPlugin::new(InMemorySink::new()).with_model("gpt-4o");
     assert_eq!(*lock_unpoison(&plugin.inner.model), "gpt-4o");
@@ -150,7 +352,8 @@ fn builder_chaining() {
         .with_temperature(0.5)
         .with_top_p(0.8)
         .with_max_tokens(2048)
-        .with_stop_sequences(vec!["DONE".into()]);
+        .with_stop_sequences(vec!["DONE".into()])
+        .with_tool_io_capture(ToolIoCapture::ArgumentsAndResults);
 
     assert_eq!(*lock_unpoison(&plugin.inner.model), "claude-3");
     assert_eq!(*lock_unpoison(&plugin.inner.provider), "anthropic");
@@ -158,6 +361,10 @@ fn builder_chaining() {
     assert_eq!(*lock_unpoison(&plugin.inner.top_p), Some(0.8));
     assert_eq!(*lock_unpoison(&plugin.inner.max_tokens), Some(2048));
     assert_eq!(*lock_unpoison(&plugin.inner.stop_sequences), vec!["DONE"]);
+    assert_eq!(
+        plugin.inner.tool_io_capture,
+        ToolIoCapture::ArgumentsAndResults
+    );
 }
 
 #[test]
@@ -273,13 +480,275 @@ async fn on_after_tool_execute_records_tool_span() {
     assert_eq!(metrics.tools[0].name, "search");
     assert_eq!(metrics.tools[0].call_id, "c1");
     assert!(metrics.tools[0].is_success());
+    assert!(metrics.tools[0].call_arguments.is_none());
+    assert!(metrics.tools[0].call_result.is_none());
 
     let sink_m = sink.metrics();
     assert_eq!(sink_m.tool_count(), 1);
 }
 
 #[tokio::test]
-async fn on_after_tool_execute_no_result_skips_recording() {
+async fn tool_io_capture_records_opt_in_arguments_and_results() {
+    let sink = InMemorySink::new();
+    let plugin = ObservabilityPlugin::new(sink.clone())
+        .with_tool_io_capture(ToolIoCapture::ArgumentsAndResults);
+    let args = serde_json::json!({"query": "otel", "limit": 3});
+    let result = serde_json::json!({"count": 2});
+
+    let ctx = PhaseContext::new(Phase::BeforeToolExecute, empty_snapshot()).with_tool_info(
+        "search",
+        "c1",
+        Some(args.clone()),
+    );
+    run_phase(&plugin, &ctx).await;
+
+    let ctx = PhaseContext::new(Phase::AfterToolExecute, empty_snapshot())
+        .with_tool_info("search", "c1", Some(args.clone()))
+        .with_tool_result(ToolResult::success("search", result.clone()));
+    run_phase(&plugin, &ctx).await;
+
+    let metrics = lock_unpoison(&plugin.inner.metrics);
+    assert_eq!(metrics.tools.len(), 1);
+    assert_eq!(metrics.tools[0].call_arguments.as_ref(), Some(&args));
+    assert_eq!(metrics.tools[0].call_result.as_ref(), Some(&result));
+
+    let sink_m = sink.metrics();
+    assert_eq!(sink_m.tools[0].call_arguments.as_ref(), Some(&args));
+    assert_eq!(sink_m.tools[0].call_result.as_ref(), Some(&result));
+}
+
+#[tokio::test]
+async fn tool_io_capture_redacts_sensitive_fields() {
+    let sink = InMemorySink::new();
+    let plugin = ObservabilityPlugin::new(sink.clone())
+        .with_tool_io_capture(ToolIoCapture::ArgumentsAndResults);
+    let args = serde_json::json!({
+        "query": "otel",
+        "api_key": "sample-api-key",
+        "nested": {"token": "sample-token", "safe": "kept"}
+    });
+    let result = serde_json::json!({"password": "sample-password", "count": 1});
+
+    let ctx = PhaseContext::new(Phase::BeforeToolExecute, empty_snapshot()).with_tool_info(
+        "search",
+        "c1",
+        Some(args.clone()),
+    );
+    run_phase(&plugin, &ctx).await;
+
+    let ctx = PhaseContext::new(Phase::AfterToolExecute, empty_snapshot())
+        .with_tool_info("search", "c1", Some(args))
+        .with_tool_result(ToolResult::success("search", result));
+    run_phase(&plugin, &ctx).await;
+
+    let metrics = lock_unpoison(&plugin.inner.metrics);
+    let rendered = serde_json::to_string(&metrics.tools[0]).unwrap();
+    assert!(!rendered.contains("sample-api-key"));
+    assert!(!rendered.contains("sample-token"));
+    assert!(!rendered.contains("sample-password"));
+    assert!(rendered.contains("\"api_key\":\"***\""));
+    assert!(rendered.contains("\"token\":\"***\""));
+    assert!(rendered.contains("\"password\":\"***\""));
+}
+
+#[tokio::test]
+async fn tool_io_capture_records_error_results_through_sanitizer() {
+    // Error tool results were previously dropped from `call_result`; debugging
+    // tool failures needs them. Verify error data is captured AND still goes
+    // through the default redactor.
+    use awaken_contract::contract::tool::{ToolResult, ToolStatus};
+    let sink = InMemorySink::new();
+    let plugin = ObservabilityPlugin::new(sink.clone())
+        .with_tool_io_capture(ToolIoCapture::ArgumentsAndResults);
+
+    let ctx = PhaseContext::new(Phase::BeforeToolExecute, empty_snapshot()).with_tool_info(
+        "fetch",
+        "c1",
+        Some(serde_json::json!({})),
+    );
+    run_phase(&plugin, &ctx).await;
+
+    let error_data = serde_json::json!({
+        "error": "upstream 401",
+        "details": { "Authorization": "Bearer leaked-bearer" }
+    });
+    let mut result = ToolResult::error("fetch", "auth failed");
+    result.status = ToolStatus::Error;
+    result.data = error_data;
+
+    let ctx = PhaseContext::new(Phase::AfterToolExecute, empty_snapshot())
+        .with_tool_info("fetch", "c1", Some(serde_json::json!({})))
+        .with_tool_result(result);
+    run_phase(&plugin, &ctx).await;
+
+    let metrics = lock_unpoison(&plugin.inner.metrics);
+    let captured = metrics.tools[0]
+        .call_result
+        .as_ref()
+        .expect("error result must still be captured");
+    let rendered = serde_json::to_string(captured).unwrap();
+    assert!(rendered.contains("\"error\":\"upstream 401\""));
+    assert!(
+        !rendered.contains("leaked-bearer"),
+        "bearer must be redacted in error result: {rendered}"
+    );
+    assert_eq!(metrics.tools[0].error_type.as_deref(), Some("tool_error"));
+}
+
+#[tokio::test]
+async fn tool_io_capture_redacts_extended_sensitive_keys_case_insensitive_nested() {
+    // Pin the extended sensitive-key list across casing, nesting, arrays.
+    // Each leaked-* literal MUST disappear; each *-redacted-here marker
+    // shows where redaction landed.
+    let sink = InMemorySink::new();
+    let plugin = ObservabilityPlugin::new(sink.clone())
+        .with_tool_io_capture(ToolIoCapture::ArgumentsAndResults);
+    let args = serde_json::json!({
+        "Cookie": "leaked-cookie",
+        "Set-Cookie": "leaked-set-cookie",
+        "session_id": "leaked-session",
+        "JWT": "leaked-jwt",
+        "access_key": "leaked-access-key",
+        "client_secret": "leaked-client-secret",
+        "refresh_token": "leaked-refresh",
+        "id_token": "leaked-id-token",
+        "Auth": "leaked-auth-header",
+        "headers": [
+            { "Authorization": "Bearer leaked-bearer" },
+            { "x-api-key": "leaked-x-api" }
+        ],
+        "deeply": { "nested": { "Password": "leaked-deep" } },
+        "kept": "ok"
+    });
+    let ctx = PhaseContext::new(Phase::BeforeToolExecute, empty_snapshot()).with_tool_info(
+        "search",
+        "c1",
+        Some(args.clone()),
+    );
+    run_phase(&plugin, &ctx).await;
+    let ctx = PhaseContext::new(Phase::AfterToolExecute, empty_snapshot())
+        .with_tool_info("search", "c1", Some(args))
+        .with_tool_result(ToolResult::success(
+            "search",
+            serde_json::json!({ "ok": true }),
+        ));
+    run_phase(&plugin, &ctx).await;
+
+    let metrics = lock_unpoison(&plugin.inner.metrics);
+    let rendered = serde_json::to_string(&metrics.tools[0]).unwrap();
+    for leaked in [
+        "leaked-cookie",
+        "leaked-set-cookie",
+        "leaked-session",
+        "leaked-jwt",
+        "leaked-access-key",
+        "leaked-client-secret",
+        "leaked-refresh",
+        "leaked-id-token",
+        "leaked-auth-header",
+        "leaked-bearer",
+        "leaked-x-api",
+        "leaked-deep",
+    ] {
+        assert!(!rendered.contains(leaked), "found {leaked} in {rendered}");
+    }
+    assert!(rendered.contains("\"kept\":\"ok\""));
+}
+
+#[tokio::test]
+async fn tool_io_capture_allows_fields_and_truncates_oversized_payloads() {
+    let sink = InMemorySink::new();
+    let plugin = ObservabilityPlugin::new(sink.clone())
+        .with_tool_io_capture(ToolIoCapture::Arguments)
+        .with_tool_io_allowed_fields(["query"])
+        .with_tool_io_max_payload_bytes(48);
+    let args = serde_json::json!({
+        "query": "x".repeat(200),
+        "api_key": "sample-api-key",
+        "dropped": "value"
+    });
+
+    let ctx = PhaseContext::new(Phase::BeforeToolExecute, empty_snapshot()).with_tool_info(
+        "search",
+        "c1",
+        Some(args.clone()),
+    );
+    run_phase(&plugin, &ctx).await;
+
+    let ctx = PhaseContext::new(Phase::AfterToolExecute, empty_snapshot())
+        .with_tool_info("search", "c1", Some(args))
+        .with_tool_result(ToolResult::success(
+            "search",
+            serde_json::json!({"ok": true}),
+        ));
+    run_phase(&plugin, &ctx).await;
+
+    let metrics = lock_unpoison(&plugin.inner.metrics);
+    let captured = metrics.tools[0]
+        .call_arguments
+        .as_ref()
+        .expect("captured arguments");
+    assert_eq!(
+        captured
+            .get(TOOL_PAYLOAD_TRUNCATED_MARKER)
+            .and_then(serde_json::Value::as_bool),
+        Some(true)
+    );
+    let rendered = serde_json::to_string(captured).unwrap();
+    assert!(!rendered.contains("sample-api-key"));
+    assert!(!rendered.contains("dropped"));
+    assert!(metrics.tools[0].has_truncated_payload());
+}
+
+#[tokio::test]
+async fn default_redactor_runs_after_custom_redactor() {
+    let sink = InMemorySink::new();
+    // A pathological custom redactor that re-introduces a sensitive field.
+    let plugin = ObservabilityPlugin::new(sink.clone())
+        .with_tool_io_capture(ToolIoCapture::ArgumentsAndResults)
+        .with_tool_io_redactor(|value| match value {
+            serde_json::Value::Object(mut map) => {
+                map.insert(
+                    "api_key".to_string(),
+                    serde_json::Value::String("leaked-by-custom".into()),
+                );
+                serde_json::Value::Object(map)
+            }
+            other => other,
+        });
+    let args = serde_json::json!({ "query": "search" });
+
+    let ctx = PhaseContext::new(Phase::BeforeToolExecute, empty_snapshot()).with_tool_info(
+        "search",
+        "c1",
+        Some(args.clone()),
+    );
+    run_phase(&plugin, &ctx).await;
+
+    let ctx = PhaseContext::new(Phase::AfterToolExecute, empty_snapshot())
+        .with_tool_info("search", "c1", Some(args))
+        .with_tool_result(ToolResult::success(
+            "search",
+            serde_json::json!({ "ok": true }),
+        ));
+    run_phase(&plugin, &ctx).await;
+
+    let metrics = lock_unpoison(&plugin.inner.metrics);
+    let rendered =
+        serde_json::to_string(metrics.tools[0].call_arguments.as_ref().unwrap()).unwrap();
+    assert!(
+        !rendered.contains("leaked-by-custom"),
+        "default redactor must mask after custom: {rendered}"
+    );
+    assert!(rendered.contains("\"api_key\":\"***\""));
+}
+
+#[tokio::test]
+async fn on_after_tool_execute_no_result_records_synthetic_failure_span() {
+    // Missing `tool_result` is a real failure mode (executor crash, dropped
+    // result channel, ...). The hook must still emit a terminal ToolSpan so
+    // the sink, Prometheus counters, and any pending OTel context all see
+    // one event for this call.
     let sink = InMemorySink::new();
     let plugin = ObservabilityPlugin::new(sink.clone());
 
@@ -290,7 +759,6 @@ async fn on_after_tool_execute_no_result_skips_recording() {
     );
     run_phase(&plugin, &ctx).await;
 
-    // AfterToolExecute without tool_result
     let ctx = PhaseContext::new(Phase::AfterToolExecute, empty_snapshot()).with_tool_info(
         "search",
         "c1",
@@ -299,7 +767,36 @@ async fn on_after_tool_execute_no_result_skips_recording() {
     run_phase(&plugin, &ctx).await;
 
     let metrics = lock_unpoison(&plugin.inner.metrics);
-    assert!(metrics.tools.is_empty());
+    assert_eq!(
+        metrics.tools.len(),
+        1,
+        "synthetic failure span must be recorded"
+    );
+    assert_eq!(metrics.tools[0].name, "search");
+    assert_eq!(metrics.tools[0].call_id, "c1");
+    assert_eq!(
+        metrics.tools[0].error_type.as_deref(),
+        Some("missing_tool_result")
+    );
+    assert!(metrics.tools[0].call_result.is_none());
+    drop(metrics);
+
+    let sink_metrics = sink.metrics();
+    assert_eq!(
+        sink_metrics.tool_count(),
+        1,
+        "sink must observe the failure too"
+    );
+    assert_eq!(sink_metrics.tool_failures(), 1);
+
+    assert!(
+        plugin.inner.tool_tracing_span.lock().await.is_empty(),
+        "tracing span must be released even when tool_result is missing",
+    );
+    assert!(
+        plugin.inner.tool_start.lock().await.is_empty(),
+        "tool_start must be released even when tool_result is missing",
+    );
 }
 
 #[tokio::test]

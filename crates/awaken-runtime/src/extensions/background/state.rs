@@ -102,6 +102,14 @@ impl PersistedTaskMeta {
 }
 
 /// Persisted state for all background tasks.
+///
+/// The map is keyed by `TaskId` alone. This is safe because the surrounding
+/// system enforces a **1 `BackgroundTaskManager` ↔ 1 `BackgroundTaskPlugin`
+/// ↔ 1 `StateStore`** invariant (see [`super::plugin::BackgroundTaskPlugin`]),
+/// so all `TaskId`s ever written here come from a single manager whose
+/// `bg_{n}` counter is globally unique within this store. Any future change
+/// that allows two managers to share a store MUST also change this map to
+/// a composite key — otherwise a `bg_0` collision would silently overwrite.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct BackgroundTaskStateSnapshot {
     pub tasks: HashMap<TaskId, PersistedTaskMeta>,

@@ -86,6 +86,7 @@ impl Replayer for MockReplayer {
                 thread_id: format!("mock-thread-{}", fixture.id),
                 agent_id: "mock-agent".into(),
                 parent_run_id: None,
+                parent_tool_call_id: None,
             },
             step_index: Some(0),
             model: "mock-replayer".into(),
@@ -111,6 +112,8 @@ impl Replayer for MockReplayer {
             max_tokens: None,
             stop_sequences: Vec::new(),
             duration_ms: 0,
+            started_at_ms: 0,
+            ended_at_ms: 0,
         };
         sink.record(&MetricsEvent::Inference(span.clone()));
 
