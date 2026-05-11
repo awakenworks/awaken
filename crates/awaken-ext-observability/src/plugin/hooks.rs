@@ -5,7 +5,10 @@ use std::time::Instant;
 use async_trait::async_trait;
 use awaken_contract::StateError;
 use awaken_contract::contract::tool::ToolStatus;
+use awaken_contract::identity::agent_prompt_id;
+use awaken_contract::registry_spec::AgentSpec;
 use awaken_runtime::extensions::background::{BackgroundTaskStateKey, PersistedTaskMeta};
+use awaken_runtime::registry::RegistrySnapshot;
 use awaken_runtime::{PhaseContext, PhaseHook, StateCommand};
 
 use crate::metrics::{
@@ -46,6 +49,25 @@ fn now_epoch_ms() -> u64 {
         .as_millis() as u64
 }
 
+/// Resolve `prompt_id` for the current turn. Prefers the resolved
+/// `agent_spec`'s system prompt (the literal text the LLM will see this
+/// turn) and falls back to the registry snapshot when the spec has not
+/// been hydrated yet at this phase boundary. Used by both `RunStartHook`
+/// and the handoff branch of `BeforeInferenceHook` so every stamp obeys
+/// the same precedence and a handoff into an agent whose spec is still a
+/// stub does not silently drop the attribution.
+fn derive_prompt_id(agent_spec: &AgentSpec, snapshot: Option<&RegistrySnapshot>) -> Option<String> {
+    if !agent_spec.system_prompt.is_empty() {
+        Some(agent_prompt_id(
+            &agent_spec.id,
+            "system",
+            &agent_spec.system_prompt,
+        ))
+    } else {
+        snapshot.and_then(|s| s.agent_prompt_id(&agent_spec.id))
+    }
+}
+
 pub(crate) struct RunStartHook(pub(crate) Arc<Inner>);
 
 #[async_trait]
@@ -66,12 +88,19 @@ impl PhaseHook for RunStartHook {
 
         // Capture execution context from RunIdentity for all subsequent spans.
         let ri = &ctx.run_identity;
+        // ADR-0030 D2: stamp content-addressed prompt_id via the shared
+        // helper so RunStart and handoff use identical precedence.
+        let prompt_id = derive_prompt_id(&ctx.agent_spec, ctx.registry_snapshot.as_deref());
         *self.0.span_context.lock().await = SpanContext {
             run_id: ri.run_id.clone(),
             thread_id: ri.thread_id.clone(),
             agent_id: ri.agent_id.clone(),
             parent_run_id: ri.parent_run_id.clone(),
             parent_tool_call_id: ri.parent_tool_call_id.clone(),
+            prompt_id,
+            // skill_ids stays empty — see RegistrySnapshot's in-code note
+            // about skill_content_id being deferred to a follow-up ADR.
+            skill_ids: Vec::new(),
             ..Default::default()
         };
         // Reset step counter for the new run.
@@ -109,9 +138,23 @@ impl PhaseHook for BeforeInferenceHook {
                 crate::prometheus::record_handoff(&handoff);
                 s.sink.record(&MetricsEvent::Handoff(handoff.clone()));
                 s.metrics.lock().await.handoffs.push(handoff);
-                // Update span context with new agent identity.
+                // Update span context with the new agent's identity AND
+                // its content-addressed prompt id. F13: previously only
+                // `agent_id` was refreshed, so subsequent inference
+                // spans carried the new agent_id but the old agent's
+                // prompt_id — corrupting attribution after every
+                // handoff. `ctx.agent_spec` here is the new agent's
+                // spec (re-resolved at the handoff boundary, ADR-0014
+                // D3), so we recompute prompt_id from it through the
+                // shared `derive_prompt_id` helper. Going through the
+                // helper also picks up the snapshot fallback for the
+                // handoff path, matching RunStart semantics — without
+                // it, a handoff into an agent whose spec still has an
+                // empty `system_prompt` would silently null the
+                // attribution.
                 let mut sc = s.span_context.lock().await;
                 sc.agent_id = new_agent_id.clone();
+                sc.prompt_id = derive_prompt_id(&ctx.agent_spec, ctx.registry_snapshot.as_deref());
             }
         }
 
@@ -123,6 +166,24 @@ impl PhaseHook for BeforeInferenceHook {
             previous_span.record("otel.status_code", "ERROR");
             previous_span.record("otel.status_description", message);
             drop(previous_span);
+        }
+
+        // ADR-0030 D2: populate tool_desc_ids from the registry snapshot.
+        // allowed_tools on agent_spec lists the tool IDs advertised at this turn;
+        // tool_desc_id computes the content-addressed hash of each descriptor.
+        if let Some(snapshot) = ctx.registry_snapshot.as_deref() {
+            let allowed: Vec<String> = ctx
+                .agent_spec
+                .allowed_tools
+                .as_deref()
+                .map(|ids| ids.to_vec())
+                .unwrap_or_else(|| snapshot.registries().tools.tool_ids());
+            let tool_desc_ids: Vec<String> = allowed
+                .iter()
+                .filter_map(|id| snapshot.tool_desc_id(id))
+                .collect();
+            let mut span_ctx = s.span_context.lock().await;
+            span_ctx.tool_desc_ids = tool_desc_ids;
         }
 
         *s.inference_start.lock().await = Some((Instant::now(), now_epoch_ms()));
@@ -215,7 +276,17 @@ impl PhaseHook for AfterInferenceHook {
             extract_token_counts(usage);
         let (cache_read_input_tokens, cache_creation_input_tokens) = extract_cache_tokens(usage);
 
-        let context = s.span_context.lock().await.clone();
+        let mut context = s.span_context.lock().await.clone();
+        // F2: prefer the post-filter tool list threaded onto the
+        // PhaseContext by the loop runner over the pre-filter
+        // approximation BeforeInferenceHook computed from
+        // `agent_spec.allowed_tools`. This stamps the GenAI span with the
+        // tools the LLM actually saw, including any inclusion/exclusion
+        // payloads from gate hooks and any frontend tools the
+        // orchestrator merged in.
+        if let Some(ids) = &ctx.effective_tool_ids {
+            context.tool_desc_ids = ids.clone();
+        }
         let step = s.step_counter.fetch_add(1, Ordering::Relaxed);
         let model = s.model.lock().await.clone();
         let provider = s.provider.lock().await.clone();
@@ -314,6 +385,16 @@ impl PhaseHook for BeforeToolExecuteHook {
                 .lock()
                 .await
                 .insert(call_id.clone(), (Instant::now(), now_epoch_ms()));
+        }
+
+        // ADR-0030 D2: stamp the single tool_desc_id for this call into the
+        // span context so AfterToolExecute captures it on the ToolSpan.
+        if let Some(snapshot) = ctx.registry_snapshot.as_deref() {
+            if let Some(desc_id) = snapshot.tool_desc_id(&tool_name) {
+                s.span_context.lock().await.tool_desc_ids = vec![desc_id];
+            } else {
+                s.span_context.lock().await.tool_desc_ids = Vec::new();
+            }
         }
 
         let provider = s.provider.lock().await.clone();

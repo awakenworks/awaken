@@ -149,6 +149,7 @@ pub(super) async fn run_agent_loop_impl(
                 &run_identity,
                 store,
                 cancellation_token.as_ref(),
+                &agent,
             ),
         )
         .await
@@ -540,6 +541,7 @@ pub(super) async fn run_agent_loop_impl(
                 &run_identity,
                 store,
                 cancellation_token.as_ref(),
+                &agent,
             ),
         )
         .await

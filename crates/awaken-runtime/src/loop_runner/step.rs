@@ -146,10 +146,20 @@ pub(super) fn make_ctx(
     identity: &RunIdentity,
     store: &crate::state::StateStore,
     cancellation_token: Option<&CancellationToken>,
+    agent: &crate::registry::ResolvedAgent,
 ) -> PhaseContext {
     let ctx = PhaseContext::new(phase, store.snapshot())
         .with_run_identity(identity.clone())
-        .with_messages(msgs.to_vec());
+        .with_messages(msgs.to_vec())
+        // F1: stamp `agent_spec` so observability hooks (and any future
+        // PhaseContext consumer) see the resolved agent at this phase
+        // instead of the default-constructed empty spec. Without this,
+        // attribution hooks silently emit None for `prompt_id` in every
+        // production run. `registry_snapshot` is intentionally left
+        // unset: `PhaseRuntime` does not carry a registry handle today,
+        // and the prompt_id path needs `agent_spec` only. Per-turn
+        // `tool_desc_ids` are stamped by F2 via `effective_tool_ids`.
+        .with_agent_spec(agent.spec.clone());
     match cancellation_token {
         Some(token) => ctx.with_cancellation_token(token.clone()),
         None => ctx,
@@ -169,6 +179,7 @@ fn tool_phase_context(
         ctx.run_identity,
         ctx.runtime.store(),
         ctx.cancellation_token,
+        ctx.agent,
     )
     .with_tool_info(&call.name, &call.id, Some(call.arguments.clone()))
 }
@@ -239,6 +250,7 @@ async fn run_phase_and_check(
                 ctx.run_identity,
                 store,
                 ctx.cancellation_token,
+                ctx.agent,
             ),
         )
         .await
@@ -363,6 +375,7 @@ async fn run_before_inference(
         ctx.run_identity,
         store,
         ctx.cancellation_token,
+        ctx.agent,
     );
 
     // GATHER only — returns merged StateCommand without committing
@@ -383,6 +396,7 @@ async fn run_before_inference(
         ctx.run_identity,
         store,
         ctx.cancellation_token,
+        ctx.agent,
     );
     ctx.runtime
         .run_execute_loop(&ctx.agent.env, exec_ctx)
@@ -439,6 +453,12 @@ struct InferencePhaseOutput {
     /// to the next `user` message after the completed tools execute,
     /// telling the model which call was lost so it can choose to retry.
     cancelled_tool_hint: Option<awaken_contract::contract::executor::InFlightTool>,
+    /// Content-addressed ids of the tools that were actually presented
+    /// to the LLM on this turn (post-`apply_tool_filter_payloads`,
+    /// post-frontend-tool injection). Threaded into the `AfterInference`
+    /// phase context so observability stamps the GenAI span with the
+    /// real wire list. F2.
+    effective_tool_ids: Vec<String>,
 }
 
 /// Run the inference phase: compaction, request building, streaming.
@@ -479,6 +499,20 @@ async fn run_inference_phase(
 
     let mut tools = ctx.agent.tool_descriptors();
     apply_tool_filter_payloads(&mut tools, exclusion_payloads, inclusion_payloads);
+    // F2: derive tool_desc_ids from the *final* tool list (after
+    // `apply_tool_filter_payloads` and any frontend-tool injection by
+    // the orchestrator). Threaded out via `InferencePhaseOutput` so
+    // `execute_step` stamps it onto the AfterInference PhaseContext —
+    // which is what the observability hook reads when constructing the
+    // GenAISpan. This replaces the BeforeInferenceHook's stale
+    // approximation derived from `agent_spec.allowed_tools`.
+    let effective_tool_ids: Vec<String> = tools
+        .iter()
+        .map(|td| {
+            let schema = serde_json::to_string(&td.parameters).unwrap_or_default();
+            awaken_contract::identity::tool_desc_id(&td.name, &td.description, &schema)
+        })
+        .collect();
     let transform_arcs = ctx.agent.env.transform_arcs();
     let request_messages = awaken_contract::contract::transform::apply_transforms(
         request_messages,
@@ -542,6 +576,7 @@ async fn run_inference_phase(
         duration_ms,
         upstream_model: request_upstream_model,
         cancelled_tool_hint,
+        effective_tool_ids,
     })
 }
 
@@ -1204,6 +1239,7 @@ pub(super) async fn execute_step(ctx: &mut StepContext<'_>) -> Result<StepOutcom
         duration_ms,
         upstream_model,
         cancelled_tool_hint,
+        effective_tool_ids,
     } = inference;
 
     // --- Post-inference cancellation check ---
@@ -1240,8 +1276,10 @@ pub(super) async fn execute_step(ctx: &mut StepContext<'_>) -> Result<StepOutcom
         ctx.run_identity,
         store,
         ctx.cancellation_token,
+        ctx.agent,
     )
-    .with_llm_response(llm_response);
+    .with_llm_response(llm_response)
+    .with_effective_tool_ids(effective_tool_ids);
     match ctx
         .runtime
         .run_phase_with_context(&ctx.agent.env, after_inf_ctx)
@@ -1347,4 +1385,60 @@ pub(super) async fn execute_step(ctx: &mut StepContext<'_>) -> Result<StepOutcom
     }
 
     Ok(StepOutcome::Continue)
+}
+
+#[cfg(test)]
+mod make_ctx_tests {
+    use super::*;
+    use crate::registry::resolver::ResolvedAgent;
+    use crate::state::StateStore;
+    use async_trait::async_trait;
+    use awaken_contract::contract::executor::{
+        InferenceExecutionError, InferenceRequest, LlmExecutor,
+    };
+    use awaken_contract::contract::identity::RunIdentity;
+    use awaken_contract::contract::inference::StreamResult;
+
+    struct DummyExecutor;
+
+    #[async_trait]
+    impl LlmExecutor for DummyExecutor {
+        async fn execute(
+            &self,
+            _req: InferenceRequest,
+        ) -> Result<StreamResult, InferenceExecutionError> {
+            unimplemented!("test fixture; never invoked")
+        }
+        fn name(&self) -> &str {
+            "dummy"
+        }
+    }
+
+    #[test]
+    fn make_ctx_populates_agent_spec_in_production() {
+        // Regression for F1: prior `make_ctx` left `agent_spec` as the
+        // `Arc::new(AgentSpec::default())` default, with an empty
+        // `system_prompt`. Observability hooks then silently emitted
+        // None for prompt_id. This test pins the contract that
+        // make_ctx now stamps the resolved agent's spec onto the
+        // PhaseContext, which is the load-bearing field the prompt_id
+        // path reads.
+        let store = StateStore::new();
+        let agent = ResolvedAgent::new(
+            "weather",
+            "test-model",
+            "You are a forecaster.",
+            Arc::new(DummyExecutor),
+        );
+        let ctx = make_ctx(
+            Phase::RunStart,
+            &[],
+            &RunIdentity::default(),
+            &store,
+            None,
+            &agent,
+        );
+        assert_eq!(ctx.agent_spec.id, "weather");
+        assert_eq!(ctx.agent_spec.system_prompt, "You are a forecaster.");
+    }
 }

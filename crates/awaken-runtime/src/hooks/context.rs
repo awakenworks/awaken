@@ -3,6 +3,7 @@ use std::sync::Arc;
 use serde_json::Value;
 
 use crate::cancellation::CancellationToken;
+use crate::registry::RegistrySnapshot;
 use crate::state::{Snapshot, StateKey};
 use awaken_contract::StateError;
 use awaken_contract::contract::identity::RunIdentity;
@@ -58,6 +59,21 @@ pub struct PhaseContext {
 
     /// Optional profile access for cross-run persistence.
     pub profile_access: Option<Arc<crate::profile::ProfileAccess>>,
+
+    /// Registry snapshot at the time this context was built. Populated by the
+    /// runtime runner when a registry handle is present; `None` in minimal
+    /// test contexts that don't carry a registry.
+    pub registry_snapshot: Option<Arc<RegistrySnapshot>>,
+
+    /// Content-addressed ids of the tools that were actually presented to
+    /// the LLM on this turn (i.e. **after**
+    /// `apply_tool_filter_payloads` and frontend-tool injection). Set by
+    /// the loop runner immediately before the inference call so the
+    /// `AfterInference` hook stamps the recorded `GenAISpan` with the
+    /// real wire list instead of an approximation derived from
+    /// `agent_spec.allowed_tools`. `None` in minimal test contexts and on
+    /// phases other than `AfterInference`.
+    pub effective_tool_ids: Option<Vec<String>>,
 }
 
 impl PhaseContext {
@@ -82,6 +98,8 @@ impl PhaseContext {
             suspension_reason: None,
             cancellation_token: None,
             profile_access: None,
+            registry_snapshot: None,
+            effective_tool_ids: None,
         }
     }
 
@@ -214,6 +232,24 @@ impl PhaseContext {
     #[must_use]
     pub fn with_profile_access(mut self, access: Arc<crate::profile::ProfileAccess>) -> Self {
         self.profile_access = Some(access);
+        self
+    }
+
+    /// Attach the registry snapshot active at the time this context was built.
+    /// Hooks that need content-addressed tool/prompt ids read from this.
+    #[must_use]
+    pub fn with_registry_snapshot(mut self, snapshot: Arc<RegistrySnapshot>) -> Self {
+        self.registry_snapshot = Some(snapshot);
+        self
+    }
+
+    /// Attach the set of tool descriptor ids that were actually sent to the
+    /// LLM on this turn. Used by the `AfterInference` observability hook
+    /// to stamp `GenAISpan.context.tool_desc_ids` with the post-filter
+    /// list, not the agent's pre-filter `allowed_tools`.
+    #[must_use]
+    pub fn with_effective_tool_ids(mut self, ids: Vec<String>) -> Self {
+        self.effective_tool_ids = Some(ids);
         self
     }
 }
