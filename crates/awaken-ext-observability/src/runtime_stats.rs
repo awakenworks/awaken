@@ -622,8 +622,7 @@ mod tests {
             run_id: "r".into(),
             thread_id: "t".into(),
             agent_id: agent.into(),
-            parent_run_id: None,
-            parent_tool_call_id: None,
+            ..Default::default()
         }
     }
 

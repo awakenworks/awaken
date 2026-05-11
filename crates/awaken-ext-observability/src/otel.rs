@@ -348,6 +348,7 @@ impl OtelMetricsSink {
 
         Self::push_genai_context_attributes(&mut attrs, &span.context);
         Self::push_awaken_context_attributes(&mut attrs, &span.context);
+        attrs.extend(otel_attributes_for_inference(span));
         if let Some(step) = span.step_index {
             attrs.push(KeyValue::new("awaken.step.index", step as i64));
         }
@@ -435,6 +436,7 @@ impl OtelMetricsSink {
         ];
 
         Self::push_awaken_context_attributes(&mut attrs, &span.context);
+        attrs.extend(otel_attributes_for_tool(span));
         if let Some(step) = span.step_index {
             attrs.push(KeyValue::new("awaken.step.index", step as i64));
         }
@@ -1269,6 +1271,68 @@ impl Drop for OtelMetricsSink {
     }
 }
 
+// ADR-0030 D2 attribution attribute keys.  Single source of truth so the
+// wire format lives in one place and a typo can't ship bad telemetry.
+const ATTR_PROMPT_ID: &str = "awaken.prompt_id";
+const ATTR_TOOL_DESC_IDS: &str = "awaken.tool_desc_ids";
+const ATTR_SKILL_IDS: &str = "awaken.skill_ids";
+const ATTR_RELEASE_TAG: &str = "awaken.release.tag";
+const ATTR_EXPERIMENT_ID: &str = "awaken.experiment.id";
+const ATTR_EXPERIMENT_VARIANT: &str = "awaken.experiment.variant";
+
+/// Map an inference span's `SpanContext` to its ADR-0030 D2 OTel
+/// attribution `KeyValue`s. Pure function — unit-testable without a
+/// tracer; called by `genai_attributes` to extend the standard GenAI
+/// attribute set with `awaken.*` fields.
+pub(crate) fn otel_attributes_for_inference(span: &GenAISpan) -> Vec<KeyValue> {
+    attribution_kv_pairs(&span.context)
+}
+
+/// Map a tool span's `SpanContext` to its ADR-0030 D2 OTel attribution
+/// `KeyValue`s. Pure function — counterpart of
+/// [`otel_attributes_for_inference`] for tool execution spans.
+pub(crate) fn otel_attributes_for_tool(span: &ToolSpan) -> Vec<KeyValue> {
+    attribution_kv_pairs(&span.context)
+}
+
+fn attribution_kv_pairs(ctx: &SpanContext) -> Vec<KeyValue> {
+    let mut out: Vec<KeyValue> = Vec::new();
+    if let Some(p) = &ctx.prompt_id {
+        out.push(KeyValue::new(ATTR_PROMPT_ID, p.clone()));
+    }
+    if !ctx.tool_desc_ids.is_empty() {
+        // Use the OTel string-array shape so backends (Phoenix, Jaeger,
+        // OTLP exporters) can index per-id rather than parsing a
+        // comma-joined string.
+        out.push(KeyValue::new(
+            ATTR_TOOL_DESC_IDS,
+            string_array_value(&ctx.tool_desc_ids),
+        ));
+    }
+    if !ctx.skill_ids.is_empty() {
+        out.push(KeyValue::new(
+            ATTR_SKILL_IDS,
+            string_array_value(&ctx.skill_ids),
+        ));
+    }
+    if let Some(t) = &ctx.release_tag {
+        out.push(KeyValue::new(ATTR_RELEASE_TAG, t.clone()));
+    }
+    if let Some(e) = &ctx.experiment_id {
+        out.push(KeyValue::new(ATTR_EXPERIMENT_ID, e.clone()));
+    }
+    if let Some(v) = &ctx.variant_name {
+        out.push(KeyValue::new(ATTR_EXPERIMENT_VARIANT, v.clone()));
+    }
+    out
+}
+
+fn string_array_value(values: &[String]) -> Value {
+    Value::Array(Array::String(
+        values.iter().cloned().map(StringValue::from).collect(),
+    ))
+}
+
 impl OtelMetricsSink {
     fn run_keys_for_metrics(metrics: &AgentMetrics) -> HashSet<String> {
         let mut run_keys = HashSet::new();
@@ -1594,6 +1658,7 @@ mod tests {
                 agent_id: "agent-alpha".to_string(),
                 parent_run_id: None,
                 parent_tool_call_id: None,
+                ..Default::default()
             },
             step_index: Some(3),
             duration_ms: 1200,
@@ -1692,6 +1757,7 @@ mod tests {
             agent_id: "agent-alpha".to_string(),
             parent_run_id: None,
             parent_tool_call_id: None,
+            ..Default::default()
         };
 
         // Record an inference first so the tool becomes its child.
@@ -1777,6 +1843,7 @@ mod tests {
             agent_id: "agent-orchestrator".to_string(),
             parent_run_id: None,
             parent_tool_call_id: None,
+            ..Default::default()
         };
         let inference = GenAISpan {
             context: context.clone(),
@@ -1902,6 +1969,7 @@ mod tests {
             agent_id: "agent-bg".to_string(),
             parent_run_id: None,
             parent_tool_call_id: None,
+            ..Default::default()
         };
         let parent_inference = GenAISpan {
             context: context.clone(),
@@ -1991,6 +2059,7 @@ mod tests {
             agent_id: "agent-bg".to_string(),
             parent_run_id: None,
             parent_tool_call_id: None,
+            ..Default::default()
         };
         let parent_inference = GenAISpan {
             context: context.clone(),
@@ -2075,6 +2144,7 @@ mod tests {
             agent_id: "agent-bg".to_string(),
             parent_run_id: None,
             parent_tool_call_id: None,
+            ..Default::default()
         };
         let inference = GenAISpan {
             context: context.clone(),
@@ -2166,6 +2236,7 @@ mod tests {
             agent_id: "agent-bg".to_string(),
             parent_run_id: None,
             parent_tool_call_id: None,
+            ..Default::default()
         };
         let parent_inference = GenAISpan {
             context: parent_context.clone(),
@@ -2184,6 +2255,7 @@ mod tests {
             agent_id: "worker".to_string(),
             parent_run_id: Some(parent_context.run_id.clone()),
             parent_tool_call_id: Some(tool.call_id.clone()),
+            ..Default::default()
         };
         let child_inference = GenAISpan {
             context: child_context.clone(),
@@ -2322,6 +2394,7 @@ mod tests {
             agent_id: "orchestrator".to_string(),
             parent_run_id: None,
             parent_tool_call_id: None,
+            ..Default::default()
         };
         let child_context = SpanContext {
             run_id: "child-run".to_string(),
@@ -2329,6 +2402,7 @@ mod tests {
             agent_id: "worker".to_string(),
             parent_run_id: Some("parent-run".to_string()),
             parent_tool_call_id: None,
+            ..Default::default()
         };
         let parent_inference = GenAISpan {
             context: parent_context.clone(),
@@ -2523,6 +2597,7 @@ mod tests {
             agent_id: "agent-provider".to_string(),
             parent_run_id: None,
             parent_tool_call_id: None,
+            ..Default::default()
         };
         sink.record(&MetricsEvent::Inference(GenAISpan {
             context: context.clone(),
@@ -2563,6 +2638,7 @@ mod tests {
             agent_id: "agent-eval".to_string(),
             parent_run_id: None,
             parent_tool_call_id: None,
+            ..Default::default()
         };
         let inference = GenAISpan {
             context: context.clone(),
@@ -2646,6 +2722,7 @@ mod tests {
             agent_id: "agent-beta".to_string(),
             parent_run_id: None,
             parent_tool_call_id: None,
+            ..Default::default()
         };
 
         // Step 0: inference + 2 tools
@@ -2815,6 +2892,7 @@ mod tests {
             agent_id: "agent-time".to_string(),
             parent_run_id: None,
             parent_tool_call_id: None,
+            ..Default::default()
         };
         sink.record(&MetricsEvent::Inference(GenAISpan {
             context: context.clone(),
@@ -2885,6 +2963,7 @@ mod tests {
             agent_id: "agent-shutdown".to_string(),
             parent_run_id: None,
             parent_tool_call_id: None,
+            ..Default::default()
         };
         sink.record(&MetricsEvent::Inference(GenAISpan {
             context: context.clone(),
@@ -2932,6 +3011,7 @@ mod tests {
             agent_id: "agent".to_string(),
             parent_run_id: None,
             parent_tool_call_id: None,
+            ..Default::default()
         };
 
         // Open both runs' roots, then record one Running event in each.
@@ -3014,6 +3094,7 @@ mod tests {
             agent_id: "agent-parent".to_string(),
             parent_run_id: None,
             parent_tool_call_id: None,
+            ..Default::default()
         };
 
         // Open the parent run's root + a tool span that has the call_id we
@@ -3038,6 +3119,7 @@ mod tests {
             agent_id: "agent-child".to_string(),
             parent_run_id: Some("parent-run".to_string()),
             parent_tool_call_id: Some("call-cross-run".to_string()),
+            ..Default::default()
         };
         let completed = BackgroundTaskSpan {
             context: bg_context,
@@ -3086,6 +3168,7 @@ mod tests {
             agent_id: "agent-synth".to_string(),
             parent_run_id: None,
             parent_tool_call_id: None,
+            ..Default::default()
         };
 
         // Open a root via an inference, then a background task that
@@ -3181,6 +3264,7 @@ mod tests {
             agent_id: "agent-trait".to_string(),
             parent_run_id: None,
             parent_tool_call_id: None,
+            ..Default::default()
         };
         composite.record(&MetricsEvent::Inference(GenAISpan {
             context: context.clone(),
@@ -3224,6 +3308,7 @@ mod tests {
             agent_id: "agent-bg".to_string(),
             parent_run_id: None,
             parent_tool_call_id: Some("call-bg".to_string()),
+            ..Default::default()
         };
 
         // Inference creates the root, then a never-terminal background task.
@@ -3272,6 +3357,150 @@ mod tests {
                 .get("awaken.background_task.close_reason")
                 .map(|v| v.to_string()),
             Some("abandoned".to_string())
+        );
+    }
+}
+
+#[cfg(test)]
+mod attribution_otel_tests {
+    use super::*;
+    use crate::metrics::{GenAISpan, SpanContext};
+
+    fn span_with_attribution() -> GenAISpan {
+        let mut ctx = SpanContext::default();
+        ctx.run_id = "r".into();
+        ctx.thread_id = "t".into();
+        ctx.agent_id = "a".into();
+        ctx.prompt_id = Some("a1b2c3d4e5f6".into());
+        ctx.tool_desc_ids = vec!["t000aaaaaaaa".into()];
+        ctx.skill_ids = vec!["s00000000000".into()];
+        ctx.release_tag = Some("agents.weather@stable".into());
+        ctx.experiment_id = Some("01HXEXP00000000000000000AB".into());
+        ctx.variant_name = Some("candidate".into());
+        GenAISpan {
+            context: ctx,
+            step_index: Some(0),
+            model: "m".into(),
+            provider: "p".into(),
+            operation: "chat".into(),
+            response_model: None,
+            response_id: None,
+            finish_reasons: vec![],
+            error_type: None,
+            error_class: None,
+            input_tokens: None,
+            output_tokens: None,
+            total_tokens: None,
+            thinking_tokens: None,
+            cache_read_input_tokens: None,
+            cache_creation_input_tokens: None,
+            temperature: None,
+            top_p: None,
+            max_tokens: None,
+            stop_sequences: vec![],
+            duration_ms: 0,
+            started_at_ms: 0,
+            ended_at_ms: 0,
+        }
+    }
+
+    #[test]
+    fn genai_span_emits_awaken_attributes() {
+        let attrs = otel_attributes_for_inference(&span_with_attribution());
+        let map: std::collections::HashMap<_, _> = attrs
+            .iter()
+            .map(|kv| (kv.key.as_str().to_string(), kv.value.to_string()))
+            .collect();
+        assert_eq!(
+            map.get("awaken.prompt_id").map(String::as_str),
+            Some("a1b2c3d4e5f6")
+        );
+        assert_eq!(
+            map.get("awaken.experiment.id").map(String::as_str),
+            Some("01HXEXP00000000000000000AB")
+        );
+        assert_eq!(
+            map.get("awaken.experiment.variant").map(String::as_str),
+            Some("candidate")
+        );
+        assert_eq!(
+            map.get("awaken.release.tag").map(String::as_str),
+            Some("agents.weather@stable")
+        );
+        assert!(map.contains_key("awaken.tool_desc_ids"));
+        assert!(map.contains_key("awaken.skill_ids"));
+    }
+
+    #[test]
+    fn attribution_skips_empty_fields() {
+        let span = GenAISpan {
+            context: SpanContext::default(),
+            step_index: None,
+            model: "m".into(),
+            provider: "p".into(),
+            operation: "chat".into(),
+            response_model: None,
+            response_id: None,
+            finish_reasons: vec![],
+            error_type: None,
+            error_class: None,
+            input_tokens: None,
+            output_tokens: None,
+            total_tokens: None,
+            thinking_tokens: None,
+            cache_read_input_tokens: None,
+            cache_creation_input_tokens: None,
+            temperature: None,
+            top_p: None,
+            max_tokens: None,
+            stop_sequences: vec![],
+            duration_ms: 0,
+            started_at_ms: 0,
+            ended_at_ms: 0,
+        };
+        let attrs = otel_attributes_for_inference(&span);
+        assert!(
+            attrs.is_empty(),
+            "no attribution attrs should be emitted for a default context"
+        );
+    }
+
+    #[test]
+    fn tool_span_emits_awaken_attributes() {
+        let mut ctx = SpanContext::default();
+        ctx.prompt_id = Some("deadbeefcafe".into());
+        ctx.experiment_id = Some("01HXEXP00000000000000000CD".into());
+        ctx.variant_name = Some("control".into());
+        let span = ToolSpan {
+            context: ctx,
+            step_index: None,
+            name: "search".into(),
+            operation: "execute_tool".into(),
+            call_id: "call_1".into(),
+            tool_type: "function".into(),
+            call_arguments: None,
+            call_result: None,
+            error_type: None,
+            duration_ms: 10,
+            started_at_ms: 0,
+            ended_at_ms: 0,
+        };
+        let attrs = otel_attributes_for_tool(&span);
+        let map: std::collections::HashMap<_, _> = attrs
+            .iter()
+            .map(|kv| (kv.key.as_str().to_string(), kv.value.to_string()))
+            .collect();
+        assert_eq!(
+            map.get("awaken.prompt_id").map(String::as_str),
+            Some("deadbeefcafe")
+        );
+        assert_eq!(
+            map.get("awaken.experiment.id").map(String::as_str),
+            Some("01HXEXP00000000000000000CD")
+        );
+        assert_eq!(
+            map.get("awaken.experiment.variant").map(String::as_str),
+            Some("control")
         );
     }
 }
