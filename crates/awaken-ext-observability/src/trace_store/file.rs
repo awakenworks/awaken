@@ -144,26 +144,6 @@ impl FileTraceStore {
         cache.insert(run_id.to_string(), dir);
         Some(candidate)
     }
-
-    /// Public-for-tests: write an index file for `run_id`. Production callers
-    /// go through the wrapping `PersistentSink` adapter (T8).
-    pub fn write_index_for_run(
-        &self,
-        run_id: &str,
-        summary: &RunSummary,
-    ) -> Result<(), TraceStoreError> {
-        validate_run_id(run_id)?;
-        let _guard = self.write_lock.lock().unwrap_or_else(|e| e.into_inner());
-        // Same shard directory the run's `.ndjson` already uses — keeps
-        // index and events colocated even when `started_at` is from a
-        // different month than the events were appended in.
-        let dir = self.resolve_shard_dir(run_id, summary.started_at);
-        fs::create_dir_all(&dir)?;
-        let path = dir.join(format!("{run_id}.idx.json"));
-        let json = serde_json::to_vec_pretty(&IndexFile::from(summary))?;
-        fs::write(path, json)?;
-        Ok(())
-    }
 }
 
 /// Return whether `path` ends with a `\n` byte. Empty files return
@@ -476,6 +456,25 @@ impl TraceStore for FileTraceStore {
             }
         }
         Ok(removed)
+    }
+
+    fn write_index_for_run(
+        &self,
+        run_id: &str,
+        summary: &RunSummary,
+    ) -> Result<(), TraceStoreError> {
+        validate_run_id(run_id)?;
+        let _guard = self.write_lock.lock().unwrap_or_else(|e| e.into_inner());
+        // Same shard directory the run's `.ndjson` already uses — keeps
+        // index and events colocated even when `started_at` is from a
+        // different month than the events were appended in (see
+        // `resolve_shard_dir`'s cache-first logic).
+        let dir = self.resolve_shard_dir(run_id, summary.started_at);
+        fs::create_dir_all(&dir)?;
+        let path = dir.join(format!("{run_id}.idx.json"));
+        let json = serde_json::to_vec_pretty(&IndexFile::from(summary))?;
+        fs::write(path, json)?;
+        Ok(())
     }
 }
 

@@ -13,6 +13,7 @@
 //! | `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`  |                                                                        |
 //! | `AWAKEN_PROMETHEUS=1`                 | Adds [`PrometheusSink`]                                                |
 //! | `AWAKEN_PERSISTENT_SINK_DIR=<dir>`    | Wraps the composite in a [`PersistentSink`] writing NDJSON to `<dir>` |
+//! | `AWAKEN_TRACE_SAMPLING_DISABLE=1`     | Bypasses the default [`SamplingPolicy`] (errors / low-judge / explicit always; normal 1%) and writes every event through (ADR-0030 D5 opt-out) |
 //! | `AWAKEN_OBSERVABILITY_DISABLE=1`      | Suppresses all auto-wired sinks (caller-provided sinks unaffected)     |
 //!
 //! Composition rules:
@@ -64,6 +65,13 @@ pub struct WiringSettings {
     /// When `Some(path)`, the assembled composite is wrapped in a
     /// [`PersistentSink`] writing NDJSON to `path`.
     pub persistent_sink_dir: Option<PathBuf>,
+    /// When `true`, do NOT attach the default sampling policy to a
+    /// persistent sink. The default (`false`) means a `TraceStore`-backed
+    /// `PersistentSink` is gated by `SamplingPolicy::default()` (errors /
+    /// low-judge / explicit always, normal proportional 1%). Set via
+    /// `AWAKEN_TRACE_SAMPLING_DISABLE=1` for full capture during
+    /// incidents.
+    pub sampling_disabled: bool,
 }
 
 impl WiringSettings {
@@ -86,13 +94,14 @@ impl WiringSettings {
                 || env_present("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"),
             prometheus: env_truthy("AWAKEN_PROMETHEUS"),
             persistent_sink_dir: env_path("AWAKEN_PERSISTENT_SINK_DIR"),
+            sampling_disabled: env_truthy("AWAKEN_TRACE_SAMPLING_DISABLE"),
         }
     }
 }
 
 /// What `install_default_sinks` produced and *why*, useful for surfacing
 /// diagnostics in a startup banner.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Clone, Default)]
 pub struct WiringSummary {
     /// `true` when the `InMemorySink` was added (always currently).
     pub in_memory: bool,
@@ -104,7 +113,42 @@ pub struct WiringSummary {
     pub persistent_dir: Option<PathBuf>,
     /// `true` when settings explicitly disabled the auto-wiring.
     pub disabled: bool,
+    /// The `TraceStore` constructed during wiring, when
+    /// `AWAKEN_PERSISTENT_SINK_DIR` is set and `FileTraceStore` initialised
+    /// successfully.  The server reads this to expose the trace query API.
+    pub trace_store: Option<Arc<dyn crate::trace_store::TraceStore>>,
+    /// `true` when the default sampling policy was attached to the
+    /// persistent sink. Reflects ADR-0030 D5 in operator banners.
+    pub sampling_enabled: bool,
 }
+
+impl std::fmt::Debug for WiringSummary {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WiringSummary")
+            .field("in_memory", &self.in_memory)
+            .field("otel", &self.otel)
+            .field("prometheus", &self.prometheus)
+            .field("persistent_dir", &self.persistent_dir)
+            .field("disabled", &self.disabled)
+            .field("trace_store", &self.trace_store.is_some())
+            .field("sampling_enabled", &self.sampling_enabled)
+            .finish()
+    }
+}
+
+impl PartialEq for WiringSummary {
+    fn eq(&self, other: &Self) -> bool {
+        self.in_memory == other.in_memory
+            && self.otel == other.otel
+            && self.prometheus == other.prometheus
+            && self.persistent_dir == other.persistent_dir
+            && self.disabled == other.disabled
+            && self.trace_store.is_some() == other.trace_store.is_some()
+            && self.sampling_enabled == other.sampling_enabled
+    }
+}
+
+impl Eq for WiringSummary {}
 
 /// Pure assembly entry point taking pre-resolved [`WiringSettings`].
 ///
@@ -160,8 +204,44 @@ pub fn install_default_sinks(settings: &WiringSettings) -> (Arc<dyn MetricsSink>
             storage_dir: dir.clone(),
             ..PersistenceConfig::default()
         };
-        match PersistentSink::new(Arc::clone(&composite), config) {
-            Ok(persistent) => {
+        let store: Option<Arc<dyn crate::trace_store::TraceStore>> =
+            match crate::trace_store::file::FileTraceStore::new(dir) {
+                Ok(s) => Some(Arc::new(s)),
+                Err(e) => {
+                    // TraceStore (the queryable trace layer) failed to
+                    // initialise, but the operator still asked for a
+                    // persistent sink — fall through to the legacy
+                    // disk-spill PersistentSink so we don't silently
+                    // demote the whole pipeline to the in-memory composite.
+                    tracing::warn!(
+                        error = %e,
+                        dir = %dir.display(),
+                        "FileTraceStore init failed; falling back to disk-spill PersistentSink only"
+                    );
+                    None
+                }
+            };
+        let result = match store.clone() {
+            Some(s) => PersistentSink::with_trace_store(Arc::clone(&composite), s, config),
+            None => PersistentSink::new(Arc::clone(&composite), config),
+        };
+        match result {
+            Ok(mut persistent) => {
+                // F16: attach the default sampling policy whenever a
+                // TraceStore is in play, so the documented behaviour
+                // (errors / low-judge / explicit always; normal 1%)
+                // actually applies. Without this the sink wrote every
+                // event through, contradicting ADR-0030 D5.
+                // `AWAKEN_TRACE_SAMPLING_DISABLE=1` opts back to the
+                // old write-through for operators who want full
+                // capture during incidents.
+                if store.is_some() && !settings.sampling_disabled {
+                    let policy = std::sync::Arc::new(parking_lot::RwLock::new(
+                        crate::sampling::SamplingPolicy::default(),
+                    ));
+                    persistent = persistent.with_sampling_policy(policy);
+                    summary.sampling_enabled = true;
+                }
                 summary.persistent_dir = Some(dir.clone());
                 return (Arc::new(persistent), summary);
             }
@@ -169,8 +249,7 @@ pub fn install_default_sinks(settings: &WiringSettings) -> (Arc<dyn MetricsSink>
                 tracing::warn!(
                     error = %err,
                     dir = %dir.display(),
-                    "AWAKEN_PERSISTENT_SINK_DIR set but PersistentSink could not be created; \
-                     falling back to non-persistent wiring"
+                    "PersistentSink construction failed; falling back to non-persistent wiring"
                 );
             }
         }
@@ -387,6 +466,7 @@ mod tests {
             otel: true,
             prometheus: true,
             persistent_sink_dir: Some(PathBuf::from("/tmp/x")),
+            sampling_disabled: false,
         };
         let clone = s.clone();
         assert_eq!(s, clone);
@@ -408,6 +488,7 @@ mod tests {
             otel: true,
             prometheus: true,
             persistent_sink_dir: Some(PathBuf::from("/dev/null")),
+            sampling_disabled: false,
         };
         let (_sink, summary) = install_default_sinks(&settings);
         assert!(summary.disabled);
@@ -461,6 +542,44 @@ mod tests {
     }
 
     // ── install_default_sinks: persistent wrapping ─────────────────────
+
+    #[test]
+    fn install_persistent_attaches_default_sampling() {
+        // Regression for F16: prior wiring built `PersistentSink::with_trace_store`
+        // but never called `with_sampling_policy`, so the documented
+        // `SamplingPolicy::default()` (normal=Proportional(0.01)) never
+        // applied — production wrote every event through.
+        let dir = temp_dir("sampling-default");
+        let (_sink, summary) = install_default_sinks(&WiringSettings {
+            persistent_sink_dir: Some(dir.clone()),
+            ..WiringSettings::default()
+        });
+        assert!(summary.trace_store.is_some());
+        assert!(
+            summary.sampling_enabled,
+            "default sampling must be attached whenever a TraceStore is wired"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn install_persistent_respects_sampling_disabled() {
+        // Opt-out path: when sampling_disabled is set (env
+        // AWAKEN_TRACE_SAMPLING_DISABLE=1), no policy attaches and the
+        // legacy write-through behaviour is restored.
+        let dir = temp_dir("sampling-disabled");
+        let (_sink, summary) = install_default_sinks(&WiringSettings {
+            persistent_sink_dir: Some(dir.clone()),
+            sampling_disabled: true,
+            ..WiringSettings::default()
+        });
+        assert!(summary.trace_store.is_some());
+        assert!(
+            !summary.sampling_enabled,
+            "sampling must NOT attach when explicitly disabled"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn install_persistent_creates_dir_and_wraps() {

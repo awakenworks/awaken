@@ -10,6 +10,7 @@ mod persistent;
 mod plugin;
 mod prometheus;
 pub mod runtime_stats;
+pub mod sampling;
 mod sink;
 mod stats;
 pub mod trace_store;

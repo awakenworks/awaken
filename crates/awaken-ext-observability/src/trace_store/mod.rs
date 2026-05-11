@@ -68,6 +68,16 @@ pub trait TraceStore: Send + Sync {
         older_than: SystemTime,
         except_referenced: &HashSet<String>,
     ) -> Result<u64, TraceStoreError>;
+
+    /// Persist a `RunSummary` index for `run_id` so `list` can return the
+    /// run without rescanning events. Called by `PersistentSink::on_run_end`
+    /// after the event stream is finalised, so the index always points at
+    /// committed shards.
+    fn write_index_for_run(
+        &self,
+        run_id: &str,
+        summary: &RunSummary,
+    ) -> Result<(), TraceStoreError>;
 }
 
 #[derive(Debug, thiserror::Error)]
