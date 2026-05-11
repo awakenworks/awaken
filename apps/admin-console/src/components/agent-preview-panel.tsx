@@ -245,10 +245,38 @@ function StatCell({ label, value, title }: { label: string; value: string; title
   );
 }
 
-function MessageParts({ message }: { message: UIMessage }) {
+/**
+ * Decide whether a `UIMessage.parts` entry has anything we render today.
+ * Shared by `MessageParts` (to choose what to draw) and
+ * `hasRenderableContent` (to decide whether to show a bubble at all) so
+ * the two cannot drift — drift produces empty bubbles for parts the
+ * renderer doesn't know about (e.g. AI SDK metadata / source parts).
+ */
+function isRenderablePart(part: unknown): boolean {
+  if (!part || typeof part !== "object" || !("type" in part)) return false;
+  const typed = part as { type: string; text?: unknown };
+  if (typed.type === "step-start") return false;
+  if (typed.type === "text") {
+    return typeof typed.text === "string" && typed.text.length > 0;
+  }
+  if (typed.type === "reasoning") {
+    return typeof typed.text === "string" && typed.text.length > 0;
+  }
+  if (typed.type === "dynamic-tool" || typed.type.startsWith("tool-")) {
+    return true;
+  }
+  return false;
+}
+
+export function MessageParts({ message }: { message: UIMessage }) {
   const rendered: ReactNode[] = [];
+  const unknownTypes: string[] = [];
   for (const [index, part] of message.parts.entries()) {
     if (!part || typeof part !== "object" || !("type" in part)) continue;
+    if (part.type === "step-start") {
+      // Visual separator between agent turns; no content.
+      continue;
+    }
     if (part.type === "text") {
       if (typeof part.text === "string" && part.text.length > 0) {
         rendered.push(
@@ -281,10 +309,29 @@ function MessageParts({ message }: { message: UIMessage }) {
       rendered.push(<ToolInvocation key={index} part={part as ToolPart} />);
       continue;
     }
-    if (part.type === "step-start") {
-      // Visual separator between agent turns; no content.
-      continue;
-    }
+    // Anything we don't render directly — metadata, source, file, future
+    // SDK additions — gets collected into a single collapsible debug
+    // fallback rather than producing an empty bubble.
+    unknownTypes.push(part.type);
+  }
+  if (unknownTypes.length > 0) {
+    rendered.push(
+      <details
+        key="__unknown_parts"
+        data-testid="message-unknown-parts"
+        className="rounded-md border border-dashed border-line bg-surface px-3 py-2 text-xs text-fg-soft"
+      >
+        <summary className="cursor-pointer text-[10px] font-medium uppercase tracking-eyebrow text-fg-soft">
+          {unknownTypes.length} unrecognized part
+          {unknownTypes.length === 1 ? "" : "s"}
+        </summary>
+        <ul className="mt-2 list-disc pl-5 font-mono text-[11px] text-fg-soft">
+          {unknownTypes.map((typeName, i) => (
+            <li key={i}>{typeName}</li>
+          ))}
+        </ul>
+      </details>,
+    );
   }
   if (rendered.length === 0) {
     return (
@@ -387,15 +434,8 @@ const TOOL_TONE_STYLE: Record<"neutral" | "info" | "success" | "warn" | "error",
   error: "bg-tone-error/15 text-tone-error",
 };
 
-function hasRenderableContent(message: UIMessage): boolean {
-  return message.parts.some((part) => {
-    if (!part || typeof part !== "object" || !("type" in part)) return false;
-    if (part.type === "step-start") return false;
-    if (part.type === "text") {
-      return typeof part.text === "string" && part.text.length > 0;
-    }
-    return true;
-  });
+export function hasRenderableContent(message: UIMessage): boolean {
+  return message.parts.some(isRenderablePart);
 }
 
 function countToolCalls(message: UIMessage): number {
