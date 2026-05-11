@@ -786,6 +786,20 @@ pub async fn serve(state: AppState) -> std::io::Result<()> {
         MailboxLifecycleMode::Manual => None,
     };
 
+    // Spawn the trace-retention loop whenever a TraceStore is attached.
+    // Retention is a property of the *storage layer*, not the HTTP API —
+    // an operator may turn off `expose_trace_routes` (e.g. to keep the
+    // admin surface narrow) yet still depend on the persistence layer for
+    // OTLP / Phoenix sourcing, and that path also needs TTL cleanup. The
+    // RetentionHandle is intentionally dropped after the server exits
+    // (fire-and-forget for v1), matching the audit sweeper.
+    let _retention_handle = state.trace_store().map(|store| {
+        crate::services::trace_retention::spawn_retention_loop(
+            store,
+            crate::services::trace_retention::RetentionConfig::default(),
+        )
+    });
+
     let listener = tokio::net::TcpListener::bind(&addr).await?;
     tracing::info!("listening on {addr}");
 
