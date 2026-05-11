@@ -12,6 +12,7 @@ mod prometheus;
 pub mod runtime_stats;
 mod sink;
 mod stats;
+pub mod trace_store;
 mod wiring;
 
 #[cfg(feature = "otel")]

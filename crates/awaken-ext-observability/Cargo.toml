@@ -20,6 +20,7 @@ tracing = { workspace = true }
 uuid = { workspace = true }
 tokio = { workspace = true }
 parking_lot = { workspace = true }
+thiserror = { workspace = true }
 metrics = "0.24"
 
 # Optional OTel
