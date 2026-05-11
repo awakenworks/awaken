@@ -20,6 +20,7 @@ pub mod config_record;
 pub mod config_validation;
 pub mod contract;
 mod error;
+pub mod identity;
 pub mod model;
 pub mod periodic_refresh;
 pub mod registry_spec;
