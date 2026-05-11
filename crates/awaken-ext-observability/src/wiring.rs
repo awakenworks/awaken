@@ -243,6 +243,7 @@ pub fn install_default_sinks(settings: &WiringSettings) -> (Arc<dyn MetricsSink>
                     summary.sampling_enabled = true;
                 }
                 summary.persistent_dir = Some(dir.clone());
+                summary.trace_store = store;
                 return (Arc::new(persistent), summary);
             }
             Err(err) => {

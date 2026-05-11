@@ -7,3 +7,4 @@ pub mod run_control_service;
 pub mod run_service;
 pub mod thread_service;
 pub mod tool_overrides;
+pub mod trace_service;

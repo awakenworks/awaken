@@ -13,6 +13,8 @@ use awaken_runtime::{AgentResolver, AgentRuntime};
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 
+use awaken_ext_observability::trace_store::TraceStore;
+
 use crate::mailbox::{Mailbox, MailboxLifecycleConfig};
 use crate::services::audit_log::AuditLogger;
 use crate::transport::replay_buffer::EventReplayBuffer;
@@ -118,6 +120,16 @@ pub struct AdminApiConfig {
     /// `false` to keep the HTTP surface free of those endpoints entirely.
     #[serde(default = "default_expose_config_routes")]
     pub expose_config_routes: bool,
+    /// Whether the server mounts the `/v1/traces` query routes.
+    /// Defaults to `false` (opt-in): the trace surface exposes prompt
+    /// content, tool arguments, and tool results — strictly more
+    /// sensitive than the existing admin metadata routes, so a fresh
+    /// deployment must take an explicit step to publish it. Set to
+    /// `true` (or use `AdminApiConfig::with_expose_trace_routes`) to
+    /// mount the endpoint; a non-loopback bind without a bearer token
+    /// still fails startup through `validate_admin_surface`.
+    #[serde(default = "default_expose_trace_routes")]
+    pub expose_trace_routes: bool,
 }
 
 /// Audit-log retention settings attached to [`AppState`] via
@@ -141,6 +153,17 @@ pub struct AuditLogConfig {
 
 const fn default_expose_config_routes() -> bool {
     true
+}
+
+const fn default_expose_trace_routes() -> bool {
+    // F20: opt-in. The trace API surfaces prompt content, tool arguments,
+    // tool results, and agent/run/thread linkage — strictly more
+    // sensitive than the existing admin metadata routes. Operators that
+    // attach a `TraceStore` must explicitly set `expose_trace_routes =
+    // true` (or `AdminApiConfig::with_expose_trace_routes`) to publish
+    // the endpoint. A non-loopback bind without a bearer token still
+    // fails startup (see `validate_admin_surface`).
+    false
 }
 
 const fn default_audit_log_enabled() -> bool {
@@ -192,6 +215,7 @@ impl Default for AdminApiConfig {
             bearer_token: None,
             cors_allowed_origins: default_admin_cors_allowed_origins(),
             expose_config_routes: default_expose_config_routes(),
+            expose_trace_routes: default_expose_trace_routes(),
         }
     }
 }
@@ -247,6 +271,7 @@ struct AppStateExtras {
     audit_log_config: AuditLogConfig,
     runtime_stats: Option<Arc<RuntimeStatsRegistry>>,
     audit_log: Option<Arc<AuditLogger>>,
+    trace_store: Option<Arc<dyn TraceStore>>,
     started_at: Instant,
     credential_broker: Arc<dyn CredentialBroker>,
 }
@@ -258,6 +283,7 @@ impl Default for AppStateExtras {
             audit_log_config: AuditLogConfig::default(),
             runtime_stats: None,
             audit_log: None,
+            trace_store: None,
             started_at: Instant::now(),
             credential_broker: Arc::new(AwakenCredentialBroker::new()),
         }
@@ -535,6 +561,24 @@ impl AppState {
         app_state_extras(self).audit_log
     }
 
+    /// Attach a `TraceStore` for the trace query API.
+    ///
+    /// Embedders using `install_default_sinks` / `observability_plugin_from`
+    /// can extract `WiringSummary::trace_store` and pass it here so that the
+    /// `/v1/traces` routes are backed by the same store that receives events.
+    #[must_use]
+    pub fn with_trace_store(self, store: Arc<dyn TraceStore>) -> Self {
+        update_app_state_extras(&self, |extras| {
+            extras.trace_store = Some(store);
+        });
+        self
+    }
+
+    /// Return the attached `TraceStore`, if configured.
+    pub fn trace_store(&self) -> Option<Arc<dyn TraceStore>> {
+        app_state_extras(self).trace_store
+    }
+
     /// Builder convenience: create an `AuditLogger` from the already-attached
     /// `config_store` (if any) and the effective `AdminApiConfig` settings.
     ///
@@ -774,7 +818,16 @@ pub fn build_service_router(state: AppState) -> std::io::Result<axum::Router> {
 
 pub fn validate_admin_surface(state: &AppState) -> std::io::Result<()> {
     let admin = admin_api_config(state);
-    if !admin.expose_config_routes {
+    // Any of the admin surfaces that expose sensitive data must be gated
+    // when binding a non-loopback address. Trace routes count as a
+    // sensitive surface in their own right (they reveal prompts, tool
+    // arguments, tool results, agent/run/thread linkage), so a deployment
+    // that disables config routes but enables trace routes still needs a
+    // bearer token. The previous short-circuit on `!expose_config_routes`
+    // missed this case entirely.
+    let any_sensitive_route_exposed =
+        admin.expose_config_routes || (admin.expose_trace_routes && state.trace_store().is_some());
+    if !any_sensitive_route_exposed {
         return Ok(());
     }
     if admin.bearer_token.is_some() {
@@ -804,6 +857,7 @@ fn admin_surface_has_sensitive_state(state: &AppState) -> bool {
         || state.audit_log().is_some()
         || state.runtime_stats().is_some()
         || state.skill_catalog_provider.is_some()
+        || state.trace_store().is_some()
 }
 
 pub fn admin_cors_layer(state: &AppState) -> std::io::Result<tower_http::cors::CorsLayer> {
@@ -916,6 +970,43 @@ mod tests {
             !debug.contains("a2a-secret-67890"),
             "ServerConfig Debug must redact a2a_extended_card_bearer_token, got: {debug}"
         );
+    }
+
+    #[test]
+    fn validate_admin_surface_rejects_trace_routes_without_token_on_non_loopback() {
+        // Regression for issue 1 residual: even with config routes off, an
+        // exposed trace store on a non-loopback bind without a bearer token
+        // must fail startup. Previously the validator short-circuited on
+        // `!expose_config_routes` and never inspected trace routes.
+        use crate::services::trace_retention; // pulls TraceStore via re-export
+        let _ = trace_retention::RetentionConfig::default(); // sanity
+
+        // Build a state with a trace store attached.
+        let mut state = state_for_admin_surface_test(
+            "0.0.0.0:3000",
+            AdminApiConfig {
+                expose_config_routes: false,
+                expose_trace_routes: true,
+                bearer_token: None,
+                ..AdminApiConfig::default()
+            },
+        );
+        let dir = std::env::temp_dir().join(format!(
+            "awaken-validate-admin-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos(),
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let trace_store: Arc<dyn TraceStore> = Arc::new(
+            awaken_ext_observability::trace_store::file::FileTraceStore::new(&dir).unwrap(),
+        );
+        state = state.with_trace_store(trace_store);
+
+        let err = validate_admin_surface(&state).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::PermissionDenied);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

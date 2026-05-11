@@ -97,6 +97,12 @@ fn ctx(agent: &str) -> SpanContext {
         agent_id: agent.into(),
         parent_run_id: None,
         parent_tool_call_id: None,
+        prompt_id: None,
+        tool_desc_ids: vec![],
+        skill_ids: vec![],
+        release_tag: None,
+        experiment_id: None,
+        variant_name: None,
     }
 }
 

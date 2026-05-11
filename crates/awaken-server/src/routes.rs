@@ -1,5 +1,6 @@
 //! Axum router setup — unified route registration.
 
+use crate::services::trace_service::{get_trace, list_traces, pin_trace};
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::middleware;
@@ -101,6 +102,8 @@ fn map_run_control_error(error: RunControlError) -> ApiError {
 pub fn build_router(state: &AppState) -> Router<AppState> {
     crate::metrics::install_recorder();
 
+    let admin_config = state.admin_api_config();
+
     let mut router = Router::new()
         .merge(health_routes())
         .merge(thread_routes())
@@ -110,13 +113,24 @@ pub fn build_router(state: &AppState) -> Router<AppState> {
         .merge(a2a_routes())
         .merge(mcp_routes());
 
-    if state.admin_api_config().expose_config_routes {
+    if admin_config.expose_config_routes {
         router = router.merge(admin_routes());
+    }
+
+    if admin_config.expose_trace_routes {
+        router = router.merge(trace_routes());
     }
 
     router
         .route("/metrics", get(crate::metrics::metrics_handler))
         .layer(middleware::from_fn(crate::metrics::http_metrics_middleware))
+}
+
+fn trace_routes() -> Router<AppState> {
+    Router::new()
+        .route("/v1/traces", get(list_traces))
+        .route("/v1/traces/:run_id", get(get_trace))
+        .route("/v1/traces/:run_id/pin", post(pin_trace))
 }
 
 fn health_routes() -> Router<AppState> {
