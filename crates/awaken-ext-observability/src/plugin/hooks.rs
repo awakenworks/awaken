@@ -51,6 +51,7 @@ impl PhaseHook for RunStartHook {
             agent_id: ri.agent_id.clone(),
             parent_run_id: ri.parent_run_id.clone(),
             parent_tool_call_id: ri.parent_tool_call_id.clone(),
+            ..Default::default()
         };
         // Reset step counter for the new run.
         self.0.step_counter.store(0, Ordering::Relaxed);
@@ -594,6 +595,7 @@ fn background_task_span_from_meta(meta: &PersistedTaskMeta) -> BackgroundTaskSpa
             agent_id: parent.agent_id.clone().unwrap_or_default(),
             parent_run_id: None,
             parent_tool_call_id: parent.call_id.clone(),
+            ..Default::default()
         },
         task_id: meta.task_id.clone(),
         task_type: meta.task_type.clone(),

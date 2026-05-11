@@ -34,6 +34,28 @@ pub struct SpanContext {
     /// Parent tool call id that caused this run/event, when available.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent_tool_call_id: Option<String>,
+
+    // ── Attribution fields (ADR-0030 D2) ───────────────────────────────
+    /// Content-addressed id of the agent's effective system prompt.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt_id: Option<String>,
+    /// Content-addressed ids of tool descriptions advertised at this turn.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tool_desc_ids: Vec<String>,
+    /// Content-addressed ids of skills active at this turn.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub skill_ids: Vec<String>,
+    /// Operator-supplied release alias (e.g. `agents.weather@stable`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub release_tag: Option<String>,
+
+    // ── Experiment fields (populated by ADR-0031; reserved here) ───────
+    /// Active experiment id, if the resolve pipeline routed through one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub experiment_id: Option<String>,
+    /// Variant name selected for this run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub variant_name: Option<String>,
 }
 
 /// Unified event type for all observability events.
@@ -482,6 +504,56 @@ impl AgentMetrics {
 }
 
 #[cfg(test)]
+mod attribution_tests {
+    use super::SpanContext;
+
+    #[test]
+    fn span_context_default_has_empty_attribution() {
+        let ctx = SpanContext::default();
+        assert!(ctx.prompt_id.is_none());
+        assert!(ctx.tool_desc_ids.is_empty());
+        assert!(ctx.skill_ids.is_empty());
+        assert!(ctx.release_tag.is_none());
+        assert!(ctx.experiment_id.is_none());
+        assert!(ctx.variant_name.is_none());
+    }
+
+    #[test]
+    fn span_context_serializes_attribution_fields() {
+        let mut ctx = SpanContext::default();
+        ctx.prompt_id = Some("a1b2c3d4e5f6".to_string());
+        ctx.tool_desc_ids = vec!["t000aaaaaaaa".to_string(), "t111bbbbbbbb".to_string()];
+        ctx.skill_ids = vec!["s00000000000".to_string()];
+        ctx.release_tag = Some("agents.weather@stable".to_string());
+        // experiment_id is a ULID per ADR-0031 — use a realistic 26-char
+        // shape so the fixture survives a future newtype tightening.
+        ctx.experiment_id = Some("01HXEXP00000000000000000AB".to_string());
+        // variant_name is a human-readable label, not a content id.
+        ctx.variant_name = Some("candidate".to_string());
+
+        let json = serde_json::to_value(&ctx).expect("serialise");
+        assert_eq!(json["prompt_id"], "a1b2c3d4e5f6");
+        assert_eq!(json["tool_desc_ids"][0], "t000aaaaaaaa");
+        assert_eq!(json["skill_ids"][0], "s00000000000");
+        assert_eq!(json["release_tag"], "agents.weather@stable");
+        assert_eq!(json["experiment_id"], "01HXEXP00000000000000000AB");
+        assert_eq!(json["variant_name"], "candidate");
+    }
+
+    #[test]
+    fn span_context_omits_empty_attribution_fields() {
+        let ctx = SpanContext::default();
+        let json = serde_json::to_string(&ctx).expect("serialise");
+        // The "{}" invariant relies on every pre-existing field also using
+        // skip_serializing_if (String::is_empty / Option::is_none). If a
+        // future change drops a skip on an unrelated field, this assertion
+        // will fail here even though the new attribution fields are fine —
+        // chase the regression to that field, not to attribution.
+        assert_eq!(json, "{}");
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -572,6 +644,7 @@ mod tests {
             agent_id: "agent-1".to_string(),
             parent_run_id: Some("parent-run-1".to_string()),
             parent_tool_call_id: Some("call-1".to_string()),
+            ..Default::default()
         };
         let json = serde_json::to_string(&ctx).unwrap();
         let restored: SpanContext = serde_json::from_str(&json).unwrap();
@@ -892,8 +965,7 @@ mod tests {
                 run_id: "r1".into(),
                 thread_id: "t1".into(),
                 agent_id: agent_id.to_string(),
-                parent_run_id: None,
-                parent_tool_call_id: None,
+                ..Default::default()
             },
             ..make_tool_span(name, error)
         }

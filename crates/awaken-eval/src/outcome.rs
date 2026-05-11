@@ -256,6 +256,7 @@ mod tests {
                 agent_id: agent_id.into(),
                 parent_run_id: None,
                 parent_tool_call_id: None,
+                ..Default::default()
             },
             step_index: None,
             name: name.into(),
