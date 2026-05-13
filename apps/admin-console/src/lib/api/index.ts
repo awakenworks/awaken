@@ -8,4 +8,5 @@ export { mcpApi } from "./mcp";
 export { providersApi } from "./providers";
 export { systemApi } from "./system";
 export { toolsApi } from "./tools";
+export { tracesApi } from "./traces";
 export * from "./types";

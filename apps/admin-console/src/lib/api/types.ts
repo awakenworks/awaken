@@ -1,18 +1,61 @@
+export type ContextCompactionMode = "keep_recent_raw_suffix" | "compact_to_safe_frontier";
+
+export interface ContextWindowPolicy {
+  max_context_tokens: number;
+  max_output_tokens: number;
+  min_recent_messages: number;
+  enable_prompt_cache: boolean;
+  autocompact_threshold?: number | null;
+  compaction_mode?: ContextCompactionMode;
+  compaction_raw_suffix_messages?: number;
+}
+
+export interface RemoteAuth {
+  type: string;
+  [key: string]: unknown;
+}
+
+export interface RemoteEndpoint {
+  backend?: string;
+  base_url: string;
+  auth?: RemoteAuth | null;
+  target?: string | null;
+  timeout_ms?: number;
+  options?: Record<string, unknown>;
+}
+
 export interface AgentSpec {
   id: string;
   model_id: string;
   system_prompt: string;
   max_rounds?: number;
   max_continuation_retries?: number;
+  context_policy?: ContextWindowPolicy | null;
   plugin_ids?: string[];
+  /** Runtime hook filter — only hooks from listed plugins run (`[]` = no filter). */
+  active_hook_filter?: string[];
   sections?: Record<string, unknown>;
   allowed_tools?: string[] | null;
   excluded_tools?: string[] | null;
+  endpoint?: RemoteEndpoint | null;
   delegates?: string[];
   reasoning_effort?: string | number | null;
+  /** Registry source. `undefined` = locally defined; otherwise registry name. */
+  registry?: string | null;
   created_at?: number;
   updated_at?: number;
 }
+
+/** Default values mirroring `ContextWindowPolicy::default()` on the Rust side. */
+export const DEFAULT_CONTEXT_POLICY: ContextWindowPolicy = {
+  max_context_tokens: 200_000,
+  max_output_tokens: 16_384,
+  min_recent_messages: 10,
+  enable_prompt_cache: true,
+  autocompact_threshold: null,
+  compaction_mode: "keep_recent_raw_suffix",
+  compaction_raw_suffix_messages: 2,
+};
 
 export interface ToolSpec {
   id: string;
@@ -200,6 +243,71 @@ export interface AgentRuntimeSnapshot {
 }
 
 export type RestoreResponse = Record<string, unknown>;
+
+/** Wire shape of one run summary in `GET /v1/traces` (ADR-0030 D7). */
+export interface TraceRunSummary {
+  run_id: string;
+  agent_id: string;
+  /** Unix epoch seconds. */
+  started_at: number;
+  /** Unix epoch seconds; `null`/absent when the run is still in flight. */
+  ended_at?: number | null;
+  prompt_ids: string[];
+  experiment_id?: string | null;
+  variant_name?: string | null;
+  final_status?: string | null;
+  judge_score?: number | null;
+}
+
+/** Wire shape of `GET /v1/traces`. */
+export interface ListTracesResponse {
+  runs: TraceRunSummary[];
+}
+
+/** One trace event line in the NDJSON body returned by
+ *  `GET /v1/traces/:run_id`. Shape is the JSON form of
+ *  `awaken_ext_observability::trace_store::TraceEvent`. */
+export interface TraceEvent {
+  kind: string;
+  ts?: number;
+  payload?: Record<string, unknown>;
+  [key: string]: unknown;
+}
+
+/** Result of fetching a trace page — events plus the pagination headers
+ *  the server emits (`x-trace-next-offset` / `x-trace-total-events`). */
+export interface TracePage {
+  events: TraceEvent[];
+  total: number;
+  next_offset: number | null;
+}
+
+/** Wire shape of `GET /v1/agents/:id/permission-preview` (issue #190). */
+export interface PermissionPreviewResponse {
+  agent_id: string;
+  /** `true` when the agent has the permission plugin in `plugin_ids` AND
+   *  a permission config section that compiles into a ruleset. */
+  permission_plugin_enabled: boolean;
+  /** Default behavior when no rule matches. `null` when permission plugin is
+   *  not enabled — `effective_tools` are just `candidate_tools` in that case. */
+  default_behavior: "allow" | "ask" | "deny" | null;
+  /** `allowed_tools ∖ excluded_tools` over the full registered tool set. */
+  candidate_tools: string[];
+  /** Tools the BeforeInference hook will unconditionally strip (rules
+   *  matching `Deny` + exact tool + `args == Any`). Empty when permission
+   *  plugin is disabled. */
+  unconditionally_denied: string[];
+  /** `candidate_tools ∖ unconditionally_denied`. This is the tool list the
+   *  model actually receives. Per-call args-dependent rules can still gate
+   *  / Ask / Deny at invocation time — see `args_conditional_rules`. */
+  effective_tools: string[];
+  /** Rules whose match depends on runtime arguments — informational only. */
+  args_conditional_rules: Array<{
+    tool: string;
+    behavior: "allow" | "ask" | "deny";
+    pattern: string;
+  }>;
+}
 
 // ── Record provenance types (mirrors Rust RecordMeta / RecordSource) ─────────
 

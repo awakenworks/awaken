@@ -2649,3 +2649,168 @@ async fn list_meta_returns_all_records_with_source() {
     assert!(user_rec.is_some(), "user-list-meta must be in list/meta");
     assert_eq!(user_rec.unwrap()["meta"]["source"]["kind"], "user");
 }
+
+// ── Permission preview endpoint (issue #190) ───────────────────────────────
+
+/// Build a router with the permission plugin registered and a stub provider.
+/// Shared setup for the preview tests below.
+#[cfg(feature = "permission")]
+async fn make_permission_preview_app() -> axum::Router {
+    let (runtime, store, manager) = make_runtime_manager_custom(
+        None,
+        Arc::new(TestMcpRegistryFactory),
+        None,
+        Arc::new(TestProviderFactory),
+        true, // register permission plugin
+    )
+    .await;
+    let config_store = store.clone() as Arc<dyn ConfigStore>;
+    let mailbox = Arc::new(Mailbox::new(
+        runtime.clone(),
+        Arc::new(awaken_stores::InMemoryMailboxStore::new()),
+        store.clone(),
+        "permission-preview-test".into(),
+        MailboxConfig::default(),
+    ));
+    let state = AppState::new(
+        runtime.clone(),
+        mailbox,
+        store,
+        runtime.resolver_arc(),
+        ServerConfig::default(),
+    )
+    .with_config_store(config_store)
+    .with_config_runtime_manager(manager);
+    build_router(&state).with_state(state)
+}
+
+#[cfg(feature = "permission")]
+async fn seed_provider_and_model(router: &axum::Router) {
+    let (status, _) = request_json(
+        router,
+        Method::POST,
+        "/v1/config/providers",
+        Some(json!({ "id": "stub-provider", "adapter": "stub" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let (status, _) = request_json(
+        router,
+        Method::POST,
+        "/v1/config/models",
+        Some(json!({
+            "id": "stub-model",
+            "provider_id": "stub-provider",
+            "upstream_model": "any"
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+}
+
+#[cfg(feature = "permission")]
+#[tokio::test]
+async fn permission_preview_returns_candidate_set_without_permission_plugin() {
+    let router = make_permission_preview_app().await;
+    seed_provider_and_model(&router).await;
+    let (status, _) = request_json(
+        &router,
+        Method::POST,
+        "/v1/config/agents",
+        Some(json!({
+            "id": "no-perm-agent",
+            "model_id": "stub-model",
+            "system_prompt": "no permission plugin",
+            "allowed_tools": ["alpha", "beta"],
+            "excluded_tools": ["beta"]
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, body) = request_json(
+        &router,
+        Method::GET,
+        "/v1/agents/no-perm-agent/permission-preview",
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "body={body}");
+    assert_eq!(body["agent_id"], "no-perm-agent");
+    assert_eq!(body["permission_plugin_enabled"], false);
+    assert!(body["default_behavior"].is_null());
+    // candidate = allowed ∖ excluded = ["alpha"]
+    assert_eq!(body["candidate_tools"], json!(["alpha"]));
+    // No permission plugin -> effective == candidate.
+    assert_eq!(body["effective_tools"], json!(["alpha"]));
+    assert_eq!(body["unconditionally_denied"], json!([]));
+    assert_eq!(body["args_conditional_rules"], json!([]));
+}
+
+#[cfg(feature = "permission")]
+#[tokio::test]
+async fn permission_preview_subtracts_unconditionally_denied_tools() {
+    let router = make_permission_preview_app().await;
+    seed_provider_and_model(&router).await;
+    let (status, _) = request_json(
+        &router,
+        Method::POST,
+        "/v1/config/agents",
+        Some(json!({
+            "id": "perm-agent",
+            "model_id": "stub-model",
+            "system_prompt": "permission-gated",
+            "plugin_ids": ["permission"],
+            "allowed_tools": ["Bash", "Read", "Edit"],
+            "sections": {
+                "permission": {
+                    "default_behavior": "ask",
+                    "rules": [
+                        { "tool": "Bash", "behavior": "deny" },
+                        { "tool": "Read", "behavior": "allow" },
+                        { "tool": "Edit(/etc/*)", "behavior": "deny" }
+                    ]
+                }
+            }
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, body) = request_json(
+        &router,
+        Method::GET,
+        "/v1/agents/perm-agent/permission-preview",
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "body={body}");
+    assert_eq!(body["permission_plugin_enabled"], true);
+    assert_eq!(body["default_behavior"], "ask");
+    assert_eq!(body["candidate_tools"], json!(["Bash", "Edit", "Read"]));
+    assert_eq!(body["unconditionally_denied"], json!(["Bash"]));
+    // Bash stripped; Edit kept (the deny is args-conditional on path).
+    assert_eq!(body["effective_tools"], json!(["Edit", "Read"]));
+    let args = body["args_conditional_rules"]
+        .as_array()
+        .expect("args_conditional_rules should be a list");
+    assert!(
+        args.iter()
+            .any(|r| r["tool"] == "Edit" && r["behavior"] == "deny"),
+        "expected Edit(/etc/*) deny rule in args_conditional_rules, got {body}",
+    );
+}
+
+#[cfg(feature = "permission")]
+#[tokio::test]
+async fn permission_preview_404_for_unknown_agent() {
+    let router = make_permission_preview_app().await;
+    let (status, _body) = request_json(
+        &router,
+        Method::GET,
+        "/v1/agents/no-such-agent/permission-preview",
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}

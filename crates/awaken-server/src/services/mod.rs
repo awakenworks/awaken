@@ -3,6 +3,8 @@ pub mod builtin_seed;
 pub mod config_envelope;
 pub mod config_runtime;
 pub mod config_service;
+#[cfg(feature = "permission")]
+pub mod permission_preview;
 pub mod run_control_service;
 pub mod run_service;
 pub mod thread_service;

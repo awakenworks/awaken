@@ -1,5 +1,5 @@
 import { BACKEND_URL, ConfigApiError, fetchJson } from "./http";
-import type { AgentRuntimeSnapshot } from "./types";
+import type { AgentRuntimeSnapshot, PermissionPreviewResponse } from "./types";
 
 export const agentsApi = {
   /** All-agents runtime stats. Backed by `/v1/agents/runtime-stats`, which
@@ -43,4 +43,18 @@ export const agentsApi = {
       `${BACKEND_URL}/v1/config/agents/${encodeURIComponent(id)}/overrides/${encodeURIComponent(field)}`,
       { method: "DELETE" },
     ),
+
+  /** True effective-tools preview for an agent — runs the permission ruleset
+   *  server-side rather than re-implementing it in TS. Returns `null` when
+   *  the server build lacks the `permission` feature (404). */
+  agentPermissionPreview: async (id: string): Promise<PermissionPreviewResponse | null> => {
+    try {
+      return await fetchJson<PermissionPreviewResponse>(
+        `${BACKEND_URL}/v1/agents/${encodeURIComponent(id)}/permission-preview`,
+      );
+    } catch (err) {
+      if (err instanceof ConfigApiError && err.status === 404) return null;
+      throw err;
+    }
+  },
 };

@@ -24,6 +24,7 @@ export const qk = {
     runtimeStats: (id: string, window: string) =>
       ["agent", "runtime-stats", id, window || "default"] as const,
     runtimeStatsList: () => ["agent", "runtime-stats"] as const,
+    permissionPreview: (id: string) => ["agent", "permission-preview", id] as const,
   },
   system: {
     info: () => ["system", "info"] as const,

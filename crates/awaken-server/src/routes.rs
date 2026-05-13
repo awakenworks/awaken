@@ -174,10 +174,49 @@ fn run_routes() -> Router<AppState> {
 }
 
 fn admin_routes() -> Router<AppState> {
-    config_routes()
+    let router = config_routes()
         .route("/v1/system/info", get(system_info))
         .route("/v1/agents/:id/runtime-stats", get(get_agent_runtime_stats))
-        .route("/v1/agents/runtime-stats", get(list_agents_runtime_stats))
+        .route("/v1/agents/runtime-stats", get(list_agents_runtime_stats));
+
+    #[cfg(feature = "permission")]
+    let router = router.route(
+        "/v1/agents/:id/permission-preview",
+        get(get_agent_permission_preview),
+    );
+
+    router
+}
+
+#[cfg(feature = "permission")]
+#[tracing::instrument(skip(state))]
+async fn get_agent_permission_preview(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> Response {
+    if let Err(err) = crate::config_routes::ensure_admin_auth(&state, &headers) {
+        return err.into_response();
+    }
+    match crate::services::permission_preview::preview_agent_permissions(&state, &id).await {
+        Ok(preview) => Json(preview).into_response(),
+        Err(err) => map_permission_preview_error(err).into_response(),
+    }
+}
+
+#[cfg(feature = "permission")]
+fn map_permission_preview_error(
+    err: crate::services::permission_preview::PermissionPreviewError,
+) -> ApiError {
+    use crate::services::permission_preview::PermissionPreviewError as PE;
+    match err {
+        PE::AgentNotFound(id) => ApiError::NotFound(format!("agent not found: {id}")),
+        PE::InvalidSpec(msg) | PE::InvalidPermissionConfig { reason: msg, .. } => {
+            ApiError::BadRequest(msg)
+        }
+        PE::RegistryUnavailable => ApiError::Internal("runtime registry unavailable".into()),
+        PE::Config(err) => ApiError::Internal(err.to_string()),
+    }
 }
 
 // ── Agent runtime-stats endpoints ───────────────────────────────────
