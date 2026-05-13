@@ -84,6 +84,21 @@ pub struct AgentSpecPatch {
     )]
     pub reasoning_effort: NullablePatch<ReasoningEffort>,
     /// Remote endpoint override. JSON `null` clears the base value.
+    ///
+    /// **Contract**: endpoint is a *patchable* runtime-safe field at the
+    /// API layer. The admin-console editor intentionally treats endpoint
+    /// as a locked / read-only field and does NOT expose UI for editing
+    /// it — that's a UX simplification ("most operators shouldn't be
+    /// rebinding the remote backend of a builtin agent through the
+    /// graphical editor"), not an immutability or security boundary.
+    /// Programmatic clients (CLI, scripts, other admin tooling)
+    /// retain the ability to override endpoint via this PATCH field.
+    ///
+    /// `patch_overrides_null_clears_nullable_base_field` (in
+    /// `crates/awaken-server/tests/config_api.rs`) pins this contract:
+    /// `PATCH /v1/config/agents/:id/overrides` with `{"endpoint": null}`
+    /// must return 200 and clear the base endpoint. Changing this to a
+    /// reject would be a breaking API change requiring a dedicated ADR.
     #[serde(
         default,
         deserialize_with = "nullable_patch::deserialize",

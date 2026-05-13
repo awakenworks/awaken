@@ -77,9 +77,32 @@ export function deepEqualCanonical(a: unknown, b: unknown): boolean {
 /**
  * Returns the name of the first locked field (`endpoint` or `registry`)
  * whose value would change if `parsed` were applied, or `null` when both
- * fields are unchanged. Uses canonical (key-order-insensitive) deep equality
- * so that re-indenting / reordering keys in Raw JSON doesn't falsely flag a
- * locked-field change.
+ * fields are unchanged.
+ *
+ * **Normalization contract**: this guard exists to stop the Raw JSON
+ * path from persisting locked-field edits the save flow can't carry. It
+ * uses canonical deep equality, which collapses three writings the
+ * runtime treats identically into one equivalence class:
+ *
+ *  - **key absent**       (`{}`)
+ *  - **key present, null** (`{"endpoint": null}`)
+ *  - **key present, undefined** (`{"endpoint": undefined}`)
+ *
+ * For locked fields whose current spec value is "no value" (absent / null),
+ * an Apply that writes `null` or removes the key is intentionally a no-op
+ * — not a "silent drop". The runtime, the customized PATCH layer (which
+ * does NOT include endpoint/registry in `PATCHABLE_AGENT_FIELDS`), and
+ * this guard all agree that those three forms mean the same thing.
+ * Without this normalization, a user re-typing `endpoint: null` to
+ * "make the absence explicit" would get rejected with a misleading
+ * "locked field changed" error.
+ *
+ * For locked fields with a real value (e.g. `endpoint.base_url = "..."`),
+ * any byte-level change to that value DOES surface here — the equivalence
+ * class above only collapses the empty cases.
+ *
+ * Also key-order-insensitive: re-indenting / reordering object keys in
+ * Raw JSON doesn't falsely flag a locked-field change.
  */
 export function lockedFieldChange(
   spec: AgentSpec,

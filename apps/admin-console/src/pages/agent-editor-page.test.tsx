@@ -703,6 +703,96 @@ describe("agent editor source badges", () => {
   });
 });
 
+// ── endpoint override banner (R14) ───────────────────────────────────────────
+//
+// The admin-console editor treats `endpoint` as locked and exposes no UI
+// for editing it. The server-side `AgentSpecPatch.endpoint` field is
+// still patchable through `PATCH /v1/config/agents/:id/overrides`, so
+// programmatic clients (CLI, scripts) can install endpoint overrides
+// the editor wouldn't otherwise reveal. The banner surfaces that
+// existence so the editor's "endpoint is fixed" appearance doesn't
+// silently lie to operators.
+
+describe("agent editor endpoint override banner (R14)", () => {
+  it("renders banner when user_overrides.endpoint exists", async () => {
+    vi.stubGlobal(
+      "fetch",
+      buildEditorFetchMock(
+        "patched-endpoint",
+        { id: "patched-endpoint", model_id: "m1", system_prompt: "", max_rounds: 8 },
+        {
+          source: { kind: "builtin", binary_version: "1.0" },
+          hidden: false,
+          user_overrides: {
+            endpoint: {
+              backend: "a2a",
+              base_url: "https://staging.example.com",
+              target: "remote-agent",
+            },
+          },
+          created_at: 0,
+          updated_at: 0,
+        },
+      ),
+    );
+
+    renderEditorRoute("/agents/patched-endpoint");
+    await screen.findByText(/Edit patched-endpoint/i);
+    expect(screen.getByTestId("endpoint-override-banner")).toBeDefined();
+  });
+
+  it("renders banner even when override is explicit null (clears base endpoint)", async () => {
+    vi.stubGlobal(
+      "fetch",
+      buildEditorFetchMock(
+        "cleared-endpoint",
+        { id: "cleared-endpoint", model_id: "m1", system_prompt: "", max_rounds: 8 },
+        {
+          source: { kind: "builtin", binary_version: "1.0" },
+          hidden: false,
+          user_overrides: { endpoint: null },
+          created_at: 0,
+          updated_at: 0,
+        },
+      ),
+    );
+
+    renderEditorRoute("/agents/cleared-endpoint");
+    await screen.findByText(/Edit cleared-endpoint/i);
+    // `endpoint: null` is a valid override (means "this customized
+    // record clears the base endpoint"). The banner must surface this
+    // too — operators should see ANY endpoint override exists.
+    expect(screen.getByTestId("endpoint-override-banner")).toBeDefined();
+  });
+
+  it("does not render banner when no endpoint override is set", async () => {
+    vi.stubGlobal(
+      "fetch",
+      buildEditorFetchMock(
+        "no-endpoint-override",
+        {
+          id: "no-endpoint-override",
+          model_id: "m1",
+          system_prompt: "custom",
+          max_rounds: 8,
+        },
+        {
+          source: { kind: "builtin", binary_version: "1.0" },
+          hidden: false,
+          // Customized record, but the override is on a different field.
+          user_overrides: { system_prompt: "custom" },
+          created_at: 0,
+          updated_at: 0,
+        },
+      ),
+    );
+
+    renderEditorRoute("/agents/no-endpoint-override");
+    await screen.findByText(/Edit no-endpoint-override/i);
+    expect(screen.queryByTestId("endpoint-override-banner")).toBeNull();
+  });
+});
+
 // ── Save → PATCH vs PUT branching ────────────────────────────────────────────
 
 describe("agent editor Save → PATCH vs PUT branching", () => {
