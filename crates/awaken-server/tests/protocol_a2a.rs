@@ -1,6 +1,6 @@
 //! A2A v1.0 type contract tests on the server re-export surface.
 
-use awaken_server::protocols::a2a::http::{
+use awaken_server::protocols::a2a::{
     A2aMessage, AgentCapabilities, AgentCard, AgentInterface, AgentSkill, MessageRole, Part,
     PushNotificationConfig, SendMessageConfiguration, SendMessageRequest, TaskState,
 };
