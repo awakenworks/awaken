@@ -16,7 +16,7 @@
 //! Tool(f1 ~ "a", f2 = "b")       multi-field AND
 //! ```
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -258,6 +258,72 @@ impl PermissionRuleset {
                 _ => None,
             })
             .collect()
+    }
+
+    /// Full set of tool IDs the BeforeInference filter must strip given a
+    /// live tool registry. Includes:
+    ///
+    ///  - every exact-tool, any-args Deny (covered by
+    ///    `unconditionally_denied_tools`), and
+    ///  - every glob/regex tool + any-args Deny expanded against the
+    ///    registry — i.e. for each rule like `{ tool: "mcp__db__*", deny }`,
+    ///    every `tool_id` in `registry_tool_ids` that the pattern matches.
+    ///
+    /// Both the runtime BeforeInference hook AND the admin-console
+    /// permission preview MUST share this expansion. Without it they
+    /// drift: a glob Deny would show up in preview's
+    /// `unconditionally_denied` (preview expands against the registry)
+    /// but the runtime filter (which historically only looked at exact
+    /// matches) would still surface those tools to the model, deferring
+    /// the block to `ToolGate`. That's a semantic regression — "stripped
+    /// before the model sees the list" in the UI must match what the
+    /// model actually sees.
+    ///
+    /// Per-args patterns (`pattern.args != Any`) are NOT expanded — a
+    /// `Bash(npm *)` Deny still requires arg evaluation at call time and
+    /// remains in args-conditional territory.
+    #[must_use]
+    pub fn unconditionally_denied_against<I, S>(&self, registry_tool_ids: I) -> HashSet<String>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        let mut denied: HashSet<String> = self
+            .unconditionally_denied_tools()
+            .into_iter()
+            .map(str::to_string)
+            .collect();
+        let tool_ids: Vec<String> = registry_tool_ids
+            .into_iter()
+            .map(|s| s.as_ref().to_string())
+            .collect();
+        if tool_ids.is_empty() {
+            return denied;
+        }
+        for rule in self.rules.values() {
+            if rule.behavior != ToolPermissionBehavior::Deny {
+                continue;
+            }
+            let pattern = match &rule.subject {
+                PermissionSubject::Pattern { pattern } => pattern,
+                // Exact `Tool { .. }` already captured above.
+                PermissionSubject::Tool { .. } => continue,
+            };
+            // Only any-args Deny is unconditional w.r.t. args.
+            if !matches!(&pattern.args, ArgMatcher::Any) {
+                continue;
+            }
+            // Exact + any-args already captured above.
+            if matches!(&pattern.tool, ToolMatcher::Exact(_)) {
+                continue;
+            }
+            for tool_id in &tool_ids {
+                if rule.subject.matches_tool(tool_id) {
+                    denied.insert(tool_id.clone());
+                }
+            }
+        }
+        denied
     }
 }
 
@@ -823,5 +889,138 @@ mod tests {
         let eval = evaluate_tool_permission(&ruleset, "Bash", &json!({}));
         assert_eq!(eval.behavior, ToolPermissionBehavior::Deny);
         assert!(eval.matched_rule.is_none());
+    }
+
+    // --- unconditionally_denied_against (shared with permission preview) ---
+
+    fn deny_pattern(pattern: ToolCallPattern) -> PermissionRule {
+        PermissionRule::new_pattern(pattern, ToolPermissionBehavior::Deny)
+    }
+
+    #[test]
+    fn against_includes_exact_tool_denies() {
+        let mut ruleset = PermissionRuleset::default();
+        let rule = PermissionRule::new_tool("rm", ToolPermissionBehavior::Deny);
+        ruleset.rules.insert(rule.subject.key(), rule);
+        let denied = ruleset.unconditionally_denied_against(Vec::<&str>::new());
+        let mut got: Vec<String> = denied.into_iter().collect();
+        got.sort();
+        assert_eq!(got, vec!["rm".to_string()]);
+    }
+
+    #[test]
+    fn against_includes_exact_pattern_any_args_denies() {
+        let mut ruleset = PermissionRuleset::default();
+        let rule = deny_pattern(ToolCallPattern::tool("Bash"));
+        ruleset.rules.insert(rule.subject.key(), rule);
+        // Registry irrelevant for exact-tool denies.
+        let denied = ruleset.unconditionally_denied_against(["Bash", "Other"]);
+        assert!(denied.contains("Bash"));
+        assert!(!denied.contains("Other"));
+    }
+
+    #[test]
+    fn against_expands_glob_any_args_against_registry() {
+        let mut ruleset = PermissionRuleset::default();
+        let rule = deny_pattern(ToolCallPattern::tool_glob("mcp__db__*"));
+        ruleset.rules.insert(rule.subject.key(), rule);
+        let registry = [
+            "Bash",
+            "mcp__db__query",
+            "mcp__db__write",
+            "mcp__github__list_issues",
+        ];
+        let denied = ruleset.unconditionally_denied_against(registry);
+        let mut got: Vec<String> = denied.into_iter().collect();
+        got.sort();
+        assert_eq!(got, vec!["mcp__db__query", "mcp__db__write"]);
+    }
+
+    #[test]
+    fn against_expands_regex_any_args_against_registry() {
+        let mut ruleset = PermissionRuleset::default();
+        let pattern = parse_pattern("/mcp__(gh|gl)__.*/").expect("valid regex pattern");
+        let rule = deny_pattern(pattern);
+        ruleset.rules.insert(rule.subject.key(), rule);
+        let registry = [
+            "Bash",
+            "mcp__gh__list_repos",
+            "mcp__gl__list_projects",
+            "mcp__db__query",
+        ];
+        let denied = ruleset.unconditionally_denied_against(registry);
+        let mut got: Vec<String> = denied.into_iter().collect();
+        got.sort();
+        assert_eq!(got, vec!["mcp__gh__list_repos", "mcp__gl__list_projects"]);
+    }
+
+    #[test]
+    fn against_skips_glob_with_args_condition() {
+        // Per-args glob (here: primary-arg glob) Deny is NOT unconditional —
+        // it requires arg evaluation, so it must NOT be expanded against the
+        // registry. Stays in args-conditional territory.
+        let mut ruleset = PermissionRuleset::default();
+        let rule = deny_pattern(ToolCallPattern::tool_with_primary("Bash", "rm *"));
+        ruleset.rules.insert(rule.subject.key(), rule);
+        let registry = ["Bash"];
+        let denied = ruleset.unconditionally_denied_against(registry);
+        assert!(
+            denied.is_empty(),
+            "per-args Deny must not expand to ExcludeTool, got {denied:?}"
+        );
+    }
+
+    #[test]
+    fn against_does_not_double_count_exact_via_pattern() {
+        // `Tool { tool_id: "Bash" }` and `Pattern { tool: Exact("Bash"), args: Any }`
+        // would both produce "Bash" — but the set semantics dedup naturally.
+        let mut ruleset = PermissionRuleset::default();
+        ruleset.rules.insert(
+            "tool:Bash".into(),
+            PermissionRule::new_tool("Bash", ToolPermissionBehavior::Deny),
+        );
+        ruleset.rules.insert(
+            "pattern:Bash".into(),
+            deny_pattern(ToolCallPattern::tool("Bash")),
+        );
+        let denied = ruleset.unconditionally_denied_against(["Bash"]);
+        assert_eq!(denied.len(), 1);
+        assert!(denied.contains("Bash"));
+    }
+
+    #[test]
+    fn against_skips_non_deny_glob_rules() {
+        // Glob Allow / Ask must NOT show up in the unconditionally-denied
+        // set — those tools stay in the model's tool list.
+        let mut ruleset = PermissionRuleset::default();
+        let allow = PermissionRule::new_pattern(
+            ToolCallPattern::tool_glob("mcp__db__*"),
+            ToolPermissionBehavior::Allow,
+        );
+        ruleset.rules.insert(allow.subject.key(), allow);
+        let ask = PermissionRule::new_pattern(
+            ToolCallPattern::tool_glob("mcp__github__*"),
+            ToolPermissionBehavior::Ask,
+        );
+        ruleset.rules.insert(ask.subject.key(), ask);
+        let denied =
+            ruleset.unconditionally_denied_against(["mcp__db__query", "mcp__github__list_issues"]);
+        assert!(denied.is_empty());
+    }
+
+    #[test]
+    fn against_with_empty_registry_returns_only_exact_denies() {
+        let mut ruleset = PermissionRuleset::default();
+        ruleset.rules.insert(
+            "tool:rm".into(),
+            PermissionRule::new_tool("rm", ToolPermissionBehavior::Deny),
+        );
+        let glob = deny_pattern(ToolCallPattern::tool_glob("mcp__db__*"));
+        ruleset.rules.insert(glob.subject.key(), glob);
+        let denied = ruleset.unconditionally_denied_against(Vec::<&str>::new());
+        // No registry → glob can't be expanded; exact still applies.
+        let mut got: Vec<String> = denied.into_iter().collect();
+        got.sort();
+        assert_eq!(got, vec!["rm".to_string()]);
     }
 }

@@ -214,6 +214,11 @@ fn api_error_exhaustive_match_keeps_0_2_variants() {
             ApiError::NotFound(_) => "not_found",
             ApiError::ThreadNotFound(_) => "thread_not_found",
             ApiError::RunNotFound(_) => "run_not_found",
+            // Post-0.2 addition (PR #190 — `permission-preview` feature
+            // gate). Not part of the 0.2 surface itself, but listed here
+            // so the exhaustive match keeps compiling and a future
+            // refactor of `ApiError` still trips this test.
+            ApiError::ServiceUnavailable(_) => "service_unavailable",
             ApiError::Internal(_) => "internal",
         }
     }

@@ -179,16 +179,11 @@ pub async fn preview_agent_permissions(
 
     // Unconditional deny = exact-tool Deny ∪ (glob/regex Deny + Any args
     // expanded against the registry). The runtime BeforeInference hook
-    // strips a tool whenever any matching rule denies it without
-    // examining args; the preview must mirror that, so a `Bash(npm *)`
-    // Deny stays in args_conditional_rules but `mcp__db__*` Deny gets
-    // expanded into every tool id matching the glob.
-    let mut denied: HashSet<String> = ruleset
-        .unconditionally_denied_tools()
-        .into_iter()
-        .map(str::to_string)
-        .collect();
-    denied.extend(expand_glob_regex_denies(&ruleset, &all_tools));
+    // (`PermissionToolFilterHook`) strips the same set via the shared
+    // helper, so a `Bash(npm *)` Deny stays in `args_conditional_rules`
+    // while `mcp__db__*` Deny is expanded into every matching registry
+    // id here AND removed from the model's tool list at runtime.
+    let denied: HashSet<String> = ruleset.unconditionally_denied_against(&all_tools);
     let effective_tools: Vec<String> = candidate_tools
         .iter()
         .filter(|tool| !denied.contains(*tool))
@@ -303,44 +298,6 @@ fn describe_args_conditional(
         behavior: behavior_label(rule.behavior).to_string(),
         pattern: ToolCallPattern::to_string(pattern),
     })
-}
-
-/// Expand glob/regex Deny rules with `args == Any` into the concrete
-/// tool ids in the registry they match. The runtime BeforeInference hook
-/// strips these without examining call args, so the preview's
-/// `unconditionally_denied` set should include them.
-fn expand_glob_regex_denies(ruleset: &PermissionRuleset, all_tools: &[String]) -> HashSet<String> {
-    let mut out = HashSet::new();
-    for rule in ruleset.rules.values() {
-        if rule.behavior != ToolPermissionBehavior::Deny {
-            continue;
-        }
-        let pattern = match &rule.subject {
-            PermissionSubject::Pattern { pattern } => pattern,
-            // Exact `Tool { .. }` is already handled by
-            // `unconditionally_denied_tools()`.
-            PermissionSubject::Tool { .. } => continue,
-        };
-        // Only any-args Deny is unconditional w.r.t. args. Per-args
-        // patterns stay in `args_conditional_rules`.
-        if !matches!(&pattern.args, ArgMatcher::Any) {
-            continue;
-        }
-        // Exact + any-args is also already handled.
-        if matches!(&pattern.tool, ToolMatcher::Exact(_)) {
-            continue;
-        }
-        // Glob / Regex: walk the registry and add every tool the rule
-        // would deny on any call. `rule.subject.matches_tool(id)`
-        // implicitly tests pattern.args against `Value::Null`, which is
-        // always a match when args is `Any`.
-        for tool_id in all_tools {
-            if rule.subject.matches_tool(tool_id) {
-                out.insert(tool_id.clone());
-            }
-        }
-    }
-    out
 }
 
 fn tool_display(matcher: &ToolMatcher) -> String {
@@ -470,62 +427,11 @@ mod tests {
         assert_eq!(behavior_label(ToolPermissionBehavior::Deny), "deny");
     }
 
-    // R7 #3 — glob/regex Deny + any args must be expanded against the
-    // registry into concrete tool ids, not left as an
-    // `args_conditional_rules` note. The runtime BeforeInference hook
-    // would strip these tools without examining args; the preview must
-    // mirror that or it lies about what the model sees.
-    #[test]
-    fn expand_glob_deny_matches_every_registered_tool() {
-        let ruleset = ruleset_from_json(json!({
-            "default_behavior": "ask",
-            "rules": [
-                { "tool": "mcp__db__*", "behavior": "deny" },
-            ]
-        }));
-        let all_tools = vec![
-            "Bash".to_string(),
-            "mcp__db__query".to_string(),
-            "mcp__db__write".to_string(),
-            "mcp__github__list_issues".to_string(),
-        ];
-        let denied = expand_glob_regex_denies(&ruleset, &all_tools);
-        let mut got: Vec<String> = denied.into_iter().collect();
-        got.sort();
-        assert_eq!(got, vec!["mcp__db__query", "mcp__db__write"]);
-    }
-
-    #[test]
-    fn expand_glob_deny_does_not_double_count_exact_tool() {
-        let ruleset = ruleset_from_json(json!({
-            "default_behavior": "ask",
-            "rules": [
-                { "tool": "Bash", "behavior": "deny" },
-            ]
-        }));
-        let all_tools = vec!["Bash".to_string()];
-        let denied = expand_glob_regex_denies(&ruleset, &all_tools);
-        assert!(
-            denied.is_empty(),
-            "exact `Tool` Deny handled by unconditionally_denied_tools()"
-        );
-    }
-
-    #[test]
-    fn expand_glob_deny_skips_per_args_rules() {
-        // `Bash(npm *)` Deny is conditional on args — must NOT be
-        // expanded against the registry, because a `Bash` call with
-        // other args is still permitted.
-        let ruleset = ruleset_from_json(json!({
-            "default_behavior": "ask",
-            "rules": [
-                { "tool": "Bash(npm *)", "behavior": "deny" },
-            ]
-        }));
-        let all_tools = vec!["Bash".to_string()];
-        let denied = expand_glob_regex_denies(&ruleset, &all_tools);
-        assert!(denied.is_empty(), "per-args Deny stays conditional");
-    }
+    // The unit tests for glob/regex Deny expansion moved to
+    // `awaken_ext_permission::rules::tests::against_*` along with the
+    // helper — `PermissionRuleset::unconditionally_denied_against` is the
+    // single source of truth for this expansion, shared between the
+    // runtime BeforeInference filter and this preview.
 
     #[test]
     fn args_conditional_no_longer_lists_glob_deny_any_args() {
