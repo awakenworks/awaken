@@ -195,6 +195,56 @@ pre-commit:
         fi
       stage_fixed: false
 
+    check-code-file-length:
+      run: |
+        code_files=$(git diff --cached --name-only --diff-filter=AM \
+          | grep -E '\.(rs|ts|tsx|js|jsx|mjs|cjs|py|go|java|cs|c|cc|cpp|cxx|h|hpp|vue)$' \
+          | grep -vE '(^|/)(target|node_modules|dist|build|coverage|\.next)/' \
+          | grep -vE '(^|/)fixtures/|(^|/)test-data/|(^|/)snapshots/' \
+          | grep -vE '(^|/)generated/|\.generated\.' \
+          | grep -vE '(^|/)tests/|(^|/)test/|(^|/)[^/]*(\.test|\.spec)\.(ts|tsx|js|jsx)$|(^|/)tests\.rs$|_test\.(go|rs)$' \
+          || true)
+
+        if [ -z "$code_files" ]; then
+          exit 0
+        fi
+
+        violations=""
+        for file in $code_files; do
+          [ -f "$file" ] || continue
+
+          case "$file" in
+            *.tsx|*.jsx|*.vue) max_lines=500 ;;
+            *.ts|*.js|*.mjs|*.cjs) max_lines=700 ;;
+            *.rs) max_lines=800 ;;
+            *.py|*.go) max_lines=700 ;;
+            *.java|*.cs) max_lines=800 ;;
+            *.c|*.cc|*.cpp|*.cxx|*.h|*.hpp) max_lines=1000 ;;
+            *) max_lines=800 ;;
+          esac
+
+          line_count=$(wc -l < "$file" | tr -d ' ')
+          if [ "$line_count" -gt "$max_lines" ]; then
+            violations="${violations}  ${file}: ${line_count} lines > ${max_lines}\n"
+          fi
+        done
+
+        if [ -n "$violations" ]; then
+          echo "ERROR: 代码文件行数超过模块化约束:"
+          printf '%b' "$violations"
+          echo ""
+          echo "❌ 代码超长通常表示职责过多、定位困难或修改牵连过大。"
+          echo "   请按职责拆分模块、子组件、hooks、service/repository/validator 等。"
+          echo ""
+          echo "例外应仅限 generated/parser/schema/测试数据等天然大文件。"
+          echo ""
+          echo "<system-reminder>"
+          echo "→ Next: Split by change reason → keep public API stable → move tests to test modules/files → git add"
+          echo "</system-reminder>"
+          exit 1
+        fi
+      stage_fixed: false
+
     rustfmt:
       glob: "**/*.rs"
       run: rustfmt --edition 2024 {staged_files}
