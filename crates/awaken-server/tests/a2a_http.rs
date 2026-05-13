@@ -598,6 +598,114 @@ async fn a2a_http_dispatch_matrix_handles_task_actions() {
         body.contains("\"task\""),
         "missing subscribe task body: {body}"
     );
+
+    let (status, body) = request_json(
+        &app,
+        "POST",
+        "/v1/a2a/message:send",
+        &[("content-type", "application/json")],
+        Some(json!({
+            "message": {
+                "taskId": "task-matrix-default-subscribe",
+                "contextId": "thread-matrix-actions",
+                "messageId": "msg-matrix-default-subscribe",
+                "role": "ROLE_USER",
+                "parts": [{"text": "subscribe default"}]
+            },
+            "configuration": {
+                "returnImmediately": true
+            }
+        })),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected default subscribe seed body: {body}"
+    );
+
+    let (status, content_type, body) = request_text(
+        &app,
+        "POST",
+        "/v1/a2a/tasks/task-matrix-default-subscribe:subscribe",
+        &[],
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(content_type.contains("text/event-stream"));
+    assert!(
+        body.contains("\"task\""),
+        "missing default subscribe task body: {body}"
+    );
+
+    let (status, body) = request_json(
+        &app,
+        "POST",
+        "/v1/a2a/alpha/message:send",
+        &[("content-type", "application/json")],
+        Some(json!({
+            "message": {
+                "taskId": "task-matrix-tenant-cancel",
+                "contextId": "thread-matrix-actions",
+                "messageId": "msg-matrix-tenant-cancel",
+                "role": "ROLE_USER",
+                "parts": [{"text": "cancel tenant"}]
+            },
+            "configuration": {
+                "returnImmediately": true
+            }
+        })),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected tenant cancel seed body: {body}"
+    );
+
+    let (status, canceled) = request_json(
+        &app,
+        "POST",
+        "/v1/a2a/alpha/tasks/task-matrix-tenant-cancel:cancel",
+        &[],
+        None,
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CONFLICT,
+        "tenant cancel route returned unexpected body: {canceled}"
+    );
+    assert_eq!(
+        canceled["error"]["details"][0]["reason"].as_str(),
+        Some("TASK_NOT_CANCELABLE")
+    );
+}
+
+#[tokio::test]
+async fn a2a_http_dispatch_matrix_handles_tenant_stream_route() {
+    let app = make_test_app(&["alpha"]);
+
+    let (status, content_type, body) = request_text(
+        &app,
+        "POST",
+        "/v1/a2a/alpha/message:stream",
+        &[("content-type", "application/a2a+json")],
+        Some(send_message_payload(
+            "task-matrix-tenant-stream",
+            "thread-matrix-tenant-stream",
+            "msg-matrix-tenant-stream",
+            "stream tenant",
+        )),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(content_type.contains("text/event-stream"));
+    assert!(
+        body.contains("task-matrix-tenant-stream"),
+        "missing tenant stream task body: {body}"
+    );
 }
 
 #[tokio::test]
@@ -635,6 +743,33 @@ async fn a2a_http_dispatch_matrix_rejects_version_path_and_content_type_errors()
         body["error"]["details"][0]["fieldViolations"][0]["field"].as_str(),
         Some("contentType")
     );
+
+    let (status, body) = request_json(
+        &app,
+        "POST",
+        "/v1/a2a/tasks/task-unsupported:pause",
+        &[],
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(body["error"]["status"].as_str(), Some("NOT_FOUND"));
+
+    let (status, body) = request_json(&app, "POST", "/v1/a2a/tasks/:cancel", &[], None).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(body["error"]["status"].as_str(), Some("INVALID_ARGUMENT"));
+    assert_eq!(
+        body["error"]["details"][0]["fieldViolations"][0]["field"].as_str(),
+        Some("taskId")
+    );
+
+    for uri in [
+        "/v1/a2a/tasks/task-missing-config-id/pushNotificationConfigs",
+        "/v1/a2a/alpha/tasks/task-missing-config-id/pushNotificationConfigs",
+    ] {
+        let (status, _content_type, body) = request_text(&app, "DELETE", uri, &[], None).await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "unexpected {uri}: {body}");
+    }
 }
 
 #[tokio::test]

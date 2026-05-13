@@ -276,6 +276,8 @@ pre-commit:
 
             if [ "$base_count" -le "$max_lines" ]; then
               violations="${violations}  ${file}: ${line_count} lines > ${max_lines}\n"
+            elif [ "$line_count" -gt "$base_count" ]; then
+              violations="${violations}  ${file}: ${line_count} lines > legacy baseline ${base_count} (limit ${max_lines})\n"
             else
               warnings="${warnings}  ${file}: ${line_count} lines > ${max_lines} (legacy baseline ${base_count})\n"
             fi

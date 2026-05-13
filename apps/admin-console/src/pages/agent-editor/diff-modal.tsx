@@ -68,7 +68,7 @@ export function DiffModal({
     <div
       role="dialog"
       aria-modal="true"
-      aria-label="Diff vs published"
+      aria-label={title}
       className="fixed inset-0 z-50 flex items-center justify-center bg-overlay px-4 backdrop-blur-sm"
       onClick={onClose}
     >

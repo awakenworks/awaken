@@ -36,6 +36,7 @@ export function EditorSaveBar({
       ? (savePayload as Record<string, unknown>)
       : {};
   const hasPatchPayload = Object.keys(patchPayload).length > 0;
+  const canShowDiff = Boolean(savedSpec) && (!isPatchMode || hasPatchPayload);
   const saveDescription = isPatchMode
     ? t("editor.savePayload.patchDescription")
     : t("editor.savePayload.fullDescription");
@@ -76,7 +77,7 @@ export function EditorSaveBar({
             <span className="ml-2 text-fg-soft">{saveDescription}</span>
           </div>
           <div className="ml-auto flex items-center gap-2">
-            {!isNew && savedSpec && (
+            {!isNew && canShowDiff && (
               <button
                 type="button"
                 onClick={() => setDiffOpen(true)}
@@ -105,7 +106,7 @@ export function EditorSaveBar({
         </div>
       </div>
 
-      {diffOpen && savedSpec && (
+      {diffOpen && savedSpec && canShowDiff && (
         <DiffModal
           current={isPatchMode ? patchPayload : savePayload}
           previous={isPatchMode ? {} : savedSpec}
