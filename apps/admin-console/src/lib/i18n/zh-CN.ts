@@ -174,6 +174,14 @@ export const zhCN: Dict = {
     validate: "校验",
     validating: "校验中…",
     diff: "与已发布版本对比",
+    diffModal: {
+      summary: "保存时会变更的字段数：{{count}}",
+      noChanges: "没有语义变更。dirty 标记可能来自临时表单编辑；可以安全保存。",
+      before: "原值",
+      after: "新值",
+      unset: "（未设置）",
+      emptyString: "（空字符串）",
+    },
     savePayload: {
       createTitle: "创建请求体",
       fullTitle: "完整更新请求体",

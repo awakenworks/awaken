@@ -175,6 +175,15 @@ export const en = {
     validate: "Validate",
     validating: "Validating…",
     diff: "Diff vs published",
+    diffModal: {
+      summary: "Fields changed on save: {{count}}",
+      noChanges:
+        "No semantic changes. The dirty flag may be set because of a transient form edit; saving is safe.",
+      before: "Was",
+      after: "Will be",
+      unset: "(unset)",
+      emptyString: "(empty string)",
+    },
     savePayload: {
       createTitle: "Create payload",
       fullTitle: "Full update payload",
