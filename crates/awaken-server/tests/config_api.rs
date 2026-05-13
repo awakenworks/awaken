@@ -2228,6 +2228,17 @@ async fn patch_overrides_null_clears_field() {
     );
 }
 
+// **Contract pin**: `endpoint` is a patchable AgentSpec field through the
+// override API. The admin-console editor treats endpoint as a locked /
+// read-only field for UX simplification, but this is a client-side
+// choice — not a server-enforced immutability boundary. Programmatic
+// clients (CLI, scripts, other admin tooling) can override or clear
+// endpoint through `PATCH /v1/config/agents/:id/overrides`. See the
+// long-form rationale on `AgentSpecPatch::endpoint` in
+// `crates/awaken-contract/src/agent_spec_patch.rs`.
+//
+// Changing this behavior (e.g. making endpoint server-side immutable)
+// would be a breaking API change and requires a dedicated ADR.
 #[tokio::test]
 async fn patch_overrides_null_clears_nullable_base_field() {
     let app = make_app().await;

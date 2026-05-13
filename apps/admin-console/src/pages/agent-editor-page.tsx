@@ -587,6 +587,35 @@ export function AgentEditorPage() {
         </div>
       )}
 
+      {overriddenFields.has("endpoint") && (
+        // The admin-console editor treats `endpoint` as a locked field
+        // and intentionally does NOT expose UI for editing it. The
+        // server-side config API still accepts `endpoint` patches (see
+        // `AgentSpecPatch::endpoint`), so a CLI or scripted client can
+        // install an override that bypasses this editor. Surface that
+        // existence to operators so the editor doesn't silently lie
+        // about the agent's effective shape.
+        <div
+          className="mx-6 mt-4 rounded-md border border-tone-warn/40 bg-tone-warn/10 px-4 py-3 text-sm text-fg md:mx-8"
+          data-testid="endpoint-override-banner"
+        >
+          <div className="font-semibold text-tone-warn">
+            This agent has an <span className="font-mono">endpoint</span> override set
+            through the config API.
+          </div>
+          <p className="mt-1 text-xs text-fg-soft">
+            The editor does not expose <span className="font-mono">endpoint</span> editing
+            — programmatic clients (CLI, scripts) installed this override. To inspect
+            or remove it, use{" "}
+            <span className="font-mono">
+              PATCH /v1/config/agents/{spec.id}/overrides
+            </span>{" "}
+            with{" "}
+            <span className="font-mono">{`{"_clear": ["endpoint"]}`}</span>.
+          </p>
+        </div>
+      )}
+
       <div className="grid gap-6 px-6 py-6 md:px-8 xl:grid-cols-[minmax(0,1fr),24rem]">
         <div className="space-y-6">
           {AGENT_EDITOR_TABS.map((tab) => (
@@ -2293,6 +2322,17 @@ function JsonEditorSection({
             <span className="font-mono">created_at</span>, and{" "}
             <span className="font-mono">updated_at</span> are preserved on Apply. Click Save below
             to publish — the runtime validation still runs.
+          </p>
+          <p
+            className="mt-2 max-w-xl text-xs text-fg-soft"
+            data-testid="raw-json-locked-field-help"
+          >
+            Locked fields are normalized on Apply. For{" "}
+            <span className="font-mono">endpoint</span> and{" "}
+            <span className="font-mono">registry</span> specifically, an explicit{" "}
+            <span className="font-mono">null</span> is treated the same as absence when the
+            current spec has no value — both mean "no override here". Use the Customization
+            controls above to clear an existing override.
           </p>
           {hasRedactedEndpoint ? (
             <p

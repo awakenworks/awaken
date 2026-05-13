@@ -99,11 +99,21 @@ describe("lockedFieldChange", () => {
     expect(lockedFieldChange(spec, reordered)).toBeNull();
   });
 
-  it("treats absent vs explicit null equivalently for endpoint", () => {
+  // Contract pin (R14): for a locked field whose current spec value is
+  // "no value", the three Raw JSON writings { absent, null, undefined }
+  // are equivalent. Re-typing `endpoint: null` to "make the absence
+  // explicit" must be a no-op, not a "locked field changed" error.
+  // This is intentional normalization, not a silent drop — see the
+  // JSDoc on `lockedFieldChange` for the full rationale. Position B
+  // (presence-aware) was considered and rejected because it produces
+  // user-visible errors for semantically-equivalent edits.
+  it("locked-field normalization: absent ≡ explicit null ≡ explicit undefined", () => {
     const spec = baseSpec();
     expect(lockedFieldChange(spec, {})).toBeNull();
     expect(lockedFieldChange(spec, { endpoint: null })).toBeNull();
     expect(lockedFieldChange(spec, { endpoint: undefined })).toBeNull();
+    expect(lockedFieldChange(spec, { registry: null })).toBeNull();
+    expect(lockedFieldChange(spec, { registry: undefined })).toBeNull();
   });
 
   it("flags endpoint when the parsed value differs", () => {
