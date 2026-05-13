@@ -189,6 +189,7 @@ export const zhCN: Dict = {
       fullDescription: "保存将发布完整 Agent spec。",
       patchDescription: "保存将发布覆盖补丁请求体。",
       validatePassed: "校验通过 - 请求体可以发布。",
+      validateFailed: "校验失败：{{message}}",
       noPatchableChanges: "没有可校验的可补丁字段变更。",
       advancedFull: "这里展示将发送给配置 API 的完整 Agent spec。",
       advancedPatch: "这里展示内置或已定制 Agent 将发送的 PATCH /overrides 请求体。",

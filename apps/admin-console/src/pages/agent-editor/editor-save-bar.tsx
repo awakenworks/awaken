@@ -57,7 +57,11 @@ export function EditorSaveBar({
       }
       toast.success(t("editor.savePayload.validatePassed"));
     } catch (err) {
-      toast.error(`Validation failed: ${err instanceof Error ? err.message : String(err)}`);
+      toast.error(
+        t("editor.savePayload.validateFailed", {
+          message: err instanceof Error ? err.message : String(err),
+        }),
+      );
     } finally {
       setValidating(false);
     }
