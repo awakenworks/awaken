@@ -6,6 +6,7 @@ import {
   PATCHABLE_AGENT_FIELDS,
   canonicalStringify,
   cloneAgentSpecForEditor,
+  computeRedactedDiff,
   deepEqualCanonical,
   diffPatchableAgentFields,
   lockedFieldChange,
@@ -591,6 +592,58 @@ describe("redactSecretsForDisplay (R6 #B/#C — generic deep redact)", () => {
     expect((redacted.payload.endpoint.auth as Record<string, unknown>).api_key).toBe("***");
   });
 
+  it("masks hyphenated API key headers in arbitrary trace payloads", () => {
+    const payload = {
+      response: {
+        headers: {
+          "x-api-key": "raw-x-api-key",
+          "api-key": "raw-api-key",
+          "content-type": "application/json",
+        },
+      },
+    };
+    const redacted = redactSecretsForDisplay(payload);
+    const headers = redacted.response.headers as Record<string, unknown>;
+    expect(headers["x-api-key"]).toBe("***");
+    expect(headers["api-key"]).toBe("***");
+    expect(headers["content-type"]).toBe("application/json");
+  });
+
+  it("masks hyphenated API keys inside endpoint option headers", () => {
+    const payload = {
+      endpoint: {
+        options: {
+          headers: {
+            "x-api-key": "raw-nested-key",
+            "user-agent": "awaken-admin",
+          },
+        },
+      },
+    };
+    const redacted = redactSecretsForDisplay(payload);
+    const headers = redacted.endpoint.options.headers as Record<string, unknown>;
+    expect(headers["x-api-key"]).toBe("***");
+    expect(headers["user-agent"]).toBe("awaken-admin");
+  });
+
+  it("masks request and response auth header aliases", () => {
+    const payload = {
+      request_headers: {
+        "x-auth-token": "raw-auth-token",
+        accept: "application/json",
+      },
+      response_headers: {
+        "set-cookie": "sid=raw-session",
+        "cache-control": "no-store",
+      },
+    };
+    const redacted = redactSecretsForDisplay(payload);
+    expect(redacted.request_headers["x-auth-token"]).toBe("***");
+    expect(redacted.request_headers.accept).toBe("application/json");
+    expect(redacted.response_headers["set-cookie"]).toBe("***");
+    expect(redacted.response_headers["cache-control"]).toBe("no-store");
+  });
+
   it("passes through primitives and arrays unchanged", () => {
     expect(redactSecretsForDisplay(42)).toBe(42);
     expect(redactSecretsForDisplay("hello")).toBe("hello");
@@ -752,6 +805,44 @@ describe("redactSecretsForDisplay (R6 #B/#C — generic deep redact)", () => {
     expect(auth.type).toBe("bearer");
     expect(auth.weird_key).toBeNull();
     expect(auth.other).toBeUndefined();
+  });
+});
+
+describe("computeRedactedDiff", () => {
+  it("reports secret-only changes while returning only redacted values", () => {
+    const changes = computeRedactedDiff(
+      { sections: { oauth: { client_secret: "old-client-secret" } } },
+      { sections: { oauth: { client_secret: "new-client-secret" } } },
+    );
+    expect(changes).toEqual([
+      {
+        path: "sections.oauth.client_secret",
+        before: "***",
+        after: "***",
+        redactedValueChanged: true,
+      },
+    ]);
+    const serialized = JSON.stringify(changes);
+    expect(serialized).not.toContain("old-client-secret");
+    expect(serialized).not.toContain("new-client-secret");
+  });
+
+  it("preserves normal before and after values for non-secret changes", () => {
+    expect(
+      computeRedactedDiff(
+        { sections: { ui: { theme: "light" } } },
+        {
+          sections: { ui: { theme: "dark" } },
+        },
+      ),
+    ).toEqual([
+      {
+        path: "sections.ui.theme",
+        before: "light",
+        after: "dark",
+        redactedValueChanged: false,
+      },
+    ]);
   });
 });
 

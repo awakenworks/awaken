@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
 import {
   tracesApi,
   type TraceEvent,
@@ -7,6 +7,8 @@ import {
   type TraceRunSummary,
 } from "@/lib/config-api";
 import { redactSecretsForDisplay } from "@/lib/agent-editor-helpers";
+
+const TRACE_EVENT_PAGE_LIMIT = 1000;
 
 /**
  * Side drawer that lists recent persisted runs for an agent and lets the
@@ -199,15 +201,18 @@ function RunList({
 }
 
 function RunEventViewer({ runId, onBack }: { runId: string; onBack: () => void }) {
-  // Single-page fetch — server caps at 1000 events. For runs above the cap
-  // we surface that via a hint rather than auto-paging through, since
-  // operators typically only care about the head of the stream when
-  // checking what happened.
-  const eventsQuery = useQuery({
+  const eventsQuery = useInfiniteQuery({
     queryKey: ["traces", "events", runId],
-    queryFn: () => tracesApi.getTracePage(runId, { limit: 1000 }),
+    queryFn: ({ pageParam }) =>
+      tracesApi.getTracePage(runId, {
+        offset: pageParam,
+        limit: TRACE_EVENT_PAGE_LIMIT,
+      }),
+    initialPageParam: 0,
+    getNextPageParam: (lastPage) => lastPage?.next_offset ?? undefined,
     staleTime: 30_000,
   });
+  const page = combineTracePages(eventsQuery.data?.pages);
 
   return (
     <div data-testid="recent-traces-events">
@@ -221,16 +226,16 @@ function RunEventViewer({ runId, onBack }: { runId: string; onBack: () => void }
         </button>
         <span className="font-mono text-[11px] text-fg-strong">{runId}</span>
       </div>
-      {eventsQuery.isPending && eventsQuery.fetchStatus === "fetching" ? (
+      {eventsQuery.isPending && eventsQuery.fetchStatus === "fetching" && page === undefined ? (
         <div className="px-4 py-6 text-xs text-fg-soft">Loading events…</div>
-      ) : eventsQuery.error ? (
+      ) : eventsQuery.error && page === undefined ? (
         <div className="px-4 py-6 text-xs text-tone-error">
           Failed to load events:{" "}
           {eventsQuery.error instanceof Error
             ? eventsQuery.error.message
             : String(eventsQuery.error)}
         </div>
-      ) : eventsQuery.data === null ? (
+      ) : page === null ? (
         // Server build lacks trace persistence (503). Distinct from
         // "0 events", which would be a successful empty page.
         <div
@@ -240,19 +245,51 @@ function RunEventViewer({ runId, onBack }: { runId: string; onBack: () => void }
           Trace persistence is not configured on this server build.
         </div>
       ) : (
-        <EventList page={eventsQuery.data ?? { events: [], total: 0, next_offset: null }} />
+        <EventList
+          page={page ?? { events: [], total: 0, next_offset: null }}
+          canLoadMore={eventsQuery.hasNextPage}
+          loadingMore={eventsQuery.isFetchingNextPage}
+          loadError={eventsQuery.error}
+          onLoadMore={() => void eventsQuery.fetchNextPage()}
+        />
       )}
     </div>
   );
 }
 
-function EventList({ page }: { page: TracePage }) {
-  const truncated = page.next_offset !== null;
+function combineTracePages(
+  pages: Array<TracePage | null> | undefined,
+): TracePage | null | undefined {
+  if (!pages) return undefined;
+  if (pages.some((page) => page === null)) return null;
+  const loadedPages = pages as TracePage[];
+  const lastPage = loadedPages[loadedPages.length - 1];
+  const events = loadedPages.flatMap((page) => page.events);
+  return {
+    events,
+    total: lastPage?.total ?? events.length,
+    next_offset: lastPage?.next_offset ?? null,
+  };
+}
+
+function EventList({
+  page,
+  canLoadMore,
+  loadingMore,
+  loadError,
+  onLoadMore,
+}: {
+  page: TracePage;
+  canLoadMore: boolean;
+  loadingMore: boolean;
+  loadError: unknown;
+  onLoadMore: () => void;
+}) {
   return (
     <>
       <div className="px-4 py-2 text-[10px] uppercase tracking-eyebrow text-fg-soft">
         {page.events.length} of {page.total} events
-        {truncated ? " (truncated — server caps at 1000 per page)" : ""}
+        {canLoadMore ? " loaded" : ""}
       </div>
       <ul className="divide-y divide-line">
         {page.events.map((event, index) => (
@@ -265,6 +302,24 @@ function EventList({ page }: { page: TracePage }) {
           </li>
         ))}
       </ul>
+      {loadError && page.events.length > 0 ? (
+        <div className="px-4 py-2 text-[11px] text-tone-error">
+          Failed to load more events:{" "}
+          {loadError instanceof Error ? loadError.message : String(loadError)}
+        </div>
+      ) : null}
+      {canLoadMore ? (
+        <div className="border-t border-line px-4 py-3">
+          <button
+            type="button"
+            onClick={onLoadMore}
+            disabled={loadingMore}
+            className="rounded-md border border-line-strong bg-surface px-3 py-1.5 text-xs font-medium text-fg-soft transition hover:bg-soft disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            {loadingMore ? "Loading…" : "Load more"}
+          </button>
+        </div>
+      ) : null}
     </>
   );
 }

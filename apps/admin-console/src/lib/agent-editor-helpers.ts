@@ -309,23 +309,19 @@ export function partitionActiveHookFilter(
 
 /** Keys that always carry secret material when seen anywhere in a
  *  payload — masked by `redactSecretsForDisplay` regardless of context
- *  (audit log diff, trace event payload, DiffModal). Lowercased
- *  contains-match — `token` catches `bearer_token` / `access_token` /
- *  `refresh_token` / `id_token`; `cookie` catches `cookie` /
- *  `set-cookie` / `cookies`; `session` catches `session_id` /
- *  `session-cookie`; etc. */
+ *  (audit log diff, trace event payload, DiffModal). Keys are normalized
+ *  before matching so `api_key`, `api-key`, and `x-api-key` all hit the
+ *  same `apikey` pattern. */
 const SENSITIVE_AUTH_KEY_PATTERNS = [
   "token",
   "secret",
   "password",
   "passphrase",
-  "api_key",
   "apikey",
   "authorization",
   "credential",
-  "private_key",
   "privatekey",
-  "client_secret",
+  "clientsecret",
   // R10 #4 — broaden generic-redaction coverage to HTTP-flavored
   // secret carriers that an `endpoint.auth` payload or a trace event
   // can plausibly hold under arbitrary key names.
@@ -333,15 +329,37 @@ const SENSITIVE_AUTH_KEY_PATTERNS = [
   "jwt",
   "bearer",
   "session",
-  "access_key",
   "accesskey",
 ];
 
 const REDACTED_PLACEHOLDER = "***";
 
+const HEADER_CONTAINER_KEYS = new Set(["headers", "requestheaders", "responseheaders"]);
+
+const SENSITIVE_HEADER_KEY_PATTERNS = [
+  "authorization",
+  "proxyauthorization",
+  "cookie",
+  "setcookie",
+  "apikey",
+  "xapikey",
+  "xauthtoken",
+  "token",
+];
+
+function normalizeSecretKey(key: string): string {
+  return key.toLowerCase().replace(/[-_\s]/g, "");
+}
+
 function isSensitiveKey(key: string): boolean {
-  const lowered = key.toLowerCase();
-  return SENSITIVE_AUTH_KEY_PATTERNS.some((pattern) => lowered.includes(pattern));
+  const normalized = normalizeSecretKey(key);
+  return SENSITIVE_AUTH_KEY_PATTERNS.some((pattern) => normalized.includes(pattern));
+}
+
+function isSensitiveHeaderKey(parentKey: string, key: string): boolean {
+  if (!HEADER_CONTAINER_KEYS.has(normalizeSecretKey(parentKey))) return false;
+  const normalized = normalizeSecretKey(key);
+  return SENSITIVE_HEADER_KEY_PATTERNS.some((pattern) => normalized.includes(pattern));
 }
 
 function redactRecord(value: unknown, parentKey: string = ""): unknown {
@@ -363,7 +381,7 @@ function redactRecord(value: unknown, parentKey: string = ""): unknown {
     // every entry except the human-readable `type` discriminator —
     // mirrors `redactEndpointForDisplay` but applies wherever `auth`
     // shows up in audit / trace / diff payloads.
-    if (parentKey === "auth") {
+    if (normalizeSecretKey(parentKey) === "auth") {
       const safeAuth: Record<string, unknown> = {};
       for (const [key, inner] of Object.entries(value as Record<string, unknown>)) {
         if (key === "type" || inner === null || inner === undefined) {
@@ -376,7 +394,7 @@ function redactRecord(value: unknown, parentKey: string = ""): unknown {
     }
     const next: Record<string, unknown> = {};
     for (const [key, inner] of Object.entries(value as Record<string, unknown>)) {
-      if (isSensitiveKey(key)) {
+      if (isSensitiveKey(key) || isSensitiveHeaderKey(parentKey, key)) {
         next[key] = inner === null || inner === undefined ? inner : REDACTED_PLACEHOLDER;
       } else {
         next[key] = redactRecord(inner, key);
@@ -440,6 +458,71 @@ export function redactEndpointForDisplay(endpoint: RemoteEndpoint): RemoteEndpoi
  */
 export function redactSecretsForDisplay<T>(value: T): T {
   return redactRecord(value) as T;
+}
+
+export interface RedactedFieldChange {
+  path: string;
+  before: unknown;
+  after: unknown;
+  redactedValueChanged: boolean;
+}
+
+/**
+ * Compute semantic changes from raw values, but return only redacted
+ * before/after payloads for rendering. This preserves secret-only changes
+ * in DiffModal without handing the DOM the original credential values.
+ */
+export function computeRedactedDiff(
+  prev: Record<string, unknown>,
+  curr: Record<string, unknown>,
+  base = "",
+): RedactedFieldChange[] {
+  return computeRedactedDiffFrom(
+    prev,
+    curr,
+    redactSecretsForDisplay(prev),
+    redactSecretsForDisplay(curr),
+    base,
+  );
+}
+
+function computeRedactedDiffFrom(
+  prev: Record<string, unknown>,
+  curr: Record<string, unknown>,
+  redactedPrev: Record<string, unknown>,
+  redactedCurr: Record<string, unknown>,
+  base: string,
+): RedactedFieldChange[] {
+  const out: RedactedFieldChange[] = [];
+  const keys = new Set([...Object.keys(prev ?? {}), ...Object.keys(curr ?? {})]);
+  for (const key of keys) {
+    const path = base ? `${base}.${key}` : key;
+    const beforeRaw = prev?.[key];
+    const afterRaw = curr?.[key];
+    const beforeDisplay = redactedPrev?.[key];
+    const afterDisplay = redactedCurr?.[key];
+    if (deepEqualCanonical(beforeRaw, afterRaw)) continue;
+    if (
+      isDiffRecord(beforeRaw) &&
+      isDiffRecord(afterRaw) &&
+      isDiffRecord(beforeDisplay) &&
+      isDiffRecord(afterDisplay)
+    ) {
+      out.push(...computeRedactedDiffFrom(beforeRaw, afterRaw, beforeDisplay, afterDisplay, path));
+    } else {
+      out.push({
+        path,
+        before: beforeDisplay,
+        after: afterDisplay,
+        redactedValueChanged: deepEqualCanonical(beforeDisplay, afterDisplay),
+      });
+    }
+  }
+  return out;
+}
+
+function isDiffRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
 /**

@@ -6,7 +6,9 @@ import { appRoutes } from "../app";
 import { AuthProvider } from "../components/auth-provider";
 import { ConfirmDialogProvider } from "../components/confirm-dialog";
 import { ToastProvider } from "../components/toast-provider";
+import { DiffModal } from "./agent-editor-page";
 import { ADMIN_TOKEN_STORAGE_KEY } from "../lib/config-api";
+import type { AgentSpec } from "../lib/config-api";
 import { __resetAuthInterceptorForTesting } from "../lib/auth-interceptor";
 import { withQueryClient } from "../test/query";
 
@@ -469,6 +471,25 @@ describe("agent editor History tab auto-refresh after Save", () => {
     await screen.findByText("hash2");
 
     expect(auditCallCount).toBeGreaterThanOrEqual(2);
+  });
+});
+
+describe("DiffModal", () => {
+  it("shows secret-only section changes without rendering raw secret values", () => {
+    const previous = agentSpec("secret-agent") as AgentSpec;
+    previous.sections = { oauth: { client_secret: "old-client-secret" } };
+    const current = agentSpec("secret-agent") as AgentSpec;
+    current.sections = { oauth: { client_secret: "new-client-secret" } };
+
+    render(<DiffModal previous={previous} current={current} onClose={() => {}} />);
+
+    const dialog = screen.getByRole("dialog", { name: "Diff vs published" });
+    expect(screen.getByText("sections.oauth.client_secret")).toBeTruthy();
+    expect(screen.getByTestId("diff-redacted-value-changed")).toBeTruthy();
+    expect(dialog.textContent).toContain("*** (changed)");
+    expect(dialog.textContent).not.toContain("old-client-secret");
+    expect(dialog.textContent).not.toContain("new-client-secret");
+    expect(screen.queryByText(/No semantic changes/i)).toBeNull();
   });
 });
 

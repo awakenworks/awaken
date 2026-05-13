@@ -125,6 +125,56 @@ describe("RecentTracesDrawer (G7)", () => {
     expect(screen.getByText("tool_call")).toBeTruthy();
   });
 
+  it("loads and appends additional event pages", async () => {
+    vi.spyOn(tracesApi, "listAgentTraces").mockResolvedValue({
+      runs: [
+        {
+          run_id: "run-paged",
+          agent_id: "agent-a",
+          started_at: Math.floor(Date.now() / 1000),
+          prompt_ids: [],
+          final_status: "succeeded",
+        },
+      ],
+    });
+    const getTracePage = vi.spyOn(tracesApi, "getTracePage");
+    getTracePage
+      .mockResolvedValueOnce({
+        events: [
+          { kind: "run_start", ts: 1_000_000 },
+          { kind: "tool_call", ts: 1_000_005 },
+        ],
+        total: 3,
+        next_offset: 2,
+      })
+      .mockResolvedValueOnce({
+        events: [{ kind: "run_finish", ts: 1_000_010 }],
+        total: 3,
+        next_offset: null,
+      });
+
+    renderWithClient(<RecentTracesDrawer agentId="agent-a" open onClose={() => {}} />);
+    await waitFor(() => screen.getByTestId("recent-traces-list"));
+    fireEvent.click(screen.getByText(/run-paged/));
+
+    await waitFor(() => {
+      expect(screen.queryAllByTestId("recent-traces-event-row")).toHaveLength(2);
+    });
+    expect(screen.getByText("2 of 3 events loaded")).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: /load more/i }));
+
+    await waitFor(() => {
+      expect(screen.queryAllByTestId("recent-traces-event-row")).toHaveLength(3);
+    });
+    expect(getTracePage).toHaveBeenNthCalledWith(2, "run-paged", {
+      offset: 2,
+      limit: 1000,
+    });
+    expect(screen.getByText("run_finish")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /load more/i })).toBeNull();
+  });
+
   it("clicking the scrim calls onClose", async () => {
     vi.spyOn(tracesApi, "listAgentTraces").mockResolvedValue({ runs: [] });
     const onClose = vi.fn();

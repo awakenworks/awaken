@@ -44,6 +44,7 @@ import { invalidateConfigMutation } from "@/lib/query/invalidation";
 import {
   canonicalStringify,
   cloneAgentSpecForEditor,
+  computeRedactedDiff,
   deepEqualCanonical,
   diffPatchableAgentFields,
   lockedFieldChange,
@@ -799,7 +800,7 @@ function EditorSaveBar({
   );
 }
 
-function DiffModal({
+export function DiffModal({
   current,
   previous,
   onClose,
@@ -808,18 +809,12 @@ function DiffModal({
   previous: AgentSpec;
   onClose: () => void;
 }) {
-  // Both specs may carry `endpoint.auth.bearer_token` or similar secrets.
-  // Diff against the REDACTED projection so the modal DOM never holds a
-  // real credential — order-of-display matters because each `change.before`
-  // / `change.after` is rendered through `formatDiffValue` below, and that
-  // path stringifies whatever it's handed.
-  const redactedPrevious = redactSecretsForDisplay(
+  // Diff against the raw values so a secret rotation still appears as a
+  // semantic change, then render only redacted before/after values.
+  const changes = computeRedactedDiff(
     previous as unknown as Record<string, unknown>,
-  );
-  const redactedCurrent = redactSecretsForDisplay(
     current as unknown as Record<string, unknown>,
   );
-  const changes = computeDiff(redactedPrevious, redactedCurrent);
   return (
     <div
       role="dialog"
@@ -857,14 +852,26 @@ function DiffModal({
             <ul className="space-y-3">
               {changes.map((change) => (
                 <li key={change.path} className="rounded-md border border-line bg-soft p-3">
-                  <div className="font-mono text-xs font-medium text-fg-strong">{change.path}</div>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <div className="font-mono text-xs font-medium text-fg-strong">
+                      {change.path}
+                    </div>
+                    {change.redactedValueChanged ? (
+                      <span
+                        className="rounded-pill bg-tone-warn/15 px-2 py-0.5 text-[10px] font-medium text-tone-warn"
+                        data-testid="diff-redacted-value-changed"
+                      >
+                        changed behind redaction
+                      </span>
+                    ) : null}
+                  </div>
                   <div className="mt-2 grid gap-2 md:grid-cols-2">
                     <div>
                       <div className="text-[10px] font-medium uppercase tracking-eyebrow text-tone-error">
                         Was
                       </div>
                       <pre className="mt-1 overflow-auto rounded border border-tone-error/20 bg-tone-error/5 px-2 py-1 font-mono text-xs text-fg">
-                        {formatDiffValue(change.before)}
+                        {formatDiffValue(change.before, change.redactedValueChanged)}
                       </pre>
                     </div>
                     <div>
@@ -872,7 +879,7 @@ function DiffModal({
                         Will be
                       </div>
                       <pre className="mt-1 overflow-auto rounded border border-tone-success/20 bg-tone-success/5 px-2 py-1 font-mono text-xs text-fg">
-                        {formatDiffValue(change.after)}
+                        {formatDiffValue(change.after, change.redactedValueChanged)}
                       </pre>
                     </div>
                   </div>
@@ -886,50 +893,15 @@ function DiffModal({
   );
 }
 
-interface FieldChange {
-  path: string;
-  before: unknown;
-  after: unknown;
-}
-
-function computeDiff(
-  prev: Record<string, unknown>,
-  curr: Record<string, unknown>,
-  base = "",
-): FieldChange[] {
-  const out: FieldChange[] = [];
-  const keys = new Set([...Object.keys(prev ?? {}), ...Object.keys(curr ?? {})]);
-  for (const key of keys) {
-    const path = base ? `${base}.${key}` : key;
-    const a = prev?.[key];
-    const b = curr?.[key];
-    // Use canonical deep-equal so object key-order changes don't surface
-    // as spurious diffs — mirrors what the save-path diff and locked-field
-    // compare both do.
-    if (deepEqualCanonical(a, b)) continue;
-    if (
-      a !== null &&
-      b !== null &&
-      typeof a === "object" &&
-      typeof b === "object" &&
-      !Array.isArray(a) &&
-      !Array.isArray(b)
-    ) {
-      out.push(...computeDiff(a as Record<string, unknown>, b as Record<string, unknown>, path));
-    } else {
-      out.push({ path, before: a, after: b });
-    }
-  }
-  return out;
-}
-
-function formatDiffValue(value: unknown): string {
-  if (value === undefined) return "(unset)";
-  if (value === null) return "null";
-  if (typeof value === "string") return value || "(empty string)";
+function formatDiffValue(value: unknown, redactedValueChanged = false): string {
+  const suffix = redactedValueChanged ? " (changed)" : "";
+  if (value === undefined) return `(unset)${suffix}`;
+  if (value === null) return `null${suffix}`;
+  if (typeof value === "string") return `${value || "(empty string)"}${suffix}`;
   // Defense-in-depth: the caller is expected to have already redacted, but
   // a future code path that forgets shouldn't end up dumping secrets here.
-  return JSON.stringify(redactSecretsForDisplay(value), null, 2);
+  const rendered = JSON.stringify(redactSecretsForDisplay(value), null, 2);
+  return redactedValueChanged ? `${rendered}\n(changed)` : rendered;
 }
 
 function EditorSourceBadge({ state }: { state: ConfigSourceState }) {
