@@ -94,7 +94,9 @@ pub fn config_routes() -> Router<AppState> {
         .route("/v1/agents/:id", get(get_agent))
         .route(
             "/v1/config/agents/:id/overrides",
-            patch(patch_agent_overrides_handler).delete(clear_agent_overrides_handler),
+            post(validate_agent_overrides_handler)
+                .patch(patch_agent_overrides_handler)
+                .delete(clear_agent_overrides_handler),
         )
         .route(
             "/v1/config/agents/:id/overrides/:field",
@@ -716,6 +718,26 @@ async fn patch_agent_overrides_handler(
     }
 }
 
+async fn validate_agent_overrides_handler(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    Json(body): Json<Value>,
+) -> Response {
+    if let Err(err) = ensure_admin_auth(&state, &headers) {
+        return err.into_response();
+    }
+    let service = match ConfigService::new(&state) {
+        Ok(s) => s,
+        Err(e) => return ConfigRouteError::Api(map_service_error(e)).into_response(),
+    };
+    match service.validate_agent_overrides(&id, body).await {
+        Ok(spec) => Json(spec).into_response(),
+        Err(e) if is_overrides_not_supported_for_user_record(&e) => unprocessable_error(e),
+        Err(e) => ConfigRouteError::Api(map_service_error(e)).into_response(),
+    }
+}
+
 async fn clear_agent_overrides_handler(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -1197,6 +1219,40 @@ mod tests {
             .await;
             assert_eq!(status, StatusCode::BAD_REQUEST);
             assert!(body["error"].as_str().unwrap().contains("provider_id"));
+        }
+
+        #[tokio::test]
+        async fn validate_agent_overrides_does_not_persist_patch() {
+            let app = build_test_app().await;
+            let req = Request::builder()
+                .method("POST")
+                .uri("/v1/config/agents/bootstrap/overrides")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"system_prompt":"patched"}"#))
+                .unwrap();
+            let resp = app.clone().oneshot(req).await.unwrap();
+            assert_eq!(resp.status(), StatusCode::OK);
+            let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+            let body: Value = serde_json::from_slice(&bytes).unwrap();
+            assert_eq!(body["ok"], Value::Bool(true));
+            assert_eq!(body["normalized"]["system_prompt"], "patched");
+
+            let (status, meta) = get_json(&app, "/v1/config/agents/bootstrap/meta").await;
+            assert_eq!(status, StatusCode::OK);
+            assert!(meta["user_overrides"].is_null());
+        }
+
+        #[tokio::test]
+        async fn validate_agent_overrides_rejects_unknown_fields() {
+            let app = build_test_app().await;
+            let req = Request::builder()
+                .method("POST")
+                .uri("/v1/config/agents/bootstrap/overrides")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"unknown_field":true}"#))
+                .unwrap();
+            let resp = app.clone().oneshot(req).await.unwrap();
+            assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
         }
 
         #[tokio::test]

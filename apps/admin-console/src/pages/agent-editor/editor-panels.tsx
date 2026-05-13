@@ -7,6 +7,7 @@ import { PluginsPanel } from "./panels/plugins-panel";
 import { DelegatesPanel } from "./panels/delegates-panel";
 import { AdvancedPanel } from "./panels/advanced-panel";
 import { HistoryPanel } from "./panels/history-panel";
+import { type AgentSaveMode } from "./spec-helpers";
 
 type VisiblePluginSchemas = Parameters<typeof PluginsPanel>[0]["visiblePluginSchemas"];
 
@@ -29,6 +30,8 @@ export function AgentEditorPanels({
   updateSection,
   toggleDelegate,
   historyRefreshKey,
+  saveMode,
+  savePayload,
   onSpecRestored,
 }: {
   spec: AgentSpec;
@@ -49,7 +52,9 @@ export function AgentEditorPanels({
   updateSection: (key: string, value: unknown) => void;
   toggleDelegate: (delegateId: string, checked: boolean) => void;
   historyRefreshKey: number;
-  onSpecRestored: (updated: AgentSpec) => void;
+  saveMode: AgentSaveMode;
+  savePayload: AgentSpec | Record<string, unknown>;
+  onSpecRestored: (updated: AgentSpec) => void | Promise<void>;
 }) {
   return (
     <div className="space-y-6">
@@ -97,7 +102,9 @@ export function AgentEditorPanels({
               toggleDelegate={toggleDelegate}
             />
           )}
-          {tab.id === "advanced" && <AdvancedPanel spec={spec} />}
+          {tab.id === "advanced" && (
+            <AdvancedPanel saveMode={saveMode} savePayload={savePayload} />
+          )}
           {tab.id === "history" && (
             <HistoryPanel
               spec={spec}

@@ -11,6 +11,38 @@ use super::{
 };
 
 impl<'a> ConfigService<'a> {
+    /// POST /v1/config/agents/:id/overrides
+    ///
+    /// Dry-run validation for the override patch payload. It validates the
+    /// same body shape and merged override state as `patch_agent_overrides`
+    /// without writing the store, applying runtime config, or emitting audit.
+    pub async fn validate_agent_overrides(
+        &self,
+        id: &str,
+        body: Value,
+    ) -> Result<Value, ConfigServiceError> {
+        let raw = self
+            .store
+            .get(ConfigNamespace::Agents.as_str(), id)
+            .await?
+            .ok_or_else(|| ConfigServiceError::NotFound(format!("agents/{id}")))?;
+
+        let record = ConfigRecord::<AgentSpec>::from_value(raw)
+            .map_err(|e| ConfigServiceError::InvalidPayload(e.to_string()))?;
+
+        if matches!(record.meta.source, RecordSource::User) {
+            return Err(overrides_not_supported_for_user_record());
+        }
+
+        let normalized = build_agent_overrides_patch(record.meta.user_overrides.as_ref(), &body)?
+            .unwrap_or_else(|| Value::Object(Map::new()));
+
+        Ok(serde_json::json!({
+            "ok": true,
+            "normalized": normalized,
+        }))
+    }
+
     /// PATCH /v1/config/agents/:id/overrides
     ///
     /// Merges the patch body into the existing `user_overrides` of a Builtin
@@ -41,55 +73,8 @@ impl<'a> ConfigService<'a> {
 
         let expected_revision = record.meta.revision;
 
-        // Validate incoming body field names via AgentSpecPatch (deny_unknown_fields).
-        // We use a separate check for null values: replace nulls with a dummy value
-        // so that deny_unknown_fields can still catch unknown field names.
-        let body_map = match &body {
-            Value::Object(m) => m,
-            _ => {
-                return Err(ConfigServiceError::InvalidPayload(
-                    "expected JSON object body".into(),
-                ));
-            }
-        };
-        // Null values for nullable AgentSpec fields are valid (they mean
-        // "clear the base value").
-        // Pass the body as-is; deny_unknown_fields catches unknown field names.
-        awaken_contract::validate_agent_spec_patch(body.clone())
-            .map_err(|e| ConfigServiceError::InvalidPayload(e.to_string()))?;
-
-        // Merge patch INTO existing user_overrides (shallow key-level merge).
-        // Use the raw body Value to preserve nullable-field nulls.
-        let mut existing_map: Map<String, Value> = record
-            .meta
-            .user_overrides
-            .as_ref()
-            .and_then(Value::as_object)
-            .cloned()
-            .unwrap_or_default();
-
-        for (k, v) in body_map {
-            if v.is_null() {
-                if is_nullable_agent_patch_field(k) {
-                    existing_map.insert(k.clone(), Value::Null);
-                } else {
-                    existing_map.remove(k);
-                }
-            } else {
-                existing_map.insert(k.clone(), v.clone());
-            }
-        }
-
-        // Validate the merged overrides by round-tripping through AgentSpecPatch.
-        let merged_value = Value::Object(existing_map.clone());
-        awaken_contract::validate_agent_spec_patch(merged_value.clone())
-            .map_err(|e| ConfigServiceError::InvalidPayload(e.to_string()))?;
-
-        let proposed_overrides: Option<Value> = if existing_map.is_empty() {
-            None
-        } else {
-            Some(merged_value.clone())
-        };
+        let proposed_overrides =
+            build_agent_overrides_patch(record.meta.user_overrides.as_ref(), &body)?;
 
         // Short-circuit: if the proposed overrides are identical to existing ones,
         // skip the store write, apply_locked, and audit emit — it's a no-op.
@@ -361,4 +346,48 @@ fn is_nullable_agent_patch_field(field: &str) -> bool {
         field,
         "context_policy" | "allowed_tools" | "excluded_tools" | "reasoning_effort" | "endpoint"
     )
+}
+
+fn build_agent_overrides_patch(
+    current_overrides: Option<&Value>,
+    body: &Value,
+) -> Result<Option<Value>, ConfigServiceError> {
+    let body_map = match body {
+        Value::Object(m) => m,
+        _ => {
+            return Err(ConfigServiceError::InvalidPayload(
+                "expected JSON object body".into(),
+            ));
+        }
+    };
+
+    awaken_contract::validate_agent_spec_patch(body.clone())
+        .map_err(|e| ConfigServiceError::InvalidPayload(e.to_string()))?;
+
+    let mut existing_map: Map<String, Value> = current_overrides
+        .and_then(Value::as_object)
+        .cloned()
+        .unwrap_or_default();
+
+    for (key, value) in body_map {
+        if value.is_null() {
+            if is_nullable_agent_patch_field(key) {
+                existing_map.insert(key.clone(), Value::Null);
+            } else {
+                existing_map.remove(key);
+            }
+        } else {
+            existing_map.insert(key.clone(), value.clone());
+        }
+    }
+
+    let merged_value = Value::Object(existing_map.clone());
+    awaken_contract::validate_agent_spec_patch(merged_value.clone())
+        .map_err(|e| ConfigServiceError::InvalidPayload(e.to_string()))?;
+
+    Ok(if existing_map.is_empty() {
+        None
+    } else {
+        Some(merged_value)
+    })
 }

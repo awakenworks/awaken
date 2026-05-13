@@ -175,6 +175,17 @@ export const en = {
     validate: "Validate",
     validating: "Validating…",
     diff: "Diff vs published",
+    savePayload: {
+      createTitle: "Create payload",
+      fullTitle: "Full update payload",
+      patchTitle: "Override patch payload",
+      fullDescription: "Save will publish the full agent spec.",
+      patchDescription: "Save will publish the override patch payload.",
+      validatePassed: "Validation passed - payload is safe to publish.",
+      noPatchableChanges: "No patchable changes to validate.",
+      advancedFull: "This is the full agent spec that will be sent to the config API.",
+      advancedPatch: "This is the PATCH /overrides body that will be sent for built-in or customized agents.",
+    },
     sandbox: {
       title: "Sandbox",
       sub: "runs against current draft",
@@ -200,6 +211,10 @@ export const en = {
       maxRetries: "Max continuation retries",
       reasoningEffort: "Reasoning effort",
       systemPrompt: "System prompt",
+      selectModel: "Select a model",
+      providerDefault: "Provider default",
+      custom: "Custom…",
+      reasoningEffortPlaceholder: "e.g. 1, 2, ultra",
     },
   },
   common: {

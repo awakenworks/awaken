@@ -1,15 +1,31 @@
-import { type AgentSpec } from "@/lib/config-api";
+import { useTranslation } from "react-i18next";
+import { type AgentSaveMode, prettyStableStringify } from "../spec-helpers";
 
-export function AdvancedPanel({ spec }: { spec: AgentSpec }) {
+export function AdvancedPanel({
+  saveMode,
+  savePayload,
+}: {
+  saveMode: AgentSaveMode;
+  savePayload: unknown;
+}) {
+  const { t } = useTranslation();
+  const modeLabel =
+    saveMode === "patch-overrides"
+      ? t("editor.savePayload.patchTitle")
+      : saveMode === "create"
+        ? t("editor.savePayload.createTitle")
+        : t("editor.savePayload.fullTitle");
+  const description =
+    saveMode === "patch-overrides"
+      ? t("editor.savePayload.advancedPatch")
+      : t("editor.savePayload.advancedFull");
+
   return (
     <section className="rounded-md border border-line bg-surface p-5 shadow-sm">
-      <h3 className="text-lg font-semibold text-fg-strong">JSON Preview</h3>
-      <p className="mt-2 text-sm text-fg-soft">
-        The exact payload that will be PUT to the config API. Useful for sanity checking before
-        publish.
-      </p>
+      <h3 className="text-lg font-semibold text-fg-strong">{modeLabel}</h3>
+      <p className="mt-2 text-sm text-fg-soft">{description}</p>
       <pre className="mt-4 max-h-[36rem] overflow-auto rounded-xl bg-code-bg p-4 text-xs text-code-fg">
-        {JSON.stringify(spec, null, 2)}
+        {prettyStableStringify(savePayload)}
       </pre>
     </section>
   );

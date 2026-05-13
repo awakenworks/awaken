@@ -174,6 +174,17 @@ export const zhCN: Dict = {
     validate: "校验",
     validating: "校验中…",
     diff: "与已发布版本对比",
+    savePayload: {
+      createTitle: "创建请求体",
+      fullTitle: "完整更新请求体",
+      patchTitle: "覆盖补丁请求体",
+      fullDescription: "保存将发布完整 Agent spec。",
+      patchDescription: "保存将发布覆盖补丁请求体。",
+      validatePassed: "校验通过 - 请求体可以发布。",
+      noPatchableChanges: "没有可校验的可补丁字段变更。",
+      advancedFull: "这里展示将发送给配置 API 的完整 Agent spec。",
+      advancedPatch: "这里展示内置或已定制 Agent 将发送的 PATCH /overrides 请求体。",
+    },
     sandbox: {
       title: "沙盒",
       sub: "运行当前草稿",
@@ -199,6 +210,10 @@ export const zhCN: Dict = {
       maxRetries: "最大重试次数",
       reasoningEffort: "推理强度",
       systemPrompt: "系统提示词",
+      selectModel: "选择模型",
+      providerDefault: "供应商默认",
+      custom: "自定义…",
+      reasoningEffortPlaceholder: "例如 1, 2, ultra",
     },
   },
   common: {

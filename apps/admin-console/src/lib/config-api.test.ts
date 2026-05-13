@@ -423,3 +423,24 @@ describe("tool overrides client", () => {
     expect((fetchMock.mock.calls[0]![1] as RequestInit).method).toBe("DELETE");
   });
 });
+
+describe("agent overrides client", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("POST validates an agent override patch without persisting", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify({ ok: true, normalized: { system_prompt: "patched" } }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    await configApi.validateAgentOverrides("agent-a", { system_prompt: "patched" });
+    const url = fetchMock.mock.calls[0]![0] as string;
+    const init = fetchMock.mock.calls[0]![1] as RequestInit;
+    expect(url).toMatch(/\/v1\/config\/agents\/agent-a\/overrides$/);
+    expect(init.method).toBe("POST");
+    expect(JSON.parse(init.body as string)).toEqual({ system_prompt: "patched" });
+  });
+});

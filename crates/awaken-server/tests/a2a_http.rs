@@ -395,6 +395,249 @@ fn user_message_ids(task: &Value) -> Vec<&str> {
 }
 
 #[tokio::test]
+async fn a2a_http_dispatch_matrix_handles_default_and_tenant_routes() {
+    let app = make_test_app(&["alpha"]);
+
+    let route_cases = [
+        (
+            "/v1/a2a/message:send",
+            "/v1/a2a/tasks",
+            "task-matrix-default",
+            "thread-matrix-default",
+        ),
+        (
+            "/v1/a2a/alpha/message:send",
+            "/v1/a2a/alpha/tasks",
+            "task-matrix-tenant",
+            "thread-matrix-tenant",
+        ),
+    ];
+
+    for (send_uri, tasks_uri, task_id, context_id) in route_cases {
+        let (status, body) = request_json(
+            &app,
+            "POST",
+            send_uri,
+            &[("content-type", "application/json")],
+            Some(send_message_payload(
+                task_id,
+                context_id,
+                &format!("msg-{task_id}"),
+                "hello",
+            )),
+        )
+        .await;
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "unexpected body for {send_uri}: {body}"
+        );
+        assert_eq!(body["task"]["id"].as_str(), Some(task_id));
+
+        let (status, task) = request_json(
+            &app,
+            "GET",
+            &format!("{tasks_uri}/{task_id}?historyLength=10"),
+            &[],
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "GET task failed: {task}");
+        assert_eq!(task["id"].as_str(), Some(task_id));
+
+        let (status, tasks) = request_json(&app, "GET", tasks_uri, &[], None).await;
+        assert_eq!(status, StatusCode::OK, "list tasks failed: {tasks}");
+        assert!(
+            tasks["tasks"]
+                .as_array()
+                .expect("tasks array")
+                .iter()
+                .any(|task| task["id"].as_str() == Some(task_id)),
+            "task {task_id} missing from {tasks_uri}: {tasks}"
+        );
+
+        let config_id = format!("cfg-{task_id}");
+        let push_uri = format!("{tasks_uri}/{task_id}/pushNotificationConfigs");
+        let (status, cfg) = request_json(
+            &app,
+            "POST",
+            &push_uri,
+            &[("content-type", "application/json")],
+            Some(json!({
+                "id": config_id.clone(),
+                "url": "http://127.0.0.1:9/a2a-test"
+            })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "create push config failed: {cfg}");
+        assert_eq!(cfg["id"].as_str(), Some(config_id.as_str()));
+
+        let (status, list) = request_json(&app, "GET", &push_uri, &[], None).await;
+        assert_eq!(status, StatusCode::OK, "list push configs failed: {list}");
+        assert_eq!(list["configs"][0]["id"].as_str(), Some(config_id.as_str()));
+
+        let item_uri = format!("{push_uri}/{config_id}");
+        let (status, cfg) = request_json(&app, "GET", &item_uri, &[], None).await;
+        assert_eq!(status, StatusCode::OK, "get push config failed: {cfg}");
+        assert_eq!(cfg["taskId"].as_str(), Some(task_id));
+
+        let (status, _content_type, deleted) =
+            request_text(&app, "DELETE", &item_uri, &[], None).await;
+        assert_eq!(status, StatusCode::NO_CONTENT);
+        assert!(deleted.is_empty());
+    }
+
+    let (status, content_type, body) = request_text(
+        &app,
+        "POST",
+        "/v1/a2a/message:stream",
+        &[("content-type", "application/json")],
+        Some(send_message_payload(
+            "task-matrix-stream",
+            "thread-matrix-stream",
+            "msg-matrix-stream",
+            "stream",
+        )),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(content_type.contains("text/event-stream"));
+    assert!(
+        body.contains("\"task\""),
+        "missing stream task body: {body}"
+    );
+}
+
+#[tokio::test]
+async fn a2a_http_dispatch_matrix_handles_task_actions() {
+    let app = build_test_app(
+        &["alpha"],
+        Arc::new(DelayedExecutor),
+        ServerConfig::default(),
+    );
+
+    let (status, body) = request_json(
+        &app,
+        "POST",
+        "/v1/a2a/message:send",
+        &[("content-type", "application/json")],
+        Some(json!({
+            "message": {
+                "taskId": "task-matrix-cancel",
+                "contextId": "thread-matrix-actions",
+                "messageId": "msg-matrix-cancel",
+                "role": "ROLE_USER",
+                "parts": [{"text": "cancel me"}]
+            },
+            "configuration": {
+                "returnImmediately": true
+            }
+        })),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected cancel seed body: {body}"
+    );
+
+    let (status, canceled) = request_json(
+        &app,
+        "POST",
+        "/v1/a2a/tasks/task-matrix-cancel:cancel",
+        &[],
+        None,
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CONFLICT,
+        "cancel route returned unexpected body: {canceled}"
+    );
+    assert_eq!(
+        canceled["error"]["details"][0]["reason"].as_str(),
+        Some("TASK_NOT_CANCELABLE")
+    );
+
+    let (status, body) = request_json(
+        &app,
+        "POST",
+        "/v1/a2a/alpha/message:send",
+        &[("content-type", "application/json")],
+        Some(json!({
+            "message": {
+                "taskId": "task-matrix-subscribe",
+                "contextId": "thread-matrix-actions",
+                "messageId": "msg-matrix-subscribe",
+                "role": "ROLE_USER",
+                "parts": [{"text": "subscribe me"}]
+            },
+            "configuration": {
+                "returnImmediately": true
+            }
+        })),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected subscribe seed body: {body}"
+    );
+
+    let (status, content_type, body) = request_text(
+        &app,
+        "POST",
+        "/v1/a2a/alpha/tasks/task-matrix-subscribe:subscribe",
+        &[],
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(content_type.contains("text/event-stream"));
+    assert!(
+        body.contains("\"task\""),
+        "missing subscribe task body: {body}"
+    );
+}
+
+#[tokio::test]
+async fn a2a_http_dispatch_matrix_rejects_version_path_and_content_type_errors() {
+    let app = make_test_app(&["alpha"]);
+
+    let (status, body) =
+        request_json(&app, "GET", "/v1/a2a/tasks?A2A-Version=0.9", &[], None).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(
+        body["error"]["details"][0]["reason"].as_str(),
+        Some("VERSION_NOT_SUPPORTED")
+    );
+
+    let (status, body) = request_json(&app, "GET", "/v1/a2a/not/a/route", &[], None).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(body["error"]["status"].as_str(), Some("NOT_FOUND"));
+
+    let (status, body) = request_json(
+        &app,
+        "POST",
+        "/v1/a2a/message:send",
+        &[("content-type", "text/plain")],
+        Some(send_message_payload(
+            "task-bad-content-type",
+            "thread-bad-content-type",
+            "msg-bad-content-type",
+            "hello",
+        )),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(body["error"]["status"].as_str(), Some("INVALID_ARGUMENT"));
+    assert_eq!(
+        body["error"]["details"][0]["fieldViolations"][0]["field"].as_str(),
+        Some("contentType")
+    );
+}
+
+#[tokio::test]
 async fn well_known_agent_card_returns_latest_shape() {
     let app = make_test_app(&["alpha"]);
     let (status, body) = request_json(&app, "GET", "/.well-known/agent-card.json", &[], None).await;

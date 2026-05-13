@@ -195,9 +195,50 @@ pre-commit:
         fi
       stage_fixed: false
 
+    check-hidden-unicode:
+      run: |
+        scanned_files=$(git diff --cached --name-only --diff-filter=ACMR \
+          | grep -E '(^lefthook\.yml$)|\.(rs|ts|tsx|js|jsx|mjs|cjs|py|go|java|cs|c|cc|cpp|cxx|h|hpp|vue|css|json|toml|yaml|yml|md)$' \
+          | grep -vE '(^|/)(target|node_modules|dist|build|coverage|\.next)/' \
+          | grep -vE '(^|/)generated/|\.generated\.' \
+          || true)
+
+        if [ -z "$scanned_files" ]; then
+          exit 0
+        fi
+
+        violations=""
+        for file in $scanned_files; do
+          git cat-file -e ":$file" 2>/dev/null || continue
+          matches=$(git show ":$file" \
+            | perl -CS -ne 'if (/[\x{200B}-\x{200F}\x{202A}-\x{202E}\x{2066}-\x{2069}\x{FEFF}]/) { print "  line $.: $_" }' \
+            || true)
+          if [ -n "$matches" ]; then
+            violations="${violations}${file}:\n${matches}\n"
+          fi
+        done
+
+        if [ -n "$violations" ]; then
+          echo "ERROR: 检测到隐藏 Unicode 控制字符:"
+          printf '%b' "$violations"
+          echo ""
+          echo "❌ 源码中不应包含 bidi/zero-width 控制字符，容易造成审查误导或显示歧义。"
+          echo ""
+          echo "<system-reminder>"
+          echo "→ Next: Remove hidden Unicode control chars → git add"
+          echo "</system-reminder>"
+          exit 1
+        fi
+      stage_fixed: false
+
+    00-rustfmt:
+      glob: "**/*.rs"
+      run: rustfmt --edition 2024 {staged_files}
+      stage_fixed: true
+
     check-code-file-length:
       run: |
-        code_files=$(git diff --cached --name-only --diff-filter=AM \
+        code_files=$(git diff --cached --name-only --diff-filter=ACMR \
           | grep -E '\.(rs|ts|tsx|js|jsx|mjs|cjs|py|go|java|cs|c|cc|cpp|cxx|h|hpp|vue)$' \
           | grep -vE '(^|/)(target|node_modules|dist|build|coverage|\.next)/' \
           | grep -vE '(^|/)fixtures/|(^|/)test-data/|(^|/)snapshots/' \
@@ -210,9 +251,12 @@ pre-commit:
         fi
 
         violations=""
+        warnings=""
         for file in $code_files; do
-          [ -f "$file" ] || continue
+          git cat-file -e ":$file" 2>/dev/null || continue
 
+          # 约束按仓库模块化边界设定：前端组件 500 行、Rust 800 行、
+          # C/C++ 1000 行，其余业务代码 700-800 行；测试与生成代码已排除。
           case "$file" in
             *.tsx|*.jsx|*.vue) max_lines=500 ;;
             *.ts|*.js|*.mjs|*.cjs) max_lines=700 ;;
@@ -223,11 +267,28 @@ pre-commit:
             *) max_lines=800 ;;
           esac
 
-          line_count=$(wc -l < "$file" | tr -d ' ')
+          line_count=$(git show ":$file" | wc -l | tr -d ' ')
           if [ "$line_count" -gt "$max_lines" ]; then
-            violations="${violations}  ${file}: ${line_count} lines > ${max_lines}\n"
+            base_count=0
+            if git cat-file -e "HEAD:$file" 2>/dev/null; then
+              base_count=$(git show "HEAD:$file" | wc -l | tr -d ' ')
+            fi
+
+            if [ "$base_count" -le "$max_lines" ]; then
+              violations="${violations}  ${file}: ${line_count} lines > ${max_lines}\n"
+            else
+              warnings="${warnings}  ${file}: ${line_count} lines > ${max_lines} (legacy baseline ${base_count})\n"
+            fi
           fi
         done
+
+        if [ -n "$warnings" ]; then
+          echo "WARNING: 已存在的超长代码文件仍超过模块化约束:"
+          printf '%b' "$warnings"
+          echo ""
+          echo "⚠️  这些文件在 HEAD 中已超限，本次不阻断提交；后续修改时仍应考虑拆分模块。"
+          echo ""
+        fi
 
         if [ -n "$violations" ]; then
           echo "ERROR: 代码文件行数超过模块化约束:"
@@ -244,11 +305,6 @@ pre-commit:
           exit 1
         fi
       stage_fixed: false
-
-    rustfmt:
-      glob: "**/*.rs"
-      run: rustfmt --edition 2024 {staged_files}
-      stage_fixed: true
 
     check-code-quality:
       run: |

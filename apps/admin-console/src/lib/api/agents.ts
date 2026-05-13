@@ -23,6 +23,16 @@ export const agentsApi = {
       body: JSON.stringify(patch),
     }),
 
+  validateAgentOverrides: (id: string, patch: Record<string, unknown>) =>
+    fetchJson<{ ok: boolean; normalized: unknown }>(
+      `${BACKEND_URL}/v1/config/agents/${encodeURIComponent(id)}/overrides`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(patch),
+      },
+    ),
+
   clearAgentOverrides: (id: string) =>
     fetchJson<unknown>(`${BACKEND_URL}/v1/config/agents/${encodeURIComponent(id)}/overrides`, {
       method: "DELETE",

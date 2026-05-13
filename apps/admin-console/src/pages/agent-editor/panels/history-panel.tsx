@@ -24,7 +24,7 @@ export function HistoryPanel({
   spec: AgentSpec;
   isNew: boolean;
   refreshKey: number;
-  onSpecRestored: (updated: AgentSpec) => void;
+  onSpecRestored: (updated: AgentSpec) => void | Promise<void>;
 }) {
   const toast = useToast();
   const confirm = useConfirmDialog();
@@ -92,7 +92,7 @@ export function HistoryPanel({
       toast.success(`Agent restored to version ${shortId}`);
       const refreshed = await configApi.get<AgentSpec>("agents", spec.id);
       const hydrated = hydrateAgentSpec(refreshed);
-      onSpecRestored(hydrated);
+      await onSpecRestored(hydrated);
       void refetchHistory();
     } catch (err) {
       toast.error(err instanceof Error ? err.message : String(err));

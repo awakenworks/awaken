@@ -1,4 +1,4 @@
-import { type AgentSpec } from "@/lib/config-api";
+import { jsonSemanticallyEqual, prettyStableStringify } from "./spec-helpers";
 
 interface FieldChange {
   path: string;
@@ -11,7 +11,7 @@ function deepEqual(a: unknown, b: unknown): boolean {
   if (a === null || b === null) return a === b;
   if (typeof a !== typeof b) return false;
   if (typeof a !== "object") return false;
-  return JSON.stringify(a) === JSON.stringify(b);
+  return jsonSemanticallyEqual(a, b);
 }
 
 function computeDiff(
@@ -46,16 +46,18 @@ function formatDiffValue(value: unknown): string {
   if (value === undefined) return "(unset)";
   if (value === null) return "null";
   if (typeof value === "string") return value || "(empty string)";
-  return JSON.stringify(value, null, 2);
+  return prettyStableStringify(value);
 }
 
 export function DiffModal({
   current,
   previous,
+  title = "Diff vs published",
   onClose,
 }: {
-  current: AgentSpec;
-  previous: AgentSpec;
+  current: unknown;
+  previous: unknown;
+  title?: string;
   onClose: () => void;
 }) {
   const changes = computeDiff(
@@ -76,7 +78,7 @@ export function DiffModal({
       >
         <div className="flex items-center justify-between border-b border-line px-5 py-3">
           <div>
-            <h3 className="text-base font-semibold text-fg-strong">Diff vs published</h3>
+            <h3 className="text-base font-semibold text-fg-strong">{title}</h3>
             <p className="mt-0.5 text-xs text-fg-soft">
               {changes.length} field{changes.length === 1 ? "" : "s"} would change on save.
             </p>

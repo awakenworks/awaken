@@ -23,9 +23,12 @@ import { qk } from "@/lib/query/keys";
 import { invalidateConfigMutation } from "@/lib/query/invalidation";
 import {
   EMPTY_AGENT,
-  diffPatchableFields,
+  agentSaveMode,
+  agentSavePayload,
+  fullAgentSavePayload,
   getOptionalAgentMeta,
   hydrateAgentSpec,
+  jsonSemanticallyEqual,
 } from "./agent-editor/spec-helpers";
 import { AgentEditorPanels } from "./agent-editor/editor-panels";
 import { EditorSaveBar } from "./agent-editor/editor-save-bar";
@@ -78,6 +81,12 @@ export function AgentEditorPage() {
       : null;
   const saveDisabled = saving || Boolean(agentMetaError || (!isNew && agentMetaQuery.isPending));
   const initializedAgentIdRef = useRef<string | null>(null);
+  const sourceState: ConfigSourceState | null = agentMeta ? deriveSourceState(agentMeta) : null;
+  const saveMode = useMemo(() => agentSaveMode(isNew, sourceState), [isNew, sourceState]);
+  const savePayload = useMemo(
+    () => agentSavePayload(spec, originalSpec, saveMode),
+    [spec, originalSpec, saveMode],
+  );
 
   const isDirty = useMemo(() => {
     if (saving) return false;
@@ -90,12 +99,10 @@ export function AgentEditorPage() {
       );
     }
     if (!savedSpec) return false;
-    return JSON.stringify(spec) !== JSON.stringify(savedSpec);
+    return !jsonSemanticallyEqual(spec, savedSpec);
   }, [spec, savedSpec, isNew, saving]);
 
   useUnsavedChangesGuard({ enabled: isDirty });
-
-  const sourceState: ConfigSourceState | null = agentMeta ? deriveSourceState(agentMeta) : null;
 
   useEffect(() => {
     if (capabilitiesQuery.error) {
@@ -152,6 +159,39 @@ export function AgentEditorPage() {
     return next;
   }
 
+  function commitAgentSnapshot(nextSpec: AgentSpec, nextMeta?: RecordMeta | null) {
+    const hydrated = hydrateAgentSpec(nextSpec);
+    setSpec(hydrated);
+    setSavedSpec(hydrated);
+    setOriginalSpec(hydrated);
+    queryClient.setQueryData(qk.config.get("agents", hydrated.id), hydrated);
+    if (nextMeta !== undefined) {
+      setAgentMeta(nextMeta);
+      queryClient.setQueryData(qk.config.meta("agents", hydrated.id), nextMeta);
+    }
+    invalidateConfigMutation(queryClient, "agents", hydrated.id);
+  }
+
+  async function refreshAgentSnapshot(agentId: string) {
+    const [nextSpec, nextMeta] = await Promise.all([
+      configApi.get<AgentSpec>("agents", agentId),
+      getOptionalAgentMeta(agentId),
+    ]);
+    commitAgentSnapshot(nextSpec, nextMeta);
+  }
+
+  async function handleSpecRestored(updated: AgentSpec) {
+    commitAgentSnapshot(updated);
+    try {
+      const nextMeta = await getOptionalAgentMeta(updated.id);
+      setAgentMeta(nextMeta);
+      queryClient.setQueryData(qk.config.meta("agents", updated.id), nextMeta);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : String(err));
+    }
+    setHistoryRefreshKey((k) => k + 1);
+  }
+
   async function handleSave() {
     if (!isNew && agentMetaQuery.isPending) {
       toast.error("Agent metadata is still loading.");
@@ -171,42 +211,23 @@ export function AgentEditorPage() {
     }
     setSaving(true);
     try {
-      const payload = {
-        ...spec,
-        plugin_ids: [...(spec.plugin_ids ?? [])],
-        delegates: [...(spec.delegates ?? [])],
-      };
+      const payload = fullAgentSavePayload(spec);
 
       if (isNew) {
         const created = await configApi.create<typeof payload, AgentSpec>("agents", payload);
-        setSavedSpec(created);
-        setOriginalSpec(created);
-        queryClient.setQueryData(qk.config.get("agents", created.id), created);
-        invalidateConfigMutation(queryClient, "agents", created.id);
+        commitAgentSnapshot(created);
         toast.success(`Agent "${created.id}" created`);
         navigate(adminRoutes.agent(created.id), { replace: true });
-      } else if (sourceState === "builtin" || sourceState === "customized") {
+      } else if (saveMode === "patch-overrides") {
         // For Builtin/Customized records, use PATCH /overrides to preserve
         // upgrade tracking. Only patchable fields are included.
-        const patch = diffPatchableFields(spec, originalSpec ?? spec);
+        const patch = savePayload as Record<string, unknown>;
         if (Object.keys(patch).length === 0) {
-          // Nothing patchable changed; nothing to send.
-          toast.success(`Agent "${spec.id}" saved (no patchable changes)`);
+          await refreshAgentSnapshot(spec.id);
+          toast.success(`Agent "${spec.id}" has no patchable changes to save`);
         } else {
           await configApi.patchAgentOverrides(spec.id, patch);
-          // Refresh spec and meta so the badge updates correctly.
-          const [nextSpec, nextMeta] = await Promise.all([
-            configApi.get<AgentSpec>("agents", spec.id),
-            getOptionalAgentMeta(spec.id),
-          ]);
-          const hydrated = hydrateAgentSpec(nextSpec);
-          setSpec(hydrated);
-          setSavedSpec(hydrated);
-          setOriginalSpec(hydrated);
-          setAgentMeta(nextMeta);
-          queryClient.setQueryData(qk.config.get("agents", spec.id), hydrated);
-          queryClient.setQueryData(qk.config.meta("agents", spec.id), nextMeta);
-          invalidateConfigMutation(queryClient, "agents", spec.id);
+          await refreshAgentSnapshot(spec.id);
           toast.success(`Agent "${spec.id}" saved`);
           setHistoryRefreshKey((k) => k + 1);
         }
@@ -216,11 +237,7 @@ export function AgentEditorPage() {
           spec.id,
           payload,
         );
-        setSpec(updated);
-        setSavedSpec(updated);
-        setOriginalSpec(updated);
-        queryClient.setQueryData(qk.config.get("agents", updated.id), updated);
-        invalidateConfigMutation(queryClient, "agents", updated.id);
+        commitAgentSnapshot(updated);
         toast.success(`Agent "${updated.id}" saved`);
         setHistoryRefreshKey((k) => k + 1);
       }
@@ -247,14 +264,7 @@ export function AgentEditorPage() {
         configApi.get<AgentSpec>("agents", id),
         getOptionalAgentMeta(id),
       ]);
-      const hydrated = hydrateAgentSpec(nextSpec);
-      setSpec(hydrated);
-      setSavedSpec(hydrated);
-      setOriginalSpec(hydrated);
-      setAgentMeta(nextMeta);
-      queryClient.setQueryData(qk.config.get("agents", id), hydrated);
-      queryClient.setQueryData(qk.config.meta("agents", id), nextMeta);
-      invalidateConfigMutation(queryClient, "agents", id);
+      commitAgentSnapshot(nextSpec, nextMeta);
       toast.success(`Agent "${id}" overrides cleared`);
     } catch (err) {
       toast.error(err instanceof Error ? err.message : String(err));
@@ -269,14 +279,7 @@ export function AgentEditorPage() {
         configApi.get<AgentSpec>("agents", id),
         getOptionalAgentMeta(id),
       ]);
-      const hydrated = hydrateAgentSpec(nextSpec);
-      setSpec(hydrated);
-      setSavedSpec(hydrated);
-      setOriginalSpec(hydrated);
-      setAgentMeta(nextMeta);
-      queryClient.setQueryData(qk.config.get("agents", id), hydrated);
-      queryClient.setQueryData(qk.config.meta("agents", id), nextMeta);
-      invalidateConfigMutation(queryClient, "agents", id);
+      commitAgentSnapshot(nextSpec, nextMeta);
       toast.success(t("agents.resetOverrideFieldDone", { field }));
       setHistoryRefreshKey((k) => k + 1);
     } catch (err) {
@@ -352,31 +355,36 @@ export function AgentEditorPage() {
   }, [agentMeta]);
   const isCustomized = sourceState === "customized";
 
-  const configurablePlugins = (capabilities?.plugins ?? []).filter(
-    (plugin) => plugin.config_schemas.length > 0,
+  const configurablePlugins = useMemo(
+    () => (capabilities?.plugins ?? []).filter((plugin) => plugin.config_schemas.length > 0),
+    [capabilities?.plugins],
   );
-  const visiblePluginSchemas = configurablePlugins
-    .flatMap((plugin) => {
-      const selected = (spec.plugin_ids ?? []).includes(plugin.id);
-      const hasStoredConfig = plugin.config_schemas.some(
-        (schema) => spec.sections?.[schema.key] !== undefined,
-      );
+  const visiblePluginSchemas = useMemo(
+    () =>
+      configurablePlugins
+        .flatMap((plugin) => {
+          const selected = (spec.plugin_ids ?? []).includes(plugin.id);
+          const hasStoredConfig = plugin.config_schemas.some(
+            (schema) => spec.sections?.[schema.key] !== undefined,
+          );
 
-      return plugin.config_schemas.map((schema) => ({
-        plugin,
-        schema,
-        selected,
-        hasStoredConfig,
-      }));
-    })
-    .sort((left, right) => {
-      const leftRank = Number(left.selected) * 2 + Number(left.hasStoredConfig);
-      const rightRank = Number(right.selected) * 2 + Number(right.hasStoredConfig);
-      if (leftRank !== rightRank) {
-        return rightRank - leftRank;
-      }
-      return left.plugin.id.localeCompare(right.plugin.id);
-    });
+          return plugin.config_schemas.map((schema) => ({
+            plugin,
+            schema,
+            selected,
+            hasStoredConfig,
+          }));
+        })
+        .sort((left, right) => {
+          const leftRank = Number(left.selected) * 2 + Number(left.hasStoredConfig);
+          const rightRank = Number(right.selected) * 2 + Number(right.hasStoredConfig);
+          if (leftRank !== rightRank) {
+            return rightRank - leftRank;
+          }
+          return left.plugin.id.localeCompare(right.plugin.id);
+        }),
+    [configurablePlugins, spec.plugin_ids, spec.sections],
+  );
 
   useEffect(() => {
     if (visiblePluginSchemas.length === 0) {
@@ -466,14 +474,9 @@ export function AgentEditorPage() {
           updateSection={updateSection}
           toggleDelegate={toggleDelegate}
           historyRefreshKey={historyRefreshKey}
-          onSpecRestored={(updated) => {
-            setSpec(updated);
-            setSavedSpec(updated);
-            setOriginalSpec(updated);
-            queryClient.setQueryData(qk.config.get("agents", updated.id), updated);
-            invalidateConfigMutation(queryClient, "agents", updated.id);
-            setHistoryRefreshKey((k) => k + 1);
-          }}
+          saveMode={saveMode}
+          savePayload={savePayload}
+          onSpecRestored={(updated) => handleSpecRestored(updated)}
         />
 
         <AgentPreviewPanel draft={spec} />
@@ -486,6 +489,8 @@ export function AgentEditorPage() {
         saveDisabled={saveDisabled}
         spec={spec}
         savedSpec={savedSpec}
+        saveMode={saveMode}
+        savePayload={savePayload}
         onSave={() => void handleSave()}
       />
     </div>

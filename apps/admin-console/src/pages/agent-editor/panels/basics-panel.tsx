@@ -1,3 +1,4 @@
+import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { type AgentSpec, type Capabilities } from "@/lib/config-api";
 import { Field } from "@/components/form-components";
@@ -29,6 +30,38 @@ export function BasicsPanel({
   onResetField?: (field: string) => void;
 }) {
   const { t } = useTranslation();
+  const [maxRoundsDraft, setMaxRoundsDraft] = useState(() => String(spec.max_rounds ?? 16));
+  const [maxRetriesDraft, setMaxRetriesDraft] = useState(() =>
+    String(spec.max_continuation_retries ?? 2),
+  );
+
+  useEffect(() => {
+    setMaxRoundsDraft(String(spec.max_rounds ?? 16));
+  }, [spec.max_rounds]);
+
+  useEffect(() => {
+    setMaxRetriesDraft(String(spec.max_continuation_retries ?? 2));
+  }, [spec.max_continuation_retries]);
+
+  function commitNumberDraft(
+    rawValue: string,
+    min: number,
+    fallback: number,
+    onCommit: (value: number) => void,
+    onRevert: (value: string) => void,
+  ) {
+    const trimmed = rawValue.trim();
+    if (!trimmed) {
+      onRevert(String(fallback));
+      onCommit(fallback);
+      return;
+    }
+    const parsed = Number(trimmed);
+    const next = Number.isFinite(parsed) ? Math.max(min, Math.trunc(parsed)) : fallback;
+    onRevert(String(next));
+    onCommit(next);
+  }
+
   const fieldResetProps = (field: string) => {
     if (!canResetFields || !overriddenFields?.has(field) || !onResetField) {
       return {};
@@ -41,9 +74,9 @@ export function BasicsPanel({
   };
   return (
     <section className="rounded-md border border-line bg-surface p-5 shadow-sm">
-      <h3 className="text-lg font-semibold text-fg-strong">Basics</h3>
+      <h3 className="text-lg font-semibold text-fg-strong">{t("editor.tabs.basics")}</h3>
       <div className="mt-4 grid gap-4 md:grid-cols-2">
-        <Field label="Agent ID" required={isNew} error={errors?.id}>
+        <Field label={t("editor.fields.agentId")} required={isNew} error={errors?.id}>
           <input
             type="text"
             value={spec.id}
@@ -53,14 +86,19 @@ export function BasicsPanel({
             className="w-full rounded-xl border border-line-strong px-3 py-2 text-sm text-fg-strong outline-none transition focus:border-line-strong disabled:bg-muted disabled:text-fg-soft aria-[invalid=true]:border-tone-error"
           />
         </Field>
-        <Field label="Model" required error={errors?.model_id} {...fieldResetProps("model_id")}>
+        <Field
+          label={t("editor.fields.model")}
+          required
+          error={errors?.model_id}
+          {...fieldResetProps("model_id")}
+        >
           <select
             value={String(spec.model_id ?? "")}
             aria-invalid={Boolean(errors?.model_id)}
             onChange={(event) => updateField("model_id", event.target.value)}
             className="w-full rounded-xl border border-line-strong bg-surface px-3 py-2 text-sm text-fg-strong outline-none transition focus:border-line-strong aria-[invalid=true]:border-tone-error"
           >
-            <option value="">Select a model</option>
+            <option value="">{t("editor.fields.selectModel")}</option>
             {(capabilities?.models ?? []).map((model) => (
               <option key={model.id} value={model.id}>
                 {model.id} ({model.upstream_model})
@@ -68,27 +106,46 @@ export function BasicsPanel({
             ))}
           </select>
         </Field>
-        <Field label="Max rounds" {...fieldResetProps("max_rounds")}>
+        <Field label={t("editor.fields.maxRounds")} {...fieldResetProps("max_rounds")}>
           <input
             type="number"
             min={1}
-            value={Number(spec.max_rounds ?? 16)}
-            onChange={(event) => updateField("max_rounds", Number(event.target.value) || 16)}
-            className="w-full rounded-xl border border-line-strong px-3 py-2 text-sm text-fg-strong outline-none transition focus:border-line-strong"
-          />
-        </Field>
-        <Field label="Max continuation retries" {...fieldResetProps("max_continuation_retries")}>
-          <input
-            type="number"
-            min={0}
-            value={Number(spec.max_continuation_retries ?? 2)}
-            onChange={(event) =>
-              updateField("max_continuation_retries", Number(event.target.value) || 0)
+            value={maxRoundsDraft}
+            onChange={(event) => setMaxRoundsDraft(event.target.value)}
+            onBlur={() =>
+              commitNumberDraft(
+                maxRoundsDraft,
+                1,
+                Number(spec.max_rounds ?? 16),
+                (value) => updateField("max_rounds", value),
+                setMaxRoundsDraft,
+              )
             }
             className="w-full rounded-xl border border-line-strong px-3 py-2 text-sm text-fg-strong outline-none transition focus:border-line-strong"
           />
         </Field>
-        <Field label="Reasoning effort">
+        <Field
+          label={t("editor.fields.maxRetries")}
+          {...fieldResetProps("max_continuation_retries")}
+        >
+          <input
+            type="number"
+            min={0}
+            value={maxRetriesDraft}
+            onChange={(event) => setMaxRetriesDraft(event.target.value)}
+            onBlur={() =>
+              commitNumberDraft(
+                maxRetriesDraft,
+                0,
+                Number(spec.max_continuation_retries ?? 2),
+                (value) => updateField("max_continuation_retries", value),
+                setMaxRetriesDraft,
+              )
+            }
+            className="w-full rounded-xl border border-line-strong px-3 py-2 text-sm text-fg-strong outline-none transition focus:border-line-strong"
+          />
+        </Field>
+        <Field label={t("editor.fields.reasoningEffort")}>
           <div className="flex flex-wrap items-center gap-2">
             <select
               value={
@@ -127,13 +184,13 @@ export function BasicsPanel({
               }}
               className="rounded-xl border border-line-strong bg-surface px-3 py-2 text-sm text-fg-strong outline-none transition focus:border-line-strong"
             >
-              <option value="__default__">Provider default</option>
+              <option value="__default__">{t("editor.fields.providerDefault")}</option>
               {REASONING_EFFORT_PRESETS.map((preset) => (
                 <option key={preset} value={preset}>
                   {preset}
                 </option>
               ))}
-              <option value="__custom__">Custom…</option>
+              <option value="__custom__">{t("editor.fields.custom")}</option>
             </select>
             {reasoningMode.kind === "custom" ? (
               <input
@@ -148,7 +205,7 @@ export function BasicsPanel({
                     }) as string | number | null | undefined,
                   )
                 }
-                placeholder="e.g. 1, 2, ultra"
+                placeholder={t("editor.fields.reasoningEffortPlaceholder")}
                 className="w-32 rounded-xl border border-line-strong px-3 py-2 text-sm text-fg-strong outline-none transition focus:border-line-strong"
               />
             ) : null}
@@ -157,7 +214,7 @@ export function BasicsPanel({
       </div>
 
       <div className="mt-4">
-        <Field label="System prompt" {...fieldResetProps("system_prompt")}>
+        <Field label={t("editor.fields.systemPrompt")} {...fieldResetProps("system_prompt")}>
           <textarea
             value={String(spec.system_prompt ?? "")}
             onChange={(event) => updateField("system_prompt", event.target.value)}

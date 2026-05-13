@@ -1,5 +1,6 @@
 import {
   type AgentSpec,
+  type ConfigSourceState,
   type RecordMeta,
   ConfigApiError,
   configApi,
@@ -29,6 +30,18 @@ export const PATCHABLE_FIELDS: Array<keyof AgentSpec> = [
   "reasoning_effort",
 ];
 
+export type AgentSaveMode = "create" | "patch-overrides" | "put-full-spec";
+
+export function agentSaveMode(
+  isNew: boolean,
+  sourceState: ConfigSourceState | null,
+): AgentSaveMode {
+  if (isNew) return "create";
+  return sourceState === "builtin" || sourceState === "customized"
+    ? "patch-overrides"
+    : "put-full-spec";
+}
+
 export async function getOptionalAgentMeta(id: string): Promise<RecordMeta | null> {
   try {
     return await configApi.getMeta("agents", id);
@@ -40,6 +53,38 @@ export async function getOptionalAgentMeta(id: string): Promise<RecordMeta | nul
   }
 }
 
+export function normalizeJson(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map((item) => normalizeJson(item));
+  }
+
+  if (value && typeof value === "object") {
+    const record = value as Record<string, unknown>;
+    const normalized: Record<string, unknown> = {};
+    for (const key of Object.keys(record).sort()) {
+      const next = normalizeJson(record[key]);
+      if (next !== undefined) {
+        normalized[key] = next;
+      }
+    }
+    return normalized;
+  }
+
+  return value;
+}
+
+export function stableStringify(value: unknown): string {
+  return JSON.stringify(normalizeJson(value));
+}
+
+export function prettyStableStringify(value: unknown): string {
+  return JSON.stringify(normalizeJson(value), null, 2);
+}
+
+export function jsonSemanticallyEqual(left: unknown, right: unknown): boolean {
+  return stableStringify(left) === stableStringify(right);
+}
+
 export function diffPatchableFields(
   current: AgentSpec,
   original: AgentSpec,
@@ -48,11 +93,30 @@ export function diffPatchableFields(
   for (const key of PATCHABLE_FIELDS) {
     const a = current[key];
     const b = original[key];
-    if (JSON.stringify(a) !== JSON.stringify(b)) {
-      patch[key] = a;
+    if (!jsonSemanticallyEqual(a, b)) {
+      patch[key] = a === undefined ? null : a;
     }
   }
   return patch;
+}
+
+export function fullAgentSavePayload(spec: AgentSpec): AgentSpec {
+  return {
+    ...spec,
+    plugin_ids: [...(spec.plugin_ids ?? [])],
+    delegates: [...(spec.delegates ?? [])],
+  };
+}
+
+export function agentSavePayload(
+  spec: AgentSpec,
+  originalSpec: AgentSpec | null,
+  mode: AgentSaveMode,
+): AgentSpec | Record<string, unknown> {
+  if (mode === "patch-overrides") {
+    return diffPatchableFields(spec, originalSpec ?? spec);
+  }
+  return fullAgentSavePayload(spec);
 }
 
 export function hydrateAgentSpec(spec: AgentSpec): AgentSpec {

@@ -3,6 +3,7 @@ import { useTranslation } from "react-i18next";
 import { type AgentSpec, configApi } from "@/lib/config-api";
 import { useToast } from "@/components/toast-provider";
 import { DiffModal } from "./diff-modal";
+import { type AgentSaveMode } from "./spec-helpers";
 
 export function EditorSaveBar({
   isDirty,
@@ -11,6 +12,8 @@ export function EditorSaveBar({
   saveDisabled,
   spec,
   savedSpec,
+  saveMode,
+  savePayload,
   onSave,
 }: {
   isDirty: boolean;
@@ -19,20 +22,39 @@ export function EditorSaveBar({
   saveDisabled: boolean;
   spec: AgentSpec;
   savedSpec: AgentSpec | null;
+  saveMode: AgentSaveMode;
+  savePayload: AgentSpec | Record<string, unknown>;
   onSave: () => void;
 }) {
   const { t } = useTranslation();
   const toast = useToast();
   const [validating, setValidating] = useState(false);
   const [diffOpen, setDiffOpen] = useState(false);
+  const isPatchMode = saveMode === "patch-overrides";
+  const patchPayload =
+    isPatchMode && !Array.isArray(savePayload) && savePayload && typeof savePayload === "object"
+      ? (savePayload as Record<string, unknown>)
+      : {};
+  const hasPatchPayload = Object.keys(patchPayload).length > 0;
+  const saveDescription = isPatchMode
+    ? t("editor.savePayload.patchDescription")
+    : t("editor.savePayload.fullDescription");
 
   if (!isDirty && !isNew) return null;
 
   async function handleValidate() {
     setValidating(true);
     try {
-      await configApi.validateConfig("agents", spec, isNew ? undefined : { id: spec.id });
-      toast.success("Validation passed — payload is safe to publish.");
+      if (isPatchMode) {
+        if (!hasPatchPayload) {
+          toast.success(t("editor.savePayload.noPatchableChanges"));
+          return;
+        }
+        await configApi.validateAgentOverrides(spec.id, patchPayload);
+      } else {
+        await configApi.validateConfig("agents", savePayload, isNew ? undefined : { id: spec.id });
+      }
+      toast.success(t("editor.savePayload.validatePassed"));
     } catch (err) {
       toast.error(`Validation failed: ${err instanceof Error ? err.message : String(err)}`);
     } finally {
@@ -51,7 +73,7 @@ export function EditorSaveBar({
             ) : (
               <span className="text-fg-strong">{t("editor.unsavedChanges")}</span>
             )}
-            <span className="ml-2 text-fg-soft">Save will publish to the runtime config.</span>
+            <span className="ml-2 text-fg-soft">{saveDescription}</span>
           </div>
           <div className="ml-auto flex items-center gap-2">
             {!isNew && savedSpec && (
@@ -84,7 +106,12 @@ export function EditorSaveBar({
       </div>
 
       {diffOpen && savedSpec && (
-        <DiffModal current={spec} previous={savedSpec} onClose={() => setDiffOpen(false)} />
+        <DiffModal
+          current={isPatchMode ? patchPayload : savePayload}
+          previous={isPatchMode ? {} : savedSpec}
+          title={isPatchMode ? t("editor.savePayload.patchTitle") : t("editor.diff")}
+          onClose={() => setDiffOpen(false)}
+        />
       )}
     </>
   );
