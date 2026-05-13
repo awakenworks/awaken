@@ -2,7 +2,12 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { cleanup, render, screen } from "@testing-library/react";
 import type { UIMessage } from "@ai-sdk/react";
-import { MessageParts, hasRenderableContent } from "./agent-preview-panel";
+import {
+  MessageParts,
+  hasRenderableContent,
+  normalizePreviewAgent,
+} from "./agent-preview-panel";
+import type { AgentSpec, RemoteEndpoint } from "../lib/api/types";
 
 afterEach(() => {
   cleanup();
@@ -312,5 +317,88 @@ describe("hasRenderableContent (R3 #6)", () => {
 
   it("returns true for a real text part", () => {
     expect(hasRenderableContent(uiMessage([{ type: "text", text: "hi" }]))).toBe(true);
+  });
+});
+
+// R14 — `/v1/ai-sdk/agent-previews/runs` rejects payloads carrying
+// `endpoint` or `registry` (the server forces local-only resolution to
+// stop a crafted draft from routing the run to an arbitrary backend or
+// skipping registry-membership checks). Builtin / customized records the
+// editor loads naturally carry `registry`, and any agent backed by a
+// remote backend carries `endpoint`. Without this strip, every preview
+// of such an agent fails with 400 — a hard regression for the most
+// common use case.
+describe("normalizePreviewAgent — strip endpoint/registry for preview (R14)", () => {
+  function previewSpec(overrides: Partial<AgentSpec> = {}): AgentSpec {
+    return {
+      id: "draft",
+      model_id: "research-default",
+      system_prompt: "You are a test agent.",
+      ...overrides,
+    };
+  }
+
+  const REMOTE_ENDPOINT: RemoteEndpoint = {
+    backend: "a2a",
+    base_url: "https://remote.example.com",
+    target: "remote-agent",
+    timeout_ms: 60_000,
+  };
+
+  it("strips endpoint from the payload", () => {
+    const draft = previewSpec({ endpoint: REMOTE_ENDPOINT });
+    const out = normalizePreviewAgent(draft);
+    expect(out.endpoint).toBeUndefined();
+    expect("endpoint" in out).toBe(false);
+  });
+
+  it("strips registry from the payload", () => {
+    const draft = previewSpec({ registry: "cloud" });
+    const out = normalizePreviewAgent(draft);
+    expect(out.registry).toBeUndefined();
+    expect("registry" in out).toBe(false);
+  });
+
+  it("strips both endpoint and registry simultaneously", () => {
+    const draft = previewSpec({ endpoint: REMOTE_ENDPOINT, registry: "cloud" });
+    const out = normalizePreviewAgent(draft);
+    expect("endpoint" in out).toBe(false);
+    expect("registry" in out).toBe(false);
+  });
+
+  it("preserves every other patchable field", () => {
+    const draft = previewSpec({
+      endpoint: REMOTE_ENDPOINT,
+      registry: "cloud",
+      plugin_ids: ["permission"],
+      active_hook_filter: ["permission"],
+      sections: { permission: { default_behavior: "ask" } },
+      delegates: ["other"],
+      allowed_tools: ["Bash"],
+      excluded_tools: ["Read"],
+      max_rounds: 16,
+      reasoning_effort: "high",
+    });
+    const out = normalizePreviewAgent(draft);
+    expect(out.plugin_ids).toEqual(["permission"]);
+    expect(out.active_hook_filter).toEqual(["permission"]);
+    expect(out.sections).toEqual({ permission: { default_behavior: "ask" } });
+    expect(out.delegates).toEqual(["other"]);
+    expect(out.allowed_tools).toEqual(["Bash"]);
+    expect(out.excluded_tools).toEqual(["Read"]);
+    expect(out.max_rounds).toBe(16);
+    expect(out.reasoning_effort).toBe("high");
+  });
+
+  it("defaults a blank id to 'draft-preview'", () => {
+    const out = normalizePreviewAgent(previewSpec({ id: "   " }));
+    expect(out.id).toBe("draft-preview");
+  });
+
+  it("does not mutate the source draft", () => {
+    const draft = previewSpec({ endpoint: REMOTE_ENDPOINT, registry: "cloud" });
+    const snapshot = JSON.parse(JSON.stringify(draft));
+    normalizePreviewAgent(draft);
+    expect(draft).toEqual(snapshot);
   });
 });

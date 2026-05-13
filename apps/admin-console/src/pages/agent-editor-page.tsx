@@ -226,12 +226,17 @@ export function AgentEditorPage() {
       return;
     }
     setSaving(true);
-    // Track whether the in-flight save is a multi-request customized
-    // override flow (PATCH + N×DELETE). If it is and any step throws,
-    // the server may already hold a partially-applied state and the UI
-    // would otherwise sit on a stale draft that disagrees with the
-    // server. The catch block refetches the agent record in this case
-    // so the user sees the actual post-failure state.
+    // Track whether the in-flight save targets a builtin / customized
+    // record via `PATCH /overrides`. On failure the catch block
+    // refetches the agent so the editor's draft matches what the server
+    // actually holds. The PATCH itself is transactional (a single body
+    // carries upserts plus `_clear`; the server applies both under one
+    // `apply_locked` guard and rolls back on any sub-step error), so a
+    // partial-write scenario doesn't happen here — but the refetch is
+    // still worth doing because the error may come from validation,
+    // optimistic-concurrency failure, or stale client state, any of
+    // which leave the user looking at a draft that doesn't match the
+    // server's view.
     let customizedSaveInFlight = false;
     try {
       const payload = {
@@ -302,11 +307,13 @@ export function AgentEditorPage() {
       }
     } catch (saveError) {
       toast.error(saveError instanceof Error ? saveError.message : String(saveError));
-      // R8 #5 — Non-atomic customized save: a PATCH may have succeeded
-      // before a subsequent DELETE failed (or vice versa), leaving the
-      // server holding a partial result. Refetch so the UI matches the
-      // actual post-failure state — without this, draft sits where the
-      // user left it and silently disagrees with the persisted record.
+      // Customized PATCH is now transactional (server applies upserts +
+      // `_clear` together under one `apply_locked` guard), so on failure
+      // the server itself is in a consistent state. The refetch here
+      // exists to re-sync the EDITOR's view: the error may come from
+      // optimistic-concurrency rejection, validation, or stale
+      // `originalSpec`, all of which leave the local draft diverged
+      // from the server's actual current state.
       if (customizedSaveInFlight && !isNew && id) {
         try {
           const [nextSpec, nextMeta] = await Promise.all([

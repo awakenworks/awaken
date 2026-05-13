@@ -476,15 +476,30 @@ function formatJson(value: unknown): string {
   }
 }
 
-function normalizePreviewAgent(draft: AgentSpec): AgentSpec {
+export function normalizePreviewAgent(draft: AgentSpec): AgentSpec {
+  // Strip provenance / locality fields before sending to the preview
+  // endpoint. The server's `/v1/ai-sdk/agent-previews/runs` route returns
+  // 400 if either `endpoint` or `registry` is present in the payload —
+  // it forces the preview into the local-only resolve path so a crafted
+  // draft can't route the run to an arbitrary remote backend or skip
+  // registry-membership checks. Builtin / customized records loaded into
+  // the editor naturally carry `registry` (and may carry `endpoint`), so
+  // without this strip every preview of a registry-resident agent would
+  // fail with `BadRequest`. The runtime preview is always local —
+  // endpoint and registry are not meaningful here.
+  const {
+    endpoint: _endpoint,
+    registry: _registry,
+    ...localDraft
+  } = draft;
   return {
-    ...draft,
-    id: draft.id.trim() || "draft-preview",
-    model_id: String(draft.model_id ?? "").trim(),
-    system_prompt: String(draft.system_prompt ?? ""),
-    plugin_ids: [...(draft.plugin_ids ?? [])],
-    delegates: [...(draft.delegates ?? [])],
-    sections: { ...(draft.sections ?? {}) },
+    ...localDraft,
+    id: localDraft.id.trim() || "draft-preview",
+    model_id: String(localDraft.model_id ?? "").trim(),
+    system_prompt: String(localDraft.system_prompt ?? ""),
+    plugin_ids: [...(localDraft.plugin_ids ?? [])],
+    delegates: [...(localDraft.delegates ?? [])],
+    sections: { ...(localDraft.sections ?? {}) },
   };
 }
 
