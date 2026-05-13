@@ -47,14 +47,7 @@ async function readResponseBody(response: Response): Promise<unknown> {
 }
 
 export async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {
-  let response = await fetch(url, withAdminAuth(init));
-  if (response.status === 401 && hasUnauthorizedHandler()) {
-    const refreshed = await requestUnauthorizedRetry();
-    if (refreshed && refreshed.trim().length > 0) {
-      response = await fetch(url, withAdminAuth(init, refreshed.trim()));
-    }
-  }
-
+  const response = await fetchWithAdminAuth(url, init);
   const detail = await readResponseBody(response);
 
   if (!response.ok) {
@@ -66,6 +59,37 @@ export async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> 
   }
 
   return detail as T;
+}
+
+/// Lower-level `fetch` wrapper that handles admin-bearer auth + the 401
+/// refresh retry but returns the raw `Response` so streaming / NDJSON
+/// callers can parse the body themselves. The previous trace-detail
+/// code path called `fetch` directly and missed both the dev-env token
+/// fallback and the 401 retry — R11 #2.
+export async function fetchWithAdminAuth(
+  url: string,
+  init?: RequestInit,
+): Promise<Response> {
+  let response = await fetch(url, withAdminAuth(init));
+  if (response.status === 401 && hasUnauthorizedHandler()) {
+    const refreshed = await requestUnauthorizedRetry();
+    if (refreshed && refreshed.trim().length > 0) {
+      response = await fetch(url, withAdminAuth(init, refreshed.trim()));
+    }
+  }
+  return response;
+}
+
+/// Return an `authorization: Bearer …` header object suitable for
+/// `RequestInit.headers` / `fetch` callers (e.g. the AI SDK
+/// `DefaultChatTransport` which has its own `fetch` driver). Returns
+/// an empty object when no token is configured — leaves the request
+/// header-free rather than emitting `Bearer undefined`. Resolves from
+/// localStorage first, then the dev-env fallback, mirroring
+/// `withAdminAuth`. R11 #1 / #2.
+export function adminAuthHeaders(): Record<string, string> {
+  const token = adminBearerToken();
+  return token ? { authorization: `Bearer ${token}` } : {};
 }
 
 function adminBearerToken(override?: string): string | undefined {

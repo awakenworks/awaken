@@ -285,17 +285,24 @@ export interface TracePage {
 /** Wire shape of `GET /v1/agents/:id/permission-preview` (issue #190). */
 export interface PermissionPreviewResponse {
   agent_id: string;
-  /** `true` when the agent has the permission plugin in `plugin_ids` AND
-   *  a permission config section that compiles into a ruleset. */
+  /** `true` when the permission plugin is loaded (`plugin_ids` contains
+   *  `"permission"`) AND `active_hook_filter` admits its hooks (filter is
+   *  empty, or contains `"permission"`). `false` when the runtime would
+   *  not run any permission BeforeInference hooks for this agent — in
+   *  which case `effective_tools` equals `candidate_tools` and no rules
+   *  are surfaced. */
   permission_plugin_enabled: boolean;
   /** Default behavior when no rule matches. `null` when permission plugin is
    *  not enabled — `effective_tools` are just `candidate_tools` in that case. */
   default_behavior: "allow" | "ask" | "deny" | null;
   /** `allowed_tools ∖ excluded_tools` over the full registered tool set. */
   candidate_tools: string[];
-  /** Tools the BeforeInference hook will unconditionally strip (rules
-   *  matching `Deny` + exact tool + `args == Any`). Empty when permission
-   *  plugin is disabled. */
+  /** Tools from `candidate_tools` that the BeforeInference hook will
+   *  unconditionally strip — only deny rules biting a tool the model would
+   *  otherwise see are counted. Deny rules targeting tools already outside
+   *  the candidate set (e.g. excluded via `excluded_tools`) are NOT
+   *  included so the "stripped before model" summary doesn't overstate.
+   *  Empty when permission plugin is disabled. */
   unconditionally_denied: string[];
   /** `candidate_tools ∖ unconditionally_denied`. This is the tool list the
    *  model actually receives. Per-call args-dependent rules can still gate

@@ -1,4 +1,4 @@
-import { BACKEND_URL, ConfigApiError, fetchJson } from "./http";
+import { BACKEND_URL, ConfigApiError, fetchJson, fetchWithAdminAuth } from "./http";
 import type { ListTracesResponse, TraceEvent, TracePage } from "./types";
 
 /** Build query string from a sparse object — undefined values are dropped. */
@@ -15,10 +15,13 @@ function qs(params: Record<string, string | number | undefined>): string {
 }
 
 export const tracesApi = {
-  /** List recent runs, optionally filtered by agent. Returns `null` when the
-   *  server build does not expose trace persistence (HTTP 503 — feature gate
-   *  in `awaken-server` controls this), so callers can render a friendly
-   *  "not configured" state rather than throwing. */
+  /** List recent runs, optionally filtered by agent. Returns `null` ONLY
+   *  when the server build does not expose trace persistence (HTTP 503 —
+   *  feature gate in `awaken-server` controls this), so callers can render
+   *  a friendly "not configured" state. A 404 (unknown agent id) is a real
+   *  error and is re-thrown so the UI surfaces it as such instead of
+   *  conflating it with the "feature disabled" state — matches the
+   *  `agentPermissionPreview` / `getTracePage` policy. */
   listAgentTraces: async (
     agentId: string,
     options: { limit?: number; since?: string } = {},
@@ -32,7 +35,7 @@ export const tracesApi = {
         })}`,
       );
     } catch (err) {
-      if (err instanceof ConfigApiError && (err.status === 503 || err.status === 404)) {
+      if (err instanceof ConfigApiError && err.status === 503) {
         return null;
       }
       throw err;
@@ -42,27 +45,35 @@ export const tracesApi = {
   /** Fetch one page of trace events for a run, parsing the NDJSON body and
    *  surfacing the server's pagination headers. The server caps a single
    *  page at 1000 events; callers can keep paging while `next_offset !==
-   *  null`. */
+   *  null`.
+   *
+   *  Returns `null` only when the trace store is not configured on this
+   *  server build (503) — the UI then renders a "trace persistence not
+   *  enabled" state.
+   *
+   *  404 means the run id is unknown (deleted, never persisted, typo)
+   *  and is surfaced as a thrown `ConfigApiError` so the caller can
+   *  render a real error rather than showing "no events" for a missing
+   *  run. */
   getTracePage: async (
     runId: string,
     options: { offset?: number; limit?: number } = {},
-  ): Promise<TracePage> => {
+  ): Promise<TracePage | null> => {
     const url = `${BACKEND_URL}/v1/traces/${encodeURIComponent(runId)}${qs({
       offset: options.offset,
       limit: options.limit,
     })}`;
-    // Bearer header is applied by the fetch wrapper inside fetchJson — but
-    // this endpoint is NDJSON, not JSON, so we mirror its auth handling
-    // directly here to keep the NDJSON streaming path simple.
-    const token = readStoredAdminToken();
-    const init: RequestInit = {
-      headers: token ? { authorization: `Bearer ${token}` } : {},
-    };
-    const response = await fetch(url, init);
-    if (response.status === 503 || response.status === 404) {
-      // Either trace store not configured (503) or run is unknown (404) —
-      // both are "no events" states; let the caller decide UX.
-      return { events: [], total: 0, next_offset: null };
+    // R11 #2 — route the NDJSON request through `fetchWithAdminAuth`
+    // so it picks up the same admin-bearer resolution (localStorage +
+    // dev-env fallback) AND 401-refresh retry as JSON endpoints.
+    // Previously this path read only `localStorage` and would fail
+    // silently in dev environments that rely on `VITE_ADMIN_BEARER_TOKEN`
+    // or against a server that requires a token refresh.
+    const response = await fetchWithAdminAuth(url);
+    if (response.status === 503) {
+      // Trace store not configured on this server build — surface as
+      // a "feature unavailable" state, not as an empty event list.
+      return null;
     }
     if (!response.ok) {
       const text = await response.text();
@@ -88,8 +99,3 @@ export const tracesApi = {
   },
 };
 
-function readStoredAdminToken(): string | null {
-  if (typeof globalThis.localStorage === "undefined") return null;
-  const stored = globalThis.localStorage.getItem("awaken.adminToken");
-  return stored && stored.trim() ? stored.trim() : null;
-}

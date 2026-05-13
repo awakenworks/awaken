@@ -21,7 +21,7 @@ const TOOLS: ToolInfo[] = [
 interface SelectorProps {
   title?: string;
   description?: string;
-  value?: string[] | undefined;
+  value?: string[] | null | undefined;
   onChange?: Mock;
   tools?: ToolInfo[];
   variant?: "include" | "exclude";
@@ -32,7 +32,7 @@ function renderSelector(overrides: SelectorProps = {}) {
   const props = {
     title: "Allowed Tools",
     description: "Configure which tools this agent can use.",
-    value: undefined as string[] | undefined,
+    value: undefined as string[] | null | undefined,
     onChange,
     tools: TOOLS,
     ...overrides,
@@ -140,10 +140,10 @@ describe("ToolSelector — group Select all / Clear buttons", () => {
     });
 
     expect(props.onChange).toHaveBeenCalledOnce();
-    // setGroupSelection with all builtin tools selected plus existing — all 6 tools = collapse to undefined
+    // setGroupSelection with all builtin tools selected plus existing — all 6 tools = collapse to explicit null
     const result = props.onChange.mock.calls[0][0];
-    // When every tool ends up selected, setGroupSelection returns undefined
-    expect(result).toBeUndefined();
+    // When every tool ends up selected, setGroupSelection returns null (explicit "all" override).
+    expect(result).toBeNull();
   });
 
   it("calls onChange excluding group tools when 'Clear' is clicked on the built-in group", () => {
@@ -202,6 +202,67 @@ describe("ToolSelector — variant='exclude' labels", () => {
     renderSelector({ value: undefined, variant: "exclude" });
 
     expect(screen.getByText(/No tools are explicitly excluded/)).toBeTruthy();
+  });
+});
+
+// R8 #1 — Regression suite for the exclude-variant data-loss bug. The
+// previous helpers were include-only: switching to "Custom exclusion"
+// from "Block none" would seed `excluded_tools` with every published
+// tool id, immediately stripping the agent of access to everything.
+describe("ToolSelector — variant='exclude' switching to Custom exclusion (R8 #1)", () => {
+  it("seeds custom mode with NO excluded tools (not the full tool list)", () => {
+    const { props } = renderSelector({ value: undefined, variant: "exclude" });
+
+    const customLabel = screen.getByText("Custom exclusion");
+    const customRadio = customLabel
+      .closest("label")!
+      .querySelector("input[type='radio']") as HTMLInputElement;
+
+    act(() => {
+      fireEvent.click(customRadio);
+    });
+
+    expect(props.onChange).toHaveBeenCalledOnce();
+    const result = props.onChange.mock.calls[0][0];
+    // Must be `[]` — every published tool would mean "block all tools",
+    // i.e. the agent would lose access to everything immediately on
+    // mode toggle.
+    expect(result).toEqual([]);
+  });
+
+  it("checking a tool from the empty excluded set ADDS that one tool", () => {
+    const { props } = renderSelector({ value: [], variant: "exclude" });
+
+    const bashIdEl = screen.getByText("Bash");
+    const bashLabel = bashIdEl.closest("label")!;
+    const bashCheckbox = bashLabel.querySelector("input[type='checkbox']") as HTMLInputElement;
+    expect(bashCheckbox.checked).toBe(false);
+
+    act(() => {
+      fireEvent.click(bashCheckbox);
+    });
+
+    expect(props.onChange).toHaveBeenCalledOnce();
+    const result = props.onChange.mock.calls[0][0];
+    // Old helper returned `undefined` here (no add path for exclude),
+    // silently dropping the user's click.
+    expect(result).toEqual(["Bash"]);
+  });
+
+  it("'Block none' radio emits explicit null (not undefined) so customized save overrides base", () => {
+    const { props } = renderSelector({ value: ["Bash"], variant: "exclude" });
+
+    const blockNoneLabel = screen.getByText("Block none");
+    const blockNoneRadio = blockNoneLabel
+      .closest("label")!
+      .querySelector("input[type='radio']") as HTMLInputElement;
+
+    act(() => {
+      fireEvent.click(blockNoneRadio);
+    });
+
+    expect(props.onChange).toHaveBeenCalledOnce();
+    expect(props.onChange.mock.calls[0][0]).toBeNull();
   });
 });
 

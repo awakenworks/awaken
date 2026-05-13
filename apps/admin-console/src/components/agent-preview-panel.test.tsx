@@ -113,6 +113,82 @@ describe("MessageParts — AI SDK part states (R3 #5)", () => {
     expect(screen.queryByText(/should not be visible/)).toBeNull();
   });
 
+  // R10 #5 — Tool input/output payloads can carry API keys / auth
+  // headers / cookies / JWTs. Until R10 they were JSON-stringified
+  // directly into the preview DOM; the redaction pipeline used by
+  // audit/trace/diff did not cover this code path.
+  it("redacts secret-bearing keys in tool input and output", () => {
+    const { container } = render(
+      <MessageParts
+        message={uiMessage([
+          {
+            type: "tool-call_api",
+            state: "output-available",
+            input: {
+              headers: { authorization: "Bearer real-token", cookie: "sid=raw" },
+              jwt: "raw-jwt",
+            },
+            output: { api_key: "raw-key", bearer: "raw-bearer", data: { ok: true } },
+          },
+        ])}
+      />,
+    );
+    const dom = container.textContent ?? "";
+    // None of the raw credential strings may appear in the DOM.
+    expect(dom).not.toContain("real-token");
+    expect(dom).not.toContain("sid=raw");
+    expect(dom).not.toContain("raw-jwt");
+    expect(dom).not.toContain("raw-key");
+    expect(dom).not.toContain("raw-bearer");
+    // The redacted placeholder shows up where the secrets used to be.
+    expect(dom).toContain("***");
+    // Non-secret data is preserved.
+    expect(dom).toContain('"ok": true');
+  });
+
+  // R12 #3 — Output paths missed by R10's object-only redaction:
+  // primitive string outputs, and `errorText` (rendered to a separate
+  // <pre>). Both pass through `redactSecretString` now.
+  it("redacts credential patterns inside a primitive string tool output", () => {
+    const { container } = render(
+      <MessageParts
+        message={uiMessage([
+          {
+            type: "tool-call_api",
+            state: "output-available",
+            input: {},
+            output:
+              "called with Authorization: Bearer sk-real-secret-value and api_key=raw-key-12345",
+          },
+        ])}
+      />,
+    );
+    const dom = container.textContent ?? "";
+    expect(dom).not.toContain("sk-real-secret-value");
+    expect(dom).not.toContain("raw-key-12345");
+    expect(dom).toContain("***");
+  });
+
+  it("redacts credential patterns inside tool errorText", () => {
+    const { container } = render(
+      <MessageParts
+        message={uiMessage([
+          {
+            type: "tool-call_api",
+            state: "output-error",
+            input: {},
+            errorText:
+              "request failed with Bearer real-bearer-token-1234567890 — body had api_key=raw-key",
+          },
+        ])}
+      />,
+    );
+    const dom = container.textContent ?? "";
+    expect(dom).not.toContain("real-bearer-token-1234567890");
+    expect(dom).not.toContain("raw-key");
+    expect(dom).toContain("Bearer ***");
+  });
+
   it("renders `output-denied` with the Denied badge", () => {
     render(
       <MessageParts
@@ -197,10 +273,13 @@ describe("hasRenderableContent (R3 #6)", () => {
     expect(hasRenderableContent(uiMessage([{ type: "text", text: "" }]))).toBe(false);
   });
 
-  it("returns false for unknown parts only (no empty bubble for sources/metadata)", () => {
-    // This is the regression: previously `hasRenderableContent` returned
-    // true for anything non-step-start non-empty-text, so a message
-    // containing only metadata/source parts would draw an empty bubble.
+  // R8 #4 — unknown-only message: MessageParts renders the unrecognized-
+  // parts collapsible fallback for these, so the bubble is informative
+  // (the user can expand and see what types arrived). Filtering them
+  // out at this gate would hide the diagnostic entirely. (PR #189
+  // description: "Unknown SDK parts collapse into an unrecognized part
+  // debug fallback".)
+  it("returns true for unknown parts only — they render the debug fallback", () => {
     expect(
       hasRenderableContent(
         uiMessage([
@@ -208,6 +287,12 @@ describe("hasRenderableContent (R3 #6)", () => {
           { type: "metadata", payload: 42 },
         ]),
       ),
+    ).toBe(true);
+  });
+
+  it("returns false when step-start is the only typed part — nothing to render", () => {
+    expect(
+      hasRenderableContent(uiMessage([{ type: "step-start" }, { type: "step-start" }])),
     ).toBe(false);
   });
 

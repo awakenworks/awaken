@@ -118,10 +118,27 @@ async fn ai_sdk_chat_agent_scoped(
 
 /// Draft-agent preview route:
 /// `POST /v1/ai-sdk/agent-previews/runs`
+///
+/// Admin-only: this endpoint runs an arbitrary AgentSpec against the
+/// runtime (provider credits, registered tools, plugins). Without
+/// `ensure_admin_auth` anyone with network access could execute draft
+/// agents — see R11 #1.
+///
+/// Additional surface-area defence: the request strips `endpoint` and
+/// `registry` from the incoming agent before resolution. The runtime
+/// resolver previously skipped local registry validation when
+/// `agent.endpoint` was set (treating it as remote), which let a
+/// crafted payload bypass the registry-membership check; clearing the
+/// field forces the preview into the local-only resolve path.
 async fn ai_sdk_chat_preview_agent(
     State(st): State<AppState>,
+    headers: HeaderMap,
     Json(payload): Json<super::request::PreviewAgentChatRequest>,
 ) -> Result<Response, ApiError> {
+    if let Err(err) = crate::config_routes::ensure_admin_auth(&st, &headers) {
+        return Ok(err.into_response());
+    }
+
     let super::request::PreviewAgentChatRequest {
         messages,
         thread_id,
@@ -137,6 +154,17 @@ async fn ai_sdk_chat_preview_agent(
 
     if agent.id.trim().is_empty() {
         agent.id = "draft-preview".to_string();
+    }
+
+    // Strip provenance / runtime-locality fields from the client-supplied
+    // spec so the preview always runs against the local registry. A
+    // payload with `endpoint` would otherwise route the run to an
+    // arbitrary remote backend; `registry` would mark the draft as
+    // registry-defined and skip local resolution.
+    if agent.endpoint.is_some() || agent.registry.is_some() {
+        return Err(ApiError::BadRequest(
+            "preview agent payload must not carry `endpoint` or `registry` fields".to_string(),
+        ));
     }
 
     let processed = super::request::process_preview_chat_request(messages, thread_id, state)

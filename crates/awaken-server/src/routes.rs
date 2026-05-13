@@ -37,6 +37,11 @@ pub enum ApiError {
     NotFound(String),
     ThreadNotFound(String),
     RunNotFound(String),
+    /// Feature/route present but the backing capability isn't installed —
+    /// e.g. `permission-preview` requested but server was built without
+    /// `--features permission`. Distinct from 404 so callers can
+    /// differentiate "no such resource" from "feature not available".
+    ServiceUnavailable(String),
     Internal(String),
 }
 
@@ -50,6 +55,7 @@ impl IntoResponse for ApiError {
                 (StatusCode::NOT_FOUND, format!("thread not found: {id}"))
             }
             ApiError::RunNotFound(id) => (StatusCode::NOT_FOUND, format!("run not found: {id}")),
+            ApiError::ServiceUnavailable(msg) => (StatusCode::SERVICE_UNAVAILABLE, msg),
             ApiError::Internal(msg) => (StatusCode::INTERNAL_SERVER_ERROR, msg),
         };
         (status, Json(json!({"error": message}))).into_response()
@@ -174,21 +180,23 @@ fn run_routes() -> Router<AppState> {
 }
 
 fn admin_routes() -> Router<AppState> {
-    let router = config_routes()
+    // The permission-preview route is registered unconditionally so the
+    // server can return a meaningful 503 when the `permission` feature
+    // is not compiled in — gating the route registration on the feature
+    // would make the route a generic 404 (Axum "no route"), which the
+    // client cannot distinguish from "agent not found" (also 404). 503
+    // matches the convention used by `runtime-stats` / trace routes for
+    // "capability not installed".
+    config_routes()
         .route("/v1/system/info", get(system_info))
         .route("/v1/agents/:id/runtime-stats", get(get_agent_runtime_stats))
-        .route("/v1/agents/runtime-stats", get(list_agents_runtime_stats));
-
-    #[cfg(feature = "permission")]
-    let router = router.route(
-        "/v1/agents/:id/permission-preview",
-        get(get_agent_permission_preview),
-    );
-
-    router
+        .route("/v1/agents/runtime-stats", get(list_agents_runtime_stats))
+        .route(
+            "/v1/agents/:id/permission-preview",
+            get(get_agent_permission_preview),
+        )
 }
 
-#[cfg(feature = "permission")]
 #[tracing::instrument(skip(state))]
 async fn get_agent_permission_preview(
     State(state): State<AppState>,
@@ -198,9 +206,21 @@ async fn get_agent_permission_preview(
     if let Err(err) = crate::config_routes::ensure_admin_auth(&state, &headers) {
         return err.into_response();
     }
-    match crate::services::permission_preview::preview_agent_permissions(&state, &id).await {
-        Ok(preview) => Json(preview).into_response(),
-        Err(err) => map_permission_preview_error(err).into_response(),
+    #[cfg(feature = "permission")]
+    {
+        let _ = &id;
+        match crate::services::permission_preview::preview_agent_permissions(&state, &id).await {
+            Ok(preview) => Json(preview).into_response(),
+            Err(err) => map_permission_preview_error(err).into_response(),
+        }
+    }
+    #[cfg(not(feature = "permission"))]
+    {
+        let _ = (state, id);
+        ApiError::ServiceUnavailable(
+            "permission feature not compiled into this server build".to_string(),
+        )
+        .into_response()
     }
 }
 

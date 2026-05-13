@@ -2274,6 +2274,81 @@ async fn patch_overrides_rejects_unknown_field() {
     assert_eq!(status, StatusCode::BAD_REQUEST, "body: {body}");
 }
 
+// R11 #3 — `_clear` directive applies upserts + clears atomically in
+// one PATCH transaction. Replaces the previous client-side
+// PATCH + N×DELETE flow which could leave the record in a partial
+// state if any DELETE failed.
+#[tokio::test]
+async fn patch_overrides_clear_directive_removes_overrides() {
+    let app = make_app().await;
+
+    // Seed two overrides.
+    let (s1, _) = patch_overrides(
+        &app.router,
+        "bootstrap",
+        json!({"system_prompt": "kept", "max_rounds": 99}),
+    )
+    .await;
+    assert_eq!(s1, StatusCode::OK);
+
+    // Clear `max_rounds` while upserting another field — both in one call.
+    let (s2, body) = patch_overrides(
+        &app.router,
+        "bootstrap",
+        json!({"_clear": ["max_rounds"], "system_prompt": "still-kept"}),
+    )
+    .await;
+    assert_eq!(s2, StatusCode::OK, "body={body}");
+    // Effective spec reflects the upsert.
+    assert_eq!(body["system_prompt"], "still-kept");
+    // Effective spec drops the cleared override.
+    use awaken_contract::contract::config_store::ConfigStore;
+    let raw = ConfigStore::get(app.store.as_ref(), "agents", "bootstrap")
+        .await
+        .expect("store read")
+        .expect("entry present");
+    let overrides = raw["meta"]["user_overrides"]
+        .as_object()
+        .expect("overrides obj");
+    assert!(
+        !overrides.contains_key("max_rounds"),
+        "max_rounds override should be cleared, got: {raw}"
+    );
+    assert_eq!(overrides.get("system_prompt"), Some(&json!("still-kept")));
+}
+
+#[tokio::test]
+async fn patch_overrides_clear_rejects_unknown_field_name() {
+    let app = make_app().await;
+    let (status, body) = patch_overrides(
+        &app.router,
+        "bootstrap",
+        json!({"_clear": ["unknown_field"]}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "body={body}");
+}
+
+#[tokio::test]
+async fn patch_overrides_clear_rejects_conflict_with_upsert() {
+    let app = make_app().await;
+    let (status, body) = patch_overrides(
+        &app.router,
+        "bootstrap",
+        json!({"system_prompt": "new", "_clear": ["system_prompt"]}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "body={body}");
+}
+
+#[tokio::test]
+async fn patch_overrides_clear_rejects_non_array() {
+    let app = make_app().await;
+    let (status, body) =
+        patch_overrides(&app.router, "bootstrap", json!({"_clear": "system_prompt"})).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "body={body}");
+}
+
 #[tokio::test]
 async fn patch_overrides_on_user_record_returns_422() {
     let app = make_app().await;
@@ -2652,18 +2727,14 @@ async fn list_meta_returns_all_records_with_source() {
 
 // ── Permission preview endpoint (issue #190) ───────────────────────────────
 
-/// Build a router with the permission plugin registered and a stub provider.
-/// Shared setup for the preview tests below.
+/// Build a router with the permission plugin registered, a stub provider,
+/// and a fixed tool registry. The preview endpoint intersects
+/// `allowed_tools` against the tool registry — without registered tools
+/// the candidate set would always be empty, so we seed a deterministic
+/// set every preview test can reference.
 #[cfg(feature = "permission")]
 async fn make_permission_preview_app() -> axum::Router {
-    let (runtime, store, manager) = make_runtime_manager_custom(
-        None,
-        Arc::new(TestMcpRegistryFactory),
-        None,
-        Arc::new(TestProviderFactory),
-        true, // register permission plugin
-    )
-    .await;
+    let (runtime, store, manager) = make_permission_preview_runtime().await;
     let config_store = store.clone() as Arc<dyn ConfigStore>;
     let mailbox = Arc::new(Mailbox::new(
         runtime.clone(),
@@ -2682,6 +2753,87 @@ async fn make_permission_preview_app() -> axum::Router {
     .with_config_store(config_store)
     .with_config_runtime_manager(manager);
     build_router(&state).with_state(state)
+}
+
+/// Standalone runtime+manager+store for permission preview tests, with a
+/// fixed set of tools registered (`Bash`, `Read`, `Edit`, plus a couple
+/// of `mcp__db__*` tools so glob expansion tests can verify behaviour
+/// against real registry entries).
+#[cfg(feature = "permission")]
+async fn make_permission_preview_runtime() -> (
+    Arc<AgentRuntime>,
+    Arc<InMemoryStore>,
+    Arc<ConfigRuntimeManager>,
+) {
+    struct PreviewMockTool {
+        id: String,
+    }
+    #[async_trait]
+    impl Tool for PreviewMockTool {
+        fn descriptor(&self) -> ToolDescriptor {
+            ToolDescriptor::new(&self.id, &self.id, "preview mock")
+        }
+        async fn execute(
+            &self,
+            _args: serde_json::Value,
+            _ctx: &ToolCallContext,
+        ) -> Result<ToolOutput, ToolError> {
+            Ok(ToolOutput::new(ToolResult::success(
+                &self.id,
+                serde_json::Value::Null,
+            )))
+        }
+    }
+
+    // No-op plugin used by tests that need a second loaded plugin id to
+    // populate `active_hook_filter` against. Defaults on the `Plugin`
+    // trait suffice — descriptor is the only required method.
+    struct NoopPlugin;
+    impl awaken_runtime::plugins::Plugin for NoopPlugin {
+        fn descriptor(&self) -> awaken_runtime::plugins::PluginDescriptor {
+            awaken_runtime::plugins::PluginDescriptor {
+                name: "observability",
+            }
+        }
+    }
+
+    let store = Arc::new(InMemoryStore::new());
+    let mut builder = AgentRuntimeBuilder::new()
+        .with_provider("bootstrap", Arc::new(ImmediateExecutor))
+        .with_plugin("permission", Arc::new(PermissionPlugin))
+        .with_plugin("observability", Arc::new(NoopPlugin))
+        .with_thread_run_store(store.clone());
+    for id in ["Bash", "Read", "Edit", "mcp__db__query", "mcp__db__write"] {
+        builder = builder.with_tool(id, Arc::new(PreviewMockTool { id: id.into() }));
+    }
+    let runtime = Arc::new(builder.build().expect("build preview runtime"));
+    let config_store = store.clone() as Arc<dyn ConfigStore>;
+    let manager = Arc::new(
+        ConfigRuntimeManager::new(runtime.clone(), config_store.clone())
+            .expect("config runtime manager")
+            .with_provider_factory(Arc::new(TestProviderFactory))
+            .with_mcp_registry_factory(Arc::new(TestMcpRegistryFactory)),
+    );
+    let seed = BuiltinSeedSet {
+        binary_version: "test".to_string(),
+        specs: vec![
+            BuiltinSpec::provider(ProviderSpec {
+                id: "bootstrap".into(),
+                adapter: "stub".into(),
+                ..Default::default()
+            }),
+            BuiltinSpec::model(ModelBindingSpec {
+                id: "bootstrap".into(),
+                provider_id: "bootstrap".into(),
+                upstream_model: "bootstrap-model".into(),
+            }),
+            BuiltinSpec::agent(agent_spec("bootstrap", "bootstrap")),
+        ],
+    };
+    manager.apply_seed(&seed).await.expect("apply_seed");
+    manager.apply().await.expect("publish config snapshot");
+
+    (runtime, store, manager)
 }
 
 #[cfg(feature = "permission")]
@@ -2721,8 +2873,12 @@ async fn permission_preview_returns_candidate_set_without_permission_plugin() {
             "id": "no-perm-agent",
             "model_id": "stub-model",
             "system_prompt": "no permission plugin",
-            "allowed_tools": ["alpha", "beta"],
-            "excluded_tools": ["beta"]
+            // Use ids that exist in the test runtime registry (Bash/Read/Edit
+            // are seeded by `make_permission_preview_runtime`). After the R7
+            // registry-intersection fix, ids not in the registry are
+            // filtered out — covered by a dedicated test below.
+            "allowed_tools": ["Bash", "Read"],
+            "excluded_tools": ["Read"]
         })),
     )
     .await;
@@ -2739,12 +2895,119 @@ async fn permission_preview_returns_candidate_set_without_permission_plugin() {
     assert_eq!(body["agent_id"], "no-perm-agent");
     assert_eq!(body["permission_plugin_enabled"], false);
     assert!(body["default_behavior"].is_null());
-    // candidate = allowed ∖ excluded = ["alpha"]
-    assert_eq!(body["candidate_tools"], json!(["alpha"]));
+    // candidate = allowed ∖ excluded = ["Bash"]
+    assert_eq!(body["candidate_tools"], json!(["Bash"]));
     // No permission plugin -> effective == candidate.
-    assert_eq!(body["effective_tools"], json!(["alpha"]));
+    assert_eq!(body["effective_tools"], json!(["Bash"]));
     assert_eq!(body["unconditionally_denied"], json!([]));
     assert_eq!(body["args_conditional_rules"], json!([]));
+}
+
+// R7 #2 — preview filters `allowed_tools` against the registry. A stale
+// id (renamed plugin, removed MCP server, typo) must NOT appear in
+// `effective_tools` because the runtime tool catalog never offers it.
+#[cfg(feature = "permission")]
+#[tokio::test]
+async fn permission_preview_intersects_allowed_tools_with_registry() {
+    let router = make_permission_preview_app().await;
+    seed_provider_and_model(&router).await;
+    let (status, _) = request_json(
+        &router,
+        Method::POST,
+        "/v1/config/agents",
+        Some(json!({
+            "id": "stale-tools-agent",
+            "model_id": "stub-model",
+            "system_prompt": "stale tool list",
+            // `ghost_tool` is not registered; the runtime would never
+            // offer it. The preview must drop it.
+            "allowed_tools": ["Bash", "ghost_tool", "another-ghost"],
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, body) = request_json(
+        &router,
+        Method::GET,
+        "/v1/agents/stale-tools-agent/permission-preview",
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "body={body}");
+    assert_eq!(body["candidate_tools"], json!(["Bash"]));
+    assert_eq!(body["effective_tools"], json!(["Bash"]));
+}
+
+// R7 #3 — glob/regex Deny + any-args rules expand against the registry
+// into `unconditionally_denied`. Without this fix a `mcp__db__*` Deny
+// rule would only appear in `args_conditional_rules` while
+// `effective_tools` still listed `mcp__db__query` etc., even though
+// the runtime BeforeInference hook would strip them on every call.
+#[cfg(feature = "permission")]
+#[tokio::test]
+async fn permission_preview_expands_glob_deny_against_registry() {
+    let router = make_permission_preview_app().await;
+    seed_provider_and_model(&router).await;
+    let (status, _) = request_json(
+        &router,
+        Method::POST,
+        "/v1/config/agents",
+        Some(json!({
+            "id": "glob-deny-agent",
+            "model_id": "stub-model",
+            "system_prompt": "deny all mcp__db__*",
+            "plugin_ids": ["permission"],
+            "sections": {
+                "permission": {
+                    "default_behavior": "ask",
+                    "rules": [
+                        { "tool": "mcp__db__*", "behavior": "deny" }
+                    ]
+                }
+            }
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, body) = request_json(
+        &router,
+        Method::GET,
+        "/v1/agents/glob-deny-agent/permission-preview",
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "body={body}");
+    // Both registered mcp__db__* tools are now in the unconditionally
+    // denied list — not hiding in args_conditional_rules.
+    let denied = body["unconditionally_denied"]
+        .as_array()
+        .expect("unconditionally_denied is an array")
+        .iter()
+        .map(|v| v.as_str().unwrap().to_string())
+        .collect::<Vec<_>>();
+    assert!(denied.contains(&"mcp__db__query".to_string()));
+    assert!(denied.contains(&"mcp__db__write".to_string()));
+    // Effective tools no longer carry them.
+    let effective = body["effective_tools"]
+        .as_array()
+        .expect("effective_tools is an array")
+        .iter()
+        .map(|v| v.as_str().unwrap().to_string())
+        .collect::<Vec<_>>();
+    assert!(!effective.contains(&"mcp__db__query".to_string()));
+    assert!(!effective.contains(&"mcp__db__write".to_string()));
+    // The glob Deny no longer double-appears in args_conditional_rules.
+    let args_conditional = body["args_conditional_rules"]
+        .as_array()
+        .expect("args_conditional_rules is an array");
+    assert!(
+        !args_conditional.iter().any(
+            |r| r["behavior"] == "deny" && r["pattern"].as_str().unwrap().contains("mcp__db__")
+        ),
+        "glob deny should be in unconditionally_denied, not args_conditional_rules"
+    );
 }
 
 #[cfg(feature = "permission")]
@@ -2813,4 +3076,322 @@ async fn permission_preview_404_for_unknown_agent() {
     )
     .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+// R8 #1 — `active_hook_filter` excludes the permission plugin from the
+// hook dispatcher even though the plugin itself is loaded. The runtime
+// won't run permission BeforeInference hooks in this state, so preview
+// must report enabled=false and emit candidate_tools as effective_tools.
+#[cfg(feature = "permission")]
+#[tokio::test]
+async fn permission_preview_respects_active_hook_filter_excluding_permission() {
+    let router = make_permission_preview_app().await;
+    seed_provider_and_model(&router).await;
+    let (status, body) = request_json(
+        &router,
+        Method::POST,
+        "/v1/config/agents",
+        Some(json!({
+            "id": "filtered-out-agent",
+            "model_id": "stub-model",
+            "system_prompt": "permission loaded but filtered",
+            // Both plugins are loaded by the runtime; the filter
+            // restricts hook dispatch to observability only —
+            // permission hooks will NOT run.
+            "plugin_ids": ["permission", "observability"],
+            "active_hook_filter": ["observability"],
+            "allowed_tools": ["Bash", "Read"],
+            "sections": {
+                "permission": {
+                    "default_behavior": "ask",
+                    "rules": [
+                        { "tool": "Bash", "behavior": "deny" }
+                    ]
+                }
+            }
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "body={body}");
+
+    let (status, body) = request_json(
+        &router,
+        Method::GET,
+        "/v1/agents/filtered-out-agent/permission-preview",
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "body={body}");
+    assert_eq!(
+        body["permission_plugin_enabled"], false,
+        "filtered-out permission plugin must report disabled"
+    );
+    // No deny is applied since the hook won't run.
+    assert_eq!(body["unconditionally_denied"], json!([]));
+    assert_eq!(body["candidate_tools"], body["effective_tools"]);
+}
+
+#[cfg(feature = "permission")]
+#[tokio::test]
+async fn permission_preview_respects_active_hook_filter_including_permission() {
+    let router = make_permission_preview_app().await;
+    seed_provider_and_model(&router).await;
+    let (status, _) = request_json(
+        &router,
+        Method::POST,
+        "/v1/config/agents",
+        Some(json!({
+            "id": "filter-includes-permission-agent",
+            "model_id": "stub-model",
+            "system_prompt": "permission loaded and admitted",
+            "plugin_ids": ["permission", "observability"],
+            "active_hook_filter": ["permission"],
+            "allowed_tools": ["Bash", "Read"],
+            "sections": {
+                "permission": {
+                    "default_behavior": "ask",
+                    "rules": [
+                        { "tool": "Bash", "behavior": "deny" }
+                    ]
+                }
+            }
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, body) = request_json(
+        &router,
+        Method::GET,
+        "/v1/agents/filter-includes-permission-agent/permission-preview",
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "body={body}");
+    assert_eq!(body["permission_plugin_enabled"], true);
+    assert_eq!(body["unconditionally_denied"], json!(["Bash"]));
+}
+
+// R8 #4 — `unconditionally_denied` must only count tools that were in
+// the candidate set. A deny rule for a tool the agent already wouldn't
+// see (because allowed_tools excluded it) is NOT a "strip" — the UI
+// summary "N tools stripped before the model sees the list" would
+// otherwise overstate.
+#[cfg(feature = "permission")]
+#[tokio::test]
+async fn permission_preview_unconditionally_denied_intersects_candidate() {
+    let router = make_permission_preview_app().await;
+    seed_provider_and_model(&router).await;
+    let (status, _) = request_json(
+        &router,
+        Method::POST,
+        "/v1/config/agents",
+        Some(json!({
+            "id": "denied-outside-candidate-agent",
+            "model_id": "stub-model",
+            "system_prompt": "deny rules target tools outside candidate set",
+            "plugin_ids": ["permission"],
+            // Candidate set is just Bash; the deny rule targets a
+            // glob the agent never had access to.
+            "allowed_tools": ["Bash"],
+            "sections": {
+                "permission": {
+                    "default_behavior": "ask",
+                    "rules": [
+                        { "tool": "mcp__db__*", "behavior": "deny" }
+                    ]
+                }
+            }
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, body) = request_json(
+        &router,
+        Method::GET,
+        "/v1/agents/denied-outside-candidate-agent/permission-preview",
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "body={body}");
+    assert_eq!(body["candidate_tools"], json!(["Bash"]));
+    // `mcp__db__query` etc. matched the deny rule but they were never
+    // in the candidate set — they are NOT counted as "stripped".
+    assert_eq!(body["unconditionally_denied"], json!([]));
+    assert_eq!(body["effective_tools"], json!(["Bash"]));
+}
+
+// R10 #1 — agent not found must return 404, NOT the 404 the client
+// previously interpreted as "permission feature not compiled". The
+// route is registered unconditionally and returns 503 only when the
+// `permission` feature is off (see permission_preview_route_returns_503_when_feature_disabled
+// in the `cfg(not(feature = "permission"))` test module).
+#[cfg(feature = "permission")]
+#[tokio::test]
+async fn permission_preview_404_body_distinguishes_missing_agent() {
+    let router = make_permission_preview_app().await;
+    let (status, body) = request_json(
+        &router,
+        Method::GET,
+        "/v1/agents/ghost-agent/permission-preview",
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    let err = body
+        .get("error")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default();
+    assert!(
+        err.contains("agent not found"),
+        "404 body must identify the missing agent (got: {err})"
+    );
+}
+
+// R10 #3 — `args_conditional_rules` must not list rules whose tool
+// target is outside the candidate set. Such rules can never bite at
+// runtime; the operator would mistake them for "still gating tools the
+// model can call".
+#[cfg(feature = "permission")]
+#[tokio::test]
+async fn permission_preview_args_conditional_drops_rules_outside_candidate() {
+    let router = make_permission_preview_app().await;
+    seed_provider_and_model(&router).await;
+    let (status, _) = request_json(
+        &router,
+        Method::POST,
+        "/v1/config/agents",
+        Some(json!({
+            "id": "args-cond-outside-candidate-agent",
+            "model_id": "stub-model",
+            "system_prompt": "args-conditional rule targets non-candidate tool",
+            "plugin_ids": ["permission"],
+            // Candidate is just `Bash`; the args-pattern rule targets
+            // `Read` which the agent never had access to.
+            "allowed_tools": ["Bash"],
+            "sections": {
+                "permission": {
+                    "default_behavior": "ask",
+                    "rules": [
+                        { "tool": "Read(/etc/*)", "behavior": "deny" }
+                    ]
+                }
+            }
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, body) = request_json(
+        &router,
+        Method::GET,
+        "/v1/agents/args-cond-outside-candidate-agent/permission-preview",
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "body={body}");
+    // The Read(/etc/*) rule must NOT show up; Read is outside candidate.
+    assert_eq!(body["args_conditional_rules"], json!([]));
+}
+
+// R12 #1 — `effective_tools = candidate ∖ unconditionally_denied`.
+// An args-conditional rule on an unconditionally-denied tool cannot
+// fire at runtime (the tool is stripped before any call reaches the
+// permission layer), so the preview must not list it.
+#[cfg(feature = "permission")]
+#[tokio::test]
+async fn permission_preview_drops_args_rules_on_unconditionally_denied_tools() {
+    let router = make_permission_preview_app().await;
+    seed_provider_and_model(&router).await;
+    let (status, _) = request_json(
+        &router,
+        Method::POST,
+        "/v1/config/agents",
+        Some(json!({
+            "id": "args-on-denied-agent",
+            "model_id": "stub-model",
+            "system_prompt": "args rule on a denied tool",
+            "plugin_ids": ["permission"],
+            "allowed_tools": ["Bash", "Read"],
+            "sections": {
+                "permission": {
+                    "default_behavior": "ask",
+                    "rules": [
+                        // Bash is unconditionally denied.
+                        { "tool": "Bash", "behavior": "deny" },
+                        // Args-conditional rule on the SAME tool —
+                        // can never bite once Bash is stripped.
+                        { "tool": "Bash(npm *)", "behavior": "ask" }
+                    ]
+                }
+            }
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, body) = request_json(
+        &router,
+        Method::GET,
+        "/v1/agents/args-on-denied-agent/permission-preview",
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "body={body}");
+    assert_eq!(body["unconditionally_denied"], json!(["Bash"]));
+    assert_eq!(body["effective_tools"], json!(["Read"]));
+    // The Bash(npm *) ask rule must NOT show — Bash is already
+    // stripped before any call reaches the permission layer.
+    assert_eq!(
+        body["args_conditional_rules"],
+        json!([]),
+        "args rule on an unconditionally-denied tool must be dropped"
+    );
+}
+
+// R12 #6 — Sections-less agent: the `permission` plugin is loaded but
+// the agent never wrote a `sections.permission` entry. `AgentSpec::config`
+// returns `Config::default()` in this case, so the preview should
+// succeed with the default behavior and no rules — NOT 400.
+#[cfg(feature = "permission")]
+#[tokio::test]
+async fn permission_preview_handles_missing_permission_section() {
+    let router = make_permission_preview_app().await;
+    seed_provider_and_model(&router).await;
+    let (status, _) = request_json(
+        &router,
+        Method::POST,
+        "/v1/config/agents",
+        Some(json!({
+            "id": "permission-no-section-agent",
+            "model_id": "stub-model",
+            "system_prompt": "permission plugin loaded, no section",
+            "plugin_ids": ["permission"],
+            "allowed_tools": ["Bash"],
+            // No `sections.permission` entry at all.
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, body) = request_json(
+        &router,
+        Method::GET,
+        "/v1/agents/permission-no-section-agent/permission-preview",
+        None,
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "missing permission section must NOT error — defaults apply: body={body}"
+    );
+    assert_eq!(body["permission_plugin_enabled"], true);
+    // Default behavior is `ask` (PermissionRulesConfig::default()).
+    assert_eq!(body["default_behavior"], "ask");
+    assert_eq!(body["unconditionally_denied"], json!([]));
+    assert_eq!(body["args_conditional_rules"], json!([]));
+    assert_eq!(body["candidate_tools"], json!(["Bash"]));
+    assert_eq!(body["effective_tools"], json!(["Bash"]));
 }

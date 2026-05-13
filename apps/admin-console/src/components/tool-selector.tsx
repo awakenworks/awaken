@@ -19,13 +19,17 @@ interface ToolSelectorProps {
   /// `undefined` or `null` = mode "all"; explicit list = mode "custom".
   /// (Backend serializes `Option<Vec<String>>` as JSON null, so accept both.)
   value: string[] | null | undefined;
-  onChange: (next: string[] | undefined) => void;
+  /// Selection changes emit `null` (not `undefined`) for the "all" /
+  /// "block none" radio. `null` is an explicit override on the wire,
+  /// which is what customized agents need — `undefined` would land in
+  /// the save-path's clear list and DELETE the override, re-inheriting
+  /// the base record's restricted list (R8 #1).
+  onChange: (next: string[] | null) => void;
   tools: ToolInfo[];
-  /// Default mode. "include" matches `allowed_tools` semantics where
-  /// undefined means "every tool". "exclude" matches `excluded_tools`
-  /// semantics where undefined means "exclude none" — but the storage
-  /// shape is identical (string[] | undefined), so we can reuse the
-  /// component with a different label set.
+  /// "include" matches `allowed_tools` semantics (default = every tool
+  /// allowed). "exclude" matches `excluded_tools` (default = no tool
+  /// excluded). The wire-shape is identical but checkbox semantics
+  /// invert — the helpers know the difference, so always pass `variant`.
   variant?: "include" | "exclude";
 }
 
@@ -91,15 +95,15 @@ export function ToolSelector({
   const labels = LABELS_BY_VARIANT[variant];
 
   function setMode(next: ToolSelectionMode) {
-    onChange(applyToolSelectionMode(value, next, allToolIds));
+    onChange(applyToolSelectionMode(value, next, allToolIds, variant));
   }
 
   function toggleTool(toolId: string, checked: boolean) {
-    onChange(nextAllowedTools(value, allToolIds, toolId, checked));
+    onChange(nextAllowedTools(value, allToolIds, toolId, checked, variant));
   }
 
   function toggleGroup(groupToolIds: string[], selected: boolean) {
-    onChange(setGroupSelection(value, allToolIds, groupToolIds, selected));
+    onChange(setGroupSelection(value, allToolIds, groupToolIds, selected, variant));
   }
 
   return (
@@ -186,7 +190,7 @@ export function ToolSelector({
             <div className="mt-4 space-y-5">
               {filteredGroups.map((group) => {
                 const groupIds = group.tools.map((tool) => tool.id);
-                const state = groupSelectionState(value, groupIds);
+                const state = groupSelectionState(value, groupIds, variant);
                 return (
                   <div
                     key={group.source.key}
@@ -198,7 +202,7 @@ export function ToolSelector({
                           {group.source.label}
                         </span>
                         <span className="text-xs text-fg-soft">
-                          {summariseSelection(state, groupIds.length, value, groupIds)}
+                          {summariseSelection(state, groupIds.length, value, groupIds, variant)}
                         </span>
                       </div>
                       <div className="flex gap-2 text-xs font-medium">
@@ -220,7 +224,7 @@ export function ToolSelector({
                     </div>
                     <div className="mt-3 grid gap-2 md:grid-cols-2 xl:grid-cols-3">
                       {group.tools.map((tool) => {
-                        const checked = isToolAllowed(value, tool.id);
+                        const checked = isToolAllowed(value, tool.id, variant);
                         return (
                           <label
                             key={tool.id}
@@ -302,13 +306,14 @@ function summariseSelection(
   total: number,
   value: string[] | null | undefined,
   groupToolIds: string[],
+  variant: "include" | "exclude",
 ): string {
   if (total === 0) return "0 tools";
   if (state === "all") return `${total} of ${total} selected`;
   if (state === "none") return `0 of ${total} selected`;
   let selected = 0;
   for (const id of groupToolIds) {
-    if (isToolAllowed(value, id)) selected += 1;
+    if (isToolAllowed(value, id, variant)) selected += 1;
   }
   return `${selected} of ${total} selected`;
 }

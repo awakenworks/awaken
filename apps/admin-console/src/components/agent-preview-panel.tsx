@@ -2,6 +2,8 @@ import { DefaultChatTransport } from "ai";
 import { useChat, type UIMessage } from "@ai-sdk/react";
 import { useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { agentPreviewRunUrl, type AgentSpec } from "@/lib/config-api";
+import { adminAuthHeaders } from "@/lib/api/http";
+import { redactSecretString, redactSecretsForDisplay } from "@/lib/agent-editor-helpers";
 import { RecentTracesDrawer } from "@/components/recent-traces-drawer";
 
 interface AgentPreviewPanelProps {
@@ -26,6 +28,12 @@ export function AgentPreviewPanel({ draft }: AgentPreviewPanelProps) {
       new DefaultChatTransport({
         api: agentPreviewRunUrl(),
         prepareSendMessagesRequest: ({ messages }) => ({
+          // R11 #1 — the preview route is admin-only on the server.
+          // Without this header the request 401s; resolving the token
+          // here (rather than in a static `headers` option) lets the
+          // resolver react to a freshly-saved bearer or a dev-env
+          // fallback at send time.
+          headers: adminAuthHeaders(),
           body: {
             threadId: sessionId,
             messages,
@@ -245,29 +253,6 @@ function StatCell({ label, value, title }: { label: string; value: string; title
   );
 }
 
-/**
- * Decide whether a `UIMessage.parts` entry has anything we render today.
- * Shared by `MessageParts` (to choose what to draw) and
- * `hasRenderableContent` (to decide whether to show a bubble at all) so
- * the two cannot drift — drift produces empty bubbles for parts the
- * renderer doesn't know about (e.g. AI SDK metadata / source parts).
- */
-function isRenderablePart(part: unknown): boolean {
-  if (!part || typeof part !== "object" || !("type" in part)) return false;
-  const typed = part as { type: string; text?: unknown };
-  if (typed.type === "step-start") return false;
-  if (typed.type === "text") {
-    return typeof typed.text === "string" && typed.text.length > 0;
-  }
-  if (typed.type === "reasoning") {
-    return typeof typed.text === "string" && typed.text.length > 0;
-  }
-  if (typed.type === "dynamic-tool" || typed.type.startsWith("tool-")) {
-    return true;
-  }
-  return false;
-}
-
 export function MessageParts({ message }: { message: UIMessage }) {
   const rendered: ReactNode[] = [];
   const unknownTypes: string[] = [];
@@ -388,7 +373,10 @@ function ToolInvocation({ part }: { part: ToolPart }) {
               Error
             </div>
             <pre className="mt-1 max-h-48 overflow-auto rounded-md border border-tone-error/30 bg-tone-error/10 p-2 font-mono text-[11px] text-tone-error">
-              {part.errorText}
+              {/* R12 #3 — tool error text often quotes the offending
+                  Authorization header / api_key in plaintext. Scrub
+                  before rendering. */}
+              {redactSecretString(part.errorText)}
             </pre>
           </>
         ) : part.output !== undefined ? (
@@ -435,7 +423,30 @@ const TOOL_TONE_STYLE: Record<"neutral" | "info" | "success" | "warn" | "error",
 };
 
 export function hasRenderableContent(message: UIMessage): boolean {
-  return message.parts.some(isRenderablePart);
+  // A bubble is worth drawing when MessageParts would emit at least one
+  // visible element. Mirrors the render path's three cases:
+  //   1. Known content with payload (text/reasoning/tool).
+  //   2. Unknown SDK type → collapsed into the unrecognized-parts debug
+  //      fallback. R8 #4: previously dropped here, which contradicted
+  //      the PR's "unknown parts collapse into a debug fallback" goal.
+  //   3. step-start / empty text / empty reasoning → MessageParts skips
+  //      these silently; nothing reaches the DOM.
+  return message.parts.some(isDisplayablePart);
+}
+
+function isDisplayablePart(part: unknown): boolean {
+  if (!part || typeof part !== "object" || !("type" in part)) return false;
+  const typed = part as { type: string; text?: unknown };
+  if (typed.type === "step-start") return false;
+  if (typed.type === "text" || typed.type === "reasoning") {
+    return typeof typed.text === "string" && typed.text.length > 0;
+  }
+  if (typed.type === "dynamic-tool" || typed.type.startsWith("tool-")) {
+    return true;
+  }
+  // Anything else lands in the unrecognized-parts debug fallback —
+  // worth showing the bubble for it.
+  return true;
 }
 
 function countToolCalls(message: UIMessage): number {
@@ -449,11 +460,19 @@ function countToolCalls(message: UIMessage): number {
 function formatJson(value: unknown): string {
   if (value === undefined) return "(no value)";
   if (value === null) return "null";
-  if (typeof value === "string") return value;
+  // R12 #3 — string outputs go through pattern-based credential
+  // scrubbing. A tool can return a plain-string payload (`"Authorization:
+  // Bearer sk-..."`) or a structured object; without this branch the
+  // object case was redacted by key but the string case rendered raw.
+  if (typeof value === "string") return redactSecretString(value);
+  // R10 #5 — tool inputs/outputs can carry API keys, authorization
+  // headers, cookies, JWTs etc. Same redaction pipeline used by audit /
+  // trace / diff so a credential never lands in the preview DOM.
+  const redacted = redactSecretsForDisplay(value);
   try {
-    return JSON.stringify(value, null, 2);
+    return JSON.stringify(redacted, null, 2);
   } catch {
-    return String(value);
+    return String(redacted);
   }
 }
 

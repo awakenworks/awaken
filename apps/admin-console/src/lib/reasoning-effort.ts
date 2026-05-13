@@ -26,14 +26,19 @@ export function reasoningEffortMode(
   return { kind: "custom", value };
 }
 
-/// Convert a UI mode back to the wire-shape stored on AgentSpec.
+/// Convert a UI mode back to the wire-shape stored on AgentSpec. Returns
+/// `null` for "Provider default" so customized agents PATCH an explicit
+/// null override (forcing provider default), not DELETE the override
+/// (which would re-inherit the base record's value). For a user-defined
+/// agent with no base, `null` and absent serialize identically on the
+/// server side — both produce `reasoning_effort: None`.
 export function reasoningEffortValue(
   mode: ReasoningEffortMode,
-): string | number | null | undefined {
-  if (mode.kind === "default") return undefined;
+): string | number | null {
+  if (mode.kind === "default") return null;
   if (mode.kind === "preset") return mode.value;
   const trimmed = mode.value.trim();
-  if (trimmed.length === 0) return undefined;
+  if (trimmed.length === 0) return null;
   const asNumber = Number(trimmed);
   if (!Number.isNaN(asNumber) && /^-?\d+(\.\d+)?$/.test(trimmed)) {
     return asNumber;

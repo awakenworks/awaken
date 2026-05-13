@@ -39,8 +39,13 @@ describe("reasoningEffortMode", () => {
 });
 
 describe("reasoningEffortValue", () => {
-  it("erases the field when the mode is default", () => {
-    expect(reasoningEffortValue({ kind: "default" })).toBeUndefined();
+  it("returns null for default so customized agents PATCH an explicit null override", () => {
+    // Returning null (not undefined) is load-bearing for customized
+    // agents: the patch-diff walks fields and routes undefined into a
+    // DELETE override (which falls back to the base record's value).
+    // The "Provider default" UI choice must override the base with an
+    // explicit null instead.
+    expect(reasoningEffortValue({ kind: "default" })).toBeNull();
   });
 
   it("returns the preset string verbatim", () => {
@@ -58,7 +63,7 @@ describe("reasoningEffortValue", () => {
     );
   });
 
-  it("treats a blank custom value as the default", () => {
-    expect(reasoningEffortValue({ kind: "custom", value: "  " })).toBeUndefined();
+  it("treats a blank custom value the same as default (null = provider default override)", () => {
+    expect(reasoningEffortValue({ kind: "custom", value: "  " })).toBeNull();
   });
 });

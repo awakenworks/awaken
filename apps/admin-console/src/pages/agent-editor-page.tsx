@@ -42,6 +42,7 @@ import { useAuditLogInfiniteQuery } from "@/lib/query/hooks/audit";
 import { qk } from "@/lib/query/keys";
 import { invalidateConfigMutation } from "@/lib/query/invalidation";
 import {
+  canonicalStringify,
   cloneAgentSpecForEditor,
   deepEqualCanonical,
   diffPatchableAgentFields,
@@ -50,6 +51,7 @@ import {
   partitionActiveHookFilter,
   redactAgentSpecForDisplay,
   redactEndpointForDisplay,
+  redactSecretsForDisplay,
   togglePluginState,
   unknownAgentSpecFields,
 } from "@/lib/agent-editor-helpers";
@@ -224,6 +226,13 @@ export function AgentEditorPage() {
       return;
     }
     setSaving(true);
+    // Track whether the in-flight save is a multi-request customized
+    // override flow (PATCH + N×DELETE). If it is and any step throws,
+    // the server may already hold a partially-applied state and the UI
+    // would otherwise sit on a stale draft that disagrees with the
+    // server. The catch block refetches the agent record in this case
+    // so the user sees the actual post-failure state.
+    let customizedSaveInFlight = false;
     try {
       const payload = {
         ...spec,
@@ -240,14 +249,27 @@ export function AgentEditorPage() {
         toast.success(`Agent "${created.id}" created`);
         navigate(adminRoutes.agent(created.id), { replace: true });
       } else if (sourceState === "builtin" || sourceState === "customized") {
+        customizedSaveInFlight = true;
         // For Builtin/Customized records, use PATCH /overrides to preserve
         // upgrade tracking. Only patchable fields are included.
-        const patch = diffPatchableAgentFields(spec, originalSpec ?? spec);
-        if (Object.keys(patch).length === 0) {
+        const plan = diffPatchableAgentFields(spec, originalSpec ?? spec);
+        const hasUpserts = Object.keys(plan.patch).length > 0;
+        const hasClears = plan.clear.length > 0;
+        if (!hasUpserts && !hasClears) {
           // Nothing patchable changed; nothing to send.
           toast.success(`Agent "${spec.id}" saved (no patchable changes)`);
         } else {
-          await configApi.patchAgentOverrides(spec.id, patch);
+          // R11 #3 — Combine upserts + clears into a single transactional
+          // PATCH. The server applies both inside one `apply_locked`
+          // guard and emits a single audit event; a failure leaves the
+          // record untouched. Previously the client issued one PATCH
+          // followed by N DELETE calls, which could leave the agent in
+          // a partial state if any DELETE failed.
+          const body: Record<string, unknown> = { ...plan.patch };
+          if (hasClears) {
+            body._clear = plan.clear.map((field) => String(field));
+          }
+          await configApi.patchAgentOverrides(spec.id, body);
           // Refresh spec and meta so the badge updates correctly.
           const [nextSpec, nextMeta] = await Promise.all([
             configApi.get<AgentSpec>("agents", spec.id),
@@ -280,6 +302,37 @@ export function AgentEditorPage() {
       }
     } catch (saveError) {
       toast.error(saveError instanceof Error ? saveError.message : String(saveError));
+      // R8 #5 — Non-atomic customized save: a PATCH may have succeeded
+      // before a subsequent DELETE failed (or vice versa), leaving the
+      // server holding a partial result. Refetch so the UI matches the
+      // actual post-failure state — without this, draft sits where the
+      // user left it and silently disagrees with the persisted record.
+      if (customizedSaveInFlight && !isNew && id) {
+        try {
+          const [nextSpec, nextMeta] = await Promise.all([
+            configApi.get<AgentSpec>("agents", id),
+            getOptionalAgentMeta(id),
+          ]);
+          const hydrated = hydrateAgentSpec(nextSpec);
+          setSpec(hydrated);
+          setSavedSpec(hydrated);
+          setOriginalSpec(hydrated);
+          setAgentMeta(nextMeta);
+          queryClient.setQueryData(qk.config.get("agents", id), hydrated);
+          queryClient.setQueryData(qk.config.meta("agents", id), nextMeta);
+          invalidateConfigMutation(queryClient, "agents", id);
+        } catch (refetchError) {
+          // Refetch itself failed (e.g. network down). The original
+          // saveError is the actionable one; surface the refetch
+          // failure as a secondary toast so the user knows the UI may
+          // also be stale.
+          toast.error(
+            `Could not refresh agent state after save error: ${
+              refetchError instanceof Error ? refetchError.message : String(refetchError)
+            }`,
+          );
+        }
+      }
     } finally {
       setSaving(false);
     }
@@ -558,6 +611,7 @@ export function AgentEditorPage() {
                   capabilities={capabilities}
                   updateField={updateField}
                   agentSaved={!isNew && savedSpec !== null}
+                  savedSpec={savedSpec}
                 />
               )}
               {tab.id === "plugins" && (
@@ -718,10 +772,18 @@ function DiffModal({
   previous: AgentSpec;
   onClose: () => void;
 }) {
-  const changes = computeDiff(
+  // Both specs may carry `endpoint.auth.bearer_token` or similar secrets.
+  // Diff against the REDACTED projection so the modal DOM never holds a
+  // real credential — order-of-display matters because each `change.before`
+  // / `change.after` is rendered through `formatDiffValue` below, and that
+  // path stringifies whatever it's handed.
+  const redactedPrevious = redactSecretsForDisplay(
     previous as unknown as Record<string, unknown>,
+  );
+  const redactedCurrent = redactSecretsForDisplay(
     current as unknown as Record<string, unknown>,
   );
+  const changes = computeDiff(redactedPrevious, redactedCurrent);
   return (
     <div
       role="dialog"
@@ -805,7 +867,10 @@ function computeDiff(
     const path = base ? `${base}.${key}` : key;
     const a = prev?.[key];
     const b = curr?.[key];
-    if (deepEqual(a, b)) continue;
+    // Use canonical deep-equal so object key-order changes don't surface
+    // as spurious diffs — mirrors what the save-path diff and locked-field
+    // compare both do.
+    if (deepEqualCanonical(a, b)) continue;
     if (
       a !== null &&
       b !== null &&
@@ -822,19 +887,13 @@ function computeDiff(
   return out;
 }
 
-function deepEqual(a: unknown, b: unknown): boolean {
-  if (a === b) return true;
-  if (a === null || b === null) return a === b;
-  if (typeof a !== typeof b) return false;
-  if (typeof a !== "object") return false;
-  return JSON.stringify(a) === JSON.stringify(b);
-}
-
 function formatDiffValue(value: unknown): string {
   if (value === undefined) return "(unset)";
   if (value === null) return "null";
   if (typeof value === "string") return value || "(empty string)";
-  return JSON.stringify(value, null, 2);
+  // Defense-in-depth: the caller is expected to have already redacted, but
+  // a future code path that forgets shouldn't end up dumping secrets here.
+  return JSON.stringify(redactSecretsForDisplay(value), null, 2);
 }
 
 function EditorSourceBadge({ state }: { state: ConfigSourceState }) {
@@ -1302,11 +1361,13 @@ function ToolsPanel({
   capabilities,
   updateField,
   agentSaved,
+  savedSpec,
 }: {
   spec: AgentSpec;
   capabilities: Capabilities | null;
   updateField: <K extends keyof AgentSpec>(key: K, value: AgentSpec[K]) => void;
   agentSaved: boolean;
+  savedSpec: AgentSpec | null;
 }) {
   if (!capabilities || capabilities.tools.length === 0) {
     return (
@@ -1338,6 +1399,7 @@ function ToolsPanel({
         spec={spec}
         capabilities={capabilities}
         agentSaved={agentSaved}
+        savedSpec={savedSpec}
       />
     </div>
   );
@@ -1366,12 +1428,17 @@ function AllowedExcludedToolsSection({
   spec,
   capabilities,
   agentSaved,
+  savedSpec,
 }: {
   spec: AgentSpec;
   capabilities: Capabilities;
   /** `true` once the agent exists server-side; the preview endpoint reads
    *  the stored record so it would 404 for an in-flight new draft. */
   agentSaved: boolean;
+  /** The last-saved spec from `useConfigRecordQuery`. The preview gate
+   *  reads this rather than the working draft so the UI never claims a
+   *  preview is available based on an unsaved plugin toggle. */
+  savedSpec: AgentSpec | null;
 }) {
   const visible = useMemo(
     () => computeAllowedTools(capabilities.tools, spec.allowed_tools, spec.excluded_tools),
@@ -1382,13 +1449,55 @@ function AllowedExcludedToolsSection({
   const allowedMode =
     spec.allowed_tools === null || spec.allowed_tools === undefined ? "all" : "custom";
   const allowedSize = spec.allowed_tools?.length ?? total;
-  const permissionPluginEnabled = (spec.plugin_ids ?? []).includes("permission");
+  // Gate on the SAVED spec — not the draft. The preview endpoint reads the
+  // persisted record, so showing/hiding the block based on a dirty draft
+  // would silently lie to the user: "you toggled permission on in the
+  // draft, here's the preview" (but it's actually computed against the
+  // saved version that doesn't have the plugin). Conversely, disabling
+  // the plugin in the draft would hide the preview even though the saved
+  // agent is still permission-gated at runtime.
+  //
+  // "Enabled" also requires `active_hook_filter` to admit permission
+  // hooks. Mirrors the server's runtime: an empty filter runs all hooks;
+  // a non-empty filter only runs the listed plugins' hooks. So a saved
+  // agent with `plugin_ids: ["permission"]` but
+  // `active_hook_filter: ["observability"]` would not run permission
+  // hooks at runtime, and the preview must not claim to show the
+  // post-filter tool set.
+  const savedPluginIds = savedSpec?.plugin_ids ?? [];
+  const savedHookFilter = savedSpec?.active_hook_filter ?? [];
+  const permissionLoaded = savedPluginIds.includes("permission");
+  const permissionHooksActive =
+    savedHookFilter.length === 0 || savedHookFilter.includes("permission");
+  const permissionPluginEnabled = permissionLoaded && permissionHooksActive;
+  // Surface a stale-preview hint when ANY of the fields the preview is
+  // computed from differs between draft and saved. Plugin id toggles,
+  // hook-filter changes, allowed/excluded tool list edits, and edits to
+  // the `permission` section all change what the server-side preview
+  // would return — but the preview query reads only the saved record,
+  // so without this hint the top section (computed from draft) and the
+  // preview block (computed from saved) silently disagree.
+  const draftPluginIds = spec.plugin_ids ?? [];
+  const draftHookFilter = spec.active_hook_filter ?? [];
+  const draftPermissionSection = (spec.sections ?? {})["permission"];
+  const savedPermissionSection = (savedSpec?.sections ?? {})["permission"];
+  const previewInputsDirty =
+    agentSaved &&
+    (canonicalStringify([...draftPluginIds].sort()) !==
+      canonicalStringify([...savedPluginIds].sort()) ||
+      canonicalStringify([...draftHookFilter].sort()) !==
+        canonicalStringify([...savedHookFilter].sort()) ||
+      !deepEqualCanonical(
+        spec.allowed_tools ?? null,
+        savedSpec?.allowed_tools ?? null,
+      ) ||
+      !deepEqualCanonical(
+        spec.excluded_tools ?? null,
+        savedSpec?.excluded_tools ?? null,
+      ) ||
+      !deepEqualCanonical(draftPermissionSection, savedPermissionSection));
   // Fetch the server-computed permission preview when the agent is saved
-  // AND the permission plugin is enabled. The endpoint reads the persisted
-  // record, so we tie the query to spec.id rather than spec content — the
-  // user sees the *saved* effective tools (not pending unsaved edits to
-  // the permission section). The query auto-refetches when the saved spec
-  // changes via queryClient invalidation in the Save path.
+  // AND the saved spec has the permission plugin enabled.
   const previewQuery = useQuery({
     queryKey: qk.agent.permissionPreview(spec.id),
     queryFn: () => configApi.agentPermissionPreview(spec.id),
@@ -1455,12 +1564,25 @@ function AllowedExcludedToolsSection({
       )}
 
       {permissionPluginEnabled ? (
-        <PermissionPreviewBlock
-          agentSaved={agentSaved}
-          loading={previewQuery.isPending && previewQuery.fetchStatus === "fetching"}
-          error={previewQuery.error}
-          preview={previewQuery.data}
-        />
+        <>
+          {previewInputsDirty ? (
+            <div
+              className="mt-4 rounded-md border border-tone-warn/35 bg-tone-warn/10 px-3 py-2 text-xs text-tone-warn"
+              data-testid="permission-preview-dirty-hint"
+            >
+              The tools-after-lists count above reflects your unsaved draft; the permission
+              preview below reflects the <em>saved</em> config. Save to align them — preview
+              inputs (plugins, hook filter, allow/exclude lists, permission rules) have unsaved
+              changes.
+            </div>
+          ) : null}
+          <PermissionPreviewBlock
+            agentSaved={agentSaved}
+            loading={previewQuery.isPending && previewQuery.fetchStatus === "fetching"}
+            error={previewQuery.error}
+            preview={previewQuery.data}
+          />
+        </>
       ) : null}
     </section>
   );
@@ -1737,11 +1859,24 @@ function ActiveHookFilterSection({
   }
 
   function toggle(pluginId: string, checked: boolean) {
+    // R12 #4 — Refuse to uncheck the last entry in Filter mode. The
+    // runtime treats `active_hook_filter == []` the same as absent
+    // ("all hooks run") via `is_empty() || contains(id)` in
+    // `phase/engine.rs`, so silently mapping `[]` back to undefined
+    // would flip the UI radio from Filter → All without the user
+    // touching it — a semantic reversal disguised as a single
+    // checkbox click. Force the user to click "All plugins"
+    // explicitly if that's what they want.
+    if (!checked && value.length === 1 && value[0] === pluginId) {
+      return;
+    }
     const next = checked
       ? Array.from(new Set([...value, pluginId]))
       : value.filter((id) => id !== pluginId);
     onChange(next);
   }
+
+  const isLastSelection = value.length === 1;
 
   function clearStaleEntries() {
     if (stale.length === 0) return;
@@ -1819,24 +1954,44 @@ function ActiveHookFilterSection({
             No plugins are enabled. Enable plugins above before filtering hooks.
           </div>
         ) : (
-          <div className="mt-4 grid gap-2 md:grid-cols-2 xl:grid-cols-3">
-            {pluginIds.map((pluginId) => {
-              const checked = valueSet.has(pluginId);
-              return (
-                <label
-                  key={pluginId}
-                  className="flex items-center gap-2 rounded-xl border border-line bg-soft px-3 py-2 text-sm text-fg"
-                >
-                  <input
-                    type="checkbox"
-                    checked={checked}
-                    onChange={(event) => toggle(pluginId, event.target.checked)}
-                  />
-                  <span className="font-mono text-xs text-fg-strong">{pluginId}</span>
-                </label>
-              );
-            })}
-          </div>
+          <>
+            <div className="mt-4 grid gap-2 md:grid-cols-2 xl:grid-cols-3">
+              {pluginIds.map((pluginId) => {
+                const checked = valueSet.has(pluginId);
+                // The last remaining filter entry is locked — switch
+                // to "All plugins" to disable filtering instead.
+                const isLastChecked = checked && isLastSelection;
+                return (
+                  <label
+                    key={pluginId}
+                    className="flex items-center gap-2 rounded-xl border border-line bg-soft px-3 py-2 text-sm text-fg"
+                    title={
+                      isLastChecked
+                        ? "Filter mode requires at least one plugin — switch to All plugins to disable filtering."
+                        : undefined
+                    }
+                  >
+                    <input
+                      type="checkbox"
+                      checked={checked}
+                      disabled={isLastChecked}
+                      onChange={(event) => toggle(pluginId, event.target.checked)}
+                    />
+                    <span className="font-mono text-xs text-fg-strong">{pluginId}</span>
+                  </label>
+                );
+              })}
+            </div>
+            {isLastSelection ? (
+              <p
+                className="mt-2 text-xs text-fg-soft"
+                data-testid="active-hook-filter-last-entry-hint"
+              >
+                Filter mode requires at least one plugin. Switch to{" "}
+                <em>All plugins</em> above to disable filtering entirely.
+              </p>
+            ) : null}
+          </>
         )
       ) : null}
 
@@ -1989,9 +2144,14 @@ function JsonEditorSection({
 }) {
   // The textarea shows a redacted view of the spec (today: just `endpoint`
   // auth secrets) so a real bearer token / api_key never lands in the
-  // admin DOM. The Apply path overlays the real locked fields from the
-  // current spec before checking / persisting, so redaction is purely a
-  // display concern.
+  // admin DOM. The Apply path validates the user's parsed payload
+  // against the redacted display copy FIRST (to detect any edit to a
+  // locked field even when its value reads `***`), and only AFTER the
+  // compare passes does it overlay the real locked-field values from
+  // the current spec back into the candidate. Doing it in this order
+  // is load-bearing — overlaying first would mask user edits to
+  // `endpoint.base_url` / `endpoint.auth.*` / `registry`. See
+  // `mergeLockedFields` and the inline comment in `handleApply`.
   const specSerialized = useMemo(
     () => JSON.stringify(redactAgentSpecForDisplay(spec), null, 2),
     [spec],
@@ -2031,30 +2191,59 @@ function JsonEditorSection({
     // changes)" while the page still looks dirty).
     const unknown = unknownAgentSpecFields(parsedRecord);
     if (unknown.length > 0) {
+      // The allowlist is a front-end-maintained mirror of
+      // `PATCHABLE_AGENT_FIELDS + identity/locked fields`. If the user pastes
+      // a schema field that the backend understands but this admin console
+      // version doesn't know about, the diff/PATCH path can't persist it
+      // and Save would silently drop it. Surface that distinction in the
+      // error: this is a *version* mismatch, not a malformed spec.
       setError(
-        `Unknown top-level field${unknown.length === 1 ? "" : "s"}: ${unknown
-          .map((k) => `\`${k}\``)
-          .join(", ")}. The editor cannot persist these — remove them or update the schema.`,
+        `This admin console version does not recognize ${
+          unknown.length === 1 ? "field" : "fields"
+        }: ${unknown.map((k) => `\`${k}\``).join(", ")}. Either upgrade the console, ` +
+          `or remove the field from this draft.`,
       );
       return;
     }
-    // Overlay the real locked fields onto the parsed payload before any
-    // further check. The textarea showed `***` for redacted endpoint
-    // auth; without this overlay, `lockedFieldChange` would always flag
-    // endpoint as "changed" the moment an endpoint is present and Apply
-    // would be impossible.
-    const withRealLockedFields = mergeLockedFields(parsedRecord, spec);
+    // R12 #5 — Identity / timestamp fields are server-managed; the
+    // candidate constructed below overwrites them from `spec`
+    // unconditionally. If we let an edit slip through, Apply would
+    // claim success while silently discarding the user's change.
+    // Compare canonically so re-indenting / key-order tweaks aren't
+    // mistaken for an edit.
+    const IDENTITY_FIELDS: Array<keyof AgentSpec> = ["id", "created_at", "updated_at"];
+    for (const field of IDENTITY_FIELDS) {
+      if (!(field in parsedRecord)) continue;
+      if (!deepEqualCanonical(parsedRecord[field], spec[field])) {
+        setError(
+          `\`${field}\` is a server-managed identity / timestamp field and can't be edited from Raw JSON. Revert it to its current value to apply.`,
+        );
+        return;
+      }
+    }
     // `endpoint` and `registry` are provenance / runtime-locality fields
-    // not user-editable through the editor. Even though redaction is now
-    // overlaid, a user could still try to change a non-secret subfield
-    // (`base_url`, `backend`, `target`, …); lockedFieldChange catches that.
-    const lockedField = lockedFieldChange(spec, withRealLockedFields);
+    // not user-editable through the editor. Compare the PARSED payload
+    // against the redacted spec the textarea was seeded from — equality
+    // means the user didn't touch the locked fields (any `***` stayed
+    // `***`). If anything differs (a real bearer-token edit, a
+    // `base_url` swap, a `registry` flip, etc.) we reject the Apply
+    // entirely. Doing this BEFORE `mergeLockedFields` is mandatory: the
+    // overlay overwrites parsed.endpoint with spec.endpoint, so any
+    // post-overlay compare would always read "equal" and silently drop
+    // the user's edit.
+    const displaySpec = redactAgentSpecForDisplay(spec);
+    const lockedField = lockedFieldChange(displaySpec, parsedRecord);
     if (lockedField) {
       setError(
         `\`${lockedField}\` can't be changed from the editor — it's a provenance / runtime-locality field. Revert the key to its current value to apply.`,
       );
       return;
     }
+    // Now overlay the real locked-field values onto the parsed payload so
+    // the candidate carries the actual `endpoint.auth.bearer_token` (not
+    // the `***` placeholder the textarea showed). Redaction stays purely
+    // a display concern from here on.
+    const withRealLockedFields = mergeLockedFields(parsedRecord, spec);
     // Build the would-be-applied payload (identity fields are preserved by
     // replaceSpec) and let the server type-check the rest before we mutate
     // editor state. The same validate endpoint backs the Validate button so
@@ -2179,6 +2368,19 @@ function ContextPolicySection({
     onChange({ ...policy, [key]: next });
   }
 
+  /** Parse a token-count input. Ignores blank / non-numeric / < `min`
+   *  values: a half-typed clear-and-retype flow would otherwise flash the
+   *  draft to `Number("") || 0 === 0`, which collides with the `min={1}`
+   *  on `max_context_tokens` / `max_output_tokens` and locks Save behind
+   *  a "validation failed" toast that the user didn't actually trigger.
+   *  Returning `undefined` here keeps the previous value displayed until
+   *  the user types something valid. */
+  function parseTokenInput(value: string, min: number): number | undefined {
+    const parsed = Number(value);
+    if (!Number.isFinite(parsed) || parsed < min) return undefined;
+    return parsed;
+  }
+
   return (
     <section className="rounded-md border border-line bg-surface p-5 shadow-sm">
       <div className="flex flex-wrap items-start justify-between gap-3">
@@ -2208,9 +2410,10 @@ function ContextPolicySection({
               type="number"
               min={1}
               value={policy.max_context_tokens}
-              onChange={(event) =>
-                update("max_context_tokens", Number(event.target.value) || 0)
-              }
+              onChange={(event) => {
+                const next = parseTokenInput(event.target.value, 1);
+                if (next !== undefined) update("max_context_tokens", next);
+              }}
               className="w-full rounded-xl border border-line-strong px-3 py-2 text-sm text-fg-strong outline-none transition focus:border-line-strong"
             />
           </Field>
@@ -2219,7 +2422,10 @@ function ContextPolicySection({
               type="number"
               min={1}
               value={policy.max_output_tokens}
-              onChange={(event) => update("max_output_tokens", Number(event.target.value) || 0)}
+              onChange={(event) => {
+                const next = parseTokenInput(event.target.value, 1);
+                if (next !== undefined) update("max_output_tokens", next);
+              }}
               className="w-full rounded-xl border border-line-strong px-3 py-2 text-sm text-fg-strong outline-none transition focus:border-line-strong"
             />
           </Field>
@@ -2388,14 +2594,25 @@ function HistoryPanel({
 
   async function handleRestore(event: AuditEvent) {
     const targetSpec = event.action === "delete" ? event.before : event.after;
-    // Mask secret-bearing keys (today: endpoint auth fields) before they
-    // land in the confirm-dialog DOM. The real values survive in the
-    // editor's spec state and are still what gets POSTed back to the
-    // restore endpoint; redaction is purely a display concern.
-    const redactedCurrent = redactAgentSpecForDisplay(spec);
+    // R12 #2 — Two-layer redaction before the confirm-dialog DOM:
+    //   1. `redactAgentSpecForDisplay` applies default-deny on
+    //      `endpoint.auth` (every key except `type`).
+    //   2. `redactSecretsForDisplay` then walks the whole tree and
+    //      masks pattern-matched secret keys anywhere — `sections.*`
+    //      is a free-form `Record<string, unknown>` and can carry
+    //      plugin / provider credentials (`api_key`, `bearer_token`,
+    //      `cookie`, `jwt`, etc.). Without the second pass, a restore
+    //      preview of an agent whose `sections.observability.api_key`
+    //      contained a live key would render that key into the DOM.
+    // The real values survive in the editor's spec state and are still
+    // what gets POSTed back to the restore endpoint; redaction is
+    // purely a display concern.
+    const redactedCurrent = redactSecretsForDisplay(redactAgentSpecForDisplay(spec));
     const redactedTarget =
       targetSpec && typeof targetSpec === "object"
-        ? redactAgentSpecForDisplay(targetSpec as unknown as AgentSpec)
+        ? redactSecretsForDisplay(
+            redactAgentSpecForDisplay(targetSpec as unknown as AgentSpec),
+          )
         : null;
     const confirmed = await confirm({
       title: "Restore agent to this version?",
@@ -2608,13 +2825,17 @@ function HistoryEventPanel({ event, onClose }: { event: AuditEvent; onClose: () 
           <div>
             <p className="mb-2 text-xs font-medium uppercase tracking-wide text-fg-soft">Before</p>
             <pre className="overflow-auto rounded-xl border border-line bg-soft p-3 text-xs leading-relaxed text-fg">
-              {event.before != null ? JSON.stringify(event.before, null, 2) : "—"}
+              {event.before != null
+                ? JSON.stringify(redactSecretsForDisplay(event.before), null, 2)
+                : "—"}
             </pre>
           </div>
           <div>
             <p className="mb-2 text-xs font-medium uppercase tracking-wide text-fg-soft">After</p>
             <pre className="overflow-auto rounded-xl border border-line bg-soft p-3 text-xs leading-relaxed text-fg">
-              {event.after != null ? JSON.stringify(event.after, null, 2) : "—"}
+              {event.after != null
+                ? JSON.stringify(redactSecretsForDisplay(event.after), null, 2)
+                : "—"}
             </pre>
           </div>
         </div>

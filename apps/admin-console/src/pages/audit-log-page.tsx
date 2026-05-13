@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { ConfigApiError } from "@/lib/api";
+import { redactSecretsForDisplay } from "@/lib/agent-editor-helpers";
 
 /** Quote a CSV cell per RFC 4180 (double-quote any cell containing , " or \n). */
 function csvCell(v: string): string {
@@ -406,7 +407,10 @@ function EventPanel({ event, onClose }: { event: AuditEvent; onClose: () => void
             <p className="mb-2 text-xs font-medium uppercase tracking-wide text-fg-soft">Before</p>
             <pre className="overflow-auto rounded-xl border border-line bg-soft p-3 text-xs leading-relaxed text-fg">
               {event.before != null ? (
-                JSON.stringify(event.before, null, 2)
+                // Audit snapshots can contain a full AgentSpec, including
+                // `endpoint.auth.bearer_token`. Mask before rendering so
+                // the admin DOM never carries a real credential.
+                JSON.stringify(redactSecretsForDisplay(event.before), null, 2)
               ) : (
                 <span className="text-fg-faint">—</span>
               )}
@@ -416,7 +420,7 @@ function EventPanel({ event, onClose }: { event: AuditEvent; onClose: () => void
             <p className="mb-2 text-xs font-medium uppercase tracking-wide text-fg-soft">After</p>
             <pre className="overflow-auto rounded-xl border border-line bg-soft p-3 text-xs leading-relaxed text-fg">
               {event.after != null ? (
-                JSON.stringify(event.after, null, 2)
+                JSON.stringify(redactSecretsForDisplay(event.after), null, 2)
               ) : (
                 <span className="text-fg-faint">—</span>
               )}

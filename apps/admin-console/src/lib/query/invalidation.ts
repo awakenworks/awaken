@@ -15,6 +15,14 @@ export function invalidateConfigMutation(queryClient: QueryClient, namespace: st
     if (namespace === "mcp-servers") {
       void queryClient.invalidateQueries({ queryKey: qk.mcp.status(id) });
     }
+    if (namespace === "agents") {
+      // The permission-preview API reads the persisted agent spec to
+      // compute effective tools, so any agent save / reset / restore
+      // must invalidate it. Without this, the editor would keep showing
+      // the previous effective list for `staleTime` after a permission
+      // section edit was saved.
+      void queryClient.invalidateQueries({ queryKey: qk.agent.permissionPreview(id) });
+    }
   }
 
   if (NAV_HEALTH_NAMESPACES.has(namespace)) {

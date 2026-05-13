@@ -1,55 +1,129 @@
-/// Backend serializes `Option<Vec<String>>` as JSON `null` when None, which
-/// becomes JS `null` after parsing. Treat null and undefined identically as
-/// "no explicit list set" — the default-all sentinel for inclusion semantics.
-export function isToolAllowed(
-  allowedTools: string[] | null | undefined,
+/// Variant-aware tool selection helpers.
+///
+/// `ToolSelector` is used for two AgentSpec fields with opposite semantics:
+///
+///   - `allowed_tools` (variant `"include"`)
+///       null / undefined → every published tool is allowed (default)
+///       string[]         → only these tools are allowed
+///
+///   - `excluded_tools` (variant `"exclude"`)
+///       null / undefined → no tool is excluded (default)
+///       string[]         → these tools are removed from the allow-list
+///
+/// The wire-shape (`Option<Vec<String>>`) is identical for both, so we
+/// route through a single component, but the *semantics* (what `null`
+/// means, what a checkbox "checked" means, what to seed on mode toggle)
+/// are inverted. These helpers carry an explicit `variant` so the
+/// component never gets the wrong default — silently emitting "all tools
+/// excluded" on a Custom-exclusion toggle was R8 #1.
+///
+/// Mode toggles emit an explicit `null` for "all" (include) / "block
+/// none" (exclude) rather than `undefined`. For customized agents this
+/// matters: a `null` patch overrides the base record's restricted list
+/// with an explicit "no whitelist" / "no blacklist" override; a
+/// `undefined` value would land in the save-path's clear list and
+/// DELETE the override, re-inheriting the base's restriction — the
+/// opposite of what the user picked.
+
+export type ToolSelectionVariant = "include" | "exclude";
+
+/// Whether a tool's checkbox should render checked.
+///
+/// - include: checked = "tool is in the allow-list". Defaults to true on
+///   null/undefined (no whitelist means every tool is allowed).
+/// - exclude: checked = "tool is in the exclude-list". Defaults to false
+///   on null/undefined (no blacklist means no tool is excluded).
+export function isToolSelected(
+  value: string[] | null | undefined,
   toolId: string,
+  variant: ToolSelectionVariant = "include",
 ): boolean {
-  return allowedTools ? allowedTools.includes(toolId) : true;
+  if (variant === "exclude") {
+    return value ? value.includes(toolId) : false;
+  }
+  return value ? value.includes(toolId) : true;
 }
 
-export function nextAllowedTools(
-  allowedTools: string[] | null | undefined,
+/// Backward-compat alias — older include-only call sites.
+export const isToolAllowed = isToolSelected;
+
+/// Compute the next value after a checkbox toggle.
+///
+/// For include: `checked` = "add to allow-list".
+/// For exclude: `checked` = "add to exclude-list".
+///
+/// Returns explicit `null` when the resulting set means "default
+/// everywhere" (every tool allowed / nothing excluded) so customized
+/// agents persist the user's intent as an override rather than
+/// inheriting the base record.
+export function nextToolSelection(
+  value: string[] | null | undefined,
   allToolIds: string[],
   toolId: string,
   checked: boolean,
-): string[] | undefined {
-  if (checked) {
-    if (!allowedTools) {
-      return undefined;
+  variant: ToolSelectionVariant = "include",
+): string[] | null {
+  if (variant === "exclude") {
+    const current = value ?? [];
+    if (checked) {
+      const next = Array.from(new Set([...current, toolId])).filter((id) =>
+        allToolIds.includes(id),
+      );
+      return next.length === 0 ? null : next;
     }
-
-    const nextAllowed = Array.from(new Set([...allowedTools, toolId])).filter((id) =>
+    if (current.length === 0) return null;
+    const next = current.filter((id) => id !== toolId);
+    return next.length === 0 ? null : next;
+  }
+  // include
+  if (checked) {
+    if (!value) {
+      // Already "all tools allowed"; checking an already-checked tool is
+      // a no-op. Persist as explicit null so customized save emits an
+      // override rather than DELETE-ing it (which would inherit the
+      // base's restricted list).
+      return null;
+    }
+    const next = Array.from(new Set([...value, toolId])).filter((id) =>
       allToolIds.includes(id),
     );
-    return nextAllowed.length >= allToolIds.length ? undefined : nextAllowed;
+    return next.length >= allToolIds.length ? null : next;
   }
-
-  const baseAllowed = allowedTools ?? allToolIds;
+  const baseAllowed = value ?? allToolIds;
   return baseAllowed.filter((id) => id !== toolId);
 }
 
-/// Inclusion semantics — `undefined`/`null` (or missing) means "every tool";
-/// an explicit array means "only these tools".
+/// Backward-compat alias.
+export const nextAllowedTools = nextToolSelection;
+
 export type ToolSelectionMode = "all" | "custom";
 
 export function toolSelectionMode(
-  allowedTools: string[] | null | undefined,
+  value: string[] | null | undefined,
 ): ToolSelectionMode {
-  return allowedTools == null ? "all" : "custom";
+  return value == null ? "all" : "custom";
 }
 
-/// Switch between modes without losing user data. When toggling to "all",
-/// the explicit list is cleared (undefined). When toggling to "custom",
-/// the current list is preserved, falling back to *all* known tools so
-/// the resulting custom set has the same effective behaviour as "all".
+/// Switch between modes without losing user data.
+///
+/// "all" → explicit `null` (forces "all tools" / "block none" as an
+/// override; does NOT mean "inherit base").
+///
+/// "custom" with no prior list:
+///   - include: seeded with every known tool (so checkboxes start
+///     checked and the user deselects to narrow the list).
+///   - exclude: seeded with `[]` (so checkboxes start UNCHECKED — seeding
+///     with every tool would mean every tool is excluded, i.e. the agent
+///     loses access to everything; this was R8 #1).
 export function applyToolSelectionMode(
   current: string[] | null | undefined,
   mode: ToolSelectionMode,
   allToolIds: string[],
-): string[] | undefined {
-  if (mode === "all") return undefined;
-  if (current != null) return current;
+  variant: ToolSelectionVariant = "include",
+): string[] | null {
+  if (mode === "all") return null;
+  if (current && current.length > 0) return current;
+  if (variant === "exclude") return [];
   return [...allToolIds];
 }
 
@@ -146,45 +220,58 @@ const SOURCE_ORDER: Record<ToolSourceKind, number> = {
   mcp: 2,
 };
 
-/// Apply a "select all in group" operation. Returns the new allowed_tools
-/// value, preserving the inclusion semantics: when every tool ends up
-/// selected we collapse to `undefined`.
+/// "Select all" / "Clear" buttons on a group.
+///
+/// For include: selected=true means "allow every tool in this group" —
+/// collapses to `null` when every known tool ends up allowed.
+///
+/// For exclude: selected=true means "exclude every tool in this group" —
+/// collapses to `null` when no tool ends up excluded.
 export function setGroupSelection(
-  allowedTools: string[] | null | undefined,
+  value: string[] | null | undefined,
   allToolIds: string[],
   groupToolIds: string[],
   selected: boolean,
-): string[] | undefined {
-  const baseline = allowedTools ?? allToolIds;
-  const baselineSet = new Set(baseline);
+  variant: ToolSelectionVariant = "include",
+): string[] | null {
+  if (variant === "exclude") {
+    const baseline = new Set(value ?? []);
+    if (selected) {
+      for (const id of groupToolIds) baseline.add(id);
+    } else {
+      for (const id of groupToolIds) baseline.delete(id);
+    }
+    const next = Array.from(baseline).filter((id) => allToolIds.includes(id));
+    return next.length === 0 ? null : next;
+  }
+  const baseline = new Set(value ?? allToolIds);
 
   if (selected) {
-    for (const id of groupToolIds) {
-      baselineSet.add(id);
-    }
+    for (const id of groupToolIds) baseline.add(id);
   } else {
-    for (const id of groupToolIds) {
-      baselineSet.delete(id);
-    }
+    for (const id of groupToolIds) baseline.delete(id);
   }
 
-  if (selected && allToolIds.every((id) => baselineSet.has(id))) {
-    return undefined;
+  if (selected && allToolIds.every((id) => baseline.has(id))) {
+    return null;
   }
 
-  return Array.from(baselineSet).filter((id) => allToolIds.includes(id));
+  return Array.from(baseline).filter((id) => allToolIds.includes(id));
 }
 
-/// Returns the selection state of a group: "all" if every tool in the
-/// group is selected, "none" if zero, or "some" otherwise.
+/// Selection state of a group of tools — used for the per-group "X of N
+/// selected" summary and the indeterminate visual state on group
+/// buttons. "Selected" follows the variant: included for `"include"`,
+/// excluded for `"exclude"`.
 export function groupSelectionState(
-  allowedTools: string[] | null | undefined,
+  value: string[] | null | undefined,
   groupToolIds: string[],
+  variant: ToolSelectionVariant = "include",
 ): "all" | "some" | "none" {
   if (groupToolIds.length === 0) return "none";
   let selected = 0;
   for (const id of groupToolIds) {
-    if (isToolAllowed(allowedTools, id)) selected += 1;
+    if (isToolSelected(value, id, variant)) selected += 1;
   }
   if (selected === 0) return "none";
   if (selected === groupToolIds.length) return "all";

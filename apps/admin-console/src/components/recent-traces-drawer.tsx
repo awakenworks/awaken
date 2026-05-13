@@ -6,6 +6,7 @@ import {
   type TracePage,
   type TraceRunSummary,
 } from "@/lib/config-api";
+import { redactSecretsForDisplay } from "@/lib/agent-editor-helpers";
 
 /**
  * Side drawer that lists recent persisted runs for an agent and lets the
@@ -229,6 +230,15 @@ function RunEventViewer({ runId, onBack }: { runId: string; onBack: () => void }
             ? eventsQuery.error.message
             : String(eventsQuery.error)}
         </div>
+      ) : eventsQuery.data === null ? (
+        // Server build lacks trace persistence (503). Distinct from
+        // "0 events", which would be a successful empty page.
+        <div
+          className="px-4 py-6 text-xs text-fg-soft"
+          data-testid="recent-traces-events-unavailable"
+        >
+          Trace persistence is not configured on this server build.
+        </div>
       ) : (
         <EventList page={eventsQuery.data ?? { events: [], total: 0, next_offset: null }} />
       )}
@@ -261,6 +271,10 @@ function EventList({ page }: { page: TracePage }) {
 
 function EventRow({ event }: { event: TraceEvent }) {
   const kind = typeof event.kind === "string" ? event.kind : "unknown";
+  // Trace event payloads can carry serialized agent specs in fields like
+  // `agent_resolved.endpoint.auth`. Mask defensively before rendering;
+  // the wire `event` is unchanged for any caller that re-reads it.
+  const redacted = redactSecretsForDisplay(event);
   return (
     <details>
       <summary className="flex cursor-pointer items-center gap-2">
@@ -274,7 +288,7 @@ function EventRow({ event }: { event: TraceEvent }) {
         ) : null}
       </summary>
       <pre className="mt-2 max-h-48 overflow-auto rounded-md bg-code-bg px-2 py-2 font-mono text-[10px] text-code-fg">
-        {JSON.stringify(event, null, 2)}
+        {JSON.stringify(redacted, null, 2)}
       </pre>
     </details>
   );

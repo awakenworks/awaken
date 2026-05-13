@@ -5,14 +5,16 @@ import {
   groupSelectionState,
   groupToolsBySource,
   isToolAllowed,
+  isToolSelected,
   nextAllowedTools,
+  nextToolSelection,
   setGroupSelection,
   toolSelectionMode,
   toolSourceFor,
   type ApiToolSource,
 } from "./agent-tool-selection";
 
-describe("agent tool selection", () => {
+describe("agent tool selection (include variant)", () => {
   const allToolIds = ["search", "write", "read"];
 
   it("treats undefined allowed_tools as unrestricted", () => {
@@ -34,10 +36,11 @@ describe("agent tool selection", () => {
     expect(nextAllowedTools([], allToolIds, "read", true)).toEqual(["read"]);
   });
 
-  it("collapses back to undefined when every tool is selected again", () => {
-    expect(nextAllowedTools(["search", "write"], ["search", "write"], "search", true)).toBe(
-      undefined,
-    );
+  it("collapses to explicit null (not undefined) when every tool is selected again", () => {
+    // R8 #1: a customized agent picking "all tools" must PATCH an
+    // explicit null override, not DELETE the override (which would
+    // re-inherit the base's restricted list).
+    expect(nextAllowedTools(["search", "write"], ["search", "write"], "search", true)).toBeNull();
   });
 });
 
@@ -46,15 +49,19 @@ describe("toolSelectionMode", () => {
     expect(toolSelectionMode(undefined)).toBe("all");
   });
 
+  it("classifies explicit null as the default 'all' mode", () => {
+    expect(toolSelectionMode(null)).toBe("all");
+  });
+
   it("treats an explicit list as 'custom', even if it lists every tool", () => {
     expect(toolSelectionMode([])).toBe("custom");
     expect(toolSelectionMode(["search"])).toBe("custom");
   });
 });
 
-describe("applyToolSelectionMode", () => {
-  it("clears the explicit list when switching back to 'all'", () => {
-    expect(applyToolSelectionMode(["search"], "all", ["search", "write"])).toBeUndefined();
+describe("applyToolSelectionMode (include)", () => {
+  it("returns explicit null when switching to 'all' (forces explicit override)", () => {
+    expect(applyToolSelectionMode(["search"], "all", ["search", "write"])).toBeNull();
   });
 
   it("preserves the existing custom list when re-entering custom mode", () => {
@@ -65,6 +72,81 @@ describe("applyToolSelectionMode", () => {
 
   it("seeds custom mode with every known tool when there is no prior list", () => {
     expect(applyToolSelectionMode(undefined, "custom", ["a", "b"])).toEqual(["a", "b"]);
+  });
+});
+
+// R8 #1 — `excluded_tools` shares the wire shape with `allowed_tools` but
+// has inverted defaults: undefined/null = "no tool excluded" (not
+// "every tool excluded"). The component reuses the same helpers with a
+// `variant` discriminator; these tests pin the inverted semantics.
+describe("agent tool selection (exclude variant)", () => {
+  const allToolIds = ["search", "write", "read"];
+
+  it("treats undefined excluded_tools as 'no tool excluded'", () => {
+    expect(isToolSelected(undefined, "search", "exclude")).toBe(false);
+  });
+
+  it("treats null excluded_tools the same as undefined", () => {
+    expect(isToolSelected(null, "search", "exclude")).toBe(false);
+  });
+
+  it("treats an empty list as 'no tool excluded'", () => {
+    expect(isToolSelected([], "search", "exclude")).toBe(false);
+  });
+
+  it("treats an explicit list entry as excluded", () => {
+    expect(isToolSelected(["search"], "search", "exclude")).toBe(true);
+    expect(isToolSelected(["search"], "read", "exclude")).toBe(false);
+  });
+
+  it("checking a tool from null adds only that tool to the excluded list", () => {
+    // R8 #1: without the exclude variant, the previous helpers returned
+    // undefined here — checking a tool would NOT add it to the excluded
+    // list, so the UI checkbox state and the underlying value silently
+    // diverged.
+    expect(nextToolSelection(null, allToolIds, "search", true, "exclude")).toEqual([
+      "search",
+    ]);
+  });
+
+  it("checking another tool appends to the excluded list", () => {
+    expect(
+      nextToolSelection(["search"], allToolIds, "write", true, "exclude"),
+    ).toEqual(["search", "write"]);
+  });
+
+  it("unchecking the last tool collapses to null (explicit 'block none')", () => {
+    expect(
+      nextToolSelection(["search"], allToolIds, "search", false, "exclude"),
+    ).toBeNull();
+  });
+
+  it("unchecking a tool not in the list is a no-op", () => {
+    expect(nextToolSelection(null, allToolIds, "search", false, "exclude")).toBeNull();
+    expect(
+      nextToolSelection(["write"], allToolIds, "search", false, "exclude"),
+    ).toEqual(["write"]);
+  });
+});
+
+describe("applyToolSelectionMode (exclude)", () => {
+  it("custom mode from null seeds with [] (NOT every tool — that would block all tools)", () => {
+    // R8 #1: this was the data-loss bug — the previous helper returned
+    // `[...allToolIds]`, i.e. every tool in `excluded_tools`, so the
+    // moment a user clicked "Custom exclusion" the agent lost access to
+    // every tool.
+    expect(applyToolSelectionMode(undefined, "custom", ["a", "b"], "exclude")).toEqual([]);
+    expect(applyToolSelectionMode(null, "custom", ["a", "b"], "exclude")).toEqual([]);
+  });
+
+  it("custom mode preserves a non-empty existing list", () => {
+    expect(
+      applyToolSelectionMode(["a"], "custom", ["a", "b"], "exclude"),
+    ).toEqual(["a"]);
+  });
+
+  it("'block none' mode emits explicit null (customized save → override)", () => {
+    expect(applyToolSelectionMode(["a"], "all", ["a", "b"], "exclude")).toBeNull();
   });
 });
 
@@ -175,7 +257,7 @@ describe("groupToolsBySource", () => {
   });
 });
 
-describe("groupSelectionState", () => {
+describe("groupSelectionState (include)", () => {
   const groupIds = ["a", "b"];
 
   it("treats undefined allowed_tools as everything selected", () => {
@@ -191,22 +273,72 @@ describe("groupSelectionState", () => {
   });
 });
 
-describe("setGroupSelection", () => {
+describe("groupSelectionState (exclude)", () => {
+  const groupIds = ["a", "b"];
+
+  it("treats undefined excluded_tools as everything UN-selected (block none)", () => {
+    expect(groupSelectionState(undefined, groupIds, "exclude")).toBe("none");
+  });
+
+  it("returns 'all' when every group member is in the excluded list", () => {
+    expect(groupSelectionState(["a", "b"], groupIds, "exclude")).toBe("all");
+  });
+
+  it("returns 'some' when only part of the group is excluded", () => {
+    expect(groupSelectionState(["a"], groupIds, "exclude")).toBe("some");
+  });
+});
+
+describe("setGroupSelection (include)", () => {
   const allToolIds = ["a", "b", "c"];
 
-  it("adds every group tool when selecting", () => {
-    expect(setGroupSelection(["c"], allToolIds, ["a", "b"], true)).toBeUndefined();
+  it("adds every group tool when selecting (collapses to explicit null when complete)", () => {
+    expect(setGroupSelection(["c"], allToolIds, ["a", "b"], true)).toBeNull();
   });
 
   it("removes every group tool when deselecting", () => {
     expect(setGroupSelection(undefined, allToolIds, ["a", "b"], false)).toEqual(["c"]);
   });
 
-  it("collapses to undefined when the result covers every known tool", () => {
-    expect(setGroupSelection([], allToolIds, ["a", "b", "c"], true)).toBeUndefined();
+  it("collapses to explicit null when the result covers every known tool", () => {
+    expect(setGroupSelection([], allToolIds, ["a", "b", "c"], true)).toBeNull();
   });
 
   it("ignores group ids that are not part of the catalog", () => {
     expect(setGroupSelection(["a"], allToolIds, ["a", "z"], false)).toEqual([]);
+  });
+});
+
+describe("setGroupSelection (exclude)", () => {
+  const allToolIds = ["a", "b", "c"];
+
+  it("adds every group tool to the excluded list when 'Select all' is clicked", () => {
+    expect(setGroupSelection(null, allToolIds, ["a", "b"], true, "exclude")).toEqual([
+      "a",
+      "b",
+    ]);
+  });
+
+  it("collapses to explicit null when the excluded list ends up empty", () => {
+    expect(
+      setGroupSelection(["a"], allToolIds, ["a"], false, "exclude"),
+    ).toBeNull();
+  });
+
+  it("removes only the group tools, preserving other excluded entries", () => {
+    expect(
+      setGroupSelection(["a", "c"], allToolIds, ["a"], false, "exclude"),
+    ).toEqual(["c"]);
+  });
+
+  it("does NOT collapse when every tool is excluded — that's an intentional 'block all' state", () => {
+    // Distinct from include semantics: a fully-populated allowed_tools
+    // collapses to "all" because it's a redundant restriction; a fully-
+    // populated excluded_tools is the meaningful "block every tool"
+    // signal and must NOT collapse to null (which would mean the
+    // opposite — "block none").
+    expect(
+      setGroupSelection([], allToolIds, ["a", "b", "c"], true, "exclude"),
+    ).toEqual(["a", "b", "c"]);
   });
 });

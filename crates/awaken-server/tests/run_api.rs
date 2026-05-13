@@ -734,6 +734,207 @@ async fn ai_sdk_agent_preview_runs_with_draft_system_prompt_and_history() {
     );
 }
 
+// R11 #1 — Preview must refuse payloads carrying `endpoint` or
+// `registry`. These provenance fields would let a crafted draft skip
+// local registry validation in `build_preview_registry_set` (which
+// only resolves when `agent.endpoint.is_none()`) and route the run
+// to an arbitrary remote backend.
+#[tokio::test]
+async fn ai_sdk_agent_preview_rejects_endpoint_field() {
+    let test = make_test_app();
+    let (status, body) = post_json(
+        test.router,
+        "/v1/ai-sdk/agent-previews/runs",
+        json!({
+            "agent": {
+                "id": "evil-preview",
+                "model_id": "test-model",
+                "system_prompt": "evil",
+                "max_rounds": 0,
+                "endpoint": {
+                    "backend": "remote",
+                    "base_url": "https://attacker.example.com"
+                }
+            },
+            "messages": [
+                {
+                    "id": "u1",
+                    "role": "user",
+                    "parts": [{ "type": "text", "text": "hello" }]
+                }
+            ]
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "body={body}");
+    assert!(
+        body.contains("endpoint") || body.contains("registry"),
+        "rejection message should name the forbidden field: {body}"
+    );
+}
+
+#[tokio::test]
+async fn ai_sdk_agent_preview_rejects_registry_field() {
+    let test = make_test_app();
+    let (status, body) = post_json(
+        test.router,
+        "/v1/ai-sdk/agent-previews/runs",
+        json!({
+            "agent": {
+                "id": "evil-preview",
+                "model_id": "test-model",
+                "system_prompt": "evil",
+                "max_rounds": 0,
+                "registry": "cloud"
+            },
+            "messages": [
+                {
+                    "id": "u1",
+                    "role": "user",
+                    "parts": [{ "type": "text", "text": "hello" }]
+                }
+            ]
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "body={body}");
+    assert!(
+        body.contains("endpoint") || body.contains("registry"),
+        "rejection message should name the forbidden field: {body}"
+    );
+}
+
+// R11 #1 — Preview must require the admin bearer when one is
+// configured on the server. Without this gate anyone with network
+// access could submit an arbitrary AgentSpec, consume provider
+// credits, and invoke registered tools.
+#[tokio::test]
+async fn ai_sdk_agent_preview_requires_admin_token_when_configured() {
+    let store = Arc::new(InMemoryStore::new());
+    let runtime = Arc::new(
+        AgentRuntimeBuilder::new()
+            .with_model_binding(
+                "test-model",
+                ModelBinding {
+                    provider_id: "mock".into(),
+                    upstream_model: "mock-model".into(),
+                },
+            )
+            .with_provider("mock", Arc::new(ImmediateExecutor))
+            .with_agent_spec(AgentSpec {
+                id: "test-agent".into(),
+                model_id: "test-model".into(),
+                system_prompt: "test".into(),
+                max_rounds: 0,
+                ..Default::default()
+            })
+            .with_thread_run_store(store.clone())
+            .build()
+            .expect("build runtime"),
+    );
+    let mailbox_store = Arc::new(awaken_stores::InMemoryMailboxStore::new());
+    let mailbox = Arc::new(awaken_server::mailbox::Mailbox::new(
+        runtime.clone(),
+        mailbox_store,
+        store.clone(),
+        "test".to_string(),
+        awaken_server::mailbox::MailboxConfig::default(),
+    ));
+    let state = AppState::new(
+        runtime.clone(),
+        mailbox,
+        store.clone(),
+        runtime.resolver_arc(),
+        ServerConfig::default(),
+    )
+    .with_admin_api_bearer_token("expected-token");
+    let router = build_router(&state).with_state(state);
+
+    // No Authorization header → 401.
+    let (status, _) = post_json(
+        router.clone(),
+        "/v1/ai-sdk/agent-previews/runs",
+        json!({
+            "agent": {
+                "id": "preview",
+                "model_id": "test-model",
+                "system_prompt": "p",
+                "max_rounds": 0
+            },
+            "messages": [
+                { "id": "u1", "role": "user", "parts": [{ "type": "text", "text": "hi" }] }
+            ]
+        }),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::UNAUTHORIZED,
+        "unauthenticated must be 401"
+    );
+
+    // Wrong token → 401.
+    let resp = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/ai-sdk/agent-previews/runs")
+                .header("content-type", "application/json")
+                .header("authorization", "Bearer wrong")
+                .body(axum::body::Body::from(
+                    json!({
+                        "agent": {
+                            "id": "preview",
+                            "model_id": "test-model",
+                            "system_prompt": "p",
+                            "max_rounds": 0
+                        },
+                        "messages": [
+                            { "id": "u1", "role": "user", "parts": [{ "type": "text", "text": "hi" }] }
+                        ]
+                    })
+                    .to_string(),
+                ))
+                .expect("request build"),
+        )
+        .await
+        .expect("router handles request");
+    assert_eq!(
+        resp.status(),
+        StatusCode::UNAUTHORIZED,
+        "wrong token must be 401"
+    );
+
+    // Correct token → 200.
+    let resp = router
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/ai-sdk/agent-previews/runs")
+                .header("content-type", "application/json")
+                .header("authorization", "Bearer expected-token")
+                .body(axum::body::Body::from(
+                    json!({
+                        "agent": {
+                            "id": "preview",
+                            "model_id": "test-model",
+                            "system_prompt": "p",
+                            "max_rounds": 0
+                        },
+                        "messages": [
+                            { "id": "u1", "role": "user", "parts": [{ "type": "text", "text": "hi" }] }
+                        ]
+                    })
+                    .to_string(),
+                ))
+                .expect("request build"),
+        )
+        .await
+        .expect("router handles request");
+    assert_eq!(resp.status(), StatusCode::OK, "correct token must succeed");
+}
+
 // ============================================================================
 // List runs (GET /v1/runs)
 // ============================================================================

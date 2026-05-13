@@ -27,18 +27,24 @@ use crate::services::config_service::{ConfigNamespace, ConfigService, ConfigServ
 #[derive(Debug, Clone, Serialize)]
 pub struct PermissionPreviewResponse {
     pub agent_id: String,
-    /// `true` when the agent has the permission plugin in `plugin_ids` AND
-    /// a permission config section. When `false` the `effective_tools` are
-    /// just the candidate set with no further filtering.
+    /// `true` when the permission plugin is loaded (`plugin_ids` contains
+    /// `"permission"`) AND `active_hook_filter` admits permission hooks
+    /// (filter is empty, or explicitly contains `"permission"`). When
+    /// `false` the runtime won't run any permission BeforeInference hooks,
+    /// so `effective_tools` equals `candidate_tools` and no rules are
+    /// surfaced.
     pub permission_plugin_enabled: bool,
     /// Default behavior when no rule matches a call. `None` when the
     /// permission plugin isn't enabled.
     pub default_behavior: Option<String>,
     /// `allowed_tools ∖ excluded_tools` over the full tool registry.
     pub candidate_tools: Vec<String>,
-    /// Tools the BeforeInference hook will unconditionally strip (any rule
-    /// matching `Deny` + exact tool + `args == Any`). Empty when permission
-    /// plugin is disabled.
+    /// Tools from `candidate_tools` that the BeforeInference hook will
+    /// unconditionally strip — i.e. only the deny rules that bite a tool
+    /// the model would otherwise see. Deny rules whose tool target falls
+    /// outside the candidate set (denied tool wasn't allowed to begin
+    /// with) are NOT counted here so the UI's "stripped before model"
+    /// summary doesn't overstate the filter.
     pub unconditionally_denied: Vec<String>,
     /// `candidate_tools ∖ unconditionally_denied`. This is what the model
     /// actually sees in the tool list it's offered. Per-call args-dependent
@@ -92,8 +98,17 @@ pub async fn preview_agent_permissions(
         .registry_set()
         .ok_or(PermissionPreviewError::RegistryUnavailable)?;
     let all_tools: Vec<String> = registries.tools.tool_ids().into_iter().collect();
+    let all_tool_set: HashSet<&str> = all_tools.iter().map(String::as_str).collect();
 
-    // candidate = (allowed.unwrap_or(all)) ∖ excluded
+    // candidate = (allowed ∩ registry).unwrap_or(registry) ∖ excluded
+    //
+    // INTERSECT WITH REGISTRY: an agent's `allowed_tools` is a string list
+    // written into config; nothing forces every entry to correspond to a
+    // currently-registered tool. Without filtering against the registry,
+    // a stale id (renamed plugin, removed MCP server, typo) would show up
+    // in `effective_tools` as if the model could call it — but the
+    // runtime tool catalog never offers it. The preview must mirror what
+    // the model actually sees.
     let excluded: HashSet<&str> = spec
         .excluded_tools
         .as_deref()
@@ -102,7 +117,12 @@ pub async fn preview_agent_permissions(
         .map(String::as_str)
         .collect();
     let candidate_iter: Box<dyn Iterator<Item = String>> = match &spec.allowed_tools {
-        Some(allowed) => Box::new(allowed.iter().cloned()),
+        Some(allowed) => Box::new(
+            allowed
+                .iter()
+                .filter(|tool| all_tool_set.contains(tool.as_str()))
+                .cloned(),
+        ),
         None => Box::new(all_tools.iter().cloned()),
     };
     let mut candidate_tools: Vec<String> = candidate_iter
@@ -111,9 +131,18 @@ pub async fn preview_agent_permissions(
     candidate_tools.sort();
     candidate_tools.dedup();
 
-    // If the permission plugin isn't in the plugin list, there's no
-    // further filtering to do — the model sees the candidate set as-is.
-    let permission_plugin_enabled = spec.plugin_ids.iter().any(|id| id == "permission");
+    // The permission plugin is "enabled" for preview purposes only when it
+    // is both loaded AND its hooks will actually run for this agent. The
+    // runtime's hook dispatcher (phase/engine.rs) filters hooks through
+    // `active_hook_filter`: empty filter = all hooks run, non-empty filter
+    // = only listed plugins' hooks run. If permission is loaded but
+    // filtered out, no BeforeInference filtering happens, so the preview
+    // must report the candidate set verbatim instead of claiming tools
+    // would be stripped.
+    let permission_loaded = spec.plugin_ids.iter().any(|id| id == "permission");
+    let permission_hooks_active = spec.active_hook_filter.is_empty()
+        || spec.active_hook_filter.iter().any(|id| id == "permission");
+    let permission_plugin_enabled = permission_loaded && permission_hooks_active;
     if !permission_plugin_enabled {
         return Ok(PermissionPreviewResponse {
             agent_id: agent_id.to_string(),
@@ -148,20 +177,44 @@ pub async fn preview_agent_permissions(
         }
     })?;
 
-    let denied: HashSet<String> = ruleset
+    // Unconditional deny = exact-tool Deny ∪ (glob/regex Deny + Any args
+    // expanded against the registry). The runtime BeforeInference hook
+    // strips a tool whenever any matching rule denies it without
+    // examining args; the preview must mirror that, so a `Bash(npm *)`
+    // Deny stays in args_conditional_rules but `mcp__db__*` Deny gets
+    // expanded into every tool id matching the glob.
+    let mut denied: HashSet<String> = ruleset
         .unconditionally_denied_tools()
         .into_iter()
         .map(str::to_string)
         .collect();
+    denied.extend(expand_glob_regex_denies(&ruleset, &all_tools));
     let effective_tools: Vec<String> = candidate_tools
         .iter()
         .filter(|tool| !denied.contains(*tool))
         .cloned()
         .collect();
-    let mut unconditionally_denied: Vec<String> = denied.into_iter().collect();
+    // Only tools the model *would* otherwise see are "stripped" by the
+    // permission layer. A deny rule for a tool that was already excluded
+    // by `allowed_tools` / `excluded_tools` (or simply not in the
+    // candidate set for any reason) is not surfaced as a strip — the UI
+    // summary "N tools stripped before the model sees the list" must
+    // count only real strips.
+    let candidate_set: HashSet<&str> = candidate_tools.iter().map(String::as_str).collect();
+    let mut unconditionally_denied: Vec<String> = denied
+        .into_iter()
+        .filter(|tool| candidate_set.contains(tool.as_str()))
+        .collect();
     unconditionally_denied.sort();
 
-    let args_conditional_rules = collect_args_conditional_rules(&ruleset);
+    // R12 #1 — Surface only rules whose target tool the model could
+    // actually call. We filter against `effective_tools` (candidate
+    // minus unconditionally-denied) so that a rule on an unconditionally
+    // denied tool — which the model would never call regardless of args
+    // — does NOT show up as an args-conditional surprise. R10 used
+    // `candidate_tools`, which still listed args rules for tools that
+    // had already been stripped by the BeforeInference hook.
+    let args_conditional_rules = collect_args_conditional_rules(&ruleset, &effective_tools);
 
     Ok(PermissionPreviewResponse {
         agent_id: agent_id.to_string(),
@@ -182,10 +235,18 @@ fn behavior_label(behavior: ToolPermissionBehavior) -> &'static str {
     }
 }
 
-fn collect_args_conditional_rules(ruleset: &PermissionRuleset) -> Vec<ArgConditionalRule> {
+/// `callable_tools` is the set of tool ids the model could actually
+/// invoke at runtime — i.e. `effective_tools = candidate_tools ∖
+/// unconditionally_denied`. Rules targeting tools outside this set
+/// can never fire and are filtered out so the preview doesn't list
+/// stale guards.
+fn collect_args_conditional_rules(
+    ruleset: &PermissionRuleset,
+    callable_tools: &[String],
+) -> Vec<ArgConditionalRule> {
     let mut out = Vec::new();
     for rule in ruleset.rules.values() {
-        if let Some(entry) = describe_args_conditional(rule) {
+        if let Some(entry) = describe_args_conditional(rule, callable_tools) {
             out.push(entry);
         }
     }
@@ -193,19 +254,48 @@ fn collect_args_conditional_rules(ruleset: &PermissionRuleset) -> Vec<ArgConditi
     out
 }
 
-fn describe_args_conditional(rule: &PermissionRule) -> Option<ArgConditionalRule> {
+fn describe_args_conditional(
+    rule: &PermissionRule,
+    callable_tools: &[String],
+) -> Option<ArgConditionalRule> {
     let pattern = match &rule.subject {
         PermissionSubject::Pattern { pattern } => pattern,
         PermissionSubject::Tool { .. } => return None, // tool-only is unconditional
     };
     if matches!(&pattern.args, ArgMatcher::Any) {
         // exact-tool + any-args is unconditional; already captured by
-        // `unconditionally_denied_tools` for Deny. Glob/regex tool with
-        // any-args is conditional on the tool name match but not args —
-        // we still surface it because the user wants to see "any mcp__db__*
-        // gets Ask'd" without it being mistaken for a deny.
+        // `unconditionally_denied_tools` for Deny / behavior-default for
+        // others. Skip.
         if matches!(&pattern.tool, ToolMatcher::Exact(_)) {
             return None;
+        }
+        // Glob/regex tool + any-args + Deny is now expanded against the
+        // registry into the unconditionally-denied set, so it should NOT
+        // also show up here — that would double-count. Allow/Ask glob
+        // rules still get surfaced informationally ("all mcp__db__* are
+        // auto-allowed without confirmation", etc.).
+        if rule.behavior == ToolPermissionBehavior::Deny {
+            return None;
+        }
+    }
+    // R10 #3 / R12 #1 — A rule whose tool target is outside the
+    // callable set (excluded by `excluded_tools`, missing from
+    // `allowed_tools`, unregistered, OR already unconditionally
+    // denied) cannot fire at runtime. Drop it from the preview so the
+    // operator sees only actionable entries.
+    match &pattern.tool {
+        ToolMatcher::Exact(name) => {
+            if !callable_tools.iter().any(|tool| tool == name) {
+                return None;
+            }
+        }
+        ToolMatcher::Glob(_) | ToolMatcher::Regex(_) => {
+            if !callable_tools
+                .iter()
+                .any(|tool| rule.subject.matches_tool(tool))
+            {
+                return None;
+            }
         }
     }
     Some(ArgConditionalRule {
@@ -213,6 +303,44 @@ fn describe_args_conditional(rule: &PermissionRule) -> Option<ArgConditionalRule
         behavior: behavior_label(rule.behavior).to_string(),
         pattern: ToolCallPattern::to_string(pattern),
     })
+}
+
+/// Expand glob/regex Deny rules with `args == Any` into the concrete
+/// tool ids in the registry they match. The runtime BeforeInference hook
+/// strips these without examining call args, so the preview's
+/// `unconditionally_denied` set should include them.
+fn expand_glob_regex_denies(ruleset: &PermissionRuleset, all_tools: &[String]) -> HashSet<String> {
+    let mut out = HashSet::new();
+    for rule in ruleset.rules.values() {
+        if rule.behavior != ToolPermissionBehavior::Deny {
+            continue;
+        }
+        let pattern = match &rule.subject {
+            PermissionSubject::Pattern { pattern } => pattern,
+            // Exact `Tool { .. }` is already handled by
+            // `unconditionally_denied_tools()`.
+            PermissionSubject::Tool { .. } => continue,
+        };
+        // Only any-args Deny is unconditional w.r.t. args. Per-args
+        // patterns stay in `args_conditional_rules`.
+        if !matches!(&pattern.args, ArgMatcher::Any) {
+            continue;
+        }
+        // Exact + any-args is also already handled.
+        if matches!(&pattern.tool, ToolMatcher::Exact(_)) {
+            continue;
+        }
+        // Glob / Regex: walk the registry and add every tool the rule
+        // would deny on any call. `rule.subject.matches_tool(id)`
+        // implicitly tests pattern.args against `Value::Null`, which is
+        // always a match when args is `Any`.
+        for tool_id in all_tools {
+            if rule.subject.matches_tool(tool_id) {
+                out.insert(tool_id.clone());
+            }
+        }
+    }
+    out
 }
 
 fn tool_display(matcher: &ToolMatcher) -> String {
@@ -244,7 +372,8 @@ mod tests {
                 { "tool": "Bash", "behavior": "deny" },
             ]
         }));
-        let entries = collect_args_conditional_rules(&ruleset);
+        let candidate = vec!["Bash".to_string()];
+        let entries = collect_args_conditional_rules(&ruleset, &candidate);
         assert!(entries.is_empty(), "exact tool any-args isn't conditional");
     }
 
@@ -256,7 +385,8 @@ mod tests {
                 { "tool": "Bash(npm *)", "behavior": "allow" },
             ]
         }));
-        let entries = collect_args_conditional_rules(&ruleset);
+        let candidate = vec!["Bash".to_string()];
+        let entries = collect_args_conditional_rules(&ruleset, &candidate);
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].tool, "Bash");
         assert_eq!(entries[0].behavior, "allow");
@@ -264,9 +394,9 @@ mod tests {
     }
 
     #[test]
-    fn args_conditional_surfaces_glob_tool_any_args() {
-        // mcp__db__* (glob tool) + any args is still "tool-name dependent"
-        // — surfaced because the user wants to see it covers a set of
+    fn args_conditional_surfaces_glob_tool_any_args_for_non_deny() {
+        // Glob tool + any args + Allow/Ask is "tool-name dependent" —
+        // surfaced because the user wants to see it covers a set of
         // dynamically-discovered tools.
         let ruleset = ruleset_from_json(json!({
             "default_behavior": "ask",
@@ -274,8 +404,63 @@ mod tests {
                 { "tool": "mcp__db__*", "behavior": "ask" },
             ]
         }));
-        let entries = collect_args_conditional_rules(&ruleset);
+        let candidate = vec!["mcp__db__query".to_string()];
+        let entries = collect_args_conditional_rules(&ruleset, &candidate);
         assert_eq!(entries.len(), 1);
+    }
+
+    // R10 #3 — rules whose tool target is outside the candidate set
+    // can never fire at runtime; the preview must drop them so the
+    // operator doesn't see stale entries for excluded or unregistered
+    // tools.
+    #[test]
+    fn args_conditional_drops_exact_rule_outside_candidate() {
+        let ruleset = ruleset_from_json(json!({
+            "default_behavior": "ask",
+            "rules": [
+                { "tool": "Read(/etc/*)", "behavior": "deny" },
+            ]
+        }));
+        // `Read` is not in candidate (user restricted `allowed_tools` to
+        // just `Bash`, or excluded `Read`, etc.) — the args-conditional
+        // entry should be filtered out.
+        let candidate = vec!["Bash".to_string()];
+        let entries = collect_args_conditional_rules(&ruleset, &candidate);
+        assert!(
+            entries.is_empty(),
+            "rule targeting a non-candidate tool must be dropped"
+        );
+    }
+
+    #[test]
+    fn args_conditional_drops_glob_rule_with_no_candidate_match() {
+        let ruleset = ruleset_from_json(json!({
+            "default_behavior": "ask",
+            "rules": [
+                { "tool": "mcp__db__*", "behavior": "ask" },
+            ]
+        }));
+        // Candidate has no `mcp__db__*` tools — glob doesn't bite
+        // anything the model can call.
+        let candidate = vec!["Bash".to_string(), "Read".to_string()];
+        let entries = collect_args_conditional_rules(&ruleset, &candidate);
+        assert!(
+            entries.is_empty(),
+            "glob rule that matches no candidate tool must be dropped"
+        );
+    }
+
+    #[test]
+    fn args_conditional_keeps_exact_rule_inside_candidate() {
+        let ruleset = ruleset_from_json(json!({
+            "default_behavior": "ask",
+            "rules": [
+                { "tool": "Bash(npm *)", "behavior": "ask" },
+            ]
+        }));
+        let candidate = vec!["Bash".to_string()];
+        let entries = collect_args_conditional_rules(&ruleset, &candidate);
+        assert_eq!(entries.len(), 1, "rule on candidate tool stays");
     }
 
     #[test]
@@ -283,5 +468,109 @@ mod tests {
         assert_eq!(behavior_label(ToolPermissionBehavior::Allow), "allow");
         assert_eq!(behavior_label(ToolPermissionBehavior::Ask), "ask");
         assert_eq!(behavior_label(ToolPermissionBehavior::Deny), "deny");
+    }
+
+    // R7 #3 — glob/regex Deny + any args must be expanded against the
+    // registry into concrete tool ids, not left as an
+    // `args_conditional_rules` note. The runtime BeforeInference hook
+    // would strip these tools without examining args; the preview must
+    // mirror that or it lies about what the model sees.
+    #[test]
+    fn expand_glob_deny_matches_every_registered_tool() {
+        let ruleset = ruleset_from_json(json!({
+            "default_behavior": "ask",
+            "rules": [
+                { "tool": "mcp__db__*", "behavior": "deny" },
+            ]
+        }));
+        let all_tools = vec![
+            "Bash".to_string(),
+            "mcp__db__query".to_string(),
+            "mcp__db__write".to_string(),
+            "mcp__github__list_issues".to_string(),
+        ];
+        let denied = expand_glob_regex_denies(&ruleset, &all_tools);
+        let mut got: Vec<String> = denied.into_iter().collect();
+        got.sort();
+        assert_eq!(got, vec!["mcp__db__query", "mcp__db__write"]);
+    }
+
+    #[test]
+    fn expand_glob_deny_does_not_double_count_exact_tool() {
+        let ruleset = ruleset_from_json(json!({
+            "default_behavior": "ask",
+            "rules": [
+                { "tool": "Bash", "behavior": "deny" },
+            ]
+        }));
+        let all_tools = vec!["Bash".to_string()];
+        let denied = expand_glob_regex_denies(&ruleset, &all_tools);
+        assert!(
+            denied.is_empty(),
+            "exact `Tool` Deny handled by unconditionally_denied_tools()"
+        );
+    }
+
+    #[test]
+    fn expand_glob_deny_skips_per_args_rules() {
+        // `Bash(npm *)` Deny is conditional on args — must NOT be
+        // expanded against the registry, because a `Bash` call with
+        // other args is still permitted.
+        let ruleset = ruleset_from_json(json!({
+            "default_behavior": "ask",
+            "rules": [
+                { "tool": "Bash(npm *)", "behavior": "deny" },
+            ]
+        }));
+        let all_tools = vec!["Bash".to_string()];
+        let denied = expand_glob_regex_denies(&ruleset, &all_tools);
+        assert!(denied.is_empty(), "per-args Deny stays conditional");
+    }
+
+    #[test]
+    fn args_conditional_no_longer_lists_glob_deny_any_args() {
+        // After R7 #3, glob/regex Deny + any args is expanded into
+        // `unconditionally_denied`. To avoid double-display, it must
+        // disappear from args_conditional_rules.
+        let ruleset = ruleset_from_json(json!({
+            "default_behavior": "ask",
+            "rules": [
+                { "tool": "mcp__db__*", "behavior": "deny" },
+            ]
+        }));
+        let candidate = vec!["mcp__db__query".to_string()];
+        let entries = collect_args_conditional_rules(&ruleset, &candidate);
+        assert!(
+            entries.is_empty(),
+            "glob Deny + any-args is now unconditional"
+        );
+    }
+
+    // R12 #1 — Passing the EFFECTIVE set (candidate minus
+    // unconditionally-denied) drops args-conditional rules whose tool
+    // target the model can no longer call. Previously the call site
+    // passed the raw `candidate_tools`, leaving stale entries that
+    // implied "Bash will still be denied when args match" even though
+    // Bash itself was already stripped by the BeforeInference hook.
+    #[test]
+    fn args_conditional_drops_rules_on_unconditionally_denied_tools() {
+        let ruleset = ruleset_from_json(json!({
+            "default_behavior": "ask",
+            "rules": [
+                // Unconditional deny for Bash — strips the tool entirely.
+                { "tool": "Bash", "behavior": "deny" },
+                // Args-conditional rule on the SAME tool — cannot fire
+                // once Bash is removed from the model's tool list.
+                { "tool": "Bash(npm *)", "behavior": "ask" },
+            ]
+        }));
+        // The call site passes effective_tools = candidate ∖ denied.
+        // Here Bash is denied, so it's not in `effective`.
+        let effective = vec!["Read".to_string()];
+        let entries = collect_args_conditional_rules(&ruleset, &effective);
+        assert!(
+            entries.is_empty(),
+            "args-conditional rule on a denied tool must be dropped, got: {entries:?}"
+        );
     }
 }

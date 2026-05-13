@@ -45,15 +45,22 @@ export const agentsApi = {
     ),
 
   /** True effective-tools preview for an agent — runs the permission ruleset
-   *  server-side rather than re-implementing it in TS. Returns `null` when
-   *  the server build lacks the `permission` feature (404). */
+   *  server-side rather than re-implementing it in TS.
+   *
+   *  Returns `null` only when the server build was compiled WITHOUT the
+   *  `permission` feature; the route then returns 503 Service Unavailable
+   *  and the UI renders a "preview unavailable" state.
+   *
+   *  404 means the agent record doesn't exist (stale id, concurrent
+   *  delete, typo). Re-throw so the editor can surface a real error
+   *  instead of misleading the user with "feature not available". */
   agentPermissionPreview: async (id: string): Promise<PermissionPreviewResponse | null> => {
     try {
       return await fetchJson<PermissionPreviewResponse>(
         `${BACKEND_URL}/v1/agents/${encodeURIComponent(id)}/permission-preview`,
       );
     } catch (err) {
-      if (err instanceof ConfigApiError && err.status === 404) return null;
+      if (err instanceof ConfigApiError && err.status === 503) return null;
       throw err;
     }
   },
