@@ -13,12 +13,7 @@ import { useToast } from "@/components/toast-provider";
 import { useConfirmDialog } from "@/components/confirm-dialog";
 import { useUnsavedChangesGuard } from "@/components/unsaved-changes-guard";
 import { useTranslation } from "react-i18next";
-import {
-  AGENT_EDITOR_TABS,
-  type AgentEditorTabId,
-  readTabFromSearch,
-  writeTabToSearch,
-} from "@/lib/editor-tabs";
+import { type AgentEditorTabId, readTabFromSearch, writeTabToSearch } from "@/lib/editor-tabs";
 import { pluginConfigEntryKey } from "@/lib/plugin-config";
 import { reasoningEffortMode } from "@/lib/reasoning-effort";
 import { adminRoutes } from "@/lib/routes";
@@ -32,14 +27,9 @@ import {
   getOptionalAgentMeta,
   hydrateAgentSpec,
 } from "./agent-editor/spec-helpers";
+import { AgentEditorPanels } from "./agent-editor/editor-panels";
 import { EditorSaveBar } from "./agent-editor/editor-save-bar";
 import { StickyEditorHeader } from "./agent-editor/sticky-editor-header";
-import { BasicsPanel } from "./agent-editor/panels/basics-panel";
-import { ToolsPanel } from "./agent-editor/panels/tools-panel";
-import { PluginsPanel } from "./agent-editor/panels/plugins-panel";
-import { DelegatesPanel } from "./agent-editor/panels/delegates-panel";
-import { AdvancedPanel } from "./agent-editor/panels/advanced-panel";
-import { HistoryPanel } from "./agent-editor/panels/history-panel";
 
 export function AgentEditorPage() {
   const navigate = useNavigate();
@@ -457,70 +447,34 @@ export function AgentEditorPage() {
       )}
 
       <div className="grid gap-6 px-6 py-6 md:px-8 xl:grid-cols-[minmax(0,1fr),24rem]">
-        <div className="space-y-6">
-          {AGENT_EDITOR_TABS.map((tab) => (
-            <div
-              key={tab.id}
-              role="tabpanel"
-              id={`panel-${tab.id}`}
-              aria-labelledby={`tab-${tab.id}`}
-              tabIndex={0}
-              hidden={activeTab !== tab.id}
-            >
-              {tab.id === "basics" && (
-                <BasicsPanel
-                  spec={spec}
-                  capabilities={capabilities}
-                  isNew={isNew}
-                  updateField={updateField}
-                  reasoningMode={reasoningMode}
-                  errors={errors}
-                  canResetFields={!isNew && isCustomized}
-                  overriddenFields={overriddenFields}
-                  onResetField={(field) => void handleResetField(field)}
-                />
-              )}
-              {tab.id === "tools" && (
-                <ToolsPanel spec={spec} capabilities={capabilities} updateField={updateField} />
-              )}
-              {tab.id === "plugins" && (
-                <PluginsPanel
-                  spec={spec}
-                  capabilities={capabilities}
-                  configurablePlugins={configurablePlugins}
-                  visiblePluginSchemas={visiblePluginSchemas}
-                  activePluginConfig={activePluginConfig}
-                  setActivePluginConfig={setActivePluginConfig}
-                  togglePlugin={togglePlugin}
-                  updateSection={updateSection}
-                />
-              )}
-              {tab.id === "delegates" && (
-                <DelegatesPanel
-                  spec={spec}
-                  capabilities={capabilities}
-                  toggleDelegate={toggleDelegate}
-                />
-              )}
-              {tab.id === "advanced" && <AdvancedPanel spec={spec} />}
-              {tab.id === "history" && (
-                <HistoryPanel
-                  spec={spec}
-                  isNew={isNew}
-                  refreshKey={historyRefreshKey}
-                  onSpecRestored={(updated) => {
-                    setSpec(updated);
-                    setSavedSpec(updated);
-                    setOriginalSpec(updated);
-                    queryClient.setQueryData(qk.config.get("agents", updated.id), updated);
-                    invalidateConfigMutation(queryClient, "agents", updated.id);
-                    setHistoryRefreshKey((k) => k + 1);
-                  }}
-                />
-              )}
-            </div>
-          ))}
-        </div>
+        <AgentEditorPanels
+          spec={spec}
+          capabilities={capabilities}
+          isNew={isNew}
+          activeTab={activeTab}
+          updateField={updateField}
+          reasoningMode={reasoningMode}
+          errors={errors}
+          canResetFields={!isNew && isCustomized}
+          overriddenFields={overriddenFields}
+          onResetField={(field) => void handleResetField(field)}
+          configurablePlugins={configurablePlugins}
+          visiblePluginSchemas={visiblePluginSchemas}
+          activePluginConfig={activePluginConfig}
+          setActivePluginConfig={setActivePluginConfig}
+          togglePlugin={togglePlugin}
+          updateSection={updateSection}
+          toggleDelegate={toggleDelegate}
+          historyRefreshKey={historyRefreshKey}
+          onSpecRestored={(updated) => {
+            setSpec(updated);
+            setSavedSpec(updated);
+            setOriginalSpec(updated);
+            queryClient.setQueryData(qk.config.get("agents", updated.id), updated);
+            invalidateConfigMutation(queryClient, "agents", updated.id);
+            setHistoryRefreshKey((k) => k + 1);
+          }}
+        />
 
         <AgentPreviewPanel draft={spec} />
       </div>
