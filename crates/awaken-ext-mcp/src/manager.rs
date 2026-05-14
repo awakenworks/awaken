@@ -200,6 +200,22 @@ impl Tool for McpTool {
             ));
         };
         let tool_name = self.tool_name.clone();
+        // Build vendor-attribution metadata from the calling agent/thread/run
+        // identity so the MCP server can correlate, rate-limit, or audit per
+        // tenant. Carried via JSON-RPC `params._meta.awaken/attribution` —
+        // see `McpCallMetadata` for the on-wire shape.
+        let metadata = crate::transport::McpCallMetadata {
+            agent_id: Some(ctx.run_identity.agent_id.clone()),
+            thread_id: Some(ctx.run_identity.thread_id.clone()),
+            run_id: Some(ctx.run_identity.run_id.clone()),
+            call_id: Some(ctx.call_id.clone()),
+            parent_run_id: ctx.run_identity.parent_run_id.clone(),
+            parent_call_id: ctx.run_identity.parent_tool_call_id.clone(),
+        };
+        // Propagate run cancellation to the MCP transport so it can emit
+        // `notifications/cancelled` (spec 2025-06-18 §Cancellation) and
+        // free server-side resources when the agent run is torn down.
+        let cancellation = ctx.cancellation_token.clone();
         let res = match with_runtime_lease(
             &state,
             &self.server_name,
@@ -211,6 +227,8 @@ impl Tool for McpTool {
                     &tool_name,
                     args,
                     Some(progress_tx),
+                    metadata,
+                    cancellation,
                 ));
                 let mut gate = ProgressEmitGate::default();
 
@@ -2002,6 +2020,8 @@ mod tests {
             name: &str,
             _args: Value,
             _progress_tx: Option<mpsc::UnboundedSender<McpProgressUpdate>>,
+            _metadata: crate::transport::McpCallMetadata,
+            _cancellation: Option<awaken_contract::cancellation::CancellationToken>,
         ) -> Result<CallToolResult, McpTransportError> {
             Ok(CallToolResult {
                 content: vec![mcp::ToolContent::Text {
@@ -2030,6 +2050,8 @@ mod tests {
             name: &str,
             _args: Value,
             _progress_tx: Option<mpsc::UnboundedSender<McpProgressUpdate>>,
+            _metadata: crate::transport::McpCallMetadata,
+            _cancellation: Option<awaken_contract::cancellation::CancellationToken>,
         ) -> Result<CallToolResult, McpTransportError> {
             Ok(CallToolResult {
                 content: vec![mcp::ToolContent::Text {
@@ -2064,6 +2086,8 @@ mod tests {
             name: &str,
             _args: Value,
             _progress_tx: Option<mpsc::UnboundedSender<McpProgressUpdate>>,
+            _metadata: crate::transport::McpCallMetadata,
+            _cancellation: Option<awaken_contract::cancellation::CancellationToken>,
         ) -> Result<CallToolResult, McpTransportError> {
             Ok(CallToolResult {
                 content: vec![mcp::ToolContent::Text {
@@ -2098,6 +2122,8 @@ mod tests {
             name: &str,
             _args: Value,
             _progress_tx: Option<mpsc::UnboundedSender<McpProgressUpdate>>,
+            _metadata: crate::transport::McpCallMetadata,
+            _cancellation: Option<awaken_contract::cancellation::CancellationToken>,
         ) -> Result<CallToolResult, McpTransportError> {
             Ok(CallToolResult {
                 content: vec![mcp::ToolContent::Text {
@@ -2146,6 +2172,8 @@ mod tests {
             name: &str,
             _args: Value,
             _progress_tx: Option<mpsc::UnboundedSender<McpProgressUpdate>>,
+            _metadata: crate::transport::McpCallMetadata,
+            _cancellation: Option<awaken_contract::cancellation::CancellationToken>,
         ) -> Result<CallToolResult, McpTransportError> {
             Ok(CallToolResult {
                 content: vec![mcp::ToolContent::Text {
@@ -2192,6 +2220,8 @@ mod tests {
             name: &str,
             _args: Value,
             _progress_tx: Option<mpsc::UnboundedSender<McpProgressUpdate>>,
+            _metadata: crate::transport::McpCallMetadata,
+            _cancellation: Option<awaken_contract::cancellation::CancellationToken>,
         ) -> Result<CallToolResult, McpTransportError> {
             Ok(CallToolResult {
                 content: vec![mcp::ToolContent::Text {
@@ -2241,6 +2271,8 @@ mod tests {
             name: &str,
             _args: Value,
             _progress_tx: Option<mpsc::UnboundedSender<McpProgressUpdate>>,
+            _metadata: crate::transport::McpCallMetadata,
+            _cancellation: Option<awaken_contract::cancellation::CancellationToken>,
         ) -> Result<CallToolResult, McpTransportError> {
             Ok(CallToolResult {
                 content: vec![mcp::ToolContent::Text {
@@ -2305,6 +2337,8 @@ mod tests {
             name: &str,
             _args: Value,
             _progress_tx: Option<mpsc::UnboundedSender<McpProgressUpdate>>,
+            _metadata: crate::transport::McpCallMetadata,
+            _cancellation: Option<awaken_contract::cancellation::CancellationToken>,
         ) -> Result<CallToolResult, McpTransportError> {
             self.calls.lock().unwrap().push(name.to_string());
             Ok(CallToolResult {
@@ -2349,6 +2383,8 @@ mod tests {
             _name: &str,
             _args: Value,
             _progress_tx: Option<mpsc::UnboundedSender<McpProgressUpdate>>,
+            _metadata: crate::transport::McpCallMetadata,
+            _cancellation: Option<awaken_contract::cancellation::CancellationToken>,
         ) -> Result<CallToolResult, McpTransportError> {
             if self.connection_closed {
                 Err(McpTransportError::ConnectionClosed)
@@ -2385,6 +2421,8 @@ mod tests {
             _name: &str,
             _args: Value,
             _progress_tx: Option<mpsc::UnboundedSender<McpProgressUpdate>>,
+            _metadata: crate::transport::McpCallMetadata,
+            _cancellation: Option<awaken_contract::cancellation::CancellationToken>,
         ) -> Result<CallToolResult, McpTransportError> {
             unreachable!()
         }
@@ -2405,6 +2443,8 @@ mod tests {
             name: &str,
             _args: Value,
             _progress_tx: Option<mpsc::UnboundedSender<McpProgressUpdate>>,
+            _metadata: crate::transport::McpCallMetadata,
+            _cancellation: Option<awaken_contract::cancellation::CancellationToken>,
         ) -> Result<CallToolResult, McpTransportError> {
             Ok(CallToolResult {
                 content: vec![mcp::ToolContent::Text {
@@ -2625,6 +2665,8 @@ mod tests {
                 _name: &str,
                 _args: Value,
                 _progress_tx: Option<mpsc::UnboundedSender<McpProgressUpdate>>,
+                _metadata: crate::transport::McpCallMetadata,
+                _cancellation: Option<awaken_contract::cancellation::CancellationToken>,
             ) -> Result<CallToolResult, McpTransportError> {
                 unreachable!()
             }

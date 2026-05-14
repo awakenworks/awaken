@@ -26,8 +26,17 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, Command};
 use tokio::sync::{mpsc, oneshot};
 
+use awaken_contract::cancellation::CancellationToken;
+
 use crate::progress::McpProgressUpdate;
 use crate::sampling::SamplingHandler;
+
+/// Sentinel error string used to distinguish a client-initiated
+/// cancellation from other transport errors at the call boundary. Kept
+/// as a string so the variant set in the upstream `McpTransportError`
+/// crate doesn't need extending — callers match on this exact message
+/// to surface the cancellation upward (e.g. as `ToolError::Cancelled`).
+pub const CANCELLED_BY_CLIENT: &str = "MCP request cancelled by client";
 
 #[cfg(unix)]
 use nix::sys::signal::{Signal, kill};
@@ -99,6 +108,81 @@ struct ListResourcesResult {
     resources: Vec<McpResourceDefinition>,
 }
 
+// ── McpCallMetadata ──
+
+/// Client-side attribution metadata attached to outgoing MCP tool calls
+/// via JSON-RPC `params._meta`. Lets the MCP server identify which agent /
+/// thread / run / call initiated the request so it can do per-agent rate
+/// limiting, per-tenant OAuth, audit, or workflow correlation.
+///
+/// Spec (2025-06-18 §JSON-RPC 2.0 + §Basic) reserves the `_meta` field on
+/// request params for client-controlled metadata. By convention,
+/// vendor-specific keys are namespaced — we use `awaken/attribution` so
+/// our additions don't collide with future MCP spec fields (notably the
+/// existing `progressToken` key, which we continue to set in the same
+/// `_meta` map).
+///
+/// All fields are optional. Empty `McpCallMetadata` is a no-op — no
+/// `awaken/attribution` key is added to `_meta`.
+#[derive(Debug, Clone, Default)]
+pub struct McpCallMetadata {
+    pub agent_id: Option<String>,
+    pub thread_id: Option<String>,
+    pub run_id: Option<String>,
+    pub call_id: Option<String>,
+    pub parent_run_id: Option<String>,
+    pub parent_call_id: Option<String>,
+}
+
+impl McpCallMetadata {
+    /// Serialize set fields into a `Map` under the `awaken/attribution`
+    /// key. No-op if every field is `None`.
+    fn write_into(&self, map: &mut Map<String, Value>) {
+        let mut bag = Map::new();
+        if let Some(v) = &self.agent_id {
+            bag.insert("agent_id".to_string(), Value::String(v.clone()));
+        }
+        if let Some(v) = &self.thread_id {
+            bag.insert("thread_id".to_string(), Value::String(v.clone()));
+        }
+        if let Some(v) = &self.run_id {
+            bag.insert("run_id".to_string(), Value::String(v.clone()));
+        }
+        if let Some(v) = &self.call_id {
+            bag.insert("call_id".to_string(), Value::String(v.clone()));
+        }
+        if let Some(v) = &self.parent_run_id {
+            bag.insert("parent_run_id".to_string(), Value::String(v.clone()));
+        }
+        if let Some(v) = &self.parent_call_id {
+            bag.insert("parent_call_id".to_string(), Value::String(v.clone()));
+        }
+        if !bag.is_empty() {
+            map.insert("awaken/attribution".to_string(), Value::Object(bag));
+        }
+    }
+}
+
+/// Build the `_meta` value for `tools/call` params. Combines the MCP
+/// `progressToken` (when progress is enabled) with optional vendor
+/// attribution from `McpCallMetadata`. Returns `None` when neither is
+/// present so the wire payload omits the `_meta` field entirely.
+fn build_call_tool_meta(
+    progress_token: Option<ProgressToken>,
+    metadata: &McpCallMetadata,
+) -> Result<Option<Value>, McpTransportError> {
+    let mut map = Map::new();
+    if let Some(token) = progress_token {
+        map.insert("progressToken".to_string(), serde_json::to_value(token)?);
+    }
+    metadata.write_into(&mut map);
+    if map.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(Value::Object(map)))
+    }
+}
+
 // ── McpToolTransport trait ──
 
 /// Raw MCP client transport abstraction.
@@ -140,6 +224,8 @@ pub trait McpToolTransport: Send + Sync {
         name: &str,
         args: Value,
         progress_tx: Option<mpsc::UnboundedSender<McpProgressUpdate>>,
+        metadata: McpCallMetadata,
+        cancellation: Option<CancellationToken>,
     ) -> Result<CallToolResult, McpTransportError>;
 
     fn transport_type(&self) -> TransportTypeId;
@@ -176,6 +262,12 @@ impl From<&ProgressToken> for ProgressTokenKey {
 
 struct WriteRequest {
     line: String,
+    /// Optional ack channel: when present, the writer task signals after
+    /// the line has been written + flushed to the subprocess stdin. Used
+    /// by the cancellation path so `notifications/cancelled` is
+    /// guaranteed to reach the subprocess before the transport is
+    /// dropped (drop kills the subprocess via `kill_on_drop(true)`).
+    ack: Option<oneshot::Sender<()>>,
 }
 
 // ── Stdio transport ──
@@ -257,6 +349,9 @@ impl ProgressAwareStdioTransport {
                     alive_writer.store(false, Ordering::SeqCst);
                     break;
                 }
+                if let Some(ack) = req.ack {
+                    let _ = ack.send(());
+                }
             }
         });
 
@@ -298,7 +393,7 @@ impl ProgressAwareStdioTransport {
                                     "{}\n",
                                     serde_json::to_string(&response).unwrap_or_default()
                                 );
-                                let _ = wtx.send(WriteRequest { line }).await;
+                                let _ = wtx.send(WriteRequest { line, ack: None }).await;
                             });
                         }
                         Err(e) => {
@@ -396,7 +491,7 @@ impl ProgressAwareStdioTransport {
         let notification = JsonRpcNotification::new(method, params);
         let line = format!("{}\n", serde_json::to_string(&notification)?);
         self.write_tx
-            .send(WriteRequest { line })
+            .send(WriteRequest { line, ack: None })
             .await
             .map_err(|_| McpTransportError::ConnectionClosed)?;
         Ok(())
@@ -408,11 +503,26 @@ impl ProgressAwareStdioTransport {
         params: Option<Value>,
         progress_registration: Option<(ProgressTokenKey, mpsc::UnboundedSender<McpProgressUpdate>)>,
     ) -> Result<Value, McpTransportError> {
+        let id = self.next_id.fetch_add(1, Ordering::SeqCst);
+        self.send_request_with_id(id, method, params, progress_registration)
+            .await
+    }
+
+    /// Send a JSON-RPC request using a caller-supplied id. Extracted from
+    /// `send_request` so cancellable call paths can allocate the id up
+    /// front and reuse it when emitting `notifications/cancelled`
+    /// (which references the in-flight request by id per spec).
+    async fn send_request_with_id(
+        &self,
+        id: i64,
+        method: &str,
+        params: Option<Value>,
+        progress_registration: Option<(ProgressTokenKey, mpsc::UnboundedSender<McpProgressUpdate>)>,
+    ) -> Result<Value, McpTransportError> {
         if !self.alive.load(Ordering::SeqCst) {
             return Err(McpTransportError::ConnectionClosed);
         }
 
-        let id = self.next_id.fetch_add(1, Ordering::SeqCst);
         let request = JsonRpcRequest::new(JsonRpcId::Number(id), method.to_string(), params);
         let line = format!("{}\n", serde_json::to_string(&request)?);
 
@@ -424,7 +534,12 @@ impl ProgressAwareStdioTransport {
             self.progress_subscribers.lock().await.insert(key, sender);
         }
 
-        if self.write_tx.send(WriteRequest { line }).await.is_err() {
+        if self
+            .write_tx
+            .send(WriteRequest { line, ack: None })
+            .await
+            .is_err()
+        {
             self.pending.lock().await.remove(&id);
             if let Some(key) = progress_key {
                 self.progress_subscribers.lock().await.remove(&key);
@@ -451,6 +566,42 @@ impl ProgressAwareStdioTransport {
                 )))
             }
         }
+    }
+
+    /// Drop a pending request entry on cancellation so the reader task
+    /// doesn't keep the channel alive. The matching response (if it ever
+    /// arrives) will then be silently discarded.
+    async fn forget_pending(&self, id: i64) {
+        self.pending.lock().await.remove(&id);
+    }
+
+    /// Send a JSON-RPC notification and wait for the writer task to
+    /// confirm the line has been written + flushed to subprocess stdin.
+    /// Critical for the cancellation path: the transport is dropped
+    /// immediately after this returns, which triggers `kill_on_drop`
+    /// on the subprocess — without the ack we'd race the kill and the
+    /// `notifications/cancelled` might never reach the server.
+    async fn send_notification_flushed(
+        &self,
+        method: &str,
+        params: Option<Value>,
+    ) -> Result<(), McpTransportError> {
+        if !self.alive.load(Ordering::SeqCst) {
+            return Err(McpTransportError::ConnectionClosed);
+        }
+        let notification = JsonRpcNotification::new(method, params);
+        let line = format!("{}\n", serde_json::to_string(&notification)?);
+        let (ack_tx, ack_rx) = oneshot::channel();
+        self.write_tx
+            .send(WriteRequest {
+                line,
+                ack: Some(ack_tx),
+            })
+            .await
+            .map_err(|_| McpTransportError::ConnectionClosed)?;
+        // Bounded wait — if the writer task is gone the ack will drop.
+        let _ = tokio::time::timeout(Duration::from_secs(2), ack_rx).await;
+        Ok(())
     }
 }
 
@@ -503,21 +654,20 @@ impl McpToolTransport for ProgressAwareStdioTransport {
         name: &str,
         args: Value,
         progress_tx: Option<mpsc::UnboundedSender<McpProgressUpdate>>,
+        metadata: McpCallMetadata,
+        cancellation: Option<CancellationToken>,
     ) -> Result<CallToolResult, McpTransportError> {
-        let progress_registration = progress_tx.map(|sender| {
-            let token =
-                ProgressToken::Number(self.next_progress_token.fetch_add(1, Ordering::SeqCst));
-            let key = ProgressTokenKey::from(&token);
-            (token, key, sender)
-        });
-
-        let (meta, progress_sender) = if let Some((token, key, sender)) = progress_registration {
-            let mut map = Map::new();
-            map.insert("progressToken".to_string(), serde_json::to_value(token)?);
-            (Some(Value::Object(map)), Some((key, sender)))
-        } else {
-            (None, None)
+        let (progress_token, progress_sender) = match progress_tx {
+            Some(sender) => {
+                let token =
+                    ProgressToken::Number(self.next_progress_token.fetch_add(1, Ordering::SeqCst));
+                let key = ProgressTokenKey::from(&token);
+                (Some(token), Some((key, sender)))
+            }
+            None => (None, None),
         };
+
+        let meta = build_call_tool_meta(progress_token, &metadata)?;
 
         let params = CallToolParams {
             name: name.to_string(),
@@ -526,13 +676,57 @@ impl McpToolTransport for ProgressAwareStdioTransport {
             meta,
         };
 
-        let result = self
-            .send_request(
-                "tools/call",
-                Some(serde_json::to_value(&params)?),
-                progress_sender,
-            )
-            .await?;
+        // Allocate the request id up front so notifications/cancelled can
+        // reference it on cancellation. Without this, the id is generated
+        // inside `send_request` and there's no way to address the
+        // in-flight call from outside.
+        let id = self.next_id.fetch_add(1, Ordering::SeqCst);
+        let request_fut = self.send_request_with_id(
+            id,
+            "tools/call",
+            Some(serde_json::to_value(&params)?),
+            progress_sender,
+        );
+
+        let result = match cancellation {
+            None => request_fut.await,
+            Some(token) => {
+                tokio::pin!(request_fut);
+                tokio::select! {
+                    biased;
+                    _ = token.cancelled() => {
+                        // Per spec (2025-06-18 §Cancellation): the client
+                        // SHOULD send `notifications/cancelled` with the
+                        // in-flight requestId so the server can stop
+                        // processing and free resources. We use the
+                        // flushed variant because the transport is
+                        // typically dropped immediately after this
+                        // returns; `kill_on_drop(true)` would race the
+                        // notification write and the server might never
+                        // see the cancellation.
+                        let _ = self
+                            .send_notification_flushed(
+                                "notifications/cancelled",
+                                Some(json!({
+                                    "requestId": id,
+                                    "reason": "client run cancelled",
+                                })),
+                            )
+                            .await;
+                        // Drop the pending entry so a late response is
+                        // dropped on the reader floor rather than
+                        // delivered to an orphaned channel.
+                        self.forget_pending(id).await;
+                        Err(McpTransportError::TransportError(
+                            CANCELLED_BY_CLIENT.to_string(),
+                        ))
+                    }
+                    result = &mut request_fut => result,
+                }
+            }
+        };
+
+        let result = result?;
         let call_result: CallToolResult = serde_json::from_value(result)?;
 
         if call_result.is_error == Some(true) {
@@ -653,9 +847,12 @@ impl ProgressAwareHttpTransport {
             )
             .await?;
 
+        // Spec literal: `Mcp-Session-Id`. HeaderMap::get is
+        // case-insensitive so this works regardless of how the server
+        // capitalises the response header.
         let session_id = response
             .headers()
-            .get("MCP-Session-Id")
+            .get("Mcp-Session-Id")
             .and_then(|value| value.to_str().ok())
             .map(str::to_string);
 
@@ -684,6 +881,20 @@ impl ProgressAwareHttpTransport {
         progress_registration: Option<(ProgressTokenKey, mpsc::UnboundedSender<McpProgressUpdate>)>,
     ) -> Result<Value, McpTransportError> {
         let id = self.next_id.fetch_add(1, Ordering::SeqCst);
+        self.send_request_with_id(id, method, params, progress_registration)
+            .await
+    }
+
+    /// Variant of `send_request` that uses a caller-allocated id so the
+    /// cancellable call path can emit `notifications/cancelled` against
+    /// the same in-flight request id.
+    async fn send_request_with_id(
+        &self,
+        id: i64,
+        method: &str,
+        params: Option<Value>,
+        progress_registration: Option<(ProgressTokenKey, mpsc::UnboundedSender<McpProgressUpdate>)>,
+    ) -> Result<Value, McpTransportError> {
         let request = JsonRpcRequest::new(JsonRpcId::Number(id), method.to_string(), params);
         let response = self
             .post_message(JsonRpcMessage::Request(request), true)
@@ -729,7 +940,11 @@ impl ProgressAwareHttpTransport {
             request = request.header("MCP-Protocol-Version", protocol_version);
         }
         if let Some(session_id) = session.session_id {
-            request = request.header("MCP-Session-Id", session_id);
+            // Spec literal is `Mcp-Session-Id` (title case), not `MCP-`.
+            // HTTP headers are case-insensitive per RFC 7230 so both work
+            // against compliant servers, but the spec writes it in title
+            // case and some intermediaries are pickier than they should be.
+            request = request.header("Mcp-Session-Id", session_id);
         }
 
         request = match message {
@@ -1066,21 +1281,20 @@ impl McpToolTransport for ProgressAwareHttpTransport {
         name: &str,
         args: Value,
         progress_tx: Option<mpsc::UnboundedSender<McpProgressUpdate>>,
+        metadata: McpCallMetadata,
+        cancellation: Option<CancellationToken>,
     ) -> Result<CallToolResult, McpTransportError> {
-        let progress_registration = progress_tx.map(|sender| {
-            let token =
-                ProgressToken::Number(self.next_progress_token.fetch_add(1, Ordering::SeqCst));
-            let key = ProgressTokenKey::from(&token);
-            (token, key, sender)
-        });
-
-        let (meta, progress_sender) = if let Some((token, key, sender)) = progress_registration {
-            let mut map = Map::new();
-            map.insert("progressToken".to_string(), serde_json::to_value(token)?);
-            (Some(Value::Object(map)), Some((key, sender)))
-        } else {
-            (None, None)
+        let (progress_token, progress_sender) = match progress_tx {
+            Some(sender) => {
+                let token =
+                    ProgressToken::Number(self.next_progress_token.fetch_add(1, Ordering::SeqCst));
+                let key = ProgressTokenKey::from(&token);
+                (Some(token), Some((key, sender)))
+            }
+            None => (None, None),
         };
+
+        let meta = build_call_tool_meta(progress_token, &metadata)?;
 
         let params = CallToolParams {
             name: name.to_string(),
@@ -1089,13 +1303,68 @@ impl McpToolTransport for ProgressAwareHttpTransport {
             meta,
         };
 
-        let result = self
-            .send_initialized_request(
-                "tools/call",
-                Some(serde_json::to_value(&params)?),
-                progress_sender,
-            )
-            .await?;
+        // Initialize (with cancellation race) before any tool call — the
+        // server might assign a fresh session id we need for the request.
+        match cancellation {
+            None => {
+                self.initialize_if_needed().await?;
+            }
+            Some(ref token) => {
+                let init_fut = self.initialize_if_needed();
+                tokio::pin!(init_fut);
+                tokio::select! {
+                    biased;
+                    _ = token.cancelled() => {
+                        return Err(McpTransportError::TransportError(
+                            CANCELLED_BY_CLIENT.to_string(),
+                        ));
+                    }
+                    result = &mut init_fut => { result?; }
+                }
+            }
+        }
+
+        let id = self.next_id.fetch_add(1, Ordering::SeqCst);
+        let request_fut = self.send_request_with_id(
+            id,
+            "tools/call",
+            Some(serde_json::to_value(&params)?),
+            progress_sender,
+        );
+
+        let result = match cancellation {
+            None => request_fut.await,
+            Some(token) => {
+                tokio::pin!(request_fut);
+                tokio::select! {
+                    biased;
+                    _ = token.cancelled() => {
+                        // Per spec (2025-06-18 §Cancellation): SHOULD emit
+                        // notifications/cancelled with the in-flight
+                        // requestId so the server stops processing. The
+                        // in-flight HTTP request is dropped by virtue of
+                        // dropping `request_fut`; reqwest cancels the
+                        // socket. Then we issue a separate POST with the
+                        // cancellation notification.
+                        let _ = self
+                            .send_notification(
+                                "notifications/cancelled",
+                                Some(json!({
+                                    "requestId": id,
+                                    "reason": "client run cancelled",
+                                })),
+                            )
+                            .await;
+                        return Err(McpTransportError::TransportError(
+                            CANCELLED_BY_CLIENT.to_string(),
+                        ));
+                    }
+                    result = &mut request_fut => result,
+                }
+            }
+        };
+
+        let result = result?;
         let call_result: CallToolResult = serde_json::from_value(result)?;
 
         if call_result.is_error == Some(true) {
@@ -1121,6 +1390,24 @@ impl McpToolTransport for ProgressAwareHttpTransport {
     }
 
     async fn close(&self) -> Result<(), McpTransportError> {
+        // Per spec (2025-06-18 §Streamable HTTP / Session Management):
+        // "Clients that no longer need a particular session SHOULD send an
+        //  HTTP DELETE to the MCP endpoint with the Mcp-Session-Id header,
+        //  to explicitly terminate the session. The server MAY respond
+        //  to this request with HTTP 405 Method Not Allowed."
+        //
+        // Without this, the server-side session state lingers until its
+        // own TTL fires — for long-running awaken processes that toggle
+        // / reconnect MCP servers, this accumulates zombie sessions.
+        //
+        // Errors are swallowed (best-effort): the server may legitimately
+        // 405 to refuse termination, or the network may be down. Either
+        // way we still tear down local state.
+        let session_id = self.session.read().await.session_id.clone();
+        if let Some(session_id) = session_id {
+            self.send_session_termination(&session_id).await;
+        }
+
         {
             let mut session = self.session.write().await;
             session.session_id = None;
@@ -1133,6 +1420,46 @@ impl McpToolTransport for ProgressAwareHttpTransport {
         }
 
         Ok(())
+    }
+}
+
+impl ProgressAwareHttpTransport {
+    /// Best-effort `DELETE <endpoint>` with the session id header so the
+    /// server can immediately free session state. Swallows all errors —
+    /// the client has already decided to terminate, so a server 405 / 5xx
+    /// / network error doesn't change the outcome locally.
+    async fn send_session_termination(&self, session_id: &str) {
+        let mut request = self
+            .client
+            .delete(&self.endpoint)
+            .header("Mcp-Session-Id", session_id.to_string());
+        let protocol_version = self.session.read().await.protocol_version.clone();
+        if let Some(protocol_version) = protocol_version {
+            request = request.header("MCP-Protocol-Version", protocol_version);
+        }
+        match request.send().await {
+            Ok(response) if response.status() == reqwest::StatusCode::METHOD_NOT_ALLOWED => {
+                tracing::debug!(
+                    endpoint = %self.endpoint,
+                    "MCP server refused DELETE-session (405); session will expire on server TTL"
+                );
+            }
+            Ok(response) if !response.status().is_success() => {
+                tracing::debug!(
+                    endpoint = %self.endpoint,
+                    status = %response.status(),
+                    "MCP DELETE-session non-success; ignoring"
+                );
+            }
+            Ok(_) => {}
+            Err(err) => {
+                tracing::debug!(
+                    endpoint = %self.endpoint,
+                    error = %err,
+                    "MCP DELETE-session failed; ignoring"
+                );
+            }
+        }
     }
 }
 
@@ -1559,6 +1886,343 @@ mod tests {
 
         transport.close().await.unwrap();
         transport.close().await.unwrap();
+    }
+
+    /// Spec (2025-06-18, §Streamable HTTP / Session Management):
+    /// "Clients that no longer need a particular session SHOULD send an
+    ///  HTTP DELETE to the MCP endpoint with the Mcp-Session-Id header,
+    ///  to explicitly terminate the session."
+    ///
+    /// Verifies that `ProgressAwareHttpTransport::close()` actually emits
+    /// the DELETE with the right method, header name, and header value.
+    /// Uses an ephemeral TCP listener instead of pulling in a mock-server
+    /// dev-dep — the test owns its own one-shot server lifetime.
+    #[tokio::test]
+    async fn http_transport_close_sends_delete_with_session_id() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let url = format!("http://{}", addr);
+
+        let recorded = Arc::new(tokio::sync::Mutex::new(None::<String>));
+        let recorded_clone = Arc::clone(&recorded);
+        let server_task = tokio::spawn(async move {
+            if let Ok((mut stream, _)) = listener.accept().await {
+                let mut buf = vec![0u8; 4096];
+                let n = stream.read(&mut buf).await.unwrap_or(0);
+                *recorded_clone.lock().await = Some(String::from_utf8_lossy(&buf[..n]).to_string());
+                let _ = stream
+                    .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n")
+                    .await;
+            }
+        });
+
+        let cfg = mcp::transport::McpServerConnectionConfig::http("http-close-delete", url);
+        let transport = ProgressAwareHttpTransport::connect(&cfg, None).unwrap();
+        // Pretend init already happened so close() has a session id to terminate.
+        transport.session.write().await.session_id = Some("test-session-abc".into());
+
+        transport.close().await.unwrap();
+        let _ = tokio::time::timeout(Duration::from_secs(2), server_task).await;
+
+        let request = recorded
+            .lock()
+            .await
+            .clone()
+            .expect("server must have observed a request from close()");
+
+        // Method line.
+        let first_line = request.lines().next().unwrap_or("");
+        assert!(
+            first_line.starts_with("DELETE "),
+            "close() must use HTTP DELETE; got first line: {first_line}"
+        );
+
+        // Session id header (HTTP header names are case-insensitive but the
+        // spec literal is `Mcp-Session-Id`).
+        let has_session_header = request.lines().any(|line| {
+            line.to_ascii_lowercase().starts_with("mcp-session-id:")
+                && line.contains("test-session-abc")
+        });
+        assert!(
+            has_session_header,
+            "DELETE must carry the Mcp-Session-Id header. Request was:\n{request}"
+        );
+
+        // Local state cleared after close().
+        let session_after = transport.session.read().await.clone();
+        assert!(session_after.session_id.is_none(), "session_id cleared");
+    }
+
+    // ── build_call_tool_meta tests ──
+
+    #[test]
+    fn build_meta_returns_none_when_no_progress_or_attribution() {
+        let meta = build_call_tool_meta(None, &McpCallMetadata::default()).unwrap();
+        assert!(
+            meta.is_none(),
+            "empty metadata + no progress => no _meta field"
+        );
+    }
+
+    #[test]
+    fn build_meta_includes_progress_token_alone() {
+        let meta =
+            build_call_tool_meta(Some(ProgressToken::Number(7)), &McpCallMetadata::default())
+                .unwrap()
+                .expect("Some(_meta) when progress is set");
+        let obj = meta.as_object().unwrap();
+        assert_eq!(obj.get("progressToken"), Some(&serde_json::json!(7)));
+        assert!(!obj.contains_key("awaken/attribution"));
+    }
+
+    #[test]
+    fn build_meta_namespaces_attribution_under_awaken_key() {
+        let metadata = McpCallMetadata {
+            agent_id: Some("research-assistant".into()),
+            thread_id: Some("thr-abc".into()),
+            run_id: Some("run-xyz".into()),
+            call_id: Some("call-1".into()),
+            parent_run_id: None,
+            parent_call_id: None,
+        };
+        let meta = build_call_tool_meta(None, &metadata)
+            .unwrap()
+            .expect("Some(_meta) when attribution is set");
+        let attribution = meta
+            .get("awaken/attribution")
+            .expect("attribution must be namespaced under awaken/attribution")
+            .as_object()
+            .unwrap();
+        assert_eq!(
+            attribution.get("agent_id"),
+            Some(&serde_json::json!("research-assistant"))
+        );
+        assert_eq!(
+            attribution.get("thread_id"),
+            Some(&serde_json::json!("thr-abc"))
+        );
+        assert_eq!(
+            attribution.get("run_id"),
+            Some(&serde_json::json!("run-xyz"))
+        );
+        assert_eq!(
+            attribution.get("call_id"),
+            Some(&serde_json::json!("call-1"))
+        );
+        // Absent fields don't pollute the bag.
+        assert!(!attribution.contains_key("parent_run_id"));
+        assert!(!attribution.contains_key("parent_call_id"));
+    }
+
+    #[test]
+    fn build_meta_combines_progress_token_and_attribution() {
+        let metadata = McpCallMetadata {
+            agent_id: Some("a1".into()),
+            ..Default::default()
+        };
+        let meta = build_call_tool_meta(Some(ProgressToken::String("tok-1".into())), &metadata)
+            .unwrap()
+            .expect("Some(_meta)");
+        let obj = meta.as_object().unwrap();
+        // Both progress and attribution coexist in the same _meta map.
+        assert!(obj.contains_key("progressToken"));
+        let attribution = obj.get("awaken/attribution").unwrap().as_object().unwrap();
+        assert_eq!(attribution.get("agent_id"), Some(&serde_json::json!("a1")));
+    }
+
+    #[test]
+    fn build_meta_omits_empty_attribution_bag() {
+        // Every attribution field set to None — the bag is empty so no
+        // `awaken/attribution` key is added even though metadata was
+        // technically "supplied" (Default::default()).
+        let meta =
+            build_call_tool_meta(Some(ProgressToken::Number(1)), &McpCallMetadata::default())
+                .unwrap()
+                .expect("Some(_meta)");
+        let obj = meta.as_object().unwrap();
+        assert!(obj.contains_key("progressToken"));
+        assert!(!obj.contains_key("awaken/attribution"));
+    }
+
+    /// Spec (2025-06-18 §Cancellation): on a client-initiated cancel the
+    /// client SHOULD send `notifications/cancelled` with the in-flight
+    /// requestId. This test drives stdio `call_tool` against a reflective
+    /// shell-script "MCP server" that:
+    ///   1. logs every stdin line to a scratch file,
+    ///   2. answers `initialize` so connect() succeeds,
+    ///   3. holds `tools/call` indefinitely (never responds),
+    /// then triggers `CancellationToken::cancel()` and asserts the
+    /// transport wrote a `notifications/cancelled` line with a matching
+    /// requestId and returned the cancellation sentinel error.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn stdio_call_tool_cancellation_emits_notification() {
+        use serde_json::Value;
+
+        let scratch = std::env::temp_dir().join(format!(
+            "awaken-mcp-cancel-{}-{}.log",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let _ = std::fs::remove_file(&scratch);
+        let scratch_str = scratch.to_string_lossy().to_string();
+
+        let script = format!(
+            r#"
+while IFS= read -r LINE; do
+    printf '%s\n' "$LINE" >> "{scratch}"
+    case "$LINE" in
+        *'"method":"initialize"'*)
+            ID=$(printf '%s' "$LINE" | sed -n 's/.*"id":\([0-9]*\).*/\1/p')
+            printf '{{"jsonrpc":"2.0","id":%s,"result":{{"protocolVersion":"2024-11-05","capabilities":{{"tools":{{}}}},"serverInfo":{{"name":"mock","version":"0"}}}}}}\n' "$ID"
+            ;;
+    esac
+done
+"#,
+            scratch = scratch_str
+        );
+
+        let mut cfg = mcp::transport::McpServerConnectionConfig::stdio(
+            "stdio-cancel",
+            "/bin/sh",
+            vec!["-c".to_string(), script],
+        );
+        cfg.timeout_secs = 30;
+
+        let transport = Arc::new(
+            ProgressAwareStdioTransport::connect(&cfg, None)
+                .await
+                .expect("stdio transport connects"),
+        );
+
+        let cancel = CancellationToken::new();
+        let cancel_trigger = cancel.clone();
+
+        let transport_for_call = Arc::clone(&transport);
+        let call_handle = tokio::spawn(async move {
+            transport_for_call
+                .call_tool(
+                    "test-tool",
+                    json!({}),
+                    None,
+                    McpCallMetadata::default(),
+                    Some(cancel),
+                )
+                .await
+        });
+
+        // Give the tools/call line time to land on subprocess stdin
+        // before triggering cancellation.
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        cancel_trigger.cancel();
+
+        let outcome = tokio::time::timeout(Duration::from_secs(5), call_handle)
+            .await
+            .expect("call did not return after cancellation")
+            .expect("call task joined");
+
+        match outcome {
+            Err(McpTransportError::TransportError(msg)) if msg == CANCELLED_BY_CLIENT => {}
+            other => panic!("expected CANCELLED_BY_CLIENT error, got: {other:?}"),
+        }
+
+        // Wait for the subprocess to flush the notification line.
+        let started = Instant::now();
+        let contents = loop {
+            let current = fs::read_to_string(&scratch).unwrap_or_default();
+            if current.contains("notifications/cancelled") {
+                break current;
+            }
+            if started.elapsed() > Duration::from_secs(3) {
+                panic!("did not observe notifications/cancelled. Got:\n{current}");
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        };
+
+        let cancel_line = contents
+            .lines()
+            .find(|l| l.contains("notifications/cancelled"))
+            .expect("found cancellation line");
+        let parsed: Value = serde_json::from_str(cancel_line).expect("notification is valid JSON");
+        assert_eq!(parsed["method"], "notifications/cancelled");
+        // tools/call is the 2nd JSON-RPC request id (initialize was #1).
+        // The id allocator starts at 1 and increments; we tolerate any
+        // positive id since timing-dependent setup may shift it.
+        let request_id = parsed["params"]["requestId"]
+            .as_i64()
+            .expect("requestId must be a JSON-RPC integer id");
+        assert!(
+            request_id >= 1,
+            "requestId must reference an in-flight call"
+        );
+        assert_eq!(parsed["params"]["reason"], "client run cancelled");
+
+        let _ = std::fs::remove_file(&scratch);
+    }
+
+    #[test]
+    fn build_meta_includes_parent_when_present() {
+        let metadata = McpCallMetadata {
+            agent_id: Some("delegate".into()),
+            parent_run_id: Some("parent-run".into()),
+            parent_call_id: Some("parent-call".into()),
+            ..Default::default()
+        };
+        let attribution = build_call_tool_meta(None, &metadata)
+            .unwrap()
+            .unwrap()
+            .get("awaken/attribution")
+            .cloned()
+            .unwrap();
+        let obj = attribution.as_object().unwrap();
+        assert_eq!(
+            obj.get("parent_run_id"),
+            Some(&serde_json::json!("parent-run"))
+        );
+        assert_eq!(
+            obj.get("parent_call_id"),
+            Some(&serde_json::json!("parent-call"))
+        );
+    }
+
+    /// close() with no session id MUST NOT emit any HTTP request — there's
+    /// nothing to terminate. Pairs with the test above so a refactor that
+    /// accidentally always-DELETEs trips the empty-session case.
+    #[tokio::test]
+    async fn http_transport_close_without_session_emits_no_request() {
+        use tokio::io::AsyncReadExt;
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let url = format!("http://{}", addr);
+
+        let observed = Arc::new(tokio::sync::Mutex::new(false));
+        let observed_clone = Arc::clone(&observed);
+        let server_task = tokio::spawn(async move {
+            if let Ok((mut stream, _)) = listener.accept().await {
+                let mut buf = vec![0u8; 16];
+                if stream.read(&mut buf).await.unwrap_or(0) > 0 {
+                    *observed_clone.lock().await = true;
+                }
+            }
+        });
+
+        let cfg = mcp::transport::McpServerConnectionConfig::http("http-close-no-session", url);
+        let transport = ProgressAwareHttpTransport::connect(&cfg, None).unwrap();
+        // No session id set.
+        transport.close().await.unwrap();
+
+        // Give the listener a brief moment to observe a spurious request.
+        let _ = tokio::time::timeout(Duration::from_millis(150), server_task).await;
+        assert!(
+            !*observed.lock().await,
+            "close() with no session_id must not contact the server"
+        );
     }
 
     #[cfg(unix)]

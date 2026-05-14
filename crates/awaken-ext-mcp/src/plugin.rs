@@ -74,6 +74,8 @@ mod tests {
             name: &str,
             _args: Value,
             _progress_tx: Option<mpsc::UnboundedSender<McpProgressUpdate>>,
+            _metadata: crate::transport::McpCallMetadata,
+            _cancellation: Option<awaken_contract::cancellation::CancellationToken>,
         ) -> Result<CallToolResult, McpTransportError> {
             Ok(CallToolResult {
                 content: vec![mcp::ToolContent::Text {
