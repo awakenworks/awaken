@@ -1,6 +1,8 @@
 //! Resolution pipeline: `agent_id` + `RegistrySet` -> `ResolvedAgent` /
 //! `ResolvedExecution`.
 
+mod catalog;
+
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
@@ -19,6 +21,7 @@ use crate::registry::traits::RegistrySet;
 use awaken_contract::registry_spec::AgentSpec;
 
 use super::error::ResolveError;
+use catalog::{filter_tools, permission_rules_without_catalog_match};
 
 // ---------------------------------------------------------------------------
 // inject_default_plugins()
@@ -265,6 +268,16 @@ fn build_tool_set(
     // Apply allow/exclude filtering to the full merged tool set
     filter_tools(&mut tools, spec);
 
+    // Cross-layer check: warn about permission rules referencing absent tools.
+    let retained: Vec<String> = tools.keys().cloned().collect();
+    for orphan in permission_rules_without_catalog_match(&spec.sections, &retained) {
+        tracing::warn!(
+            agent_id = %spec.id,
+            rule = %orphan,
+            "permission rule references tool not in catalog — rule will never fire"
+        );
+    }
+
     Ok(tools)
 }
 
@@ -460,24 +473,6 @@ fn collect_global_tools(registries: &RegistrySet) -> HashMap<String, Arc<dyn Too
     tools
 }
 
-/// Apply allow/exclude filtering to a mutable tool map.
-///
-/// - `allowed_tools = None` -> keep all.
-/// - `allowed_tools = Some(list)` -> keep only those IDs.
-/// - `excluded_tools` -> remove from the set.
-fn filter_tools(tools: &mut HashMap<String, Arc<dyn Tool>>, spec: &AgentSpec) {
-    if let Some(allow) = &spec.allowed_tools {
-        let allowed: HashSet<&str> = allow.iter().map(|s| s.as_str()).collect();
-        tools.retain(|id, _| allowed.contains(id.as_str()));
-    }
-
-    if let Some(exclude) = &spec.excluded_tools {
-        for id in exclude {
-            tools.remove(id);
-        }
-    }
-}
-
 /// Resolve plugins by IDs from the spec.
 fn resolve_plugins(
     registries: &RegistrySet,
@@ -500,6 +495,8 @@ fn resolve_plugins(
 
 #[cfg(test)]
 mod tests {
+    mod catalog;
+
     use super::*;
     #[cfg(feature = "a2a")]
     use crate::extensions::a2a::{

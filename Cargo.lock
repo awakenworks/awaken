@@ -524,6 +524,7 @@ dependencies = [
  "awaken-protocol-a2a",
  "awaken-runtime",
  "awaken-stores",
+ "awaken-tool-pattern",
  "futures",
  "genai",
  "jsonschema",
