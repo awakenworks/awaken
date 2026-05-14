@@ -2326,6 +2326,128 @@ async fn patch_overrides_sections_null_value_deletes_base_section_key() {
 }
 
 #[tokio::test]
+async fn patch_overrides_sections_merges_with_existing_section_overrides() {
+    let app = make_app().await;
+
+    use awaken_contract::contract::config_store::ConfigStore;
+
+    let mut raw = ConfigStore::get(app.store.as_ref(), "agents", "bootstrap")
+        .await
+        .expect("store read")
+        .expect("entry present");
+    raw["spec"]["sections"] = json!({
+        "permission": { "default_behavior": "ask" },
+        "observability": { "enabled": false }
+    });
+    ConfigStore::put(app.store.as_ref(), "agents", "bootstrap", &raw)
+        .await
+        .expect("store write");
+
+    let (seed_status, _) = patch_overrides(
+        &app.router,
+        "bootstrap",
+        json!({
+            "sections": {
+                "permission": { "default_behavior": "deny" },
+                "observability": { "enabled": true }
+            }
+        }),
+    )
+    .await;
+    assert_eq!(seed_status, StatusCode::OK);
+
+    let (status, body) = patch_overrides(
+        &app.router,
+        "bootstrap",
+        json!({"sections": {"permission": {"default_behavior": "allow"}}}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "body: {body}");
+    assert_eq!(
+        body["sections"]["permission"],
+        json!({"default_behavior": "allow"})
+    );
+    assert_eq!(body["sections"]["observability"], json!({"enabled": true}));
+
+    let raw = ConfigStore::get(app.store.as_ref(), "agents", "bootstrap")
+        .await
+        .expect("store read")
+        .expect("entry present");
+    let section_overrides = raw["meta"]["user_overrides"]["sections"]
+        .as_object()
+        .expect("section overrides object");
+    assert_eq!(
+        section_overrides.get("permission"),
+        Some(&json!({"default_behavior": "allow"}))
+    );
+    assert_eq!(
+        section_overrides.get("observability"),
+        Some(&json!({"enabled": true}))
+    );
+}
+
+#[tokio::test]
+async fn patch_overrides_sections_delete_preserves_existing_sibling_overrides() {
+    let app = make_app().await;
+
+    use awaken_contract::contract::config_store::ConfigStore;
+
+    let mut raw = ConfigStore::get(app.store.as_ref(), "agents", "bootstrap")
+        .await
+        .expect("store read")
+        .expect("entry present");
+    raw["spec"]["sections"] = json!({
+        "permission": { "default_behavior": "ask" },
+        "observability": { "enabled": false }
+    });
+    ConfigStore::put(app.store.as_ref(), "agents", "bootstrap", &raw)
+        .await
+        .expect("store write");
+
+    let (seed_status, _) = patch_overrides(
+        &app.router,
+        "bootstrap",
+        json!({"sections": {"observability": {"enabled": true}}}),
+    )
+    .await;
+    assert_eq!(seed_status, StatusCode::OK);
+
+    let (status, body) = patch_overrides(
+        &app.router,
+        "bootstrap",
+        json!({"sections": {"permission": null}}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "body: {body}");
+    assert!(
+        !body["sections"]
+            .as_object()
+            .expect("sections object")
+            .contains_key("permission"),
+        "permission section must be deleted from the effective spec"
+    );
+    assert_eq!(body["sections"]["observability"], json!({"enabled": true}));
+
+    let raw = ConfigStore::get(app.store.as_ref(), "agents", "bootstrap")
+        .await
+        .expect("store read")
+        .expect("entry present");
+    let section_overrides = raw["meta"]["user_overrides"]["sections"]
+        .as_object()
+        .expect("section overrides object");
+    assert!(
+        section_overrides
+            .get("permission")
+            .is_some_and(Value::is_null),
+        "stored override should preserve the per-section delete marker"
+    );
+    assert_eq!(
+        section_overrides.get("observability"),
+        Some(&json!({"enabled": true}))
+    );
+}
+
+#[tokio::test]
 async fn patch_overrides_rejects_unknown_field() {
     let app = make_app().await;
 

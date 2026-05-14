@@ -348,6 +348,61 @@ fn is_nullable_agent_patch_field(field: &str) -> bool {
     )
 }
 
+/// Patchable agent-spec field names, mirroring `AgentSpecPatch`.
+/// Used to validate `_clear` directives — typos would otherwise
+/// silently no-op.
+const PATCHABLE_AGENT_SPEC_FIELDS: &[&str] = &[
+    "model_id",
+    "system_prompt",
+    "max_rounds",
+    "max_continuation_retries",
+    "context_policy",
+    "plugin_ids",
+    "active_hook_filter",
+    "sections",
+    "allowed_tools",
+    "excluded_tools",
+    "delegates",
+    "reasoning_effort",
+    "endpoint",
+];
+
+fn validate_clear_field_names(fields: &[String]) -> Result<(), ConfigServiceError> {
+    for field in fields {
+        if !PATCHABLE_AGENT_SPEC_FIELDS.contains(&field.as_str()) {
+            return Err(ConfigServiceError::InvalidPayload(format!(
+                "_clear contains unknown agent-spec field `{field}`"
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn merge_sections_override(
+    existing_map: &mut Map<String, Value>,
+    incoming: &Value,
+) -> Result<(), ConfigServiceError> {
+    let incoming_sections = incoming.as_object().ok_or_else(|| {
+        ConfigServiceError::InvalidPayload("sections override must be a JSON object".into())
+    })?;
+    let mut existing_sections = existing_map
+        .get("sections")
+        .and_then(Value::as_object)
+        .cloned()
+        .unwrap_or_default();
+
+    for (section_key, section_value) in incoming_sections {
+        existing_sections.insert(section_key.clone(), section_value.clone());
+    }
+
+    if existing_sections.is_empty() {
+        existing_map.remove("sections");
+    } else {
+        existing_map.insert("sections".into(), Value::Object(existing_sections));
+    }
+    Ok(())
+}
+
 fn build_agent_overrides_patch(
     current_overrides: Option<&Value>,
     body: &Value,
@@ -361,21 +416,63 @@ fn build_agent_overrides_patch(
         }
     };
 
-    awaken_contract::validate_agent_spec_patch(body.clone())
+    let mut clear_list: Vec<String> = Vec::new();
+    let mut upsert_body = Map::new();
+    for (key, value) in body_map {
+        if key == "_clear" {
+            clear_list = match value {
+                Value::Array(items) => items
+                    .iter()
+                    .map(|item| match item {
+                        Value::String(field) => Ok(field.clone()),
+                        _ => Err(ConfigServiceError::InvalidPayload(
+                            "_clear must be an array of field-name strings".into(),
+                        )),
+                    })
+                    .collect::<Result<Vec<_>, _>>()?,
+                _ => {
+                    return Err(ConfigServiceError::InvalidPayload(
+                        "_clear must be an array of field-name strings".into(),
+                    ));
+                }
+            };
+        } else {
+            upsert_body.insert(key.clone(), value.clone());
+        }
+    }
+
+    for clear_field in &clear_list {
+        if upsert_body.contains_key(clear_field) {
+            return Err(ConfigServiceError::InvalidPayload(format!(
+                "field `{clear_field}` appears in both the upsert body and `_clear`"
+            )));
+        }
+    }
+
+    awaken_contract::validate_agent_spec_patch(Value::Object(upsert_body.clone()))
         .map_err(|e| ConfigServiceError::InvalidPayload(e.to_string()))?;
+    if !clear_list.is_empty() {
+        validate_clear_field_names(&clear_list)?;
+    }
 
     let mut existing_map: Map<String, Value> = current_overrides
         .and_then(Value::as_object)
         .cloned()
         .unwrap_or_default();
 
-    for (key, value) in body_map {
+    for clear_field in &clear_list {
+        existing_map.remove(clear_field);
+    }
+
+    for (key, value) in &upsert_body {
         if value.is_null() {
             if is_nullable_agent_patch_field(key) {
                 existing_map.insert(key.clone(), Value::Null);
             } else {
                 existing_map.remove(key);
             }
+        } else if key == "sections" {
+            merge_sections_override(&mut existing_map, value)?;
         } else {
             existing_map.insert(key.clone(), value.clone());
         }
