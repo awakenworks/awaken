@@ -34,8 +34,9 @@ impl<'a> ConfigService<'a> {
             return Err(overrides_not_supported_for_user_record());
         }
 
-        let normalized = build_agent_overrides_patch(record.meta.user_overrides.as_ref(), &body)?
-            .unwrap_or_else(|| Value::Object(Map::new()));
+        let normalized =
+            build_agent_overrides_patch(record.meta.user_overrides.as_ref(), &record.spec, &body)?
+                .unwrap_or_else(|| Value::Object(Map::new()));
 
         Ok(serde_json::json!({
             "ok": true,
@@ -74,7 +75,7 @@ impl<'a> ConfigService<'a> {
         let expected_revision = record.meta.revision;
 
         let proposed_overrides =
-            build_agent_overrides_patch(record.meta.user_overrides.as_ref(), &body)?;
+            build_agent_overrides_patch(record.meta.user_overrides.as_ref(), &record.spec, &body)?;
 
         // Short-circuit: if the proposed overrides are identical to existing ones,
         // skip the store write, apply_locked, and audit emit — it's a no-op.
@@ -403,8 +404,27 @@ fn merge_sections_override(
     Ok(())
 }
 
+fn normalize_section_delete_markers(existing_map: &mut Map<String, Value>, base_spec: &AgentSpec) {
+    let Some(mut sections) = existing_map
+        .get("sections")
+        .and_then(Value::as_object)
+        .cloned()
+    else {
+        return;
+    };
+    sections.retain(|section_key, section_value| {
+        !section_value.is_null() || base_spec.sections.contains_key(section_key)
+    });
+    if sections.is_empty() {
+        existing_map.remove("sections");
+    } else {
+        existing_map.insert("sections".into(), Value::Object(sections));
+    }
+}
+
 fn build_agent_overrides_patch(
     current_overrides: Option<&Value>,
+    base_spec: &AgentSpec,
     body: &Value,
 ) -> Result<Option<Value>, ConfigServiceError> {
     let body_map = match body {
@@ -477,6 +497,7 @@ fn build_agent_overrides_patch(
             existing_map.insert(key.clone(), value.clone());
         }
     }
+    normalize_section_delete_markers(&mut existing_map, base_spec);
 
     let merged_value = Value::Object(existing_map.clone());
     awaken_contract::validate_agent_spec_patch(merged_value.clone())

@@ -944,7 +944,38 @@ describe("agent editor Raw JSON secret redaction", () => {
     expect(screen.queryByText(/Save will publish to the runtime config/i)).toBeNull();
   });
 
-  it("keeps a changed Raw JSON redaction marker as the new sections secret on save", async () => {
+  it("blocks Apply when an edited Raw JSON value still contains a redaction marker", async () => {
+    const agent = agentSpec("raw-marker-agent") as AgentSpec;
+    agent.sections = {
+      gateway: {
+        note: "Authorization: Bearer raw-token-value-1234567890\nowner=team-a",
+      },
+    };
+    const { validateBodies } = stubRawJsonAgent(agent, {
+      source: { kind: "builtin", binary_version: "1.0" },
+      hidden: false,
+      user_overrides: null,
+      created_at: 0,
+      updated_at: 0,
+    });
+
+    renderEditorRoute(`/agents/${agent.id}`);
+    await screen.findByText(/Edit raw-marker-agent/i);
+
+    const textarea = await openRawJsonTextarea();
+    const marker = rawJsonRedactionMarker(textarea, "note");
+    fireEvent.change(textarea, {
+      target: {
+        value: textarea.value.replace(`"note": "${marker}"`, `"note": "${marker}\\nowner=team-b"`),
+      },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /apply to draft/i }));
+
+    await screen.findByText(/Redaction marker `sections\.gateway\.note`/i);
+    expect(validateBodies).toHaveLength(0);
+  });
+
+  it("keeps a full Raw JSON secret replacement on save", async () => {
     const agent = agentSpec("raw-replace-agent") as AgentSpec;
     agent.sections = { oauth: { client_secret: "old-client-secret" } };
     const { validateBodies, patchBodies } = stubRawJsonAgent(agent, {
@@ -990,6 +1021,73 @@ describe("agent editor Raw JSON secret redaction", () => {
         {}
       ).client_secret,
     ).toBe("new-secret");
+  });
+
+  it("allows Raw JSON to set id while creating a new agent", async () => {
+    const validateBodies: AgentSpec[] = [];
+    const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
+      const u = String(url);
+      if (u.includes("/v1/capabilities")) {
+        return jsonResponse({
+          agents: [],
+          tools: [],
+          plugins: [],
+          skills: [],
+          models: [],
+          providers: [],
+          namespaces: [],
+        });
+      }
+      if (u.includes("/v1/config/agents/validate") && init?.method === "POST") {
+        const body = JSON.parse((init.body as string) ?? "{}") as AgentSpec;
+        validateBodies.push(body);
+        return jsonResponse({ ok: true, normalized: body });
+      }
+      return jsonResponse({ error: "not found" }, { ok: false, status: 404 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderEditorRoute("/agents/new");
+    await screen.findByLabelText("Agent ID");
+
+    const textarea = await openRawJsonTextarea();
+    fireEvent.change(textarea, {
+      target: { value: textarea.value.replace('"id": ""', '"id": "raw-new-agent"') },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /apply to draft/i }));
+
+    await waitFor(() => {
+      expect(validateBodies).toHaveLength(1);
+    });
+    expect(validateBodies[0].id).toBe("raw-new-agent");
+
+    fireEvent.click(screen.getByRole("tab", { name: "Basics" }));
+    await waitFor(() => {
+      expect((screen.getByLabelText("Agent ID") as HTMLInputElement).value).toBe("raw-new-agent");
+    });
+  });
+});
+
+describe("agent editor context policy inputs", () => {
+  it("keeps the previous autocompact threshold while the number field is blank", async () => {
+    renderEditorRoute("/agents/new");
+    await screen.findByLabelText("Agent ID");
+
+    fireEvent.click(await screen.findByRole("tab", { name: "Advanced" }));
+    fireEvent.click(screen.getByLabelText("Apply custom policy"));
+
+    const thresholdField = screen.getByText("Autocompact threshold").closest("label");
+    if (!thresholdField) throw new Error("Autocompact threshold field not found");
+    const inputs = thresholdField.querySelectorAll("input");
+    const enableInput = inputs[0] as HTMLInputElement;
+    const thresholdInput = inputs[1] as HTMLInputElement;
+
+    fireEvent.click(enableInput);
+    fireEvent.change(thresholdInput, { target: { value: "123456" } });
+    expect(thresholdInput.value).toBe("123456");
+
+    fireEvent.change(thresholdInput, { target: { value: "" } });
+    expect(thresholdInput.value).toBe("123456");
   });
 });
 

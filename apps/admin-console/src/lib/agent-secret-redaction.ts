@@ -7,6 +7,8 @@ import { deepEqualCanonical } from "./agent-editor-canonical";
  *  Keys are normalized via `normalizeSecretKey` before lookup. */
 const EXACT_SECRET_KEYS = new Set(["token", "apikey", "xapikey"]);
 
+const SENSITIVE_KEY_SUFFIXES = ["apikey", "xapikey", "privatekey"];
+
 /** Substring patterns specific enough to be safe; `token` is intentionally
  *  excluded. Compound `*_token` shapes live below as their full form. */
 const SENSITIVE_AUTH_KEY_PATTERNS = [
@@ -83,6 +85,7 @@ function normalizeSecretKey(key: string): string {
 function isSensitiveKey(key: string): boolean {
   const normalized = normalizeSecretKey(key);
   if (EXACT_SECRET_KEYS.has(normalized)) return true;
+  if (SENSITIVE_KEY_SUFFIXES.some((suffix) => normalized.endsWith(suffix))) return true;
   return SENSITIVE_AUTH_KEY_PATTERNS.some((pattern) => normalized.includes(pattern));
 }
 
@@ -261,6 +264,39 @@ export function restoreUnchangedRedactions<T>(parsed: T, redactions: readonly Re
     }
   }
   return restored;
+}
+
+const EDITING_REDACTED_MARKER_PATTERN = /__AWAKEN_REDACTED_SECRET_[a-f0-9]{8}__/;
+
+function containsEditingRedactionMarker(value: unknown): boolean {
+  if (typeof value === "string") return EDITING_REDACTED_MARKER_PATTERN.test(value);
+  if (Array.isArray(value)) return value.some(containsEditingRedactionMarker);
+  if (value && typeof value === "object") {
+    return Object.values(value as Record<string, unknown>).some(containsEditingRedactionMarker);
+  }
+  return false;
+}
+
+function formatRedactionPath(path: readonly RedactionPathSegment[]): string {
+  return path.reduce<string>((acc, segment) => {
+    if (typeof segment === "number") return `${acc}[${segment}]`;
+    return acc ? `${acc}.${segment}` : segment;
+  }, "");
+}
+
+export function changedRedactionMarkerPaths(
+  root: unknown,
+  redactions: readonly RedactionEntry[],
+): string[] {
+  const paths: string[] = [];
+  for (const redaction of redactions) {
+    const current = readPath(root, redaction.path);
+    if (!current.found || deepEqualCanonical(current.value, redaction.redacted)) continue;
+    if (containsEditingRedactionMarker(current.value)) {
+      paths.push(formatRedactionPath(redaction.path));
+    }
+  }
+  return paths;
 }
 
 export interface RedactedFieldChange {

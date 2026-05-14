@@ -2326,6 +2326,47 @@ async fn patch_overrides_sections_null_value_deletes_base_section_key() {
 }
 
 #[tokio::test]
+async fn patch_overrides_sections_null_value_clears_override_only_section_key() {
+    let app = make_app().await;
+
+    let (seed_status, seed_body) = patch_overrides(
+        &app.router,
+        "bootstrap",
+        json!({"sections": {"draft_only": {"enabled": true}}}),
+    )
+    .await;
+    assert_eq!(seed_status, StatusCode::OK, "body: {seed_body}");
+    assert_eq!(
+        seed_body["sections"]["draft_only"],
+        json!({"enabled": true})
+    );
+
+    let (status, body) = patch_overrides(
+        &app.router,
+        "bootstrap",
+        json!({"sections": {"draft_only": null}}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "body: {body}");
+    if let Some(sections) = body.get("sections").and_then(Value::as_object) {
+        assert!(
+            !sections.contains_key("draft_only"),
+            "override-only section must be removed from the effective spec"
+        );
+    }
+
+    use awaken_contract::contract::config_store::ConfigStore;
+    let raw = ConfigStore::get(app.store.as_ref(), "agents", "bootstrap")
+        .await
+        .expect("store read")
+        .expect("entry present");
+    assert!(
+        raw["meta"]["user_overrides"].is_null(),
+        "deleting the only override-only section should clear user_overrides: {raw}"
+    );
+}
+
+#[tokio::test]
 async fn patch_overrides_sections_merges_with_existing_section_overrides() {
     let app = make_app().await;
 

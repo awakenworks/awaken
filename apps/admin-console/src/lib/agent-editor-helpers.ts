@@ -7,6 +7,7 @@ import { deepEqualCanonical } from "./agent-editor-canonical";
 
 export { canonicalStringify, deepEqualCanonical } from "./agent-editor-canonical";
 export {
+  changedRedactionMarkerPaths,
   computeRedactedDiff,
   redactAgentSpecForDisplay,
   redactAgentSpecForEditing,

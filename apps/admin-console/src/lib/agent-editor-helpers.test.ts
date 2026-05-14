@@ -7,6 +7,7 @@ import {
   LOCKED_AGENT_FIELDS,
   PATCHABLE_AGENT_FIELDS,
   canonicalStringify,
+  changedRedactionMarkerPaths,
   cloneAgentSpecForEditor,
   computeRedactedDiff,
   deepEqualCanonical,
@@ -949,6 +950,39 @@ describe("redactSecretsForDisplay (R6 #B/#C — generic deep redact)", () => {
       expect(creds.client_secret).toBe("***");
       expect(creds.private_key).toBe("***");
     });
+
+    it("masks compound api key fields without masking token budget fields", () => {
+      const value = {
+        sections: {
+          provider: {
+            openai_api_key: "openai-field-secret",
+            anthropicApiKey: "anthropic-field-secret",
+            provider_api_key: "provider-field-secret",
+            headers: {
+              "x-api-key": "header-field-secret",
+              "content-type": "application/json",
+            },
+            context_policy: {
+              max_context_tokens: 200_000,
+              max_output_tokens: 16_384,
+            },
+          },
+        },
+      };
+
+      const redacted = redactSecretsForDisplay(value);
+      const provider = redacted.sections.provider as Record<string, unknown>;
+      const headers = provider.headers as Record<string, unknown>;
+      const contextPolicy = provider.context_policy as Record<string, unknown>;
+
+      expect(provider.openai_api_key).toBe("***");
+      expect(provider.anthropicApiKey).toBe("***");
+      expect(provider.provider_api_key).toBe("***");
+      expect(headers["x-api-key"]).toBe("***");
+      expect(headers["content-type"]).toBe("application/json");
+      expect(contextPolicy.max_context_tokens).toBe(200_000);
+      expect(contextPolicy.max_output_tokens).toBe(16_384);
+    });
   });
 });
 
@@ -1098,6 +1132,38 @@ describe("redactAgentSpecForEditing / restoreUnchangedRedactions", () => {
     expect(restored.sections?.notes).toBe(
       "upstream echoed Authorization: Bearer sk-real-secret-value",
     );
+  });
+
+  it("detects edited Raw JSON values that still contain a redaction marker", () => {
+    const spec = baseSpec({
+      sections: {
+        gateway: {
+          note: "Authorization: Bearer raw-token-value-1234567890\nowner=team-a",
+        },
+      },
+    });
+    const { redacted, redactions } = redactAgentSpecForEditing(spec);
+    const parsed = JSON.parse(JSON.stringify(redacted)) as AgentSpec;
+    const gateway = parsed.sections?.gateway as Record<string, unknown>;
+    const marker = String(gateway.note);
+
+    gateway.note = `${marker}\nowner=team-b`;
+
+    expect(changedRedactionMarkerPaths(parsed, redactions)).toEqual(["sections.gateway.note"]);
+  });
+
+  it("does not flag unchanged markers or full secret replacements", () => {
+    const spec = baseSpec({
+      sections: { oauth: { client_secret: "old-secret-value" } },
+    });
+    const { redacted, redactions } = redactAgentSpecForEditing(spec);
+    expect(changedRedactionMarkerPaths(JSON.parse(JSON.stringify(redacted)), redactions)).toEqual(
+      [],
+    );
+
+    const parsed = JSON.parse(JSON.stringify(redacted)) as AgentSpec;
+    (parsed.sections?.oauth as Record<string, unknown>).client_secret = "new-secret-value";
+    expect(changedRedactionMarkerPaths(parsed, redactions)).toEqual([]);
   });
 });
 

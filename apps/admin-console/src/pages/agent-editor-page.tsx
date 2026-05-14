@@ -43,6 +43,7 @@ import { qk } from "@/lib/query/keys";
 import { invalidateConfigMutation } from "@/lib/query/invalidation";
 import {
   canonicalStringify,
+  changedRedactionMarkerPaths,
   cloneAgentSpecForEditor,
   computeRedactedDiff,
   deepEqualCanonical,
@@ -413,10 +414,11 @@ export function AgentEditorPage() {
   }
 
   function replaceSpec(next: AgentSpec) {
-    // Preserve identity fields the editor manages outside the JSON payload.
+    // Existing agents keep their identity outside Raw JSON; new agents can
+    // take `id` from a pasted AgentSpec.
     setSpec((current) => ({
       ...next,
-      id: current.id,
+      id: isNew ? next.id : current.id,
       created_at: current.created_at,
       updated_at: current.updated_at,
     }));
@@ -2143,15 +2145,8 @@ function JsonEditorSection({
   isNew: boolean;
   replaceSpec: (next: AgentSpec) => void;
 }) {
-  // The textarea shows a redacted view of the spec so real credentials
-  // from endpoint auth, plugin/provider `sections.*`, or other
-  // secret-shaped fields never land in the admin DOM. The Apply path
-  // validates the user's parsed payload against this exact redacted
-  // display copy FIRST (to detect edits to locked fields even when their
-  // value is a redaction sentinel), then restores unchanged redaction
-  // markers before the candidate reaches validation / draft state. Doing
-  // this before `mergeLockedFields` is load-bearing — overlaying first would mask
-  // user edits to `endpoint.base_url` / `endpoint.auth.*` / `registry`.
+  // Raw JSON uses a redacted display copy. Apply validates against that copy
+  // before restoring unchanged markers and overlaying locked real values.
   const editingSpec = useMemo(() => redactAgentSpecForEditing(spec), [spec]);
   const specSerialized = useMemo(
     () => JSON.stringify(editingSpec.redacted, null, 2),
@@ -2186,18 +2181,10 @@ function JsonEditorSection({
       return;
     }
     const parsedRecord = parsed as Record<string, unknown>;
-    // Reject unknown top-level fields up front. The Save path only persists
-    // identity + locked + patchable fields, so anything else would enter
-    // the dirty state and silently disappear on Save ("saved (no patchable
-    // changes)" while the page still looks dirty).
+    // Save persists only known identity, locked, and patchable fields.
     const unknown = unknownAgentSpecFields(parsedRecord);
     if (unknown.length > 0) {
-      // The allowlist is a front-end-maintained mirror of
-      // `PATCHABLE_AGENT_FIELDS + identity/locked fields`. If the user pastes
-      // a schema field that the backend understands but this admin console
-      // version doesn't know about, the diff/PATCH path can't persist it
-      // and Save would silently drop it. Surface that distinction in the
-      // error: this is a *version* mismatch, not a malformed spec.
+      // Treat unknown fields as console/schema drift, not malformed JSON.
       setError(
         `This admin console version does not recognize ${
           unknown.length === 1 ? "field" : "fields"
@@ -2206,14 +2193,12 @@ function JsonEditorSection({
       );
       return;
     }
-    // R12 #5 — Identity / timestamp fields are server-managed; the
-    // candidate constructed below overwrites them from `spec`
-    // unconditionally. If we let an edit slip through, Apply would
-    // claim success while silently discarding the user's change.
-    // Compare canonically so re-indenting / key-order tweaks aren't
-    // mistaken for an edit.
-    const IDENTITY_FIELDS: Array<keyof AgentSpec> = ["id", "created_at", "updated_at"];
-    for (const field of IDENTITY_FIELDS) {
+    // Existing identity and timestamp edits would be overwritten below, so
+    // reject them before Apply can look successful.
+    const identityFields: Array<keyof AgentSpec> = isNew
+      ? ["created_at", "updated_at"]
+      : ["id", "created_at", "updated_at"];
+    for (const field of identityFields) {
       if (!(field in parsedRecord)) continue;
       if (!deepEqualCanonical(parsedRecord[field], editingSpec.redacted[field])) {
         setError(
@@ -2222,16 +2207,8 @@ function JsonEditorSection({
         return;
       }
     }
-    // `endpoint` and `registry` are provenance / runtime-locality fields
-    // not user-editable through the editor. Compare the PARSED payload
-    // against the redacted spec the textarea was seeded from — equality
-    // means the user didn't touch the locked fields (any redaction sentinel
-    // stayed intact). If anything differs (a real bearer-token edit, a
-    // `base_url` swap, a `registry` flip, etc.) we reject the Apply
-    // entirely. Doing this BEFORE `mergeLockedFields` is mandatory: the
-    // overlay overwrites parsed.endpoint with spec.endpoint, so any
-    // post-overlay compare would always read "equal" and silently drop
-    // the user's edit.
+    // Compare before mergeLockedFields; overlaying first would hide edits to
+    // endpoint / registry and silently drop them.
     const displaySpec = editingSpec.redacted;
     const lockedField = lockedFieldChange(displaySpec, parsedRecord);
     if (lockedField) {
@@ -2240,22 +2217,24 @@ function JsonEditorSection({
       );
       return;
     }
+    const changedMarkerPaths = changedRedactionMarkerPaths(parsedRecord, editingSpec.redactions);
+    if (changedMarkerPaths.length > 0) {
+      setError(
+        `Redaction marker \`${changedMarkerPaths[0]}\` is inside an edited value. Replace the full credential value or revert the marker before applying.`,
+      );
+      return;
+    }
     const withRestoredRedactions = restoreUnchangedRedactions(
       parsedRecord,
       editingSpec.redactions,
     ) as Record<string, unknown>;
-    // Now overlay the real locked-field values onto the parsed payload so
-    // the candidate carries the actual `endpoint.auth.bearer_token` (not
-    // the redaction sentinel the textarea showed). Redaction stays purely a
-    // display concern from here on.
+    // Restore the real locked values after all Raw JSON edit checks.
     const withRealLockedFields = mergeLockedFields(withRestoredRedactions, spec);
-    // Build the would-be-applied payload (identity fields are preserved by
-    // replaceSpec) and let the server type-check the rest before we mutate
-    // editor state. The same validate endpoint backs the Validate button so
-    // we get consistent errors with the Save path.
+    // Server validation runs before the draft state mutates.
+    const candidateSource = withRealLockedFields as unknown as AgentSpec;
     const candidate: AgentSpec = {
-      ...(withRealLockedFields as unknown as AgentSpec),
-      id: spec.id,
+      ...candidateSource,
+      id: isNew ? candidateSource.id : spec.id,
       created_at: spec.created_at,
       updated_at: spec.updated_at,
     };
@@ -2285,10 +2264,20 @@ function JsonEditorSection({
         <div>
           <h3 className="text-lg font-semibold text-fg-strong">Raw JSON</h3>
           <p className="mt-2 max-w-xl text-sm text-fg-soft">
-            Edit the AgentSpec payload directly. <span className="font-mono">id</span>,{" "}
-            <span className="font-mono">created_at</span>, and{" "}
-            <span className="font-mono">updated_at</span> are preserved on Apply. Click Save below
-            to publish — the runtime validation still runs.
+            Edit the AgentSpec payload directly.{" "}
+            {isNew ? (
+              <>
+                <span className="font-mono">id</span> can be set for new agents;{" "}
+                <span className="font-mono">created_at</span> and{" "}
+                <span className="font-mono">updated_at</span> are preserved on Apply.
+              </>
+            ) : (
+              <>
+                <span className="font-mono">id</span>, <span className="font-mono">created_at</span>
+                , and <span className="font-mono">updated_at</span> are preserved on Apply.
+              </>
+            )}{" "}
+            Click Save below to publish — the runtime validation still runs.
           </p>
           <p
             className="mt-2 max-w-xl text-xs text-fg-soft"
@@ -2382,13 +2371,7 @@ function ContextPolicySection({
     onChange({ ...policy, [key]: next });
   }
 
-  /** Parse a token-count input. Ignores blank / non-numeric / < `min`
-   *  values: a half-typed clear-and-retype flow would otherwise flash the
-   *  draft to `Number("") || 0 === 0`, which collides with the `min={1}`
-   *  on `max_context_tokens` / `max_output_tokens` and locks Save behind
-   *  a "validation failed" toast that the user didn't actually trigger.
-   *  Returning `undefined` here keeps the previous value displayed until
-   *  the user types something valid. */
+  // Keep the previous value while number inputs are blank or half-typed.
   function parseTokenInput(value: string, min: number): number | undefined {
     const parsed = Number(value);
     if (!Number.isFinite(parsed) || parsed < min) return undefined;
@@ -2498,9 +2481,10 @@ function ContextPolicySection({
                 min={1}
                 disabled={!autocompactEnabled}
                 value={autocompactEnabled ? Number(policy.autocompact_threshold ?? 0) : ""}
-                onChange={(event) =>
-                  update("autocompact_threshold", Number(event.target.value) || null)
-                }
+                onChange={(event) => {
+                  const next = parseTokenInput(event.target.value, 1);
+                  if (next !== undefined) update("autocompact_threshold", next);
+                }}
                 className="w-full rounded-xl border border-line-strong px-3 py-2 text-sm text-fg-strong outline-none transition focus:border-line-strong disabled:bg-muted disabled:text-fg-soft"
               />
             </div>
