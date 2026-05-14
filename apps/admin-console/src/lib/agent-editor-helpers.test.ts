@@ -830,6 +830,109 @@ describe("redactSecretsForDisplay (R6 #B/#C — generic deep redact)", () => {
     expect(auth.weird_key).toBeNull();
     expect(auth.other).toBeUndefined();
   });
+
+  // R15 — Numeric LLM token-budget fields must NOT be masked. The
+  // previous implementation used `"token"` as an unconditional substring
+  // pattern; `normalizeSecretKey("max_context_tokens")` is
+  // `"maxcontexttokens"` which contains "token", so every Raw JSON view
+  // / DiffModal / audit snapshot rendered `context_policy` as
+  // `{max_context_tokens: "***", max_output_tokens: "***"}` — hiding
+  // legitimate numeric config. R15 splits `"token"` into an exact-match
+  // bucket plus compound `*_token` patterns so the substring approach
+  // stops biting context_policy / usage-counter fields.
+  describe("R15 — token substring no longer over-redacts numeric budgets", () => {
+    it("preserves max_context_tokens and max_output_tokens inside context_policy", () => {
+      const result = redactSecretsForDisplay({
+        context_policy: {
+          max_context_tokens: 200_000,
+          max_output_tokens: 16_384,
+          min_recent_messages: 10,
+          autocompact_threshold: null,
+        },
+      });
+      const policy = result.context_policy as Record<string, unknown>;
+      expect(policy.max_context_tokens).toBe(200_000);
+      expect(policy.max_output_tokens).toBe(16_384);
+      expect(policy.min_recent_messages).toBe(10);
+      expect(policy.autocompact_threshold).toBeNull();
+    });
+
+    it("preserves usage-counter token fields in trace / audit payloads", () => {
+      // LLM telemetry surfaces `input_tokens` / `output_tokens` /
+      // `total_tokens` / `token_count` — all numeric debug info that
+      // must remain readable in the admin console.
+      const event = {
+        kind: "after_inference",
+        payload: {
+          usage: {
+            input_tokens: 1234,
+            output_tokens: 567,
+            total_tokens: 1801,
+            token_count: 1801,
+            cached_input_tokens: 100,
+          },
+        },
+      };
+      const redacted = redactSecretsForDisplay(event);
+      const usage = (redacted.payload as Record<string, unknown>).usage as Record<
+        string,
+        unknown
+      >;
+      expect(usage.input_tokens).toBe(1234);
+      expect(usage.output_tokens).toBe(567);
+      expect(usage.total_tokens).toBe(1801);
+      expect(usage.token_count).toBe(1801);
+      expect(usage.cached_input_tokens).toBe(100);
+    });
+
+    it("still masks standalone `token` and `Token` keys", () => {
+      const value = { config: { token: "raw-bearer-value", Token: "raw-mixed-case" } };
+      const redacted = redactSecretsForDisplay(value);
+      const config = redacted.config as Record<string, unknown>;
+      expect(config.token).toBe("***");
+      expect(config.Token).toBe("***");
+    });
+
+    it("still masks compound `*_token` credential shapes", () => {
+      const value = {
+        auth_payload: {
+          access_token: "at-leaked",
+          refresh_token: "rt-leaked",
+          id_token: "it-leaked",
+          bearer_token: "bt-leaked",
+          auth_token: "auth-leaked",
+          session_token: "st-leaked",
+        },
+      };
+      const redacted = redactSecretsForDisplay(value);
+      const payload = redacted.auth_payload as Record<string, unknown>;
+      expect(payload.access_token).toBe("***");
+      expect(payload.refresh_token).toBe("***");
+      expect(payload.id_token).toBe("***");
+      expect(payload.bearer_token).toBe("***");
+      expect(payload.auth_token).toBe("***");
+      expect(payload.session_token).toBe("***");
+    });
+
+    it("still masks api_key / x-api-key / authorization / client_secret / private_key", () => {
+      const value = {
+        creds: {
+          api_key: "leaked-api-key",
+          "x-api-key": "leaked-x-key",
+          authorization: "Bearer leaked",
+          client_secret: "cs-leaked",
+          private_key: "pk-leaked",
+        },
+      };
+      const redacted = redactSecretsForDisplay(value);
+      const creds = redacted.creds as Record<string, unknown>;
+      expect(creds.api_key).toBe("***");
+      expect(creds["x-api-key"]).toBe("***");
+      expect(creds.authorization).toBe("***");
+      expect(creds.client_secret).toBe("***");
+      expect(creds.private_key).toBe("***");
+    });
+  });
 });
 
 describe("computeRedactedDiff", () => {

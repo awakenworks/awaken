@@ -117,26 +117,19 @@ export function lockedFieldChange(
 }
 
 /**
- * Plan of changes that need to ride the wire to persist the user's draft
- * against an existing builtin / customized agent record. Split into two
- * lists because they target different endpoints:
+ * Save plan for a builtin / customized record. Both lists ride a single
+ * `PATCH /v1/config/agents/:id/overrides` body shaped like
+ * `{...patch, _clear: [...clear]}`; the server applies upserts and
+ * clears in one `apply_locked` transaction (R11 #3, supersedes the
+ * earlier PATCH + N×DELETE flow).
  *
- *  - `patch`  → `PATCH /v1/config/agents/:id/overrides` with this map as the
- *               body. Contains fields with concrete values, including
- *               explicit `null` for nullable fields the user deliberately
- *               disabled (e.g. `context_policy: null` meaning "no context
- *               policy on this agent, even if the base had one").
- *  - `clear`  → one `DELETE /v1/config/agents/:id/overrides/:field` per
- *               entry. These are fields the user reverted to "use the base
- *               value" — the `user_overrides` key gets removed entirely
- *               rather than left as an explicit-null override that would
- *               keep the "customized" badge on for no reason.
- *
- * Distinguishing the two is the difference between "explicit null
- * override" and "no override". A naive `PATCH {field: null}` for every
- * cleared field would mix the two: nullable fields would receive an
- * `explicit-null` override (badge stays customized) instead of being
- * cleared back to the builtin default.
+ *  - `patch`  → top-level body keys. Includes explicit `null` for
+ *               nullable fields the user deliberately disabled (e.g.
+ *               `context_policy: null` = "no policy even if base had one").
+ *  - `clear`  → entries in the `_clear` array. Removes the field from
+ *               `user_overrides` so the resolved spec falls back to
+ *               the builtin default — distinct from "explicit null
+ *               override" which would keep the customized badge on.
  */
 export interface AgentPatchPlan {
   patch: Record<string, unknown>;
@@ -339,29 +332,23 @@ export function partitionActiveHookFilter(
   return { active, stale };
 }
 
-/** Keys that always carry secret material when seen anywhere in a
- *  payload — masked by `redactSecretsForDisplay` regardless of context
- *  (audit log diff, trace event payload, DiffModal). Keys are normalized
- *  before matching so `api_key`, `api-key`, and `x-api-key` all hit the
- *  same `apikey` pattern. */
+/** Exact-match buckets for short / ambiguous secret names where substring
+ *  matching would over-redact. R15: standalone `token` is a secret;
+ *  `max_context_tokens` (LLM budget) contains "token" but isn't one.
+ *  Keys are normalized via `normalizeSecretKey` before lookup. */
+const EXACT_SECRET_KEYS = new Set(["token", "apikey", "xapikey"]);
+
+/** Substring patterns specific enough to be safe; `token` is intentionally
+ *  excluded — see `EXACT_SECRET_KEYS`. Compound `*_token` shapes
+ *  (access_token, bearer_token, …) live below as their full form. */
 const SENSITIVE_AUTH_KEY_PATTERNS = [
-  "token",
-  "secret",
-  "password",
-  "passphrase",
-  "apikey",
-  "authorization",
-  "credential",
-  "privatekey",
-  "clientsecret",
-  // R10 #4 — broaden generic-redaction coverage to HTTP-flavored
-  // secret carriers that an `endpoint.auth` payload or a trace event
-  // can plausibly hold under arbitrary key names.
-  "cookie",
-  "jwt",
-  "bearer",
-  "session",
-  "accesskey",
+  "secret", "password", "passphrase", "authorization", "credential",
+  "privatekey", "clientsecret",
+  // R10 #4 — HTTP-flavored secret carriers under arbitrary key names.
+  "cookie", "jwt", "bearer", "session", "accesskey",
+  // R15 — compound token shapes; the standalone word "token" stays exact.
+  "accesstoken", "refreshtoken", "idtoken", "bearertoken",
+  "authtoken", "sessiontoken",
 ];
 
 const REDACTED_PLACEHOLDER = "***";
@@ -393,6 +380,7 @@ function normalizeSecretKey(key: string): string {
 
 function isSensitiveKey(key: string): boolean {
   const normalized = normalizeSecretKey(key);
+  if (EXACT_SECRET_KEYS.has(normalized)) return true;
   return SENSITIVE_AUTH_KEY_PATTERNS.some((pattern) => normalized.includes(pattern));
 }
 
