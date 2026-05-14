@@ -100,6 +100,17 @@ describe("ConfigApiError shape", () => {
     expect(err.message).not.toContain("sk-real-secret-value");
   });
 
+  it("stores a redacted detail body", () => {
+    const err = new ConfigApiError(500, {
+      error: "upstream failed with Authorization: Bearer sk-real-secret-value",
+      headers: { Authorization: "Bearer raw-header-secret" },
+    });
+
+    expect(JSON.stringify(err.detail)).toContain("Authorization: ***");
+    expect(JSON.stringify(err.detail)).not.toContain("sk-real-secret-value");
+    expect(JSON.stringify(err.detail)).not.toContain("raw-header-secret");
+  });
+
   it("uses and redacts a response message field when error is absent", () => {
     const err = new ConfigApiError(500, {
       message: "upstream failed with api_key=raw-api-key-value",
