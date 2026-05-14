@@ -2329,6 +2329,48 @@ async fn patch_overrides_clear_directive_removes_overrides() {
 }
 
 #[tokio::test]
+async fn patch_overrides_clear_directive_accepts_endpoint() {
+    let app = make_app().await;
+
+    let (seed_status, _) = patch_overrides(
+        &app.router,
+        "bootstrap",
+        json!({
+            "endpoint": {
+                "backend": "a2a",
+                "base_url": "https://remote.example.com",
+                "target": "remote-agent"
+            }
+        }),
+    )
+    .await;
+    assert_eq!(seed_status, StatusCode::OK);
+
+    let (status, body) =
+        patch_overrides(&app.router, "bootstrap", json!({"_clear": ["endpoint"]})).await;
+    assert_eq!(status, StatusCode::OK, "body={body}");
+    assert!(
+        body.get("endpoint").is_none() || body["endpoint"].is_null(),
+        "effective endpoint must fall back to the base value"
+    );
+
+    use awaken_contract::contract::config_store::ConfigStore;
+    let raw = ConfigStore::get(app.store.as_ref(), "agents", "bootstrap")
+        .await
+        .expect("store read")
+        .expect("entry present");
+    let overrides = raw["meta"].get("user_overrides").unwrap_or(&Value::Null);
+    assert!(
+        overrides.is_null()
+            || !overrides
+                .as_object()
+                .expect("user_overrides object")
+                .contains_key("endpoint"),
+        "endpoint override should be cleared, got: {raw}"
+    );
+}
+
+#[tokio::test]
 async fn patch_overrides_clear_rejects_unknown_field_name() {
     let app = make_app().await;
     let (status, body) = patch_overrides(
@@ -2347,6 +2389,18 @@ async fn patch_overrides_clear_rejects_conflict_with_upsert() {
         &app.router,
         "bootstrap",
         json!({"system_prompt": "new", "_clear": ["system_prompt"]}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "body={body}");
+}
+
+#[tokio::test]
+async fn patch_overrides_clear_rejects_endpoint_conflict_with_upsert() {
+    let app = make_app().await;
+    let (status, body) = patch_overrides(
+        &app.router,
+        "bootstrap",
+        json!({"endpoint": null, "_clear": ["endpoint"]}),
     )
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "body={body}");
