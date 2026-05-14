@@ -6,7 +6,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use async_trait::async_trait;
 use futures::StreamExt;
@@ -38,9 +38,17 @@ use crate::sampling::SamplingHandler;
 /// to surface the cancellation upward (e.g. as `ToolError::Cancelled`).
 pub const CANCELLED_BY_CLIENT: &str = "MCP request cancelled by client";
 
+const MCP_SESSION_EXPIRED: &str = "MCP session expired";
+const MCP_SESSION_EXPIRED_AFTER_ACCEPT: &str = "MCP session expired after request was accepted";
+const MAX_SSE_LINE_BYTES: usize = 64 * 1024;
+const MAX_SSE_EVENT_BYTES: usize = 1024 * 1024;
+const MAX_SSE_JSON_PAYLOAD_BYTES: usize = 1024 * 1024;
+const MAX_SSE_RETRY_DELAY_MS: u64 = 30_000;
+const MAX_SSE_RESUME_ATTEMPTS: u32 = 3;
+
 /// Protocol versions awaken's transports know how to talk on the wire.
 ///
-/// Per MCP 2025-06-18 §Lifecycle / Version Negotiation: "If the server
+/// Per MCP 2025-11-25 §Lifecycle / Version Negotiation: "If the server
 /// supports the requested protocol version, it MUST respond with the
 /// same version. Otherwise, the server MUST respond with another
 /// protocol version it supports." Our handshake sends
@@ -155,7 +163,7 @@ struct ListResourcesResult {
 /// thread / run / call initiated the request so it can do per-agent rate
 /// limiting, per-tenant OAuth, audit, or workflow correlation.
 ///
-/// Spec (2025-06-18 §JSON-RPC 2.0 + §Basic) reserves the `_meta` field on
+/// Spec (2025-11-25 §JSON-RPC 2.0 + §Basic) reserves the `_meta` field on
 /// request params for client-controlled metadata. By convention,
 /// vendor-specific keys are namespaced — we use `awaken/attribution` so
 /// our additions don't collide with future MCP spec fields (notably the
@@ -229,7 +237,7 @@ pub struct McpCallContext {
 /// transport can distinguish "no factory configured at all" from
 /// "factory consulted but declined to bind this agent" — these have
 /// different security semantics.
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub enum McpCallSampling {
     /// No per-call decision was made. The transport falls through to
     /// its registry-level fixed handler (legacy behaviour, preserved
@@ -342,9 +350,16 @@ pub trait McpToolTransport: Send + Sync {
         None
     }
 
+    /// Wall-clock time of the current HTTP session's successful
+    /// `initialize`, if the transport can report it live. Stdio returns
+    /// `None`; manager snapshots fall back to their connect/reconnect cache.
+    async fn current_session_started_at(&self) -> Option<SystemTime> {
+        None
+    }
+
     /// Take the receiver for `notifications/{tools,prompts,resources}/list_changed`
     /// events. Each event names which catalogue changed so the host can
-    /// refresh only that surface. Per MCP 2025-06-18 §Server features,
+    /// refresh only that surface. Per MCP 2025-11-25 §Server features,
     /// servers that advertise `tools.listChanged` / `prompts.listChanged`
     /// / `resources.listChanged` SHOULD emit these notifications when
     /// the corresponding catalogue mutates — receiving one removes the
@@ -358,7 +373,7 @@ pub trait McpToolTransport: Send + Sync {
     }
 
     /// Subscribe to updates for a single resource URI. Per MCP
-    /// 2025-06-18 §Resources / Subscriptions: callable only when the
+    /// 2025-11-25 §Resources / Subscriptions: callable only when the
     /// server advertised `resources.subscribe: true` during initialize.
     /// The caller is responsible for that capability check; the
     /// transport just forwards the JSON-RPC request.
@@ -385,7 +400,7 @@ pub trait McpToolTransport: Send + Sync {
     }
 
     /// Ask the server for autocomplete suggestions for a prompt /
-    /// resource argument. Per MCP 2025-06-18 §Utilities / Completion:
+    /// resource argument. Per MCP 2025-11-25 §Utilities / Completion:
     /// only valid when the server advertised `completions: {}` in its
     /// initialize response — the caller is responsible for that
     /// capability check. The transport just forwards the request.
@@ -418,6 +433,194 @@ fn list_changed_method(method: &str) -> Option<ListChangedKind> {
         "notifications/prompts/list_changed" => Some(ListChangedKind::Prompts),
         "notifications/resources/list_changed" => Some(ListChangedKind::Resources),
         _ => None,
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum SseEventIdUpdate {
+    Absent,
+    Set(String),
+    Reset,
+}
+
+/// Extract the value of an `id:` field from the buffered SSE event lines.
+/// Per WHATWG SSE, an empty `id:` resets the last-event-id; that must be
+/// represented separately from an absent field so callers can clear stale
+/// resume cursors.
+fn extract_event_id(event_lines: &[String]) -> SseEventIdUpdate {
+    for line in event_lines.iter().rev() {
+        if let Some(rest) = line.strip_prefix("id:") {
+            let trimmed = rest.trim_start();
+            if trimmed.is_empty() {
+                return SseEventIdUpdate::Reset;
+            }
+            return SseEventIdUpdate::Set(trimmed.to_string());
+        }
+    }
+    SseEventIdUpdate::Absent
+}
+
+fn apply_event_id_update(last_event_id: &mut Option<String>, update: SseEventIdUpdate) {
+    match update {
+        SseEventIdUpdate::Absent => {}
+        SseEventIdUpdate::Set(id) => *last_event_id = Some(id),
+        SseEventIdUpdate::Reset => *last_event_id = None,
+    }
+}
+
+/// Extract an SSE `retry:` field as a reconnect delay. Malformed values are
+/// ignored, matching the EventSource processing model.
+fn extract_retry_delay(event_lines: &[String]) -> Option<Duration> {
+    let mut delay = None;
+    for line in event_lines {
+        if let Some(rest) = line.strip_prefix("retry:") {
+            let trimmed = rest.trim_start();
+            if let Ok(millis) = trimmed.parse::<u64>() {
+                delay = Some(Duration::from_millis(millis));
+            }
+        }
+    }
+    delay
+}
+
+fn bounded_sse_retry_delay(
+    event_lines: &[String],
+    context: &str,
+) -> Result<Option<Duration>, McpTransportError> {
+    let Some(delay) = extract_retry_delay(event_lines) else {
+        return Ok(None);
+    };
+    if delay > Duration::from_millis(MAX_SSE_RETRY_DELAY_MS) {
+        return Err(McpTransportError::ProtocolError(format!(
+            "{context} SSE retry delay exceeded {MAX_SSE_RETRY_DELAY_MS} ms"
+        )));
+    }
+    Ok(Some(delay))
+}
+
+fn response_content_type(response: &reqwest::Response) -> String {
+    response
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default()
+        .trim()
+        .to_ascii_lowercase()
+}
+
+fn is_sse_content_type(content_type: &str) -> bool {
+    content_type.starts_with("text/event-stream")
+}
+
+fn validate_sse_response(
+    response: &reqwest::Response,
+    context: &str,
+) -> Result<(), McpTransportError> {
+    let content_type = response_content_type(response);
+    if is_sse_content_type(&content_type) {
+        Ok(())
+    } else {
+        Err(McpTransportError::ProtocolError(format!(
+            "{context} expected Content-Type text/event-stream, got {}",
+            if content_type.is_empty() {
+                "<missing>"
+            } else {
+                content_type.as_str()
+            }
+        )))
+    }
+}
+
+async fn decode_json_response_body(
+    response: reqwest::Response,
+    timeout: Duration,
+) -> Result<Value, McpTransportError> {
+    tokio::time::timeout(timeout, response.json())
+        .await
+        .map_err(|_| {
+            McpTransportError::Timeout(format!(
+                "HTTP JSON response body did not complete within {:?}",
+                timeout
+            ))
+        })?
+        .map_err(|e| {
+            McpTransportError::TransportError(format!("Failed to parse JSON response: {}", e))
+        })
+}
+
+fn push_sse_line_byte(
+    line_buf: &mut Vec<u8>,
+    byte: u8,
+    context: &str,
+) -> Result<(), McpTransportError> {
+    if line_buf.len() >= MAX_SSE_LINE_BYTES {
+        return Err(McpTransportError::ProtocolError(format!(
+            "{context} SSE line exceeded {MAX_SSE_LINE_BYTES} bytes"
+        )));
+    }
+    line_buf.push(byte);
+    Ok(())
+}
+
+fn push_sse_event_line(
+    event_lines: &mut Vec<String>,
+    event_bytes: &mut usize,
+    line: String,
+    context: &str,
+) -> Result<(), McpTransportError> {
+    *event_bytes = event_bytes
+        .checked_add(line.len().saturating_add(1))
+        .ok_or_else(|| {
+            McpTransportError::ProtocolError(format!(
+                "{context} SSE event exceeded {MAX_SSE_EVENT_BYTES} bytes"
+            ))
+        })?;
+    if *event_bytes > MAX_SSE_EVENT_BYTES {
+        return Err(McpTransportError::ProtocolError(format!(
+            "{context} SSE event exceeded {MAX_SSE_EVENT_BYTES} bytes"
+        )));
+    }
+    event_lines.push(line);
+    Ok(())
+}
+
+fn sse_data_payload(
+    event_lines: &[String],
+    context: &str,
+) -> Result<Option<String>, McpTransportError> {
+    let mut data_parts = Vec::new();
+    let mut payload_bytes = 0usize;
+    for line in event_lines {
+        if line.starts_with(':') {
+            continue;
+        }
+        if let Some(rest) = line.strip_prefix("data:") {
+            let part = rest.trim_start();
+            payload_bytes = payload_bytes
+                .checked_add(part.len())
+                .and_then(|bytes| bytes.checked_add(1))
+                .ok_or_else(|| {
+                    McpTransportError::ProtocolError(format!(
+                        "{context} SSE JSON payload exceeded {MAX_SSE_JSON_PAYLOAD_BYTES} bytes"
+                    ))
+                })?;
+            if payload_bytes > MAX_SSE_JSON_PAYLOAD_BYTES {
+                return Err(McpTransportError::ProtocolError(format!(
+                    "{context} SSE JSON payload exceeded {MAX_SSE_JSON_PAYLOAD_BYTES} bytes"
+                )));
+            }
+            data_parts.push(part.to_string());
+        }
+    }
+
+    if data_parts.is_empty() {
+        return Ok(None);
+    }
+    let payload = data_parts.join("\n");
+    if payload.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(payload))
     }
 }
 
@@ -526,17 +729,32 @@ impl PerCallSamplingGuard {
             }
         }
     }
+
+    /// Explicitly drop the per-call entry with an `.await`'d lock.
+    /// Call this on every exit path of `call_tool` so cardinality-
+    /// based routing in `select_sampling_handler` doesn't observe a
+    /// stale entry from a call that just returned. Marks the guard
+    /// inactive so the sync `Drop` impl becomes a no-op safety net.
+    async fn unregister(&mut self) {
+        if !self.active {
+            return;
+        }
+        self.handlers.lock().await.remove(&self.id);
+        self.active = false;
+    }
 }
 
 impl Drop for PerCallSamplingGuard {
     fn drop(&mut self) {
+        // Reachable only if `unregister()` wasn't awaited (panic,
+        // early return on a path the future of call_tool aborts mid-
+        // way). Sync best-effort: try_lock first, spawn fallback for
+        // contended cases. The contended path is racy by design — we
+        // accept it as a backstop ONLY; correctness for the routing
+        // path comes from `unregister()` being called before return.
         if !self.active {
             return;
         }
-        // Drop is sync; we can only try to lock. The map is taken only
-        // briefly by the reader task or other guards, so try_lock should
-        // succeed in the common case. If contended, schedule removal so
-        // the entry doesn't outlive the call indefinitely.
         if let Ok(mut map) = self.handlers.try_lock() {
             map.remove(&self.id);
         } else {
@@ -594,6 +812,7 @@ impl ProgressAwareStdioTransport {
         config: &McpServerConnectionConfig,
         sampling_handler: Option<Arc<dyn SamplingHandler>>,
         roots: Arc<Vec<Root>>,
+        advertise_sampling: bool,
     ) -> Result<Self, McpTransportError> {
         let command = config.command.as_ref().ok_or_else(|| {
             McpTransportError::TransportError("Stdio transport requires command".to_string())
@@ -790,11 +1009,15 @@ impl ProgressAwareStdioTransport {
         };
 
         let mut capabilities = InitializeCapabilities::default();
-        if sampling_handler.is_some() {
+        // Advertise `sampling` only when this transport has a handler
+        // that can safely answer global server-initiated requests. A
+        // per-call factory is not global capability support; it is only
+        // safe when the stream binds the request to a specific call id.
+        if sampling_handler.is_some() || advertise_sampling {
             capabilities.sampling = Some(SamplingCapabilities::default());
         }
         if !transport.roots.is_empty() {
-            // Spec 2025-06-18 §Client features: clients advertising
+            // Spec 2025-11-25 §Client features: clients advertising
             // `roots` MUST be prepared to respond to `roots/list`. Our
             // roots are static post-construction (set via the
             // constructor arg, no runtime mutation today), so we
@@ -863,20 +1086,27 @@ impl ProgressAwareStdioTransport {
         progress_registration: Option<(ProgressTokenKey, mpsc::UnboundedSender<McpProgressUpdate>)>,
     ) -> Result<Value, McpTransportError> {
         let id = self.next_id.fetch_add(1, Ordering::SeqCst);
-        self.send_request_with_id(id, method, params, progress_registration)
+        self.send_request_with_id(id, method, params, progress_registration, None)
             .await
     }
 
-    /// Send a JSON-RPC request using a caller-supplied id. Extracted from
-    /// `send_request` so cancellable call paths can allocate the id up
-    /// front and reuse it when emitting `notifications/cancelled`
-    /// (which references the in-flight request by id per spec).
+    /// Send a JSON-RPC request using a caller-supplied id.
+    ///
+    /// `sent_flag`, when supplied, is set to `true` once the request
+    /// has been enqueued for transmission (channel push for stdio,
+    /// HTTP send returning OK for HTTP). The cancellable call path
+    /// reads it before emitting `notifications/cancelled`: if the
+    /// request never went out, the server hasn't allocated state for
+    /// the id, so the spec-mandated notification would reference a
+    /// requestId the peer never saw — confusing logs at best, an
+    /// "unknown requestId" rejection at worst.
     async fn send_request_with_id(
         &self,
         id: i64,
         method: &str,
         params: Option<Value>,
         progress_registration: Option<(ProgressTokenKey, mpsc::UnboundedSender<McpProgressUpdate>)>,
+        sent_flag: Option<Arc<AtomicBool>>,
     ) -> Result<Value, McpTransportError> {
         if !self.alive.load(Ordering::SeqCst) {
             return Err(McpTransportError::ConnectionClosed);
@@ -904,6 +1134,14 @@ impl ProgressAwareStdioTransport {
                 self.progress_subscribers.lock().await.remove(&key);
             }
             return Err(McpTransportError::ConnectionClosed);
+        }
+
+        // Channel push succeeded — the writer task will flush this
+        // line; ordering between the request and any subsequent
+        // notification (e.g. cancellation) is preserved via the
+        // single-consumer write channel.
+        if let Some(flag) = sent_flag.as_ref() {
+            flag.store(true, Ordering::SeqCst);
         }
 
         let response = tokio::time::timeout(self.timeout, rx).await;
@@ -1064,14 +1302,16 @@ impl McpToolTransport for ProgressAwareStdioTransport {
         // required: if registration raced the server-initiated
         // sampling/createMessage we want to route to this entry, an
         // earlier try_lock-based scheme would silently miss it.
-        let _handler_guard =
+        let mut handler_guard =
             PerCallSamplingGuard::register(Arc::clone(&self.per_call_sampling), id, sampling).await;
 
+        let request_sent = Arc::new(AtomicBool::new(false));
         let request_fut = self.send_request_with_id(
             id,
             "tools/call",
             Some(serde_json::to_value(&params)?),
             progress_sender,
+            Some(Arc::clone(&request_sent)),
         );
 
         let result = match cancellation {
@@ -1081,7 +1321,7 @@ impl McpToolTransport for ProgressAwareStdioTransport {
                 tokio::select! {
                     biased;
                     _ = token.cancelled() => {
-                        // Per spec (2025-06-18 §Cancellation): the client
+                        // Per spec (2025-11-25 §Cancellation): the client
                         // SHOULD send `notifications/cancelled` with the
                         // in-flight requestId so the server can stop
                         // processing and free resources. We use the
@@ -1090,27 +1330,48 @@ impl McpToolTransport for ProgressAwareStdioTransport {
                         // returns; `kill_on_drop(true)` would race the
                         // notification write and the server might never
                         // see the cancellation.
-                        let _ = self
-                            .send_notification_flushed(
-                                "notifications/cancelled",
-                                Some(json!({
-                                    "requestId": id,
-                                    "reason": "client run cancelled",
-                                })),
-                            )
-                            .await;
+                        //
+                        // Only emit when the request actually went out.
+                        // If cancellation fired before `request_fut` had
+                        // a chance to push the request line onto the
+                        // write channel, the server never allocated
+                        // state for this requestId — emitting the
+                        // notification would reference an unknown id.
+                        if request_sent.load(Ordering::SeqCst) {
+                            let _ = self
+                                .send_notification_flushed(
+                                    "notifications/cancelled",
+                                    Some(json!({
+                                        "requestId": id,
+                                        "reason": "client run cancelled",
+                                    })),
+                                )
+                                .await;
+                        }
                         // Drop the pending entry so a late response is
                         // dropped on the reader floor rather than
                         // delivered to an orphaned channel.
                         self.forget_pending(id).await;
-                        Err(McpTransportError::TransportError(
+                        // Deterministic guard cleanup before return —
+                        // ensures cardinality-based routing doesn't
+                        // observe a stale entry from this just-returned
+                        // call. The sync Drop is a backstop only.
+                        handler_guard.unregister().await;
+                        return Err(McpTransportError::TransportError(
                             CANCELLED_BY_CLIENT.to_string(),
-                        ))
+                        ));
                     }
                     result = &mut request_fut => result,
                 }
             }
         };
+
+        // Deterministic guard cleanup on every non-cancel return path,
+        // before we transform `result` into the final value the caller
+        // sees. Without this, a fast follow-up call could observe a
+        // map entry from the just-returned call and route sampling to
+        // a stale handler.
+        handler_guard.unregister().await;
 
         let result = result?;
         let call_result: CallToolResult = serde_json::from_value(result)?;
@@ -1201,10 +1462,13 @@ impl McpToolTransport for ProgressAwareStdioTransport {
 pub(crate) struct ProgressAwareHttpTransport {
     endpoint: String,
     client: reqwest::Client,
+    streaming_client: reqwest::Client,
+    timeout: Duration,
     next_id: AtomicI64,
     next_progress_token: AtomicI64,
-    capabilities: tokio::sync::Mutex<Option<ServerCapabilities>>,
-    session: tokio::sync::RwLock<HttpSessionState>,
+    capabilities: Arc<tokio::sync::Mutex<Option<ServerCapabilities>>>,
+    initialize_lock: tokio::sync::Mutex<()>,
+    session: Arc<tokio::sync::RwLock<HttpSessionState>>,
     sampling_handler: Option<Arc<dyn SamplingHandler>>,
     /// Per-call sampling handlers; same semantics as the stdio variant.
     /// Populated by `call_tool` while a request is in flight; consulted
@@ -1230,12 +1494,84 @@ pub(crate) struct ProgressAwareHttpTransport {
     /// Non-empty → roots capability advertised at initialize and
     /// `roots/list` is served from this list.
     roots: Arc<Vec<Root>>,
+    /// Whether to advertise `sampling` capability at initialize. This
+    /// is true only when the manager has a transport-level fallback
+    /// handler that can answer server requests without per-call
+    /// attribution; factory-only routing intentionally leaves it false.
+    advertise_sampling: bool,
+    /// Tracks whether we've spawned the background GET listening
+    /// stream task yet (spec 2025-11-25 §Streamable HTTP / Listening
+    /// for Messages from the Server). Start-once, never restart from
+    /// here — the task itself loops over connect / reconnect /
+    /// backoff. Set via `swap` so concurrent first-initialize callers
+    /// don't double-spawn.
+    listener_started: AtomicBool,
+    /// `AbortHandle` for the listener task. Held so `close()` (and
+    /// the Drop impl) can cancel the task immediately rather than
+    /// leaking it past the transport's lifetime. `None` before the
+    /// task is spawned; cleared on `close()`.
+    listener_abort: std::sync::Mutex<Option<tokio::task::AbortHandle>>,
+    /// Atomic kill switch the listener task polls between SSE chunks
+    /// so a clean `close()` shuts it down even if `AbortHandle::abort`
+    /// races a pending request.
+    listener_alive: Arc<AtomicBool>,
 }
 
 #[derive(Debug, Clone, Default)]
 struct HttpSessionState {
     session_id: Option<String>,
     protocol_version: Option<String>,
+    started_at: Option<SystemTime>,
+    generation: u64,
+}
+
+#[derive(Debug, Clone, Default)]
+struct HttpSessionSnapshot {
+    session_id: Option<String>,
+    protocol_version: Option<String>,
+    generation: u64,
+}
+
+impl HttpSessionState {
+    fn snapshot(&self) -> HttpSessionSnapshot {
+        HttpSessionSnapshot {
+            session_id: self.session_id.clone(),
+            protocol_version: self.protocol_version.clone(),
+            generation: self.generation,
+        }
+    }
+}
+
+#[derive(Debug)]
+struct HttpPostResponse {
+    response: reqwest::Response,
+    session: HttpSessionSnapshot,
+}
+
+async fn reset_http_session_state_if_current(
+    session: &Arc<tokio::sync::RwLock<HttpSessionState>>,
+    capabilities: &Arc<tokio::sync::Mutex<Option<ServerCapabilities>>>,
+    expected_session_id: Option<&str>,
+    expected_protocol_version: Option<&str>,
+    expected_generation: u64,
+) -> bool {
+    // Lock capabilities first to match initialize_if_needed's ordering.
+    // This keeps "clear caps + clear session" atomic from request paths
+    // that would otherwise see stale capabilities with an empty session.
+    let mut capabilities_guard = capabilities.lock().await;
+    let mut session_guard = session.write().await;
+    if session_guard.session_id.as_deref() != expected_session_id
+        || session_guard.protocol_version.as_deref() != expected_protocol_version
+        || session_guard.generation != expected_generation
+    {
+        return false;
+    }
+    *session_guard = HttpSessionState {
+        generation: session_guard.generation.saturating_add(1),
+        ..HttpSessionState::default()
+    };
+    *capabilities_guard = None;
+    true
 }
 
 impl ProgressAwareHttpTransport {
@@ -1243,6 +1579,7 @@ impl ProgressAwareHttpTransport {
         config: &McpServerConnectionConfig,
         sampling_handler: Option<Arc<dyn SamplingHandler>>,
         roots: Arc<Vec<Root>>,
+        advertise_sampling: bool,
     ) -> Result<Self, McpTransportError> {
         let endpoint = config.url.as_ref().ok_or_else(|| {
             McpTransportError::TransportError("HTTP transport requires URL".to_string())
@@ -1254,16 +1591,29 @@ impl ProgressAwareHttpTransport {
             .map_err(|e| {
                 McpTransportError::TransportError(format!("Failed to create HTTP client: {}", e))
             })?;
+        let streaming_client = reqwest::Client::builder()
+            .connect_timeout(timeout)
+            .read_timeout(timeout)
+            .build()
+            .map_err(|e| {
+                McpTransportError::TransportError(format!(
+                    "Failed to create HTTP streaming client: {}",
+                    e
+                ))
+            })?;
 
         let (list_changed_tx, list_changed_rx) = mpsc::unbounded_channel::<ListChangedKind>();
         let (resource_updated_tx, resource_updated_rx) = mpsc::unbounded_channel::<String>();
         Ok(Self {
             endpoint: endpoint.clone(),
             client,
+            streaming_client,
+            timeout,
             next_id: AtomicI64::new(1),
             next_progress_token: AtomicI64::new(1),
-            capabilities: tokio::sync::Mutex::new(None),
-            session: tokio::sync::RwLock::new(HttpSessionState::default()),
+            capabilities: Arc::new(tokio::sync::Mutex::new(None)),
+            initialize_lock: tokio::sync::Mutex::new(()),
+            session: Arc::new(tokio::sync::RwLock::new(HttpSessionState::default())),
             sampling_handler,
             per_call_sampling: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
             list_changed_tx,
@@ -1271,28 +1621,48 @@ impl ProgressAwareHttpTransport {
             resource_updated_tx,
             resource_updated_rx: tokio::sync::Mutex::new(Some(resource_updated_rx)),
             roots,
+            advertise_sampling,
+            listener_started: AtomicBool::new(false),
+            listener_abort: std::sync::Mutex::new(None),
+            listener_alive: Arc::new(AtomicBool::new(true)),
         })
     }
 
     async fn initialize_if_needed(&self) -> Result<ServerCapabilities, McpTransportError> {
-        let mut guard = self.capabilities.lock().await;
-        if let Some(capabilities) = guard.clone() {
-            return Ok(capabilities);
+        {
+            let guard = self.capabilities.lock().await;
+            if let Some(capabilities) = guard.clone() {
+                self.spawn_listening_stream_once();
+                return Ok(capabilities);
+            }
+        }
+
+        let _initialize_guard = self.initialize_lock.lock().await;
+        {
+            let guard = self.capabilities.lock().await;
+            if let Some(capabilities) = guard.clone() {
+                self.spawn_listening_stream_once();
+                return Ok(capabilities);
+            }
         }
         let capabilities = self.initialize().await?;
+        let mut guard = self.capabilities.lock().await;
         *guard = Some(capabilities.clone());
+        drop(guard);
+        self.spawn_listening_stream_once();
         Ok(capabilities)
     }
 
     async fn initialize(&self) -> Result<ServerCapabilities, McpTransportError> {
         // Build advertised capabilities the same way the stdio path
-        // does: sampling iff a handler is configured, roots iff we
-        // have roots to serve. HTTP used to send empty capabilities
-        // (`{}`), which masked the sampling support — the server
-        // would refuse to call `sampling/createMessage` even though
-        // the client could handle it. Fix as part of the roots work.
+        // does: sampling iff this transport has a handler that can
+        // answer global server-initiated sampling requests, roots iff we
+        // have roots to serve. Per-call factories are intentionally not
+        // advertised as global sampling support; they are only safe on
+        // per-request SSE streams where request_id binds the sampling
+        // request to a specific agent call.
         let mut caps = InitializeCapabilities::default();
-        if self.sampling_handler.is_some() {
+        if self.sampling_handler.is_some() || self.advertise_sampling {
             caps.sampling = Some(SamplingCapabilities::default());
         }
         if !self.roots.is_empty() {
@@ -1302,48 +1672,130 @@ impl ProgressAwareHttpTransport {
         }
         let caps_value = serde_json::to_value(&caps).unwrap_or_else(|_| json!({}));
         let request_id = self.next_id.fetch_add(1, Ordering::SeqCst);
-        let response = self
+        let post_response = self
             .post_message(
                 JsonRpcMessage::Request(JsonRpcRequest::new(
                     JsonRpcId::Number(request_id),
                     "initialize".to_string(),
                     Some(initialize_params(caps_value, Value::Null)),
                 )),
-                false,
+                true,
             )
             .await?;
 
-        // Spec literal: `Mcp-Session-Id`. HeaderMap::get is
+        // Spec literal: `MCP-Session-Id`. HeaderMap::get is
         // case-insensitive so this works regardless of how the server
         // capitalises the response header.
-        let session_id = response
+        let session_id = post_response
+            .response
             .headers()
-            .get("Mcp-Session-Id")
+            .get("MCP-Session-Id")
             .and_then(|value| value.to_str().ok())
             .map(str::to_string);
 
-        let body = self
-            .decode_http_body(response, request_id, None)
+        let body = match self
+            .decode_initialize_body(post_response.response, request_id, session_id.as_deref())
             .await
-            .map_err(|e| McpTransportError::ProtocolError(format!("initialize failed: {e}")))?;
-        let result: InitializeResult = serde_json::from_value(body)?;
+        {
+            Ok(body) => body,
+            Err(err) => {
+                if let Some(session_id) = session_id.as_deref() {
+                    self.send_session_termination(session_id, None).await;
+                }
+                return Err(McpTransportError::ProtocolError(format!(
+                    "initialize failed: {err}"
+                )));
+            }
+        };
+        let result: InitializeResult = match serde_json::from_value(body) {
+            Ok(result) => result,
+            Err(err) => {
+                if let Some(session_id) = session_id.as_deref() {
+                    self.send_session_termination(session_id, None).await;
+                }
+                return Err(err.into());
+            }
+        };
 
         // Validate the server-echoed protocolVersion BEFORE accepting
         // the session id or emitting `notifications/initialized`. On
         // mismatch we leave session state empty so the next attempt
         // re-handshakes rather than half-living with an unusable session.
-        let negotiated = negotiate_protocol_version(&result.protocol_version)?;
+        let negotiated = match negotiate_protocol_version(&result.protocol_version) {
+            Ok(negotiated) => negotiated,
+            Err(err) => {
+                if let Some(session_id) = session_id.as_deref() {
+                    self.send_session_termination(session_id, None).await;
+                }
+                return Err(err);
+            }
+        };
 
-        {
+        let installed_generation = {
             let mut session = self.session.write().await;
-            session.session_id = session_id;
+            let installed_generation = session.generation.saturating_add(1);
+            session.session_id = session_id.clone();
             session.protocol_version = Some(negotiated.to_string());
+            session.started_at = Some(SystemTime::now());
+            session.generation = installed_generation;
+            installed_generation
+        };
+
+        if let Err(err) = self
+            .send_notification("notifications/initialized", Some(json!({})))
+            .await
+        {
+            reset_http_session_state_if_current(
+                &self.session,
+                &self.capabilities,
+                session_id.as_deref(),
+                Some(negotiated),
+                installed_generation,
+            )
+            .await;
+            if let Some(session_id) = session_id.as_deref() {
+                self.send_session_termination(session_id, Some(negotiated))
+                    .await;
+            }
+            return Err(err);
         }
 
-        self.send_notification("notifications/initialized", Some(json!({})))
-            .await?;
-
         Ok(result.capabilities)
+    }
+
+    /// Spawn the background GET listener task at most once per
+    /// transport instance. Idempotent: subsequent calls are no-ops.
+    fn spawn_listening_stream_once(&self) {
+        if self.listener_started.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        let client = self.client.clone();
+        let streaming_client = self.streaming_client.clone();
+        let endpoint = self.endpoint.clone();
+        let session = Arc::clone(&self.session);
+        let capabilities = Arc::clone(&self.capabilities);
+        let list_changed_tx = self.list_changed_tx.clone();
+        let resource_updated_tx = self.resource_updated_tx.clone();
+        let roots = Arc::clone(&self.roots);
+        let fallback_sampling = self.sampling_handler.clone();
+        let alive = Arc::clone(&self.listener_alive);
+
+        let handle = tokio::spawn(run_http_listening_stream(HttpListenerCtx {
+            client,
+            streaming_client,
+            timeout: self.timeout,
+            endpoint,
+            session,
+            capabilities,
+            list_changed_tx,
+            resource_updated_tx,
+            roots,
+            fallback_sampling,
+            alive,
+        }));
+        if let Ok(mut slot) = self.listener_abort.lock() {
+            *slot = Some(handle.abort_handle());
+        }
     }
 
     async fn send_request(
@@ -1353,26 +1805,57 @@ impl ProgressAwareHttpTransport {
         progress_registration: Option<(ProgressTokenKey, mpsc::UnboundedSender<McpProgressUpdate>)>,
     ) -> Result<Value, McpTransportError> {
         let id = self.next_id.fetch_add(1, Ordering::SeqCst);
-        self.send_request_with_id(id, method, params, progress_registration)
+        self.send_request_with_id(id, method, params, progress_registration, None, None)
             .await
     }
 
     /// Variant of `send_request` that uses a caller-allocated id so the
     /// cancellable call path can emit `notifications/cancelled` against
     /// the same in-flight request id.
+    ///
+    /// `sent_flag` is an optimistic "believed in-progress" marker. It is
+    /// set after the HTTP session snapshot has been captured but before
+    /// awaiting response headers, because that wait can last for the
+    /// whole tool execution. `sent_session`, when supplied, receives the
+    /// exact session snapshot used for the POST so cancellation can send
+    /// `notifications/cancelled` to the original session instead of a
+    /// newer session installed by a concurrent reset/reinitialize.
     async fn send_request_with_id(
         &self,
         id: i64,
         method: &str,
         params: Option<Value>,
         progress_registration: Option<(ProgressTokenKey, mpsc::UnboundedSender<McpProgressUpdate>)>,
+        sent_flag: Option<Arc<AtomicBool>>,
+        sent_session: Option<Arc<tokio::sync::Mutex<Option<HttpSessionSnapshot>>>>,
     ) -> Result<Value, McpTransportError> {
         let request = JsonRpcRequest::new(JsonRpcId::Number(id), method.to_string(), params);
-        let response = self
-            .post_message(JsonRpcMessage::Request(request), true)
+        let session = self.session.read().await.snapshot();
+        if let Some(slot) = sent_session.as_ref() {
+            *slot.lock().await = Some(session.clone());
+        }
+        // Mark the request as "believed in-progress" BEFORE awaiting
+        // response headers. That await can last for the whole
+        // per-request SSE stream — many seconds for a long-running
+        // tool. Setting the flag only after that window would make the
+        // cancellation branch skip notifications/cancelled for the
+        // most-important case (slow tool call needs cancelling).
+        // Per MCP 2025-11-25 §Cancellation: unknown requestIds on
+        // `notifications/cancelled` SHOULD be ignored by the receiver,
+        // so being slightly optimistic here is safe.
+        if let Some(flag) = sent_flag.as_ref() {
+            flag.store(true, Ordering::SeqCst);
+        }
+        let post_response = self
+            .post_message_with_session_snapshot(JsonRpcMessage::Request(request), true, session)
             .await?;
-        self.decode_http_body(response, id, progress_registration)
-            .await
+        self.decode_http_body(
+            post_response.response,
+            id,
+            progress_registration,
+            Some(post_response.session),
+        )
+        .await
     }
 
     async fn send_initialized_request(
@@ -1387,8 +1870,7 @@ impl ProgressAwareHttpTransport {
             .await
         {
             Ok(value) => Ok(value),
-            Err(McpTransportError::ProtocolError(message)) if message == "MCP session expired" => {
-                self.reset_session().await;
+            Err(McpTransportError::ProtocolError(message)) if message == MCP_SESSION_EXPIRED => {
                 self.initialize_if_needed().await?;
                 self.send_request(method, params, progress_registration)
                     .await
@@ -1401,22 +1883,44 @@ impl ProgressAwareHttpTransport {
         &self,
         message: JsonRpcMessage,
         expect_response: bool,
-    ) -> Result<reqwest::Response, McpTransportError> {
-        let mut request = self.client.post(&self.endpoint).header(
+    ) -> Result<HttpPostResponse, McpTransportError> {
+        let session = self.session.read().await.snapshot();
+        self.post_message_with_session_snapshot(message, expect_response, session)
+            .await
+    }
+
+    async fn post_message_with_session_snapshot(
+        &self,
+        message: JsonRpcMessage,
+        expect_response: bool,
+        session: HttpSessionSnapshot,
+    ) -> Result<HttpPostResponse, McpTransportError> {
+        let is_initialize = matches!(
+            &message,
+            JsonRpcMessage::Request(request) if request.method == "initialize"
+        );
+        let client = if expect_response {
+            &self.streaming_client
+        } else {
+            &self.client
+        };
+        let mut request = client.post(&self.endpoint).header(
             reqwest::header::ACCEPT,
             "application/json, text/event-stream",
         );
 
-        let session = self.session.read().await.clone();
-        if let Some(protocol_version) = session.protocol_version {
-            request = request.header("MCP-Protocol-Version", protocol_version);
+        let sent_session_id = session.session_id.clone();
+        let sent_protocol_version = session.protocol_version.clone();
+        if !is_initialize && sent_protocol_version.is_none() {
+            return Err(McpTransportError::ProtocolError(
+                MCP_SESSION_EXPIRED.to_string(),
+            ));
         }
-        if let Some(session_id) = session.session_id {
-            // Spec literal is `Mcp-Session-Id` (title case), not `MCP-`.
-            // HTTP headers are case-insensitive per RFC 7230 so both work
-            // against compliant servers, but the spec writes it in title
-            // case and some intermediaries are pickier than they should be.
-            request = request.header("Mcp-Session-Id", session_id);
+        if let Some(ref protocol_version) = sent_protocol_version {
+            request = request.header("MCP-Protocol-Version", protocol_version.clone());
+        }
+        if let Some(ref session_id) = sent_session_id {
+            request = request.header("MCP-Session-Id", session_id.clone());
         }
 
         request = match message {
@@ -1425,21 +1929,39 @@ impl ProgressAwareHttpTransport {
             JsonRpcMessage::Response(response) => request.json(&response),
         };
 
-        let response = request.send().await.map_err(|e| {
-            McpTransportError::TransportError(format!("HTTP request failed: {}", e))
-        })?;
+        let response = tokio::time::timeout(self.timeout, request.send())
+            .await
+            .map_err(|_| {
+                McpTransportError::Timeout(format!(
+                    "HTTP request did not receive response headers within {:?}",
+                    self.timeout
+                ))
+            })?
+            .map_err(|e| {
+                McpTransportError::TransportError(format!("HTTP request failed: {}", e))
+            })?;
 
         let status = response.status();
         if !status.is_success() {
-            if status == reqwest::StatusCode::NOT_FOUND
-                && self.session.read().await.session_id.is_some()
-            {
+            if status == reqwest::StatusCode::NOT_FOUND && sent_session_id.is_some() {
+                reset_http_session_state_if_current(
+                    &self.session,
+                    &self.capabilities,
+                    sent_session_id.as_deref(),
+                    sent_protocol_version.as_deref(),
+                    session.generation,
+                )
+                .await;
                 return Err(McpTransportError::ProtocolError(
-                    "MCP session expired".to_string(),
+                    MCP_SESSION_EXPIRED.to_string(),
                 ));
             }
 
-            let body = response.text().await.unwrap_or_default();
+            let body = tokio::time::timeout(self.timeout, response.text())
+                .await
+                .ok()
+                .and_then(Result::ok)
+                .unwrap_or_default();
             return Err(McpTransportError::TransportError(format!(
                 "HTTP error: {} - {}",
                 status, body
@@ -1457,7 +1979,7 @@ impl ProgressAwareHttpTransport {
             )));
         }
 
-        Ok(response)
+        Ok(HttpPostResponse { response, session })
     }
 
     async fn send_notification(
@@ -1471,13 +1993,329 @@ impl ProgressAwareHttpTransport {
         Ok(())
     }
 
-    async fn send_response_message(
+    async fn send_notification_with_session(
+        &self,
+        method: &str,
+        params: Option<Value>,
+        request_session: &HttpSessionSnapshot,
+    ) -> Result<(), McpTransportError> {
+        let current_session = self.session.read().await.snapshot();
+        if current_session.generation != request_session.generation
+            || current_session.session_id != request_session.session_id
+            || current_session.protocol_version != request_session.protocol_version
+        {
+            tracing::debug!(
+                request_generation = request_session.generation,
+                current_generation = current_session.generation,
+                "sending MCP notification with captured HTTP session because current session changed"
+            );
+        }
+
+        let notification = JsonRpcNotification::new(method, params);
+        self.post_message_with_session_snapshot(
+            JsonRpcMessage::Notification(notification),
+            false,
+            request_session.clone(),
+        )
+        .await?;
+        Ok(())
+    }
+
+    async fn send_response_message_with_session(
         &self,
         response: JsonRpcResponse,
+        request_session: &HttpSessionSnapshot,
     ) -> Result<(), McpTransportError> {
-        self.post_message(JsonRpcMessage::Response(response), false)
-            .await?;
-        Ok(())
+        let current_session = self.session.read().await.snapshot();
+        if current_session.generation != request_session.generation
+            || current_session.session_id != request_session.session_id
+            || current_session.protocol_version != request_session.protocol_version
+        {
+            tracing::debug!(
+                stream_generation = request_session.generation,
+                current_generation = current_session.generation,
+                "dropping MCP per-request SSE response for stale HTTP session generation"
+            );
+            return Err(McpTransportError::ProtocolError(
+                MCP_SESSION_EXPIRED_AFTER_ACCEPT.to_string(),
+            ));
+        }
+
+        match self
+            .post_message_with_session_snapshot(
+                JsonRpcMessage::Response(response),
+                false,
+                request_session.clone(),
+            )
+            .await
+        {
+            Ok(_) => Ok(()),
+            Err(McpTransportError::ProtocolError(message)) if message == MCP_SESSION_EXPIRED => {
+                Err(McpTransportError::ProtocolError(
+                    MCP_SESSION_EXPIRED_AFTER_ACCEPT.to_string(),
+                ))
+            }
+            Err(err) => Err(err),
+        }
+    }
+
+    async fn decode_initialize_body(
+        &self,
+        response: reqwest::Response,
+        request_id: i64,
+        provisional_session_id: Option<&str>,
+    ) -> Result<Value, McpTransportError> {
+        let content_type = response_content_type(&response);
+
+        if content_type.starts_with("application/json") {
+            let body = decode_json_response_body(response, self.timeout).await?;
+            return decode_http_response_payload(body, request_id, None);
+        }
+
+        if content_type.starts_with("text/event-stream") {
+            return self
+                .decode_initialize_sse_response(response, request_id, provisional_session_id)
+                .await;
+        }
+
+        Err(McpTransportError::ProtocolError(format!(
+            "Unsupported HTTP content type: {}",
+            content_type
+        )))
+    }
+
+    async fn decode_initialize_sse_response(
+        &self,
+        response: reqwest::Response,
+        request_id: i64,
+        provisional_session_id: Option<&str>,
+    ) -> Result<Value, McpTransportError> {
+        let mut last_event_id: Option<String> = None;
+        let mut retry_delay: Option<Duration> = None;
+        let mut resume_attempts = 0u32;
+        let mut current_response = response;
+
+        loop {
+            let mut matched_response: Option<Result<Value, McpTransportError>> = None;
+            let mut event_lines: Vec<String> = Vec::new();
+            let mut event_bytes = 0usize;
+            let mut line_buf: Vec<u8> = Vec::new();
+            let mut stream_io_error: Option<reqwest::Error> = None;
+            let mut stream = current_response.bytes_stream();
+
+            while let Some(chunk) = stream.next().await {
+                let chunk = match chunk {
+                    Ok(chunk) => chunk,
+                    Err(err) => {
+                        stream_io_error = Some(err);
+                        break;
+                    }
+                };
+
+                for byte in chunk {
+                    if byte == b'\n' {
+                        let mut line =
+                            String::from_utf8(std::mem::take(&mut line_buf)).map_err(|e| {
+                                McpTransportError::ProtocolError(format!(
+                                    "Invalid UTF-8 in initialize SSE response: {}",
+                                    e
+                                ))
+                            })?;
+                        if line.ends_with('\r') {
+                            line.pop();
+                        }
+
+                        if line.is_empty() {
+                            apply_event_id_update(
+                                &mut last_event_id,
+                                extract_event_id(&event_lines),
+                            );
+                            if let Some(result) =
+                                self.process_initialize_sse_event(&event_lines, request_id)?
+                            {
+                                matched_response = Some(result);
+                                break;
+                            }
+                            if let Some(delay) =
+                                bounded_sse_retry_delay(&event_lines, "initialize SSE response")?
+                            {
+                                retry_delay = Some(delay);
+                            }
+                            event_lines.clear();
+                            event_bytes = 0;
+                        } else {
+                            push_sse_event_line(
+                                &mut event_lines,
+                                &mut event_bytes,
+                                line,
+                                "initialize SSE response",
+                            )?;
+                        }
+                    } else {
+                        push_sse_line_byte(&mut line_buf, byte, "initialize SSE response")?;
+                    }
+                }
+
+                if matched_response.is_some() {
+                    break;
+                }
+            }
+
+            if !line_buf.is_empty() {
+                let mut line = String::from_utf8(std::mem::take(&mut line_buf)).map_err(|e| {
+                    McpTransportError::ProtocolError(format!(
+                        "Invalid UTF-8 in initialize SSE response: {}",
+                        e
+                    ))
+                })?;
+                if line.ends_with('\r') {
+                    line.pop();
+                }
+                push_sse_event_line(
+                    &mut event_lines,
+                    &mut event_bytes,
+                    line,
+                    "initialize SSE response",
+                )?;
+            }
+
+            if matched_response.is_none() && !event_lines.is_empty() && stream_io_error.is_none() {
+                apply_event_id_update(&mut last_event_id, extract_event_id(&event_lines));
+                matched_response = self.process_initialize_sse_event(&event_lines, request_id)?;
+                if matched_response.is_none()
+                    && let Some(delay) =
+                        bounded_sse_retry_delay(&event_lines, "initialize SSE response")?
+                {
+                    retry_delay = Some(delay);
+                }
+            }
+
+            if let Some(result) = matched_response {
+                return result;
+            }
+
+            if resume_attempts < MAX_SSE_RESUME_ATTEMPTS
+                && let (Some(session_id), Some(id)) =
+                    (provisional_session_id, last_event_id.clone())
+            {
+                resume_attempts += 1;
+                if let Some(delay) = retry_delay {
+                    tokio::time::sleep(delay).await;
+                }
+                tracing::debug!(
+                    request_id,
+                    attempt = resume_attempts,
+                    last_event_id = %id,
+                    clean_eof = stream_io_error.is_none(),
+                    "initialize SSE stream ended before matched response; attempting Last-Event-ID resume"
+                );
+                match self.get_initialize_resume_stream(&id, session_id).await {
+                    Ok(resumed) => {
+                        current_response = resumed;
+                        continue;
+                    }
+                    Err(resume_err) => {
+                        if let Some(err) = stream_io_error {
+                            tracing::warn!(
+                                error = %resume_err,
+                                "initialize Last-Event-ID resume failed; surfacing original stream error"
+                            );
+                            return Err(McpTransportError::TransportError(format!(
+                                "Failed to read initialize SSE response body: {}",
+                                err
+                            )));
+                        }
+                        return Err(resume_err);
+                    }
+                }
+            }
+
+            if let Some(err) = stream_io_error {
+                return Err(McpTransportError::TransportError(format!(
+                    "Failed to read initialize SSE response body: {}",
+                    err
+                )));
+            }
+
+            return Err(McpTransportError::ProtocolError(format!(
+                "Missing initialize response for request id {}",
+                request_id
+            )));
+        }
+    }
+
+    fn process_initialize_sse_event(
+        &self,
+        lines: &[String],
+        request_id: i64,
+    ) -> Result<Option<Result<Value, McpTransportError>>, McpTransportError> {
+        let Some(payload) = sse_data_payload(lines, "initialize SSE response")? else {
+            return Ok(None);
+        };
+
+        let message =
+            parse_json_rpc_message(serde_json::from_str::<Value>(&payload).map_err(|e| {
+                McpTransportError::ProtocolError(format!(
+                    "Invalid JSON payload in initialize SSE response: {}",
+                    e
+                ))
+            })?)?;
+
+        match message {
+            JsonRpcMessage::Response(response) => {
+                if matches!(response.id, JsonRpcId::Number(id) if id == request_id) {
+                    Ok(Some(map_response_payload(response.payload)))
+                } else {
+                    Err(McpTransportError::ProtocolError(format!(
+                        "initialize SSE stream for request id {request_id} returned response for different id {:?}",
+                        response.id
+                    )))
+                }
+            }
+            JsonRpcMessage::Notification(_) => Ok(None),
+            JsonRpcMessage::Request(request) => Err(McpTransportError::ProtocolError(format!(
+                "initialize SSE stream returned server request before initialization completed: {}",
+                request.method
+            ))),
+        }
+    }
+
+    async fn get_initialize_resume_stream(
+        &self,
+        last_event_id: &str,
+        session_id: &str,
+    ) -> Result<reqwest::Response, McpTransportError> {
+        let request = self
+            .streaming_client
+            .get(&self.endpoint)
+            .header(reqwest::header::ACCEPT, "text/event-stream")
+            .header("MCP-Session-Id", session_id)
+            .header("MCP-Protocol-Version", MCP_PROTOCOL_VERSION)
+            .header("Last-Event-ID", last_event_id);
+
+        let response = tokio::time::timeout(self.timeout, request.send())
+            .await
+            .map_err(|_| {
+                McpTransportError::Timeout(format!(
+                    "initialize SSE resume GET did not receive response headers within {:?}",
+                    self.timeout
+                ))
+            })?
+            .map_err(|e| {
+                McpTransportError::TransportError(format!(
+                    "initialize SSE resume GET failed: {}",
+                    e
+                ))
+            })?;
+
+        if !response.status().is_success() {
+            return Err(McpTransportError::TransportError(format!(
+                "initialize SSE resume GET returned {}",
+                response.status()
+            )));
+        }
+        validate_sse_response(&response, "initialize SSE resume GET")?;
+        Ok(response)
     }
 
     async fn decode_http_body(
@@ -1485,24 +2323,23 @@ impl ProgressAwareHttpTransport {
         response: reqwest::Response,
         request_id: i64,
         progress_registration: Option<(ProgressTokenKey, mpsc::UnboundedSender<McpProgressUpdate>)>,
+        request_session: Option<HttpSessionSnapshot>,
     ) -> Result<Value, McpTransportError> {
-        let content_type = response
-            .headers()
-            .get(reqwest::header::CONTENT_TYPE)
-            .and_then(|value| value.to_str().ok())
-            .unwrap_or_default()
-            .to_ascii_lowercase();
+        let content_type = response_content_type(&response);
 
         if content_type.starts_with("application/json") {
-            let body: Value = response.json().await.map_err(|e| {
-                McpTransportError::TransportError(format!("Failed to parse JSON response: {}", e))
-            })?;
+            let body = decode_json_response_body(response, self.timeout).await?;
             return decode_http_response_payload(body, request_id, progress_registration);
         }
 
         if content_type.starts_with("text/event-stream") {
+            let request_session = request_session.ok_or_else(|| {
+                McpTransportError::ProtocolError(
+                    "SSE response missing HTTP session snapshot".to_string(),
+                )
+            })?;
             return self
-                .decode_sse_response(response, request_id, progress_registration)
+                .decode_sse_response(response, request_id, progress_registration, request_session)
                 .await;
         }
 
@@ -1517,79 +2354,270 @@ impl ProgressAwareHttpTransport {
         response: reqwest::Response,
         request_id: i64,
         progress_registration: Option<(ProgressTokenKey, mpsc::UnboundedSender<McpProgressUpdate>)>,
+        request_session: HttpSessionSnapshot,
     ) -> Result<Value, McpTransportError> {
         let progress_key = progress_registration.as_ref().map(|(key, _)| key.clone());
         let progress_tx = progress_registration.as_ref().map(|(_, tx)| tx.clone());
-        let mut matched_response: Option<Result<Value, McpTransportError>> = None;
-        let mut event_lines: Vec<String> = Vec::new();
-        let mut line_buf: Vec<u8> = Vec::new();
-        let mut stream = response.bytes_stream();
 
-        while let Some(chunk) = stream.next().await {
-            let chunk = chunk.map_err(|e| {
-                McpTransportError::TransportError(format!(
-                    "Failed to read SSE response body: {}",
-                    e
-                ))
-            })?;
+        // Per spec 2025-11-25 §Streamable HTTP / Resumability: track
+        // the highest `id:` field we've seen so a mid-stream drop or a
+        // clean server close before the final response can be resumed via
+        // `GET <endpoint>` + `Last-Event-ID`.
+        let mut last_event_id: Option<String> = None;
+        let mut retry_delay: Option<Duration> = None;
+        let mut resume_attempts = 0u32;
+        let mut current_response = response;
 
-            for byte in chunk {
-                if byte == b'\n' {
-                    let mut line =
-                        String::from_utf8(std::mem::take(&mut line_buf)).map_err(|e| {
-                            McpTransportError::ProtocolError(format!(
-                                "Invalid UTF-8 in SSE response: {}",
-                                e
-                            ))
-                        })?;
-                    if line.ends_with('\r') {
-                        line.pop();
+        loop {
+            let mut matched_response: Option<Result<Value, McpTransportError>> = None;
+            let mut event_lines: Vec<String> = Vec::new();
+            let mut event_bytes = 0usize;
+            let mut line_buf: Vec<u8> = Vec::new();
+            let mut stream_io_error: Option<reqwest::Error> = None;
+            let mut stream = current_response.bytes_stream();
+
+            while let Some(chunk) = stream.next().await {
+                let chunk = match chunk {
+                    Ok(chunk) => chunk,
+                    Err(err) => {
+                        // Mid-stream IO error. If we have a
+                        // last_event_id and reconnect budget remains,
+                        // we'll attempt resume below.
+                        stream_io_error = Some(err);
+                        break;
                     }
+                };
 
-                    if line.is_empty() {
-                        if let Some(result) = self
-                            .process_sse_event(
-                                &event_lines,
-                                request_id,
-                                progress_key.as_ref(),
-                                progress_tx.as_ref(),
-                            )
-                            .await?
-                        {
-                            matched_response = Some(result);
-                            break;
+                for byte in chunk {
+                    if byte == b'\n' {
+                        let mut line =
+                            String::from_utf8(std::mem::take(&mut line_buf)).map_err(|e| {
+                                McpTransportError::ProtocolError(format!(
+                                    "Invalid UTF-8 in SSE response: {}",
+                                    e
+                                ))
+                            })?;
+                        if line.ends_with('\r') {
+                            line.pop();
                         }
-                        event_lines.clear();
+
+                        if line.is_empty() {
+                            apply_event_id_update(
+                                &mut last_event_id,
+                                extract_event_id(&event_lines),
+                            );
+                            if let Some(result) = self
+                                .process_sse_event(
+                                    &event_lines,
+                                    request_id,
+                                    progress_key.as_ref(),
+                                    progress_tx.as_ref(),
+                                    &request_session,
+                                )
+                                .await?
+                            {
+                                matched_response = Some(result);
+                                break;
+                            }
+                            if let Some(delay) =
+                                bounded_sse_retry_delay(&event_lines, "HTTP SSE response")?
+                            {
+                                retry_delay = Some(delay);
+                            }
+                            event_lines.clear();
+                            event_bytes = 0;
+                        } else {
+                            push_sse_event_line(
+                                &mut event_lines,
+                                &mut event_bytes,
+                                line,
+                                "HTTP SSE response",
+                            )?;
+                        }
                     } else {
-                        event_lines.push(line);
+                        push_sse_line_byte(&mut line_buf, byte, "HTTP SSE response")?;
                     }
-                } else {
-                    line_buf.push(byte);
+                }
+
+                if matched_response.is_some() {
+                    break;
                 }
             }
 
-            if matched_response.is_some() {
-                break;
+            // Final event without trailing blank-line terminator.
+            if !line_buf.is_empty() {
+                let mut line = String::from_utf8(std::mem::take(&mut line_buf)).map_err(|e| {
+                    McpTransportError::ProtocolError(format!(
+                        "Invalid UTF-8 in SSE response: {}",
+                        e
+                    ))
+                })?;
+                if line.ends_with('\r') {
+                    line.pop();
+                }
+                push_sse_event_line(
+                    &mut event_lines,
+                    &mut event_bytes,
+                    line,
+                    "HTTP SSE response",
+                )?;
             }
-        }
+            if matched_response.is_none() && !event_lines.is_empty() && stream_io_error.is_none() {
+                apply_event_id_update(&mut last_event_id, extract_event_id(&event_lines));
+                matched_response = self
+                    .process_sse_event(
+                        &event_lines,
+                        request_id,
+                        progress_key.as_ref(),
+                        progress_tx.as_ref(),
+                        &request_session,
+                    )
+                    .await?;
+                if matched_response.is_none()
+                    && let Some(delay) = bounded_sse_retry_delay(&event_lines, "HTTP SSE response")?
+                {
+                    retry_delay = Some(delay);
+                }
+            }
 
-        if matched_response.is_none() && !event_lines.is_empty() {
-            matched_response = self
-                .process_sse_event(
-                    &event_lines,
+            if let Some(result) = matched_response {
+                return result;
+            }
+
+            // Stream ended without a matched response. MCP Streamable HTTP
+            // permits the server to close an SSE stream after sending an
+            // event id without terminating the logical stream; poll/resume
+            // through GET + Last-Event-ID for both broken streams and clean
+            // EOFs.
+            if resume_attempts < MAX_SSE_RESUME_ATTEMPTS
+                && let Some(id) = last_event_id.clone()
+            {
+                resume_attempts += 1;
+                if let Some(delay) = retry_delay {
+                    tokio::time::sleep(delay).await;
+                }
+                tracing::debug!(
                     request_id,
-                    progress_key.as_ref(),
-                    progress_tx.as_ref(),
-                )
-                .await?;
-        }
+                    attempt = resume_attempts,
+                    last_event_id = %id,
+                    clean_eof = stream_io_error.is_none(),
+                    "SSE stream ended before matched response; attempting Last-Event-ID resume"
+                );
+                match self
+                    .get_listening_stream(Some(&id), Some(request_session.generation))
+                    .await
+                {
+                    Ok(resumed) => {
+                        current_response = resumed;
+                        continue;
+                    }
+                    Err(resume_err) => {
+                        if matches!(
+                            &resume_err,
+                            McpTransportError::ProtocolError(message)
+                                if message == MCP_SESSION_EXPIRED
+                        ) {
+                            return Err(McpTransportError::ProtocolError(
+                                MCP_SESSION_EXPIRED_AFTER_ACCEPT.to_string(),
+                            ));
+                        }
+                        if let Some(err) = stream_io_error {
+                            tracing::warn!(
+                                error = %resume_err,
+                                "Last-Event-ID resume failed; surfacing original stream error"
+                            );
+                            return Err(McpTransportError::TransportError(format!(
+                                "Failed to read SSE response body: {}",
+                                err
+                            )));
+                        }
+                        return Err(resume_err);
+                    }
+                }
+            }
 
-        matched_response.unwrap_or_else(|| {
-            Err(McpTransportError::ProtocolError(format!(
+            if let Some(err) = stream_io_error {
+                return Err(McpTransportError::TransportError(format!(
+                    "Failed to read SSE response body: {}",
+                    err
+                )));
+            }
+
+            return Err(McpTransportError::ProtocolError(format!(
                 "Missing response for request id {}",
                 request_id
-            )))
-        })
+            )));
+        }
+    }
+
+    /// Issue a `GET <endpoint>` carrying the current session id and
+    /// the supplied `Last-Event-ID`. Used by [`decode_sse_response`] to
+    /// resume a broken per-request SSE stream. The server SHOULD reply
+    /// with an SSE stream containing only events strictly newer than
+    /// the supplied id (spec 2025-11-25 §Streamable HTTP / Resumability).
+    async fn get_listening_stream(
+        &self,
+        last_event_id: Option<&str>,
+        expected_generation: Option<u64>,
+    ) -> Result<reqwest::Response, McpTransportError> {
+        let mut request = self
+            .streaming_client
+            .get(&self.endpoint)
+            .header(reqwest::header::ACCEPT, "text/event-stream");
+        let session = self.session.read().await.snapshot();
+        let sent_session_id = session.session_id.clone();
+        let sent_protocol_version = session.protocol_version.clone();
+        if sent_protocol_version.is_none() {
+            return Err(McpTransportError::ProtocolError(
+                MCP_SESSION_EXPIRED.to_string(),
+            ));
+        }
+        if expected_generation.is_some_and(|generation| generation != session.generation) {
+            return Err(McpTransportError::ProtocolError(
+                MCP_SESSION_EXPIRED.to_string(),
+            ));
+        }
+        if let Some(ref session_id) = sent_session_id {
+            request = request.header("MCP-Session-Id", session_id.clone());
+        }
+        if let Some(ref protocol_version) = sent_protocol_version {
+            request = request.header("MCP-Protocol-Version", protocol_version.clone());
+        }
+        if let Some(id) = last_event_id {
+            request = request.header("Last-Event-ID", id);
+        }
+        let resp = tokio::time::timeout(self.timeout, request.send())
+            .await
+            .map_err(|_| {
+                McpTransportError::Timeout(format!(
+                    "SSE resume GET did not receive response headers within {:?}",
+                    self.timeout
+                ))
+            })?
+            .map_err(|e| {
+                McpTransportError::TransportError(format!("SSE resume GET failed: {}", e))
+            })?;
+        if resp.status() == reqwest::StatusCode::NOT_FOUND && sent_session_id.is_some() {
+            reset_http_session_state_if_current(
+                &self.session,
+                &self.capabilities,
+                sent_session_id.as_deref(),
+                sent_protocol_version.as_deref(),
+                session.generation,
+            )
+            .await;
+            return Err(McpTransportError::ProtocolError(
+                MCP_SESSION_EXPIRED.to_string(),
+            ));
+        }
+        if !resp.status().is_success() {
+            return Err(McpTransportError::TransportError(format!(
+                "SSE resume GET returned {}",
+                resp.status()
+            )));
+        }
+        validate_sse_response(&resp, "SSE resume GET")?;
+        Ok(resp)
     }
 
     async fn process_sse_event(
@@ -1598,25 +2626,11 @@ impl ProgressAwareHttpTransport {
         request_id: i64,
         progress_key: Option<&ProgressTokenKey>,
         progress_tx: Option<&mpsc::UnboundedSender<McpProgressUpdate>>,
+        request_session: &HttpSessionSnapshot,
     ) -> Result<Option<Result<Value, McpTransportError>>, McpTransportError> {
-        let mut data_parts = Vec::new();
-        for line in lines {
-            if line.starts_with(':') {
-                continue;
-            }
-            if let Some(rest) = line.strip_prefix("data:") {
-                data_parts.push(rest.trim_start().to_string());
-            }
-        }
-
-        if data_parts.is_empty() {
+        let Some(payload) = sse_data_payload(lines, "HTTP SSE response")? else {
             return Ok(None);
-        }
-
-        let payload = data_parts.join("\n");
-        if payload.is_empty() {
-            return Ok(None);
-        }
+        };
 
         let message =
             parse_json_rpc_message(serde_json::from_str::<Value>(&payload).map_err(|e| {
@@ -1631,7 +2645,10 @@ impl ProgressAwareHttpTransport {
                 if matches!(response.id, JsonRpcId::Number(id) if id == request_id) {
                     return Ok(Some(map_response_payload(response.payload)));
                 }
-                Ok(None)
+                Err(McpTransportError::ProtocolError(format!(
+                    "SSE stream for request id {request_id} returned response for different id {:?}",
+                    response.id
+                )))
             }
             JsonRpcMessage::Notification(notification) => {
                 if let Some(kind) = list_changed_method(&notification.method) {
@@ -1649,7 +2666,7 @@ impl ProgressAwareHttpTransport {
                 Ok(None)
             }
             JsonRpcMessage::Request(request) => {
-                // HTTP per-request SSE stream: per spec 2025-06-18
+                // HTTP per-request SSE stream: per spec 2025-11-25
                 // §Listening for Messages from the Server, messages on
                 // this stream "SHOULD relate to a single client request"
                 // — namely OUR `request_id`. So a server-initiated
@@ -1677,15 +2694,11 @@ impl ProgressAwareHttpTransport {
                 };
                 let response =
                     handle_server_request(chosen.as_deref(), self.roots.as_slice(), &request).await;
-                self.send_response_message(response).await?;
+                self.send_response_message_with_session(response, request_session)
+                    .await?;
                 Ok(None)
             }
         }
-    }
-
-    async fn reset_session(&self) {
-        *self.capabilities.lock().await = None;
-        *self.session.write().await = HttpSessionState::default();
     }
 }
 
@@ -1733,6 +2746,405 @@ fn send_signal(pid: u32, signal: Signal) -> Result<(), McpTransportError> {
 async fn terminate_child(child: &mut Child) -> Result<(), McpTransportError> {
     child.start_kill()?;
     let _ = child.wait().await;
+    Ok(())
+}
+
+// ── HTTP listening stream (spec 2025-11-25 §Streamable HTTP / Listening) ──
+
+/// State the listening-stream task needs. Held by value (each field
+/// is `Clone` or `Arc`'d) so the task is fully self-contained — it
+/// doesn't borrow from the transport, which lets the transport drop
+/// while the task is alive without lifetime headaches.
+struct HttpListenerCtx {
+    client: reqwest::Client,
+    streaming_client: reqwest::Client,
+    timeout: Duration,
+    endpoint: String,
+    session: Arc<tokio::sync::RwLock<HttpSessionState>>,
+    /// Same `Arc` the transport holds. Needed so the listener's 404
+    /// path can clear it: `initialize_if_needed` short-circuits when
+    /// `capabilities = Some`, so leaving it stale after a session
+    /// expiry would let subsequent calls send post_message() without
+    /// a session id (spec violation — server returns 400/404 again).
+    capabilities: Arc<tokio::sync::Mutex<Option<ServerCapabilities>>>,
+    list_changed_tx: mpsc::UnboundedSender<ListChangedKind>,
+    resource_updated_tx: mpsc::UnboundedSender<String>,
+    roots: Arc<Vec<Root>>,
+    fallback_sampling: Option<Arc<dyn SamplingHandler>>,
+    alive: Arc<AtomicBool>,
+}
+
+async fn run_http_listening_stream(ctx: HttpListenerCtx) {
+    const BACKOFF_BASE_MS: u64 = 500;
+    let mut backoff_ms: u64 = BACKOFF_BASE_MS;
+    let mut last_event_id: Option<String> = None;
+    let mut last_event_generation: Option<u64> = None;
+
+    while ctx.alive.load(Ordering::SeqCst) {
+        let session_snapshot = ctx.session.read().await.clone();
+        if last_event_generation != Some(session_snapshot.generation) {
+            // SSE event ids are scoped to the HTTP session/generation
+            // that produced them. Another request path can reset and
+            // re-initialize the session while this background listener
+            // is sleeping or consuming an old stream; never replay that
+            // old cursor against the fresh session.
+            last_event_id = None;
+            last_event_generation = Some(session_snapshot.generation);
+        }
+        if session_snapshot.protocol_version.is_none() {
+            // A prior 404 cleared the HTTP session. The request path
+            // owns re-initialize; the background listener must not send
+            // unauthenticated/unversioned GETs while waiting for that.
+            tokio::time::sleep(Duration::from_millis(BACKOFF_BASE_MS)).await;
+            continue;
+        }
+        let mut req = ctx
+            .streaming_client
+            .get(&ctx.endpoint)
+            .header(reqwest::header::ACCEPT, "text/event-stream");
+        if let Some(ref id) = session_snapshot.session_id {
+            req = req.header("MCP-Session-Id", id.clone());
+        }
+        if let Some(ref pv) = session_snapshot.protocol_version {
+            req = req.header("MCP-Protocol-Version", pv.clone());
+        }
+        if let Some(ref id) = last_event_id {
+            req = req.header("Last-Event-ID", id.clone());
+        }
+
+        let response = match tokio::time::timeout(ctx.timeout, req.send()).await {
+            Ok(Ok(resp)) => resp,
+            Ok(Err(err)) => {
+                tracing::debug!(error = %err, "MCP listening stream GET failed; backing off");
+                sleep_with_backoff(&mut backoff_ms).await;
+                continue;
+            }
+            Err(_) => {
+                tracing::debug!(
+                    timeout = ?ctx.timeout,
+                    "MCP listening stream GET timed out waiting for response headers; backing off"
+                );
+                sleep_with_backoff(&mut backoff_ms).await;
+                continue;
+            }
+        };
+
+        let status = response.status();
+        if status == reqwest::StatusCode::METHOD_NOT_ALLOWED {
+            tracing::debug!(
+                "MCP server does not support GET listening stream (405); stopping listener"
+            );
+            break;
+        }
+        if status == reqwest::StatusCode::NOT_FOUND && session_snapshot.session_id.is_some() {
+            // Session expired. Clear BOTH cached session AND cached
+            // capabilities — without the second, `initialize_if_needed`
+            // would short-circuit on next request-path call (capabilities
+            // = Some) and `post_message` would then run without a
+            // session id, getting another 404. Clearing capabilities
+            // forces the next request to walk the full handshake.
+            tracing::debug!(
+                "MCP listening stream got 404 — resetting session + capabilities to force re-handshake"
+            );
+            reset_http_session_state_if_current(
+                &ctx.session,
+                &ctx.capabilities,
+                session_snapshot.session_id.as_deref(),
+                session_snapshot.protocol_version.as_deref(),
+                session_snapshot.generation,
+            )
+            .await;
+            last_event_id = None;
+            sleep_with_backoff(&mut backoff_ms).await;
+            continue;
+        }
+        if !status.is_success() {
+            tracing::debug!(%status, "MCP listening stream non-success status; backing off");
+            sleep_with_backoff(&mut backoff_ms).await;
+            continue;
+        }
+        if let Err(error) = validate_sse_response(&response, "MCP listening stream GET") {
+            tracing::warn!(error = %error, "MCP listening stream returned non-SSE response; backing off");
+            sleep_with_backoff(&mut backoff_ms).await;
+            continue;
+        }
+
+        // Successful 200 with SSE body. Reset backoff and consume.
+        backoff_ms = BACKOFF_BASE_MS;
+        let stream_session = session_snapshot.snapshot();
+        let outcome =
+            consume_listening_stream(&ctx, response, &stream_session, &mut last_event_id).await;
+        if !ctx.alive.load(Ordering::SeqCst) {
+            break;
+        }
+        if let Some(delay) = outcome.retry_delay {
+            tokio::time::sleep(delay).await;
+        } else {
+            sleep_with_backoff(&mut backoff_ms).await;
+        }
+    }
+}
+
+async fn sleep_with_backoff(backoff_ms: &mut u64) {
+    tokio::time::sleep(Duration::from_millis(*backoff_ms)).await;
+    *backoff_ms = (*backoff_ms * 2).min(30_000);
+}
+
+/// Drain the SSE response body, forwarding each event to the
+/// appropriate channel. Returns when the stream ends (clean close or
+/// IO error). The caller loops to reconnect.
+#[derive(Debug, Default)]
+struct ListeningStreamOutcome {
+    retry_delay: Option<Duration>,
+}
+
+async fn consume_listening_stream(
+    ctx: &HttpListenerCtx,
+    response: reqwest::Response,
+    stream_session: &HttpSessionSnapshot,
+    last_event_id: &mut Option<String>,
+) -> ListeningStreamOutcome {
+    let mut outcome = ListeningStreamOutcome::default();
+    let mut event_lines: Vec<String> = Vec::new();
+    let mut event_bytes = 0usize;
+    let mut line_buf: Vec<u8> = Vec::new();
+    let mut stream = response.bytes_stream();
+
+    while let Some(chunk) = stream.next().await {
+        if !ctx.alive.load(Ordering::SeqCst) {
+            return outcome;
+        }
+        let chunk = match chunk {
+            Ok(c) => c,
+            Err(err) => {
+                tracing::debug!(error = %err, "MCP listening stream chunk error");
+                return outcome;
+            }
+        };
+        for byte in chunk {
+            if byte == b'\n' {
+                let mut line = match String::from_utf8(std::mem::take(&mut line_buf)) {
+                    Ok(s) => s,
+                    Err(err) => {
+                        tracing::warn!(error = %err, "MCP listening stream invalid UTF-8");
+                        return outcome;
+                    }
+                };
+                if line.ends_with('\r') {
+                    line.pop();
+                }
+                if line.is_empty() {
+                    apply_event_id_update(last_event_id, extract_event_id(&event_lines));
+                    match bounded_sse_retry_delay(&event_lines, "MCP listening stream") {
+                        Ok(Some(delay)) => outcome.retry_delay = Some(delay),
+                        Ok(None) => {}
+                        Err(err) => {
+                            tracing::warn!(error = %err, "MCP listening stream rejected SSE retry delay");
+                            return outcome;
+                        }
+                    }
+                    process_listening_event(ctx, stream_session, &event_lines).await;
+                    event_lines.clear();
+                    event_bytes = 0;
+                } else if let Err(err) = push_sse_event_line(
+                    &mut event_lines,
+                    &mut event_bytes,
+                    line,
+                    "MCP listening stream",
+                ) {
+                    tracing::warn!(error = %err, "MCP listening stream rejected oversized SSE event");
+                    return outcome;
+                }
+            } else if let Err(err) = push_sse_line_byte(&mut line_buf, byte, "MCP listening stream")
+            {
+                tracing::warn!(error = %err, "MCP listening stream rejected oversized SSE line");
+                return outcome;
+            }
+        }
+    }
+    // Final unterminated event (no trailing blank line).
+    if !line_buf.is_empty() {
+        let mut line = match String::from_utf8(std::mem::take(&mut line_buf)) {
+            Ok(line) => line,
+            Err(err) => {
+                tracing::warn!(error = %err, "MCP listening stream invalid UTF-8");
+                return outcome;
+            }
+        };
+        if line.ends_with('\r') {
+            line.pop();
+        }
+        if let Err(err) = push_sse_event_line(
+            &mut event_lines,
+            &mut event_bytes,
+            line,
+            "MCP listening stream",
+        ) {
+            tracing::warn!(error = %err, "MCP listening stream rejected oversized SSE event");
+            return outcome;
+        }
+    }
+    if !event_lines.is_empty() {
+        apply_event_id_update(last_event_id, extract_event_id(&event_lines));
+        match bounded_sse_retry_delay(&event_lines, "MCP listening stream") {
+            Ok(Some(delay)) => outcome.retry_delay = Some(delay),
+            Ok(None) => {}
+            Err(err) => {
+                tracing::warn!(error = %err, "MCP listening stream rejected SSE retry delay");
+                return outcome;
+            }
+        }
+        process_listening_event(ctx, stream_session, &event_lines).await;
+    }
+    outcome
+}
+
+async fn process_listening_event(
+    ctx: &HttpListenerCtx,
+    stream_session: &HttpSessionSnapshot,
+    event_lines: &[String],
+) {
+    if ctx.session.read().await.generation != stream_session.generation {
+        // This event belongs to a GET stream opened under an expired
+        // HTTP session. Do not apply stale notifications locally and,
+        // most importantly, do not answer server requests using a newer
+        // session id.
+        tracing::debug!(
+            stream_generation = stream_session.generation,
+            "dropping MCP listening event from stale HTTP session generation"
+        );
+        return;
+    }
+
+    let payload = match sse_data_payload(event_lines, "MCP listening stream") {
+        Ok(Some(payload)) => payload,
+        Ok(None) => return,
+        Err(err) => {
+            tracing::warn!(error = %err, "MCP listening stream rejected oversized SSE payload");
+            return;
+        }
+    };
+    let value = match serde_json::from_str::<Value>(&payload) {
+        Ok(v) => v,
+        Err(err) => {
+            tracing::warn!(error = %err, payload, "MCP listening stream invalid JSON");
+            return;
+        }
+    };
+    let message = match parse_json_rpc_message(value) {
+        Ok(m) => m,
+        Err(err) => {
+            tracing::warn!(error = %err, "MCP listening stream message parse failed");
+            return;
+        }
+    };
+
+    match message {
+        JsonRpcMessage::Notification(notification) => {
+            if let Some(kind) = list_changed_method(&notification.method) {
+                let _ = ctx.list_changed_tx.send(kind);
+            } else if let Some(uri) = resource_updated_uri(&notification) {
+                let _ = ctx.resource_updated_tx.send(uri);
+            }
+            // progress notifications without a request_id can't be
+            // routed; drop. The listening stream isn't tied to a
+            // single client request.
+        }
+        JsonRpcMessage::Request(request) => {
+            // Server-initiated request on the GET listening stream.
+            // Per spec 2025-11-25 §Streamable HTTP / Listening for
+            // Messages from the Server, these messages SHOULD be
+            // unrelated to concurrently-running client requests — so
+            // we MUST NOT use per-call-cardinality routing here.
+            // Doing so would let a sampling/createMessage on this
+            // stream be answered by an arbitrary in-flight agent's
+            // executor (the cross-agent leak the per-call factory
+            // exists to prevent).
+            //
+            // Resolution: use the registry-level fallback handler
+            // only. If no fallback is configured, the request is
+            // rejected with method-not-supported (-32601). Servers
+            // wanting per-agent sampling must initiate the request
+            // on the per-request SSE stream where request_id-based
+            // routing applies.
+            let chosen = ctx.fallback_sampling.clone();
+            let response =
+                handle_server_request(chosen.as_deref(), ctx.roots.as_slice(), &request).await;
+            // POST the response back to the server. See
+            // post_listener_response for status handling.
+            let _ = post_listener_response(ctx, stream_session, response).await;
+        }
+        JsonRpcMessage::Response(_) => {
+            // Responses on the listening stream are unexpected — the
+            // listening stream is for server-initiated traffic.
+            // Ignore.
+        }
+    }
+}
+
+async fn post_listener_response(
+    ctx: &HttpListenerCtx,
+    stream_session: &HttpSessionSnapshot,
+    response: JsonRpcResponse,
+) -> Result<(), McpTransportError> {
+    let mut req = ctx.client.post(&ctx.endpoint).header(
+        reqwest::header::ACCEPT,
+        "application/json, text/event-stream",
+    );
+    let current_session = ctx.session.read().await.snapshot();
+    if current_session.generation != stream_session.generation {
+        tracing::debug!(
+            stream_generation = stream_session.generation,
+            current_generation = current_session.generation,
+            "dropping MCP listening response for stale HTTP session generation"
+        );
+        return Err(McpTransportError::ProtocolError(
+            MCP_SESSION_EXPIRED.to_string(),
+        ));
+    }
+    let sent_session_id = stream_session.session_id.clone();
+    let sent_protocol_version = stream_session.protocol_version.clone();
+    if sent_protocol_version.is_none() {
+        return Err(McpTransportError::ProtocolError(
+            MCP_SESSION_EXPIRED.to_string(),
+        ));
+    }
+    if let Some(ref pv) = sent_protocol_version {
+        req = req.header("MCP-Protocol-Version", pv.clone());
+    }
+    if let Some(ref id) = sent_session_id {
+        req = req.header("MCP-Session-Id", id.clone());
+    }
+    let http_response = req.json(&response).send().await.map_err(|e| {
+        McpTransportError::TransportError(format!("listener response POST failed: {}", e))
+    })?;
+    // Per spec 2025-11-25 §Streamable HTTP: a client POSTing a
+    // JSON-RPC response/notification should expect 202 Accepted (or
+    // 200/204 for some servers). 4xx/5xx means the server rejected
+    // our response to its server-initiated request — silently
+    // dropping that would leave the server waiting indefinitely.
+    // Log at warn so oncall can see it; the listener task continues.
+    let status = http_response.status();
+    if status == reqwest::StatusCode::NOT_FOUND && sent_session_id.is_some() {
+        tracing::debug!(
+            "listener response POST got 404 — resetting session + capabilities to force re-handshake"
+        );
+        reset_http_session_state_if_current(
+            &ctx.session,
+            &ctx.capabilities,
+            sent_session_id.as_deref(),
+            sent_protocol_version.as_deref(),
+            stream_session.generation,
+        )
+        .await;
+        return Ok(());
+    }
+    if !status.is_success() && status != reqwest::StatusCode::NO_CONTENT {
+        tracing::warn!(
+            %status,
+            "listener response POST returned non-success status; server may treat its request as unanswered"
+        );
+    }
     Ok(())
 }
 
@@ -1824,6 +3236,7 @@ impl McpToolTransport for ProgressAwareHttpTransport {
             task: None,
             meta,
         };
+        let params_value = serde_json::to_value(&params)?;
 
         // Initialize runs UNINTERRUPTED — racing it with cancellation
         // can leave the session half-constructed: server assigns a
@@ -1845,57 +3258,152 @@ impl McpToolTransport for ProgressAwareHttpTransport {
             ));
         }
 
-        let id = self.next_id.fetch_add(1, Ordering::SeqCst);
+        // Retry loop for the spec-defined `MCP session expired` case
+        // before the server accepted the request (the initial POST
+        // returned 404 against a request bearing our session id — see
+        // `post_message`). Once a per-request SSE body has begun, the
+        // tool may already be executing; resume failures are mapped to
+        // `MCP_SESSION_EXPIRED_AFTER_ACCEPT` and MUST NOT silently
+        // replay a potentially side-effectful `tools/call`.
+        // One pre-accept retry is enough: server told us the session is
+        // gone, so we reset, reinitialize, and resend with a fresh id.
+        // Anything beyond that is almost certainly a genuine
+        // server-side failure, not session staleness.
+        let mut session_retried = false;
+        let result_value = loop {
+            let id = self.next_id.fetch_add(1, Ordering::SeqCst);
 
-        // Register the per-call sampling decision deterministically
-        // BEFORE the request hits the wire. Awaiting the lock guarantees
-        // the reader sees this entry before it can receive a
-        // `sampling/createMessage` for our request id on the per-request
-        // SSE stream.
-        let _handler_guard =
-            PerCallSamplingGuard::register(Arc::clone(&self.per_call_sampling), id, sampling).await;
+            // Register the per-call sampling decision deterministically
+            // BEFORE the request hits the wire. Awaiting the lock guarantees
+            // the reader sees this entry before it can receive a
+            // `sampling/createMessage` for our request id on the per-request
+            // SSE stream.
+            let mut handler_guard = PerCallSamplingGuard::register(
+                Arc::clone(&self.per_call_sampling),
+                id,
+                sampling.clone(),
+            )
+            .await;
 
-        let request_fut = self.send_request_with_id(
-            id,
-            "tools/call",
-            Some(serde_json::to_value(&params)?),
-            progress_sender,
-        );
+            let request_sent = Arc::new(AtomicBool::new(false));
+            let request_session = Arc::new(tokio::sync::Mutex::new(None::<HttpSessionSnapshot>));
+            let request_fut = self.send_request_with_id(
+                id,
+                "tools/call",
+                Some(params_value.clone()),
+                progress_sender.clone(),
+                Some(Arc::clone(&request_sent)),
+                Some(Arc::clone(&request_session)),
+            );
 
-        let result = match cancellation {
-            None => request_fut.await,
-            Some(token) => {
-                tokio::pin!(request_fut);
-                tokio::select! {
-                    biased;
-                    _ = token.cancelled() => {
-                        // Per spec (2025-06-18 §Cancellation): SHOULD emit
-                        // notifications/cancelled with the in-flight
-                        // requestId so the server stops processing. The
-                        // in-flight HTTP request is dropped by virtue of
-                        // dropping `request_fut`; reqwest cancels the
-                        // socket. Then we issue a separate POST with the
-                        // cancellation notification.
-                        let _ = self
-                            .send_notification(
-                                "notifications/cancelled",
-                                Some(json!({
-                                    "requestId": id,
-                                    "reason": "client run cancelled",
-                                })),
-                            )
-                            .await;
+            let attempt_result = match cancellation.as_ref() {
+                None => request_fut.await,
+                Some(token) => {
+                    tokio::pin!(request_fut);
+                    tokio::select! {
+                        biased;
+                        _ = token.cancelled() => {
+                            // Per spec (2025-11-25 §Cancellation): SHOULD
+                            // emit notifications/cancelled with the
+                            // in-flight requestId so the server stops
+                            // processing. For HTTP this flag means the
+                            // request is believed issued/in-progress; the
+                            // POST may still be awaiting response headers.
+                            // Receivers should ignore unknown request ids.
+                            if request_sent.load(Ordering::SeqCst) {
+                                if let Some(session) = request_session.lock().await.clone() {
+                                    match self
+                                        .send_notification_with_session(
+                                            "notifications/cancelled",
+                                            Some(json!({
+                                                "requestId": id,
+                                                "reason": "client run cancelled",
+                                            })),
+                                            &session,
+                                        )
+                                        .await
+                                    {
+                                        Ok(()) => {}
+                                        // 404 here means the original
+                                        // session is already gone. The
+                                        // captured-session POST keeps
+                                        // this cancellation from leaking
+                                        // into a newer session; the
+                                        // in-flight old-session work may
+                                        // still run to completion server-side.
+                                        Err(McpTransportError::ProtocolError(ref msg))
+                                            if msg == MCP_SESSION_EXPIRED =>
+                                        {
+                                            tracing::warn!(
+                                                request_id = id,
+                                                "session expired while sending notifications/cancelled"
+                                            );
+                                        }
+                                        Err(err) => {
+                                            tracing::warn!(
+                                                error = %err,
+                                                request_id = id,
+                                                "notifications/cancelled send failed — server may continue executing the cancelled tool call"
+                                            );
+                                        }
+                                    }
+                                } else {
+                                    tracing::warn!(
+                                        request_id = id,
+                                        "notifications/cancelled skipped because no HTTP session snapshot was captured"
+                                    );
+                                }
+                            }
+                            // Deterministic guard cleanup before
+                            // returning — cardinality routing must
+                            // not see a stale entry from this call.
+                            handler_guard.unregister().await;
+                            return Err(McpTransportError::TransportError(
+                                CANCELLED_BY_CLIENT.to_string(),
+                            ));
+                        }
+                        result = &mut request_fut => result,
+                    }
+                }
+            };
+
+            match attempt_result {
+                Ok(value) => {
+                    // Success path — explicitly unregister so the
+                    // sampling map is consistent before we return.
+                    handler_guard.unregister().await;
+                    break value;
+                }
+                Err(McpTransportError::ProtocolError(ref message))
+                    if message == MCP_SESSION_EXPIRED && !session_retried =>
+                {
+                    // Drop the guard for the now-invalid id (await
+                    // the async cleanup, not the sync Drop), then
+                    // retry with the current session. The request path
+                    // that observed the 404 already performed a
+                    // compare-and-reset if it still owned the current
+                    // session; a stale 404 must not clobber a newer
+                    // session installed by another request.
+                    handler_guard.unregister().await;
+                    session_retried = true;
+                    self.initialize_if_needed().await?;
+                    if let Some(ref token) = cancellation
+                        && token.is_cancelled()
+                    {
                         return Err(McpTransportError::TransportError(
                             CANCELLED_BY_CLIENT.to_string(),
                         ));
                     }
-                    result = &mut request_fut => result,
+                    continue;
+                }
+                Err(err) => {
+                    handler_guard.unregister().await;
+                    return Err(err);
                 }
             }
         };
 
-        let result = result?;
-        let call_result: CallToolResult = serde_json::from_value(result)?;
+        let call_result: CallToolResult = serde_json::from_value(result_value)?;
 
         if call_result.is_error == Some(true) {
             return Err(McpTransportError::ServerError(tool_result_error_text(
@@ -1951,9 +3459,9 @@ impl McpToolTransport for ProgressAwareHttpTransport {
     }
 
     async fn close(&self) -> Result<(), McpTransportError> {
-        // Per spec (2025-06-18 §Streamable HTTP / Session Management):
+        // Per spec (2025-11-25 §Streamable HTTP / Session Management):
         // "Clients that no longer need a particular session SHOULD send an
-        //  HTTP DELETE to the MCP endpoint with the Mcp-Session-Id header,
+        //  HTTP DELETE to the MCP endpoint with the MCP-Session-Id header,
         //  to explicitly terminate the session. The server MAY respond
         //  to this request with HTTP 405 Method Not Allowed."
         //
@@ -1964,15 +3472,34 @@ impl McpToolTransport for ProgressAwareHttpTransport {
         // Errors are swallowed (best-effort): the server may legitimately
         // 405 to refuse termination, or the network may be down. Either
         // way we still tear down local state.
-        let session_id = self.session.read().await.session_id.clone();
-        if let Some(session_id) = session_id {
-            self.send_session_termination(&session_id).await;
+
+        // Stop the background GET listener BEFORE tearing down the
+        // session — otherwise the listener might race the DELETE and
+        // re-establish a new stream against the about-to-be-killed
+        // session. The atomic guards the consume loop's chunked
+        // wakeups; the abort handle short-circuits any in-flight
+        // request.
+        self.listener_alive.store(false, Ordering::SeqCst);
+        if let Ok(mut slot) = self.listener_abort.lock()
+            && let Some(handle) = slot.take()
+        {
+            handle.abort();
+        }
+
+        let session_snapshot = self.session.read().await.snapshot();
+        if let Some(session_id) = session_snapshot.session_id {
+            self.send_session_termination(
+                &session_id,
+                session_snapshot.protocol_version.as_deref(),
+            )
+            .await;
         }
 
         {
             let mut session = self.session.write().await;
             session.session_id = None;
             session.protocol_version = None;
+            session.started_at = None;
         }
 
         {
@@ -1986,6 +3513,26 @@ impl McpToolTransport for ProgressAwareHttpTransport {
     async fn current_session_id(&self) -> Option<String> {
         self.session.read().await.session_id.clone()
     }
+
+    async fn current_session_started_at(&self) -> Option<SystemTime> {
+        self.session.read().await.started_at
+    }
+}
+
+impl Drop for ProgressAwareHttpTransport {
+    fn drop(&mut self) {
+        // Cancel the background GET listener if it's still alive —
+        // without this, the task would keep retrying connections
+        // against an endpoint nobody is reading from. `close()`
+        // already does this on the happy path; Drop is the backstop
+        // for `Arc::drop` without an explicit close.
+        self.listener_alive.store(false, Ordering::SeqCst);
+        if let Ok(mut slot) = self.listener_abort.lock()
+            && let Some(handle) = slot.take()
+        {
+            handle.abort();
+        }
+    }
 }
 
 impl ProgressAwareHttpTransport {
@@ -1993,14 +3540,13 @@ impl ProgressAwareHttpTransport {
     /// server can immediately free session state. Swallows all errors —
     /// the client has already decided to terminate, so a server 405 / 5xx
     /// / network error doesn't change the outcome locally.
-    async fn send_session_termination(&self, session_id: &str) {
+    async fn send_session_termination(&self, session_id: &str, protocol_version: Option<&str>) {
         let mut request = self
             .client
             .delete(&self.endpoint)
-            .header("Mcp-Session-Id", session_id.to_string());
-        let protocol_version = self.session.read().await.protocol_version.clone();
+            .header("MCP-Session-Id", session_id.to_string());
         if let Some(protocol_version) = protocol_version {
-            request = request.header("MCP-Protocol-Version", protocol_version);
+            request = request.header("MCP-Protocol-Version", protocol_version.to_string());
         }
         match request.send().await {
             Ok(response) if response.status() == reqwest::StatusCode::METHOD_NOT_ALLOWED => {
@@ -2034,15 +3580,26 @@ pub(crate) async fn connect_transport(
     config: &McpServerConnectionConfig,
     sampling_handler: Option<Arc<dyn SamplingHandler>>,
     roots: Arc<Vec<Root>>,
+    advertise_sampling: bool,
 ) -> Result<Arc<dyn McpToolTransport>, McpTransportError> {
     match config.transport {
         TransportTypeId::Stdio => {
-            let transport =
-                ProgressAwareStdioTransport::connect(config, sampling_handler, roots).await?;
+            let transport = ProgressAwareStdioTransport::connect(
+                config,
+                sampling_handler,
+                roots,
+                advertise_sampling,
+            )
+            .await?;
             Ok(Arc::new(transport))
         }
         TransportTypeId::Http => {
-            let transport = ProgressAwareHttpTransport::connect(config, sampling_handler, roots)?;
+            let transport = ProgressAwareHttpTransport::connect(
+                config,
+                sampling_handler,
+                roots,
+                advertise_sampling,
+            )?;
             Ok(Arc::new(transport))
         }
     }
@@ -2269,7 +3826,7 @@ pub(crate) async fn handle_server_request(
                 Err(e) => JsonRpcResponse::error(request.id.clone(), -32000, e.to_string(), None),
             }
         }
-        // Spec 2025-06-18 §Client features / Roots: server may call
+        // Spec 2025-11-25 §Client features / Roots: server may call
         // `roots/list` only if the client advertised the `roots`
         // capability during initialize. We advertise based on whether
         // the roots vec was non-empty at construction, so an empty
@@ -2336,6 +3893,191 @@ mod tests {
 
     use super::*;
     use mcp::CreateMessageResult;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    #[derive(Clone, Debug)]
+    struct UnitHttpRequest {
+        method: String,
+        headers: HashMap<String, String>,
+        body: Value,
+    }
+
+    fn unit_header_end(buf: &[u8]) -> Option<usize> {
+        buf.windows(4).position(|w| w == b"\r\n\r\n").map(|i| i + 4)
+    }
+
+    fn unit_content_length(headers: &str) -> usize {
+        headers
+            .lines()
+            .find_map(|line| {
+                let (key, value) = line.split_once(':')?;
+                key.trim()
+                    .eq_ignore_ascii_case("content-length")
+                    .then(|| value.trim().parse::<usize>().ok())
+                    .flatten()
+            })
+            .unwrap_or(0)
+    }
+
+    async fn read_unit_http_request(stream: &mut tokio::net::TcpStream) -> Option<UnitHttpRequest> {
+        let mut buf = Vec::new();
+        let mut chunk = [0_u8; 1024];
+        let (header_end_pos, body_len) = loop {
+            let n = stream.read(&mut chunk).await.ok()?;
+            if n == 0 {
+                return None;
+            }
+            buf.extend_from_slice(&chunk[..n]);
+            let Some(end) = unit_header_end(&buf) else {
+                continue;
+            };
+            let headers = std::str::from_utf8(&buf[..end]).ok()?;
+            break (end, unit_content_length(headers));
+        };
+
+        while buf.len() < header_end_pos + body_len {
+            let n = stream.read(&mut chunk).await.ok()?;
+            if n == 0 {
+                return None;
+            }
+            buf.extend_from_slice(&chunk[..n]);
+        }
+
+        let headers_text = std::str::from_utf8(&buf[..header_end_pos]).ok()?;
+        let method = headers_text
+            .lines()
+            .next()
+            .and_then(|line| line.split_whitespace().next())
+            .unwrap_or_default()
+            .to_string();
+        let headers = headers_text
+            .lines()
+            .skip(1)
+            .filter_map(|line| {
+                let (key, value) = line.split_once(':')?;
+                Some((key.trim().to_ascii_lowercase(), value.trim().to_string()))
+            })
+            .collect();
+        let body = if body_len == 0 {
+            Value::Null
+        } else {
+            serde_json::from_slice(&buf[header_end_pos..header_end_pos + body_len]).ok()?
+        };
+        Some(UnitHttpRequest {
+            method,
+            headers,
+            body,
+        })
+    }
+
+    async fn write_unit_http_response(
+        stream: &mut tokio::net::TcpStream,
+        status: u16,
+        content_type: &str,
+        body: String,
+        headers: &[(&str, String)],
+    ) {
+        let status_text = match status {
+            200 => "OK",
+            202 => "Accepted",
+            400 => "Bad Request",
+            _ => "OK",
+        };
+        let mut head = format!(
+            "HTTP/1.1 {status} {status_text}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n",
+            body.len()
+        );
+        for (key, value) in headers {
+            head.push_str(&format!("{key}: {value}\r\n"));
+        }
+        head.push_str("\r\n");
+        let _ = stream.write_all(head.as_bytes()).await;
+        let _ = stream.write_all(body.as_bytes()).await;
+        let _ = stream.shutdown().await;
+    }
+
+    // ── SSE event id extraction (R7 #6 Last-Event-ID resumability) ──
+
+    #[test]
+    fn extract_event_id_reads_id_line() {
+        let event = vec!["id: 42".to_string(), "data: {}".to_string()];
+        assert_eq!(extract_event_id(&event), SseEventIdUpdate::Set("42".into()));
+    }
+
+    #[test]
+    fn extract_event_id_tolerates_no_space_after_colon() {
+        // SSE spec permits `id:42` (no space).
+        let event = vec!["id:99".to_string(), "data: {}".to_string()];
+        assert_eq!(extract_event_id(&event), SseEventIdUpdate::Set("99".into()));
+    }
+
+    #[test]
+    fn extract_event_id_returns_none_when_absent() {
+        let event = vec!["data: {}".to_string(), "event: message".to_string()];
+        assert_eq!(extract_event_id(&event), SseEventIdUpdate::Absent);
+    }
+
+    #[test]
+    fn extract_event_id_treats_empty_value_as_reset() {
+        // Per spec: `id:\n` resets the last-event-id. This is distinct
+        // from an absent id so the reconnect path can clear stale state.
+        let event = vec!["id: ".to_string(), "data: {}".to_string()];
+        assert_eq!(extract_event_id(&event), SseEventIdUpdate::Reset);
+    }
+
+    #[test]
+    fn extract_event_id_takes_last_id_when_repeated() {
+        // SSE spec: the LAST id field in an event is authoritative.
+        // Our impl scans from the end and returns the first match.
+        let event = vec![
+            "id: 1".to_string(),
+            "data: ignored".to_string(),
+            "id: 2".to_string(),
+            "data: kept".to_string(),
+        ];
+        assert_eq!(extract_event_id(&event), SseEventIdUpdate::Set("2".into()));
+    }
+
+    #[test]
+    fn apply_event_id_update_clears_existing_id_on_reset() {
+        let mut last_event_id = Some("stale".to_string());
+        apply_event_id_update(&mut last_event_id, SseEventIdUpdate::Reset);
+        assert_eq!(last_event_id, None);
+    }
+
+    #[test]
+    fn extract_retry_delay_reads_milliseconds() {
+        let event = vec!["retry: 25".to_string(), "data: {}".to_string()];
+        assert_eq!(extract_retry_delay(&event), Some(Duration::from_millis(25)));
+    }
+
+    #[test]
+    fn extract_retry_delay_ignores_invalid_value() {
+        let event = vec!["retry: soon".to_string(), "data: {}".to_string()];
+        assert_eq!(extract_retry_delay(&event), None);
+    }
+
+    #[test]
+    fn extract_retry_delay_keeps_latest_valid_value() {
+        let event = vec![
+            "retry: 10".to_string(),
+            "retry: 20".to_string(),
+            "retry: soon".to_string(),
+            "data: {}".to_string(),
+        ];
+        assert_eq!(extract_retry_delay(&event), Some(Duration::from_millis(20)));
+    }
+
+    #[test]
+    fn bounded_sse_retry_delay_rejects_unbounded_sleep() {
+        let event = vec!["retry: 86400000".to_string(), "data:".to_string()];
+        let err = bounded_sse_retry_delay(&event, "test stream")
+            .expect_err("huge retry delay must be rejected");
+        assert!(
+            format!("{err}").contains("SSE retry delay exceeded"),
+            "unexpected error: {err}"
+        );
+    }
 
     // ── notifications/resources/updated parsing ──
 
@@ -2428,7 +4170,7 @@ mod tests {
         // Server replies with a version older than anything we know we
         // can wire-compat-talk on. Hard reject; the alternative is
         // sending `params._meta` (added in 2025-06-18) or
-        // `Mcp-Session-Id` semantics that older servers can't parse.
+        // `MCP-Session-Id` semantics that older servers can't parse.
         let err = negotiate_protocol_version("2000-01-01").unwrap_err();
         let msg = format!("{err}");
         assert!(
@@ -2688,15 +4430,389 @@ mod tests {
             "http://127.0.0.1:9".to_string(),
         );
         let transport =
-            ProgressAwareHttpTransport::connect(&cfg, None, Arc::new(Vec::new())).unwrap();
+            ProgressAwareHttpTransport::connect(&cfg, None, Arc::new(Vec::new()), false).unwrap();
 
         transport.close().await.unwrap();
         transport.close().await.unwrap();
     }
 
-    /// Spec (2025-06-18, §Streamable HTTP / Session Management):
+    #[tokio::test]
+    async fn http_non_initialize_post_without_protocol_returns_session_expired() {
+        let cfg = mcp::transport::McpServerConnectionConfig::http(
+            "http-no-protocol",
+            "http://127.0.0.1:9".to_string(),
+        );
+        let transport =
+            ProgressAwareHttpTransport::connect(&cfg, None, Arc::new(Vec::new()), false).unwrap();
+
+        let err = transport
+            .post_message(
+                JsonRpcMessage::Request(JsonRpcRequest::new(
+                    JsonRpcId::Number(1),
+                    "tools/call".to_string(),
+                    Some(json!({})),
+                )),
+                true,
+            )
+            .await
+            .expect_err("non-initialize POST without negotiated protocol must fail locally");
+
+        assert!(
+            matches!(&err, McpTransportError::ProtocolError(message) if message == MCP_SESSION_EXPIRED),
+            "expected local session-expired guard, got: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn per_request_sse_server_request_is_not_answered_on_new_session() {
+        let cfg = mcp::transport::McpServerConnectionConfig::http(
+            "http-stale-per-request-sse",
+            "http://127.0.0.1:9".to_string(),
+        );
+        let transport =
+            ProgressAwareHttpTransport::connect(&cfg, None, Arc::new(Vec::new()), false).unwrap();
+        {
+            let mut session = transport.session.write().await;
+            session.session_id = Some("session-new".to_string());
+            session.protocol_version = Some(MCP_PROTOCOL_VERSION.to_string());
+            session.generation = 2;
+        }
+
+        let stale_session = HttpSessionSnapshot {
+            session_id: Some("session-old".to_string()),
+            protocol_version: Some(MCP_PROTOCOL_VERSION.to_string()),
+            generation: 1,
+        };
+        let event = vec![format!(
+            "data: {}",
+            json!({
+                "jsonrpc": "2.0",
+                "id": 99,
+                "method": "roots/list"
+            })
+        )];
+
+        let err = transport
+            .process_sse_event(&event, 1, None, None, &stale_session)
+            .await
+            .expect_err("stale per-request SSE server request must not use the new session");
+
+        assert!(
+            matches!(&err, McpTransportError::ProtocolError(message) if message == MCP_SESSION_EXPIRED_AFTER_ACCEPT),
+            "expected stale accepted-request session error before any response POST, got: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn http_send_initialized_request_reinitializes_if_session_clears_after_gate() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let url = format!("http://{}", addr);
+        let observed = Arc::new(tokio::sync::Mutex::new(Vec::<UnitHttpRequest>::new()));
+        let observed_for_server = Arc::clone(&observed);
+
+        let server_task = tokio::spawn(async move {
+            let mut initialize_count = 0_usize;
+            let mut initialized_count = 0_usize;
+            loop {
+                let (mut stream, _) = listener.accept().await.expect("accept test request");
+                let request = read_unit_http_request(&mut stream)
+                    .await
+                    .expect("parse test request");
+                let wire_method = request.method.clone();
+                let rpc_method = request.body["method"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_string();
+                observed_for_server.lock().await.push(request.clone());
+
+                if wire_method == "GET" {
+                    write_unit_http_response(
+                        &mut stream,
+                        405,
+                        "text/plain",
+                        "listener disabled".to_string(),
+                        &[],
+                    )
+                    .await;
+                    continue;
+                }
+
+                match rpc_method.as_str() {
+                    "initialize" => {
+                        initialize_count += 1;
+                        let body = json!({
+                            "jsonrpc": "2.0",
+                            "id": request.body["id"].clone(),
+                            "result": {
+                                "protocolVersion": MCP_PROTOCOL_VERSION,
+                                "capabilities": {},
+                                "serverInfo": {
+                                    "name": "test-server",
+                                    "version": "1.0.0"
+                                }
+                            }
+                        })
+                        .to_string();
+                        write_unit_http_response(
+                            &mut stream,
+                            200,
+                            "application/json",
+                            body,
+                            &[("MCP-Session-Id", format!("session-{initialize_count}"))],
+                        )
+                        .await;
+                    }
+                    "notifications/initialized" => {
+                        initialized_count += 1;
+                        write_unit_http_response(
+                            &mut stream,
+                            202,
+                            "text/plain",
+                            String::new(),
+                            &[],
+                        )
+                        .await;
+                    }
+                    "tools/call" => {
+                        let body = json!({
+                            "jsonrpc": "2.0",
+                            "id": request.body["id"].clone(),
+                            "result": {
+                                "content": [{"type": "text", "text": "ok"}]
+                            }
+                        })
+                        .to_string();
+                        write_unit_http_response(&mut stream, 200, "application/json", body, &[])
+                            .await;
+                        break;
+                    }
+                    other => panic!("unexpected method: {other}"),
+                }
+
+                assert!(
+                    initialize_count <= 2 && initialized_count <= 2,
+                    "test should not need extra handshakes"
+                );
+            }
+        });
+
+        let cfg = mcp::transport::McpServerConnectionConfig::http("http-race-retry", url);
+        let transport =
+            ProgressAwareHttpTransport::connect(&cfg, None, Arc::new(Vec::new()), false).unwrap();
+        let capabilities = transport.initialize().await.expect("initial initialize");
+        *transport.capabilities.lock().await = Some(capabilities);
+
+        let session = Arc::clone(&transport.session);
+        let capabilities = Arc::clone(&transport.capabilities);
+        let mut session_guard = session.write().await;
+        let request_fut =
+            transport.send_initialized_request("tools/call", Some(json!({"name": "echo"})), None);
+        tokio::pin!(request_fut);
+
+        assert!(
+            futures::poll!(&mut request_fut).is_pending(),
+            "request should be parked on the held session lock after passing the capability gate"
+        );
+
+        *capabilities.lock().await = None;
+        *session_guard = HttpSessionState::default();
+        drop(session_guard);
+
+        let result = request_fut
+            .await
+            .expect("session-expired guard should trigger reinitialize and retry");
+        assert_eq!(result["content"][0]["text"], json!("ok"));
+        tokio::time::timeout(Duration::from_secs(2), server_task)
+            .await
+            .expect("server task should finish")
+            .expect("server task should not panic");
+
+        let requests = observed.lock().await.clone();
+        let initialize_requests: Vec<_> = requests
+            .iter()
+            .filter(|request| request.body["method"] == "initialize")
+            .collect();
+        let tool_calls: Vec<_> = requests
+            .iter()
+            .filter(|request| request.body["method"] == "tools/call")
+            .collect();
+
+        assert_eq!(
+            initialize_requests.len(),
+            2,
+            "request retry should create a second session"
+        );
+        assert_eq!(
+            tool_calls.len(),
+            1,
+            "unversioned pre-retry call must not hit the server"
+        );
+        assert_eq!(
+            tool_calls[0].headers.get("mcp-session-id"),
+            Some(&"session-2".to_string())
+        );
+        assert_eq!(
+            tool_calls[0].headers.get("mcp-protocol-version"),
+            Some(&MCP_PROTOCOL_VERSION.to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn http_initialize_failure_clears_partial_session_before_retry() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let url = format!("http://{}", addr);
+        let observed = Arc::new(tokio::sync::Mutex::new(Vec::<UnitHttpRequest>::new()));
+        let observed_for_server = Arc::clone(&observed);
+
+        let server_task = tokio::spawn(async move {
+            let mut initialize_count = 0_usize;
+            let mut initialized_count = 0_usize;
+            for _ in 0..5 {
+                let (mut stream, _) = listener.accept().await.expect("accept test request");
+                let request = read_unit_http_request(&mut stream)
+                    .await
+                    .expect("parse test request");
+                observed_for_server.lock().await.push(request.clone());
+
+                if request.method == "DELETE" {
+                    write_unit_http_response(&mut stream, 200, "text/plain", String::new(), &[])
+                        .await;
+                    continue;
+                }
+
+                let method = request.body["method"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_string();
+
+                match method.as_str() {
+                    "initialize" => {
+                        initialize_count += 1;
+                        let body = json!({
+                            "jsonrpc": "2.0",
+                            "id": request.body["id"].clone(),
+                            "result": {
+                                "protocolVersion": MCP_PROTOCOL_VERSION,
+                                "capabilities": {},
+                                "serverInfo": {
+                                    "name": "test-server",
+                                    "version": "1.0.0"
+                                }
+                            }
+                        })
+                        .to_string();
+                        write_unit_http_response(
+                            &mut stream,
+                            200,
+                            "application/json",
+                            body,
+                            &[("MCP-Session-Id", format!("session-{initialize_count}"))],
+                        )
+                        .await;
+                    }
+                    "notifications/initialized" => {
+                        initialized_count += 1;
+                        if initialized_count == 1 {
+                            write_unit_http_response(
+                                &mut stream,
+                                400,
+                                "text/plain",
+                                "initialized rejected".to_string(),
+                                &[],
+                            )
+                            .await;
+                        } else {
+                            write_unit_http_response(
+                                &mut stream,
+                                202,
+                                "text/plain",
+                                String::new(),
+                                &[],
+                            )
+                            .await;
+                        }
+                    }
+                    other => panic!("unexpected method: {other}"),
+                }
+            }
+        });
+
+        let cfg = mcp::transport::McpServerConnectionConfig::http("http-init-cleanup", url);
+        let transport =
+            ProgressAwareHttpTransport::connect(&cfg, None, Arc::new(Vec::new()), false).unwrap();
+
+        let err = transport
+            .initialize()
+            .await
+            .expect_err("first initialized notification is rejected");
+        assert!(
+            format!("{err}").contains("400"),
+            "expected initialized rejection to surface, got: {err}"
+        );
+        let state_after_failure = transport.session.read().await.clone();
+        assert!(state_after_failure.session_id.is_none());
+        assert!(state_after_failure.protocol_version.is_none());
+
+        transport
+            .initialize()
+            .await
+            .expect("retry initialize should start from a clean session");
+        tokio::time::timeout(Duration::from_secs(2), server_task)
+            .await
+            .expect("server task should finish")
+            .expect("server task should not panic");
+
+        let requests = observed.lock().await.clone();
+        let initialize_requests: Vec<_> = requests
+            .iter()
+            .filter(|request| request.body["method"] == "initialize")
+            .collect();
+        let initialized_requests: Vec<_> = requests
+            .iter()
+            .filter(|request| request.body["method"] == "notifications/initialized")
+            .collect();
+        let delete_requests: Vec<_> = requests
+            .iter()
+            .filter(|request| request.method == "DELETE")
+            .collect();
+
+        assert_eq!(initialize_requests.len(), 2);
+        assert_eq!(initialized_requests.len(), 2);
+        assert_eq!(delete_requests.len(), 1);
+        assert_eq!(
+            delete_requests[0].headers.get("mcp-session-id"),
+            Some(&"session-1".to_string()),
+            "failed provisional session must be terminated"
+        );
+        assert_eq!(
+            delete_requests[0].headers.get("mcp-protocol-version"),
+            Some(&MCP_PROTOCOL_VERSION.to_string()),
+            "DELETE after initialized failure must carry the negotiated protocol version"
+        );
+        assert_eq!(
+            initialized_requests[0].headers.get("mcp-session-id"),
+            Some(&"session-1".to_string()),
+            "first initialized notification must exercise the partial session path"
+        );
+        assert!(
+            !initialize_requests[1]
+                .headers
+                .contains_key("mcp-session-id"),
+            "retry initialize must not carry the failed partial session"
+        );
+        assert!(
+            !initialize_requests[1]
+                .headers
+                .contains_key("mcp-protocol-version"),
+            "retry initialize must not carry the failed partial protocol"
+        );
+    }
+
+    /// Spec (2025-11-25, §Streamable HTTP / Session Management):
     /// "Clients that no longer need a particular session SHOULD send an
-    ///  HTTP DELETE to the MCP endpoint with the Mcp-Session-Id header,
+    ///  HTTP DELETE to the MCP endpoint with the MCP-Session-Id header,
     ///  to explicitly terminate the session."
     ///
     /// Verifies that `ProgressAwareHttpTransport::close()` actually emits
@@ -2726,7 +4842,7 @@ mod tests {
 
         let cfg = mcp::transport::McpServerConnectionConfig::http("http-close-delete", url);
         let transport =
-            ProgressAwareHttpTransport::connect(&cfg, None, Arc::new(Vec::new())).unwrap();
+            ProgressAwareHttpTransport::connect(&cfg, None, Arc::new(Vec::new()), false).unwrap();
         // Pretend init already happened so close() has a session id to terminate.
         transport.session.write().await.session_id = Some("test-session-abc".into());
 
@@ -2747,14 +4863,14 @@ mod tests {
         );
 
         // Session id header (HTTP header names are case-insensitive but the
-        // spec literal is `Mcp-Session-Id`).
+        // spec literal is `MCP-Session-Id`).
         let has_session_header = request.lines().any(|line| {
             line.to_ascii_lowercase().starts_with("mcp-session-id:")
                 && line.contains("test-session-abc")
         });
         assert!(
             has_session_header,
-            "DELETE must carry the Mcp-Session-Id header. Request was:\n{request}"
+            "DELETE must carry the MCP-Session-Id header. Request was:\n{request}"
         );
 
         // Local state cleared after close().
@@ -2853,7 +4969,7 @@ mod tests {
         assert!(!obj.contains_key("awaken/attribution"));
     }
 
-    /// Spec (2025-06-18 §Cancellation): on a client-initiated cancel the
+    /// Spec (2025-11-25 §Cancellation): on a client-initiated cancel the
     /// client SHOULD send `notifications/cancelled` with the in-flight
     /// requestId. This test drives stdio `call_tool` against a reflective
     /// shell-script "MCP server" that:
@@ -2909,7 +5025,7 @@ done
         cfg.timeout_secs = 30;
 
         let transport = Arc::new(
-            ProgressAwareStdioTransport::connect(&cfg, None, Arc::new(Vec::new()))
+            ProgressAwareStdioTransport::connect(&cfg, None, Arc::new(Vec::new()), false)
                 .await
                 .expect("stdio transport connects"),
         );
@@ -2981,6 +5097,114 @@ done
         let _ = std::fs::remove_file(&scratch);
     }
 
+    /// R8 #6 regression: when the cancellation token is already
+    /// cancelled at the moment `call_tool` is entered, the early
+    /// pre-check returns the sentinel error WITHOUT ever attempting
+    /// to send `notifications/cancelled`. A notification here would
+    /// reference a requestId the server never saw (no `tools/call`
+    /// was issued), confusing oncall and possibly tripping strict
+    /// servers that validate requestId state.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn stdio_call_tool_skips_cancel_notification_when_pre_cancelled() {
+        use serde_json::Value;
+
+        let scratch = std::env::temp_dir().join(format!(
+            "awaken-mcp-pre-cancel-{}-{}.log",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let _ = std::fs::remove_file(&scratch);
+        let scratch_str = scratch.to_string_lossy().to_string();
+
+        let script = format!(
+            r#"
+while IFS= read -r LINE; do
+    printf '%s\n' "$LINE" >> "{scratch}"
+    case "$LINE" in
+        *'"method":"initialize"'*)
+            ID=$(printf '%s' "$LINE" | sed -n 's/.*"id":\([0-9]*\).*/\1/p')
+            printf '{{"jsonrpc":"2.0","id":%s,"result":{{"protocolVersion":"{version}","capabilities":{{"tools":{{}}}},"serverInfo":{{"name":"mock","version":"0"}}}}}}\n' "$ID"
+            ;;
+    esac
+done
+"#,
+            scratch = scratch_str,
+            version = MCP_PROTOCOL_VERSION,
+        );
+
+        let mut cfg = mcp::transport::McpServerConnectionConfig::stdio(
+            "stdio-pre-cancel",
+            "/bin/sh",
+            vec!["-c".to_string(), script],
+        );
+        cfg.timeout_secs = 30;
+
+        let transport =
+            ProgressAwareStdioTransport::connect(&cfg, None, Arc::new(Vec::new()), false)
+                .await
+                .expect("stdio transport connects");
+
+        // Pre-cancel BEFORE the call starts. The pre-check at the top
+        // of call_tool must catch this and exit before allocating an
+        // id, registering the sampling guard, or writing anything.
+        let cancel = CancellationToken::new();
+        cancel.cancel();
+
+        let outcome = transport
+            .call_tool(
+                "test-tool",
+                json!({}),
+                None,
+                McpCallContext {
+                    cancellation: Some(cancel),
+                    ..McpCallContext::default()
+                },
+            )
+            .await;
+
+        match outcome {
+            Err(McpTransportError::TransportError(msg)) if msg == CANCELLED_BY_CLIENT => {}
+            other => panic!("expected CANCELLED_BY_CLIENT, got: {other:?}"),
+        }
+
+        // Give the writer task a beat to flush anything pending so the
+        // assertion isn't racy against in-flight writes. The intent is
+        // that NOTHING tools/call-related, and NO notifications/cancelled,
+        // was ever sent.
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        let contents = std::fs::read_to_string(&scratch).unwrap_or_default();
+        let saw_cancel_notification = contents
+            .lines()
+            .any(|l| l.contains("notifications/cancelled"));
+        let saw_tools_call = contents.lines().any(|l| l.contains("\"tools/call\""));
+        assert!(
+            !saw_cancel_notification,
+            "pre-cancel must NOT emit notifications/cancelled. Scratch contained:\n{contents}"
+        );
+        assert!(
+            !saw_tools_call,
+            "pre-cancel must NOT send tools/call. Scratch contained:\n{contents}"
+        );
+        // The initialize handshake DID happen (we needed it to construct
+        // the transport), so we expect to see at least one initialize.
+        let saw_initialize = contents
+            .lines()
+            .any(|l| l.contains("\"method\":\"initialize\""));
+        assert!(
+            saw_initialize,
+            "initialize handshake must still appear in scratch"
+        );
+
+        // Pacifier: avoid an unused-import warning when this test
+        // is the only consumer of `Value` in this scope.
+        let _: Option<Value> = None;
+        let _ = std::fs::remove_file(&scratch);
+    }
+
     /// End-to-end smoke test for R7 #2: the reflective stdio server
     /// emits `notifications/tools/list_changed` after `initialize`; the
     /// transport must forward the parsed `ListChangedKind::Tools` event
@@ -3014,9 +5238,10 @@ done
         );
         cfg.timeout_secs = 30;
 
-        let transport = ProgressAwareStdioTransport::connect(&cfg, None, Arc::new(Vec::new()))
-            .await
-            .expect("stdio transport connects");
+        let transport =
+            ProgressAwareStdioTransport::connect(&cfg, None, Arc::new(Vec::new()), false)
+                .await
+                .expect("stdio transport connects");
 
         let mut rx = transport
             .take_list_changed_receiver()
@@ -3035,6 +5260,84 @@ done
         // Receiver is one-shot — a second take returns None even when
         // the first call succeeded (and crucially does not panic).
         assert!(transport.take_list_changed_receiver().await.is_none());
+    }
+
+    /// Factory-only sampling is not a global capability: without a fixed
+    /// fallback handler, background server-initiated sampling has no safe
+    /// agent attribution. The manager must therefore leave `sampling`
+    /// unadvertised unless a transport-level handler exists.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn stdio_does_not_advertise_sampling_without_fixed_handler() {
+        let scratch = std::env::temp_dir().join(format!(
+            "awaken-mcp-sampling-cap-{}-{}.log",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let _ = std::fs::remove_file(&scratch);
+        let scratch_str = scratch.to_string_lossy().to_string();
+
+        let script = format!(
+            r#"
+while IFS= read -r LINE; do
+    printf '%s\n' "$LINE" >> "{scratch}"
+    case "$LINE" in
+        *'"method":"initialize"'*)
+            ID=$(printf '%s' "$LINE" | sed -n 's/.*"id":\([0-9]*\).*/\1/p')
+            printf '{{"jsonrpc":"2.0","id":%s,"result":{{"protocolVersion":"{version}","capabilities":{{"tools":{{}}}},"serverInfo":{{"name":"mock","version":"0"}}}}}}\n' "$ID"
+            ;;
+    esac
+done
+"#,
+            scratch = scratch_str,
+            version = MCP_PROTOCOL_VERSION,
+        );
+
+        let mut cfg = mcp::transport::McpServerConnectionConfig::stdio(
+            "stdio-sampling-cap",
+            "/bin/sh",
+            vec!["-c".to_string(), script],
+        );
+        cfg.timeout_secs = 30;
+
+        // sampling_handler = None (no fixed fallback), advertise_sampling = false.
+        let _ = ProgressAwareStdioTransport::connect(&cfg, None, Arc::new(Vec::new()), false)
+            .await
+            .expect("stdio transport connects");
+
+        // Give the writer task a beat to land the initialize line on disk.
+        let started = Instant::now();
+        let init_line = loop {
+            let contents = std::fs::read_to_string(&scratch).unwrap_or_default();
+            if let Some(line) = contents
+                .lines()
+                .find(|l| l.contains("\"method\":\"initialize\""))
+            {
+                break line.to_string();
+            }
+            if started.elapsed() > Duration::from_secs(3) {
+                panic!(
+                    "did not observe initialize request. scratch contents:\n{}",
+                    contents
+                );
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        };
+
+        let parsed: serde_json::Value =
+            serde_json::from_str(&init_line).expect("initialize request must be valid JSON");
+        let caps = parsed["params"]["capabilities"]
+            .as_object()
+            .expect("capabilities object present");
+        assert!(
+            !caps.contains_key("sampling"),
+            "factory-only sampling must not advertise global `capabilities.sampling`; got: {init_line}"
+        );
+
+        let _ = std::fs::remove_file(&scratch);
     }
 
     // ── Per-call sampling routing tests (R1 #P1b) ──
@@ -3322,7 +5625,7 @@ done
 
         let cfg = mcp::transport::McpServerConnectionConfig::http("http-close-no-session", url);
         let transport =
-            ProgressAwareHttpTransport::connect(&cfg, None, Arc::new(Vec::new())).unwrap();
+            ProgressAwareHttpTransport::connect(&cfg, None, Arc::new(Vec::new()), false).unwrap();
         // No session id set.
         transport.close().await.unwrap();
 
@@ -3353,11 +5656,13 @@ done
         );
         cfg.timeout_secs = 1;
 
-        let err = match ProgressAwareStdioTransport::connect(&cfg, None, Arc::new(Vec::new())).await
-        {
-            Ok(_) => panic!("expected stdio initialization failure"),
-            Err(err) => err,
-        };
+        let err =
+            match ProgressAwareStdioTransport::connect(&cfg, None, Arc::new(Vec::new()), false)
+                .await
+            {
+                Ok(_) => panic!("expected stdio initialization failure"),
+                Err(err) => err,
+            };
         assert!(matches!(err, McpTransportError::Timeout(_)));
 
         let started = Instant::now();

@@ -803,6 +803,7 @@ pub async fn serve(state: AppState) -> std::io::Result<()> {
     let listener = tokio::net::TcpListener::bind(&addr).await?;
     tracing::info!("listening on {addr}");
 
+    let config_runtime_manager = state.config_runtime_manager.clone();
     let app = build_service_router(state)?;
 
     let result = serve_with_shutdown(listener, app, timeout).await;
@@ -810,6 +811,11 @@ pub async fn serve(state: AppState) -> std::io::Result<()> {
         && let Err(error) = mailbox_lifecycle.shutdown().await
     {
         tracing::warn!(error = %error, "failed to stop mailbox lifecycle cleanly");
+    }
+    if let Some(manager) = config_runtime_manager
+        && let Err(error) = manager.shutdown().await
+    {
+        tracing::warn!(error = %error, "failed to stop config runtime manager cleanly");
     }
     result
 }

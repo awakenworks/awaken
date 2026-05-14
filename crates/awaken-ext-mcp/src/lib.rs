@@ -16,7 +16,7 @@ pub use config::{McpServerConnectionConfig, TransportTypeId};
 pub use error::McpError;
 pub use manager::{
     McpPromptEntry, McpRefreshHealth, McpResourceEntry, McpServerStatusSnapshot,
-    McpServerToolEntry, McpToolRegistry, McpToolRegistryManager,
+    McpServerToolEntry, McpToolRegistry, McpToolRegistryManager, ResourceUpdated,
 };
 pub use plugin::McpPlugin;
 pub use progress::McpProgressUpdate;
