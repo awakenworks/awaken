@@ -52,6 +52,81 @@ fn config<K: PluginConfigKey>(&self) -> Result<K::Config, StateError>
 fn set_config<K: PluginConfigKey>(&mut self, config: K::Config) -> Result<(), StateError>
 ```
 
+### Tool catalog (`allowed_tools` / `excluded_tools`)
+
+`allowed_tools` and `excluded_tools` define **which tools the agent can see**.
+This is the *catalog* layer — filtering happens once at resolve time and
+removed tools never reach the LLM. Runtime permission gating (the `Ask`
+state, argument-level rules) is a separate concern; see `sections["permission"]`.
+
+| Field + value                | Meaning                                                |
+|------------------------------|--------------------------------------------------------|
+| `allowed_tools: ["*"]`       | Explicit allow-all                                     |
+| `allowed_tools: []`          | Allow no tools                                         |
+| `excluded_tools: ["*"]`      | Block all tools after the allow-list is applied        |
+| `excluded_tools: []`         | Block none                                             |
+| `["a", "mcp__*"]`           | Subset; entries may be literal tool ids or wildcards (`*`) |
+
+Legacy `null` / missing values should be migrated to explicit values:
+
+| Field            | Legacy meaning            | Explicit replacement |
+|------------------|---------------------------|----------------------|
+| `allowed_tools`  | Allow all                 | `["*"]`              |
+| `excluded_tools` | Exclude none / block none | `[]`                 |
+
+Catalog entries are **tool-id patterns**, not filesystem globs. Tool ids are
+opaque strings, so `/`, `:`, and `_` are ordinary characters — `mcp:*` will
+match `mcp:weather/forecast`, and `tool/id/*` will match `tool/id/foo/bar`.
+
+The grammar (see `awaken_tool_pattern::tool_id_match`):
+
+| Construct  | Meaning                                                              |
+|------------|----------------------------------------------------------------------|
+| literal    | A literal pattern matches the entire tool id exactly                |
+| `*`        | Matches any sequence of characters, including `/`, `:`, `_`         |
+| `\*`       | A literal `*`                                                        |
+| `\\`       | A literal `\`                                                        |
+| every other char | Literal (no special meaning, including `?`, `[`, `{`, `!`)    |
+
+Filesystem-glob features (`**` path segments, `?` single-char wildcard,
+`[abc]` character classes, `{a,b}` alternation, leading-`!` negation), regex
+syntax (`/.../`) and argument-level patterns (`Bash(npm *)`,
+`Edit(file_path ~ "src/**")`) are intentionally absent — they belong to the
+permission-rule layer in `sections["permission"]`. To express "allow every
+tool except `Bash`", use `allowed_tools: ["*"]` plus `excluded_tools: ["Bash"]`,
+not `allowed_tools: ["!Bash"]`.
+
+The Admin Console parity test
+(`apps/admin-console/src/lib/catalog-glob-parity.test.ts`) and the runtime
+oracle (`crates/awaken-tool-pattern/tests/catalog_glob_parity.rs`) share a
+single fixture; add cases there when reasoning about edge behavior.
+
+The Admin Console preserves existing pattern entries and marks tools selected
+by those entries as pattern-backed. The checkbox UI edits literal tool IDs;
+edit the JSON payload or raw config to change or remove pattern entries.
+
+When a non-empty catalog pattern matches no currently available tools, the
+resolver logs:
+
+```text
+WARN catalog pattern matches no available tools — check the tool id or wildcard
+     agent_id=<id> field=<allowed_tools|excluded_tools> pattern=<pattern>
+```
+
+When `sections["permission"]` contains a rule whose tool-name portion
+matches no surviving catalog tool, the resolver logs:
+
+```text
+WARN permission rule references tool not in catalog — rule will never fire
+     agent_id=<id> rule=<pattern>
+```
+
+This is the safety net for the classic dual-track bug where a permission
+rule is configured but the underlying tool was already excluded by the
+catalog. Fix by checking that the tool is registered, adding it to
+`allowed_tools` if the allow-list omitted it, or removing/narrowing the
+`excluded_tools` entry that filtered it out. If the rule is stale, remove it.
+
 ### Runtime-managed plugin config
 
 `AgentSpec.sections` is the source of truth for plugin configuration whether

@@ -48,6 +48,77 @@ fn config<K: PluginConfigKey>(&self) -> Result<K::Config, StateError>
 fn set_config<K: PluginConfigKey>(&mut self, config: K::Config) -> Result<(), StateError>
 ```
 
+### 工具目录（`allowed_tools` / `excluded_tools`）
+
+`allowed_tools` 与 `excluded_tools` 决定**这个 agent 能看见哪些工具**——
+这是 catalog 层，在 resolve 阶段做一次性过滤，被排除的工具不会出现在 LLM 的工具
+列表里。运行时的权限门禁（`Ask` 状态、参数级规则）是另一层，见
+`sections["permission"]`。
+
+| 字段和值                    | 含义                                                   |
+|----------------------------|--------------------------------------------------------|
+| `allowed_tools: ["*"]`     | 显式 allow-all                                        |
+| `allowed_tools: []`        | 不允许任何工具                                         |
+| `excluded_tools: ["*"]`    | 在 allow-list 应用后阻断全部工具                       |
+| `excluded_tools: []`       | 不额外阻断任何工具                                     |
+| `["a", "mcp__*"]`         | 子集；条目可以是字面 tool id 或 wildcard（`*`）        |
+
+旧的 `null` / 缺失值应迁移为显式值：
+
+| 字段             | 旧语义                    | 显式替代值 |
+|------------------|---------------------------|------------|
+| `allowed_tools`  | 允许全部工具              | `["*"]`    |
+| `excluded_tools` | 不排除任何工具 / block none | `[]`       |
+
+Catalog 条目是 **tool-id pattern**，不是文件系统 glob。Tool id 是不透明
+字符串，所以 `/`、`:`、`_` 都是普通字符——`mcp:*` 会匹配
+`mcp:weather/forecast`，`tool/id/*` 会匹配 `tool/id/foo/bar`。
+
+语法（见 `awaken_tool_pattern::tool_id_match`）：
+
+| 构造        | 含义                                                            |
+|------------|----------------------------------------------------------------|
+| literal    | 字面 pattern 与 tool id 完整精确匹配                            |
+| `*`        | 匹配任意字符序列，包括 `/`、`:`、`_`                            |
+| `\*`       | 字面 `*`                                                       |
+| `\\`       | 字面 `\`                                                       |
+| 其它字符    | 字面（`?`、`[`、`{`、`!` 都没有特殊含义）                       |
+
+文件系统 glob 特性（`**` 路径段、`?` 单字符通配、`[abc]` 字符类、
+`{a,b}` 分支、开头 `!` 取反）、regex 语法（`/.../`）和参数级模式
+（`Bash(npm *)`、`Edit(file_path ~ "src/**")`）在 catalog 层**不**存在——
+它们属于 `sections["permission"]` 层。要表达"允许除 Bash 外所有工具"，
+请用 `allowed_tools: ["*"]` 加 `excluded_tools: ["Bash"]`，
+而**不是** `allowed_tools: ["!Bash"]`。
+
+Admin Console 的 parity 测试（`apps/admin-console/src/lib/catalog-glob-parity.test.ts`）
+与 runtime oracle（`crates/awaken-tool-pattern/tests/catalog_glob_parity.rs`）
+共用同一份 fixture——边缘语义请在那里新增 case。
+
+Admin Console 会保留已有 pattern 条目，并把由这些条目选中的工具标记为
+pattern-backed。复选框 UI 只编辑字面 tool id；修改或删除 pattern 条目需要编辑
+JSON payload 或原始配置。
+
+当非空 catalog pattern 没有匹配到当前可用工具时，resolver 会输出：
+
+```text
+WARN catalog pattern matches no available tools — check the tool id or wildcard
+     agent_id=<id> field=<allowed_tools|excluded_tools> pattern=<pattern>
+```
+
+当 `sections["permission"]` 中的规则其 tool 名部分无法匹配任何保留下来的
+catalog 工具时，resolver 会输出：
+
+```text
+WARN permission rule references tool not in catalog — rule will never fire
+     agent_id=<id> rule=<pattern>
+```
+
+这条 warning 是双轨陷阱的安全网——避免"配置了权限规则但工具早被 catalog 排除，
+规则静默不生效"的典型问题。解决方式：确认工具已注册；如果 allow-list 漏掉了它，
+将其加入 `allowed_tools`；如果是 `excluded_tools` 过滤掉了它，删除或收窄对应排除
+项；如果规则已过时，则删除规则。
+
 ### 运行时管理的插件配置
 
 无论 agent spec 是在 Rust 中构造、从 JSON/YAML 加载，还是通过运行时配置 API

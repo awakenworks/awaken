@@ -121,9 +121,12 @@ flowchart LR
 
 合并后，应用规格的 `allowed_tools` 和 `excluded_tools` 字段：
 
-- `allowed_tools = None` -- 保留所有工具。
-- `allowed_tools = Some(list)` -- 仅保留 ID 出现在列表中的工具。其余全部丢弃。
-- `excluded_tools` -- 任何 ID 出现在此列表中的工具都会被移除，即使它在允许列表中。
+- `allowed_tools = Some(["*"])` -- 保留所有工具。
+- `allowed_tools = Some([])` -- 移除所有工具。
+- `allowed_tools = Some(list)` -- 仅保留 ID 匹配字面条目或 glob 条目的工具。
+- `allowed_tools = None` -- 已废弃的旧 allow-all 语义。
+- `excluded_tools = Some(list)` -- 任何 ID 匹配字面条目或 glob 条目的工具都会被移除，即使它在允许列表中。
+- `excluded_tools = None` -- 不额外移除任何工具。
 
 ## ExecutionEnv
 

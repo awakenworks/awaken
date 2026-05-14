@@ -124,9 +124,12 @@ If a plugin-registered tool has the same ID as a global tool, resolution fails w
 
 After merging, the spec's `allowed_tools` and `excluded_tools` fields are applied:
 
-- `allowed_tools = None` -- all tools are kept.
-- `allowed_tools = Some(list)` -- only tools whose ID appears in the list are kept. Everything else is dropped.
-- `excluded_tools` -- any tool whose ID appears in this list is removed, even if it was in the allow list.
+- `allowed_tools = Some(["*"])` -- all tools are kept.
+- `allowed_tools = Some([])` -- all tools are removed.
+- `allowed_tools = Some(list)` -- only tools whose ID matches a literal or glob entry is kept.
+- `allowed_tools = None` -- deprecated legacy allow-all.
+- `excluded_tools = Some(list)` -- any tool whose ID matches a literal or glob entry is removed, even if it was in the allow list.
+- `excluded_tools = None` -- no additional tools are removed.
 
 ## ExecutionEnv
 
