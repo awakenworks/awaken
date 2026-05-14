@@ -17,11 +17,19 @@ export function AgentPreviewPanel({ draft }: AgentPreviewPanelProps) {
   const [tracesOpen, setTracesOpen] = useState(false);
   const sendStartedAtRef = useRef<number | null>(null);
   const previewDraft = normalizePreviewAgent(draft);
+  const traceAgentId = draft.id.trim();
+  const canShowRecentRuns = traceAgentId.length > 0;
   const draftRef = useRef(previewDraft);
 
   useEffect(() => {
     draftRef.current = previewDraft;
   }, [previewDraft]);
+
+  useEffect(() => {
+    if (!canShowRecentRuns) {
+      setTracesOpen(false);
+    }
+  }, [canShowRecentRuns]);
 
   const transport = useMemo(
     () =>
@@ -88,7 +96,7 @@ export function AgentPreviewPanel({ draft }: AgentPreviewPanelProps) {
           Sandbox <span className="font-normal text-fg-soft">runs against current draft</span>
         </h3>
         <div className="flex items-center gap-3">
-          {previewDraft.id.trim().length > 0 ? (
+          {canShowRecentRuns ? (
             <button
               type="button"
               onClick={() => setTracesOpen(true)}
@@ -109,14 +117,15 @@ export function AgentPreviewPanel({ draft }: AgentPreviewPanelProps) {
       </div>
 
       <RecentTracesDrawer
-        agentId={previewDraft.id}
+        agentId={traceAgentId}
         open={tracesOpen}
         onClose={() => setTracesOpen(false)}
       />
 
       <div className="mt-3 rounded-md bg-code-bg px-3 py-2 font-mono text-[11px] leading-5 text-code-fg">
-        <span className="text-code-fg/70">id=</span>{previewDraft.id}{" "}
-        <span className="text-code-fg/70">model=</span>{previewDraft.model_id || "unassigned"}
+        <span className="text-code-fg/70">id=</span>
+        {previewDraft.id} <span className="text-code-fg/70">model=</span>
+        {previewDraft.model_id || "unassigned"}
       </div>
 
       <PreviewStatsBar messages={messages} latencyMs={lastLatencyMs} busy={busy} />
@@ -129,7 +138,7 @@ export function AgentPreviewPanel({ draft }: AgentPreviewPanelProps) {
 
       {error ? (
         <div className="mt-4 rounded-md border border-tone-error/30 bg-tone-error/10 px-4 py-3 text-sm text-tone-error">
-          {error.message}
+          {redactSecretString(error.message)}
         </div>
       ) : null}
 
@@ -151,9 +160,7 @@ export function AgentPreviewPanel({ draft }: AgentPreviewPanelProps) {
                     key={message.id}
                     className={[
                       "max-w-[92%] rounded-md px-4 py-3 text-sm leading-6 shadow-sm",
-                      isUser
-                        ? "ml-auto bg-accent text-accent-text"
-                        : "bg-surface text-fg",
+                      isUser ? "ml-auto bg-accent text-accent-text" : "bg-surface text-fg",
                     ].join(" ")}
                   >
                     <div
@@ -177,10 +184,7 @@ export function AgentPreviewPanel({ draft }: AgentPreviewPanelProps) {
           )}
         </div>
 
-        <form
-          onSubmit={handleSubmit}
-          className="border-t border-line bg-surface px-4 py-4"
-        >
+        <form onSubmit={handleSubmit} className="border-t border-line bg-surface px-4 py-4">
           <textarea
             value={input}
             onChange={(event) => setInput(event.target.value)}
@@ -190,10 +194,7 @@ export function AgentPreviewPanel({ draft }: AgentPreviewPanelProps) {
             className="w-full rounded-md border border-line-strong bg-surface px-4 py-3 text-sm text-fg-strong outline-none transition focus:border-line-strong disabled:bg-muted disabled:text-fg-soft"
           />
           <div className="mt-3 flex items-center justify-between gap-3">
-            <div
-              title={`Session ID: ${sessionId}`}
-              className="font-mono text-[10px] text-fg-faint"
-            >
+            <div title={`Session ID: ${sessionId}`} className="font-mono text-[10px] text-fg-faint">
               session · {sessionId.slice(-8)}
             </div>
             <button
@@ -245,9 +246,7 @@ function PreviewStatsBar({
 function StatCell({ label, value, title }: { label: string; value: string; title?: string }) {
   return (
     <div className="bg-surface px-3 py-2" title={title}>
-      <div className="text-[10px] font-medium uppercase tracking-eyebrow text-fg-soft">
-        {label}
-      </div>
+      <div className="text-[10px] font-medium uppercase tracking-eyebrow text-fg-soft">{label}</div>
       <div className="mt-0.5 font-mono text-sm font-semibold text-fg-strong">{value}</div>
     </div>
   );
@@ -266,7 +265,7 @@ export function MessageParts({ message }: { message: UIMessage }) {
       if (typeof part.text === "string" && part.text.length > 0) {
         rendered.push(
           <div key={index} className="whitespace-pre-wrap break-words">
-            {part.text}
+            {redactSecretString(part.text)}
           </div>,
         );
       }
@@ -284,7 +283,7 @@ export function MessageParts({ message }: { message: UIMessage }) {
             Reasoning
           </summary>
           <pre className="mt-2 whitespace-pre-wrap break-words font-mono text-[11px] text-fg">
-            {text}
+            {redactSecretString(text)}
           </pre>
         </details>,
       );
@@ -361,9 +360,7 @@ function ToolInvocation({ part }: { part: ToolPart }) {
         ) : null}
       </summary>
       <div className="border-t border-line px-3 py-2">
-        <div className="text-[10px] font-medium uppercase tracking-eyebrow text-fg-soft">
-          Input
-        </div>
+        <div className="text-[10px] font-medium uppercase tracking-eyebrow text-fg-soft">Input</div>
         <pre className="mt-1 max-h-48 overflow-auto rounded-md bg-code-bg p-2 font-mono text-[11px] text-code-fg">
           {formatJson(part.input)}
         </pre>
@@ -487,11 +484,7 @@ export function normalizePreviewAgent(draft: AgentSpec): AgentSpec {
   // without this strip every preview of a registry-resident agent would
   // fail with `BadRequest`. The runtime preview is always local —
   // endpoint and registry are not meaningful here.
-  const {
-    endpoint: _endpoint,
-    registry: _registry,
-    ...localDraft
-  } = draft;
+  const { endpoint: _endpoint, registry: _registry, ...localDraft } = draft;
   return {
     ...localDraft,
     id: localDraft.id.trim() || "draft-preview",

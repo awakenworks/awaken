@@ -1,13 +1,56 @@
 // @vitest-environment jsdom
-import { afterEach, describe, expect, it } from "vitest";
-import { cleanup, render, screen } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import type { UIMessage } from "@ai-sdk/react";
 import {
+  AgentPreviewPanel,
   MessageParts,
   hasRenderableContent,
   normalizePreviewAgent,
 } from "./agent-preview-panel";
 import type { AgentSpec, RemoteEndpoint } from "../lib/api/types";
+
+const previewHarness = vi.hoisted(() => ({
+  messages: [] as UIMessage[],
+  status: "ready" as "ready" | "submitted" | "streaming" | "error",
+  error: undefined as Error | undefined,
+  sendMessage: vi.fn(),
+  setMessages: vi.fn(),
+  useChat: vi.fn(),
+  drawerProps: [] as Array<{ agentId: string; open: boolean; onClose: () => void }>,
+}));
+
+vi.mock("@ai-sdk/react", () => ({
+  useChat: previewHarness.useChat,
+}));
+
+vi.mock("@/components/recent-traces-drawer", () => ({
+  RecentTracesDrawer: (props: { agentId: string; open: boolean; onClose: () => void }) => {
+    previewHarness.drawerProps.push(props);
+    return props.open ? (
+      <div data-testid="recent-traces-drawer" data-agent-id={props.agentId}>
+        Recent runs drawer
+      </div>
+    ) : null;
+  },
+}));
+
+beforeEach(() => {
+  previewHarness.messages = [];
+  previewHarness.status = "ready";
+  previewHarness.error = undefined;
+  previewHarness.drawerProps.length = 0;
+  previewHarness.sendMessage.mockClear();
+  previewHarness.setMessages.mockClear();
+  previewHarness.useChat.mockReset();
+  previewHarness.useChat.mockImplementation(() => ({
+    messages: previewHarness.messages,
+    sendMessage: previewHarness.sendMessage,
+    setMessages: previewHarness.setMessages,
+    status: previewHarness.status,
+    error: previewHarness.error,
+  }));
+});
 
 afterEach(() => {
   cleanup();
@@ -24,10 +67,39 @@ function uiMessage(parts: unknown[]): UIMessage {
   } as UIMessage;
 }
 
+function agentDraft(overrides: Partial<AgentSpec> = {}): AgentSpec {
+  return {
+    id: "saved-agent",
+    model_id: "research-default",
+    system_prompt: "You are a test agent.",
+    plugin_ids: [],
+    active_hook_filter: [],
+    sections: {},
+    delegates: [],
+    ...overrides,
+  };
+}
+
 describe("MessageParts — AI SDK part states (R3 #5)", () => {
   it("renders a non-empty text part", () => {
     render(<MessageParts message={uiMessage([{ type: "text", text: "hello" }])} />);
     expect(screen.getByText("hello")).toBeTruthy();
+  });
+
+  it("redacts credential patterns inside assistant text parts", () => {
+    const { container } = render(
+      <MessageParts
+        message={uiMessage([
+          {
+            type: "text",
+            text: "upstream echoed Authorization: Bearer sk-real-secret-value",
+          },
+        ])}
+      />,
+    );
+    const dom = container.textContent ?? "";
+    expect(dom).not.toContain("sk-real-secret-value");
+    expect(dom).toContain("Authorization: ***");
   });
 
   it("skips an empty text part rather than printing a blank bubble", () => {
@@ -43,6 +115,22 @@ describe("MessageParts — AI SDK part states (R3 #5)", () => {
     );
     expect(screen.getByText("Reasoning")).toBeTruthy();
     expect(screen.getByText("let me think step by step")).toBeTruthy();
+  });
+
+  it("redacts credential patterns inside reasoning parts", () => {
+    const { container } = render(
+      <MessageParts
+        message={uiMessage([
+          {
+            type: "reasoning",
+            text: "I should call the API with Bearer real-bearer-token-1234567890",
+          },
+        ])}
+      />,
+    );
+    const dom = container.textContent ?? "";
+    expect(dom).not.toContain("real-bearer-token-1234567890");
+    expect(dom).toContain("Bearer ***");
   });
 
   it("renders a `dynamic-tool` part as a ToolInvocation card with name + input", () => {
@@ -269,6 +357,33 @@ describe("MessageParts — AI SDK part states (R3 #5)", () => {
   });
 });
 
+describe("AgentPreviewPanel — redaction and trace gating", () => {
+  it("redacts transport/server error messages before rendering", () => {
+    previewHarness.error = new Error(
+      "preview failed with Authorization: Bearer sk-real-secret-value",
+    );
+    const { container } = render(<AgentPreviewPanel draft={agentDraft()} />);
+    const dom = container.textContent ?? "";
+    expect(dom).not.toContain("sk-real-secret-value");
+    expect(dom).toContain("Authorization: ***");
+  });
+
+  it("does not show Recent runs for a new unsaved draft with a fallback preview id", () => {
+    const { container } = render(<AgentPreviewPanel draft={agentDraft({ id: "   " })} />);
+    expect(container.textContent ?? "").toContain("draft-preview");
+    expect(screen.queryByTestId("open-recent-traces")).toBeNull();
+    const lastDrawerProps = previewHarness.drawerProps[previewHarness.drawerProps.length - 1];
+    expect(lastDrawerProps.agentId).toBe("");
+  });
+
+  it("opens Recent runs with the real saved agent id, not the preview fallback id", () => {
+    render(<AgentPreviewPanel draft={agentDraft({ id: " saved-agent " })} />);
+    fireEvent.click(screen.getByTestId("open-recent-traces"));
+    const drawer = screen.getByTestId("recent-traces-drawer");
+    expect(drawer.getAttribute("data-agent-id")).toBe("saved-agent");
+  });
+});
+
 describe("hasRenderableContent (R3 #6)", () => {
   it("returns false for a message containing only step-start", () => {
     expect(hasRenderableContent(uiMessage([{ type: "step-start" }]))).toBe(false);
@@ -296,23 +411,19 @@ describe("hasRenderableContent (R3 #6)", () => {
   });
 
   it("returns false when step-start is the only typed part — nothing to render", () => {
-    expect(
-      hasRenderableContent(uiMessage([{ type: "step-start" }, { type: "step-start" }])),
-    ).toBe(false);
+    expect(hasRenderableContent(uiMessage([{ type: "step-start" }, { type: "step-start" }]))).toBe(
+      false,
+    );
   });
 
   it("returns true for a tool part even with no text", () => {
     expect(
-      hasRenderableContent(
-        uiMessage([{ type: "tool-Bash", state: "input-streaming", input: {} }]),
-      ),
+      hasRenderableContent(uiMessage([{ type: "tool-Bash", state: "input-streaming", input: {} }])),
     ).toBe(true);
   });
 
   it("returns true for a non-empty reasoning part", () => {
-    expect(
-      hasRenderableContent(uiMessage([{ type: "reasoning", text: "thinking…" }])),
-    ).toBe(true);
+    expect(hasRenderableContent(uiMessage([{ type: "reasoning", text: "thinking…" }]))).toBe(true);
   });
 
   it("returns true for a real text part", () => {

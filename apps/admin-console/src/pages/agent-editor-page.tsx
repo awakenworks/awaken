@@ -2148,9 +2148,9 @@ function JsonEditorSection({
   // secret-shaped fields never land in the admin DOM. The Apply path
   // validates the user's parsed payload against this exact redacted
   // display copy FIRST (to detect edits to locked fields even when their
-  // value reads `***`), then restores unchanged redaction markers before the
-  // candidate reaches validation / draft state. Doing this before
-  // `mergeLockedFields` is load-bearing — overlaying first would mask
+  // value is a redaction sentinel), then restores unchanged redaction
+  // markers before the candidate reaches validation / draft state. Doing
+  // this before `mergeLockedFields` is load-bearing — overlaying first would mask
   // user edits to `endpoint.base_url` / `endpoint.auth.*` / `registry`.
   const editingSpec = useMemo(() => redactAgentSpecForEditing(spec), [spec]);
   const specSerialized = useMemo(
@@ -2225,8 +2225,8 @@ function JsonEditorSection({
     // `endpoint` and `registry` are provenance / runtime-locality fields
     // not user-editable through the editor. Compare the PARSED payload
     // against the redacted spec the textarea was seeded from — equality
-    // means the user didn't touch the locked fields (any `***` stayed
-    // `***`). If anything differs (a real bearer-token edit, a
+    // means the user didn't touch the locked fields (any redaction sentinel
+    // stayed intact). If anything differs (a real bearer-token edit, a
     // `base_url` swap, a `registry` flip, etc.) we reject the Apply
     // entirely. Doing this BEFORE `mergeLockedFields` is mandatory: the
     // overlay overwrites parsed.endpoint with spec.endpoint, so any
@@ -2246,8 +2246,8 @@ function JsonEditorSection({
     ) as Record<string, unknown>;
     // Now overlay the real locked-field values onto the parsed payload so
     // the candidate carries the actual `endpoint.auth.bearer_token` (not
-    // the `***` redaction marker the textarea showed). Redaction stays purely
-    // a display concern from here on.
+    // the redaction sentinel the textarea showed). Redaction stays purely a
+    // display concern from here on.
     const withRealLockedFields = mergeLockedFields(withRestoredRedactions, spec);
     // Build the would-be-applied payload (identity fields are preserved by
     // replaceSpec) and let the server type-check the rest before we mutate
@@ -2306,7 +2306,7 @@ function JsonEditorSection({
               data-testid="raw-json-redaction-notice"
             >
               Credential-like fields are masked as
-              <span className="mx-1 font-mono">***</span>
+              <span className="mx-1 font-mono">__AWAKEN_REDACTED_SECRET_...__</span>
               in this view. Apply restores unchanged redaction markers automatically;{" "}
               <span className="font-mono">endpoint</span> and{" "}
               <span className="font-mono">registry</span> remain read-only from this editor.

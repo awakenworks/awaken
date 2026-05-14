@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
+import { readFileSync } from "node:fs";
 
 import type { AgentSpec, RemoteEndpoint } from "./api/types";
 import {
   ALLOWED_AGENT_FIELDS,
+  LOCKED_AGENT_FIELDS,
   PATCHABLE_AGENT_FIELDS,
   canonicalStringify,
   cloneAgentSpecForEditor,
@@ -42,6 +44,24 @@ const REMOTE_ENDPOINT: RemoteEndpoint = {
   target: "remote-agent",
   timeout_ms: 60_000,
 };
+
+function rustAgentSpecPatchFields(): string[] {
+  const source = readFileSync(
+    new URL("../../../../crates/awaken-contract/src/agent_spec_patch.rs", import.meta.url),
+    "utf8",
+  );
+  const structMatch = source.match(/pub struct AgentSpecPatch \{([\s\S]*?)\n\}/);
+  if (!structMatch) {
+    throw new Error("Could not find AgentSpecPatch in Rust contract source.");
+  }
+  return [...structMatch[1].matchAll(/^\s*pub\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*:/gm)].map(
+    (match) => match[1],
+  );
+}
+
+function missingValues(source: readonly string[], expected: ReadonlySet<string>): string[] {
+  return source.filter((value) => !expected.has(value));
+}
 
 describe("canonicalStringify / deepEqualCanonical", () => {
   it("sorts object keys deterministically", () => {
@@ -874,10 +894,7 @@ describe("redactSecretsForDisplay (R6 #B/#C — generic deep redact)", () => {
         },
       };
       const redacted = redactSecretsForDisplay(event);
-      const usage = (redacted.payload as Record<string, unknown>).usage as Record<
-        string,
-        unknown
-      >;
+      const usage = (redacted.payload as Record<string, unknown>).usage as Record<string, unknown>;
       expect(usage.input_tokens).toBe(1234);
       expect(usage.output_tokens).toBe(567);
       expect(usage.total_tokens).toBe(1801);
@@ -1018,8 +1035,13 @@ describe("redactAgentSpecForEditing / restoreUnchangedRedactions", () => {
 
     expect(serialized).not.toContain("live-secret");
     expect(serialized).not.toContain("live-api-key");
-    expect((redacted.sections?.oauth as Record<string, unknown>).client_secret).toBe("***");
-    expect((redacted.sections?.observability as Record<string, unknown>).api_key).toBe("***");
+    const oauthMarker = (redacted.sections?.oauth as Record<string, unknown>).client_secret;
+    const observabilityMarker = (redacted.sections?.observability as Record<string, unknown>)
+      .api_key;
+    expect(oauthMarker).toMatch(/^__AWAKEN_REDACTED_SECRET_[a-f0-9]{8}__$/);
+    expect(observabilityMarker).toMatch(/^__AWAKEN_REDACTED_SECRET_[a-f0-9]{8}__$/);
+    expect(oauthMarker).not.toBe("***");
+    expect(observabilityMarker).not.toBe(oauthMarker);
 
     const restored = restoreUnchangedRedactions(
       JSON.parse(JSON.stringify(redacted)) as AgentSpec,
@@ -1042,6 +1064,40 @@ describe("redactAgentSpecForEditing / restoreUnchangedRedactions", () => {
     const restored = restoreUnchangedRedactions(parsed, redactions);
 
     expect((restored.sections?.oauth as Record<string, unknown>).client_secret).toBe("new-secret");
+  });
+
+  it("allows replacing a secret with the literal display mask", () => {
+    const spec = baseSpec({
+      sections: { oauth: { client_secret: "old-secret" } },
+    });
+    const { redacted, redactions } = redactAgentSpecForEditing(spec);
+    const parsed = JSON.parse(JSON.stringify(redacted)) as AgentSpec;
+    (parsed.sections?.oauth as Record<string, unknown>).client_secret = "***";
+
+    const restored = restoreUnchangedRedactions(parsed, redactions);
+
+    expect((restored.sections?.oauth as Record<string, unknown>).client_secret).toBe("***");
+  });
+
+  it("uses editing sentinels for secret patterns inside unkeyed strings", () => {
+    const spec = baseSpec({
+      sections: {
+        notes: "upstream echoed Authorization: Bearer sk-real-secret-value",
+      },
+    });
+    const { redacted, redactions } = redactAgentSpecForEditing(spec);
+    const marker = redacted.sections?.notes;
+
+    expect(marker).toMatch(/^__AWAKEN_REDACTED_SECRET_[a-f0-9]{8}__$/);
+    expect(marker).not.toBe("***");
+
+    const restored = restoreUnchangedRedactions(
+      JSON.parse(JSON.stringify(redacted)) as AgentSpec,
+      redactions,
+    );
+    expect(restored.sections?.notes).toBe(
+      "upstream echoed Authorization: Bearer sk-real-secret-value",
+    );
   });
 });
 
@@ -1080,6 +1136,17 @@ describe("ALLOWED_AGENT_FIELDS / unknownAgentSpecFields (R3 #3)", () => {
       future_field: { nested: true },
     };
     expect(unknownAgentSpecFields(parsed).sort()).toEqual(["future_field", "surprise"]);
+  });
+
+  it("runtime contract: frontend field lists cover Rust AgentSpecPatch fields", () => {
+    const rustPatchFields = rustAgentSpecPatchFields();
+    const allowedFields = new Set<string>(ALLOWED_AGENT_FIELDS);
+    const classifiedFields = new Set<string>([...PATCHABLE_AGENT_FIELDS, ...LOCKED_AGENT_FIELDS]);
+    const rustFieldSet = new Set(rustPatchFields);
+
+    expect(missingValues(rustPatchFields, allowedFields)).toEqual([]);
+    expect(missingValues(rustPatchFields, classifiedFields)).toEqual([]);
+    expect(PATCHABLE_AGENT_FIELDS.filter((field) => !rustFieldSet.has(field))).toEqual([]);
   });
 
   // R8 #6 — Drift guard: `ALLOWED_AGENT_FIELDS` is hand-maintained and the
@@ -1507,6 +1574,36 @@ describe("redactSecretString (R12 #3)", () => {
     const out = redactSecretString("key1=sk-abcdefghijklmnop1234567890 key2=sk_live_abc123XYZ");
     expect(out).not.toContain("sk-abcdefghijklmnop1234567890");
     expect(out).not.toContain("sk_live_abc123XYZ");
+  });
+
+  it("masks common GitHub, Slack, and AWS token families", () => {
+    const github = ["ghp", "abcdefghijklmnopqrstuvwxyz1234567890AB"].join("_");
+    const githubFineGrained = [
+      "github",
+      "pat",
+      "11ABCDEFG0",
+      "abcdefghijklmnopqrstuvwxyz1234567890",
+    ].join("_");
+    const slack = ["xoxb", "123456789012", "123456789012", "abcdefghijklmnopqrstuvwx"].join("-");
+    const aws = `AKIA${"IOSFODNN7EXAMPLE"}`;
+    const out = redactSecretString(`tokens ${github} ${githubFineGrained} ${slack} ${aws}`);
+
+    expect(out).not.toContain(github);
+    expect(out).not.toContain(githubFineGrained);
+    expect(out).not.toContain(slack);
+    expect(out).not.toContain(aws);
+  });
+
+  it("masks PEM private key blocks", () => {
+    const pem = [
+      "-----BEGIN PRIVATE KEY-----",
+      "MIIEvQIBADANBgkqhkiG9w0BAQEFAASC",
+      "-----END PRIVATE KEY-----",
+    ].join("\n");
+    const out = redactSecretString(`key:\n${pem}\nend`);
+
+    expect(out).not.toContain("MIIEvQIBADANBgkqhkiG9w0BAQEFAASC");
+    expect(out).toContain("***");
   });
 
   it("returns the input unchanged when no credential pattern matches", () => {

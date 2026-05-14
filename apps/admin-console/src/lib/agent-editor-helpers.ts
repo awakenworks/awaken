@@ -2,7 +2,25 @@
 /// stay unit-testable without having to drive React Router + the page state
 /// machine, and so the JSON-editor / plugin-toggle / clone / patch-diff /
 /// remote-endpoint-display code paths share one canonical implementation.
-import type { AgentSpec, RemoteEndpoint } from "./api/types";
+import type { AgentSpec } from "./api/types";
+import { deepEqualCanonical } from "./agent-editor-canonical";
+
+export { canonicalStringify, deepEqualCanonical } from "./agent-editor-canonical";
+export {
+  computeRedactedDiff,
+  redactAgentSpecForDisplay,
+  redactAgentSpecForEditing,
+  redactEndpointForDisplay,
+  redactSecretString,
+  redactSecretsForDisplay,
+  restoreUnchangedRedactions,
+} from "./agent-secret-redaction";
+export type {
+  RedactedAgentSpecForEditing,
+  RedactedFieldChange,
+  RedactionEntry,
+  RedactionPathSegment,
+} from "./agent-secret-redaction";
 
 /**
  * Fields the editor cannot patch on a customized record:
@@ -39,40 +57,6 @@ export const PATCHABLE_AGENT_FIELDS: Array<keyof AgentSpec> = [
   "delegates",
   "reasoning_effort",
 ];
-
-/**
- * Stable JSON encoding: deep-sorts object keys so structurally-equal values
- * always serialize to the same string. Used as a building block for
- * `deepEqualCanonical` so re-formatting / key-reordering of Raw JSON doesn't
- * read as a locked-field change or trigger a spurious PATCH entry.
- *
- * Arrays preserve order (semantically significant). `undefined` collapses to
- * `null` so `{a: undefined}` and `{}` are treated equivalently — JSON has no
- * `undefined` and field absence vs explicit-undefined should not surface as
- * a diff in this editor.
- */
-export function canonicalStringify(value: unknown): string {
-  return JSON.stringify(canonicalize(value));
-}
-
-function canonicalize(value: unknown): unknown {
-  if (value === undefined || value === null) return null;
-  if (Array.isArray(value)) return value.map(canonicalize);
-  if (typeof value === "object") {
-    const entries = Object.entries(value as Record<string, unknown>)
-      .filter(([, item]) => item !== undefined)
-      .map(([key, item]) => [key, canonicalize(item)] as const)
-      .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
-    return Object.fromEntries(entries);
-  }
-  return value;
-}
-
-/** Structural equality using `canonicalStringify` — order-insensitive for
- *  object keys, order-sensitive for arrays. */
-export function deepEqualCanonical(a: unknown, b: unknown): boolean {
-  return canonicalStringify(a) === canonicalStringify(b);
-}
 
 /**
  * Returns the name of the first locked field (`endpoint` or `registry`)
@@ -332,374 +316,6 @@ export function partitionActiveHookFilter(
   return { active, stale };
 }
 
-/** Exact-match buckets for short / ambiguous secret names where substring
- *  matching would over-redact. R15: standalone `token` is a secret;
- *  `max_context_tokens` (LLM budget) contains "token" but isn't one.
- *  Keys are normalized via `normalizeSecretKey` before lookup. */
-const EXACT_SECRET_KEYS = new Set(["token", "apikey", "xapikey"]);
-
-/** Substring patterns specific enough to be safe; `token` is intentionally
- *  excluded — see `EXACT_SECRET_KEYS`. Compound `*_token` shapes
- *  (access_token, bearer_token, …) live below as their full form. */
-const SENSITIVE_AUTH_KEY_PATTERNS = [
-  "secret", "password", "passphrase", "authorization", "credential",
-  "privatekey", "clientsecret",
-  // R10 #4 — HTTP-flavored secret carriers under arbitrary key names.
-  "cookie", "jwt", "bearer", "session", "accesskey",
-  // R15 — compound token shapes; the standalone word "token" stays exact.
-  "accesstoken", "refreshtoken", "idtoken", "bearertoken",
-  "authtoken", "sessiontoken",
-];
-
-const REDACTED_PLACEHOLDER = "***";
-
-const HEADER_CONTAINER_KEYS = new Set(["headers", "requestheaders", "responseheaders"]);
-
-const SENSITIVE_HEADER_KEY_PATTERNS = [
-  "authorization",
-  "proxyauthorization",
-  "cookie",
-  "setcookie",
-  "apikey",
-  "xapikey",
-  "xauthtoken",
-  "token",
-];
-
-export type RedactionPathSegment = string | number;
-
-export interface RedactionEntry {
-  path: RedactionPathSegment[];
-  original: unknown;
-  redacted: unknown;
-}
-
-function normalizeSecretKey(key: string): string {
-  return key.toLowerCase().replace(/[-_\s]/g, "");
-}
-
-function isSensitiveKey(key: string): boolean {
-  const normalized = normalizeSecretKey(key);
-  if (EXACT_SECRET_KEYS.has(normalized)) return true;
-  return SENSITIVE_AUTH_KEY_PATTERNS.some((pattern) => normalized.includes(pattern));
-}
-
-function isSensitiveHeaderKey(parentKey: string, key: string): boolean {
-  if (!HEADER_CONTAINER_KEYS.has(normalizeSecretKey(parentKey))) return false;
-  const normalized = normalizeSecretKey(key);
-  return SENSITIVE_HEADER_KEY_PATTERNS.some((pattern) => normalized.includes(pattern));
-}
-
-function cloneJsonValue<T>(value: T): T {
-  if (value === undefined || value === null) return value;
-  const encoded = JSON.stringify(value);
-  if (encoded === undefined) return value;
-  return JSON.parse(encoded) as T;
-}
-
-function recordRedaction(
-  redactions: RedactionEntry[] | undefined,
-  path: RedactionPathSegment[],
-  original: unknown,
-  redacted: unknown,
-) {
-  if (!redactions || deepEqualCanonical(original, redacted)) return;
-  redactions.push({
-    path: [...path],
-    original: cloneJsonValue(original),
-    redacted: cloneJsonValue(redacted),
-  });
-}
-
-function redactRecord(
-  value: unknown,
-  parentKey: string = "",
-  path: RedactionPathSegment[] = [],
-  redactions?: RedactionEntry[],
-): unknown {
-  if (value === null || value === undefined) return value;
-  // Primitive strings — Trace events / audit snapshots / DiffModal feed
-  // arbitrary payloads through this redactor. A `payload.output` /
-  // `body.message` field whose key name doesn't match the credential
-  // pattern list can still carry `Authorization: …` headers, inline
-  // `Bearer …` tokens, JWTs, `sk-…` keys, etc. Apply pattern-based
-  // string redaction so every display path that calls
-  // `redactSecretsForDisplay` shares one defensive layer.
-  if (typeof value === "string") {
-    const redacted = redactSecretString(value);
-    recordRedaction(redactions, path, value, redacted);
-    return redacted;
-  }
-  if (Array.isArray(value)) {
-    return value.map((item, index) => redactRecord(item, "", [...path, index], redactions));
-  }
-  if (typeof value === "object") {
-    // Default-deny on any nested `auth` object: `RemoteAuth` allows
-    // arbitrary keys, so a credential under `jwt` / `cookie` / `session` /
-    // `x-api-key` / `header` / `bearer` would slip past the pattern list
-    // below. When we recurse into a value whose key was `auth`, mask
-    // every entry except the human-readable `type` discriminator —
-    // mirrors `redactEndpointForDisplay` but applies wherever `auth`
-    // shows up in audit / trace / diff payloads.
-    if (normalizeSecretKey(parentKey) === "auth") {
-      const safeAuth: Record<string, unknown> = {};
-      for (const [key, inner] of Object.entries(value as Record<string, unknown>)) {
-        if (key === "type" || inner === null || inner === undefined) {
-          safeAuth[key] = inner;
-        } else {
-          safeAuth[key] = REDACTED_PLACEHOLDER;
-          recordRedaction(redactions, [...path, key], inner, REDACTED_PLACEHOLDER);
-        }
-      }
-      return safeAuth;
-    }
-    const next: Record<string, unknown> = {};
-    for (const [key, inner] of Object.entries(value as Record<string, unknown>)) {
-      const nextPath = [...path, key];
-      if (isSensitiveKey(key) || isSensitiveHeaderKey(parentKey, key)) {
-        next[key] = inner === null || inner === undefined ? inner : REDACTED_PLACEHOLDER;
-        recordRedaction(redactions, nextPath, inner, next[key]);
-      } else {
-        next[key] = redactRecord(inner, key, nextPath, redactions);
-      }
-    }
-    return next;
-  }
-  return value;
-}
-
-/**
- * Return a copy of `endpoint` with secret-bearing fields masked to `"***"`.
- * Two layers of defense:
- *
- *   1. Pattern-based: walks the whole endpoint and masks any key whose name
- *      matches a known credential pattern (`token`, `secret`, `password`,
- *      `api_key`, `authorization`, `credential`, `private_key`, …). This
- *      catches secrets that happen to live anywhere in the endpoint tree.
- *   2. Default-deny on `endpoint.auth`: `RemoteAuth` has an index signature,
- *      so a future schema addition could carry a credential under a key
- *      name the pattern list doesn't know about (`cookie`, `jwt`, `header`,
- *      etc.). For the `auth` object specifically, mask every key except
- *      the human-readable `type` discriminator.
- *
- * Either layer alone would catch the documented secret keys; the
- * combination is intentional for forward-compatibility with schema drift.
- * The non-secret shape (`backend`, `base_url`, `target`, `timeout_ms`,
- * `type`, etc.) is preserved so the read-only UI is still useful for
- * verifying an agent is wired to the expected remote.
- */
-export function redactEndpointForDisplay(endpoint: RemoteEndpoint): RemoteEndpoint {
-  const generic = redactRecord(endpoint) as RemoteEndpoint;
-  if (!generic.auth || typeof generic.auth !== "object") {
-    return generic;
-  }
-  const auth = generic.auth as Record<string, unknown>;
-  const safeAuth: Record<string, unknown> = {};
-  for (const [key, value] of Object.entries(auth)) {
-    if (key === "type") {
-      // The discriminator is needed for the reader to understand the
-      // shape — it's not a credential.
-      safeAuth[key] = value;
-    } else if (value === null || value === undefined) {
-      // Preserve null / undefined as semantic markers — they signal
-      // "no value", not "redacted".
-      safeAuth[key] = value;
-    } else {
-      safeAuth[key] = REDACTED_PLACEHOLDER;
-    }
-  }
-  return { ...generic, auth: safeAuth as RemoteEndpoint["auth"] };
-}
-
-/**
- * Recursively mask every secret-keyed field in an arbitrary value tree.
- * Used by display paths that serialize structures we don't statically
- * know the shape of — audit-log `before`/`after` snapshots (may carry a
- * full `AgentSpec` including `endpoint.auth`), persisted trace events
- * (payloads may include serialized agent specs), and history-restore
- * confirmation dialogs.
- */
-export function redactSecretsForDisplay<T>(value: T): T {
-  return redactRecord(value) as T;
-}
-
-export interface RedactedAgentSpecForEditing {
-  redacted: AgentSpec;
-  redactions: RedactionEntry[];
-}
-
-export function redactAgentSpecForEditing(spec: AgentSpec): RedactedAgentSpecForEditing {
-  const redactions: RedactionEntry[] = [];
-  return {
-    redacted: redactRecord(spec, "", [], redactions) as AgentSpec,
-    redactions,
-  };
-}
-
-function readPath(root: unknown, path: readonly RedactionPathSegment[]) {
-  let current = root;
-  for (const segment of path) {
-    if (current === null || typeof current !== "object") {
-      return { found: false, value: undefined };
-    }
-    if (!Object.prototype.hasOwnProperty.call(current, segment)) {
-      return { found: false, value: undefined };
-    }
-    current = Array.isArray(current)
-      ? current[Number(segment)]
-      : (current as Record<string, unknown>)[String(segment)];
-  }
-  return { found: true, value: current };
-}
-
-function writePath(root: unknown, path: readonly RedactionPathSegment[], value: unknown): boolean {
-  if (path.length === 0) return false;
-  let current = root;
-  for (const segment of path.slice(0, -1)) {
-    if (current === null || typeof current !== "object") return false;
-    current = Array.isArray(current)
-      ? current[Number(segment)]
-      : (current as Record<string, unknown>)[String(segment)];
-  }
-  if (current === null || typeof current !== "object") return false;
-  const leaf = path[path.length - 1];
-  if (Array.isArray(current)) {
-    current[Number(leaf)] = cloneJsonValue(value);
-  } else {
-    (current as Record<string, unknown>)[String(leaf)] = cloneJsonValue(value);
-  }
-  return true;
-}
-
-export function restoreUnchangedRedactions<T>(parsed: T, redactions: readonly RedactionEntry[]): T {
-  if (redactions.length === 0) return parsed;
-  const restored = cloneJsonValue(parsed);
-  for (const redaction of redactions) {
-    const current = readPath(restored, redaction.path);
-    if (current.found && deepEqualCanonical(current.value, redaction.redacted)) {
-      writePath(restored, redaction.path, redaction.original);
-    }
-  }
-  return restored;
-}
-
-export interface RedactedFieldChange {
-  path: string;
-  before: unknown;
-  after: unknown;
-  redactedValueChanged: boolean;
-}
-
-/**
- * Compute semantic changes from raw values, but return only redacted
- * before/after payloads for rendering. This preserves secret-only changes
- * in DiffModal without handing the DOM the original credential values.
- */
-export function computeRedactedDiff(
-  prev: Record<string, unknown>,
-  curr: Record<string, unknown>,
-  base = "",
-): RedactedFieldChange[] {
-  return computeRedactedDiffFrom(
-    prev,
-    curr,
-    redactSecretsForDisplay(prev),
-    redactSecretsForDisplay(curr),
-    base,
-  );
-}
-
-function computeRedactedDiffFrom(
-  prev: Record<string, unknown>,
-  curr: Record<string, unknown>,
-  redactedPrev: Record<string, unknown>,
-  redactedCurr: Record<string, unknown>,
-  base: string,
-): RedactedFieldChange[] {
-  const out: RedactedFieldChange[] = [];
-  const keys = new Set([...Object.keys(prev ?? {}), ...Object.keys(curr ?? {})]);
-  for (const key of keys) {
-    const path = base ? `${base}.${key}` : key;
-    const beforeRaw = prev?.[key];
-    const afterRaw = curr?.[key];
-    const beforeDisplay = redactedPrev?.[key];
-    const afterDisplay = redactedCurr?.[key];
-    if (deepEqualCanonical(beforeRaw, afterRaw)) continue;
-    if (
-      isDiffRecord(beforeRaw) &&
-      isDiffRecord(afterRaw) &&
-      isDiffRecord(beforeDisplay) &&
-      isDiffRecord(afterDisplay)
-    ) {
-      out.push(...computeRedactedDiffFrom(beforeRaw, afterRaw, beforeDisplay, afterDisplay, path));
-    } else {
-      out.push({
-        path,
-        before: beforeDisplay,
-        after: afterDisplay,
-        redactedValueChanged: deepEqualCanonical(beforeDisplay, afterDisplay),
-      });
-    }
-  }
-  return out;
-}
-
-function isDiffRecord(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === "object" && !Array.isArray(value);
-}
-
-/**
- * Mask common credential patterns embedded in arbitrary text. Used by
- * display paths that render raw string payloads — tool outputs, tool
- * error messages — where the key-based redactor doesn't apply because
- * there's no key/value structure to walk (R12 #3).
- *
- * Patterns covered (case-insensitive where reasonable):
- *  - `Authorization: <value>` / `Cookie: <value>` / `Set-Cookie: <value>` (full line)
- *  - `Bearer <token>` (inline anywhere in the string)
- *  - `<api_key|access_key|access_token|client_secret|refresh_token|id_token|bearer_token|password|secret|token|jwt>=<value>`
- *    (or with `:` separator) — masks the value
- *  - JWT-shaped tokens: `eyJ<base64>.<base64>.<base64>`
- *  - OpenAI-style `sk-…`, Stripe-style `sk_(live|test)_…`
- *
- * Intentionally conservative — false positives mask non-secret strings,
- * which is the right trade-off for an admin-console display layer.
- */
-export function redactSecretString(input: string): string {
-  if (typeof input !== "string" || input.length === 0) return input;
-  let result = input;
-  // Full-line header values.
-  result = result.replace(/Authorization\s*:\s*[^\r\n]+/gi, "Authorization: ***");
-  result = result.replace(/Set-Cookie\s*:\s*[^\r\n]+/gi, "Set-Cookie: ***");
-  result = result.replace(/(^|\s|;)Cookie\s*:\s*[^\r\n]+/gi, "$1Cookie: ***");
-  // Inline Bearer token.
-  result = result.replace(/Bearer\s+[A-Za-z0-9._\-+/=]{8,}/gi, "Bearer ***");
-  // key=value / key: value for known credential field names. Negative
-  // lookahead prevents re-masking already-redacted output.
-  result = result.replace(
-    /\b(api[_-]?key|access[_-]?key|access[_-]?token|client[_-]?secret|refresh[_-]?token|id[_-]?token|bearer[_-]?token|password|secret|token|jwt)\s*[:=]\s*(?!\*\*\*)[^\s,;"'&}]+/gi,
-    "$1=***",
-  );
-  // JWT — three dot-separated base64url segments starting with eyJ.
-  result = result.replace(/\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/g, "***");
-  // OpenAI-style sk-<long>, Stripe-style sk_(live|test)_<long>.
-  result = result.replace(/\bsk-[A-Za-z0-9_-]{16,}/g, "***");
-  result = result.replace(/\bsk_(?:live|test)_[A-Za-z0-9]+/g, "***");
-  return result;
-}
-
-/**
- * Return a copy of `spec` safe for display in the admin DOM: same shape,
- * but `endpoint` (the only field today that can carry remote-backend
- * credentials) is run through `redactEndpointForDisplay`. Used by the Raw
- * JSON editor and history-restore confirm dialog so a real bearer token
- * never lands in a textarea or a confirmation popover.
- */
-export function redactAgentSpecForDisplay(spec: AgentSpec): AgentSpec {
-  if (!spec.endpoint) return spec;
-  return { ...spec, endpoint: redactEndpointForDisplay(spec.endpoint) };
-}
-
 /**
  * The complete set of `AgentSpec` keys the editor knows how to round-trip.
  * Combines identity (server-managed), locked (provenance / not editable),
@@ -736,7 +352,7 @@ export function unknownAgentSpecFields(parsed: Record<string, unknown>): string[
  * silently dropping any user edit to `base_url` / `auth.*` / `target` /
  * `registry`. The compare must run first against the redacted display
  * spec; this merge then re-introduces the real credentials so the
- * candidate carries the live values rather than the `***` redaction.
+ * candidate carries the live values rather than the editing redaction sentinel.
  *
  * Returns a shallow copy; never mutates the inputs.
  */

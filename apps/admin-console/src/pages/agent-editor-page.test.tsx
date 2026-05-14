@@ -880,6 +880,14 @@ describe("agent editor Raw JSON secret redaction", () => {
     return textarea;
   }
 
+  function rawJsonRedactionMarker(textarea: HTMLTextAreaElement, field: string): string {
+    const match = textarea.value.match(
+      new RegExp(`"${field}": "(__AWAKEN_REDACTED_SECRET_[a-f0-9]{8}__)"`),
+    );
+    if (!match) throw new Error(`Redaction marker for ${field} not found`);
+    return match[1];
+  }
+
   it("does not render sections secrets into the Raw JSON textarea DOM", async () => {
     const agent = agentSpec("raw-secret-agent") as AgentSpec;
     agent.sections = {
@@ -898,8 +906,13 @@ describe("agent editor Raw JSON secret redaction", () => {
     await screen.findByText(/Edit raw-secret-agent/i);
 
     const textarea = await openRawJsonTextarea();
-    expect(textarea.value).toContain('"client_secret": "***"');
-    expect(textarea.value).toContain('"api_key": "***"');
+    expect(rawJsonRedactionMarker(textarea, "client_secret")).toMatch(
+      /^__AWAKEN_REDACTED_SECRET_[a-f0-9]{8}__$/,
+    );
+    expect(rawJsonRedactionMarker(textarea, "api_key")).toMatch(
+      /^__AWAKEN_REDACTED_SECRET_[a-f0-9]{8}__$/,
+    );
+    expect(textarea.value).not.toContain('"client_secret": "***"');
     expect(textarea.value).not.toContain("live-client-secret");
     expect(textarea.value).not.toContain("live-api-key");
   });
@@ -946,9 +959,13 @@ describe("agent editor Raw JSON secret redaction", () => {
     await screen.findByText(/Edit raw-replace-agent/i);
 
     const textarea = await openRawJsonTextarea();
+    const marker = rawJsonRedactionMarker(textarea, "client_secret");
     fireEvent.change(textarea, {
       target: {
-        value: textarea.value.replace('"client_secret": "***"', '"client_secret": "new-secret"'),
+        value: textarea.value.replace(
+          `"client_secret": "${marker}"`,
+          '"client_secret": "new-secret"',
+        ),
       },
     });
     fireEvent.click(screen.getByRole("button", { name: /apply to draft/i }));
@@ -966,7 +983,7 @@ describe("agent editor Raw JSON secret redaction", () => {
     await waitFor(() => {
       expect(patchBodies).toHaveLength(1);
     });
-    expect(JSON.stringify(patchBodies[0])).not.toContain("***");
+    expect(JSON.stringify(patchBodies[0])).not.toContain("__AWAKEN_REDACTED_SECRET_");
     expect(
       (
         ((patchBodies[0].sections as Record<string, unknown>).oauth as Record<string, unknown>) ??
