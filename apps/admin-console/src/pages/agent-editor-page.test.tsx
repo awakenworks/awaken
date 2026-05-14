@@ -343,6 +343,40 @@ describe("agent editor numeric inputs", () => {
   });
 });
 
+describe("agent editor preview Recent runs wiring", () => {
+  it("shows Recent runs for a loaded saved agent and opens traces with the saved id", async () => {
+    const agent = agentSpec("existing-agent");
+    vi.stubGlobal(
+      "fetch",
+      buildEditorFetchMock("existing-agent", agent, {
+        source: { kind: "user" },
+        hidden: false,
+        user_overrides: null,
+        created_at: 0,
+        updated_at: 0,
+      }),
+    );
+
+    renderEditorRoute("/agents/existing-agent");
+    await screen.findByText(/Edit existing-agent/i);
+
+    fireEvent.click(screen.getByTestId("open-recent-traces"));
+
+    const drawer = screen.getByRole("dialog", { name: "Recent runs" });
+    expect(drawer).toBeTruthy();
+    expect(drawer.textContent ?? "").toContain("existing-agent");
+  });
+
+  it("does not show Recent runs for a new unsaved agent after the user enters an id", async () => {
+    renderEditorRoute("/agents/new");
+    const idInput = await screen.findByLabelText("Agent ID");
+
+    fireEvent.change(idInput, { target: { value: "my-new-agent" } });
+
+    expect(screen.queryByTestId("open-recent-traces")).toBeNull();
+  });
+});
+
 describe("agent editor History tab", () => {
   it("shows 'Save first' empty state for new agents", async () => {
     renderEditorRoute("/agents/new");

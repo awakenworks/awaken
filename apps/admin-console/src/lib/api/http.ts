@@ -1,5 +1,5 @@
 import { hasUnauthorizedHandler, requestUnauthorizedRetry } from "../auth-interceptor";
-import { redactSecretString } from "../agent-secret-redaction";
+import { redactSecretString, redactSecretsForDisplay } from "../agent-secret-redaction";
 
 export const BACKEND_URL = import.meta.env.VITE_BACKEND_URL ?? "http://127.0.0.1:38080";
 
@@ -13,7 +13,7 @@ export class ConfigApiError extends Error {
     super(extractErrorMessage(status, detail));
     this.name = "ConfigApiError";
     this.status = status;
-    this.detail = detail;
+    this.detail = redactSecretsForDisplay(detail);
   }
 }
 
