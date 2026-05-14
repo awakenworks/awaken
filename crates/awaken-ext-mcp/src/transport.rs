@@ -15,10 +15,10 @@ use mcp::transport::{
     McpTransportError, SamplingCapabilities, ServerCapabilities, TransportTypeId,
 };
 use mcp::{
-    CallToolParams, CallToolResult, CreateMessageParams, JsonRpcId, JsonRpcMessage,
-    JsonRpcNotification, JsonRpcPayload, JsonRpcRequest, JsonRpcResponse, ListToolsResult,
-    MCP_PROTOCOL_VERSION, McpToolDefinition, ProgressNotificationParams, ProgressToken,
-    ToolContent,
+    CallToolParams, CallToolResult, CompleteParams, CompleteResult, CreateMessageParams, JsonRpcId,
+    JsonRpcMessage, JsonRpcNotification, JsonRpcPayload, JsonRpcRequest, JsonRpcResponse,
+    ListRootsResult, ListToolsResult, MCP_PROTOCOL_VERSION, McpToolDefinition,
+    ProgressNotificationParams, ProgressToken, Root, ToolContent,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
@@ -37,6 +37,46 @@ use crate::sampling::SamplingHandler;
 /// crate doesn't need extending — callers match on this exact message
 /// to surface the cancellation upward (e.g. as `ToolError::Cancelled`).
 pub const CANCELLED_BY_CLIENT: &str = "MCP request cancelled by client";
+
+/// Protocol versions awaken's transports know how to talk on the wire.
+///
+/// Per MCP 2025-06-18 §Lifecycle / Version Negotiation: "If the server
+/// supports the requested protocol version, it MUST respond with the
+/// same version. Otherwise, the server MUST respond with another
+/// protocol version it supports." Our handshake sends
+/// [`MCP_PROTOCOL_VERSION`] (the version baked into the upstream `mcp`
+/// crate); we accept the server's response only if it appears in this
+/// list. Mismatch is a hard error rather than a silent downgrade —
+/// silent downgrade would mean we send wire shapes the server can't
+/// parse, with failures surfacing far from the cause.
+///
+/// Order is purely informational. The list intentionally stays narrow
+/// (one entry today); widen it only when wire-format compatibility for
+/// an older spec rev has been verified end-to-end.
+pub const SUPPORTED_PROTOCOL_VERSIONS: &[&str] = &[MCP_PROTOCOL_VERSION];
+
+/// Validate the `protocolVersion` echoed by the server in `InitializeResult`.
+///
+/// Returns the negotiated version (always one of [`SUPPORTED_PROTOCOL_VERSIONS`])
+/// or a [`McpTransportError::ProtocolError`] describing the mismatch.
+/// The error names both sides so operators don't have to dig through
+/// logs to see which way to upgrade.
+pub(crate) fn negotiate_protocol_version(
+    server_version: &str,
+) -> Result<&'static str, McpTransportError> {
+    if let Some(accepted) = SUPPORTED_PROTOCOL_VERSIONS
+        .iter()
+        .find(|v| **v == server_version)
+    {
+        Ok(*accepted)
+    } else {
+        Err(McpTransportError::ProtocolError(format!(
+            "MCP server replied with unsupported protocolVersion {server_version:?}; \
+             awaken supports {SUPPORTED_PROTOCOL_VERSIONS:?}. The server should respond \
+             with one of these or upgrade to {MCP_PROTOCOL_VERSION}."
+        )))
+    }
+}
 
 #[cfg(unix)]
 use nix::sys::signal::{Signal, kill};
@@ -301,6 +341,99 @@ pub trait McpToolTransport: Send + Sync {
     async fn current_session_id(&self) -> Option<String> {
         None
     }
+
+    /// Take the receiver for `notifications/{tools,prompts,resources}/list_changed`
+    /// events. Each event names which catalogue changed so the host can
+    /// refresh only that surface. Per MCP 2025-06-18 §Server features,
+    /// servers that advertise `tools.listChanged` / `prompts.listChanged`
+    /// / `resources.listChanged` SHOULD emit these notifications when
+    /// the corresponding catalogue mutates — receiving one removes the
+    /// need for periodic polling.
+    ///
+    /// One-shot: callable at most once per transport instance. Returns
+    /// `None` thereafter (and `None` for transports that don't emit
+    /// these notifications, e.g. test stubs).
+    async fn take_list_changed_receiver(&self) -> Option<mpsc::UnboundedReceiver<ListChangedKind>> {
+        None
+    }
+
+    /// Subscribe to updates for a single resource URI. Per MCP
+    /// 2025-06-18 §Resources / Subscriptions: callable only when the
+    /// server advertised `resources.subscribe: true` during initialize.
+    /// The caller is responsible for that capability check; the
+    /// transport just forwards the JSON-RPC request.
+    async fn subscribe_resource(&self, _uri: &str) -> Result<(), McpTransportError> {
+        Err(McpTransportError::TransportError(
+            "subscribe_resource not supported".to_string(),
+        ))
+    }
+
+    /// Cancel a prior subscription. Mirrors [`subscribe_resource`] —
+    /// caller is responsible for capability gating.
+    async fn unsubscribe_resource(&self, _uri: &str) -> Result<(), McpTransportError> {
+        Err(McpTransportError::TransportError(
+            "unsubscribe_resource not supported".to_string(),
+        ))
+    }
+
+    /// Take the receiver for `notifications/resources/updated` events.
+    /// Each event carries the URI of the updated resource. The host
+    /// can fetch the new contents via `read_resource` in response.
+    /// One-shot like [`take_list_changed_receiver`].
+    async fn take_resource_updated_receiver(&self) -> Option<mpsc::UnboundedReceiver<String>> {
+        None
+    }
+
+    /// Ask the server for autocomplete suggestions for a prompt /
+    /// resource argument. Per MCP 2025-06-18 §Utilities / Completion:
+    /// only valid when the server advertised `completions: {}` in its
+    /// initialize response — the caller is responsible for that
+    /// capability check. The transport just forwards the request.
+    async fn complete(&self, _params: CompleteParams) -> Result<CompleteResult, McpTransportError> {
+        Err(McpTransportError::TransportError(
+            "completion/complete not supported".to_string(),
+        ))
+    }
+}
+
+/// Which server-side catalogue the `notifications/.../list_changed`
+/// event refers to. The transport forwards one variant per notification;
+/// the manager dispatches a refresh against that catalogue.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ListChangedKind {
+    /// `notifications/tools/list_changed` — re-run `tools/list`.
+    Tools,
+    /// `notifications/prompts/list_changed` — re-run `prompts/list`.
+    Prompts,
+    /// `notifications/resources/list_changed` — re-run `resources/list`.
+    Resources,
+}
+
+/// Parse a JSON-RPC method name into a recognised list-changed kind.
+/// Returns `None` for any method that isn't one of the three
+/// standard `notifications/.../list_changed` strings.
+fn list_changed_method(method: &str) -> Option<ListChangedKind> {
+    match method {
+        "notifications/tools/list_changed" => Some(ListChangedKind::Tools),
+        "notifications/prompts/list_changed" => Some(ListChangedKind::Prompts),
+        "notifications/resources/list_changed" => Some(ListChangedKind::Resources),
+        _ => None,
+    }
+}
+
+/// Parse a `notifications/resources/updated` notification's params into
+/// the affected resource URI. Returns `None` if the method doesn't
+/// match or the params don't carry a string `uri`.
+fn resource_updated_uri(notification: &JsonRpcNotification) -> Option<String> {
+    if notification.method != "notifications/resources/updated" {
+        return None;
+    }
+    notification
+        .params
+        .as_ref()?
+        .get("uri")?
+        .as_str()
+        .map(str::to_string)
 }
 
 // ── Progress token key ──
@@ -439,12 +572,28 @@ pub(crate) struct ProgressAwareStdioTransport {
     /// the reader uses cardinality heuristics over this map — see
     /// [`select_sampling_handler`].
     per_call_sampling: PerCallSamplingHandlers,
+    /// Receiver half of the `notifications/.../list_changed` channel.
+    /// The reader task owns the cloned sender; when this transport (and
+    /// thus the reader task) is dropped, the channel closes naturally.
+    /// Taken at most once by [`take_list_changed_receiver`].
+    list_changed_rx: tokio::sync::Mutex<Option<mpsc::UnboundedReceiver<ListChangedKind>>>,
+    /// Receiver half of the `notifications/resources/updated` channel.
+    /// Each event is the URI of an updated resource. Mirrors the
+    /// list_changed pattern — one-shot, taken via
+    /// [`take_resource_updated_receiver`].
+    resource_updated_rx: tokio::sync::Mutex<Option<mpsc::UnboundedReceiver<String>>>,
+    /// Client-defined roots advertised to the server during `initialize`
+    /// and served on subsequent `roots/list` requests. Empty = roots
+    /// capability not advertised. Held as an `Arc` so the spawned
+    /// reader task can share it cheaply with the initialize path.
+    roots: Arc<Vec<Root>>,
 }
 
 impl ProgressAwareStdioTransport {
     pub(crate) async fn connect(
         config: &McpServerConnectionConfig,
         sampling_handler: Option<Arc<dyn SamplingHandler>>,
+        roots: Arc<Vec<Root>>,
     ) -> Result<Self, McpTransportError> {
         let command = config.command.as_ref().ok_or_else(|| {
             McpTransportError::TransportError("Stdio transport requires command".to_string())
@@ -518,6 +667,11 @@ impl ProgressAwareStdioTransport {
         let per_call_sampling: PerCallSamplingHandlers =
             Arc::new(tokio::sync::Mutex::new(HashMap::new()));
         let per_call_sampling_reader = Arc::clone(&per_call_sampling);
+        let (list_changed_tx, list_changed_rx) = mpsc::unbounded_channel::<ListChangedKind>();
+        let list_changed_tx_reader = list_changed_tx.clone();
+        let (resource_updated_tx, resource_updated_rx) = mpsc::unbounded_channel::<String>();
+        let resource_updated_tx_reader = resource_updated_tx.clone();
+        let roots_reader = Arc::clone(&roots);
         let mut reader = BufReader::new(stdout);
         tokio::spawn(async move {
             let mut line = String::new();
@@ -539,17 +693,32 @@ impl ProgressAwareStdioTransport {
                             }
                         }
                         Ok(JsonRpcMessage::Notification(notification)) => {
-                            handle_progress_notification(&progress_reader, notification).await;
+                            if let Some(kind) = list_changed_method(&notification.method) {
+                                // Best-effort: if the host hasn't taken
+                                // the receiver yet (or has dropped it),
+                                // a send error just means the host is
+                                // not interested — drop silently.
+                                let _ = list_changed_tx_reader.send(kind);
+                            } else if let Some(uri) = resource_updated_uri(&notification) {
+                                let _ = resource_updated_tx_reader.send(uri);
+                            } else {
+                                handle_progress_notification(&progress_reader, notification).await;
+                            }
                         }
                         Ok(JsonRpcMessage::Request(request)) => {
                             let fallback = sampling_handler_reader.clone();
                             let per_call = Arc::clone(&per_call_sampling_reader);
                             let wtx = write_tx_reader.clone();
+                            let roots = Arc::clone(&roots_reader);
                             tokio::spawn(async move {
                                 let chosen =
                                     select_sampling_handler(&per_call, fallback.as_ref()).await;
-                                let response =
-                                    handle_server_request(chosen.as_deref(), &request).await;
+                                let response = handle_server_request(
+                                    chosen.as_deref(),
+                                    roots.as_slice(),
+                                    &request,
+                                )
+                                .await;
                                 let line = format!(
                                     "{}\n",
                                     serde_json::to_string(&response).unwrap_or_default()
@@ -598,6 +767,12 @@ impl ProgressAwareStdioTransport {
             }
         });
 
+        // Drop the originating senders so the only live senders are the
+        // reader task's clones — when the reader exits (child stdout
+        // EOF), the channels naturally close and the host consumer
+        // tasks wake up.
+        drop(list_changed_tx);
+        drop(resource_updated_tx);
         let transport = Self {
             write_tx,
             pending,
@@ -609,11 +784,24 @@ impl ProgressAwareStdioTransport {
             timeout: Duration::from_secs(config.timeout_secs),
             capabilities: None,
             per_call_sampling,
+            list_changed_rx: tokio::sync::Mutex::new(Some(list_changed_rx)),
+            resource_updated_rx: tokio::sync::Mutex::new(Some(resource_updated_rx)),
+            roots: Arc::clone(&roots),
         };
 
         let mut capabilities = InitializeCapabilities::default();
         if sampling_handler.is_some() {
             capabilities.sampling = Some(SamplingCapabilities::default());
+        }
+        if !transport.roots.is_empty() {
+            // Spec 2025-06-18 §Client features: clients advertising
+            // `roots` MUST be prepared to respond to `roots/list`. Our
+            // roots are static post-construction (set via the
+            // constructor arg, no runtime mutation today), so we
+            // advertise `listChanged: false`.
+            capabilities.roots = Some(mcp::transport::RootsCapabilities {
+                list_changed: Some(false),
+            });
         }
         let init_result = match transport
             .send_request(
@@ -632,6 +820,15 @@ impl ProgressAwareStdioTransport {
                 return Err(err);
             }
         };
+        // Validate the server-echoed protocolVersion BEFORE emitting
+        // `notifications/initialized`. A mismatch means the rest of the
+        // session would speak wire shapes the server can't parse —
+        // better to fail fast at handshake than have every subsequent
+        // tools/call surface a confusing parse error.
+        if let Err(err) = negotiate_protocol_version(&init_result.protocol_version) {
+            let _ = transport.close().await;
+            return Err(err);
+        }
         let _ = transport
             .send_notification("notifications/initialized", Some(json!({})))
             .await;
@@ -935,6 +1132,37 @@ impl McpToolTransport for ProgressAwareStdioTransport {
         Ok(self.capabilities.clone())
     }
 
+    async fn take_list_changed_receiver(&self) -> Option<mpsc::UnboundedReceiver<ListChangedKind>> {
+        self.list_changed_rx.lock().await.take()
+    }
+
+    async fn take_resource_updated_receiver(&self) -> Option<mpsc::UnboundedReceiver<String>> {
+        self.resource_updated_rx.lock().await.take()
+    }
+
+    async fn subscribe_resource(&self, uri: &str) -> Result<(), McpTransportError> {
+        self.send_request("resources/subscribe", Some(json!({ "uri": uri })), None)
+            .await
+            .map(|_| ())
+    }
+
+    async fn unsubscribe_resource(&self, uri: &str) -> Result<(), McpTransportError> {
+        self.send_request("resources/unsubscribe", Some(json!({ "uri": uri })), None)
+            .await
+            .map(|_| ())
+    }
+
+    async fn complete(&self, params: CompleteParams) -> Result<CompleteResult, McpTransportError> {
+        let result = self
+            .send_request(
+                "completion/complete",
+                Some(serde_json::to_value(&params)?),
+                None,
+            )
+            .await?;
+        serde_json::from_value(result).map_err(Into::into)
+    }
+
     async fn read_resource(&self, uri: &str) -> Result<Value, McpTransportError> {
         self.send_request("resources/read", Some(json!({ "uri": uri })), None)
             .await
@@ -983,6 +1211,25 @@ pub(crate) struct ProgressAwareHttpTransport {
     /// by `handle_server_request` for `sampling/createMessage`. See
     /// `select_sampling_handler` for the routing rule.
     per_call_sampling: PerCallSamplingHandlers,
+    /// Sender for `notifications/.../list_changed` events observed on
+    /// the HTTP SSE listening stream (and on per-request SSE streams).
+    /// Cloned into the listening-stream task at the point we add one;
+    /// for now, [`process_sse_event`] dispatches synchronously through
+    /// this sender so per-request streams report list_changed too.
+    list_changed_tx: mpsc::UnboundedSender<ListChangedKind>,
+    /// One-shot receiver, taken at most once by
+    /// [`take_list_changed_receiver`].
+    list_changed_rx: tokio::sync::Mutex<Option<mpsc::UnboundedReceiver<ListChangedKind>>>,
+    /// Sender for `notifications/resources/updated` events; cloned by
+    /// `process_sse_event` to forward each notification.
+    resource_updated_tx: mpsc::UnboundedSender<String>,
+    /// One-shot receiver for resource-updated events; same pattern as
+    /// `list_changed_rx`.
+    resource_updated_rx: tokio::sync::Mutex<Option<mpsc::UnboundedReceiver<String>>>,
+    /// Client-defined roots; same semantics as the stdio variant.
+    /// Non-empty → roots capability advertised at initialize and
+    /// `roots/list` is served from this list.
+    roots: Arc<Vec<Root>>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -995,6 +1242,7 @@ impl ProgressAwareHttpTransport {
     pub(crate) fn connect(
         config: &McpServerConnectionConfig,
         sampling_handler: Option<Arc<dyn SamplingHandler>>,
+        roots: Arc<Vec<Root>>,
     ) -> Result<Self, McpTransportError> {
         let endpoint = config.url.as_ref().ok_or_else(|| {
             McpTransportError::TransportError("HTTP transport requires URL".to_string())
@@ -1007,6 +1255,8 @@ impl ProgressAwareHttpTransport {
                 McpTransportError::TransportError(format!("Failed to create HTTP client: {}", e))
             })?;
 
+        let (list_changed_tx, list_changed_rx) = mpsc::unbounded_channel::<ListChangedKind>();
+        let (resource_updated_tx, resource_updated_rx) = mpsc::unbounded_channel::<String>();
         Ok(Self {
             endpoint: endpoint.clone(),
             client,
@@ -1016,6 +1266,11 @@ impl ProgressAwareHttpTransport {
             session: tokio::sync::RwLock::new(HttpSessionState::default()),
             sampling_handler,
             per_call_sampling: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
+            list_changed_tx,
+            list_changed_rx: tokio::sync::Mutex::new(Some(list_changed_rx)),
+            resource_updated_tx,
+            resource_updated_rx: tokio::sync::Mutex::new(Some(resource_updated_rx)),
+            roots,
         })
     }
 
@@ -1030,13 +1285,29 @@ impl ProgressAwareHttpTransport {
     }
 
     async fn initialize(&self) -> Result<ServerCapabilities, McpTransportError> {
+        // Build advertised capabilities the same way the stdio path
+        // does: sampling iff a handler is configured, roots iff we
+        // have roots to serve. HTTP used to send empty capabilities
+        // (`{}`), which masked the sampling support — the server
+        // would refuse to call `sampling/createMessage` even though
+        // the client could handle it. Fix as part of the roots work.
+        let mut caps = InitializeCapabilities::default();
+        if self.sampling_handler.is_some() {
+            caps.sampling = Some(SamplingCapabilities::default());
+        }
+        if !self.roots.is_empty() {
+            caps.roots = Some(mcp::transport::RootsCapabilities {
+                list_changed: Some(false),
+            });
+        }
+        let caps_value = serde_json::to_value(&caps).unwrap_or_else(|_| json!({}));
         let request_id = self.next_id.fetch_add(1, Ordering::SeqCst);
         let response = self
             .post_message(
                 JsonRpcMessage::Request(JsonRpcRequest::new(
                     JsonRpcId::Number(request_id),
                     "initialize".to_string(),
-                    Some(initialize_params(json!({}), Value::Null)),
+                    Some(initialize_params(caps_value, Value::Null)),
                 )),
                 false,
             )
@@ -1057,10 +1328,16 @@ impl ProgressAwareHttpTransport {
             .map_err(|e| McpTransportError::ProtocolError(format!("initialize failed: {e}")))?;
         let result: InitializeResult = serde_json::from_value(body)?;
 
+        // Validate the server-echoed protocolVersion BEFORE accepting
+        // the session id or emitting `notifications/initialized`. On
+        // mismatch we leave session state empty so the next attempt
+        // re-handshakes rather than half-living with an unusable session.
+        let negotiated = negotiate_protocol_version(&result.protocol_version)?;
+
         {
             let mut session = self.session.write().await;
             session.session_id = session_id;
-            session.protocol_version = Some(result.protocol_version.clone());
+            session.protocol_version = Some(negotiated.to_string());
         }
 
         self.send_notification("notifications/initialized", Some(json!({})))
@@ -1357,7 +1634,13 @@ impl ProgressAwareHttpTransport {
                 Ok(None)
             }
             JsonRpcMessage::Notification(notification) => {
-                if let (Some(expected_key), Some(sender)) = (progress_key, progress_tx)
+                if let Some(kind) = list_changed_method(&notification.method) {
+                    // Forward to the host's `take_list_changed_receiver`
+                    // consumer; best-effort if no one subscribed.
+                    let _ = self.list_changed_tx.send(kind);
+                } else if let Some(uri) = resource_updated_uri(&notification) {
+                    let _ = self.resource_updated_tx.send(uri);
+                } else if let (Some(expected_key), Some(sender)) = (progress_key, progress_tx)
                     && let Some((key, update)) = decode_progress_notification(notification)
                     && key == *expected_key
                 {
@@ -1392,7 +1675,8 @@ impl ProgressAwareHttpTransport {
                         None => self.sampling_handler.clone(),
                     }
                 };
-                let response = handle_server_request(chosen.as_deref(), &request).await;
+                let response =
+                    handle_server_request(chosen.as_deref(), self.roots.as_slice(), &request).await;
                 self.send_response_message(response).await?;
                 Ok(None)
             }
@@ -1630,6 +1914,37 @@ impl McpToolTransport for ProgressAwareHttpTransport {
         Ok(Some(self.initialize_if_needed().await?))
     }
 
+    async fn take_list_changed_receiver(&self) -> Option<mpsc::UnboundedReceiver<ListChangedKind>> {
+        self.list_changed_rx.lock().await.take()
+    }
+
+    async fn take_resource_updated_receiver(&self) -> Option<mpsc::UnboundedReceiver<String>> {
+        self.resource_updated_rx.lock().await.take()
+    }
+
+    async fn subscribe_resource(&self, uri: &str) -> Result<(), McpTransportError> {
+        self.send_initialized_request("resources/subscribe", Some(json!({ "uri": uri })), None)
+            .await
+            .map(|_| ())
+    }
+
+    async fn unsubscribe_resource(&self, uri: &str) -> Result<(), McpTransportError> {
+        self.send_initialized_request("resources/unsubscribe", Some(json!({ "uri": uri })), None)
+            .await
+            .map(|_| ())
+    }
+
+    async fn complete(&self, params: CompleteParams) -> Result<CompleteResult, McpTransportError> {
+        let result = self
+            .send_initialized_request(
+                "completion/complete",
+                Some(serde_json::to_value(&params)?),
+                None,
+            )
+            .await?;
+        serde_json::from_value(result).map_err(Into::into)
+    }
+
     async fn read_resource(&self, uri: &str) -> Result<Value, McpTransportError> {
         self.send_initialized_request("resources/read", Some(json!({ "uri": uri })), None)
             .await
@@ -1718,14 +2033,16 @@ impl ProgressAwareHttpTransport {
 pub(crate) async fn connect_transport(
     config: &McpServerConnectionConfig,
     sampling_handler: Option<Arc<dyn SamplingHandler>>,
+    roots: Arc<Vec<Root>>,
 ) -> Result<Arc<dyn McpToolTransport>, McpTransportError> {
     match config.transport {
         TransportTypeId::Stdio => {
-            let transport = ProgressAwareStdioTransport::connect(config, sampling_handler).await?;
+            let transport =
+                ProgressAwareStdioTransport::connect(config, sampling_handler, roots).await?;
             Ok(Arc::new(transport))
         }
         TransportTypeId::Http => {
-            let transport = ProgressAwareHttpTransport::connect(config, sampling_handler)?;
+            let transport = ProgressAwareHttpTransport::connect(config, sampling_handler, roots)?;
             Ok(Arc::new(transport))
         }
     }
@@ -1916,6 +2233,7 @@ async fn select_sampling_handler(
 
 pub(crate) async fn handle_server_request(
     sampling_handler: Option<&dyn SamplingHandler>,
+    roots: &[Root],
     request: &JsonRpcRequest,
 ) -> JsonRpcResponse {
     match request.method.as_str() {
@@ -1950,6 +2268,30 @@ pub(crate) async fn handle_server_request(
                 }
                 Err(e) => JsonRpcResponse::error(request.id.clone(), -32000, e.to_string(), None),
             }
+        }
+        // Spec 2025-06-18 §Client features / Roots: server may call
+        // `roots/list` only if the client advertised the `roots`
+        // capability during initialize. We advertise based on whether
+        // the roots vec was non-empty at construction, so an empty
+        // slice here reflects either a non-advertising client or a
+        // race during disable — return method-not-supported, NOT an
+        // empty list, so a misbehaving server learns it asked for
+        // something we never agreed to.
+        "roots/list" => {
+            if roots.is_empty() {
+                return JsonRpcResponse::error(
+                    request.id.clone(),
+                    -32601,
+                    "roots/list not supported (client did not advertise roots capability)"
+                        .to_string(),
+                    None,
+                );
+            }
+            let result = ListRootsResult {
+                roots: roots.to_vec(),
+            };
+            let result_value = serde_json::to_value(&result).unwrap_or(Value::Null);
+            JsonRpcResponse::success(request.id.clone(), result_value)
         }
         _ => JsonRpcResponse::error(
             request.id.clone(),
@@ -1994,6 +2336,118 @@ mod tests {
 
     use super::*;
     use mcp::CreateMessageResult;
+
+    // ── notifications/resources/updated parsing ──
+
+    #[test]
+    fn resource_updated_uri_extracts_uri() {
+        let notification = JsonRpcNotification::new(
+            "notifications/resources/updated",
+            Some(json!({ "uri": "file:///tmp/notes.md" })),
+        );
+        assert_eq!(
+            resource_updated_uri(&notification),
+            Some("file:///tmp/notes.md".to_string())
+        );
+    }
+
+    #[test]
+    fn resource_updated_uri_ignores_other_methods() {
+        let notification = JsonRpcNotification::new(
+            "notifications/tools/list_changed",
+            Some(json!({ "uri": "file:///irrelevant" })),
+        );
+        assert_eq!(resource_updated_uri(&notification), None);
+    }
+
+    #[test]
+    fn resource_updated_uri_rejects_missing_or_non_string_uri() {
+        // Defensive: malformed notifications shouldn't crash the
+        // reader; just yield None so they're ignored.
+        let no_params = JsonRpcNotification::new("notifications/resources/updated", None);
+        assert_eq!(resource_updated_uri(&no_params), None);
+
+        let int_uri = JsonRpcNotification::new(
+            "notifications/resources/updated",
+            Some(json!({ "uri": 42 })),
+        );
+        assert_eq!(resource_updated_uri(&int_uri), None);
+
+        let no_uri_field = JsonRpcNotification::new(
+            "notifications/resources/updated",
+            Some(json!({ "other": "x" })),
+        );
+        assert_eq!(resource_updated_uri(&no_uri_field), None);
+    }
+
+    // ── list_changed notification parsing ──
+
+    #[test]
+    fn list_changed_method_recognises_three_kinds() {
+        assert_eq!(
+            list_changed_method("notifications/tools/list_changed"),
+            Some(ListChangedKind::Tools)
+        );
+        assert_eq!(
+            list_changed_method("notifications/prompts/list_changed"),
+            Some(ListChangedKind::Prompts)
+        );
+        assert_eq!(
+            list_changed_method("notifications/resources/list_changed"),
+            Some(ListChangedKind::Resources)
+        );
+    }
+
+    #[test]
+    fn list_changed_method_ignores_other_methods() {
+        // Strict match: nothing else (progress, cancelled, custom)
+        // should be misclassified as list_changed.
+        assert_eq!(list_changed_method("notifications/progress"), None);
+        assert_eq!(list_changed_method("notifications/cancelled"), None);
+        assert_eq!(list_changed_method("notifications/initialized"), None);
+        assert_eq!(list_changed_method("notifications/tools/listChanged"), None); // wrong casing
+        assert_eq!(list_changed_method(""), None);
+        assert_eq!(list_changed_method("tools/list_changed"), None); // missing prefix
+    }
+
+    // ── protocol-version negotiation ──
+
+    #[test]
+    fn negotiate_protocol_version_accepts_current_spec() {
+        // The version awaken sends on the wire must always be in the
+        // supported list — otherwise initialize would always reject
+        // ourselves.
+        let negotiated =
+            negotiate_protocol_version(MCP_PROTOCOL_VERSION).expect("current version is supported");
+        assert_eq!(negotiated, MCP_PROTOCOL_VERSION);
+        assert!(SUPPORTED_PROTOCOL_VERSIONS.contains(&MCP_PROTOCOL_VERSION));
+    }
+
+    #[test]
+    fn negotiate_protocol_version_rejects_unknown() {
+        // Server replies with a version older than anything we know we
+        // can wire-compat-talk on. Hard reject; the alternative is
+        // sending `params._meta` (added in 2025-06-18) or
+        // `Mcp-Session-Id` semantics that older servers can't parse.
+        let err = negotiate_protocol_version("2000-01-01").unwrap_err();
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("2000-01-01"),
+            "error names the version we got: {msg}"
+        );
+        assert!(
+            msg.contains(MCP_PROTOCOL_VERSION),
+            "error names the version we expect: {msg}"
+        );
+    }
+
+    #[test]
+    fn negotiate_protocol_version_rejects_empty() {
+        // Defensive: a misbehaving server could echo back "" — should
+        // surface as a clear handshake error rather than be silently
+        // accepted.
+        assert!(negotiate_protocol_version("").is_err());
+    }
 
     // ── handle_server_request tests ──
 
@@ -2056,7 +2510,7 @@ mod tests {
                 "maxTokens": 100,
             }),
         );
-        let response = handle_server_request(Some(&handler), &request).await;
+        let response = handle_server_request(Some(&handler), &[], &request).await;
         match response.payload {
             mcp::JsonRpcPayload::Success { result } => {
                 assert_eq!(result["model"], json!("mock-model"));
@@ -2077,7 +2531,7 @@ mod tests {
                 "maxTokens": 100,
             }),
         );
-        let response = handle_server_request(None, &request).await;
+        let response = handle_server_request(None, &[], &request).await;
         match response.payload {
             mcp::JsonRpcPayload::Error { error } => {
                 assert!(error.to_string().contains("Sampling not supported"));
@@ -2092,7 +2546,7 @@ mod tests {
             response_text: "unused".to_string(),
         };
         let request = sampling_request(3, json!({"invalid": true}));
-        let response = handle_server_request(Some(&handler), &request).await;
+        let response = handle_server_request(Some(&handler), &[], &request).await;
         match response.payload {
             mcp::JsonRpcPayload::Error { error } => {
                 assert!(error.to_string().contains("Invalid sampling/createMessage"));
@@ -2111,7 +2565,7 @@ mod tests {
                 "maxTokens": 100,
             }),
         );
-        let response = handle_server_request(Some(&handler), &request).await;
+        let response = handle_server_request(Some(&handler), &[], &request).await;
         match response.payload {
             mcp::JsonRpcPayload::Error { error } => {
                 assert!(error.to_string().contains("handler failed"));
@@ -2127,13 +2581,73 @@ mod tests {
             "unknown/method".to_string(),
             Some(json!({})),
         );
-        let response = handle_server_request(None, &request).await;
+        let response = handle_server_request(None, &[], &request).await;
         match response.payload {
             mcp::JsonRpcPayload::Error { error } => {
                 assert!(error.to_string().contains("Method not supported"));
                 assert!(error.to_string().contains("unknown/method"));
             }
             _ => panic!("expected error response"),
+        }
+    }
+
+    // ── roots/list handling (R7 #3) ──
+
+    #[tokio::test]
+    async fn handle_roots_list_returns_configured_roots() {
+        let roots = vec![
+            Root {
+                uri: "file:///home/user/project".to_string(),
+                name: Some("project".to_string()),
+                meta: None,
+            },
+            Root {
+                uri: "file:///tmp/scratch".to_string(),
+                name: None,
+                meta: None,
+            },
+        ];
+        let request = JsonRpcRequest::new(
+            JsonRpcId::Number(10),
+            "roots/list".to_string(),
+            Some(json!({})),
+        );
+        let response = handle_server_request(None, &roots, &request).await;
+        match response.payload {
+            mcp::JsonRpcPayload::Success { result } => {
+                let parsed: ListRootsResult =
+                    serde_json::from_value(result).expect("ListRootsResult parses");
+                assert_eq!(parsed.roots.len(), 2);
+                assert_eq!(parsed.roots[0].uri, "file:///home/user/project");
+                assert_eq!(parsed.roots[0].name.as_deref(), Some("project"));
+                assert_eq!(parsed.roots[1].uri, "file:///tmp/scratch");
+                assert!(parsed.roots[1].name.is_none());
+            }
+            other => panic!("expected success, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn handle_roots_list_rejects_when_empty() {
+        // Empty roots = capability was not advertised at initialize.
+        // A misbehaving server still calling `roots/list` MUST see
+        // method-not-supported (not an empty result), so it can't
+        // continue assuming the client agreed to participate.
+        let request = JsonRpcRequest::new(
+            JsonRpcId::Number(11),
+            "roots/list".to_string(),
+            Some(json!({})),
+        );
+        let response = handle_server_request(None, &[], &request).await;
+        match response.payload {
+            mcp::JsonRpcPayload::Error { error } => {
+                let msg = error.to_string();
+                assert!(
+                    msg.contains("roots/list not supported"),
+                    "expected not-supported error, got: {msg}"
+                );
+            }
+            other => panic!("expected error, got {other:?}"),
         }
     }
 
@@ -2173,7 +2687,8 @@ mod tests {
             "http-close",
             "http://127.0.0.1:9".to_string(),
         );
-        let transport = ProgressAwareHttpTransport::connect(&cfg, None).unwrap();
+        let transport =
+            ProgressAwareHttpTransport::connect(&cfg, None, Arc::new(Vec::new())).unwrap();
 
         transport.close().await.unwrap();
         transport.close().await.unwrap();
@@ -2210,7 +2725,8 @@ mod tests {
         });
 
         let cfg = mcp::transport::McpServerConnectionConfig::http("http-close-delete", url);
-        let transport = ProgressAwareHttpTransport::connect(&cfg, None).unwrap();
+        let transport =
+            ProgressAwareHttpTransport::connect(&cfg, None, Arc::new(Vec::new())).unwrap();
         // Pretend init already happened so close() has a session id to terminate.
         transport.session.write().await.session_id = Some("test-session-abc".into());
 
@@ -2363,6 +2879,12 @@ mod tests {
         let _ = std::fs::remove_file(&scratch);
         let scratch_str = scratch.to_string_lossy().to_string();
 
+        // Mock server's `initialize` response echoes back the version
+        // awaken sent (current `MCP_PROTOCOL_VERSION`) — anything else
+        // would now be rejected by the negotiation check (see
+        // `negotiate_protocol_version`), which is correct production
+        // behaviour but would prevent this cancellation test from
+        // reaching the assert.
         let script = format!(
             r#"
 while IFS= read -r LINE; do
@@ -2370,12 +2892,13 @@ while IFS= read -r LINE; do
     case "$LINE" in
         *'"method":"initialize"'*)
             ID=$(printf '%s' "$LINE" | sed -n 's/.*"id":\([0-9]*\).*/\1/p')
-            printf '{{"jsonrpc":"2.0","id":%s,"result":{{"protocolVersion":"2024-11-05","capabilities":{{"tools":{{}}}},"serverInfo":{{"name":"mock","version":"0"}}}}}}\n' "$ID"
+            printf '{{"jsonrpc":"2.0","id":%s,"result":{{"protocolVersion":"{version}","capabilities":{{"tools":{{}}}},"serverInfo":{{"name":"mock","version":"0"}}}}}}\n' "$ID"
             ;;
     esac
 done
 "#,
-            scratch = scratch_str
+            scratch = scratch_str,
+            version = MCP_PROTOCOL_VERSION,
         );
 
         let mut cfg = mcp::transport::McpServerConnectionConfig::stdio(
@@ -2386,7 +2909,7 @@ done
         cfg.timeout_secs = 30;
 
         let transport = Arc::new(
-            ProgressAwareStdioTransport::connect(&cfg, None)
+            ProgressAwareStdioTransport::connect(&cfg, None, Arc::new(Vec::new()))
                 .await
                 .expect("stdio transport connects"),
         );
@@ -2456,6 +2979,62 @@ done
         assert_eq!(parsed["params"]["reason"], "client run cancelled");
 
         let _ = std::fs::remove_file(&scratch);
+    }
+
+    /// End-to-end smoke test for R7 #2: the reflective stdio server
+    /// emits `notifications/tools/list_changed` after `initialize`; the
+    /// transport must forward the parsed `ListChangedKind::Tools` event
+    /// to the host via `take_list_changed_receiver`.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn stdio_forwards_tools_list_changed_notification() {
+        let script = format!(
+            r#"
+while IFS= read -r LINE; do
+    case "$LINE" in
+        *'"method":"initialize"'*)
+            ID=$(printf '%s' "$LINE" | sed -n 's/.*"id":\([0-9]*\).*/\1/p')
+            printf '{{"jsonrpc":"2.0","id":%s,"result":{{"protocolVersion":"{version}","capabilities":{{"tools":{{"listChanged":true}}}},"serverInfo":{{"name":"mock","version":"0"}}}}}}\n' "$ID"
+            # Push a list_changed notification right after the
+            # initialize response. The transport's reader must classify
+            # it as a list_changed (NOT a progress notification) and
+            # forward it to the receiver.
+            printf '{{"jsonrpc":"2.0","method":"notifications/tools/list_changed"}}\n'
+            ;;
+    esac
+done
+"#,
+            version = MCP_PROTOCOL_VERSION,
+        );
+
+        let mut cfg = mcp::transport::McpServerConnectionConfig::stdio(
+            "stdio-list-changed",
+            "/bin/sh",
+            vec!["-c".to_string(), script],
+        );
+        cfg.timeout_secs = 30;
+
+        let transport = ProgressAwareStdioTransport::connect(&cfg, None, Arc::new(Vec::new()))
+            .await
+            .expect("stdio transport connects");
+
+        let mut rx = transport
+            .take_list_changed_receiver()
+            .await
+            .expect("transport exposes list_changed receiver");
+
+        // The server fires the notification eagerly after initialize, so
+        // it should arrive within a few hundred ms. Tolerate scheduling
+        // jitter on slow CI by waiting up to a couple of seconds.
+        let kind = tokio::time::timeout(Duration::from_secs(2), rx.recv())
+            .await
+            .expect("did not observe list_changed within timeout")
+            .expect("channel closed before notification arrived");
+        assert_eq!(kind, ListChangedKind::Tools);
+
+        // Receiver is one-shot — a second take returns None even when
+        // the first call succeeded (and crucially does not panic).
+        assert!(transport.take_list_changed_receiver().await.is_none());
     }
 
     // ── Per-call sampling routing tests (R1 #P1b) ──
@@ -2742,7 +3321,8 @@ done
         });
 
         let cfg = mcp::transport::McpServerConnectionConfig::http("http-close-no-session", url);
-        let transport = ProgressAwareHttpTransport::connect(&cfg, None).unwrap();
+        let transport =
+            ProgressAwareHttpTransport::connect(&cfg, None, Arc::new(Vec::new())).unwrap();
         // No session id set.
         transport.close().await.unwrap();
 
@@ -2773,7 +3353,8 @@ done
         );
         cfg.timeout_secs = 1;
 
-        let err = match ProgressAwareStdioTransport::connect(&cfg, None).await {
+        let err = match ProgressAwareStdioTransport::connect(&cfg, None, Arc::new(Vec::new())).await
+        {
             Ok(_) => panic!("expected stdio initialization failure"),
             Err(err) => err,
         };
@@ -3627,7 +4208,7 @@ done
             "sampling/createMessage".to_string(),
             None,
         );
-        let response = handle_server_request(Some(&handler), &request).await;
+        let response = handle_server_request(Some(&handler), &[], &request).await;
         match response.payload {
             mcp::JsonRpcPayload::Error { error } => {
                 assert!(error.to_string().contains("Invalid sampling/createMessage"));
@@ -3646,7 +4227,7 @@ done
             "tools/call".to_string(),
             Some(json!({})),
         );
-        let response = handle_server_request(Some(&handler), &request).await;
+        let response = handle_server_request(Some(&handler), &[], &request).await;
         match response.payload {
             mcp::JsonRpcPayload::Error { error } => {
                 assert!(error.to_string().contains("Method not supported"));

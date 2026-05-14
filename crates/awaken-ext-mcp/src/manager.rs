@@ -566,6 +566,12 @@ struct McpRegistryState {
     /// up is what fixes the "all agents share one LLM for sampling"
     /// leak documented in the audit.
     sampling_handler_factory: Option<Arc<dyn SamplingHandlerFactory>>,
+    /// Client-side roots advertised to every connected MCP server.
+    /// `Arc` so all transports share the same backing list at zero
+    /// allocation cost; empty = `roots` capability not advertised.
+    /// Per spec roots are a client-wide concept, not per-server, so
+    /// this lives on the shared registry state.
+    client_roots: Arc<Vec<mcp::Root>>,
 }
 
 fn read_lock<T>(lock: &RwLock<T>) -> std::sync::RwLockReadGuard<'_, T> {
@@ -958,9 +964,10 @@ fn reserve_generation(slot: &mut McpServerSlot) -> u64 {
 async fn connect_runtime(
     config: &McpServerConnectionConfig,
     sampling_handler: Option<Arc<dyn SamplingHandler>>,
+    client_roots: Arc<Vec<mcp::Root>>,
     generation: u64,
 ) -> Result<McpServerRuntime, McpError> {
-    let transport = connect_transport(config, sampling_handler).await?;
+    let transport = connect_transport(config, sampling_handler, client_roots).await?;
     let transport_type = transport.transport_type();
     let capabilities = transport.server_capabilities().await?;
     Ok(McpServerRuntime {
@@ -1168,6 +1175,7 @@ async fn reconnect_server_locked(
     server_name: &str,
 ) -> Result<(), McpError> {
     let sampling_handler = state.sampling_handler.clone();
+    let client_roots = Arc::clone(&state.client_roots);
     let (config, generation, attempt, detached_runtime) =
         begin_reconnect_transition(state.as_ref(), server_name)?;
 
@@ -1180,7 +1188,7 @@ async fn reconnect_server_locked(
 
     tokio::time::sleep(reconnect_backoff(attempt)).await;
 
-    let runtime = match connect_runtime(&config, sampling_handler, generation).await {
+    let runtime = match connect_runtime(&config, sampling_handler, client_roots, generation).await {
         Ok(runtime) => runtime,
         Err(err) => {
             finish_reconnect_error(state.as_ref(), server_name, &err)?;
@@ -1206,6 +1214,11 @@ async fn reconnect_server_locked(
     // Capture the freshly-issued session id (HTTP) before we hand the
     // runtime back to the slot map. Stdio's transport returns None.
     let session_id = runtime.transport.current_session_id().await;
+    // Subscribe to the new transport's list_changed notifications
+    // BEFORE handing it back to the slot map: once the runtime is owned
+    // by the slot we have no async access to it. The receiver is
+    // one-shot per transport, so this is the only chance to claim it.
+    let list_changed_rx = runtime.transport.take_list_changed_receiver().await;
     finish_reconnect_success(
         state.as_ref(),
         server_name,
@@ -1214,6 +1227,9 @@ async fn reconnect_server_locked(
         SystemTime::now(),
         session_id,
     )?;
+    if let Some(rx) = list_changed_rx {
+        spawn_list_changed_watcher(Arc::downgrade(state), server_name.to_string(), rx);
+    }
     Ok(())
 }
 
@@ -1356,6 +1372,60 @@ where
             Err(RuntimeOperationError::Transport(err))
         }
     }
+}
+
+/// Consume `notifications/.../list_changed` events from `rx` and refresh
+/// the relevant catalogue for `server_name`.
+///
+/// Spawned per-runtime — the task exits naturally when the transport
+/// drops (channel closes). Per MCP 2025-06-18: a server SHOULD emit
+/// these notifications when its tool / prompt / resource catalogue
+/// mutates, so polling can be supplemented (or replaced over time) by
+/// reactive refresh.
+///
+/// Today the manager only caches the **tools** catalogue, so:
+///   - `Tools`  → drives a `refresh_server` (re-runs `tools/list`)
+///   - `Prompts` / `Resources` → log at debug level. List operations
+///     for those surfaces hit the server live on each agent call;
+///     there's nothing cached locally to invalidate yet. When a future
+///     PR caches them, this is the point to hook in.
+fn spawn_list_changed_watcher(
+    state_weak: Weak<McpRegistryState>,
+    server_name: String,
+    mut rx: tokio::sync::mpsc::UnboundedReceiver<crate::transport::ListChangedKind>,
+) {
+    tokio::spawn(async move {
+        while let Some(kind) = rx.recv().await {
+            match kind {
+                crate::transport::ListChangedKind::Tools => {
+                    let Some(state) = state_weak.upgrade() else {
+                        // Registry torn down — nothing to refresh, and
+                        // no one to receive subsequent notifications.
+                        break;
+                    };
+                    if let Err(err) = refresh_server(state, server_name.clone()).await {
+                        tracing::warn!(
+                            error = %err,
+                            server = %server_name,
+                            "list_changed-triggered tools refresh failed"
+                        );
+                    }
+                }
+                crate::transport::ListChangedKind::Prompts
+                | crate::transport::ListChangedKind::Resources => {
+                    tracing::debug!(
+                        server = %server_name,
+                        kind = ?kind,
+                        "list_changed event received; no client-side cache to invalidate today"
+                    );
+                }
+            }
+        }
+        tracing::debug!(
+            server = %server_name,
+            "list_changed watcher exiting (channel closed)"
+        );
+    });
 }
 
 async fn refresh_server(state: Arc<McpRegistryState>, server_name: String) -> Result<(), McpError> {
@@ -1518,14 +1588,41 @@ impl McpToolRegistryManager {
         sampling_handler: Option<Arc<dyn SamplingHandler>>,
         sampling_handler_factory: Option<Arc<dyn SamplingHandlerFactory>>,
     ) -> Result<Self, McpError> {
+        Self::connect_with_sampling_factory_and_roots(
+            configs,
+            sampling_handler,
+            sampling_handler_factory,
+            Arc::new(Vec::new()),
+        )
+        .await
+    }
+
+    /// Variant of [`Self::connect_with_sampling_factory`] that also
+    /// accepts a client-wide roots list shared across all connected
+    /// servers. The same `Arc` is handed to every transport at
+    /// construction so the initialize-handshake `roots` capability and
+    /// the in-band `roots/list` response stay consistent.
+    pub async fn connect_with_sampling_factory_and_roots(
+        configs: impl IntoIterator<Item = McpServerConnectionConfig>,
+        sampling_handler: Option<Arc<dyn SamplingHandler>>,
+        sampling_handler_factory: Option<Arc<dyn SamplingHandlerFactory>>,
+        client_roots: Arc<Vec<mcp::Root>>,
+    ) -> Result<Self, McpError> {
         let mut entries: Vec<(McpServerConnectionConfig, Arc<dyn McpToolTransport>)> = Vec::new();
         for cfg in configs {
             validate_server_name(&cfg.name)?;
-            let transport = connect_transport(&cfg, sampling_handler.clone()).await?;
+            let transport =
+                connect_transport(&cfg, sampling_handler.clone(), Arc::clone(&client_roots))
+                    .await?;
             entries.push((cfg, transport));
         }
-        Self::from_tool_transports_with_factory(entries, sampling_handler, sampling_handler_factory)
-            .await
+        Self::from_tool_transports_with_factory_and_roots(
+            entries,
+            sampling_handler,
+            sampling_handler_factory,
+            client_roots,
+        )
+        .await
     }
 
     pub async fn from_transports(
@@ -1548,10 +1645,34 @@ impl McpToolRegistryManager {
     /// during that call then routes to the calling agent's LLM
     /// executor. When `None`, sampling falls back to the fixed
     /// `sampling_handler` (legacy behaviour).
+    ///
+    /// Delegates to [`Self::from_tool_transports_with_factory_and_roots`]
+    /// with an empty roots list (the `roots` capability is not
+    /// advertised; server-initiated `roots/list` returns
+    /// method-not-supported).
     pub async fn from_tool_transports_with_factory(
         entries: impl IntoIterator<Item = (McpServerConnectionConfig, Arc<dyn McpToolTransport>)>,
         sampling_handler: Option<Arc<dyn SamplingHandler>>,
         sampling_handler_factory: Option<Arc<dyn SamplingHandlerFactory>>,
+    ) -> Result<Self, McpError> {
+        Self::from_tool_transports_with_factory_and_roots(
+            entries,
+            sampling_handler,
+            sampling_handler_factory,
+            Arc::new(Vec::new()),
+        )
+        .await
+    }
+
+    /// Variant of [`Self::from_tool_transports_with_factory`] that
+    /// also accepts a client-wide roots list. When non-empty,
+    /// transports advertise the `roots` capability during `initialize`
+    /// and serve `roots/list` from this list.
+    pub async fn from_tool_transports_with_factory_and_roots(
+        entries: impl IntoIterator<Item = (McpServerConnectionConfig, Arc<dyn McpToolTransport>)>,
+        sampling_handler: Option<Arc<dyn SamplingHandler>>,
+        sampling_handler_factory: Option<Arc<dyn SamplingHandlerFactory>>,
+        client_roots: Arc<Vec<mcp::Root>>,
     ) -> Result<Self, McpError> {
         let servers = Self::build_servers(entries).await?;
         let state = Arc::new(McpRegistryState {
@@ -1560,25 +1681,49 @@ impl McpToolRegistryManager {
             periodic_refresh: PeriodicRefresher::new(),
             sampling_handler,
             sampling_handler_factory,
+            client_roots,
         });
 
         let server_names: Vec<String> = {
             let servers = read_lock(&state.servers);
             servers.iter().map(|slot| slot.meta.name.clone()).collect()
         };
-        for server_name in server_names {
+        for server_name in &server_names {
             let attempted_at = SystemTime::now();
-            let runtime = resolve_live_runtime(&Arc::downgrade(&state), &server_name)?;
+            let runtime = resolve_live_runtime(&Arc::downgrade(&state), server_name)?;
             let catalog = discover_catalog_from_lease(Arc::downgrade(&state), &runtime).await?;
             let _ = apply_catalog_if_current(
                 state.as_ref(),
-                &server_name,
+                server_name,
                 runtime.generation,
                 attempted_at,
                 catalog,
             )?;
         }
         rebuild_snapshot(state.as_ref()).await?;
+
+        // Subscribe to each transport's `notifications/.../list_changed`
+        // stream so we react to server-initiated catalogue mutations
+        // instead of waiting for the next periodic refresh tick. The
+        // receiver is one-shot per transport; this is the only place
+        // we claim it for the initial connect. (The reconnect path
+        // claims it at `finish_reconnect_success`.)
+        for server_name in &server_names {
+            let transport = {
+                let servers = read_lock(&state.servers);
+                let index = find_server_index(&servers, server_name)?;
+                servers[index]
+                    .runtime
+                    .as_ref()
+                    .map(|rt| Arc::clone(&rt.transport))
+            };
+            if let Some(transport) = transport
+                && let Some(rx) = transport.take_list_changed_receiver().await
+            {
+                spawn_list_changed_watcher(Arc::downgrade(&state), server_name.clone(), rx);
+            }
+        }
+
         Ok(Self { state })
     }
 

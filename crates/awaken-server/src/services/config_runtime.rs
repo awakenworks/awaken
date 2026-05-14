@@ -268,25 +268,64 @@ pub trait McpRegistryFactory: Send + Sync {
 /// handler (also typically `None` at registry construction) decide.
 pub(crate) struct RegistryDrivenSamplingHandlerFactory {
     runtime: Weak<AgentRuntime>,
+    /// Cache of `(agent_id, model_id)` → `Arc<DefaultSamplingHandler>`.
+    ///
+    /// `for_agent` is called on **every** `tools/call`, so the
+    /// underlying registry lookup + handler construction pays off
+    /// whenever the executor itself is non-trivial to instantiate (per-
+    /// tenant OAuth token mint, lazy connection pool warm-up, etc).
+    /// The agent's `(id, model_id)` tuple uniquely identifies the
+    /// handler — changing either creates a fresh entry, leaving the
+    /// stale one in place until the factory is reconstructed alongside
+    /// the runtime. Since runtime rebuilds drop this factory, stale
+    /// entries don't outlive the registry generation that produced
+    /// them.
+    cache: std::sync::Mutex<HashMap<(String, String), Arc<dyn SamplingHandler>>>,
 }
 
 impl RegistryDrivenSamplingHandlerFactory {
     pub(crate) fn new(runtime: Weak<AgentRuntime>) -> Self {
-        Self { runtime }
+        Self {
+            runtime,
+            cache: std::sync::Mutex::new(HashMap::new()),
+        }
     }
 }
 
 #[async_trait]
 impl SamplingHandlerFactory for RegistryDrivenSamplingHandlerFactory {
     async fn for_agent(&self, agent_spec: &AgentSpec) -> Option<Arc<dyn SamplingHandler>> {
+        let key = (agent_spec.id.clone(), agent_spec.model_id.clone());
+        // Fast path: cache hit. Sync mutex is fine here — the locked
+        // region is a HashMap::get + Arc::clone, no await.
+        if let Some(cached) = self
+            .cache
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .get(&key)
+            .cloned()
+        {
+            return Some(cached);
+        }
+
         let runtime = self.runtime.upgrade()?;
         let registries = runtime.registry_set()?;
         let binding = registries.models.get_model(&agent_spec.model_id)?;
         let executor = registries.providers.get_provider(&binding.provider_id)?;
-        Some(Arc::new(DefaultSamplingHandler::new(
+        let handler: Arc<dyn SamplingHandler> = Arc::new(DefaultSamplingHandler::new(
             executor,
             binding.upstream_model,
-        )))
+        ));
+        // Race tolerated: two concurrent first-callers for the same
+        // (agent, model) may both reach here and both insert. Either
+        // entry is correct (both wrap the same executor); the second
+        // insert overwrites the first and the now-orphaned Arc is
+        // dropped — harmless.
+        self.cache
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .insert(key, Arc::clone(&handler));
+        Some(handler)
     }
 }
 

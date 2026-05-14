@@ -24,6 +24,7 @@ pub use sampling::{
     DefaultSamplingHandler, FixedSamplingHandlerFactory, SamplingHandler, SamplingHandlerFactory,
 };
 pub use transport::{
-    McpCallContext, McpCallMetadata, McpCallSampling, McpPromptArgument, McpPromptDefinition,
-    McpPromptMessage, McpPromptResult, McpResourceDefinition, McpToolTransport,
+    ListChangedKind, McpCallContext, McpCallMetadata, McpCallSampling, McpPromptArgument,
+    McpPromptDefinition, McpPromptMessage, McpPromptResult, McpResourceDefinition,
+    McpToolTransport,
 };
