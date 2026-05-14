@@ -81,8 +81,7 @@ impl McpToolTransport for FakeTransport {
         name: &str,
         args: Value,
         _progress_tx: Option<mpsc::UnboundedSender<McpProgressUpdate>>,
-        _metadata: awaken_ext_mcp::McpCallMetadata,
-        _cancellation: Option<awaken_contract::cancellation::CancellationToken>,
+        _context: awaken_ext_mcp::McpCallContext,
     ) -> Result<CallToolResult, McpTransportError> {
         self.calls.lock().unwrap().push((name.to_string(), args));
         Ok(ok_text_result("ok"))
@@ -107,8 +106,7 @@ impl McpToolTransport for FakeProgressTransport {
         _name: &str,
         _args: Value,
         progress_tx: Option<mpsc::UnboundedSender<McpProgressUpdate>>,
-        _metadata: awaken_ext_mcp::McpCallMetadata,
-        _cancellation: Option<awaken_contract::cancellation::CancellationToken>,
+        _context: awaken_ext_mcp::McpCallContext,
     ) -> Result<CallToolResult, McpTransportError> {
         if let Some(progress_tx) = progress_tx {
             let _ = progress_tx.send(McpProgressUpdate {
@@ -146,8 +144,7 @@ impl McpToolTransport for FakeStructuredTransport {
         _name: &str,
         _args: Value,
         _progress_tx: Option<mpsc::UnboundedSender<McpProgressUpdate>>,
-        _metadata: awaken_ext_mcp::McpCallMetadata,
-        _cancellation: Option<awaken_contract::cancellation::CancellationToken>,
+        _context: awaken_ext_mcp::McpCallContext,
     ) -> Result<CallToolResult, McpTransportError> {
         Ok(self.result.clone())
     }
@@ -247,8 +244,7 @@ impl McpToolTransport for FakeCatalogTransport {
         _name: &str,
         _args: Value,
         _progress_tx: Option<mpsc::UnboundedSender<McpProgressUpdate>>,
-        _metadata: awaken_ext_mcp::McpCallMetadata,
-        _cancellation: Option<awaken_contract::cancellation::CancellationToken>,
+        _context: awaken_ext_mcp::McpCallContext,
     ) -> Result<CallToolResult, McpTransportError> {
         Ok(ok_text_result("ok"))
     }
@@ -306,8 +302,7 @@ impl McpToolTransport for FakeUiTransport {
         _name: &str,
         _args: Value,
         _progress_tx: Option<mpsc::UnboundedSender<McpProgressUpdate>>,
-        _metadata: awaken_ext_mcp::McpCallMetadata,
-        _cancellation: Option<awaken_contract::cancellation::CancellationToken>,
+        _context: awaken_ext_mcp::McpCallContext,
     ) -> Result<CallToolResult, McpTransportError> {
         Ok(ok_text_result("ok"))
     }
@@ -1012,8 +1007,7 @@ async fn manager_keeps_unsupported_fallback_when_capabilities_are_unknown() {
             _name: &str,
             _args: Value,
             _progress_tx: Option<mpsc::UnboundedSender<McpProgressUpdate>>,
-            _metadata: awaken_ext_mcp::McpCallMetadata,
-            _cancellation: Option<awaken_contract::cancellation::CancellationToken>,
+            _context: awaken_ext_mcp::McpCallContext,
         ) -> Result<CallToolResult, McpTransportError> {
             Ok(ok_text_result("ok"))
         }
@@ -1445,8 +1439,7 @@ async fn mcp_tool_returns_error_for_transport_call_failure() {
             _name: &str,
             _args: Value,
             _progress_tx: Option<mpsc::UnboundedSender<McpProgressUpdate>>,
-            _metadata: awaken_ext_mcp::McpCallMetadata,
-            _cancellation: Option<awaken_contract::cancellation::CancellationToken>,
+            _context: awaken_ext_mcp::McpCallContext,
         ) -> Result<CallToolResult, McpTransportError> {
             Err(McpTransportError::TransportError(
                 "connection reset".to_string(),

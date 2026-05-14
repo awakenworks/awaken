@@ -6,6 +6,7 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use awaken_contract::AgentSpec;
 use awaken_contract::contract::content::ContentBlock;
 use awaken_contract::contract::executor::{InferenceRequest, LlmExecutor};
 use awaken_contract::contract::message::Message;
@@ -22,6 +23,47 @@ pub trait SamplingHandler: Send + Sync {
         &self,
         params: CreateMessageParams,
     ) -> Result<CreateMessageResult, McpTransportError>;
+}
+
+/// Factory that constructs a per-call [`SamplingHandler`] given the agent
+/// initiating an MCP tool call. Lets awaken route server-initiated
+/// `sampling/createMessage` requests to the **calling agent's** LLM
+/// executor — different agents using different models will see their own
+/// LLM respond to MCP sampling, instead of all sharing one fixed handler
+/// at the registry level (the previous design leak documented in
+/// `awaken-ext-mcp` audit).
+///
+/// Returns `None` when the agent shouldn't receive sampling (e.g.
+/// agent's `model_id` doesn't resolve, or the runtime explicitly opts
+/// out). The transport then falls back to its registry-level fixed
+/// handler — when even that is `None`, the server-initiated request is
+/// rejected with a JSON-RPC method-not-supported error.
+#[async_trait]
+pub trait SamplingHandlerFactory: Send + Sync {
+    async fn for_agent(&self, agent_spec: &AgentSpec) -> Option<Arc<dyn SamplingHandler>>;
+}
+
+/// Trivial factory that ignores the agent and always returns the same
+/// handler. Preserves the pre-R1 behaviour of "one fixed handler for all
+/// agents". New runtime wiring should provide a registry-driven factory
+/// that resolves the agent's `model_id` → provider → `LlmExecutor` and
+/// wraps it in [`DefaultSamplingHandler`] — that's the per-agent fix the
+/// MCP audit identified.
+pub struct FixedSamplingHandlerFactory {
+    handler: Arc<dyn SamplingHandler>,
+}
+
+impl FixedSamplingHandlerFactory {
+    pub fn new(handler: Arc<dyn SamplingHandler>) -> Self {
+        Self { handler }
+    }
+}
+
+#[async_trait]
+impl SamplingHandlerFactory for FixedSamplingHandlerFactory {
+    async fn for_agent(&self, _agent_spec: &AgentSpec) -> Option<Arc<dyn SamplingHandler>> {
+        Some(self.handler.clone())
+    }
 }
 
 /// Default [`SamplingHandler`] that converts MCP sampling requests to awaken
@@ -44,27 +86,42 @@ impl DefaultSamplingHandler {
     }
 
     /// Convert MCP sampling messages to awaken [`Message`] types.
-    fn convert_messages(params: &CreateMessageParams) -> Vec<Message> {
-        params
-            .messages
-            .iter()
-            .map(|msg| {
-                let text = msg
-                    .content
-                    .iter()
-                    .filter_map(|c| match c {
-                        SamplingContent::Text { text, .. } => Some(text.as_str()),
-                        _ => None,
-                    })
-                    .collect::<Vec<_>>()
-                    .join("");
-
-                match msg.role {
-                    mcp::Role::User => Message::user(text),
-                    mcp::Role::Assistant => Message::assistant(text),
+    ///
+    /// MCP `SamplingContent` is a union of `Text`, `Image`, `Audio`, …
+    /// awaken's [`Message`] today only carries text. Rather than
+    /// silently dropping non-text blocks (which would let the server's
+    /// "describe this image" prompt arrive at the LLM with the image
+    /// stripped — a correctness bug masked as an empty turn), we
+    /// surface the limitation as a typed error.
+    ///
+    /// Returns `Err(unsupported_content_kind)` on the first non-text
+    /// block encountered. Callers should map this to an MCP JSON-RPC
+    /// error so the server learns its sampling request can't be
+    /// serviced and can decide how to proceed (retry with text only,
+    /// fall back to a different client, etc).
+    fn convert_messages(params: &CreateMessageParams) -> Result<Vec<Message>, McpTransportError> {
+        let mut out = Vec::with_capacity(params.messages.len());
+        for msg in &params.messages {
+            let mut text = String::new();
+            for block in &msg.content {
+                match block {
+                    SamplingContent::Text { text: t, .. } => text.push_str(t),
+                    other => {
+                        return Err(McpTransportError::TransportError(format!(
+                            "sampling request contains unsupported content kind: {} \
+                             (awaken's sampling handler only supports text — server should \
+                             retry with a text-only message)",
+                            sampling_content_kind(other)
+                        )));
+                    }
                 }
-            })
-            .collect()
+            }
+            out.push(match msg.role {
+                mcp::Role::User => Message::user(text),
+                mcp::Role::Assistant => Message::assistant(text),
+            });
+        }
+        Ok(out)
     }
 
     /// Build the system prompt content blocks from the params.
@@ -106,13 +163,26 @@ impl DefaultSamplingHandler {
     }
 }
 
+/// Name the variant of [`SamplingContent`] for use in error messages.
+/// Kept as a private free function so it can be unit-tested independently
+/// of [`DefaultSamplingHandler`].
+fn sampling_content_kind(content: &SamplingContent) -> &'static str {
+    match content {
+        SamplingContent::Text { .. } => "text",
+        SamplingContent::Image { .. } => "image",
+        SamplingContent::Audio { .. } => "audio",
+        SamplingContent::ToolUse { .. } => "tool_use",
+        SamplingContent::ToolResult { .. } => "tool_result",
+    }
+}
+
 #[async_trait]
 impl SamplingHandler for DefaultSamplingHandler {
     async fn handle_create_message(
         &self,
         params: CreateMessageParams,
     ) -> Result<CreateMessageResult, McpTransportError> {
-        let messages = Self::convert_messages(&params);
+        let messages = Self::convert_messages(&params)?;
         if messages.is_empty() {
             return Err(McpTransportError::TransportError(
                 "sampling request contained no messages".to_string(),
@@ -249,12 +319,123 @@ mod tests {
             task: None,
             meta: None,
         };
-        let msgs = DefaultSamplingHandler::convert_messages(&params);
+        let msgs =
+            DefaultSamplingHandler::convert_messages(&params).expect("text-only converts cleanly");
         assert_eq!(msgs.len(), 2);
         assert_eq!(msgs[0].role, Role::User);
         assert_eq!(msgs[0].text(), "hello");
         assert_eq!(msgs[1].role, Role::Assistant);
         assert_eq!(msgs[1].text(), "hi there");
+    }
+
+    #[test]
+    fn convert_messages_rejects_image_content() {
+        // Reviewer flagged the previous "silently filter non-text"
+        // behaviour: a server's "describe this image" sampling request
+        // would arrive at the LLM with the image stripped and only the
+        // prose text — producing nonsense answers and a baffling debug
+        // session. New behaviour: surface a typed error so the server
+        // sees method-supported-but-content-not-handled, not silent
+        // success with bogus output.
+        let params = CreateMessageParams {
+            messages: vec![SamplingMessage {
+                role: mcp::Role::User,
+                content: vec![
+                    SamplingContent::Text {
+                        text: "describe this:".into(),
+                        annotations: None,
+                        meta: None,
+                    },
+                    SamplingContent::Image {
+                        data: "base64-blob".into(),
+                        mime_type: "image/png".into(),
+                        annotations: None,
+                        meta: None,
+                    },
+                ],
+                meta: None,
+            }],
+            model_preferences: None,
+            system_prompt: None,
+            include_context: None,
+            temperature: None,
+            max_tokens: 1024,
+            stop_sequences: None,
+            metadata: None,
+            tools: None,
+            tool_choice: None,
+            task: None,
+            meta: None,
+        };
+        let err =
+            DefaultSamplingHandler::convert_messages(&params).expect_err("image must be rejected");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("image"),
+            "error should identify the offending content kind, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn convert_messages_rejects_audio_content() {
+        let params = CreateMessageParams {
+            messages: vec![SamplingMessage {
+                role: mcp::Role::User,
+                content: vec![SamplingContent::Audio {
+                    data: "base64-blob".into(),
+                    mime_type: "audio/wav".into(),
+                    annotations: None,
+                    meta: None,
+                }],
+                meta: None,
+            }],
+            model_preferences: None,
+            system_prompt: None,
+            include_context: None,
+            temperature: None,
+            max_tokens: 1024,
+            stop_sequences: None,
+            metadata: None,
+            tools: None,
+            tool_choice: None,
+            task: None,
+            meta: None,
+        };
+        let err =
+            DefaultSamplingHandler::convert_messages(&params).expect_err("audio must be rejected");
+        assert!(format!("{err}").contains("audio"));
+    }
+
+    #[test]
+    fn sampling_content_kind_names_each_variant() {
+        // Lock in the strings used in error messages so a future
+        // refactor of the helper doesn't silently drop a variant.
+        assert_eq!(
+            sampling_content_kind(&SamplingContent::Text {
+                text: "x".into(),
+                annotations: None,
+                meta: None,
+            }),
+            "text"
+        );
+        assert_eq!(
+            sampling_content_kind(&SamplingContent::Image {
+                data: "x".into(),
+                mime_type: "image/png".into(),
+                annotations: None,
+                meta: None,
+            }),
+            "image"
+        );
+        assert_eq!(
+            sampling_content_kind(&SamplingContent::Audio {
+                data: "x".into(),
+                mime_type: "audio/wav".into(),
+                annotations: None,
+                meta: None,
+            }),
+            "audio"
+        );
     }
 
     #[test]
@@ -329,6 +510,38 @@ mod tests {
         };
         let err = handler.handle_create_message(params).await;
         assert!(err.is_err());
+    }
+
+    #[tokio::test]
+    async fn fixed_factory_returns_same_handler_regardless_of_agent() {
+        // The fixed factory preserves R0 behaviour: every agent gets the
+        // same handler. Per-agent routing only kicks in when callers wire
+        // a registry-driven factory.
+        let executor = Arc::new(MockLlm {
+            response_text: "shared".into(),
+        });
+        let handler: Arc<dyn SamplingHandler> =
+            Arc::new(DefaultSamplingHandler::new(executor, "shared-model"));
+        let factory = FixedSamplingHandlerFactory::new(Arc::clone(&handler));
+
+        let spec_a = AgentSpec {
+            id: "a".into(),
+            model_id: "claude-opus".into(),
+            system_prompt: "".into(),
+            ..Default::default()
+        };
+        let spec_b = AgentSpec {
+            id: "b".into(),
+            model_id: "gpt-5".into(),
+            system_prompt: "".into(),
+            ..Default::default()
+        };
+
+        let resolved_a = factory.for_agent(&spec_a).await.expect("Some handler");
+        let resolved_b = factory.for_agent(&spec_b).await.expect("Some handler");
+        // Same Arc identity regardless of agent.
+        assert!(Arc::ptr_eq(&resolved_a, &handler));
+        assert!(Arc::ptr_eq(&resolved_b, &handler));
     }
 
     #[tokio::test]

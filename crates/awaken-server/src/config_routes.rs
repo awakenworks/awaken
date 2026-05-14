@@ -529,6 +529,7 @@ async fn get_mcp_server_status(
     // 404 when the id is unknown to the active registry.
     let status = manager
         .mcp_server_status(&id)
+        .await
         .ok_or_else(|| ConfigRouteError::Api(ApiError::NotFound(format!("mcp-server/{id}"))))?;
 
     Ok(Json(json!({

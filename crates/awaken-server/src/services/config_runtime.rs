@@ -13,7 +13,8 @@ use awaken_contract::{
     PeriodicRefresher, ProviderSpec,
 };
 use awaken_ext_mcp::{
-    McpServerConnectionConfig, McpServerStatusSnapshot, McpToolRegistry, McpToolRegistryManager,
+    DefaultSamplingHandler, McpServerConnectionConfig, McpServerStatusSnapshot, McpToolRegistry,
+    McpToolRegistryManager, SamplingHandler, SamplingHandlerFactory,
 };
 use awaken_runtime::engine::GenaiExecutor;
 use awaken_runtime::registry::BackendRegistry;
@@ -229,7 +230,11 @@ pub trait ManagedMcpRegistry: Send + Sync {
     fn periodic_refresh_running(&self) -> bool;
     fn start_periodic_refresh(&self, interval: Duration) -> Result<(), ConfigRuntimeError>;
     async fn stop_periodic_refresh(&self) -> bool;
-    fn server_status(&self, _server_name: &str) -> Option<McpServerStatusSnapshot> {
+    /// Async so the implementation can pull the live HTTP session id
+    /// from the transport — without this, a silent session-id rotation
+    /// (after `MCP session expired` triggers a fresh `initialize`)
+    /// wouldn't surface to admin/observability consumers.
+    async fn server_status(&self, _server_name: &str) -> Option<McpServerStatusSnapshot> {
         None
     }
     async fn reconnect(&self, server_name: &str) -> Result<(), ConfigRuntimeError> {
@@ -247,8 +252,84 @@ pub trait McpRegistryFactory: Send + Sync {
     ) -> Result<Option<Arc<dyn ManagedMcpRegistry>>, ConfigRuntimeError>;
 }
 
-#[derive(Default)]
-pub struct DefaultMcpRegistryFactory;
+/// Resolves a per-agent [`SamplingHandler`] by walking the live runtime
+/// registry: `agent.model_id` → `ModelBinding` → provider →
+/// `LlmExecutor` → [`DefaultSamplingHandler`].
+///
+/// Wired into [`DefaultMcpRegistryFactory`] so server-initiated
+/// `sampling/createMessage` requests during an agent's MCP tool call
+/// route to the **same** executor that agent uses for its own inference,
+/// not a fixed registry-level handler. Closes the multi-agent sampling
+/// leak documented in the MCP audit.
+///
+/// Holds a `Weak<AgentRuntime>` so the factory doesn't extend the
+/// runtime's lifetime. On `for_agent` we upgrade — if the runtime is
+/// already torn down, return `None` and let the transport's fallback
+/// handler (also typically `None` at registry construction) decide.
+pub(crate) struct RegistryDrivenSamplingHandlerFactory {
+    runtime: Weak<AgentRuntime>,
+}
+
+impl RegistryDrivenSamplingHandlerFactory {
+    pub(crate) fn new(runtime: Weak<AgentRuntime>) -> Self {
+        Self { runtime }
+    }
+}
+
+#[async_trait]
+impl SamplingHandlerFactory for RegistryDrivenSamplingHandlerFactory {
+    async fn for_agent(&self, agent_spec: &AgentSpec) -> Option<Arc<dyn SamplingHandler>> {
+        let runtime = self.runtime.upgrade()?;
+        let registries = runtime.registry_set()?;
+        let binding = registries.models.get_model(&agent_spec.model_id)?;
+        let executor = registries.providers.get_provider(&binding.provider_id)?;
+        Some(Arc::new(DefaultSamplingHandler::new(
+            executor,
+            binding.upstream_model,
+        )))
+    }
+}
+
+/// Default MCP registry factory.
+///
+/// When `sampling_handler_factory` is set, the connect path threads it
+/// to `McpToolRegistryManager::connect_with_sampling_factory` so the
+/// per-call sampling routing kicks in. When unset (e.g. an awaken
+/// deployment that opts out of sampling), MCP tool calls work normally
+/// but `sampling/createMessage` requests from servers get rejected with
+/// "method not supported" — the same legacy behaviour as before P1c.
+pub struct DefaultMcpRegistryFactory {
+    sampling_handler_factory: Option<Arc<dyn SamplingHandlerFactory>>,
+}
+
+impl DefaultMcpRegistryFactory {
+    /// Default factory with no sampling support — preserves the
+    /// pre-R1c behaviour. New code should prefer
+    /// [`DefaultMcpRegistryFactory::with_runtime`].
+    pub fn new() -> Self {
+        Self {
+            sampling_handler_factory: None,
+        }
+    }
+
+    /// Factory wired to per-agent sampling: server-initiated
+    /// `sampling/createMessage` during an agent's MCP tool call routes
+    /// to that agent's `LlmExecutor` via
+    /// [`RegistryDrivenSamplingHandlerFactory`].
+    pub fn with_runtime(runtime: Weak<AgentRuntime>) -> Self {
+        Self {
+            sampling_handler_factory: Some(Arc::new(RegistryDrivenSamplingHandlerFactory::new(
+                runtime,
+            ))),
+        }
+    }
+}
+
+impl Default for DefaultMcpRegistryFactory {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 #[derive(Clone)]
 struct RealManagedMcpRegistry {
@@ -276,8 +357,8 @@ impl ManagedMcpRegistry for RealManagedMcpRegistry {
         self.manager.stop_periodic_refresh().await
     }
 
-    fn server_status(&self, server_name: &str) -> Option<McpServerStatusSnapshot> {
-        self.manager.server_status_snapshot(server_name).ok()
+    async fn server_status(&self, server_name: &str) -> Option<McpServerStatusSnapshot> {
+        self.manager.server_status_snapshot(server_name).await.ok()
     }
 
     async fn reconnect(&self, server_name: &str) -> Result<(), ConfigRuntimeError> {
@@ -302,11 +383,20 @@ impl McpRegistryFactory for DefaultMcpRegistryFactory {
             .iter()
             .map(mcp_spec_to_connection_config)
             .collect::<Result<Vec<_>, _>>()?;
-        let manager = McpToolRegistryManager::connect(configs)
-            .await
-            .map_err(|error| {
-                ConfigRuntimeError::InvalidConfig(format!("failed to connect MCP servers: {error}"))
-            })?;
+        // No fixed fallback handler — per-agent factory (when set) is
+        // the single source of sampling handlers. The transport's
+        // server-request path will reject `sampling/createMessage` with
+        // a "method not supported" error when neither factory nor
+        // fallback resolves a handler.
+        let manager = McpToolRegistryManager::connect_with_sampling_factory(
+            configs,
+            None,
+            self.sampling_handler_factory.clone(),
+        )
+        .await
+        .map_err(|error| {
+            ConfigRuntimeError::InvalidConfig(format!("failed to connect MCP servers: {error}"))
+        })?;
 
         Ok(Some(Arc::new(RealManagedMcpRegistry {
             tool_registry: Arc::new(DynamicMcpToolRegistry::new(manager.registry())),
@@ -394,6 +484,17 @@ impl ConfigRuntimeManager {
             .ok_or(ConfigRuntimeError::RuntimeNotConfigurable)?;
         let discovered_agents = DiscoveredAgentRegistry::from_registry(registries.agents.clone());
 
+        // Wire the MCP registry factory with a Weak handle to this
+        // runtime so per-agent sampling can resolve `agent.model_id` →
+        // provider → `LlmExecutor` at each `tools/call`. `Weak` is
+        // load-bearing: an `Arc` here would create a self-referential
+        // cycle (runtime owns ConfigRuntimeManager → manager owns
+        // mcp_factory → factory owns runtime) that leaks the runtime
+        // for the process lifetime.
+        let mcp_registry_factory: Arc<dyn McpRegistryFactory> = Arc::new(
+            DefaultMcpRegistryFactory::with_runtime(Arc::downgrade(&runtime)),
+        );
+
         Ok(Self {
             runtime,
             store,
@@ -403,7 +504,7 @@ impl ConfigRuntimeManager {
             discovered_agents,
             provider_factory: Arc::new(GenaiProviderExecutorFactory),
             change_notifier: None,
-            mcp_registry_factory: Arc::new(DefaultMcpRegistryFactory),
+            mcp_registry_factory,
             apply_lock: tokio::sync::Mutex::new(()),
             active_mcp_registry: Mutex::new(None),
             last_applied_fingerprint: RwLock::new(None),
@@ -632,11 +733,19 @@ impl ConfigRuntimeManager {
     ///
     /// Returns `None` when no MCP registry is active (i.e. the runtime has no
     /// MCP servers configured) or the server name is unknown to the registry.
-    pub fn mcp_server_status(&self, server_name: &str) -> Option<McpServerStatusSnapshot> {
-        self.active_mcp_registry
-            .lock()
-            .as_ref()
-            .and_then(|active| active.handle.server_status(server_name))
+    ///
+    /// Async so the snapshot includes the **live** HTTP session id rather
+    /// than a value cached at connect/reconnect — `MCP session expired`
+    /// rotations re-initialise silently and the cached value goes stale.
+    pub async fn mcp_server_status(&self, server_name: &str) -> Option<McpServerStatusSnapshot> {
+        let handle = {
+            let guard = self.active_mcp_registry.lock();
+            guard.as_ref().map(|active| Arc::clone(&active.handle))
+        };
+        match handle {
+            Some(handle) => handle.server_status(server_name).await,
+            None => None,
+        }
     }
 
     /// Trigger an immediate reconnect for the named MCP server.
@@ -1573,6 +1682,49 @@ mod tests {
     /// Tests that don't care about broker state share-ability use this.
     fn test_broker() -> Arc<dyn awaken_runtime::credentials::CredentialBroker> {
         Arc::new(awaken_runtime::credentials::AwakenCredentialBroker::new())
+    }
+
+    /// Verifies the factory's defensive `None` path: when the underlying
+    /// runtime has been dropped, `for_agent` returns `None` instead of
+    /// panicking or trying to dereference a dangling weak handle. This
+    /// is the "graceful degradation" the transport's fallback handler
+    /// counts on — without it the factory could mistake "runtime is
+    /// gone" for "this agent can't sample" silently.
+    #[tokio::test]
+    async fn registry_factory_returns_none_when_runtime_dropped() {
+        // Build an AgentRuntime, downgrade to Weak, then drop the Arc.
+        // The factory should then refuse to produce a handler.
+        let runtime = Arc::new(
+            awaken_runtime::AgentRuntimeBuilder::new()
+                .build()
+                .expect("minimal runtime builds"),
+        );
+        let weak = Arc::downgrade(&runtime);
+        drop(runtime);
+
+        let factory = RegistryDrivenSamplingHandlerFactory::new(weak);
+        let spec = AgentSpec {
+            id: "alpha".into(),
+            model_id: "any-model".into(),
+            system_prompt: String::new(),
+            ..AgentSpec::default()
+        };
+        assert!(
+            factory.for_agent(&spec).await.is_none(),
+            "factory must not produce a handler for a dropped runtime"
+        );
+    }
+
+    /// `with_runtime` constructs a factory; `new()` (the `Default` path)
+    /// gives a sampling-less factory. This pins the public surface so
+    /// future refactors don't accidentally make `new()` synthesize a
+    /// fixed factory that runs cross-agent (the very bug R1 fixed).
+    #[test]
+    fn default_factory_has_no_sampling_handler_factory() {
+        let factory = DefaultMcpRegistryFactory::new();
+        assert!(factory.sampling_handler_factory.is_none());
+        let factory = DefaultMcpRegistryFactory::default();
+        assert!(factory.sampling_handler_factory.is_none());
     }
 
     #[test]

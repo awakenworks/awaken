@@ -23,7 +23,7 @@ use crate::id_mapping::to_tool_id;
 use crate::progress::{
     McpProgressUpdate, ProgressEmitGate, normalize_progress, should_emit_progress,
 };
-use crate::sampling::SamplingHandler;
+use crate::sampling::{SamplingHandler, SamplingHandlerFactory};
 use crate::transport::{
     McpPromptDefinition, McpPromptResult, McpResourceDefinition, McpToolTransport,
     call_result_to_tool_data, connect_transport,
@@ -87,6 +87,24 @@ pub struct McpServerStatusSnapshot {
     /// True after the manager has given up reconnecting. The server is
     /// staying offline until manual restart.
     pub permanently_failed: bool,
+    /// Server-assigned MCP session id (Streamable HTTP transport only).
+    /// `None` for stdio transports (the protocol does not define a
+    /// session id concept there) and for HTTP servers that don't issue
+    /// one. Surfaced for diagnostics — admins debugging "is the server
+    /// invalidating our session?" want to see this value change after
+    /// a 404 → reinit cycle.
+    pub session_id: Option<String>,
+    /// Number of times the transport has been torn down and rebuilt since
+    /// the server was first enabled. Increments after every successful
+    /// reconnect (`finish_reconnect_success`). Operators use this to
+    /// spot flapping servers without trawling logs.
+    pub reconnect_count: u64,
+    /// Wall-clock time of the most recent successful MCP `initialize`
+    /// response (i.e. when this session was opened). `None` until the
+    /// first connect succeeds. Distinct from `last_success_at`, which
+    /// tracks the most recent RPC — useful when the server is up but
+    /// `initialize` hasn't been re-run after a 404.
+    pub last_init_at: Option<SystemTime>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -216,6 +234,29 @@ impl Tool for McpTool {
         // `notifications/cancelled` (spec 2025-06-18 §Cancellation) and
         // free server-side resources when the agent run is torn down.
         let cancellation = ctx.cancellation_token.clone();
+        // Resolve per-agent sampling routing. Three states:
+        //   - No factory wired → Inherit: legacy behaviour, transport
+        //     falls back to its fixed (or absent) handler.
+        //   - Factory consulted and returned Some(h) → Bound: this
+        //     call's server-initiated sampling/createMessage routes to
+        //     THIS agent's executor.
+        //   - Factory consulted and returned None → Denied: the factory
+        //     refused to bind (agent model unresolved, opted out, etc.).
+        //     The transport will reject sampling/createMessage for this
+        //     call rather than falling through — falling through would
+        //     leak across agents.
+        let sampling = match state.sampling_handler_factory.as_ref() {
+            Some(factory) => match factory.for_agent(&ctx.agent_spec).await {
+                Some(h) => crate::transport::McpCallSampling::Bound(h),
+                None => crate::transport::McpCallSampling::Denied,
+            },
+            None => crate::transport::McpCallSampling::Inherit,
+        };
+        let call_context = crate::transport::McpCallContext {
+            metadata,
+            cancellation,
+            sampling,
+        };
         let res = match with_runtime_lease(
             &state,
             &self.server_name,
@@ -227,8 +268,7 @@ impl Tool for McpTool {
                     &tool_name,
                     args,
                     Some(progress_tx),
-                    metadata,
-                    cancellation,
+                    call_context,
                 ));
                 let mut gate = ProgressEmitGate::default();
 
@@ -484,6 +524,23 @@ struct McpServerSlot {
     next_generation: u64,
     published_snapshot: Option<McpPublishedSnapshot>,
     lifecycle_lock: Arc<AsyncMutex<()>>,
+    /// Number of times the runtime has been re-created since the server
+    /// was first enabled. Counts only SUCCESSFUL reconnects (a 404 →
+    /// reset cycle on HTTP transport doesn't tear down the runtime, so
+    /// doesn't bump this). Reset only by `toggle(disable)` →
+    /// `toggle(enable)`.
+    reconnect_count: u64,
+    /// Wall-clock time of the most recent successful MCP `initialize`
+    /// response. Set when `connect_runtime` succeeds; remains until the
+    /// next successful reconnect / re-enable.
+    last_init_at: Option<SystemTime>,
+    /// Last session id captured at connect/reconnect. Kept as a
+    /// fallback for `server_status_snapshot` — the snapshot prefers
+    /// the **live** value read from the transport (via
+    /// `current_session_id().await`), but falls back to this cache
+    /// when the runtime has been torn down (no transport available).
+    /// HTTP transport only; stdio leaves this `None`.
+    last_known_session_id: Option<String>,
 }
 
 // ── Registry snapshot ──
@@ -498,7 +555,17 @@ struct McpRegistryState {
     servers: RwLock<Vec<McpServerSlot>>,
     snapshot: RwLock<McpRegistrySnapshot>,
     periodic_refresh: PeriodicRefresher,
+    /// Transport-level fallback handler for server-initiated
+    /// `sampling/createMessage`. Set once at registry assembly; used
+    /// when there's no per-call handler in flight (or when multiple
+    /// calls are in flight and routing is ambiguous).
     sampling_handler: Option<Arc<dyn SamplingHandler>>,
+    /// Factory that resolves a per-call sampling handler based on the
+    /// calling agent's spec. Optional — when `None`, all sampling
+    /// flows through the transport-level fallback above. Wiring this
+    /// up is what fixes the "all agents share one LLM for sampling"
+    /// leak documented in the audit.
+    sampling_handler_factory: Option<Arc<dyn SamplingHandlerFactory>>,
 }
 
 fn read_lock<T>(lock: &RwLock<T>) -> std::sync::RwLockReadGuard<'_, T> {
@@ -1016,6 +1083,7 @@ fn finish_reconnect_success(
     runtime: McpServerRuntime,
     catalog: McpPublishedCatalog,
     attempted_at: SystemTime,
+    session_id: Option<String>,
 ) -> Result<(), McpError> {
     let mut servers = write_lock(&state.servers);
     let index = find_server_index(&servers, server_name)?;
@@ -1026,6 +1094,13 @@ fn finish_reconnect_success(
         generation,
         catalog,
     });
+    // Successful reconnect: bump the diagnostic counter + mark the
+    // freshly-issued init timestamp. Operators reading the status snapshot
+    // can distinguish "first connect" (reconnect_count=0) from "flapping"
+    // (reconnect_count rising) without trawling logs.
+    slot.reconnect_count = slot.reconnect_count.saturating_add(1);
+    slot.last_init_at = Some(attempted_at);
+    slot.last_known_session_id = session_id;
     reset_all_server_health_on_success(slot, attempted_at);
     Ok(())
 }
@@ -1128,12 +1203,16 @@ async fn reconnect_server_locked(
         }
     };
 
+    // Capture the freshly-issued session id (HTTP) before we hand the
+    // runtime back to the slot map. Stdio's transport returns None.
+    let session_id = runtime.transport.current_session_id().await;
     finish_reconnect_success(
         state.as_ref(),
         server_name,
         runtime,
         catalog,
         SystemTime::now(),
+        session_id,
     )?;
     Ok(())
 }
@@ -1425,13 +1504,28 @@ impl McpToolRegistryManager {
         configs: impl IntoIterator<Item = McpServerConnectionConfig>,
         sampling_handler: Option<Arc<dyn SamplingHandler>>,
     ) -> Result<Self, McpError> {
+        Self::connect_with_sampling_factory(configs, sampling_handler, None).await
+    }
+
+    /// Connect with both a transport-level fallback handler AND a
+    /// per-agent factory. When the factory is `Some`, `McpTool::execute`
+    /// consults it at each call to route server-initiated
+    /// `sampling/createMessage` to the calling agent's executor. The
+    /// fallback handler covers the cases the factory returns `None` for,
+    /// or the >1-in-flight ambiguous case at the transport layer.
+    pub async fn connect_with_sampling_factory(
+        configs: impl IntoIterator<Item = McpServerConnectionConfig>,
+        sampling_handler: Option<Arc<dyn SamplingHandler>>,
+        sampling_handler_factory: Option<Arc<dyn SamplingHandlerFactory>>,
+    ) -> Result<Self, McpError> {
         let mut entries: Vec<(McpServerConnectionConfig, Arc<dyn McpToolTransport>)> = Vec::new();
         for cfg in configs {
             validate_server_name(&cfg.name)?;
             let transport = connect_transport(&cfg, sampling_handler.clone()).await?;
             entries.push((cfg, transport));
         }
-        Self::from_tool_transports(entries, sampling_handler).await
+        Self::from_tool_transports_with_factory(entries, sampling_handler, sampling_handler_factory)
+            .await
     }
 
     pub async fn from_transports(
@@ -1444,12 +1538,28 @@ impl McpToolRegistryManager {
         entries: impl IntoIterator<Item = (McpServerConnectionConfig, Arc<dyn McpToolTransport>)>,
         sampling_handler: Option<Arc<dyn SamplingHandler>>,
     ) -> Result<Self, McpError> {
+        Self::from_tool_transports_with_factory(entries, sampling_handler, None).await
+    }
+
+    /// Variant of `from_tool_transports` that also accepts a
+    /// [`SamplingHandlerFactory`]. When set, the factory is consulted
+    /// at each `tools/call` to construct a per-agent
+    /// [`SamplingHandler`] — server-initiated `sampling/createMessage`
+    /// during that call then routes to the calling agent's LLM
+    /// executor. When `None`, sampling falls back to the fixed
+    /// `sampling_handler` (legacy behaviour).
+    pub async fn from_tool_transports_with_factory(
+        entries: impl IntoIterator<Item = (McpServerConnectionConfig, Arc<dyn McpToolTransport>)>,
+        sampling_handler: Option<Arc<dyn SamplingHandler>>,
+        sampling_handler_factory: Option<Arc<dyn SamplingHandlerFactory>>,
+    ) -> Result<Self, McpError> {
         let servers = Self::build_servers(entries).await?;
         let state = Arc::new(McpRegistryState {
             servers: RwLock::new(servers),
             snapshot: RwLock::new(McpRegistrySnapshot::default()),
             periodic_refresh: PeriodicRefresher::new(),
             sampling_handler,
+            sampling_handler_factory,
         });
 
         let server_names: Vec<String> = {
@@ -1485,6 +1595,10 @@ impl McpToolRegistryManager {
                 return Err(McpError::DuplicateServerName(cfg.name));
             }
             let capabilities = transport.server_capabilities().await?;
+            // Capture the session id (HTTP only; stdio returns None) for
+            // the diagnostic snapshot. Done here while we're still async
+            // so the snapshot accessor can stay synchronous.
+            let last_known_session_id = transport.current_session_id().await;
 
             servers.push(McpServerSlot {
                 meta: McpServerMetadata {
@@ -1517,6 +1631,9 @@ impl McpToolRegistryManager {
                 next_generation: 2,
                 published_snapshot: None,
                 lifecycle_lock: Arc::new(AsyncMutex::new(())),
+                reconnect_count: 0,
+                last_init_at: Some(connected_at),
+                last_known_session_id,
             });
         }
 
@@ -1576,39 +1693,84 @@ impl McpToolRegistryManager {
     /// Return a status snapshot for the named server, including connection state and
     /// the most recently discovered tool list.
     ///
+    /// Async because the HTTP session id is read **live** from the
+    /// transport (`current_session_id().await`). The slot keeps a cached
+    /// value at connect/reconnect time but `MCP session expired` triggers
+    /// a silent re-`initialize` that rotates the id without going through
+    /// the reconnect path — the cache would be stale until the next
+    /// reconnect. Reading live closes that window for admin/observability
+    /// consumers.
+    ///
     /// Returns [`McpError::UnknownServer`] when `server_name` is not registered.
-    pub fn server_status_snapshot(
+    pub async fn server_status_snapshot(
         &self,
         server_name: &str,
     ) -> Result<McpServerStatusSnapshot, McpError> {
-        let servers = read_lock(&self.state.servers);
-        let index = find_server_index(&servers, server_name)?;
-        let slot = &servers[index];
-        let connected = slot.lifecycle == McpServerLifecycle::Connected;
-        let last_error = slot.health.last_error.clone();
-        let tools = slot
-            .published_snapshot
-            .as_ref()
-            .map(|snap| {
-                snap.catalog
-                    .tool_defs
-                    .iter()
-                    .map(|def| McpServerToolEntry {
-                        name: def.name.clone(),
-                        description: def.description.clone(),
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
+        // Collect everything we need under the sync read lock, then
+        // release it before awaiting the transport (which itself locks
+        // its session). Holding the registry-wide RwLock across an
+        // await would also defeat any concurrent snapshot/reconnect.
+        let (
+            connected,
+            last_error,
+            tools,
+            health,
+            cached_session_id,
+            reconnect_count,
+            last_init_at,
+            transport_for_session,
+        ) = {
+            let servers = read_lock(&self.state.servers);
+            let index = find_server_index(&servers, server_name)?;
+            let slot = &servers[index];
+            let connected = slot.lifecycle == McpServerLifecycle::Connected;
+            let last_error = slot.health.last_error.clone();
+            let tools = slot
+                .published_snapshot
+                .as_ref()
+                .map(|snap| {
+                    snap.catalog
+                        .tool_defs
+                        .iter()
+                        .map(|def| McpServerToolEntry {
+                            name: def.name.clone(),
+                            description: def.description.clone(),
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            let transport_for_session = slot.runtime.as_ref().map(|rt| Arc::clone(&rt.transport));
+            (
+                connected,
+                last_error,
+                tools,
+                slot.health.clone(),
+                slot.last_known_session_id.clone(),
+                slot.reconnect_count,
+                slot.last_init_at,
+                transport_for_session,
+            )
+        };
+
+        // Prefer the live session id from the transport. Falls back to
+        // the cached value (e.g. transport dropped, race during teardown).
+        let session_id = match transport_for_session {
+            Some(transport) => transport.current_session_id().await.or(cached_session_id),
+            None => cached_session_id,
+        };
+
         Ok(McpServerStatusSnapshot {
             connected,
             last_error,
             tools,
-            consecutive_failures: slot.health.consecutive_failures,
-            last_attempt_at: slot.health.last_attempt_at,
-            last_success_at: slot.health.last_success_at,
-            reconnecting: slot.health.reconnecting,
-            permanently_failed: slot.health.permanently_failed,
+            consecutive_failures: health.consecutive_failures,
+            last_attempt_at: health.last_attempt_at,
+            last_success_at: health.last_success_at,
+            reconnecting: health.reconnecting,
+            permanently_failed: health.permanently_failed,
+            session_id,
+            reconnect_count,
+            last_init_at,
         })
     }
 
@@ -2020,8 +2182,7 @@ mod tests {
             name: &str,
             _args: Value,
             _progress_tx: Option<mpsc::UnboundedSender<McpProgressUpdate>>,
-            _metadata: crate::transport::McpCallMetadata,
-            _cancellation: Option<awaken_contract::cancellation::CancellationToken>,
+            _context: crate::transport::McpCallContext,
         ) -> Result<CallToolResult, McpTransportError> {
             Ok(CallToolResult {
                 content: vec![mcp::ToolContent::Text {
@@ -2050,8 +2211,7 @@ mod tests {
             name: &str,
             _args: Value,
             _progress_tx: Option<mpsc::UnboundedSender<McpProgressUpdate>>,
-            _metadata: crate::transport::McpCallMetadata,
-            _cancellation: Option<awaken_contract::cancellation::CancellationToken>,
+            _context: crate::transport::McpCallContext,
         ) -> Result<CallToolResult, McpTransportError> {
             Ok(CallToolResult {
                 content: vec![mcp::ToolContent::Text {
@@ -2086,8 +2246,7 @@ mod tests {
             name: &str,
             _args: Value,
             _progress_tx: Option<mpsc::UnboundedSender<McpProgressUpdate>>,
-            _metadata: crate::transport::McpCallMetadata,
-            _cancellation: Option<awaken_contract::cancellation::CancellationToken>,
+            _context: crate::transport::McpCallContext,
         ) -> Result<CallToolResult, McpTransportError> {
             Ok(CallToolResult {
                 content: vec![mcp::ToolContent::Text {
@@ -2122,8 +2281,7 @@ mod tests {
             name: &str,
             _args: Value,
             _progress_tx: Option<mpsc::UnboundedSender<McpProgressUpdate>>,
-            _metadata: crate::transport::McpCallMetadata,
-            _cancellation: Option<awaken_contract::cancellation::CancellationToken>,
+            _context: crate::transport::McpCallContext,
         ) -> Result<CallToolResult, McpTransportError> {
             Ok(CallToolResult {
                 content: vec![mcp::ToolContent::Text {
@@ -2172,8 +2330,7 @@ mod tests {
             name: &str,
             _args: Value,
             _progress_tx: Option<mpsc::UnboundedSender<McpProgressUpdate>>,
-            _metadata: crate::transport::McpCallMetadata,
-            _cancellation: Option<awaken_contract::cancellation::CancellationToken>,
+            _context: crate::transport::McpCallContext,
         ) -> Result<CallToolResult, McpTransportError> {
             Ok(CallToolResult {
                 content: vec![mcp::ToolContent::Text {
@@ -2220,8 +2377,7 @@ mod tests {
             name: &str,
             _args: Value,
             _progress_tx: Option<mpsc::UnboundedSender<McpProgressUpdate>>,
-            _metadata: crate::transport::McpCallMetadata,
-            _cancellation: Option<awaken_contract::cancellation::CancellationToken>,
+            _context: crate::transport::McpCallContext,
         ) -> Result<CallToolResult, McpTransportError> {
             Ok(CallToolResult {
                 content: vec![mcp::ToolContent::Text {
@@ -2271,8 +2427,7 @@ mod tests {
             name: &str,
             _args: Value,
             _progress_tx: Option<mpsc::UnboundedSender<McpProgressUpdate>>,
-            _metadata: crate::transport::McpCallMetadata,
-            _cancellation: Option<awaken_contract::cancellation::CancellationToken>,
+            _context: crate::transport::McpCallContext,
         ) -> Result<CallToolResult, McpTransportError> {
             Ok(CallToolResult {
                 content: vec![mcp::ToolContent::Text {
@@ -2337,8 +2492,7 @@ mod tests {
             name: &str,
             _args: Value,
             _progress_tx: Option<mpsc::UnboundedSender<McpProgressUpdate>>,
-            _metadata: crate::transport::McpCallMetadata,
-            _cancellation: Option<awaken_contract::cancellation::CancellationToken>,
+            _context: crate::transport::McpCallContext,
         ) -> Result<CallToolResult, McpTransportError> {
             self.calls.lock().unwrap().push(name.to_string());
             Ok(CallToolResult {
@@ -2383,8 +2537,7 @@ mod tests {
             _name: &str,
             _args: Value,
             _progress_tx: Option<mpsc::UnboundedSender<McpProgressUpdate>>,
-            _metadata: crate::transport::McpCallMetadata,
-            _cancellation: Option<awaken_contract::cancellation::CancellationToken>,
+            _context: crate::transport::McpCallContext,
         ) -> Result<CallToolResult, McpTransportError> {
             if self.connection_closed {
                 Err(McpTransportError::ConnectionClosed)
@@ -2421,8 +2574,7 @@ mod tests {
             _name: &str,
             _args: Value,
             _progress_tx: Option<mpsc::UnboundedSender<McpProgressUpdate>>,
-            _metadata: crate::transport::McpCallMetadata,
-            _cancellation: Option<awaken_contract::cancellation::CancellationToken>,
+            _context: crate::transport::McpCallContext,
         ) -> Result<CallToolResult, McpTransportError> {
             unreachable!()
         }
@@ -2443,8 +2595,7 @@ mod tests {
             name: &str,
             _args: Value,
             _progress_tx: Option<mpsc::UnboundedSender<McpProgressUpdate>>,
-            _metadata: crate::transport::McpCallMetadata,
-            _cancellation: Option<awaken_contract::cancellation::CancellationToken>,
+            _context: crate::transport::McpCallContext,
         ) -> Result<CallToolResult, McpTransportError> {
             Ok(CallToolResult {
                 content: vec![mcp::ToolContent::Text {
@@ -2535,6 +2686,9 @@ mod tests {
                 },
             }),
             lifecycle_lock: Arc::new(AsyncMutex::new(())),
+            reconnect_count: 0,
+            last_init_at: None,
+            last_known_session_id: None,
         }
     }
 
@@ -2665,8 +2819,7 @@ mod tests {
                 _name: &str,
                 _args: Value,
                 _progress_tx: Option<mpsc::UnboundedSender<McpProgressUpdate>>,
-                _metadata: crate::transport::McpCallMetadata,
-                _cancellation: Option<awaken_contract::cancellation::CancellationToken>,
+                _context: crate::transport::McpCallContext,
             ) -> Result<CallToolResult, McpTransportError> {
                 unreachable!()
             }

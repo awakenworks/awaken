@@ -20,8 +20,10 @@ pub use manager::{
 };
 pub use plugin::McpPlugin;
 pub use progress::McpProgressUpdate;
-pub use sampling::{DefaultSamplingHandler, SamplingHandler};
+pub use sampling::{
+    DefaultSamplingHandler, FixedSamplingHandlerFactory, SamplingHandler, SamplingHandlerFactory,
+};
 pub use transport::{
-    McpCallMetadata, McpPromptArgument, McpPromptDefinition, McpPromptMessage, McpPromptResult,
-    McpResourceDefinition, McpToolTransport,
+    McpCallContext, McpCallMetadata, McpCallSampling, McpPromptArgument, McpPromptDefinition,
+    McpPromptMessage, McpPromptResult, McpResourceDefinition, McpToolTransport,
 };

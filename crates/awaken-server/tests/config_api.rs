@@ -214,7 +214,10 @@ impl ManagedMcpRegistry for TestManagedMcpRegistry {
         self.periodic_refresh_running.swap(false, Ordering::Relaxed)
     }
 
-    fn server_status(&self, _server_name: &str) -> Option<awaken_ext_mcp::McpServerStatusSnapshot> {
+    async fn server_status(
+        &self,
+        _server_name: &str,
+    ) -> Option<awaken_ext_mcp::McpServerStatusSnapshot> {
         None
     }
 
@@ -292,7 +295,10 @@ impl ManagedMcpRegistry for TrackingManagedMcpRegistry {
             .swap(false, Ordering::Relaxed)
     }
 
-    fn server_status(&self, _server_name: &str) -> Option<awaken_ext_mcp::McpServerStatusSnapshot> {
+    async fn server_status(
+        &self,
+        _server_name: &str,
+    ) -> Option<awaken_ext_mcp::McpServerStatusSnapshot> {
         None
     }
 

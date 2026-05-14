@@ -163,6 +163,60 @@ impl McpCallMetadata {
     }
 }
 
+/// Per-call bundle threading agent / thread / run identity, cancellation,
+/// and a sampling handler down to the MCP transport for a single
+/// `call_tool` invocation. Previously these were three separate
+/// parameters — combined here so adding a new dimension (logging
+/// override, deadline, etc.) doesn't churn every trait impl.
+///
+/// `Default` produces an empty context: no attribution, no cancellation,
+/// no per-call sampling handler. Transport behaviour then collapses to
+/// the legacy "registry-level fixed handler" path.
+#[derive(Default)]
+pub struct McpCallContext {
+    /// Vendor attribution surfaced to the server via `params._meta.awaken/attribution`.
+    pub metadata: McpCallMetadata,
+    /// Caller-supplied cancellation token. When fired during an in-flight
+    /// `tools/call`, the transport emits `notifications/cancelled` and
+    /// returns the [`CANCELLED_BY_CLIENT`] sentinel error.
+    pub cancellation: Option<CancellationToken>,
+    /// Decision about how server-initiated `sampling/createMessage`
+    /// during this call should be routed. See [`McpCallSampling`].
+    pub sampling: McpCallSampling,
+}
+
+/// Per-call sampling routing decision. Three explicit states so the
+/// transport can distinguish "no factory configured at all" from
+/// "factory consulted but declined to bind this agent" — these have
+/// different security semantics.
+#[derive(Default)]
+pub enum McpCallSampling {
+    /// No per-call decision was made. The transport falls through to
+    /// its registry-level fixed handler (legacy behaviour, preserved
+    /// for callers that don't wire a factory).
+    #[default]
+    Inherit,
+    /// Factory bound a specific handler to this call. Server-initiated
+    /// `sampling/createMessage` for this call's id routes here, not to
+    /// the transport's fallback. Mandatory for multi-agent correctness.
+    Bound(Arc<dyn SamplingHandler>),
+    /// Factory was consulted and explicitly refused to bind a handler
+    /// (e.g. agent's model_id doesn't resolve, agent opted out, tenant
+    /// has no sampling quota). The transport MUST reject
+    /// `sampling/createMessage` for this call with method-not-supported
+    /// — falling through to a global fallback would re-introduce the
+    /// cross-agent leak the factory exists to prevent.
+    Denied,
+}
+
+/// Internal map value mirroring [`McpCallSampling`] minus the `Inherit`
+/// variant (Inherit is represented by the absence of a map entry).
+#[derive(Clone)]
+enum PerCallSamplingEntry {
+    Bound(Arc<dyn SamplingHandler>),
+    Denied,
+}
+
 /// Build the `_meta` value for `tools/call` params. Combines the MCP
 /// `progressToken` (when progress is enabled) with optional vendor
 /// attribution from `McpCallMetadata`. Returns `None` when neither is
@@ -224,8 +278,7 @@ pub trait McpToolTransport: Send + Sync {
         name: &str,
         args: Value,
         progress_tx: Option<mpsc::UnboundedSender<McpProgressUpdate>>,
-        metadata: McpCallMetadata,
-        cancellation: Option<CancellationToken>,
+        context: McpCallContext,
     ) -> Result<CallToolResult, McpTransportError>;
 
     fn transport_type(&self) -> TransportTypeId;
@@ -238,6 +291,15 @@ pub trait McpToolTransport: Send + Sync {
 
     async fn close(&self) -> Result<(), McpTransportError> {
         Ok(())
+    }
+
+    /// Current server-assigned session id, if any. Streamable HTTP
+    /// transports return the value cached after the most recent
+    /// successful `initialize`; stdio returns `None` (the protocol does
+    /// not define a session id for that transport). Display-only — do
+    /// not cache or persist outside the transport.
+    async fn current_session_id(&self) -> Option<String> {
+        None
     }
 }
 
@@ -270,6 +332,90 @@ struct WriteRequest {
     ack: Option<oneshot::Sender<()>>,
 }
 
+/// Type alias for the per-call sampling-handler map shared between
+/// `call_tool` (which inserts on entry, removes on exit) and the
+/// background reader/dispatcher (which looks up by in-flight call id when
+/// handling server-initiated `sampling/createMessage`).
+type PerCallSamplingHandlers = Arc<tokio::sync::Mutex<HashMap<i64, PerCallSamplingEntry>>>;
+
+/// RAII guard that inserts a per-call sampling entry at construction
+/// and removes it on drop. Registration is async/deterministic — the
+/// call_tool path awaits the lock so the entry is guaranteed visible
+/// before the request is sent on the wire. Without this guarantee the
+/// reader could observe a sampling/createMessage for our call before
+/// the entry exists and route to a stale fallback handler.
+struct PerCallSamplingGuard {
+    handlers: PerCallSamplingHandlers,
+    id: i64,
+    /// `false` when the call passed `McpCallSampling::Inherit` — no
+    /// entry was registered, so drop has nothing to remove.
+    active: bool,
+}
+
+impl PerCallSamplingGuard {
+    /// Register the per-call sampling decision for `id`. Awaits the
+    /// map lock — never silently skips registration. Callers MUST await
+    /// this before sending the request id on the wire, otherwise the
+    /// reader can race a server-initiated `sampling/createMessage` for
+    /// the call and miss the entry.
+    async fn register(
+        handlers: PerCallSamplingHandlers,
+        id: i64,
+        sampling: McpCallSampling,
+    ) -> Self {
+        match sampling {
+            McpCallSampling::Inherit => Self {
+                handlers,
+                id,
+                active: false,
+            },
+            McpCallSampling::Bound(h) => {
+                handlers
+                    .lock()
+                    .await
+                    .insert(id, PerCallSamplingEntry::Bound(h));
+                Self {
+                    handlers,
+                    id,
+                    active: true,
+                }
+            }
+            McpCallSampling::Denied => {
+                handlers
+                    .lock()
+                    .await
+                    .insert(id, PerCallSamplingEntry::Denied);
+                Self {
+                    handlers,
+                    id,
+                    active: true,
+                }
+            }
+        }
+    }
+}
+
+impl Drop for PerCallSamplingGuard {
+    fn drop(&mut self) {
+        if !self.active {
+            return;
+        }
+        // Drop is sync; we can only try to lock. The map is taken only
+        // briefly by the reader task or other guards, so try_lock should
+        // succeed in the common case. If contended, schedule removal so
+        // the entry doesn't outlive the call indefinitely.
+        if let Ok(mut map) = self.handlers.try_lock() {
+            map.remove(&self.id);
+        } else {
+            let handlers = Arc::clone(&self.handlers);
+            let id = self.id;
+            tokio::task::spawn(async move {
+                handlers.lock().await.remove(&id);
+            });
+        }
+    }
+}
+
 // ── Stdio transport ──
 
 pub(crate) struct ProgressAwareStdioTransport {
@@ -284,6 +430,15 @@ pub(crate) struct ProgressAwareStdioTransport {
     child: Arc<tokio::sync::Mutex<Option<Child>>>,
     timeout: Duration,
     capabilities: Option<ServerCapabilities>,
+    /// Map of in-flight tool-call JSON-RPC ids → per-call sampling
+    /// decision (Bound | Denied). Populated by `call_tool` whenever the
+    /// caller supplies a `McpCallSampling` other than `Inherit`; emptied
+    /// via the `PerCallSamplingGuard` on every exit path. Stdio cannot
+    /// correlate a server-initiated `sampling/createMessage` to a
+    /// specific in-flight `tools/call` (no spec-mandated id field), so
+    /// the reader uses cardinality heuristics over this map — see
+    /// [`select_sampling_handler`].
+    per_call_sampling: PerCallSamplingHandlers,
 }
 
 impl ProgressAwareStdioTransport {
@@ -360,6 +515,9 @@ impl ProgressAwareStdioTransport {
         let alive_reader = Arc::clone(&alive);
         let write_tx_reader = write_tx.clone();
         let sampling_handler_reader = sampling_handler.clone();
+        let per_call_sampling: PerCallSamplingHandlers =
+            Arc::new(tokio::sync::Mutex::new(HashMap::new()));
+        let per_call_sampling_reader = Arc::clone(&per_call_sampling);
         let mut reader = BufReader::new(stdout);
         tokio::spawn(async move {
             let mut line = String::new();
@@ -384,11 +542,14 @@ impl ProgressAwareStdioTransport {
                             handle_progress_notification(&progress_reader, notification).await;
                         }
                         Ok(JsonRpcMessage::Request(request)) => {
-                            let handler = sampling_handler_reader.clone();
+                            let fallback = sampling_handler_reader.clone();
+                            let per_call = Arc::clone(&per_call_sampling_reader);
                             let wtx = write_tx_reader.clone();
                             tokio::spawn(async move {
+                                let chosen =
+                                    select_sampling_handler(&per_call, fallback.as_ref()).await;
                                 let response =
-                                    handle_server_request(handler.as_deref(), &request).await;
+                                    handle_server_request(chosen.as_deref(), &request).await;
                                 let line = format!(
                                     "{}\n",
                                     serde_json::to_string(&response).unwrap_or_default()
@@ -447,6 +608,7 @@ impl ProgressAwareStdioTransport {
             child: Arc::new(tokio::sync::Mutex::new(Some(child))),
             timeout: Duration::from_secs(config.timeout_secs),
             capabilities: None,
+            per_call_sampling,
         };
 
         let mut capabilities = InitializeCapabilities::default();
@@ -654,9 +816,27 @@ impl McpToolTransport for ProgressAwareStdioTransport {
         name: &str,
         args: Value,
         progress_tx: Option<mpsc::UnboundedSender<McpProgressUpdate>>,
-        metadata: McpCallMetadata,
-        cancellation: Option<CancellationToken>,
+        context: McpCallContext,
     ) -> Result<CallToolResult, McpTransportError> {
+        let McpCallContext {
+            metadata,
+            cancellation,
+            sampling,
+        } = context;
+
+        // Pre-check cancellation BEFORE allocating the request id, the
+        // progress token, or the per-call sampling slot. Without this,
+        // an already-cancelled caller would still allocate a fresh id,
+        // emit `notifications/cancelled` for an id the server never
+        // saw, and pollute counters.
+        if let Some(ref token) = cancellation
+            && token.is_cancelled()
+        {
+            return Err(McpTransportError::TransportError(
+                CANCELLED_BY_CLIENT.to_string(),
+            ));
+        }
+
         let (progress_token, progress_sender) = match progress_tx {
             Some(sender) => {
                 let token =
@@ -681,6 +861,15 @@ impl McpToolTransport for ProgressAwareStdioTransport {
         // inside `send_request` and there's no way to address the
         // in-flight call from outside.
         let id = self.next_id.fetch_add(1, Ordering::SeqCst);
+
+        // Register the per-call sampling decision deterministically
+        // BEFORE the request hits the wire. Awaiting the lock here is
+        // required: if registration raced the server-initiated
+        // sampling/createMessage we want to route to this entry, an
+        // earlier try_lock-based scheme would silently miss it.
+        let _handler_guard =
+            PerCallSamplingGuard::register(Arc::clone(&self.per_call_sampling), id, sampling).await;
+
         let request_fut = self.send_request_with_id(
             id,
             "tools/call",
@@ -789,6 +978,11 @@ pub(crate) struct ProgressAwareHttpTransport {
     capabilities: tokio::sync::Mutex<Option<ServerCapabilities>>,
     session: tokio::sync::RwLock<HttpSessionState>,
     sampling_handler: Option<Arc<dyn SamplingHandler>>,
+    /// Per-call sampling handlers; same semantics as the stdio variant.
+    /// Populated by `call_tool` while a request is in flight; consulted
+    /// by `handle_server_request` for `sampling/createMessage`. See
+    /// `select_sampling_handler` for the routing rule.
+    per_call_sampling: PerCallSamplingHandlers,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -821,6 +1015,7 @@ impl ProgressAwareHttpTransport {
             capabilities: tokio::sync::Mutex::new(None),
             session: tokio::sync::RwLock::new(HttpSessionState::default()),
             sampling_handler,
+            per_call_sampling: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
         })
     }
 
@@ -1171,8 +1366,33 @@ impl ProgressAwareHttpTransport {
                 Ok(None)
             }
             JsonRpcMessage::Request(request) => {
-                let response =
-                    handle_server_request(self.sampling_handler.as_deref(), &request).await;
+                // HTTP per-request SSE stream: per spec 2025-06-18
+                // §Listening for Messages from the Server, messages on
+                // this stream "SHOULD relate to a single client request"
+                // — namely OUR `request_id`. So a server-initiated
+                // `sampling/createMessage` arriving here belongs to that
+                // call. Route directly by request_id rather than guessing
+                // via cardinality.
+                //
+                // Three states:
+                //   - Bound(h)  → use this call's bound handler
+                //   - Denied    → factory consulted, refused: reject
+                //                 (never silently fall through to a
+                //                 fallback that may belong to a
+                //                 different agent — that's the leak the
+                //                 per-call routing exists to prevent)
+                //   - no entry  → Inherit semantics: caller did not
+                //                 engage the factory, fall through to
+                //                 the transport-level fixed handler
+                let chosen: Option<Arc<dyn SamplingHandler>> = {
+                    let map = self.per_call_sampling.lock().await;
+                    match map.get(&request_id) {
+                        Some(PerCallSamplingEntry::Bound(h)) => Some(Arc::clone(h)),
+                        Some(PerCallSamplingEntry::Denied) => None,
+                        None => self.sampling_handler.clone(),
+                    }
+                };
+                let response = handle_server_request(chosen.as_deref(), &request).await;
                 self.send_response_message(response).await?;
                 Ok(None)
             }
@@ -1281,9 +1501,27 @@ impl McpToolTransport for ProgressAwareHttpTransport {
         name: &str,
         args: Value,
         progress_tx: Option<mpsc::UnboundedSender<McpProgressUpdate>>,
-        metadata: McpCallMetadata,
-        cancellation: Option<CancellationToken>,
+        context: McpCallContext,
     ) -> Result<CallToolResult, McpTransportError> {
+        let McpCallContext {
+            metadata,
+            cancellation,
+            sampling,
+        } = context;
+
+        // Pre-check cancellation BEFORE anything observable: any side
+        // effect we trigger past this point (id allocation, sampling
+        // map insertion, HTTP initialize) costs the server some work
+        // we'd need to unwind. Caller already cancelled → error out
+        // immediately.
+        if let Some(ref token) = cancellation
+            && token.is_cancelled()
+        {
+            return Err(McpTransportError::TransportError(
+                CANCELLED_BY_CLIENT.to_string(),
+            ));
+        }
+
         let (progress_token, progress_sender) = match progress_tx {
             Some(sender) => {
                 let token =
@@ -1303,28 +1541,36 @@ impl McpToolTransport for ProgressAwareHttpTransport {
             meta,
         };
 
-        // Initialize (with cancellation race) before any tool call — the
-        // server might assign a fresh session id we need for the request.
-        match cancellation {
-            None => {
-                self.initialize_if_needed().await?;
-            }
-            Some(ref token) => {
-                let init_fut = self.initialize_if_needed();
-                tokio::pin!(init_fut);
-                tokio::select! {
-                    biased;
-                    _ = token.cancelled() => {
-                        return Err(McpTransportError::TransportError(
-                            CANCELLED_BY_CLIENT.to_string(),
-                        ));
-                    }
-                    result = &mut init_fut => { result?; }
-                }
-            }
+        // Initialize runs UNINTERRUPTED — racing it with cancellation
+        // can leave the session half-constructed: server assigns a
+        // session id, we drop the future before reading it, and the
+        // orphaned server-side session lingers. Initialize is shared
+        // across all callers of this transport (cached in
+        // `capabilities`) — local to this call, it's a setup step, not
+        // the cancellable work.
+        self.initialize_if_needed().await?;
+
+        // Re-check cancellation after initialize completed (it may
+        // have taken non-trivial time). Tools/call hasn't been
+        // allocated/sent yet, so this is still a clean exit.
+        if let Some(ref token) = cancellation
+            && token.is_cancelled()
+        {
+            return Err(McpTransportError::TransportError(
+                CANCELLED_BY_CLIENT.to_string(),
+            ));
         }
 
         let id = self.next_id.fetch_add(1, Ordering::SeqCst);
+
+        // Register the per-call sampling decision deterministically
+        // BEFORE the request hits the wire. Awaiting the lock guarantees
+        // the reader sees this entry before it can receive a
+        // `sampling/createMessage` for our request id on the per-request
+        // SSE stream.
+        let _handler_guard =
+            PerCallSamplingGuard::register(Arc::clone(&self.per_call_sampling), id, sampling).await;
+
         let request_fut = self.send_request_with_id(
             id,
             "tools/call",
@@ -1420,6 +1666,10 @@ impl McpToolTransport for ProgressAwareHttpTransport {
         }
 
         Ok(())
+    }
+
+    async fn current_session_id(&self) -> Option<String> {
+        self.session.read().await.session_id.clone()
     }
 }
 
@@ -1621,6 +1871,47 @@ pub(crate) fn decode_http_response_payload(
             request_id
         )))
     })
+}
+
+/// Resolve which sampling handler should service an incoming
+/// server-initiated request. Per-call handlers (registered by `call_tool`
+/// in flight) take precedence over the transport-level fallback when
+/// there is **exactly one** call in flight — that's the unambiguous
+/// case where we know which agent's executor should service the
+/// sampling request. With zero or multiple in-flight calls we cannot
+/// route safely (the MCP spec gives no correlation between
+/// `sampling/createMessage` and a specific `tools/call` id), so we fall
+/// back to the transport's fixed handler. Operators who need stricter
+/// per-call routing in the >1-in-flight case can serialize their tool
+/// calls or contribute server-side echoing of `params._meta.awaken/in_response_to_call_id`.
+/// Stdio routing: server-initiated `sampling/createMessage` from a
+/// stdio server has no spec-mandated correlation id back to a specific
+/// in-flight `tools/call`, so we use cardinality:
+///   - 0 entries: nothing per-call to honor → fall back to transport-level
+///     fixed handler (preserves legacy behaviour for callers that don't
+///     wire a per-call factory).
+///   - 1 entry: that entry's decision is authoritative — `Bound(h)` →
+///     use h; `Denied` → reject (None). Never fall through on Denied,
+///     since the factory was explicitly consulted for this call.
+///   - More than one entry: ambiguous. Conservative — reject (None).
+///     Operators who need sampling correctness with concurrent stdio
+///     tool calls must serialize the calls. Falling through to the
+///     transport fallback would leak across agents (the bug the
+///     factory exists to prevent).
+async fn select_sampling_handler(
+    per_call: &PerCallSamplingHandlers,
+    fallback: Option<&Arc<dyn SamplingHandler>>,
+) -> Option<Arc<dyn SamplingHandler>> {
+    let map = per_call.lock().await;
+    match map.len() {
+        0 => fallback.cloned(),
+        1 => match map.values().next() {
+            Some(PerCallSamplingEntry::Bound(h)) => Some(Arc::clone(h)),
+            Some(PerCallSamplingEntry::Denied) => None,
+            None => fallback.cloned(),
+        },
+        _ => None,
+    }
 }
 
 pub(crate) async fn handle_server_request(
@@ -2110,8 +2401,10 @@ done
                     "test-tool",
                     json!({}),
                     None,
-                    McpCallMetadata::default(),
-                    Some(cancel),
+                    McpCallContext {
+                        cancellation: Some(cancel),
+                        ..McpCallContext::default()
+                    },
                 )
                 .await
         });
@@ -2163,6 +2456,242 @@ done
         assert_eq!(parsed["params"]["reason"], "client run cancelled");
 
         let _ = std::fs::remove_file(&scratch);
+    }
+
+    // ── Per-call sampling routing tests (R1 #P1b) ──
+
+    /// Helper: a sampling handler that records which "agent" handled
+    /// the call by storing a tag in a shared slot. Lets tests verify
+    /// per-call routing picked the right one.
+    struct TaggedSamplingHandler {
+        tag: String,
+        last_caller: Arc<tokio::sync::Mutex<Option<String>>>,
+    }
+
+    #[async_trait]
+    impl SamplingHandler for TaggedSamplingHandler {
+        async fn handle_create_message(
+            &self,
+            _params: CreateMessageParams,
+        ) -> Result<mcp::CreateMessageResult, McpTransportError> {
+            *self.last_caller.lock().await = Some(self.tag.clone());
+            use mcp::{Role, SamplingContent};
+            Ok(mcp::CreateMessageResult {
+                role: Role::Assistant,
+                content: vec![SamplingContent::Text {
+                    text: self.tag.clone(),
+                    annotations: None,
+                    meta: None,
+                }],
+                model: "stub".into(),
+                stop_reason: Some("endTurn".into()),
+                meta: None,
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn select_sampling_routes_single_in_flight_to_per_call() {
+        let last_caller = Arc::new(tokio::sync::Mutex::new(None::<String>));
+        let per_call: PerCallSamplingHandlers = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
+        let agent_handler: Arc<dyn SamplingHandler> = Arc::new(TaggedSamplingHandler {
+            tag: "agent-A".into(),
+            last_caller: Arc::clone(&last_caller),
+        });
+        let fallback: Arc<dyn SamplingHandler> = Arc::new(TaggedSamplingHandler {
+            tag: "fallback".into(),
+            last_caller: Arc::clone(&last_caller),
+        });
+        per_call
+            .lock()
+            .await
+            .insert(42, PerCallSamplingEntry::Bound(agent_handler));
+
+        let chosen = select_sampling_handler(&per_call, Some(&fallback)).await;
+        let chosen = chosen.expect("a handler was selected");
+
+        // Invoke and verify which one handled it.
+        let _ = chosen
+            .handle_create_message(make_minimal_sampling_params())
+            .await
+            .expect("handler succeeded");
+        assert_eq!(
+            *last_caller.lock().await,
+            Some("agent-A".to_string()),
+            "single in-flight call -> per-call handler wins"
+        );
+    }
+
+    #[tokio::test]
+    async fn select_sampling_falls_back_when_zero_in_flight() {
+        let last_caller = Arc::new(tokio::sync::Mutex::new(None::<String>));
+        let per_call: PerCallSamplingHandlers = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
+        let fallback: Arc<dyn SamplingHandler> = Arc::new(TaggedSamplingHandler {
+            tag: "fallback".into(),
+            last_caller: Arc::clone(&last_caller),
+        });
+
+        let chosen = select_sampling_handler(&per_call, Some(&fallback))
+            .await
+            .expect("fallback returned");
+        let _ = chosen
+            .handle_create_message(make_minimal_sampling_params())
+            .await;
+        assert_eq!(*last_caller.lock().await, Some("fallback".to_string()));
+    }
+
+    #[tokio::test]
+    async fn select_sampling_returns_none_when_multiple_in_flight() {
+        // With >1 in-flight calls we can't unambiguously route — return
+        // None so the server gets method-not-supported. This is a
+        // SECURITY fix: previously we fell back to the transport-level
+        // fixed handler, which could be a different agent's executor.
+        // The factory exists precisely to prevent that cross-agent
+        // leak, so the conservative fix is to refuse rather than guess.
+        let last_caller = Arc::new(tokio::sync::Mutex::new(None::<String>));
+        let per_call: PerCallSamplingHandlers = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
+        let agent_a: Arc<dyn SamplingHandler> = Arc::new(TaggedSamplingHandler {
+            tag: "agent-A".into(),
+            last_caller: Arc::clone(&last_caller),
+        });
+        let agent_b: Arc<dyn SamplingHandler> = Arc::new(TaggedSamplingHandler {
+            tag: "agent-B".into(),
+            last_caller: Arc::clone(&last_caller),
+        });
+        let fallback: Arc<dyn SamplingHandler> = Arc::new(TaggedSamplingHandler {
+            tag: "fallback".into(),
+            last_caller: Arc::clone(&last_caller),
+        });
+        per_call
+            .lock()
+            .await
+            .insert(1, PerCallSamplingEntry::Bound(agent_a));
+        per_call
+            .lock()
+            .await
+            .insert(2, PerCallSamplingEntry::Bound(agent_b));
+
+        assert!(
+            select_sampling_handler(&per_call, Some(&fallback))
+                .await
+                .is_none(),
+            "multiple in-flight => refuse rather than guess (no fallback)"
+        );
+    }
+
+    #[tokio::test]
+    async fn select_sampling_returns_none_on_denied_single_in_flight() {
+        // Factory was consulted and explicitly refused this call. The
+        // transport MUST NOT fall through to a transport-level fallback
+        // handler — that would re-introduce the cross-agent leak the
+        // factory exists to prevent.
+        let last_caller = Arc::new(tokio::sync::Mutex::new(None::<String>));
+        let per_call: PerCallSamplingHandlers = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
+        let fallback: Arc<dyn SamplingHandler> = Arc::new(TaggedSamplingHandler {
+            tag: "fallback".into(),
+            last_caller: Arc::clone(&last_caller),
+        });
+        per_call
+            .lock()
+            .await
+            .insert(7, PerCallSamplingEntry::Denied);
+        assert!(
+            select_sampling_handler(&per_call, Some(&fallback))
+                .await
+                .is_none(),
+            "Denied entry must NEVER fall through to fallback"
+        );
+    }
+
+    #[tokio::test]
+    async fn select_sampling_returns_none_when_no_handlers_anywhere() {
+        let per_call: PerCallSamplingHandlers = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
+        assert!(select_sampling_handler(&per_call, None).await.is_none());
+    }
+
+    #[tokio::test]
+    async fn per_call_sampling_guard_inserts_and_removes_bound() {
+        let per_call: PerCallSamplingHandlers = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
+        let handler: Arc<dyn SamplingHandler> = Arc::new(TaggedSamplingHandler {
+            tag: "x".into(),
+            last_caller: Arc::new(tokio::sync::Mutex::new(None)),
+        });
+        {
+            let _guard = PerCallSamplingGuard::register(
+                Arc::clone(&per_call),
+                99,
+                McpCallSampling::Bound(handler),
+            )
+            .await;
+            assert!(per_call.lock().await.contains_key(&99));
+        }
+        // After guard drops the entry should be gone. Tolerate a brief
+        // yield for the spawned-removal path; in the happy path try_lock
+        // succeeds and removal is synchronous.
+        tokio::task::yield_now().await;
+        assert!(!per_call.lock().await.contains_key(&99));
+    }
+
+    #[tokio::test]
+    async fn per_call_sampling_guard_inserts_and_removes_denied() {
+        let per_call: PerCallSamplingHandlers = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
+        {
+            let _guard =
+                PerCallSamplingGuard::register(Arc::clone(&per_call), 7, McpCallSampling::Denied)
+                    .await;
+            assert!(matches!(
+                per_call.lock().await.get(&7),
+                Some(PerCallSamplingEntry::Denied)
+            ));
+        }
+        tokio::task::yield_now().await;
+        assert!(!per_call.lock().await.contains_key(&7));
+    }
+
+    #[tokio::test]
+    async fn per_call_sampling_guard_inherit_registers_nothing() {
+        // Inherit semantics: caller didn't engage the factory, so no
+        // per-call entry is registered. The transport's reader path
+        // sees an empty map and uses its fallback handler.
+        let per_call: PerCallSamplingHandlers = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
+        {
+            let _guard =
+                PerCallSamplingGuard::register(Arc::clone(&per_call), 3, McpCallSampling::Inherit)
+                    .await;
+            assert!(
+                per_call.lock().await.is_empty(),
+                "Inherit registers nothing"
+            );
+        }
+        // Drop is a no-op for Inherit — map remains empty.
+        tokio::task::yield_now().await;
+        assert!(per_call.lock().await.is_empty());
+    }
+
+    fn make_minimal_sampling_params() -> CreateMessageParams {
+        use mcp::SamplingMessage;
+        CreateMessageParams {
+            messages: vec![SamplingMessage {
+                role: mcp::Role::User,
+                content: vec![mcp::SamplingContent::Text {
+                    text: "hi".into(),
+                    annotations: None,
+                    meta: None,
+                }],
+                meta: None,
+            }],
+            model_preferences: None,
+            system_prompt: None,
+            include_context: None,
+            temperature: None,
+            max_tokens: 16,
+            stop_sequences: None,
+            metadata: None,
+            tools: None,
+            tool_choice: None,
+            task: None,
+            meta: None,
+        }
     }
 
     #[test]
