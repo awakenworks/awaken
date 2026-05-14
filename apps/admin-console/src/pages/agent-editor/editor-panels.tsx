@@ -81,7 +81,14 @@ export function AgentEditorPanels({
             />
           )}
           {tab.id === "tools" && (
-            <ToolsPanel spec={spec} capabilities={capabilities} updateField={updateField} />
+            <ToolsPanel
+              spec={spec}
+              capabilities={capabilities}
+              updateField={updateField}
+              canResetFields={canResetFields}
+              overriddenFields={overriddenFields}
+              onResetField={onResetField}
+            />
           )}
           {tab.id === "plugins" && (
             <PluginsPanel

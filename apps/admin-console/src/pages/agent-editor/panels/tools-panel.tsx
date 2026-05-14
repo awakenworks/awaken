@@ -5,10 +5,16 @@ export function ToolsPanel({
   spec,
   capabilities,
   updateField,
+  canResetFields,
+  overriddenFields,
+  onResetField,
 }: {
   spec: AgentSpec;
   capabilities: Capabilities | null;
   updateField: <K extends keyof AgentSpec>(key: K, value: AgentSpec[K]) => void;
+  canResetFields?: boolean;
+  overriddenFields?: Set<string>;
+  onResetField?: (field: string) => void;
 }) {
   if (!capabilities || capabilities.tools.length === 0) {
     return (
@@ -18,6 +24,16 @@ export function ToolsPanel({
       </div>
     );
   }
+  const resetProps = (field: "allowed_tools" | "excluded_tools") => {
+    if (!canResetFields || !overriddenFields?.has(field) || !onResetField) {
+      return {};
+    }
+    return {
+      overridden: true,
+      onReset: () => onResetField(field),
+      resetLabel: `Reset ${field} to default`,
+    } as const;
+  };
   return (
     <>
       <ToolSelector
@@ -27,6 +43,7 @@ export function ToolsPanel({
         value={spec.allowed_tools}
         onChange={(next) => updateField("allowed_tools", next)}
         variant="include"
+        {...resetProps("allowed_tools")}
       />
       <ToolSelector
         title="Excluded Tools"
@@ -35,6 +52,7 @@ export function ToolsPanel({
         value={spec.excluded_tools}
         onChange={(next) => updateField("excluded_tools", next)}
         variant="exclude"
+        {...resetProps("excluded_tools")}
       />
     </>
   );

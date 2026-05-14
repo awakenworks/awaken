@@ -100,11 +100,20 @@ export function diffPatchableFields(
   return patch;
 }
 
-export function fullAgentSavePayload(spec: AgentSpec): AgentSpec {
+export function normalizeCatalogForSave(spec: AgentSpec): AgentSpec {
   return {
     ...spec,
-    plugin_ids: [...(spec.plugin_ids ?? [])],
-    delegates: [...(spec.delegates ?? [])],
+    allowed_tools: spec.allowed_tools ?? ["*"],
+    excluded_tools: spec.excluded_tools ?? [],
+  };
+}
+
+export function fullAgentSavePayload(spec: AgentSpec): AgentSpec {
+  const normalizedSpec = normalizeCatalogForSave(spec);
+  return {
+    ...normalizedSpec,
+    plugin_ids: [...(normalizedSpec.plugin_ids ?? [])],
+    delegates: [...(normalizedSpec.delegates ?? [])],
   };
 }
 
@@ -114,7 +123,10 @@ export function agentSavePayload(
   mode: AgentSaveMode,
 ): AgentSpec | Record<string, unknown> {
   if (mode === "patch-overrides") {
-    return diffPatchableFields(spec, originalSpec ?? spec);
+    return diffPatchableFields(
+      normalizeCatalogForSave(spec),
+      normalizeCatalogForSave(originalSpec ?? spec),
+    );
   }
   return fullAgentSavePayload(spec);
 }

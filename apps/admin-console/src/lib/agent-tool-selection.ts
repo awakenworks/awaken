@@ -1,135 +1,191 @@
-/// Variant-aware tool selection helpers.
+/// Catalog semantics for `allowed_tools` / `excluded_tools`.
 ///
-/// `ToolSelector` is used for two AgentSpec fields with opposite semantics:
+///   ["*"]            - explicit all-pattern (matches every tool)
+///   []               - explicit empty (matches nothing)
+///   ["a", "b*"]      - subset; entries may be literal ids or globs
+///   null / undefined - deprecated legacy value; save migrates to explicit form
 ///
-///   - `allowed_tools` (variant `"include"`)
-///       null / undefined → every published tool is allowed (default)
-///       string[]         → only these tools are allowed
-///
-///   - `excluded_tools` (variant `"exclude"`)
-///       null / undefined → no tool is excluded (default)
-///       string[]         → these tools are removed from the allow-list
-///
-/// The wire-shape (`Option<Vec<String>>`) is identical for both, so we
-/// route through a single component, but the *semantics* (what `null`
-/// means, what a checkbox "checked" means, what to seed on mode toggle)
-/// are inverted. These helpers carry an explicit `variant` so the
-/// component never gets the wrong default — silently emitting "all tools
-/// excluded" on a Custom-exclusion toggle was R8 #1.
-///
-/// Mode toggles emit an explicit `null` for "all" (include) / "block
-/// none" (exclude) rather than `undefined`. For customized agents this
-/// matters: a `null` patch overrides the base record's restricted list
-/// with an explicit "no whitelist" / "no blacklist" override; a
-/// `undefined` value would land in the save-path's clear list and
-/// DELETE the override, re-inheriting the base's restriction — the
-/// opposite of what the user picked.
+/// The legacy `null`/`undefined` shape is retained for read compatibility
+/// only — every helper below normalises it but `isLegacyCatalogValue` lets
+/// callers (e.g. the editor UI) surface a deprecation hint.
 
-export type ToolSelectionVariant = "include" | "exclude";
+const EXPLICIT_ALL = "*";
 
-/// Whether a tool's checkbox should render checked.
-///
-/// - include: checked = "tool is in the allow-list". Defaults to true on
-///   null/undefined (no whitelist means every tool is allowed).
-/// - exclude: checked = "tool is in the exclude-list". Defaults to false
-///   on null/undefined (no blacklist means no tool is excluded).
-export function isToolSelected(
-  value: string[] | null | undefined,
-  toolId: string,
-  variant: ToolSelectionVariant = "include",
-): boolean {
-  if (variant === "exclude") {
-    return value ? value.includes(toolId) : false;
-  }
-  return value ? value.includes(toolId) : true;
+export type CatalogVariant = "include" | "exclude";
+
+function allModeValue(variant: CatalogVariant): string[] {
+  return variant === "include" ? [EXPLICIT_ALL] : [];
 }
 
-/// Backward-compat alias — older include-only call sites.
-export const isToolAllowed = isToolSelected;
+export function isLegacyCatalogValue(value: string[] | null | undefined): boolean {
+  return value == null;
+}
 
-/// Compute the next value after a checkbox toggle.
+export function isExplicitAll(value: string[] | null | undefined): boolean {
+  return Array.isArray(value) && value.length === 1 && value[0] === EXPLICIT_ALL;
+}
+
+/// Match a tool-id pattern against a literal tool id. Mirrors the runtime's
+/// `awaken_tool_pattern::tool_id_match` — see the shared parity fixture at
+/// `crates/awaken-tool-pattern/tests/fixtures/catalog-glob-parity.json`.
 ///
-/// For include: `checked` = "add to allow-list".
-/// For exclude: `checked` = "add to exclude-list".
+/// Grammar:
+/// - The full pattern must match the full tool id (anchored).
+/// - `*` matches any sequence of characters (including `/`, `:`, `_`).
+/// - `\` escapes the next character (`\*` = literal `*`; `\\` = literal `\`).
+/// - Every other character is a literal — there is no `**`, `?`, `[...]`,
+///   `{a,b}`, leading-`!` negation, or regex syntax at this layer.
 ///
-/// Returns explicit `null` when the resulting set means "default
-/// everywhere" (every tool allowed / nothing excluded) so customized
-/// agents persist the user's intent as an override rather than
-/// inheriting the base record.
-export function nextToolSelection(
+/// Exported for the parity test fixture; prefer `isToolAllowed` in component code.
+export function toolIdMatch(pattern: string, value: string): boolean {
+  const p = pattern;
+  const v = value;
+  let pi = 0;
+  let vi = 0;
+  let starPi: number | null = null;
+  let starVi = 0;
+
+  while (vi < v.length) {
+    if (pi < p.length) {
+      const c = p[pi];
+      if (c === "\\" && pi + 1 < p.length) {
+        if (p[pi + 1] === v[vi]) {
+          pi += 2;
+          vi += 1;
+          continue;
+        }
+      } else if (c === "*") {
+        starPi = pi;
+        starVi = vi;
+        pi += 1;
+        continue;
+      } else if (c === v[vi]) {
+        pi += 1;
+        vi += 1;
+        continue;
+      }
+    }
+    // Mismatch — backtrack to the last `*` and consume one more value char.
+    if (starPi !== null) {
+      pi = starPi + 1;
+      starVi += 1;
+      vi = starVi;
+    } else {
+      return false;
+    }
+  }
+  while (pi < p.length && p[pi] === "*") {
+    pi += 1;
+  }
+  return pi === p.length;
+}
+
+function isKnownToolId(entry: string, allToolIds: string[]): boolean {
+  return allToolIds.includes(entry);
+}
+
+export function isToolAllowed(
+  allowedTools: string[] | null | undefined,
+  toolId: string,
+  variant: CatalogVariant = "include",
+): boolean {
+  if (allowedTools == null) return variant === "include";
+  if (isExplicitAll(allowedTools)) return true;
+  return allowedTools.some((entry) => toolIdMatch(entry, toolId));
+}
+
+function expandSubset(
   value: string[] | null | undefined,
+  allToolIds: string[],
+  variant: CatalogVariant,
+): string[] {
+  if (value == null) return variant === "include" ? [...allToolIds] : [];
+  if (isExplicitAll(value)) return [...allToolIds];
+  return [...value];
+}
+
+export function isToolSelectionPatternBacked(
+  allowedTools: string[] | null | undefined,
+  toolId: string,
+  variant: CatalogVariant = "include",
+): boolean {
+  return toolSelectionPattern(allowedTools, toolId, variant) !== null;
+}
+
+/// Return the entry from `allowedTools` that pattern-matched `toolId` (so
+/// the UI can show which pattern is responsible). Any non-literal entry
+/// that grants access counts — including escaped literals such as `\!Bash`
+/// that the docs advertise as valid catalog grammar. Returns `null` when
+/// the tool's selection comes from an exact literal entry or nothing.
+export function toolSelectionPattern(
+  allowedTools: string[] | null | undefined,
+  toolId: string,
+  variant: CatalogVariant = "include",
+): string | null {
+  if (!Array.isArray(allowedTools)) return null;
+  if (isExplicitAll(allowedTools)) return variant === "exclude" ? EXPLICIT_ALL : null;
+  for (const entry of allowedTools) {
+    if (entry !== toolId && toolIdMatch(entry, toolId)) return entry;
+  }
+  return null;
+}
+
+function hasUnmanagedCatalogEntries(value: string[], allToolIds: string[]): boolean {
+  return value.some((entry) => !isKnownToolId(entry, allToolIds));
+}
+
+export function nextAllowedTools(
+  allowedTools: string[] | null | undefined,
   allToolIds: string[],
   toolId: string,
   checked: boolean,
-  variant: ToolSelectionVariant = "include",
-): string[] | null {
-  if (variant === "exclude") {
-    const current = value ?? [];
-    if (checked) {
-      const next = Array.from(new Set([...current, toolId])).filter((id) =>
-        allToolIds.includes(id),
-      );
-      return next.length === 0 ? null : next;
-    }
-    if (current.length === 0) return null;
-    const next = current.filter((id) => id !== toolId);
-    return next.length === 0 ? null : next;
-  }
-  // include
-  if (checked) {
-    if (!value) {
-      // Already "all tools allowed"; checking an already-checked tool is
-      // a no-op. Persist as explicit null so customized save emits an
-      // override rather than DELETE-ing it (which would inherit the
-      // base's restricted list).
-      return null;
-    }
-    const next = Array.from(new Set([...value, toolId])).filter((id) =>
-      allToolIds.includes(id),
-    );
-    return next.length >= allToolIds.length ? null : next;
-  }
-  const baseAllowed = value ?? allToolIds;
-  return baseAllowed.filter((id) => id !== toolId);
-}
+  variant: CatalogVariant = "include",
+): string[] {
+  if (variant === "exclude" && isExplicitAll(allowedTools)) return [EXPLICIT_ALL];
 
-/// Backward-compat alias.
-export const nextAllowedTools = nextToolSelection;
+  const baseline = expandSubset(allowedTools, allToolIds, variant);
+  if (checked) {
+    const next = isKnownToolId(toolId, allToolIds)
+      ? Array.from(new Set([...baseline, toolId]))
+      : baseline;
+    if (
+      variant === "include" &&
+      !hasUnmanagedCatalogEntries(next, allToolIds) &&
+      allToolIds.every((id) => next.includes(id))
+    ) {
+      return [EXPLICIT_ALL];
+    }
+    return next;
+  }
+  return baseline.filter((id) => id !== toolId);
+}
 
 export type ToolSelectionMode = "all" | "custom";
 
 export function toolSelectionMode(
-  value: string[] | null | undefined,
+  allowedTools: string[] | null | undefined,
+  variant: CatalogVariant = "include",
 ): ToolSelectionMode {
-  return value == null ? "all" : "custom";
+  if (allowedTools == null) return "all";
+  // For include variant: "all" means "allow every tool" — ["*"].
+  // For exclude variant: "all" means "block none" — [].
+  if (variant === "include" && isExplicitAll(allowedTools)) return "all";
+  if (variant === "exclude" && allowedTools.length === 0) return "all";
+  return "custom";
 }
 
-/// Switch between modes without losing user data.
-///
-/// "all" → explicit `null` (forces "all tools" / "block none" as an
-/// override; does NOT mean "inherit base").
-///
-/// "custom" with no prior list:
-///   - include: seeded with every known tool (so checkboxes start
-///     checked and the user deselects to narrow the list).
-///   - exclude: seeded with `[]` (so checkboxes start UNCHECKED — seeding
-///     with every tool would mean every tool is excluded, i.e. the agent
-///     loses access to everything; this was R8 #1).
 export function applyToolSelectionMode(
   current: string[] | null | undefined,
   mode: ToolSelectionMode,
   allToolIds: string[],
-  variant: ToolSelectionVariant = "include",
-): string[] | null {
-  if (mode === "all") return null;
-  if (current && current.length > 0) return current;
-  if (variant === "exclude") return [];
+  variant: CatalogVariant = "include",
+): string[] {
+  if (mode === "all") return allModeValue(variant);
+  if (current != null && !isExplicitAll(current)) return [...current];
+  if (variant === "exclude" && current == null) return [];
   return [...allToolIds];
 }
 
-/// Source bucket for grouping tools in the UI. We classify by id prefix:
-/// `mcp:server-id/...` → an MCP server; `plugin:...` → a plugin tool;
-/// otherwise it's a built-in.
 export type ToolSourceKind = "mcp" | "plugin" | "builtin";
 
 export interface ToolSource {
@@ -140,18 +196,12 @@ export interface ToolSource {
   key: string;
 }
 
-/// Backend-supplied source descriptor (from `/v1/capabilities`).
 export interface ApiToolSource {
   kind: "builtin" | "plugin" | "mcp";
   id?: string;
 }
 
-/// Derive a ToolSource from a backend-supplied source descriptor when present,
-/// falling back to id-prefix inference for tools without an explicit source.
-export function toolSourceFor(
-  toolId: string,
-  apiSource?: ApiToolSource,
-): ToolSource {
+export function toolSourceFor(toolId: string, apiSource?: ApiToolSource): ToolSource {
   if (apiSource) {
     if (apiSource.kind === "mcp") {
       const server = apiSource.id ?? "";
@@ -165,7 +215,6 @@ export function toolSourceFor(
     }
     return { kind: "builtin", label: "Built-in", key: "builtin" };
   }
-  // Fallback: infer from id prefix (legacy / tools without explicit source).
   if (toolId.startsWith("mcp:")) {
     const remainder = toolId.slice(4);
     const slash = remainder.indexOf("/");
@@ -220,58 +269,49 @@ const SOURCE_ORDER: Record<ToolSourceKind, number> = {
   mcp: 2,
 };
 
-/// "Select all" / "Clear" buttons on a group.
-///
-/// For include: selected=true means "allow every tool in this group" —
-/// collapses to `null` when every known tool ends up allowed.
-///
-/// For exclude: selected=true means "exclude every tool in this group" —
-/// collapses to `null` when no tool ends up excluded.
 export function setGroupSelection(
-  value: string[] | null | undefined,
+  allowedTools: string[] | null | undefined,
   allToolIds: string[],
   groupToolIds: string[],
   selected: boolean,
-  variant: ToolSelectionVariant = "include",
-): string[] | null {
-  if (variant === "exclude") {
-    const baseline = new Set(value ?? []);
-    if (selected) {
-      for (const id of groupToolIds) baseline.add(id);
-    } else {
-      for (const id of groupToolIds) baseline.delete(id);
-    }
-    const next = Array.from(baseline).filter((id) => allToolIds.includes(id));
-    return next.length === 0 ? null : next;
-  }
-  const baseline = new Set(value ?? allToolIds);
+  variant: CatalogVariant = "include",
+): string[] {
+  if (variant === "exclude" && isExplicitAll(allowedTools)) return [EXPLICIT_ALL];
+
+  const baseline = new Set(expandSubset(allowedTools, allToolIds, variant));
 
   if (selected) {
-    for (const id of groupToolIds) baseline.add(id);
+    for (const id of groupToolIds) {
+      if (isKnownToolId(id, allToolIds)) baseline.add(id);
+    }
   } else {
-    for (const id of groupToolIds) baseline.delete(id);
+    for (const id of groupToolIds) {
+      baseline.delete(id);
+    }
   }
 
-  if (selected && allToolIds.every((id) => baseline.has(id))) {
-    return null;
+  const next = Array.from(baseline);
+  if (
+    selected &&
+    variant === "include" &&
+    !hasUnmanagedCatalogEntries(next, allToolIds) &&
+    allToolIds.every((id) => baseline.has(id))
+  ) {
+    return [EXPLICIT_ALL];
   }
 
-  return Array.from(baseline).filter((id) => allToolIds.includes(id));
+  return next;
 }
 
-/// Selection state of a group of tools — used for the per-group "X of N
-/// selected" summary and the indeterminate visual state on group
-/// buttons. "Selected" follows the variant: included for `"include"`,
-/// excluded for `"exclude"`.
 export function groupSelectionState(
-  value: string[] | null | undefined,
+  allowedTools: string[] | null | undefined,
   groupToolIds: string[],
-  variant: ToolSelectionVariant = "include",
+  variant: CatalogVariant = "include",
 ): "all" | "some" | "none" {
   if (groupToolIds.length === 0) return "none";
   let selected = 0;
   for (const id of groupToolIds) {
-    if (isToolSelected(value, id, variant)) selected += 1;
+    if (isToolAllowed(allowedTools, id, variant)) selected += 1;
   }
   if (selected === 0) return "none";
   if (selected === groupToolIds.length) return "all";

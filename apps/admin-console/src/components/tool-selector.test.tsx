@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi, type Mock } from "vitest";
-import { cleanup, render, screen, act, fireEvent } from "@testing-library/react";
+import { cleanup, render, screen, act, fireEvent, within } from "@testing-library/react";
 import { ToolSelector } from "./tool-selector";
 import type { ToolInfo } from "@/lib/config-api";
 
@@ -25,6 +25,9 @@ interface SelectorProps {
   onChange?: Mock;
   tools?: ToolInfo[];
   variant?: "include" | "exclude";
+  overridden?: boolean;
+  onReset?: Mock;
+  resetLabel?: string;
 }
 
 function renderSelector(overrides: SelectorProps = {}) {
@@ -32,7 +35,7 @@ function renderSelector(overrides: SelectorProps = {}) {
   const props = {
     title: "Allowed Tools",
     description: "Configure which tools this agent can use.",
-    value: undefined as string[] | null | undefined,
+    value: undefined as string[] | undefined,
     onChange,
     tools: TOOLS,
     ...overrides,
@@ -54,9 +57,7 @@ describe("ToolSelector — default All-tools mode", () => {
     expect(radio.checked).toBe(true);
 
     // allBody description should be visible
-    expect(
-      screen.getByText(/Every tool published to the runtime/),
-    ).toBeTruthy();
+    expect(screen.getByText(/Every tool published to the runtime/)).toBeTruthy();
 
     // Group headers should NOT appear
     expect(screen.queryByText("Built-in")).toBeNull();
@@ -84,7 +85,16 @@ describe("ToolSelector — switching to Custom mode", () => {
     // But since value is controlled, let's render with an explicit array to see groups.
     cleanup();
 
-    renderSelector({ value: ["Bash", "Read", "plugin:reminder/add", "plugin:reminder/list", "mcp:weather/forecast", "mcp:db/query"] });
+    renderSelector({
+      value: [
+        "Bash",
+        "Read",
+        "plugin:reminder/add",
+        "plugin:reminder/list",
+        "mcp:weather/forecast",
+        "mcp:db/query",
+      ],
+    });
 
     // Tab strip exposes broad source kinds (Built-in/Plugin/MCP), each group
     // panel below exposes the specific source label. The text "Built-in" can
@@ -106,7 +116,16 @@ describe("ToolSelector — switching to Custom mode", () => {
 
 describe("ToolSelector — search filtering", () => {
   it("filters tools to only matching group when searching 'forecast'", () => {
-    renderSelector({ value: ["Bash", "Read", "plugin:reminder/add", "plugin:reminder/list", "mcp:weather/forecast", "mcp:db/query"] });
+    renderSelector({
+      value: [
+        "Bash",
+        "Read",
+        "plugin:reminder/add",
+        "plugin:reminder/list",
+        "mcp:weather/forecast",
+        "mcp:db/query",
+      ],
+    });
 
     const searchInput = screen.getByRole("searchbox");
     act(() => {
@@ -130,7 +149,13 @@ describe("ToolSelector — search filtering", () => {
 describe("ToolSelector — group Select all / Clear buttons", () => {
   it("calls onChange with full set when 'Select all' is clicked on the built-in group", () => {
     // value = all except Bash — so built-in group is partially selected
-    const value = ["Read", "plugin:reminder/add", "plugin:reminder/list", "mcp:weather/forecast", "mcp:db/query"];
+    const value = [
+      "Read",
+      "plugin:reminder/add",
+      "plugin:reminder/list",
+      "mcp:weather/forecast",
+      "mcp:db/query",
+    ];
     const { props } = renderSelector({ value });
 
     // Find "Select all" buttons — the built-in group is first
@@ -140,14 +165,20 @@ describe("ToolSelector — group Select all / Clear buttons", () => {
     });
 
     expect(props.onChange).toHaveBeenCalledOnce();
-    // setGroupSelection with all builtin tools selected plus existing — all 6 tools = collapse to explicit null
+    // setGroupSelection with every tool selected for include variant collapses to ["*"].
     const result = props.onChange.mock.calls[0][0];
-    // When every tool ends up selected, setGroupSelection returns null (explicit "all" override).
-    expect(result).toBeNull();
+    expect(result).toEqual(["*"]);
   });
 
   it("calls onChange excluding group tools when 'Clear' is clicked on the built-in group", () => {
-    const value = ["Bash", "Read", "plugin:reminder/add", "plugin:reminder/list", "mcp:weather/forecast", "mcp:db/query"];
+    const value = [
+      "Bash",
+      "Read",
+      "plugin:reminder/add",
+      "plugin:reminder/list",
+      "mcp:weather/forecast",
+      "mcp:db/query",
+    ];
     const { props } = renderSelector({ value });
 
     const clearBtns = screen.getAllByRole("button", { name: "Clear" });
@@ -183,7 +214,9 @@ describe("ToolSelector — group selection state badge", () => {
   });
 
   it("shows '1 of 2 selected' for the plugin group when one is selected", () => {
-    renderSelector({ value: ["Bash", "Read", "plugin:reminder/add", "mcp:weather/forecast", "mcp:db/query"] });
+    renderSelector({
+      value: ["Bash", "Read", "plugin:reminder/add", "mcp:weather/forecast", "mcp:db/query"],
+    });
 
     // Plugin group: 2 tools, 1 selected
     expect(screen.getByText("1 of 2 selected")).toBeTruthy();
@@ -192,26 +225,20 @@ describe("ToolSelector — group selection state badge", () => {
 
 describe("ToolSelector — variant='exclude' labels", () => {
   it("shows 'Block none' instead of 'All tools' for the all-mode radio", () => {
-    renderSelector({ value: undefined, variant: "exclude" });
+    renderSelector({ value: [], variant: "exclude" });
 
     expect(screen.getByText("Block none")).toBeTruthy();
     expect(screen.queryByText("All tools")).toBeNull();
   });
 
-  it("shows exclude-mode body text when value is undefined", () => {
-    renderSelector({ value: undefined, variant: "exclude" });
+  it("shows exclude-mode body text when value is the explicit empty list", () => {
+    renderSelector({ value: [], variant: "exclude" });
 
     expect(screen.getByText(/No tools are explicitly excluded/)).toBeTruthy();
   });
-});
 
-// R8 #1 — Regression suite for the exclude-variant data-loss bug. The
-// previous helpers were include-only: switching to "Custom exclusion"
-// from "Block none" would seed `excluded_tools` with every published
-// tool id, immediately stripping the agent of access to everything.
-describe("ToolSelector — variant='exclude' switching to Custom exclusion (R8 #1)", () => {
-  it("seeds custom mode with NO excluded tools (not the full tool list)", () => {
-    const { props } = renderSelector({ value: undefined, variant: "exclude" });
+  it("allows entering Custom exclusion from the explicit empty list", () => {
+    const { props } = renderSelector({ value: [], variant: "exclude" });
 
     const customLabel = screen.getByText("Custom exclusion");
     const customRadio = customLabel
@@ -222,19 +249,44 @@ describe("ToolSelector — variant='exclude' switching to Custom exclusion (R8 #
       fireEvent.click(customRadio);
     });
 
-    expect(props.onChange).toHaveBeenCalledOnce();
-    const result = props.onChange.mock.calls[0][0];
-    // Must be `[]` — every published tool would mean "block all tools",
-    // i.e. the agent would lose access to everything immediately on
-    // mode toggle.
-    expect(result).toEqual([]);
+    expect(props.onChange).toHaveBeenCalledWith([]);
+    expect(screen.getAllByText("Built-in").length).toBeGreaterThan(0);
+    expect(screen.getByText("Bash")).toBeTruthy();
   });
 
-  it("checking a tool from the empty excluded set ADDS that one tool", () => {
-    const { props } = renderSelector({ value: [], variant: "exclude" });
+  it("allows entering Custom exclusion from legacy null", () => {
+    renderSelector({ value: null, variant: "exclude" });
 
-    const bashIdEl = screen.getByText("Bash");
-    const bashLabel = bashIdEl.closest("label")!;
+    const customLabel = screen.getByText("Custom exclusion");
+    const customRadio = customLabel
+      .closest("label")!
+      .querySelector("input[type='radio']") as HTMLInputElement;
+
+    act(() => {
+      fireEvent.click(customRadio);
+    });
+
+    expect(screen.getAllByText("Built-in").length).toBeGreaterThan(0);
+    expect(screen.getByText("Bash")).toBeTruthy();
+  });
+
+  it("selects only the clicked excluded tool after legacy null is normalized", () => {
+    const view = renderSelector({ value: null, variant: "exclude" });
+
+    const customLabel = screen.getByText("Custom exclusion");
+    const customRadio = customLabel
+      .closest("label")!
+      .querySelector("input[type='radio']") as HTMLInputElement;
+
+    act(() => {
+      fireEvent.click(customRadio);
+    });
+
+    expect(view.props.onChange).toHaveBeenCalledWith([]);
+
+    view.rerender(<ToolSelector {...view.props} value={[]} />);
+
+    const bashLabel = screen.getByText("Bash").closest("label")!;
     const bashCheckbox = bashLabel.querySelector("input[type='checkbox']") as HTMLInputElement;
     expect(bashCheckbox.checked).toBe(false);
 
@@ -242,27 +294,43 @@ describe("ToolSelector — variant='exclude' switching to Custom exclusion (R8 #
       fireEvent.click(bashCheckbox);
     });
 
-    expect(props.onChange).toHaveBeenCalledOnce();
-    const result = props.onChange.mock.calls[0][0];
-    // Old helper returned `undefined` here (no add path for exclude),
-    // silently dropping the user's click.
-    expect(result).toEqual(["Bash"]);
+    expect(view.props.onChange).toHaveBeenLastCalledWith(["Bash"]);
+  });
+});
+
+describe("ToolSelector — legacy null deprecation hint", () => {
+  it("shows a deprecation banner when value is null", () => {
+    renderSelector({ value: null });
+    expect(screen.getByText(/Legacy config detected/)).toBeTruthy();
+    expect(screen.getByText(/Runtime treats this as the explicit \["\*"\] form/)).toBeTruthy();
+    expect(screen.queryByText(/Save to migrate/)).toBeNull();
   });
 
-  it("'Block none' radio emits explicit null (not undefined) so customized save overrides base", () => {
-    const { props } = renderSelector({ value: ["Bash"], variant: "exclude" });
+  it("shows a neutral exclude deprecation banner when value is null", () => {
+    renderSelector({ value: null, variant: "exclude" });
+    expect(screen.getByText(/Runtime treats this as the explicit \[\] form/)).toBeTruthy();
+    expect(screen.queryByText(/Save to migrate/)).toBeNull();
+  });
 
-    const blockNoneLabel = screen.getByText("Block none");
-    const blockNoneRadio = blockNoneLabel
+  it("does NOT show the banner when value is the explicit ['*']", () => {
+    renderSelector({ value: ["*"] });
+    expect(screen.queryByText(/Legacy config detected/)).toBeNull();
+  });
+
+  it("does NOT show the banner when value is the explicit empty list", () => {
+    renderSelector({ value: [] });
+    expect(screen.queryByText(/Legacy config detected/)).toBeNull();
+  });
+});
+
+describe("ToolSelector — explicit ['*'] all-mode", () => {
+  it("treats ['*'] as the 'all' mode (radio checked)", () => {
+    renderSelector({ value: ["*"] });
+    const allLabel = screen.getByText("All tools");
+    const radio = allLabel
       .closest("label")!
       .querySelector("input[type='radio']") as HTMLInputElement;
-
-    act(() => {
-      fireEvent.click(blockNoneRadio);
-    });
-
-    expect(props.onChange).toHaveBeenCalledOnce();
-    expect(props.onChange.mock.calls[0][0]).toBeNull();
+    expect(radio.checked).toBe(true);
   });
 });
 
@@ -305,5 +373,85 @@ describe("ToolSelector — toggling individual tool", () => {
     // Adding Bash to Read still not all tools, so should be explicit array
     expect(Array.isArray(result)).toBe(true);
     expect((result as string[]).sort()).toEqual(["Bash", "Read"].sort());
+  });
+});
+
+describe("ToolSelector — glob-backed selections", () => {
+  it("renders glob-matched tools as checked but not directly editable", () => {
+    const { props } = renderSelector({ value: ["mcp:weather/*"] });
+
+    const forecastIdEl = screen.getByText("mcp:weather/forecast");
+    const forecastLabel = forecastIdEl.closest("label")!;
+    const forecastCheckbox = forecastLabel.querySelector(
+      "input[type='checkbox']",
+    ) as HTMLInputElement;
+
+    expect(forecastCheckbox.checked).toBe(true);
+    expect(forecastCheckbox.disabled).toBe(true);
+    expect(screen.getByText("mcp:weather/*")).toBeTruthy();
+
+    act(() => {
+      fireEvent.click(forecastCheckbox);
+    });
+
+    expect(props.onChange).not.toHaveBeenCalled();
+  });
+
+  it("disables group Clear when a group contains glob-backed selections", () => {
+    renderSelector({ value: ["mcp:weather/*"] });
+
+    const weatherGroup = screen.getByText("MCP · weather").closest("div.rounded-md") as HTMLElement;
+    const clearButton = within(weatherGroup).getByRole("button", { name: "Clear" });
+
+    expect((clearButton as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it("protects the exclude-all wildcard from checkbox edits", () => {
+    const { props } = renderSelector({ value: ["*"], variant: "exclude" });
+
+    const bashLabel = screen.getByText("Bash").closest("label")!;
+    const bashCheckbox = bashLabel.querySelector("input[type='checkbox']") as HTMLInputElement;
+
+    expect(bashCheckbox.checked).toBe(true);
+    expect(bashCheckbox.disabled).toBe(true);
+    expect(screen.getAllByText("*").length).toBeGreaterThan(0);
+
+    act(() => {
+      fireEvent.click(bashCheckbox);
+    });
+
+    expect(props.onChange).not.toHaveBeenCalled();
+  });
+
+  it("protects the exclude-all wildcard from group clear", () => {
+    const { props } = renderSelector({ value: ["*"], variant: "exclude" });
+
+    const builtInLabels = screen.getAllByText("Built-in");
+    const builtInGroup = builtInLabels[builtInLabels.length - 1].closest("div.rounded-md")!;
+    const clearButton = within(builtInGroup as HTMLElement).getByRole("button", { name: "Clear" });
+
+    expect((clearButton as HTMLButtonElement).disabled).toBe(true);
+
+    act(() => {
+      fireEvent.click(clearButton);
+    });
+
+    expect(props.onChange).not.toHaveBeenCalled();
+  });
+});
+
+describe("ToolSelector — reset override control", () => {
+  it("calls onReset from the section reset button", () => {
+    const onReset = vi.fn();
+    renderSelector({
+      value: ["Bash"],
+      overridden: true,
+      onReset,
+      resetLabel: "Reset allowed_tools to default",
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Reset allowed_tools to default" }));
+
+    expect(onReset).toHaveBeenCalledOnce();
   });
 });

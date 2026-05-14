@@ -11,6 +11,7 @@ import { ADMIN_TOKEN_STORAGE_KEY } from "../lib/config-api";
 import type { AgentSpec } from "../lib/config-api";
 import { __resetAuthInterceptorForTesting } from "../lib/auth-interceptor";
 import { withQueryClient } from "../test/query";
+import { diffPatchableFields, normalizeCatalogForSave } from "./agent-editor/spec-helpers";
 
 function stubCapabilitiesFetch() {
   const fetchSpy = vi.fn(async () => ({
@@ -111,6 +112,33 @@ afterEach(() => {
   cleanup();
   vi.unstubAllGlobals();
   __resetAuthInterceptorForTesting();
+});
+
+describe("agent editor catalog save normalization", () => {
+  it("turns legacy null catalog fields into explicit save values", () => {
+    const legacySpec = {
+      ...agentSpec("legacy-agent"),
+      allowed_tools: null,
+      excluded_tools: null,
+    };
+
+    expect(normalizeCatalogForSave(legacySpec)).toMatchObject({
+      allowed_tools: ["*"],
+      excluded_tools: [],
+    });
+  });
+
+  it("does not turn legacy catalog normalization into builtin override patch fields", () => {
+    const legacySpec = {
+      ...agentSpec("legacy-agent"),
+      allowed_tools: null,
+      excluded_tools: null,
+    };
+
+    expect(
+      diffPatchableFields(normalizeCatalogForSave(legacySpec), normalizeCatalogForSave(legacySpec)),
+    ).toEqual({});
+  });
 });
 
 describe("agent editor tab ARIA semantics", () => {
@@ -1403,6 +1431,71 @@ describe("agent editor source badges", () => {
       ).toBe("default prompt");
     });
   });
+
+  it("shows per-field reset controls for customized tool catalog overrides", async () => {
+    const agentId = "tools-customized";
+    let resetAllowedCalled = false;
+    const fetchMock = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const href = fetchHref(input);
+      const method = init?.method?.toUpperCase() ?? "GET";
+      if (method === "GET" && href.includes("/v1/capabilities")) {
+        return jsonResponse({
+          agents: [],
+          tools: [
+            { id: "Bash", name: "Bash", description: "Run shell commands" },
+            { id: "Read", name: "Read", description: "Read files" },
+          ],
+          plugins: [],
+          skills: [],
+          models: [],
+          providers: [],
+          namespaces: [],
+        });
+      }
+      if (
+        method === "DELETE" &&
+        href.endsWith(`/v1/config/agents/${agentId}/overrides/allowed_tools`)
+      ) {
+        resetAllowedCalled = true;
+        return jsonResponse({});
+      }
+      if (method === "GET" && href.endsWith(`/v1/config/agents/${agentId}/meta`)) {
+        return jsonResponse({
+          source: { kind: "builtin", binary_version: "1.0" },
+          hidden: false,
+          user_overrides: {
+            allowed_tools: ["Read"],
+            excluded_tools: ["Bash"],
+          },
+          created_at: 0,
+          updated_at: 0,
+        });
+      }
+      if (method === "GET" && href.endsWith(`/v1/config/agents/${agentId}`)) {
+        return jsonResponse({
+          ...agentSpec(agentId),
+          allowed_tools: ["Read"],
+          excluded_tools: ["Bash"],
+        });
+      }
+      if (method === "GET" && href.includes("/v1/audit-log")) {
+        return jsonResponse({ items: [] });
+      }
+      throw new Error(`Unexpected fetch: ${method} ${href}`);
+    });
+
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderEditorRoute(`/agents/${agentId}`);
+    await screen.findByText("Customized");
+
+    fireEvent.click(screen.getByRole("tab", { name: "Tools" }));
+    fireEvent.click(screen.getByRole("button", { name: "Reset allowed_tools to default" }));
+
+    await waitFor(() => {
+      expect(resetAllowedCalled).toBe(true);
+    });
+  });
 });
 
 // ── endpoint override banner (R14) ───────────────────────────────────────────
@@ -1832,6 +1925,131 @@ describe("agent editor Save → PATCH vs PUT branching", () => {
 
     await screen.findByText(`Agent "${agentId}" saved (no patchable changes)`);
     expect(patchCalled).toBe(false);
+  });
+
+  it("does not PATCH legacy catalog normalization as builtin override fields", async () => {
+    const agentId = "legacy-builtin";
+    const agentBody = {
+      ...agentSpec(agentId),
+      allowed_tools: null,
+      excluded_tools: null,
+    };
+    let patchCalled = false;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+        const href = fetchHref(input);
+        const method = init?.method?.toUpperCase() ?? "GET";
+        if (method === "GET" && href.includes("/v1/capabilities")) {
+          return jsonResponse({
+            agents: [],
+            tools: [],
+            plugins: [],
+            skills: [],
+            models: [],
+            providers: [],
+            namespaces: [],
+          });
+        }
+        if (method === "GET" && href.endsWith(`/v1/config/agents/${agentId}/meta`)) {
+          return jsonResponse({
+            source: { kind: "builtin", binary_version: "1.0" },
+            hidden: false,
+            user_overrides: null,
+            created_at: 0,
+            updated_at: 0,
+          });
+        }
+        if (method === "PATCH" && href.endsWith(`/v1/config/agents/${agentId}/overrides`)) {
+          patchCalled = true;
+          return jsonResponse(agentBody);
+        }
+        if (method === "GET" && href.endsWith(`/v1/config/agents/${agentId}`)) {
+          return jsonResponse(agentBody);
+        }
+        if (method === "GET" && href.includes("/v1/audit-log")) {
+          return jsonResponse({ items: [] });
+        }
+        throw new Error(`Unexpected fetch: ${method} ${href}`);
+      }),
+    );
+
+    renderEditorRoute(`/agents/${agentId}`);
+    await screen.findByText(new RegExp(`Edit ${agentId}`, "i"));
+    fireEvent.click(screen.getByRole("button", { name: /^Save$/i }));
+
+    await screen.findByText(`Agent "${agentId}" saved (no patchable changes)`);
+    expect(patchCalled).toBe(false);
+  });
+
+  it("normalizes legacy null catalog fields for user record PUT payloads", async () => {
+    const agentId = "legacy-user";
+    const agentBody = {
+      ...agentSpec(agentId),
+      allowed_tools: null,
+      excluded_tools: null,
+    };
+    let patchCalled = false;
+    let putCalled = false;
+    let putBody: Record<string, unknown> = {};
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+        const href = fetchHref(input);
+        const method = init?.method?.toUpperCase() ?? "GET";
+        if (method === "GET" && href.includes("/v1/capabilities")) {
+          return jsonResponse({
+            agents: [],
+            tools: [],
+            plugins: [],
+            skills: [],
+            models: [],
+            providers: [],
+            namespaces: [],
+          });
+        }
+        if (method === "GET" && href.endsWith(`/v1/config/agents/${agentId}/meta`)) {
+          return jsonResponse({
+            source: { kind: "user" },
+            hidden: false,
+            user_overrides: null,
+            created_at: 0,
+            updated_at: 0,
+          });
+        }
+        if (method === "PATCH" && href.endsWith(`/v1/config/agents/${agentId}/overrides`)) {
+          patchCalled = true;
+          return jsonResponse(agentBody);
+        }
+        if (method === "PUT" && href.endsWith(`/v1/config/agents/${agentId}`)) {
+          putCalled = true;
+          putBody = JSON.parse((init?.body as string) ?? "{}") as Record<string, unknown>;
+          return jsonResponse(putBody);
+        }
+        if (method === "GET" && href.endsWith(`/v1/config/agents/${agentId}`)) {
+          return jsonResponse(agentBody);
+        }
+        if (method === "GET" && href.includes("/v1/audit-log")) {
+          return jsonResponse({ items: [] });
+        }
+        throw new Error(`Unexpected fetch: ${method} ${href}`);
+      }),
+    );
+
+    renderEditorRoute(`/agents/${agentId}`);
+    await screen.findByText("User-defined");
+    fireEvent.click(screen.getByRole("button", { name: /^Save$/i }));
+
+    await waitFor(() => {
+      expect(putCalled).toBe(true);
+    });
+
+    expect(patchCalled).toBe(false);
+    expect(putBody).toMatchObject({
+      allowed_tools: ["*"],
+      excluded_tools: [],
+    });
   });
 
   it("Save calls PATCH /overrides for Builtin records", async () => {
