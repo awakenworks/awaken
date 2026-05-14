@@ -50,9 +50,11 @@ import {
   lockedFieldChange,
   mergeLockedFields,
   partitionActiveHookFilter,
+  redactAgentSpecForEditing,
   redactAgentSpecForDisplay,
   redactEndpointForDisplay,
   redactSecretsForDisplay,
+  restoreUnchangedRedactions,
   togglePluginState,
   unknownAgentSpecFields,
 } from "@/lib/agent-editor-helpers";
@@ -601,17 +603,13 @@ export function AgentEditorPage() {
           data-testid="endpoint-override-banner"
         >
           <div className="font-semibold text-tone-warn">
-            This agent has an <span className="font-mono">endpoint</span> override set
-            through the config API.
+            This agent has an <span className="font-mono">endpoint</span> override set through the
+            config API.
           </div>
           <p className="mt-1 text-xs text-fg-soft">
-            The editor does not expose <span className="font-mono">endpoint</span> editing
-            — programmatic clients (CLI, scripts) installed this override. To inspect
-            or remove it, use{" "}
-            <span className="font-mono">
-              PATCH /v1/config/agents/{spec.id}/overrides
-            </span>{" "}
-            with{" "}
+            The editor does not expose <span className="font-mono">endpoint</span> editing —
+            programmatic clients (CLI, scripts) installed this override. To inspect or remove it,
+            use <span className="font-mono">PATCH /v1/config/agents/{spec.id}/overrides</span> with{" "}
             <span className="font-mono">{`{"_clear": ["endpoint"]}`}</span>.
           </p>
         </div>
@@ -1495,14 +1493,8 @@ function AllowedExcludedToolsSection({
       canonicalStringify([...savedPluginIds].sort()) ||
       canonicalStringify([...draftHookFilter].sort()) !==
         canonicalStringify([...savedHookFilter].sort()) ||
-      !deepEqualCanonical(
-        spec.allowed_tools ?? null,
-        savedSpec?.allowed_tools ?? null,
-      ) ||
-      !deepEqualCanonical(
-        spec.excluded_tools ?? null,
-        savedSpec?.excluded_tools ?? null,
-      ) ||
+      !deepEqualCanonical(spec.allowed_tools ?? null, savedSpec?.allowed_tools ?? null) ||
+      !deepEqualCanonical(spec.excluded_tools ?? null, savedSpec?.excluded_tools ?? null) ||
       !deepEqualCanonical(draftPermissionSection, savedPermissionSection));
   // Fetch the server-computed permission preview when the agent is saved
   // AND the saved spec has the permission plugin enabled.
@@ -1523,9 +1515,9 @@ function AllowedExcludedToolsSection({
             <span className="font-mono">allowed_tools</span> ∖{" "}
             <span className="font-mono">excluded_tools</span> over the published tool set —{" "}
             <em>after</em> allow/exclude lists, <em>before</em> runtime plugin filtering. The
-            permission plugin (and any other plugin running a BeforeInference hook) may still
-            gate or rewrite this list per call, so this is a candidate set, not a strict
-            superset of what the model finally sees.{" "}
+            permission plugin (and any other plugin running a BeforeInference hook) may still gate
+            or rewrite this list per call, so this is a candidate set, not a strict superset of what
+            the model finally sees.{" "}
             {permissionPluginEnabled
               ? "The permission preview below shows the server-computed effective list."
               : null}
@@ -1553,8 +1545,8 @@ function AllowedExcludedToolsSection({
 
       {visible.length === 0 ? (
         <div className="mt-4 rounded-md border border-tone-warn/35 bg-tone-warn/10 px-4 py-3 text-sm text-tone-warn">
-          The allow/exclude lists leave no tools. Combined with any permission policy this means
-          the model will see an empty tool set.
+          The allow/exclude lists leave no tools. Combined with any permission policy this means the
+          model will see an empty tool set.
         </div>
       ) : (
         <details className="mt-4 rounded-md border border-line bg-soft">
@@ -1578,10 +1570,9 @@ function AllowedExcludedToolsSection({
               className="mt-4 rounded-md border border-tone-warn/35 bg-tone-warn/10 px-3 py-2 text-xs text-tone-warn"
               data-testid="permission-preview-dirty-hint"
             >
-              The tools-after-lists count above reflects your unsaved draft; the permission
-              preview below reflects the <em>saved</em> config. Save to align them — preview
-              inputs (plugins, hook filter, allow/exclude lists, permission rules) have unsaved
-              changes.
+              The tools-after-lists count above reflects your unsaved draft; the permission preview
+              below reflects the <em>saved</em> config. Save to align them — preview inputs
+              (plugins, hook filter, allow/exclude lists, permission rules) have unsaved changes.
             </div>
           ) : null}
           <PermissionPreviewBlock
@@ -1655,10 +1646,13 @@ function PermissionPreviewBlock({
           <div className="mt-1 text-fg-soft">
             Default behavior: <span className="font-mono">{preview.default_behavior ?? "—"}</span>
             <span className="mx-2 text-fg-faint">·</span>
-            Effective: <span className="font-mono text-fg-strong">{preview.effective_tools.length}</span>
+            Effective:{" "}
+            <span className="font-mono text-fg-strong">{preview.effective_tools.length}</span>
             <span className="mx-2 text-fg-faint">·</span>
             Unconditionally denied:{" "}
-            <span className="font-mono text-fg-strong">{preview.unconditionally_denied.length}</span>
+            <span className="font-mono text-fg-strong">
+              {preview.unconditionally_denied.length}
+            </span>
             <span className="mx-2 text-fg-faint">·</span>
             Args-conditional rules:{" "}
             <span className="font-mono text-fg-strong">
@@ -1898,10 +1892,9 @@ function ActiveHookFilterSection({
         <div>
           <h4 className="text-base font-semibold text-fg-strong">Active hook filter</h4>
           <p className="mt-2 max-w-xl text-sm text-fg-soft">
-            Restricts runtime hooks to a chosen subset of loaded plugins. Default is "all" —
-            every loaded plugin's hooks run. Switch to "Filter" to allow only the plugins you
-            select below to execute hooks. Plugins not in the filter remain loaded but their
-            hooks are skipped.
+            Restricts runtime hooks to a chosen subset of loaded plugins. Default is "all" — every
+            loaded plugin's hooks run. Switch to "Filter" to allow only the plugins you select below
+            to execute hooks. Plugins not in the filter remain loaded but their hooks are skipped.
           </p>
         </div>
         <fieldset aria-label="Active hook filter mode" className="flex shrink-0 gap-2">
@@ -1995,8 +1988,8 @@ function ActiveHookFilterSection({
                 className="mt-2 text-xs text-fg-soft"
                 data-testid="active-hook-filter-last-entry-hint"
               >
-                Filter mode requires at least one plugin. Switch to{" "}
-                <em>All plugins</em> above to disable filtering entirely.
+                Filter mode requires at least one plugin. Switch to <em>All plugins</em> above to
+                disable filtering entirely.
               </p>
             ) : null}
           </>
@@ -2150,26 +2143,26 @@ function JsonEditorSection({
   isNew: boolean;
   replaceSpec: (next: AgentSpec) => void;
 }) {
-  // The textarea shows a redacted view of the spec (today: just `endpoint`
-  // auth secrets) so a real bearer token / api_key never lands in the
-  // admin DOM. The Apply path validates the user's parsed payload
-  // against the redacted display copy FIRST (to detect any edit to a
-  // locked field even when its value reads `***`), and only AFTER the
-  // compare passes does it overlay the real locked-field values from
-  // the current spec back into the candidate. Doing it in this order
-  // is load-bearing — overlaying first would mask user edits to
-  // `endpoint.base_url` / `endpoint.auth.*` / `registry`. See
-  // `mergeLockedFields` and the inline comment in `handleApply`.
+  // The textarea shows a redacted view of the spec so real credentials
+  // from endpoint auth, plugin/provider `sections.*`, or other
+  // secret-shaped fields never land in the admin DOM. The Apply path
+  // validates the user's parsed payload against this exact redacted
+  // display copy FIRST (to detect edits to locked fields even when their
+  // value reads `***`), then restores unchanged redaction markers before the
+  // candidate reaches validation / draft state. Doing this before
+  // `mergeLockedFields` is load-bearing — overlaying first would mask
+  // user edits to `endpoint.base_url` / `endpoint.auth.*` / `registry`.
+  const editingSpec = useMemo(() => redactAgentSpecForEditing(spec), [spec]);
   const specSerialized = useMemo(
-    () => JSON.stringify(redactAgentSpecForDisplay(spec), null, 2),
-    [spec],
+    () => JSON.stringify(editingSpec.redacted, null, 2),
+    [editingSpec],
   );
   const [draft, setDraft] = useState<string>(() => specSerialized);
   const [error, setError] = useState<string | null>(null);
   const [touched, setTouched] = useState(false);
   const [applying, setApplying] = useState(false);
   const toast = useToast();
-  const hasRedactedEndpoint = Boolean(spec.endpoint);
+  const hasRedactedSecrets = editingSpec.redactions.length > 0;
 
   // Re-sync the textarea when the underlying spec changes from elsewhere
   // (e.g. another tab edits, restore from history) and the user has not yet
@@ -2222,7 +2215,7 @@ function JsonEditorSection({
     const IDENTITY_FIELDS: Array<keyof AgentSpec> = ["id", "created_at", "updated_at"];
     for (const field of IDENTITY_FIELDS) {
       if (!(field in parsedRecord)) continue;
-      if (!deepEqualCanonical(parsedRecord[field], spec[field])) {
+      if (!deepEqualCanonical(parsedRecord[field], editingSpec.redacted[field])) {
         setError(
           `\`${field}\` is a server-managed identity / timestamp field and can't be edited from Raw JSON. Revert it to its current value to apply.`,
         );
@@ -2239,7 +2232,7 @@ function JsonEditorSection({
     // overlay overwrites parsed.endpoint with spec.endpoint, so any
     // post-overlay compare would always read "equal" and silently drop
     // the user's edit.
-    const displaySpec = redactAgentSpecForDisplay(spec);
+    const displaySpec = editingSpec.redacted;
     const lockedField = lockedFieldChange(displaySpec, parsedRecord);
     if (lockedField) {
       setError(
@@ -2247,11 +2240,15 @@ function JsonEditorSection({
       );
       return;
     }
+    const withRestoredRedactions = restoreUnchangedRedactions(
+      parsedRecord,
+      editingSpec.redactions,
+    ) as Record<string, unknown>;
     // Now overlay the real locked-field values onto the parsed payload so
     // the candidate carries the actual `endpoint.auth.bearer_token` (not
-    // the `***` placeholder the textarea showed). Redaction stays purely
+    // the `***` redaction marker the textarea showed). Redaction stays purely
     // a display concern from here on.
-    const withRealLockedFields = mergeLockedFields(parsedRecord, spec);
+    const withRealLockedFields = mergeLockedFields(withRestoredRedactions, spec);
     // Build the would-be-applied payload (identity fields are preserved by
     // replaceSpec) and let the server type-check the rest before we mutate
     // editor state. The same validate endpoint backs the Validate button so
@@ -2270,9 +2267,7 @@ function JsonEditorSection({
       setTouched(false);
       toast.success("JSON applied to draft. Click Save to publish.");
     } catch (err) {
-      setError(
-        `Validation failed: ${err instanceof Error ? err.message : String(err)}`,
-      );
+      setError(`Validation failed: ${err instanceof Error ? err.message : String(err)}`);
     } finally {
       setApplying(false);
     }
@@ -2299,22 +2294,22 @@ function JsonEditorSection({
             className="mt-2 max-w-xl text-xs text-fg-soft"
             data-testid="raw-json-locked-field-help"
           >
-            Locked fields are normalized on Apply. For{" "}
-            <span className="font-mono">endpoint</span> and{" "}
-            <span className="font-mono">registry</span> specifically, an explicit{" "}
-            <span className="font-mono">null</span> is treated the same as absence when the
-            current spec has no value — both mean "no override here". Use the Customization
-            controls above to clear an existing override.
+            Locked fields are normalized on Apply. For <span className="font-mono">endpoint</span>{" "}
+            and <span className="font-mono">registry</span> specifically, an explicit{" "}
+            <span className="font-mono">null</span> is treated the same as absence when the current
+            spec has no value — both mean "no override here". Use the Customization controls above
+            to clear an existing override.
           </p>
-          {hasRedactedEndpoint ? (
+          {hasRedactedSecrets ? (
             <p
               className="mt-2 max-w-xl text-xs text-fg-soft"
               data-testid="raw-json-redaction-notice"
             >
-              <span className="font-mono">endpoint</span> credential fields are masked as
+              Credential-like fields are masked as
               <span className="mx-1 font-mono">***</span>
-              in this view. Apply restores the real values automatically;{" "}
-              <span className="font-mono">endpoint</span> remains read-only from this editor.
+              in this view. Apply restores unchanged redaction markers automatically;{" "}
+              <span className="font-mono">endpoint</span> and{" "}
+              <span className="font-mono">registry</span> remain read-only from this editor.
             </p>
           ) : null}
         </div>
@@ -2453,9 +2448,7 @@ function ContextPolicySection({
               type="number"
               min={0}
               value={policy.min_recent_messages}
-              onChange={(event) =>
-                update("min_recent_messages", Number(event.target.value) || 0)
-              }
+              onChange={(event) => update("min_recent_messages", Number(event.target.value) || 0)}
               className="w-full rounded-xl border border-line-strong px-3 py-2 text-sm text-fg-strong outline-none transition focus:border-line-strong"
             />
           </Field>
@@ -2629,9 +2622,7 @@ function HistoryPanel({
     const redactedCurrent = redactSecretsForDisplay(redactAgentSpecForDisplay(spec));
     const redactedTarget =
       targetSpec && typeof targetSpec === "object"
-        ? redactSecretsForDisplay(
-            redactAgentSpecForDisplay(targetSpec as unknown as AgentSpec),
-          )
+        ? redactSecretsForDisplay(redactAgentSpecForDisplay(targetSpec as unknown as AgentSpec))
         : null;
     const confirmed = await confirm({
       title: "Restore agent to this version?",

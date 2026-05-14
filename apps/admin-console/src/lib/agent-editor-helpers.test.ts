@@ -12,10 +12,12 @@ import {
   lockedFieldChange,
   mergeLockedFields,
   partitionActiveHookFilter,
+  redactAgentSpecForEditing,
   redactAgentSpecForDisplay,
   redactEndpointForDisplay,
   redactSecretString,
   redactSecretsForDisplay,
+  restoreUnchangedRedactions,
   togglePluginState,
   unknownAgentSpecFields,
 } from "./agent-editor-helpers";
@@ -47,9 +49,9 @@ describe("canonicalStringify / deepEqualCanonical", () => {
   });
 
   it("recursively sorts nested keys", () => {
-    expect(
-      canonicalStringify({ outer: { y: 2, x: 1 }, list: [{ b: 2, a: 1 }] }),
-    ).toBe(canonicalStringify({ list: [{ a: 1, b: 2 }], outer: { x: 1, y: 2 } }));
+    expect(canonicalStringify({ outer: { y: 2, x: 1 }, list: [{ b: 2, a: 1 }] })).toBe(
+      canonicalStringify({ list: [{ a: 1, b: 2 }], outer: { x: 1, y: 2 } }),
+    );
   });
 
   it("preserves array order (semantically significant)", () => {
@@ -192,6 +194,34 @@ describe("diffPatchableAgentFields", () => {
       sections: { foo: { b: 2, a: 1 } },
     };
     expect(diffPatchableAgentFields(current, original)).toEqual(EMPTY_PLAN);
+  });
+
+  it("emits sections as a per-key patch and uses null to delete inherited keys", () => {
+    const original = baseSpec({
+      sections: {
+        permission: { default_behavior: "ask", rules: [] },
+        oauth: { client_secret: "old-secret" },
+        unchanged: { enabled: true },
+      },
+    });
+    const current = baseSpec({
+      sections: {
+        oauth: { client_secret: "new-secret" },
+        unchanged: { enabled: true },
+        added: { mode: "strict" },
+      },
+    });
+
+    expect(diffPatchableAgentFields(current, original)).toEqual({
+      patch: {
+        sections: {
+          permission: null,
+          oauth: { client_secret: "new-secret" },
+          added: { mode: "strict" },
+        },
+      },
+      clear: [],
+    });
   });
 
   it("emits context_policy when it changed (regression for G1)", () => {
@@ -419,9 +449,10 @@ describe("partitionActiveHookFilter", () => {
   });
 
   it("classifies entries with no matching plugin as stale", () => {
-    expect(
-      partitionActiveHookFilter(["permission", "ghost"], ["permission"]),
-    ).toEqual({ active: ["permission"], stale: ["ghost"] });
+    expect(partitionActiveHookFilter(["permission", "ghost"], ["permission"])).toEqual({
+      active: ["permission"],
+      stale: ["ghost"],
+    });
   });
 
   it("treats undefined filter as no entries", () => {
@@ -440,10 +471,7 @@ describe("partitionActiveHookFilter", () => {
 
   it("de-duplicates within the result while preserving first-seen order", () => {
     expect(
-      partitionActiveHookFilter(
-        ["permission", "permission", "ghost", "ghost"],
-        ["permission"],
-      ),
+      partitionActiveHookFilter(["permission", "permission", "ghost", "ghost"], ["permission"]),
     ).toEqual({ active: ["permission"], stale: ["ghost"] });
   });
 });
@@ -772,11 +800,7 @@ describe("redactSecretsForDisplay (R6 #B/#C — generic deep redact)", () => {
   it("redacts secret strings inside arrays of primitives", () => {
     const event = {
       payload: {
-        lines: [
-          "first line",
-          "Bearer abc123def456ghi789jkl",
-          "Cookie: session=raw-session-id",
-        ],
+        lines: ["first line", "Bearer abc123def456ghi789jkl", "Cookie: session=raw-session-id"],
       },
     };
     const redacted = redactSecretsForDisplay(event);
@@ -877,6 +901,47 @@ describe("redactAgentSpecForDisplay (R3 #1)", () => {
   });
 });
 
+describe("redactAgentSpecForEditing / restoreUnchangedRedactions", () => {
+  it("redacts sections secrets and restores unchanged redactions", () => {
+    const spec = baseSpec({
+      sections: {
+        oauth: { client_secret: "live-secret", label: "prod" },
+        observability: { api_key: "live-api-key" },
+      },
+    });
+
+    const { redacted, redactions } = redactAgentSpecForEditing(spec);
+    const serialized = JSON.stringify(redacted);
+
+    expect(serialized).not.toContain("live-secret");
+    expect(serialized).not.toContain("live-api-key");
+    expect((redacted.sections?.oauth as Record<string, unknown>).client_secret).toBe("***");
+    expect((redacted.sections?.observability as Record<string, unknown>).api_key).toBe("***");
+
+    const restored = restoreUnchangedRedactions(
+      JSON.parse(JSON.stringify(redacted)) as AgentSpec,
+      redactions,
+    );
+    expect((restored.sections?.oauth as Record<string, unknown>).client_secret).toBe("live-secret");
+    expect((restored.sections?.observability as Record<string, unknown>).api_key).toBe(
+      "live-api-key",
+    );
+  });
+
+  it("keeps a user-entered replacement instead of restoring the old secret", () => {
+    const spec = baseSpec({
+      sections: { oauth: { client_secret: "old-secret" } },
+    });
+    const { redacted, redactions } = redactAgentSpecForEditing(spec);
+    const parsed = JSON.parse(JSON.stringify(redacted)) as AgentSpec;
+    (parsed.sections?.oauth as Record<string, unknown>).client_secret = "new-secret";
+
+    const restored = restoreUnchangedRedactions(parsed, redactions);
+
+    expect((restored.sections?.oauth as Record<string, unknown>).client_secret).toBe("new-secret");
+  });
+});
+
 describe("ALLOWED_AGENT_FIELDS / unknownAgentSpecFields (R3 #3)", () => {
   it("includes identity, locked, and patchable fields", () => {
     expect(ALLOWED_AGENT_FIELDS).toEqual(
@@ -934,12 +999,18 @@ describe("ALLOWED_AGENT_FIELDS / unknownAgentSpecFields (R3 #3)", () => {
 describe("mergeLockedFields (R3 #1)", () => {
   it("overlays current spec's endpoint and registry onto parsed", () => {
     const spec = baseSpec({
-      endpoint: { base_url: "https://real.example.com", auth: { type: "bearer", bearer_token: "real" } },
+      endpoint: {
+        base_url: "https://real.example.com",
+        auth: { type: "bearer", bearer_token: "real" },
+      },
       registry: "cloud",
     });
     const parsed: Record<string, unknown> = {
       ...spec,
-      endpoint: { base_url: "https://real.example.com", auth: { type: "bearer", bearer_token: "***" } },
+      endpoint: {
+        base_url: "https://real.example.com",
+        auth: { type: "bearer", bearer_token: "***" },
+      },
       registry: "cloud",
     };
     const merged = mergeLockedFields(parsed, spec);
@@ -1081,7 +1152,7 @@ describe("Raw JSON locked-field check ordering (R5 #1)", () => {
     const displaySpec = redactAgentSpecForDisplay(spec);
     // Scenario: user changed `endpoint.base_url` in Raw JSON. The
     // textarea showed `***` for the bearer token; the user kept that
-    // placeholder but flipped the URL.
+    // redaction marker but flipped the URL.
     const parsed = {
       ...spec,
       endpoint: {
@@ -1102,7 +1173,7 @@ describe("Raw JSON locked-field check ordering (R5 #1)", () => {
     expect(lockedFieldChange(spec, buggyMerged)).toBeNull();
   });
 
-  it("display-spec compare allows the `***` placeholder to survive (no false positive)", () => {
+  it("display-spec compare allows the `***` redaction marker to survive (no false positive)", () => {
     const spec = baseSpec({
       endpoint: {
         base_url: "https://real.example.com",
@@ -1291,7 +1362,7 @@ describe("redactSecretString (R12 #3)", () => {
   });
 
   it("masks inline Bearer tokens", () => {
-    const out = redactSecretString('called with Bearer abc123def456ghi789jkl');
+    const out = redactSecretString("called with Bearer abc123def456ghi789jkl");
     expect(out).toContain("Bearer ***");
     expect(out).not.toContain("abc123def456ghi789jkl");
   });
@@ -1330,9 +1401,7 @@ describe("redactSecretString (R12 #3)", () => {
   });
 
   it("masks OpenAI-style sk- and Stripe-style sk_ keys", () => {
-    const out = redactSecretString(
-      "key1=sk-abcdefghijklmnop1234567890 key2=sk_live_abc123XYZ",
-    );
+    const out = redactSecretString("key1=sk-abcdefghijklmnop1234567890 key2=sk_live_abc123XYZ");
     expect(out).not.toContain("sk-abcdefghijklmnop1234567890");
     expect(out).not.toContain("sk_live_abc123XYZ");
   });
@@ -1347,8 +1416,6 @@ describe("redactSecretString (R12 #3)", () => {
     expect(redactSecretString("")).toBe("");
     // Defensive — the helper is called from formatJson which already
     // narrows to string, but defensive coding pays off if callers drift.
-    expect(redactSecretString(undefined as unknown as string)).toBe(
-      undefined as unknown as string,
-    );
+    expect(redactSecretString(undefined as unknown as string)).toBe(undefined as unknown as string);
   });
 });

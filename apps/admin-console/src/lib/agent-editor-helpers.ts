@@ -171,13 +171,17 @@ export interface AgentPatchPlan {
  *     override would stay stuck as explicit-null. Detecting clear
  *     first routes `null → undefined` to the CLEAR list instead.
  */
-export function diffPatchableAgentFields(
-  current: AgentSpec,
-  original: AgentSpec,
-): AgentPatchPlan {
+export function diffPatchableAgentFields(current: AgentSpec, original: AgentSpec): AgentPatchPlan {
   const patch: Record<string, unknown> = {};
   const clear: Array<keyof AgentSpec> = [];
   for (const key of PATCHABLE_AGENT_FIELDS) {
+    if (key === "sections") {
+      const sectionsPatch = diffSectionsForPatch(current.sections, original.sections);
+      if (sectionsPatch) {
+        patch.sections = sectionsPatch;
+      }
+      continue;
+    }
     if (key === "active_hook_filter") {
       const curArr = current.active_hook_filter ?? [];
       const origArr = original.active_hook_filter ?? [];
@@ -197,6 +201,34 @@ export function diffPatchableAgentFields(
     patch[key] = a;
   }
   return { patch, clear };
+}
+
+function asSectionRecord(value: AgentSpec["sections"]): Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  return Object.fromEntries(Object.entries(value).filter(([, item]) => item !== undefined));
+}
+
+function diffSectionsForPatch(
+  current: AgentSpec["sections"],
+  original: AgentSpec["sections"],
+): Record<string, unknown> | null {
+  const currentSections = asSectionRecord(current);
+  const originalSections = asSectionRecord(original);
+  const patch: Record<string, unknown> = {};
+  const keys = new Set([...Object.keys(originalSections), ...Object.keys(currentSections)]);
+  for (const sectionKey of keys) {
+    const currentHas = Object.prototype.hasOwnProperty.call(currentSections, sectionKey);
+    const originalHas = Object.prototype.hasOwnProperty.call(originalSections, sectionKey);
+    if (!currentHas && originalHas) {
+      patch[sectionKey] = null;
+      continue;
+    }
+    if (!currentHas) continue;
+    const nextValue = currentSections[sectionKey];
+    if (originalHas && deepEqualCanonical(nextValue, originalSections[sectionKey])) continue;
+    patch[sectionKey] = nextValue;
+  }
+  return Object.keys(patch).length > 0 ? patch : null;
 }
 
 /**
@@ -347,6 +379,14 @@ const SENSITIVE_HEADER_KEY_PATTERNS = [
   "token",
 ];
 
+export type RedactionPathSegment = string | number;
+
+export interface RedactionEntry {
+  path: RedactionPathSegment[];
+  original: unknown;
+  redacted: unknown;
+}
+
 function normalizeSecretKey(key: string): string {
   return key.toLowerCase().replace(/[-_\s]/g, "");
 }
@@ -362,7 +402,33 @@ function isSensitiveHeaderKey(parentKey: string, key: string): boolean {
   return SENSITIVE_HEADER_KEY_PATTERNS.some((pattern) => normalized.includes(pattern));
 }
 
-function redactRecord(value: unknown, parentKey: string = ""): unknown {
+function cloneJsonValue<T>(value: T): T {
+  if (value === undefined || value === null) return value;
+  const encoded = JSON.stringify(value);
+  if (encoded === undefined) return value;
+  return JSON.parse(encoded) as T;
+}
+
+function recordRedaction(
+  redactions: RedactionEntry[] | undefined,
+  path: RedactionPathSegment[],
+  original: unknown,
+  redacted: unknown,
+) {
+  if (!redactions || deepEqualCanonical(original, redacted)) return;
+  redactions.push({
+    path: [...path],
+    original: cloneJsonValue(original),
+    redacted: cloneJsonValue(redacted),
+  });
+}
+
+function redactRecord(
+  value: unknown,
+  parentKey: string = "",
+  path: RedactionPathSegment[] = [],
+  redactions?: RedactionEntry[],
+): unknown {
   if (value === null || value === undefined) return value;
   // Primitive strings — Trace events / audit snapshots / DiffModal feed
   // arbitrary payloads through this redactor. A `payload.output` /
@@ -371,8 +437,14 @@ function redactRecord(value: unknown, parentKey: string = ""): unknown {
   // `Bearer …` tokens, JWTs, `sk-…` keys, etc. Apply pattern-based
   // string redaction so every display path that calls
   // `redactSecretsForDisplay` shares one defensive layer.
-  if (typeof value === "string") return redactSecretString(value);
-  if (Array.isArray(value)) return value.map((item) => redactRecord(item, ""));
+  if (typeof value === "string") {
+    const redacted = redactSecretString(value);
+    recordRedaction(redactions, path, value, redacted);
+    return redacted;
+  }
+  if (Array.isArray(value)) {
+    return value.map((item, index) => redactRecord(item, "", [...path, index], redactions));
+  }
   if (typeof value === "object") {
     // Default-deny on any nested `auth` object: `RemoteAuth` allows
     // arbitrary keys, so a credential under `jwt` / `cookie` / `session` /
@@ -388,16 +460,19 @@ function redactRecord(value: unknown, parentKey: string = ""): unknown {
           safeAuth[key] = inner;
         } else {
           safeAuth[key] = REDACTED_PLACEHOLDER;
+          recordRedaction(redactions, [...path, key], inner, REDACTED_PLACEHOLDER);
         }
       }
       return safeAuth;
     }
     const next: Record<string, unknown> = {};
     for (const [key, inner] of Object.entries(value as Record<string, unknown>)) {
+      const nextPath = [...path, key];
       if (isSensitiveKey(key) || isSensitiveHeaderKey(parentKey, key)) {
         next[key] = inner === null || inner === undefined ? inner : REDACTED_PLACEHOLDER;
+        recordRedaction(redactions, nextPath, inner, next[key]);
       } else {
-        next[key] = redactRecord(inner, key);
+        next[key] = redactRecord(inner, key, nextPath, redactions);
       }
     }
     return next;
@@ -458,6 +533,66 @@ export function redactEndpointForDisplay(endpoint: RemoteEndpoint): RemoteEndpoi
  */
 export function redactSecretsForDisplay<T>(value: T): T {
   return redactRecord(value) as T;
+}
+
+export interface RedactedAgentSpecForEditing {
+  redacted: AgentSpec;
+  redactions: RedactionEntry[];
+}
+
+export function redactAgentSpecForEditing(spec: AgentSpec): RedactedAgentSpecForEditing {
+  const redactions: RedactionEntry[] = [];
+  return {
+    redacted: redactRecord(spec, "", [], redactions) as AgentSpec,
+    redactions,
+  };
+}
+
+function readPath(root: unknown, path: readonly RedactionPathSegment[]) {
+  let current = root;
+  for (const segment of path) {
+    if (current === null || typeof current !== "object") {
+      return { found: false, value: undefined };
+    }
+    if (!Object.prototype.hasOwnProperty.call(current, segment)) {
+      return { found: false, value: undefined };
+    }
+    current = Array.isArray(current)
+      ? current[Number(segment)]
+      : (current as Record<string, unknown>)[String(segment)];
+  }
+  return { found: true, value: current };
+}
+
+function writePath(root: unknown, path: readonly RedactionPathSegment[], value: unknown): boolean {
+  if (path.length === 0) return false;
+  let current = root;
+  for (const segment of path.slice(0, -1)) {
+    if (current === null || typeof current !== "object") return false;
+    current = Array.isArray(current)
+      ? current[Number(segment)]
+      : (current as Record<string, unknown>)[String(segment)];
+  }
+  if (current === null || typeof current !== "object") return false;
+  const leaf = path[path.length - 1];
+  if (Array.isArray(current)) {
+    current[Number(leaf)] = cloneJsonValue(value);
+  } else {
+    (current as Record<string, unknown>)[String(leaf)] = cloneJsonValue(value);
+  }
+  return true;
+}
+
+export function restoreUnchangedRedactions<T>(parsed: T, redactions: readonly RedactionEntry[]): T {
+  if (redactions.length === 0) return parsed;
+  const restored = cloneJsonValue(parsed);
+  for (const redaction of redactions) {
+    const current = readPath(restored, redaction.path);
+    if (current.found && deepEqualCanonical(current.value, redaction.redacted)) {
+      writePath(restored, redaction.path, redaction.original);
+    }
+  }
+  return restored;
 }
 
 export interface RedactedFieldChange {
@@ -558,10 +693,7 @@ export function redactSecretString(input: string): string {
     "$1=***",
   );
   // JWT — three dot-separated base64url segments starting with eyJ.
-  result = result.replace(
-    /\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/g,
-    "***",
-  );
+  result = result.replace(/\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/g, "***");
   // OpenAI-style sk-<long>, Stripe-style sk_(live|test)_<long>.
   result = result.replace(/\bsk-[A-Za-z0-9_-]{16,}/g, "***");
   result = result.replace(/\bsk_(?:live|test)_[A-Za-z0-9]+/g, "***");
@@ -616,7 +748,7 @@ export function unknownAgentSpecFields(parsed: Record<string, unknown>): string[
  * silently dropping any user edit to `base_url` / `auth.*` / `target` /
  * `registry`. The compare must run first against the redacted display
  * spec; this merge then re-introduces the real credentials so the
- * candidate carries the live values rather than the `***` placeholder.
+ * candidate carries the live values rather than the `***` redaction.
  *
  * Returns a shallow copy; never mutates the inputs.
  */
