@@ -33,11 +33,24 @@ pub trait SamplingHandler: Send + Sync {
 /// at the registry level (the previous design leak documented in
 /// `awaken-ext-mcp` audit).
 ///
-/// Returns `None` when the agent shouldn't receive sampling (e.g.
-/// agent's `model_id` doesn't resolve, or the runtime explicitly opts
-/// out). The transport then falls back to its registry-level fixed
-/// handler — when even that is `None`, the server-initiated request is
-/// rejected with a JSON-RPC method-not-supported error.
+/// `for_agent` returns:
+/// - `Some(handler)` — bind this agent's call to that handler;
+///   `sampling/createMessage` during the call routes there.
+/// - `None` — the factory **explicitly refuses** to bind this agent
+///   (e.g. `agent.model_id` doesn't resolve, agent opted out, tenant
+///   has no sampling quota). The manager maps this to
+///   `McpCallSampling::Denied`; the transport then rejects the
+///   server-initiated `sampling/createMessage` with JSON-RPC
+///   method-not-supported. **It does NOT fall back to the registry-
+///   level fixed handler** — falling through would re-introduce the
+///   cross-agent leak this factory exists to prevent.
+///
+/// The "no factory configured at all" case is a separate state
+/// (`McpCallSampling::Inherit`) and is the only path that falls back
+/// to the transport-level fixed handler. See [`McpCallSampling`] in
+/// `awaken_ext_mcp::transport` for the full three-state semantics.
+///
+/// [`McpCallSampling`]: crate::transport::McpCallSampling
 #[async_trait]
 pub trait SamplingHandlerFactory: Send + Sync {
     async fn for_agent(&self, agent_spec: &AgentSpec) -> Option<Arc<dyn SamplingHandler>>;
@@ -99,13 +112,19 @@ impl DefaultSamplingHandler {
     /// error so the server learns its sampling request can't be
     /// serviced and can decide how to proceed (retry with text only,
     /// fall back to a different client, etc).
+    ///
+    /// Multiple text blocks within a single message are joined with a
+    /// blank line ("\n\n") so `"hello"` + `"world"` becomes
+    /// `"hello\n\nworld"`, not `"helloworld"`. The spec doesn't
+    /// prescribe a join; blank-line is the convention for prose
+    /// paragraphs and avoids accidentally fusing tokens.
     fn convert_messages(params: &CreateMessageParams) -> Result<Vec<Message>, McpTransportError> {
         let mut out = Vec::with_capacity(params.messages.len());
         for msg in &params.messages {
-            let mut text = String::new();
+            let mut text_parts: Vec<&str> = Vec::with_capacity(msg.content.len());
             for block in &msg.content {
                 match block {
-                    SamplingContent::Text { text: t, .. } => text.push_str(t),
+                    SamplingContent::Text { text: t, .. } => text_parts.push(t.as_str()),
                     other => {
                         return Err(McpTransportError::TransportError(format!(
                             "sampling request contains unsupported content kind: {} \
@@ -116,9 +135,10 @@ impl DefaultSamplingHandler {
                     }
                 }
             }
+            let joined = text_parts.join("\n\n");
             out.push(match msg.role {
-                mcp::Role::User => Message::user(text),
-                mcp::Role::Assistant => Message::assistant(text),
+                mcp::Role::User => Message::user(joined),
+                mcp::Role::Assistant => Message::assistant(joined),
             });
         }
         Ok(out)
@@ -176,12 +196,65 @@ fn sampling_content_kind(content: &SamplingContent) -> &'static str {
     }
 }
 
+/// Reject sampling requests whose presence would silently change LLM
+/// behaviour. The MCP spec lets the server specify model preferences,
+/// stop sequences, tool choice, etc.; awaken's handler currently maps
+/// only a small subset (system prompt, temperature, max_tokens), so
+/// honouring these would produce a different reply than the server
+/// asked for — a class of bug that's invisible until model output goes
+/// subtly wrong. Returning an error puts the burden back on the server
+/// to either retry without the unsupported field or fall over to a
+/// different client.
+///
+/// Returns `Err` with a human-readable description of the offending
+/// field. `Ok(())` means every behavioural field is either absent or
+/// in awaken's supported subset.
+fn reject_unsupported_sampling_fields(
+    params: &CreateMessageParams,
+) -> Result<(), McpTransportError> {
+    let mut unsupported: Vec<&'static str> = Vec::new();
+    if params
+        .stop_sequences
+        .as_ref()
+        .is_some_and(|s| !s.is_empty())
+    {
+        unsupported.push("stopSequences");
+    }
+    if params.include_context.is_some() {
+        unsupported.push("includeContext");
+    }
+    if params.model_preferences.is_some() {
+        unsupported.push("modelPreferences");
+    }
+    if params.tools.as_ref().is_some_and(|t| !t.is_empty()) {
+        unsupported.push("tools");
+    }
+    if params.tool_choice.is_some() {
+        unsupported.push("toolChoice");
+    }
+    if !unsupported.is_empty() {
+        return Err(McpTransportError::TransportError(format!(
+            "sampling request sets unsupported field(s): {} \
+             (awaken's DefaultSamplingHandler maps systemPrompt, \
+             temperature, maxTokens only; honouring others silently \
+             would change the LLM's reply away from what the server \
+             requested)",
+            unsupported.join(", ")
+        )));
+    }
+    Ok(())
+}
+
 #[async_trait]
 impl SamplingHandler for DefaultSamplingHandler {
     async fn handle_create_message(
         &self,
         params: CreateMessageParams,
     ) -> Result<CreateMessageResult, McpTransportError> {
+        // Reject BEFORE message conversion so the server sees the
+        // field-level objection even when content happens to be valid.
+        reject_unsupported_sampling_fields(&params)?;
+
         let messages = Self::convert_messages(&params)?;
         if messages.is_empty() {
             return Err(McpTransportError::TransportError(
@@ -466,6 +539,102 @@ mod tests {
         assert_eq!(mcp_result.stop_reason.as_deref(), Some("endTurn"));
         assert!(matches!(mcp_result.role, mcp::Role::Assistant));
         assert_eq!(mcp_result.content.len(), 1);
+    }
+
+    #[test]
+    fn convert_messages_joins_multi_text_with_blank_line() {
+        // Prior version used push_str with no separator, so
+        // ["hello", "world"] became "helloworld". Blank-line join
+        // preserves the boundary so consumers can still see the
+        // paragraph structure the server sent.
+        let params = CreateMessageParams {
+            messages: vec![SamplingMessage {
+                role: mcp::Role::User,
+                content: vec![
+                    SamplingContent::Text {
+                        text: "hello".into(),
+                        annotations: None,
+                        meta: None,
+                    },
+                    SamplingContent::Text {
+                        text: "world".into(),
+                        annotations: None,
+                        meta: None,
+                    },
+                ],
+                meta: None,
+            }],
+            model_preferences: None,
+            system_prompt: None,
+            include_context: None,
+            temperature: None,
+            max_tokens: 1024,
+            stop_sequences: None,
+            metadata: None,
+            tools: None,
+            tool_choice: None,
+            task: None,
+            meta: None,
+        };
+        let msgs = DefaultSamplingHandler::convert_messages(&params).unwrap();
+        assert_eq!(msgs.len(), 1);
+        assert_eq!(msgs[0].text(), "hello\n\nworld");
+    }
+
+    #[tokio::test]
+    async fn handle_create_message_rejects_stop_sequences() {
+        let executor = Arc::new(MockLlm {
+            response_text: "ignored".into(),
+        });
+        let handler = DefaultSamplingHandler::new(executor, "m");
+        let mut params = make_params("hi");
+        params.stop_sequences = Some(vec!["STOP".into()]);
+        let err = handler
+            .handle_create_message(params)
+            .await
+            .expect_err("stopSequences must be rejected");
+        let msg = format!("{err}");
+        assert!(msg.contains("stopSequences"), "got: {msg}");
+    }
+
+    #[tokio::test]
+    async fn handle_create_message_rejects_tool_choice() {
+        let executor = Arc::new(MockLlm {
+            response_text: "ignored".into(),
+        });
+        let handler = DefaultSamplingHandler::new(executor, "m");
+        let mut params = make_params("hi");
+        params.tool_choice = Some(mcp::ToolChoice {
+            mode: Some(mcp::ToolChoiceMode::Required),
+        });
+        let err = handler
+            .handle_create_message(params)
+            .await
+            .expect_err("toolChoice must be rejected");
+        assert!(format!("{err}").contains("toolChoice"));
+    }
+
+    #[tokio::test]
+    async fn handle_create_message_rejects_include_context_and_model_preferences() {
+        let executor = Arc::new(MockLlm {
+            response_text: "ignored".into(),
+        });
+        let handler = DefaultSamplingHandler::new(executor, "m");
+        let mut params = make_params("hi");
+        params.include_context = Some("thisServer".into());
+        params.model_preferences = Some(mcp::ModelPreferences {
+            hints: None,
+            cost_priority: None,
+            speed_priority: None,
+            intelligence_priority: None,
+        });
+        let err = handler
+            .handle_create_message(params)
+            .await
+            .expect_err("must reject");
+        let msg = format!("{err}");
+        assert!(msg.contains("includeContext"), "got: {msg}");
+        assert!(msg.contains("modelPreferences"), "got: {msg}");
     }
 
     #[tokio::test]

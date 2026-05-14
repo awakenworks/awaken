@@ -446,6 +446,24 @@ fn runtime_lease(slot: &McpServerSlot) -> Result<McpRuntimeLease, McpError> {
     })
 }
 
+fn update_runtime_capabilities(
+    state: &McpRegistryState,
+    server_name: &str,
+    generation: u64,
+    capabilities: Option<ServerCapabilities>,
+) {
+    let mut servers = write_lock(&state.servers);
+    let Ok(index) = find_server_index(&servers, server_name) else {
+        return;
+    };
+    let Some(runtime) = servers[index].runtime.as_mut() else {
+        return;
+    };
+    if runtime.generation == generation {
+        runtime.capabilities = capabilities;
+    }
+}
+
 fn resolve_live_runtime(
     state: &Weak<McpRegistryState>,
     server_name: &str,
@@ -531,8 +549,8 @@ struct McpServerSlot {
     /// `toggle(enable)`.
     reconnect_count: u64,
     /// Wall-clock time of the most recent successful MCP `initialize`
-    /// response. Set when `connect_runtime` succeeds; remains until the
-    /// next successful reconnect / re-enable.
+    /// response. Cached at connect/reconnect and used as a fallback when
+    /// the transport cannot report a live value.
     last_init_at: Option<SystemTime>,
     /// Last session id captured at connect/reconnect. Kept as a
     /// fallback for `server_status_snapshot` — the snapshot prefers
@@ -572,6 +590,24 @@ struct McpRegistryState {
     /// Per spec roots are a client-wide concept, not per-server, so
     /// this lives on the shared registry state.
     client_roots: Arc<Vec<mcp::Root>>,
+    /// Sender half of the multiplexed `notifications/resources/updated`
+    /// stream. Per-server forwarder tasks (one per active transport)
+    /// pull from `take_resource_updated_receiver` and push
+    /// `ResourceUpdated { server, uri }` here. Receiver consumed once
+    /// via [`McpToolRegistryManager::take_resource_updated_receiver`].
+    resource_updated_tx: tokio::sync::mpsc::UnboundedSender<ResourceUpdated>,
+    resource_updated_rx:
+        tokio::sync::Mutex<Option<tokio::sync::mpsc::UnboundedReceiver<ResourceUpdated>>>,
+}
+
+/// Multiplexed `notifications/resources/updated` event surfaced from
+/// any connected MCP server. The host normally cares which server
+/// owns the URI (mostly because authorization and read-back routing
+/// keyed by server-id), so we carry the server name alongside.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResourceUpdated {
+    pub server: String,
+    pub uri: String,
 }
 
 fn read_lock<T>(lock: &RwLock<T>) -> std::sync::RwLockReadGuard<'_, T> {
@@ -661,6 +697,28 @@ fn server_supports_resources(capabilities: Option<&ServerCapabilities>) -> bool 
     capabilities.is_none_or(|capabilities| capabilities.resources.is_some())
 }
 
+/// Per spec §Resources / Subscriptions: server MUST advertise
+/// `resources.subscribe: true` before the client can subscribe. We
+/// fail closed — when capabilities are absent we don't pretend
+/// subscription works (unlike the more permissive `server_supports_*`
+/// helpers above, which optimistically allow the operation when
+/// capabilities haven't been observed yet).
+fn server_supports_resources_subscribe(capabilities: Option<&ServerCapabilities>) -> bool {
+    capabilities
+        .and_then(|c| c.resources.as_ref())
+        .and_then(|r| r.subscribe)
+        .unwrap_or(false)
+}
+
+/// Per spec §Utilities / Completion: server advertises `completions`
+/// as an empty object (`{}`) when supported. We require its presence;
+/// absence means the server doesn't accept `completion/complete`.
+fn server_supports_completions(capabilities: Option<&ServerCapabilities>) -> bool {
+    capabilities
+        .map(|c| c.completions.is_some())
+        .unwrap_or(false)
+}
+
 fn require_prompts(runtime: &McpRuntimeLease) -> Result<(), McpError> {
     if server_supports_prompts(runtime.capabilities.as_ref()) {
         return Ok(());
@@ -673,6 +731,23 @@ fn require_resources(runtime: &McpRuntimeLease) -> Result<(), McpError> {
         return Ok(());
     }
     Err(unsupported_capability(&runtime.server_name, "resources"))
+}
+
+fn require_resources_subscribe(runtime: &McpRuntimeLease) -> Result<(), McpError> {
+    if server_supports_resources_subscribe(runtime.capabilities.as_ref()) {
+        return Ok(());
+    }
+    Err(unsupported_capability(
+        &runtime.server_name,
+        "resources.subscribe",
+    ))
+}
+
+fn require_completions(runtime: &McpRuntimeLease) -> Result<(), McpError> {
+    if server_supports_completions(runtime.capabilities.as_ref()) {
+        return Ok(());
+    }
+    Err(unsupported_capability(&runtime.server_name, "completions"))
 }
 
 fn discover_tools(servers: &[McpServerSlot]) -> Result<HashMap<String, Arc<dyn Tool>>, McpError> {
@@ -737,6 +812,65 @@ fn build_published_tools(
 
 async fn close_runtime(runtime: McpServerRuntime) -> Result<(), McpError> {
     runtime.transport.close().await?;
+    Ok(())
+}
+
+async fn close_transport_best_effort(transport: Arc<dyn McpToolTransport>, context: &str) {
+    if let Err(error) = transport.close().await {
+        tracing::warn!(
+            error = %error,
+            context,
+            "failed to close MCP transport during cleanup"
+        );
+    }
+}
+
+async fn close_transport_entries_best_effort(
+    entries: Vec<(McpServerConnectionConfig, Arc<dyn McpToolTransport>)>,
+    context: &str,
+) {
+    let results = join_all(
+        entries
+            .into_iter()
+            .map(|(_, transport)| async move { transport.close().await }),
+    )
+    .await;
+    for result in results {
+        if let Err(error) = result {
+            tracing::warn!(
+                error = %error,
+                context,
+                "failed to close MCP transport during cleanup"
+            );
+        }
+    }
+}
+
+async fn close_servers_best_effort(servers: Vec<McpServerSlot>, context: &str) {
+    let runtimes = servers
+        .into_iter()
+        .filter_map(|slot| slot.runtime)
+        .collect::<Vec<_>>();
+    let results = join_all(runtimes.into_iter().map(close_runtime)).await;
+    for result in results {
+        if let Err(error) = result {
+            tracing::warn!(
+                error = %error,
+                context,
+                "failed to close MCP runtime during cleanup"
+            );
+        }
+    }
+}
+
+fn validate_server_configs(configs: &[McpServerConnectionConfig]) -> Result<(), McpError> {
+    let mut names = HashSet::new();
+    for config in configs {
+        validate_server_name(&config.name)?;
+        if !names.insert(config.name.clone()) {
+            return Err(McpError::DuplicateServerName(config.name.clone()));
+        }
+    }
     Ok(())
 }
 
@@ -965,11 +1099,19 @@ async fn connect_runtime(
     config: &McpServerConnectionConfig,
     sampling_handler: Option<Arc<dyn SamplingHandler>>,
     client_roots: Arc<Vec<mcp::Root>>,
+    advertise_sampling: bool,
     generation: u64,
 ) -> Result<McpServerRuntime, McpError> {
-    let transport = connect_transport(config, sampling_handler, client_roots).await?;
+    let transport =
+        connect_transport(config, sampling_handler, client_roots, advertise_sampling).await?;
     let transport_type = transport.transport_type();
-    let capabilities = transport.server_capabilities().await?;
+    let capabilities = match transport.server_capabilities().await {
+        Ok(capabilities) => capabilities,
+        Err(error) => {
+            close_transport_best_effort(Arc::clone(&transport), "connect_runtime").await;
+            return Err(error.into());
+        }
+    };
     Ok(McpServerRuntime {
         generation,
         transport_type,
@@ -1167,6 +1309,15 @@ fn finish_disable_transition(
     clear_health_budgets(slot);
     slot.health.last_attempt_at = Some(SystemTime::now());
     slot.health.last_error = close_error.map(ToString::to_string);
+    // Clear the diagnostic fields that should reset on disable. The
+    // `last_known_session_id` doc says it's a fallback for when the
+    // runtime is torn down — once disabled, that fallback would
+    // surface stale info via `server_status_snapshot`. Similarly,
+    // `reconnect_count` is documented as reset by disable→enable,
+    // and `last_init_at` belongs to the now-torn-down session.
+    slot.last_known_session_id = None;
+    slot.last_init_at = None;
+    slot.reconnect_count = 0;
     Ok(())
 }
 
@@ -1176,6 +1327,7 @@ async fn reconnect_server_locked(
 ) -> Result<(), McpError> {
     let sampling_handler = state.sampling_handler.clone();
     let client_roots = Arc::clone(&state.client_roots);
+    let advertise_sampling = state.sampling_handler.is_some();
     let (config, generation, attempt, detached_runtime) =
         begin_reconnect_transition(state.as_ref(), server_name)?;
 
@@ -1188,7 +1340,15 @@ async fn reconnect_server_locked(
 
     tokio::time::sleep(reconnect_backoff(attempt)).await;
 
-    let runtime = match connect_runtime(&config, sampling_handler, client_roots, generation).await {
+    let runtime = match connect_runtime(
+        &config,
+        sampling_handler,
+        client_roots,
+        advertise_sampling,
+        generation,
+    )
+    .await
+    {
         Ok(runtime) => runtime,
         Err(err) => {
             finish_reconnect_error(state.as_ref(), server_name, &err)?;
@@ -1206,6 +1366,13 @@ async fn reconnect_server_locked(
     let catalog = match discover_catalog_from_lease(Arc::downgrade(state), &lease).await {
         Ok(catalog) => catalog,
         Err(err) => {
+            if let Err(close_err) = close_runtime(runtime).await {
+                tracing::warn!(
+                    error = %close_err,
+                    server = %server_name,
+                    "failed to close MCP runtime after reconnect discovery failure"
+                );
+            }
             finish_reconnect_error(state.as_ref(), server_name, &err)?;
             return Err(err);
         }
@@ -1214,11 +1381,14 @@ async fn reconnect_server_locked(
     // Capture the freshly-issued session id (HTTP) before we hand the
     // runtime back to the slot map. Stdio's transport returns None.
     let session_id = runtime.transport.current_session_id().await;
-    // Subscribe to the new transport's list_changed notifications
-    // BEFORE handing it back to the slot map: once the runtime is owned
-    // by the slot we have no async access to it. The receiver is
-    // one-shot per transport, so this is the only chance to claim it.
+    // Subscribe to the new transport's list_changed AND
+    // resources/updated notifications BEFORE handing it back to the
+    // slot map: once the runtime is owned by the slot we have no async
+    // access to it. The receivers are one-shot per transport, so this
+    // is the only chance to claim them.
     let list_changed_rx = runtime.transport.take_list_changed_receiver().await;
+    let resource_updated_rx = runtime.transport.take_resource_updated_receiver().await;
+    let resource_updated_tx = state.resource_updated_tx.clone();
     finish_reconnect_success(
         state.as_ref(),
         server_name,
@@ -1227,6 +1397,9 @@ async fn reconnect_server_locked(
         SystemTime::now(),
         session_id,
     )?;
+    if let Some(rx) = resource_updated_rx {
+        spawn_resource_updated_forwarder(resource_updated_tx, server_name.to_string(), rx);
+    }
     if let Some(rx) = list_changed_rx {
         spawn_list_changed_watcher(Arc::downgrade(state), server_name.to_string(), rx);
     }
@@ -1341,14 +1514,30 @@ where
     Fut: Future<Output = Result<T, McpTransportError>>,
     P: FnOnce(&McpRuntimeLease) -> Result<(), McpError>,
 {
-    let runtime = {
+    let mut runtime = {
         let servers = read_lock(&state.servers);
         let index = find_server_index(&servers, server_name).map_err(RuntimeOperationError::Mcp)?;
         runtime_lease(&servers[index]).map_err(RuntimeOperationError::Mcp)?
     };
+    let generation = runtime.generation;
+    let live_capabilities = match runtime.transport.server_capabilities().await {
+        Ok(capabilities) => capabilities,
+        Err(err) => {
+            record_runtime_operation_failure(
+                &Arc::downgrade(state),
+                server_name,
+                generation,
+                op_kind,
+                &err,
+            )
+            .await;
+            return Err(RuntimeOperationError::Transport(err));
+        }
+    };
+    runtime.capabilities = live_capabilities.clone();
+    update_runtime_capabilities(state.as_ref(), server_name, generation, live_capabilities);
     preflight(&runtime).map_err(RuntimeOperationError::Mcp)?;
 
-    let generation = runtime.generation;
     match operation(runtime).await {
         Ok(value) => {
             record_runtime_operation_success(
@@ -1374,6 +1563,30 @@ where
     }
 }
 
+/// Forward `notifications/resources/updated` URIs from one transport
+/// onto the manager-wide multiplexed channel. The task exits when
+/// either the per-transport receiver closes (transport dropped) or the
+/// manager-wide sender errors (registry torn down).
+fn spawn_resource_updated_forwarder(
+    tx: tokio::sync::mpsc::UnboundedSender<ResourceUpdated>,
+    server_name: String,
+    mut rx: tokio::sync::mpsc::UnboundedReceiver<String>,
+) {
+    tokio::spawn(async move {
+        while let Some(uri) = rx.recv().await {
+            if tx
+                .send(ResourceUpdated {
+                    server: server_name.clone(),
+                    uri,
+                })
+                .is_err()
+            {
+                break;
+            }
+        }
+    });
+}
+
 /// Consume `notifications/.../list_changed` events from `rx` and refresh
 /// the relevant catalogue for `server_name`.
 ///
@@ -1383,12 +1596,10 @@ where
 /// mutates, so polling can be supplemented (or replaced over time) by
 /// reactive refresh.
 ///
-/// Today the manager only caches the **tools** catalogue, so:
-///   - `Tools`  → drives a `refresh_server` (re-runs `tools/list`)
-///   - `Prompts` / `Resources` → log at debug level. List operations
-///     for those surfaces hit the server live on each agent call;
-///     there's nothing cached locally to invalidate yet. When a future
-///     PR caches them, this is the point to hook in.
+/// Today the manager only caches the **tools** catalogue, so `Tools`
+/// drives a `refresh_server` (re-running `tools/list`); `Prompts` and
+/// `Resources` are logged at debug level since list operations for
+/// those surfaces hit the server live on each agent call.
 fn spawn_list_changed_watcher(
     state_weak: Weak<McpRegistryState>,
     server_name: String,
@@ -1403,11 +1614,28 @@ fn spawn_list_changed_watcher(
                         // no one to receive subsequent notifications.
                         break;
                     };
-                    if let Err(err) = refresh_server(state, server_name.clone()).await {
+                    if let Err(err) = refresh_server(Arc::clone(&state), server_name.clone()).await
+                    {
                         tracing::warn!(
                             error = %err,
                             server = %server_name,
                             "list_changed-triggered tools refresh failed"
+                        );
+                        continue;
+                    }
+                    // refresh_server only writes the per-slot
+                    // `published_snapshot`. The manager-wide registry
+                    // snapshot (what `registry()` exposes) is rebuilt
+                    // separately — without this, callers keep seeing
+                    // the pre-list_changed tool catalog until the next
+                    // periodic refresh fires `refresh_state` (which
+                    // does both). Rebuild eagerly so the notification's
+                    // freshness actually propagates.
+                    if let Err(err) = rebuild_snapshot(state.as_ref()).await {
+                        tracing::warn!(
+                            error = %err,
+                            server = %server_name,
+                            "list_changed-triggered snapshot rebuild failed"
                         );
                     }
                 }
@@ -1580,9 +1808,22 @@ impl McpToolRegistryManager {
     /// Connect with both a transport-level fallback handler AND a
     /// per-agent factory. When the factory is `Some`, `McpTool::execute`
     /// consults it at each call to route server-initiated
-    /// `sampling/createMessage` to the calling agent's executor. The
-    /// fallback handler covers the cases the factory returns `None` for,
-    /// or the >1-in-flight ambiguous case at the transport layer.
+    /// `sampling/createMessage` to the calling agent's executor.
+    /// Factory-only mode does not advertise global sampling capability;
+    /// only a fixed transport-level fallback handler can safely answer
+    /// sampling requests from streams without per-call attribution.
+    ///
+    /// Three-state routing semantics (see `McpCallSampling`):
+    /// - **No factory configured** → `Inherit`: the transport falls
+    ///   back to `sampling_handler` if set, else method-not-supported.
+    /// - **Factory returns `Some(handler)`** → `Bound`: that handler
+    ///   serves sampling for this call.
+    /// - **Factory returns `None`** → `Denied`: server-initiated
+    ///   sampling for this call is REJECTED with method-not-supported.
+    ///   It does NOT fall back to `sampling_handler` — that fallback
+    ///   would re-introduce the cross-agent leak the factory exists
+    ///   to prevent. The fallback only covers the "no factory at all"
+    ///   and the ambiguous-cardinality cases at the transport layer.
     pub async fn connect_with_sampling_factory(
         configs: impl IntoIterator<Item = McpServerConnectionConfig>,
         sampling_handler: Option<Arc<dyn SamplingHandler>>,
@@ -1608,12 +1849,33 @@ impl McpToolRegistryManager {
         sampling_handler_factory: Option<Arc<dyn SamplingHandlerFactory>>,
         client_roots: Arc<Vec<mcp::Root>>,
     ) -> Result<Self, McpError> {
+        // Advertise sampling only when a transport-level fallback handler
+        // can answer global server-initiated sampling requests. A per-agent
+        // factory is only safe on per-request streams where request_id binds
+        // the server request to a specific tool call.
+        let advertise_sampling = sampling_handler.is_some();
+        let configs = configs.into_iter().collect::<Vec<_>>();
+        validate_server_configs(&configs)?;
         let mut entries: Vec<(McpServerConnectionConfig, Arc<dyn McpToolTransport>)> = Vec::new();
         for cfg in configs {
-            validate_server_name(&cfg.name)?;
-            let transport =
-                connect_transport(&cfg, sampling_handler.clone(), Arc::clone(&client_roots))
-                    .await?;
+            let transport = match connect_transport(
+                &cfg,
+                sampling_handler.clone(),
+                Arc::clone(&client_roots),
+                advertise_sampling,
+            )
+            .await
+            {
+                Ok(transport) => transport,
+                Err(error) => {
+                    close_transport_entries_best_effort(
+                        entries,
+                        "connect_with_sampling_factory_and_roots",
+                    )
+                    .await;
+                    return Err(error.into());
+                }
+            };
             entries.push((cfg, transport));
         }
         Self::from_tool_transports_with_factory_and_roots(
@@ -1674,7 +1936,15 @@ impl McpToolRegistryManager {
         sampling_handler_factory: Option<Arc<dyn SamplingHandlerFactory>>,
         client_roots: Arc<Vec<mcp::Root>>,
     ) -> Result<Self, McpError> {
+        let entries = entries.into_iter().collect::<Vec<_>>();
+        let configs = entries
+            .iter()
+            .map(|(config, _)| config.clone())
+            .collect::<Vec<_>>();
+        validate_server_configs(&configs)?;
         let servers = Self::build_servers(entries).await?;
+        let (resource_updated_tx, resource_updated_rx) =
+            tokio::sync::mpsc::unbounded_channel::<ResourceUpdated>();
         let state = Arc::new(McpRegistryState {
             servers: RwLock::new(servers),
             snapshot: RwLock::new(McpRegistrySnapshot::default()),
@@ -1682,64 +1952,100 @@ impl McpToolRegistryManager {
             sampling_handler,
             sampling_handler_factory,
             client_roots,
+            resource_updated_tx,
+            resource_updated_rx: tokio::sync::Mutex::new(Some(resource_updated_rx)),
         });
+        let manager = Self { state };
 
         let server_names: Vec<String> = {
-            let servers = read_lock(&state.servers);
+            let servers = read_lock(&manager.state.servers);
             servers.iter().map(|slot| slot.meta.name.clone()).collect()
         };
         for server_name in &server_names {
             let attempted_at = SystemTime::now();
-            let runtime = resolve_live_runtime(&Arc::downgrade(&state), server_name)?;
-            let catalog = discover_catalog_from_lease(Arc::downgrade(&state), &runtime).await?;
-            let _ = apply_catalog_if_current(
-                state.as_ref(),
-                server_name,
-                runtime.generation,
-                attempted_at,
-                catalog,
-            )?;
+            let result = async {
+                let runtime = resolve_live_runtime(&Arc::downgrade(&manager.state), server_name)?;
+                let catalog =
+                    discover_catalog_from_lease(Arc::downgrade(&manager.state), &runtime).await?;
+                let _ = apply_catalog_if_current(
+                    manager.state.as_ref(),
+                    server_name,
+                    runtime.generation,
+                    attempted_at,
+                    catalog,
+                )?;
+                Ok::<(), McpError>(())
+            }
+            .await;
+            if let Err(error) = result {
+                let _ = manager.close_all().await;
+                return Err(error);
+            }
         }
-        rebuild_snapshot(state.as_ref()).await?;
+        if let Err(error) = rebuild_snapshot(manager.state.as_ref()).await {
+            let _ = manager.close_all().await;
+            return Err(error);
+        }
 
         // Subscribe to each transport's `notifications/.../list_changed`
-        // stream so we react to server-initiated catalogue mutations
-        // instead of waiting for the next periodic refresh tick. The
-        // receiver is one-shot per transport; this is the only place
-        // we claim it for the initial connect. (The reconnect path
-        // claims it at `finish_reconnect_success`.)
+        // and `notifications/resources/updated` streams so we react to
+        // server-initiated events instead of waiting for the next
+        // periodic refresh tick. Receivers are one-shot per transport;
+        // this is the only place we claim them for the initial connect.
+        // (The reconnect path claims them at `finish_reconnect_success`.)
         for server_name in &server_names {
-            let transport = {
-                let servers = read_lock(&state.servers);
-                let index = find_server_index(&servers, server_name)?;
-                servers[index]
-                    .runtime
-                    .as_ref()
-                    .map(|rt| Arc::clone(&rt.transport))
+            let transport_result = {
+                let servers = read_lock(&manager.state.servers);
+                find_server_index(&servers, server_name).map(|index| {
+                    servers[index]
+                        .runtime
+                        .as_ref()
+                        .map(|rt| Arc::clone(&rt.transport))
+                })
             };
-            if let Some(transport) = transport
-                && let Some(rx) = transport.take_list_changed_receiver().await
-            {
-                spawn_list_changed_watcher(Arc::downgrade(&state), server_name.clone(), rx);
+            let transport = match transport_result {
+                Ok(transport) => transport,
+                Err(error) => {
+                    let _ = manager.close_all().await;
+                    return Err(error);
+                }
+            };
+            if let Some(transport) = transport {
+                if let Some(rx) = transport.take_list_changed_receiver().await {
+                    spawn_list_changed_watcher(
+                        Arc::downgrade(&manager.state),
+                        server_name.clone(),
+                        rx,
+                    );
+                }
+                if let Some(rx) = transport.take_resource_updated_receiver().await {
+                    spawn_resource_updated_forwarder(
+                        manager.state.resource_updated_tx.clone(),
+                        server_name.clone(),
+                        rx,
+                    );
+                }
             }
         }
 
-        Ok(Self { state })
+        Ok(manager)
     }
 
     async fn build_servers(
-        entries: impl IntoIterator<Item = (McpServerConnectionConfig, Arc<dyn McpToolTransport>)>,
+        entries: Vec<(McpServerConnectionConfig, Arc<dyn McpToolTransport>)>,
     ) -> Result<Vec<McpServerSlot>, McpError> {
         let mut servers = Vec::new();
-        let mut names: HashSet<String> = HashSet::new();
         let connected_at = SystemTime::now();
 
         for (cfg, transport) in entries {
-            validate_server_name(&cfg.name)?;
-            if !names.insert(cfg.name.clone()) {
-                return Err(McpError::DuplicateServerName(cfg.name));
-            }
-            let capabilities = transport.server_capabilities().await?;
+            let capabilities = match transport.server_capabilities().await {
+                Ok(capabilities) => capabilities,
+                Err(error) => {
+                    close_transport_best_effort(Arc::clone(&transport), "build_servers").await;
+                    close_servers_best_effort(servers, "build_servers").await;
+                    return Err(error.into());
+                }
+            };
             // Capture the session id (HTTP only; stdio returns None) for
             // the diagnostic snapshot. Done here while we're still async
             // so the snapshot accessor can stay synchronous.
@@ -1816,6 +2122,42 @@ impl McpToolRegistryManager {
         self.state.periodic_refresh.stop().await
     }
 
+    pub async fn close_all(&self) -> Result<(), McpError> {
+        self.stop_periodic_refresh().await;
+        let runtimes: Vec<McpServerRuntime> = {
+            let mut servers = write_lock(&self.state.servers);
+            servers
+                .iter_mut()
+                .filter_map(|slot| {
+                    slot.lifecycle = McpServerLifecycle::Disabled;
+                    slot.published_snapshot = None;
+                    slot.last_known_session_id = None;
+                    slot.runtime.take()
+                })
+                .collect()
+        };
+
+        let mut first_error: Option<McpError> = None;
+        for result in join_all(runtimes.into_iter().map(close_runtime)).await {
+            if let Err(error) = result
+                && first_error.is_none()
+            {
+                first_error = Some(error);
+            }
+        }
+        if let Err(error) = rebuild_snapshot(self.state.as_ref()).await
+            && first_error.is_none()
+        {
+            first_error = Some(error);
+        }
+
+        if let Some(error) = first_error {
+            Err(error)
+        } else {
+            Ok(())
+        }
+    }
+
     pub fn periodic_refresh_running(&self) -> bool {
         self.state.periodic_refresh.is_running()
     }
@@ -1838,13 +2180,13 @@ impl McpToolRegistryManager {
     /// Return a status snapshot for the named server, including connection state and
     /// the most recently discovered tool list.
     ///
-    /// Async because the HTTP session id is read **live** from the
-    /// transport (`current_session_id().await`). The slot keeps a cached
-    /// value at connect/reconnect time but `MCP session expired` triggers
-    /// a silent re-`initialize` that rotates the id without going through
-    /// the reconnect path — the cache would be stale until the next
-    /// reconnect. Reading live closes that window for admin/observability
-    /// consumers.
+    /// Async because HTTP session diagnostics are read **live** from the
+    /// transport (`current_session_id().await` and
+    /// `current_session_started_at().await`). The slot keeps cached
+    /// connect/reconnect values, but `MCP session expired` triggers a
+    /// silent re-`initialize` that rotates the id and timestamp without
+    /// going through the reconnect path. Reading live closes that window
+    /// for admin/observability consumers.
     ///
     /// Returns [`McpError::UnknownServer`] when `server_name` is not registered.
     pub async fn server_status_snapshot(
@@ -1862,7 +2204,7 @@ impl McpToolRegistryManager {
             health,
             cached_session_id,
             reconnect_count,
-            last_init_at,
+            cached_last_init_at,
             transport_for_session,
         ) = {
             let servers = read_lock(&self.state.servers);
@@ -1897,11 +2239,18 @@ impl McpToolRegistryManager {
             )
         };
 
-        // Prefer the live session id from the transport. Falls back to
-        // the cached value (e.g. transport dropped, race during teardown).
-        let session_id = match transport_for_session {
-            Some(transport) => transport.current_session_id().await.or(cached_session_id),
-            None => cached_session_id,
+        // Prefer live HTTP session diagnostics from the transport. Fall
+        // back to cached values when there is no live runtime or when the
+        // transport is stdio and has no HTTP session concept.
+        let (session_id, last_init_at) = match transport_for_session {
+            Some(transport) => (
+                transport.current_session_id().await.or(cached_session_id),
+                transport
+                    .current_session_started_at()
+                    .await
+                    .or(cached_last_init_at),
+            ),
+            None => (cached_session_id, cached_last_init_at),
         };
 
         Ok(McpServerStatusSnapshot {
@@ -2053,6 +2402,74 @@ impl McpToolRegistryManager {
             map_capability_operation_error(server_name, "resources", "read_resource", err)
         })
     }
+
+    /// Subscribe to updates for a single resource URI on `server_name`.
+    /// Requires the server to have advertised `resources.subscribe: true`
+    /// at initialize — otherwise the call returns `McpError::UnsupportedCapability`.
+    /// The host observes the resulting `notifications/resources/updated`
+    /// stream via [`Self::take_resource_updated_receiver`].
+    pub async fn subscribe_resource(&self, server_name: &str, uri: &str) -> Result<(), McpError> {
+        with_runtime_lease(
+            &self.state,
+            server_name,
+            McpRuntimeOpKind::Rpc,
+            require_resources_subscribe,
+            |runtime| async move { runtime.transport.subscribe_resource(uri).await },
+        )
+        .await
+        .map_err(|err| {
+            map_capability_operation_error(server_name, "resources", "subscribe_resource", err)
+        })
+    }
+
+    /// Cancel a prior subscription. Mirrors [`Self::subscribe_resource`].
+    pub async fn unsubscribe_resource(&self, server_name: &str, uri: &str) -> Result<(), McpError> {
+        with_runtime_lease(
+            &self.state,
+            server_name,
+            McpRuntimeOpKind::Rpc,
+            require_resources_subscribe,
+            |runtime| async move { runtime.transport.unsubscribe_resource(uri).await },
+        )
+        .await
+        .map_err(|err| {
+            map_capability_operation_error(server_name, "resources", "unsubscribe_resource", err)
+        })
+    }
+
+    /// Ask `server_name` for argument autocomplete via `completion/complete`.
+    /// Requires the server to have advertised `completions: {}` at
+    /// initialize.
+    pub async fn complete(
+        &self,
+        server_name: &str,
+        params: mcp::CompleteParams,
+    ) -> Result<mcp::CompleteResult, McpError> {
+        with_runtime_lease(
+            &self.state,
+            server_name,
+            McpRuntimeOpKind::Rpc,
+            require_completions,
+            |runtime| async move { runtime.transport.complete(params).await },
+        )
+        .await
+        .map_err(|err| map_capability_operation_error(server_name, "completions", "complete", err))
+    }
+
+    /// Take the multiplexed receiver for `notifications/resources/updated`
+    /// from every connected MCP server. Each event carries the
+    /// `(server, uri)` pair so the host can route reads back through
+    /// [`Self::read_resource`].
+    ///
+    /// One-shot: returns `None` if already taken. Surviving across
+    /// reconnects — when a server reconnects, the manager spawns a
+    /// fresh per-server forwarder feeding into the same channel.
+    pub async fn take_resource_updated_receiver(
+        &self,
+    ) -> Option<tokio::sync::mpsc::UnboundedReceiver<ResourceUpdated>> {
+        self.state.resource_updated_rx.lock().await.take()
+    }
+
     pub async fn reconnect(&self, server_name: &str) -> Result<(), McpError> {
         reconnect_server(&self.state, server_name).await?;
         rebuild_snapshot(self.state.as_ref()).await?;
@@ -2169,6 +2586,7 @@ mod tests {
     use mcp::{CallToolResult, McpToolDefinition};
     use serde_json::json;
     use std::sync::Mutex;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use tokio::sync::{Notify, Semaphore, mpsc};
 
     // ── Mock transport ──
@@ -2200,6 +2618,45 @@ mod tests {
                 execution: None,
                 annotations: None,
             }
+        }
+    }
+
+    #[derive(Debug)]
+    struct LifecycleRecordingTransport {
+        tools: Vec<McpToolDefinition>,
+        capabilities_error: Option<&'static str>,
+        list_error: Option<&'static str>,
+        capabilities_count: Arc<AtomicUsize>,
+        close_count: Arc<AtomicUsize>,
+    }
+
+    impl LifecycleRecordingTransport {
+        fn new(tool_name: &str) -> Self {
+            Self {
+                tools: vec![MockTransport::tool_def(tool_name)],
+                capabilities_error: None,
+                list_error: None,
+                capabilities_count: Arc::new(AtomicUsize::new(0)),
+                close_count: Arc::new(AtomicUsize::new(0)),
+            }
+        }
+
+        fn with_capabilities_error(mut self, error: &'static str) -> Self {
+            self.capabilities_error = Some(error);
+            self
+        }
+
+        fn with_list_error(mut self, error: &'static str) -> Self {
+            self.list_error = Some(error);
+            self
+        }
+
+        fn capabilities_count(&self) -> usize {
+            self.capabilities_count.load(Ordering::SeqCst)
+        }
+
+        fn close_count(&self) -> usize {
+            self.close_count.load(Ordering::SeqCst)
         }
     }
 
@@ -2764,6 +3221,53 @@ mod tests {
         }
     }
 
+    #[async_trait]
+    impl McpToolTransport for LifecycleRecordingTransport {
+        async fn list_tools(&self) -> Result<Vec<McpToolDefinition>, McpTransportError> {
+            if let Some(error) = self.list_error {
+                return Err(McpTransportError::TransportError(error.to_string()));
+            }
+            Ok(self.tools.clone())
+        }
+
+        async fn call_tool(
+            &self,
+            name: &str,
+            _args: Value,
+            _progress_tx: Option<mpsc::UnboundedSender<McpProgressUpdate>>,
+            _context: crate::transport::McpCallContext,
+        ) -> Result<CallToolResult, McpTransportError> {
+            Ok(CallToolResult {
+                content: vec![mcp::ToolContent::Text {
+                    text: format!("called {name}"),
+                    annotations: None,
+                    meta: None,
+                }],
+                structured_content: None,
+                is_error: None,
+            })
+        }
+
+        fn transport_type(&self) -> TransportTypeId {
+            TransportTypeId::Stdio
+        }
+
+        async fn server_capabilities(
+            &self,
+        ) -> Result<Option<ServerCapabilities>, McpTransportError> {
+            self.capabilities_count.fetch_add(1, Ordering::SeqCst);
+            if let Some(error) = self.capabilities_error {
+                return Err(McpTransportError::TransportError(error.to_string()));
+            }
+            Ok(Some(ServerCapabilities::default()))
+        }
+
+        async fn close(&self) -> Result<(), McpTransportError> {
+            self.close_count.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+    }
+
     fn cfg(name: &str) -> McpServerConnectionConfig {
         McpServerConnectionConfig::stdio(name, "echo", vec!["ok".to_string()])
     }
@@ -2925,20 +3429,77 @@ mod tests {
 
     #[tokio::test]
     async fn manager_rejects_duplicate_server_names() {
+        let first = Arc::new(LifecycleRecordingTransport::new("first"));
+        let second = Arc::new(LifecycleRecordingTransport::new("second"));
         let result = McpToolRegistryManager::from_transports(vec![
-            (
-                cfg("dup"),
-                Arc::new(MockTransport::default()) as Arc<dyn McpToolTransport>,
-            ),
-            (
-                cfg("dup"),
-                Arc::new(MockTransport::default()) as Arc<dyn McpToolTransport>,
-            ),
+            (cfg("dup"), first.clone() as Arc<dyn McpToolTransport>),
+            (cfg("dup"), second.clone() as Arc<dyn McpToolTransport>),
         ])
         .await;
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(matches!(err, McpError::DuplicateServerName(_)));
+        assert_eq!(
+            first.capabilities_count(),
+            0,
+            "duplicate names must be rejected before initializing transports"
+        );
+        assert_eq!(
+            second.capabilities_count(),
+            0,
+            "duplicate names must be rejected before initializing transports"
+        );
+    }
+
+    #[tokio::test]
+    async fn manager_closes_initialized_transports_when_capabilities_fail() {
+        let ok = Arc::new(LifecycleRecordingTransport::new("ok"));
+        let failing = Arc::new(
+            LifecycleRecordingTransport::new("bad")
+                .with_capabilities_error("scripted capabilities failure"),
+        );
+
+        let result = McpToolRegistryManager::from_transports(vec![
+            (cfg("ok"), ok.clone() as Arc<dyn McpToolTransport>),
+            (cfg("bad"), failing.clone() as Arc<dyn McpToolTransport>),
+        ])
+        .await;
+
+        let err = result.expect_err("capabilities failure should abort connect");
+        assert!(
+            err.to_string().contains("scripted capabilities failure"),
+            "unexpected error: {err}"
+        );
+        assert_eq!(ok.close_count(), 1, "previous runtime must be closed");
+        assert_eq!(
+            failing.close_count(),
+            1,
+            "transport that failed initialization must be closed"
+        );
+    }
+
+    #[tokio::test]
+    async fn manager_closes_runtimes_when_initial_discovery_fails() {
+        let failing = Arc::new(
+            LifecycleRecordingTransport::new("bad").with_list_error("scripted discovery failure"),
+        );
+
+        let result = McpToolRegistryManager::from_transports(vec![(
+            cfg("bad"),
+            failing.clone() as Arc<dyn McpToolTransport>,
+        )])
+        .await;
+
+        let err = result.expect_err("discovery failure should abort connect");
+        assert!(
+            err.to_string().contains("scripted discovery failure"),
+            "unexpected error: {err}"
+        );
+        assert_eq!(
+            failing.close_count(),
+            1,
+            "runtime must be closed when manager construction fails after initialization"
+        );
     }
 
     #[tokio::test]

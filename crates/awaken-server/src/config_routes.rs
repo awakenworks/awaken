@@ -5,6 +5,7 @@ use axum::routing::{delete as delete_route, get, patch, post};
 use axum::{Json, Router};
 use serde::Deserialize;
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
 
 #[derive(Deserialize, Default)]
@@ -546,7 +547,24 @@ async fn get_mcp_server_status(
         "last_success_at": status.last_success_at.and_then(systime_to_secs),
         "reconnecting": status.reconnecting,
         "permanently_failed": status.permanently_failed,
+        // This is a stable digest of the live HTTP session id, not the
+        // raw MCP-Session-Id header value. Operators can still spot
+        // session rotation without receiving a bearer-like identifier
+        // that could be replayed against a permissive MCP server.
+        "session_id": status.session_id.as_deref().map(redact_mcp_session_id),
+        "reconnect_count": status.reconnect_count,
+        "last_init_at": status.last_init_at.and_then(systime_to_secs),
     })))
+}
+
+fn redact_mcp_session_id(session_id: &str) -> String {
+    let digest = Sha256::digest(session_id.as_bytes());
+    let mut out = String::with_capacity("sha256:".len() + 16);
+    out.push_str("sha256:");
+    for byte in digest.iter().take(8) {
+        out.push_str(&format!("{byte:02x}"));
+    }
+    out
 }
 
 fn systime_to_secs(t: std::time::SystemTime) -> Option<u64> {

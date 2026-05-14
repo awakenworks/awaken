@@ -230,6 +230,10 @@ pub trait ManagedMcpRegistry: Send + Sync {
     fn periodic_refresh_running(&self) -> bool;
     fn start_periodic_refresh(&self, interval: Duration) -> Result<(), ConfigRuntimeError>;
     async fn stop_periodic_refresh(&self) -> bool;
+    async fn close(&self) -> Result<(), ConfigRuntimeError> {
+        self.stop_periodic_refresh().await;
+        Ok(())
+    }
     /// Async so the implementation can pull the live HTTP session id
     /// from the transport — without this, a silent session-id rotation
     /// (after `MCP session expired` triggers a fresh `initialize`)
@@ -266,28 +270,40 @@ pub trait McpRegistryFactory: Send + Sync {
 /// runtime's lifetime. On `for_agent` we upgrade — if the runtime is
 /// already torn down, return `None` and let the transport's fallback
 /// handler (also typically `None` at registry construction) decide.
+/// Cache state held by [`RegistryDrivenSamplingHandlerFactory`].
+///
+/// `version` is the [`AgentRuntime::registry_version`] under which the
+/// `entries` were built. Each publish bumps the runtime's version (see
+/// `replace_registry_set`), so a version mismatch on lookup means the
+/// underlying `ModelBinding` / provider / `LlmExecutor` may have
+/// changed — wipe the cache before serving. Without this, a published
+/// config that changes (say) a model's `upstream_model` while leaving
+/// the agent spec's `model_id` intact would keep routing sampling
+/// requests to the previous executor, silently.
+struct SamplingFactoryCacheState {
+    version: u64,
+    entries: HashMap<(String, String), Arc<dyn SamplingHandler>>,
+}
+
+impl SamplingFactoryCacheState {
+    fn empty() -> Self {
+        Self {
+            version: 0,
+            entries: HashMap::new(),
+        }
+    }
+}
+
 pub(crate) struct RegistryDrivenSamplingHandlerFactory {
     runtime: Weak<AgentRuntime>,
-    /// Cache of `(agent_id, model_id)` → `Arc<DefaultSamplingHandler>`.
-    ///
-    /// `for_agent` is called on **every** `tools/call`, so the
-    /// underlying registry lookup + handler construction pays off
-    /// whenever the executor itself is non-trivial to instantiate (per-
-    /// tenant OAuth token mint, lazy connection pool warm-up, etc).
-    /// The agent's `(id, model_id)` tuple uniquely identifies the
-    /// handler — changing either creates a fresh entry, leaving the
-    /// stale one in place until the factory is reconstructed alongside
-    /// the runtime. Since runtime rebuilds drop this factory, stale
-    /// entries don't outlive the registry generation that produced
-    /// them.
-    cache: std::sync::Mutex<HashMap<(String, String), Arc<dyn SamplingHandler>>>,
+    cache: std::sync::Mutex<SamplingFactoryCacheState>,
 }
 
 impl RegistryDrivenSamplingHandlerFactory {
     pub(crate) fn new(runtime: Weak<AgentRuntime>) -> Self {
         Self {
             runtime,
-            cache: std::sync::Mutex::new(HashMap::new()),
+            cache: std::sync::Mutex::new(SamplingFactoryCacheState::empty()),
         }
     }
 }
@@ -295,36 +311,46 @@ impl RegistryDrivenSamplingHandlerFactory {
 #[async_trait]
 impl SamplingHandlerFactory for RegistryDrivenSamplingHandlerFactory {
     async fn for_agent(&self, agent_spec: &AgentSpec) -> Option<Arc<dyn SamplingHandler>> {
+        let runtime = self.runtime.upgrade()?;
+        // Atomic capture: `registry_snapshot()` returns
+        // `(version, RegistrySet)` from a single observation. Resolving
+        // the agent's model + provider via this snapshot and then
+        // inserting under THIS version closes the race window where a
+        // separate `registry_version()` + `registry_set()` pair could
+        // straddle a `replace_registry_set` and cache a stale-built
+        // handler under the new version.
+        let snapshot = runtime.registry_snapshot()?;
+        let version = snapshot.version();
         let key = (agent_spec.id.clone(), agent_spec.model_id.clone());
-        // Fast path: cache hit. Sync mutex is fine here — the locked
-        // region is a HashMap::get + Arc::clone, no await.
-        if let Some(cached) = self
-            .cache
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .get(&key)
-            .cloned()
+
+        // Fast path: cache hit at this snapshot's version.
         {
-            return Some(cached);
+            let cache = self.cache.lock().unwrap_or_else(|p| p.into_inner());
+            if cache.version == version
+                && let Some(cached) = cache.entries.get(&key).cloned()
+            {
+                return Some(cached);
+            }
         }
 
-        let runtime = self.runtime.upgrade()?;
-        let registries = runtime.registry_set()?;
+        let registries = snapshot.registries();
         let binding = registries.models.get_model(&agent_spec.model_id)?;
         let executor = registries.providers.get_provider(&binding.provider_id)?;
         let handler: Arc<dyn SamplingHandler> = Arc::new(DefaultSamplingHandler::new(
             executor,
             binding.upstream_model,
         ));
-        // Race tolerated: two concurrent first-callers for the same
-        // (agent, model) may both reach here and both insert. Either
-        // entry is correct (both wrap the same executor); the second
-        // insert overwrites the first and the now-orphaned Arc is
-        // dropped — harmless.
-        self.cache
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .insert(key, Arc::clone(&handler));
+
+        // Insert under the SNAPSHOT's version (the one the handler
+        // was actually built from), not a freshly-read live version.
+        // If the registry was replaced concurrently, the next call
+        // will see version > cache.version and wipe — that's correct.
+        let mut cache = self.cache.lock().unwrap_or_else(|p| p.into_inner());
+        if cache.version != version {
+            cache.entries.clear();
+            cache.version = version;
+        }
+        cache.entries.insert(key, Arc::clone(&handler));
         Some(handler)
     }
 }
@@ -396,6 +422,13 @@ impl ManagedMcpRegistry for RealManagedMcpRegistry {
         self.manager.stop_periodic_refresh().await
     }
 
+    async fn close(&self) -> Result<(), ConfigRuntimeError> {
+        self.manager
+            .close_all()
+            .await
+            .map_err(|error| ConfigRuntimeError::InvalidConfig(error.to_string()))
+    }
+
     async fn server_status(&self, server_name: &str) -> Option<McpServerStatusSnapshot> {
         self.manager.server_status_snapshot(server_name).await.ok()
     }
@@ -459,8 +492,13 @@ struct PreparedMcpRegistry {
 
 impl PreparedMcpRegistry {
     async fn cleanup(self) {
-        if let Some(active) = self.next_state {
-            active.handle.stop_periodic_refresh().await;
+        if let Some(active) = self.next_state
+            && let Err(error) = active.handle.close().await
+        {
+            tracing::warn!(
+                error = %error,
+                "failed to close prepared MCP registry after publish failure"
+            );
         }
     }
 }
@@ -764,6 +802,16 @@ impl ConfigRuntimeManager {
         stopped_config || stopped_listener || stopped_mcp
     }
 
+    pub async fn shutdown(&self) -> Result<(), ConfigRuntimeError> {
+        self.periodic_refresh.stop().await;
+        self.stop_change_listener().await;
+        let active = self.active_mcp_registry.lock().take();
+        if let Some(active) = active {
+            active.handle.close().await?;
+        }
+        Ok(())
+    }
+
     pub fn periodic_refresh_running(&self) -> bool {
         self.periodic_refresh.is_running()
     }
@@ -872,8 +920,13 @@ impl ConfigRuntimeManager {
 
         *self.last_applied_fingerprint.write() = Some(managed.fingerprint);
 
-        if let Some(previous) = previous_mcp {
-            previous.handle.stop_periodic_refresh().await;
+        if let Some(previous) = previous_mcp
+            && let Err(error) = previous.handle.close().await
+        {
+            tracing::warn!(
+                error = %error,
+                "failed to close replaced MCP registry"
+            );
         }
 
         Ok(version)
@@ -895,7 +948,7 @@ impl ConfigRuntimeManager {
             });
         }
 
-        let next_state = self
+        let mut next_state = self
             .mcp_registry_factory
             .connect(specs)
             .await?
@@ -905,8 +958,19 @@ impl ConfigRuntimeManager {
                 handle,
             });
 
-        if let Some(ref active) = next_state {
-            self.ensure_mcp_periodic_refresh(&active.handle)?;
+        let refresh_error = next_state
+            .as_ref()
+            .and_then(|active| self.ensure_mcp_periodic_refresh(&active.handle).err());
+        if let Some(error) = refresh_error {
+            if let Some(active) = next_state.take()
+                && let Err(close_error) = active.handle.close().await
+            {
+                tracing::warn!(
+                    error = %close_error,
+                    "failed to close prepared MCP registry after refresh setup failure"
+                );
+            }
+            return Err(error);
         }
 
         Ok(PreparedMcpRegistry {
@@ -1754,6 +1818,157 @@ mod tests {
         );
     }
 
+    /// R8 #2 / R10 #3 regression: sampling-factory cache must drop
+    /// stale entries when the underlying [`AgentRuntime`]'s
+    /// `RegistrySet` is replaced. The cache key
+    /// `(agent_id, model_id)` alone is not sufficient — model bindings
+    /// can change underneath without the key changing. We tag entries
+    /// with `registry_version()`; a mismatch wipes the cache so the
+    /// next lookup walks the live registry.
+    #[tokio::test]
+    async fn registry_factory_cache_invalidates_on_registry_replace() {
+        use awaken_contract::contract::executor::{InferenceExecutionError, InferenceRequest};
+        use awaken_contract::contract::inference::{StreamResult, TokenUsage};
+        use awaken_runtime::registry::memory::{
+            MapAgentSpecRegistry, MapModelRegistry, MapPluginSource, MapProviderRegistry,
+            MapToolRegistry,
+        };
+        use awaken_runtime::registry::{ModelBinding, RegistrySet};
+
+        // Two distinct executors so we can tell which one the cache
+        // hands back. Mock returns its label in the response text so a
+        // sampling round trip would expose which executor ran — but we
+        // only need Arc identity for this assertion.
+        struct LabelExecutor {
+            label: &'static str,
+        }
+        #[async_trait::async_trait]
+        impl LlmExecutor for LabelExecutor {
+            async fn execute(
+                &self,
+                _request: InferenceRequest,
+            ) -> Result<StreamResult, InferenceExecutionError> {
+                Ok(StreamResult {
+                    content: vec![awaken_contract::contract::content::ContentBlock::text(
+                        self.label.to_string(),
+                    )],
+                    tool_calls: vec![],
+                    usage: Some(TokenUsage::default()),
+                    stop_reason: None,
+                    has_incomplete_tool_calls: false,
+                })
+            }
+            fn name(&self) -> &str {
+                "label"
+            }
+        }
+
+        fn registry_set_pointing_at(executor_label: &'static str) -> RegistrySet {
+            let mut agents = MapAgentSpecRegistry::new();
+            agents
+                .register_spec(AgentSpec {
+                    id: "alpha".into(),
+                    model_id: "m".into(),
+                    system_prompt: String::new(),
+                    ..Default::default()
+                })
+                .unwrap();
+            let mut models = MapModelRegistry::new();
+            models
+                .register_model(
+                    "m",
+                    ModelBinding {
+                        provider_id: "p".into(),
+                        upstream_model: format!("upstream-{executor_label}"),
+                    },
+                )
+                .unwrap();
+            let mut providers = MapProviderRegistry::new();
+            providers
+                .register_provider(
+                    "p",
+                    Arc::new(LabelExecutor {
+                        label: executor_label,
+                    }) as Arc<dyn LlmExecutor>,
+                )
+                .unwrap();
+            RegistrySet {
+                agents: Arc::new(agents),
+                tools: Arc::new(MapToolRegistry::new()),
+                models: Arc::new(models),
+                providers: Arc::new(providers),
+                plugins: Arc::new(MapPluginSource::new()),
+                backends: Arc::new(awaken_runtime::registry::memory::MapBackendRegistry::new()),
+            }
+        }
+
+        let runtime = Arc::new(
+            awaken_runtime::AgentRuntimeBuilder::new()
+                .with_provider("p", Arc::new(LabelExecutor { label: "v1" }))
+                .with_model_binding(
+                    "m",
+                    ModelBinding {
+                        provider_id: "p".into(),
+                        upstream_model: "upstream-v1".into(),
+                    },
+                )
+                .with_agent_spec(AgentSpec {
+                    id: "alpha".into(),
+                    model_id: "m".into(),
+                    system_prompt: String::new(),
+                    ..Default::default()
+                })
+                .build()
+                .expect("v1 runtime builds"),
+        );
+
+        let v1_version = runtime.registry_version().expect("v1 registered");
+        let factory = RegistryDrivenSamplingHandlerFactory::new(Arc::downgrade(&runtime));
+        let spec = AgentSpec {
+            id: "alpha".into(),
+            model_id: "m".into(),
+            system_prompt: String::new(),
+            ..AgentSpec::default()
+        };
+
+        let handler_v1 = factory
+            .for_agent(&spec)
+            .await
+            .expect("factory yields handler for v1");
+
+        // Same key → same cached Arc (the cache hit path).
+        let handler_v1_again = factory
+            .for_agent(&spec)
+            .await
+            .expect("factory yields handler for v1 again");
+        assert!(
+            Arc::ptr_eq(&handler_v1, &handler_v1_again),
+            "second lookup at the same registry version must be a cache hit (same Arc)"
+        );
+
+        // Replace the registry with a v2 set that points the SAME
+        // (agent_id, model_id) pair at a DIFFERENT executor. Without
+        // version-tagged invalidation, the cache would happily return
+        // the v1 handler — the bug R8 #2 fixed.
+        let new_version = runtime
+            .replace_registry_set(registry_set_pointing_at("v2"))
+            .expect("replace_registry_set yields a fresh version");
+        assert!(
+            new_version > v1_version,
+            "replace_registry_set must bump registry_version (was {v1_version}, got {new_version})"
+        );
+
+        let handler_v2 = factory
+            .for_agent(&spec)
+            .await
+            .expect("factory yields handler for v2");
+        assert!(
+            !Arc::ptr_eq(&handler_v1, &handler_v2),
+            "cache must invalidate on registry_version bump — got the same Arc back, \
+             which means sampling would still route to the OLD executor"
+        );
+    }
+
     /// `with_runtime` constructs a factory; `new()` (the `Default` path)
     /// gives a sampling-less factory. This pins the public surface so
     /// future refactors don't accidentally make `new()` synthesize a
@@ -2566,6 +2781,99 @@ mod tests {
         );
         let manager = ConfigRuntimeManager::new(runtime, store.clone()).expect("manager");
         (manager, store)
+    }
+
+    #[tokio::test]
+    async fn publish_closes_prepared_mcp_registry_when_refresh_start_fails() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        struct RefreshFailingRegistry {
+            tool_registry: Arc<dyn ToolRegistry>,
+            close_count: Arc<AtomicUsize>,
+        }
+
+        #[async_trait::async_trait]
+        impl ManagedMcpRegistry for RefreshFailingRegistry {
+            fn tool_registry(&self) -> Arc<dyn ToolRegistry> {
+                Arc::clone(&self.tool_registry)
+            }
+
+            fn periodic_refresh_running(&self) -> bool {
+                false
+            }
+
+            fn start_periodic_refresh(
+                &self,
+                _interval: Duration,
+            ) -> Result<(), ConfigRuntimeError> {
+                Err(ConfigRuntimeError::PeriodicRefresh(
+                    "scripted MCP refresh failure".to_string(),
+                ))
+            }
+
+            async fn stop_periodic_refresh(&self) -> bool {
+                false
+            }
+
+            async fn close(&self) -> Result<(), ConfigRuntimeError> {
+                self.close_count.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            }
+        }
+
+        struct RefreshFailingFactory {
+            close_count: Arc<AtomicUsize>,
+        }
+
+        #[async_trait::async_trait]
+        impl McpRegistryFactory for RefreshFailingFactory {
+            async fn connect(
+                &self,
+                specs: &[McpServerSpec],
+            ) -> Result<Option<Arc<dyn ManagedMcpRegistry>>, ConfigRuntimeError> {
+                assert!(!specs.is_empty(), "test must exercise a real MCP state");
+                Ok(Some(Arc::new(RefreshFailingRegistry {
+                    tool_registry: Arc::new(
+                        awaken_runtime::registry::memory::MapToolRegistry::new(),
+                    ),
+                    close_count: Arc::clone(&self.close_count),
+                }) as Arc<dyn ManagedMcpRegistry>))
+            }
+        }
+
+        let close_count = Arc::new(AtomicUsize::new(0));
+        let (manager, _) = make_manager_with_store().await;
+        let manager = manager.with_mcp_registry_factory(Arc::new(RefreshFailingFactory {
+            close_count: Arc::clone(&close_count),
+        }));
+        *manager.mcp_refresh_interval.write() = Some(Duration::from_secs(30));
+
+        let err = manager
+            .publish(ManagedConfigSnapshot {
+                providers: Vec::new(),
+                models: Vec::new(),
+                agents: Vec::new(),
+                mcp_servers: vec![McpServerSpec {
+                    id: "demo".to_string(),
+                    transport: McpTransportKind::Http,
+                    url: Some("http://mcp.example.invalid".to_string()),
+                    ..McpServerSpec::default()
+                }],
+                tools: Vec::new(),
+                fingerprint: 1,
+            })
+            .await
+            .expect_err("refresh setup failure must abort publish");
+
+        assert!(
+            matches!(err, ConfigRuntimeError::PeriodicRefresh(_)),
+            "unexpected error: {err:?}"
+        );
+        assert_eq!(
+            close_count.load(Ordering::SeqCst),
+            1,
+            "prepared MCP registry must be closed when refresh setup fails"
+        );
     }
 
     #[tokio::test]

@@ -258,6 +258,7 @@ struct TrackingManagedMcpRegistryState {
     periodic_refresh_running: AtomicBool,
     start_calls: AtomicUsize,
     stop_calls: AtomicUsize,
+    close_calls: AtomicUsize,
 }
 
 struct TrackingManagedMcpRegistry {
@@ -295,6 +296,12 @@ impl ManagedMcpRegistry for TrackingManagedMcpRegistry {
             .swap(false, Ordering::Relaxed)
     }
 
+    async fn close(&self) -> Result<(), ConfigRuntimeError> {
+        self.state.close_calls.fetch_add(1, Ordering::Relaxed);
+        self.stop_periodic_refresh().await;
+        Ok(())
+    }
+
     async fn server_status(
         &self,
         _server_name: &str,
@@ -320,6 +327,13 @@ impl TrackingMcpRegistryFactory {
             .first()
             .cloned()
             .expect("tracking factory should have created one registry")
+    }
+
+    fn states(&self) -> Vec<Arc<TrackingManagedMcpRegistryState>> {
+        self.states
+            .lock()
+            .expect("tracking factory lock poisoned")
+            .clone()
     }
 }
 
@@ -1715,7 +1729,7 @@ async fn duplicate_create_returns_conflict_status() {
 }
 
 #[tokio::test]
-async fn failed_publish_stops_prepared_mcp_registry() {
+async fn failed_publish_closes_prepared_mcp_registry() {
     let factory = Arc::new(TrackingMcpRegistryFactory::default());
     let (runtime, store, manager) = make_runtime_manager_with_options(
         None,
@@ -1757,6 +1771,7 @@ async fn failed_publish_stops_prepared_mcp_registry() {
 
     let state = factory.single_state();
     assert_eq!(state.start_calls.load(Ordering::Relaxed), 1);
+    assert_eq!(state.close_calls.load(Ordering::Relaxed), 1);
     assert_eq!(state.stop_calls.load(Ordering::Relaxed), 1);
     assert!(!state.periodic_refresh_running.load(Ordering::Relaxed));
 
@@ -1768,6 +1783,89 @@ async fn failed_publish_stops_prepared_mcp_registry() {
         !resolved.tools.contains_key("mcp__cleanup__ping"),
         "failed publish must not leak prepared MCP tools into the live runtime"
     );
+}
+
+#[tokio::test]
+async fn replacing_mcp_registry_closes_previous_registry() {
+    let factory = Arc::new(TrackingMcpRegistryFactory::default());
+    let (_runtime, store, manager) = make_runtime_manager_with_options(
+        None,
+        factory.clone() as Arc<dyn McpRegistryFactory>,
+        Some(Duration::from_secs(5)),
+    )
+    .await;
+
+    ConfigStore::put(
+        store.as_ref(),
+        "mcp-servers",
+        "first",
+        &json!({
+            "id": "first",
+            "transport": "stdio",
+            "command": "first-mcp"
+        }),
+    )
+    .await
+    .expect("write first managed mcp server");
+    manager.apply().await.expect("apply first mcp registry");
+
+    let first_state = factory.single_state();
+    assert_eq!(first_state.start_calls.load(Ordering::Relaxed), 1);
+    assert_eq!(first_state.close_calls.load(Ordering::Relaxed), 0);
+
+    ConfigStore::put(
+        store.as_ref(),
+        "mcp-servers",
+        "second",
+        &json!({
+            "id": "second",
+            "transport": "stdio",
+            "command": "second-mcp"
+        }),
+    )
+    .await
+    .expect("write second managed mcp server");
+    manager.apply().await.expect("replace mcp registry");
+
+    let states = factory.states();
+    assert_eq!(states.len(), 2);
+    assert_eq!(first_state.close_calls.load(Ordering::Relaxed), 1);
+    assert_eq!(first_state.stop_calls.load(Ordering::Relaxed), 1);
+    assert!(!first_state.periodic_refresh_running.load(Ordering::Relaxed));
+    assert_eq!(states[1].start_calls.load(Ordering::Relaxed), 1);
+    assert_eq!(states[1].close_calls.load(Ordering::Relaxed), 0);
+}
+
+#[tokio::test]
+async fn shutdown_closes_active_mcp_registry() {
+    let factory = Arc::new(TrackingMcpRegistryFactory::default());
+    let (_runtime, store, manager) = make_runtime_manager_with_options(
+        None,
+        factory.clone() as Arc<dyn McpRegistryFactory>,
+        Some(Duration::from_secs(5)),
+    )
+    .await;
+
+    ConfigStore::put(
+        store.as_ref(),
+        "mcp-servers",
+        "active",
+        &json!({
+            "id": "active",
+            "transport": "stdio",
+            "command": "active-mcp"
+        }),
+    )
+    .await
+    .expect("write active managed mcp server");
+    manager.apply().await.expect("apply active mcp registry");
+
+    let state = factory.single_state();
+    manager.shutdown().await.expect("shutdown config runtime");
+
+    assert_eq!(state.close_calls.load(Ordering::Relaxed), 1);
+    assert_eq!(state.stop_calls.load(Ordering::Relaxed), 1);
+    assert!(!state.periodic_refresh_running.load(Ordering::Relaxed));
 }
 
 // ── apply / apply_if_changed semantics ──────────────────────────────
@@ -2089,6 +2187,148 @@ async fn mcp_status_returns_404_for_unknown_server() {
     )
     .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+/// R9 #2 regression: the manager snapshot has `session_id`,
+/// `reconnect_count`, and `last_init_at` fields. The HTTP wire
+/// response forgot to surface them before R9; this test pins the
+/// fix so a future refactor of `get_mcp_server_status` doesn't
+/// silently drop them again. The session id is redacted on the wire;
+/// the raw MCP-Session-Id must never be returned by this route.
+#[tokio::test]
+async fn mcp_status_route_surfaces_session_reconnect_init_fields() {
+    use std::time::SystemTime;
+
+    /// Test-only registry that returns a fully-populated snapshot for
+    /// every server name. We don't care about the tool list here, just
+    /// that the new diagnostic fields make it onto the wire.
+    struct SnapshotStubRegistry {
+        tool_registry: Arc<dyn ToolRegistry>,
+    }
+
+    #[async_trait]
+    impl ManagedMcpRegistry for SnapshotStubRegistry {
+        fn tool_registry(&self) -> Arc<dyn ToolRegistry> {
+            Arc::clone(&self.tool_registry)
+        }
+        fn periodic_refresh_running(&self) -> bool {
+            false
+        }
+        fn start_periodic_refresh(&self, _interval: Duration) -> Result<(), ConfigRuntimeError> {
+            Ok(())
+        }
+        async fn stop_periodic_refresh(&self) -> bool {
+            false
+        }
+        async fn server_status(
+            &self,
+            _server_name: &str,
+        ) -> Option<awaken_ext_mcp::McpServerStatusSnapshot> {
+            Some(awaken_ext_mcp::McpServerStatusSnapshot {
+                connected: true,
+                last_error: None,
+                tools: vec![],
+                consecutive_failures: 0,
+                last_attempt_at: None,
+                last_success_at: None,
+                reconnecting: false,
+                permanently_failed: false,
+                session_id: Some("test-session-xyz".to_string()),
+                reconnect_count: 3,
+                // 2026-05-13 12:00:00 UTC, picked so the conversion to
+                // unix seconds is non-zero and we can assert on it.
+                last_init_at: Some(SystemTime::UNIX_EPOCH + Duration::from_secs(1_778_846_400)),
+            })
+        }
+        async fn reconnect(&self, _server_name: &str) -> Result<(), ConfigRuntimeError> {
+            Ok(())
+        }
+    }
+
+    struct SnapshotStubFactory;
+
+    #[async_trait]
+    impl McpRegistryFactory for SnapshotStubFactory {
+        async fn connect(
+            &self,
+            specs: &[McpServerSpec],
+        ) -> Result<Option<Arc<dyn ManagedMcpRegistry>>, ConfigRuntimeError> {
+            if specs.is_empty() {
+                return Ok(None);
+            }
+            Ok(Some(Arc::new(SnapshotStubRegistry {
+                tool_registry: Arc::new(MapToolRegistry::new()),
+            }) as Arc<dyn ManagedMcpRegistry>))
+        }
+    }
+
+    let notifier = Arc::new(TestConfigChangeNotifier::new());
+    let (runtime, store, manager) = make_runtime_manager_with_options(
+        Some(notifier.clone() as Arc<dyn ConfigChangeNotifier>),
+        Arc::new(SnapshotStubFactory),
+        None,
+    )
+    .await;
+    let config_store = store.clone() as Arc<dyn ConfigStore>;
+    let mailbox = Arc::new(Mailbox::new(
+        runtime.clone(),
+        Arc::new(awaken_stores::InMemoryMailboxStore::new()),
+        store.clone(),
+        "mcp-status-fields-test".into(),
+        MailboxConfig::default(),
+    ));
+    let state = AppState::new(
+        runtime.clone(),
+        mailbox,
+        store.clone(),
+        runtime.resolver_arc(),
+        ServerConfig::default(),
+    )
+    .with_config_store(config_store)
+    .with_config_runtime_manager(manager.clone());
+    let router = build_router(&state).with_state(state);
+
+    // Register an MCP server so the factory's `connect` is called and
+    // the stub registry becomes active.
+    let (status, _) = request_json(
+        &router,
+        Method::POST,
+        "/v1/config/mcp-servers",
+        Some(json!({
+            "id": "demo",
+            "transport": "http",
+            "url": "http://invalid.test"
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, body) =
+        request_json(&router, Method::GET, "/v1/mcp-servers/demo/status", None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        body["session_id"]
+            .as_str()
+            .map(|value| value.starts_with("sha256:")),
+        Some(true),
+        "session_id must be a redacted digest; body = {body}"
+    );
+    assert_ne!(
+        body["session_id"], "test-session-xyz",
+        "raw MCP session id must not surface on wire; body = {body}"
+    );
+    assert_eq!(
+        body["reconnect_count"], 3,
+        "reconnect_count must surface; body = {body}"
+    );
+    assert_eq!(
+        body["last_init_at"], 1_778_846_400,
+        "last_init_at must surface as unix seconds; body = {body}"
+    );
+    // Sanity: existing fields still present (no accidental drop while
+    // adding the new ones).
+    assert_eq!(body["connected"], true);
+    assert_eq!(body["reconnecting"], false);
 }
 
 #[tokio::test]
