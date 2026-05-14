@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { type AgentSpec, configApi } from "@/lib/config-api";
+import { safeErrorMessage } from "@/lib/safe-error-message";
 import { useToast } from "@/components/toast-provider";
 import { DiffModal } from "./diff-modal";
 import { type AgentSaveMode } from "./spec-helpers";
@@ -59,7 +60,7 @@ export function EditorSaveBar({
     } catch (err) {
       toast.error(
         t("editor.savePayload.validateFailed", {
-          message: err instanceof Error ? err.message : String(err),
+          message: safeErrorMessage(err),
         }),
       );
     } finally {

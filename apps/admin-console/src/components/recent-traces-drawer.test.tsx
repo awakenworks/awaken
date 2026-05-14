@@ -20,17 +20,13 @@ afterEach(() => {
 
 describe("RecentTracesDrawer (G7)", () => {
   it("renders nothing when closed", () => {
-    renderWithClient(
-      <RecentTracesDrawer agentId="agent-a" open={false} onClose={() => {}} />,
-    );
+    renderWithClient(<RecentTracesDrawer agentId="agent-a" open={false} onClose={() => {}} />);
     expect(screen.queryByTestId("recent-traces-drawer")).toBeNull();
   });
 
   it("shows the not-configured state when listAgentTraces returns null", async () => {
     vi.spyOn(tracesApi, "listAgentTraces").mockResolvedValue(null);
-    renderWithClient(
-      <RecentTracesDrawer agentId="agent-a" open onClose={() => {}} />,
-    );
+    renderWithClient(<RecentTracesDrawer agentId="agent-a" open onClose={() => {}} />);
     await waitFor(() => {
       expect(screen.getByTestId("recent-traces-not-configured")).toBeTruthy();
     });
@@ -38,12 +34,25 @@ describe("RecentTracesDrawer (G7)", () => {
 
   it("shows the empty state when no runs are recorded", async () => {
     vi.spyOn(tracesApi, "listAgentTraces").mockResolvedValue({ runs: [] });
-    renderWithClient(
-      <RecentTracesDrawer agentId="agent-a" open onClose={() => {}} />,
-    );
+    renderWithClient(<RecentTracesDrawer agentId="agent-a" open onClose={() => {}} />);
     await waitFor(() => {
       expect(screen.getByTestId("recent-traces-empty")).toBeTruthy();
     });
+  });
+
+  it("redacts credential patterns from run list errors", async () => {
+    vi.spyOn(tracesApi, "listAgentTraces").mockRejectedValue(
+      new Error("trace failed with Cookie: session=raw-session-id"),
+    );
+
+    const { container } = renderWithClient(
+      <RecentTracesDrawer agentId="agent-a" open onClose={() => {}} />,
+    );
+
+    await screen.findByText(/Failed to load runs/i);
+    const dom = container.textContent ?? "";
+    expect(dom).toContain("Cookie: ***");
+    expect(dom).not.toContain("raw-session-id");
   });
 
   it("renders the run list with status / experiment / variant / judge pills", async () => {
@@ -68,9 +77,7 @@ describe("RecentTracesDrawer (G7)", () => {
         },
       ],
     });
-    renderWithClient(
-      <RecentTracesDrawer agentId="agent-a" open onClose={() => {}} />,
-    );
+    renderWithClient(<RecentTracesDrawer agentId="agent-a" open onClose={() => {}} />);
     await waitFor(() => {
       expect(screen.getByTestId("recent-traces-list")).toBeTruthy();
     });
@@ -104,9 +111,7 @@ describe("RecentTracesDrawer (G7)", () => {
       next_offset: null,
     });
 
-    renderWithClient(
-      <RecentTracesDrawer agentId="agent-a" open onClose={() => {}} />,
-    );
+    renderWithClient(<RecentTracesDrawer agentId="agent-a" open onClose={() => {}} />);
     await waitFor(() => screen.getByTestId("recent-traces-list"));
     fireEvent.click(screen.getByText(/run-1/));
 
@@ -123,6 +128,34 @@ describe("RecentTracesDrawer (G7)", () => {
     expect(rows.length).toBe(2);
     expect(screen.getByText("run_start")).toBeTruthy();
     expect(screen.getByText("tool_call")).toBeTruthy();
+  });
+
+  it("redacts credential patterns from event load errors", async () => {
+    vi.spyOn(tracesApi, "listAgentTraces").mockResolvedValue({
+      runs: [
+        {
+          run_id: "run-error",
+          agent_id: "agent-a",
+          started_at: Math.floor(Date.now() / 1000),
+          prompt_ids: [],
+          final_status: "failed",
+        },
+      ],
+    });
+    vi.spyOn(tracesApi, "getTracePage").mockRejectedValue(
+      new Error("event fetch failed with api_key=raw-api-key-value"),
+    );
+
+    const { container } = renderWithClient(
+      <RecentTracesDrawer agentId="agent-a" open onClose={() => {}} />,
+    );
+    await waitFor(() => screen.getByTestId("recent-traces-list"));
+    fireEvent.click(screen.getByText(/run-error/));
+
+    await screen.findByText(/Failed to load events/i);
+    const dom = container.textContent ?? "";
+    expect(dom).toContain("api_key=***");
+    expect(dom).not.toContain("raw-api-key-value");
   });
 
   it("loads and appends additional event pages", async () => {
@@ -178,9 +211,7 @@ describe("RecentTracesDrawer (G7)", () => {
   it("clicking the scrim calls onClose", async () => {
     vi.spyOn(tracesApi, "listAgentTraces").mockResolvedValue({ runs: [] });
     const onClose = vi.fn();
-    renderWithClient(
-      <RecentTracesDrawer agentId="agent-a" open onClose={onClose} />,
-    );
+    renderWithClient(<RecentTracesDrawer agentId="agent-a" open onClose={onClose} />);
     await waitFor(() => screen.getByTestId("recent-traces-drawer"));
     fireEvent.click(screen.getByTestId("recent-traces-drawer-scrim"));
     expect(onClose).toHaveBeenCalled();

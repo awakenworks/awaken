@@ -1,12 +1,8 @@
 import { useEffect, useState } from "react";
 import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
-import {
-  tracesApi,
-  type TraceEvent,
-  type TracePage,
-  type TraceRunSummary,
-} from "@/lib/config-api";
+import { tracesApi, type TraceEvent, type TracePage, type TraceRunSummary } from "@/lib/config-api";
 import { redactSecretsForDisplay } from "@/lib/agent-editor-helpers";
+import { safeErrorMessage } from "@/lib/safe-error-message";
 
 const TRACE_EVENT_PAGE_LIMIT = 1000;
 
@@ -120,37 +116,29 @@ function RunList({
   onSelect: (runId: string) => void;
 }) {
   if (loading) {
-    return (
-      <div className="px-4 py-6 text-xs text-fg-soft">Loading recent runs…</div>
-    );
+    return <div className="px-4 py-6 text-xs text-fg-soft">Loading recent runs…</div>;
   }
   if (error) {
     return (
       <div className="px-4 py-6 text-xs text-tone-error">
-        Failed to load runs: {error instanceof Error ? error.message : String(error)}
+        Failed to load runs: {safeErrorMessage(error)}
       </div>
     );
   }
   if (data === null) {
     return (
-      <div
-        className="px-4 py-6 text-xs text-fg-soft"
-        data-testid="recent-traces-not-configured"
-      >
+      <div className="px-4 py-6 text-xs text-fg-soft" data-testid="recent-traces-not-configured">
         Trace persistence is not enabled on this server build (
-        <span className="font-mono">expose_trace_routes=false</span> or no trace store
-        configured). Ask the operator to enable trace persistence to populate this view.
+        <span className="font-mono">expose_trace_routes=false</span> or no trace store configured).
+        Ask the operator to enable trace persistence to populate this view.
       </div>
     );
   }
   if (!data || data.runs.length === 0) {
     return (
-      <div
-        className="px-4 py-6 text-xs text-fg-soft"
-        data-testid="recent-traces-empty"
-      >
-        No runs recorded for this agent yet. Run the sandbox or invoke the agent through
-        the API and a summary will appear here.
+      <div className="px-4 py-6 text-xs text-fg-soft" data-testid="recent-traces-empty">
+        No runs recorded for this agent yet. Run the sandbox or invoke the agent through the API and
+        a summary will appear here.
       </div>
     );
   }
@@ -230,10 +218,7 @@ function RunEventViewer({ runId, onBack }: { runId: string; onBack: () => void }
         <div className="px-4 py-6 text-xs text-fg-soft">Loading events…</div>
       ) : eventsQuery.error && page === undefined ? (
         <div className="px-4 py-6 text-xs text-tone-error">
-          Failed to load events:{" "}
-          {eventsQuery.error instanceof Error
-            ? eventsQuery.error.message
-            : String(eventsQuery.error)}
+          Failed to load events: {safeErrorMessage(eventsQuery.error)}
         </div>
       ) : page === null ? (
         // Server build lacks trace persistence (503). Distinct from
@@ -293,19 +278,14 @@ function EventList({
       </div>
       <ul className="divide-y divide-line">
         {page.events.map((event, index) => (
-          <li
-            key={index}
-            className="px-4 py-2 text-[11px]"
-            data-testid="recent-traces-event-row"
-          >
+          <li key={index} className="px-4 py-2 text-[11px]" data-testid="recent-traces-event-row">
             <EventRow event={event} />
           </li>
         ))}
       </ul>
       {loadError && page.events.length > 0 ? (
         <div className="px-4 py-2 text-[11px] text-tone-error">
-          Failed to load more events:{" "}
-          {loadError instanceof Error ? loadError.message : String(loadError)}
+          Failed to load more events: {safeErrorMessage(loadError)}
         </div>
       ) : null}
       {canLoadMore ? (
@@ -333,9 +313,7 @@ function EventRow({ event }: { event: TraceEvent }) {
   return (
     <details>
       <summary className="flex cursor-pointer items-center gap-2">
-        <span className="rounded-pill bg-muted px-2 py-0.5 font-mono text-fg-soft">
-          {kind}
-        </span>
+        <span className="rounded-pill bg-muted px-2 py-0.5 font-mono text-fg-soft">{kind}</span>
         {typeof event.ts === "number" ? (
           <span className="text-[10px] text-fg-faint">
             {new Date(event.ts * 1000).toISOString()}

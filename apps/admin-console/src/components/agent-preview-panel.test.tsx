@@ -376,8 +376,20 @@ describe("AgentPreviewPanel — redaction and trace gating", () => {
     expect(lastDrawerProps.agentId).toBe("");
   });
 
+  it("does not show Recent runs for a new unsaved draft after the user enters an id", () => {
+    render(<AgentPreviewPanel draft={agentDraft({ id: "my-new-agent" })} />);
+    expect(screen.queryByTestId("open-recent-traces")).toBeNull();
+    const lastDrawerProps = previewHarness.drawerProps[previewHarness.drawerProps.length - 1];
+    expect(lastDrawerProps.agentId).toBe("");
+  });
+
   it("opens Recent runs with the real saved agent id, not the preview fallback id", () => {
-    render(<AgentPreviewPanel draft={agentDraft({ id: " saved-agent " })} />);
+    render(
+      <AgentPreviewPanel
+        draft={agentDraft({ id: " edited-draft-id " })}
+        traceAgentId=" saved-agent "
+      />,
+    );
     fireEvent.click(screen.getByTestId("open-recent-traces"));
     const drawer = screen.getByTestId("recent-traces-drawer");
     expect(drawer.getAttribute("data-agent-id")).toBe("saved-agent");

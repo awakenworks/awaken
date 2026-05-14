@@ -1,4 +1,5 @@
 import { useTranslation } from "react-i18next";
+import { redactSecretString, redactSecretsForDisplay } from "@/lib/agent-editor-helpers";
 import { jsonSemanticallyEqual, prettyStableStringify } from "./spec-helpers";
 
 interface FieldChange {
@@ -43,14 +44,11 @@ function computeDiff(
   return out;
 }
 
-function formatDiffValue(
-  value: unknown,
-  labels: { emptyString: string; unset: string },
-): string {
+function formatDiffValue(value: unknown, labels: { emptyString: string; unset: string }): string {
   if (value === undefined) return labels.unset;
   if (value === null) return "null";
-  if (typeof value === "string") return value || labels.emptyString;
-  return prettyStableStringify(value);
+  if (typeof value === "string") return redactSecretString(value) || labels.emptyString;
+  return prettyStableStringify(redactSecretsForDisplay(value));
 }
 
 export function DiffModal({

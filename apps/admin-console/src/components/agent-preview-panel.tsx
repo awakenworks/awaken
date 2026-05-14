@@ -3,21 +3,29 @@ import { useChat, type UIMessage } from "@ai-sdk/react";
 import { useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { agentPreviewRunUrl, type AgentSpec } from "@/lib/config-api";
 import { adminAuthHeaders } from "@/lib/api/http";
-import { redactSecretString, redactSecretsForDisplay } from "@/lib/agent-editor-helpers";
+import {
+  redactSecretString,
+  redactSecretsForDisplay,
+  safeErrorMessage,
+} from "@/lib/agent-editor-helpers";
 import { RecentTracesDrawer } from "@/components/recent-traces-drawer";
 
 interface AgentPreviewPanelProps {
   draft: AgentSpec;
+  traceAgentId?: string;
 }
 
-export function AgentPreviewPanel({ draft }: AgentPreviewPanelProps) {
+export function AgentPreviewPanel({
+  draft,
+  traceAgentId: rawTraceAgentId,
+}: AgentPreviewPanelProps) {
   const [sessionId, setSessionId] = useState(() => makePreviewSessionId());
   const [input, setInput] = useState("");
   const [lastLatencyMs, setLastLatencyMs] = useState<number | null>(null);
   const [tracesOpen, setTracesOpen] = useState(false);
   const sendStartedAtRef = useRef<number | null>(null);
   const previewDraft = normalizePreviewAgent(draft);
-  const traceAgentId = draft.id.trim();
+  const traceAgentId = rawTraceAgentId?.trim() ?? "";
   const canShowRecentRuns = traceAgentId.length > 0;
   const draftRef = useRef(previewDraft);
 
@@ -36,11 +44,7 @@ export function AgentPreviewPanel({ draft }: AgentPreviewPanelProps) {
       new DefaultChatTransport({
         api: agentPreviewRunUrl(),
         prepareSendMessagesRequest: ({ messages }) => ({
-          // R11 #1 — the preview route is admin-only on the server.
-          // Without this header the request 401s; resolving the token
-          // here (rather than in a static `headers` option) lets the
-          // resolver react to a freshly-saved bearer or a dev-env
-          // fallback at send time.
+          // Resolve auth at send time so a freshly-saved bearer is used.
           headers: adminAuthHeaders(),
           body: {
             threadId: sessionId,
@@ -138,7 +142,7 @@ export function AgentPreviewPanel({ draft }: AgentPreviewPanelProps) {
 
       {error ? (
         <div className="mt-4 rounded-md border border-tone-error/30 bg-tone-error/10 px-4 py-3 text-sm text-tone-error">
-          {redactSecretString(error.message)}
+          {safeErrorMessage(error)}
         </div>
       ) : null}
 
@@ -420,14 +424,8 @@ const TOOL_TONE_STYLE: Record<"neutral" | "info" | "success" | "warn" | "error",
 };
 
 export function hasRenderableContent(message: UIMessage): boolean {
-  // A bubble is worth drawing when MessageParts would emit at least one
-  // visible element. Mirrors the render path's three cases:
-  //   1. Known content with payload (text/reasoning/tool).
-  //   2. Unknown SDK type → collapsed into the unrecognized-parts debug
-  //      fallback. R8 #4: previously dropped here, which contradicted
-  //      the PR's "unknown parts collapse into a debug fallback" goal.
-  //   3. step-start / empty text / empty reasoning → MessageParts skips
-  //      these silently; nothing reaches the DOM.
+  // Mirrors MessageParts: known payloads and unknown SDK parts render; empty
+  // text/reasoning and step separators do not.
   return message.parts.some(isDisplayablePart);
 }
 

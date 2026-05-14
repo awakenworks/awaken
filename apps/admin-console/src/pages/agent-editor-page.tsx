@@ -54,11 +54,13 @@ import {
   redactAgentSpecForEditing,
   redactAgentSpecForDisplay,
   redactEndpointForDisplay,
+  redactSecretString,
   redactSecretsForDisplay,
   restoreUnchangedRedactions,
   togglePluginState,
   unknownAgentSpecFields,
 } from "@/lib/agent-editor-helpers";
+import { safeErrorMessage } from "@/lib/safe-error-message";
 
 const EMPTY_AGENT: AgentSpec = {
   id: "",
@@ -124,18 +126,9 @@ export function AgentEditorPage() {
   });
   const capabilities = capabilitiesQuery.data ?? null;
   const loading = capabilitiesQuery.isPending || (!isNew && agentQuery.isPending);
-  const agentError =
-    !isNew && agentQuery.error
-      ? agentQuery.error instanceof Error
-        ? agentQuery.error.message
-        : String(agentQuery.error)
-      : null;
+  const agentError = !isNew && agentQuery.error ? safeErrorMessage(agentQuery.error) : null;
   const agentMetaError =
-    !isNew && agentMetaQuery.error
-      ? agentMetaQuery.error instanceof Error
-        ? agentMetaQuery.error.message
-        : String(agentMetaQuery.error)
-      : null;
+    !isNew && agentMetaQuery.error ? safeErrorMessage(agentMetaQuery.error) : null;
   const saveDisabled = saving || Boolean(agentMetaError || (!isNew && agentMetaQuery.isPending));
   const initializedAgentIdRef = useRef<string | null>(null);
 
@@ -159,19 +152,13 @@ export function AgentEditorPage() {
 
   useEffect(() => {
     if (capabilitiesQuery.error) {
-      toast.error(
-        capabilitiesQuery.error instanceof Error
-          ? capabilitiesQuery.error.message
-          : String(capabilitiesQuery.error),
-      );
+      toast.error(safeErrorMessage(capabilitiesQuery.error));
     }
   }, [capabilitiesQuery.error, toast]);
 
   useEffect(() => {
     if (agentQuery.error) {
-      toast.error(
-        agentQuery.error instanceof Error ? agentQuery.error.message : String(agentQuery.error),
-      );
+      toast.error(safeErrorMessage(agentQuery.error));
     }
   }, [agentQuery.error, toast]);
 
@@ -310,7 +297,7 @@ export function AgentEditorPage() {
         setHistoryRefreshKey((k) => k + 1);
       }
     } catch (saveError) {
-      toast.error(saveError instanceof Error ? saveError.message : String(saveError));
+      toast.error(safeErrorMessage(saveError));
       // Customized PATCH is now transactional (server applies upserts +
       // `_clear` together under one `apply_locked` guard), so on failure
       // the server itself is in a consistent state. The refetch here
@@ -338,9 +325,7 @@ export function AgentEditorPage() {
           // failure as a secondary toast so the user knows the UI may
           // also be stale.
           toast.error(
-            `Could not refresh agent state after save error: ${
-              refetchError instanceof Error ? refetchError.message : String(refetchError)
-            }`,
+            `Could not refresh agent state after save error: ${safeErrorMessage(refetchError)}`,
           );
         }
       }
@@ -375,7 +360,7 @@ export function AgentEditorPage() {
       invalidateConfigMutation(queryClient, "agents", id);
       toast.success(`Agent "${id}" overrides cleared`);
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : String(err));
+      toast.error(safeErrorMessage(err));
     }
   }
 
@@ -398,7 +383,7 @@ export function AgentEditorPage() {
       toast.success(t("agents.resetOverrideFieldDone", { field }));
       setHistoryRefreshKey((k) => k + 1);
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : String(err));
+      toast.error(safeErrorMessage(err));
     }
   }
 
@@ -436,7 +421,7 @@ export function AgentEditorPage() {
       setErrors({});
       toast.success(`Cloned from "${sourceId}" — pick a new agent id and Save.`);
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : String(err));
+      toast.error(safeErrorMessage(err));
     }
   }
 
@@ -698,7 +683,7 @@ export function AgentEditorPage() {
           ))}
         </div>
 
-        <AgentPreviewPanel draft={spec} />
+        <AgentPreviewPanel draft={spec} traceAgentId={isNew ? undefined : savedSpec?.id} />
       </div>
 
       <EditorSaveBar
@@ -744,7 +729,7 @@ function EditorSaveBar({
       await configApi.validateConfig("agents", spec, isNew ? undefined : { id: spec.id });
       toast.success("Validation passed — payload is safe to publish.");
     } catch (err) {
-      toast.error(`Validation failed: ${err instanceof Error ? err.message : String(err)}`);
+      toast.error(`Validation failed: ${safeErrorMessage(err)}`);
     } finally {
       setValidating(false);
     }
@@ -897,7 +882,7 @@ function formatDiffValue(value: unknown, redactedValueChanged = false): string {
   const suffix = redactedValueChanged ? " (changed)" : "";
   if (value === undefined) return `(unset)${suffix}`;
   if (value === null) return `null${suffix}`;
-  if (typeof value === "string") return `${value || "(empty string)"}${suffix}`;
+  if (typeof value === "string") return `${redactSecretString(value) || "(empty string)"}${suffix}`;
   // Defense-in-depth: the caller is expected to have already redacted, but
   // a future code path that forgets shouldn't end up dumping secrets here.
   const rendered = JSON.stringify(redactSecretsForDisplay(value), null, 2);
@@ -1133,6 +1118,14 @@ function BasicsPanel({
   const cloneOptions = isNew
     ? (capabilities?.agents ?? []).filter((agentId) => agentId !== spec.id)
     : [];
+
+  function parseIntegerInput(value: string, min: number): number | undefined {
+    if (value.trim() === "") return undefined;
+    const parsed = Number(value);
+    if (!Number.isFinite(parsed) || parsed < min) return undefined;
+    return Math.floor(parsed);
+  }
+
   return (
     <section className="rounded-md border border-line bg-surface p-5 shadow-sm">
       <h3 className="text-lg font-semibold text-fg-strong">Basics</h3>
@@ -1201,7 +1194,10 @@ function BasicsPanel({
             type="number"
             min={1}
             value={Number(spec.max_rounds ?? 16)}
-            onChange={(event) => updateField("max_rounds", Number(event.target.value) || 16)}
+            onChange={(event) => {
+              const next = parseIntegerInput(event.target.value, 1);
+              if (next !== undefined) updateField("max_rounds", next);
+            }}
             className="w-full rounded-xl border border-line-strong px-3 py-2 text-sm text-fg-strong outline-none transition focus:border-line-strong"
           />
         </Field>
@@ -1210,9 +1206,10 @@ function BasicsPanel({
             type="number"
             min={0}
             value={Number(spec.max_continuation_retries ?? 2)}
-            onChange={(event) =>
-              updateField("max_continuation_retries", Number(event.target.value) || 0)
-            }
+            onChange={(event) => {
+              const next = parseIntegerInput(event.target.value, 0);
+              if (next !== undefined) updateField("max_continuation_retries", next);
+            }}
             className="w-full rounded-xl border border-line-strong px-3 py-2 text-sm text-fg-strong outline-none transition focus:border-line-strong"
           />
         </Field>
@@ -1621,7 +1618,7 @@ function PermissionPreviewBlock({
   if (error) {
     return (
       <div className="mt-4 rounded-md border border-tone-error/30 bg-tone-error/10 px-3 py-2 text-xs text-tone-error">
-        Failed to load permission preview: {error instanceof Error ? error.message : String(error)}
+        Failed to load permission preview: {safeErrorMessage(error)}
       </div>
     );
   }
@@ -2173,7 +2170,7 @@ function JsonEditorSection({
     try {
       parsed = JSON.parse(draft);
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      setError(safeErrorMessage(err));
       return;
     }
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
@@ -2246,7 +2243,7 @@ function JsonEditorSection({
       setTouched(false);
       toast.success("JSON applied to draft. Click Save to publish.");
     } catch (err) {
-      setError(`Validation failed: ${err instanceof Error ? err.message : String(err)}`);
+      setError(`Validation failed: ${safeErrorMessage(err)}`);
     } finally {
       setApplying(false);
     }
@@ -2575,11 +2572,7 @@ function HistoryPanel({
   );
   const page = historyQuery.data?.pages[0] ?? null;
   const loading = historyQuery.isFetching;
-  const error = historyQuery.error
-    ? historyQuery.error instanceof Error
-      ? historyQuery.error.message
-      : String(historyQuery.error)
-    : null;
+  const error = historyQuery.error ? safeErrorMessage(historyQuery.error) : null;
   const refetchHistory = historyQuery.refetch;
 
   useEffect(() => {
@@ -2652,7 +2645,7 @@ function HistoryPanel({
       onSpecRestored(hydrated);
       void refetchHistory();
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : String(err));
+      toast.error(safeErrorMessage(err));
     } finally {
       setRestoring(null);
     }

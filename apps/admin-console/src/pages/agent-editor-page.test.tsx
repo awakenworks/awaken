@@ -287,6 +287,60 @@ describe("agent editor save validation", () => {
         .every((button) => button.hasAttribute("disabled")),
     ).toBe(true);
   });
+
+  it("redacts credential patterns from metadata error messages", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string | URL | Request) => {
+        const href = typeof url === "string" ? url : url instanceof URL ? url.href : url.url;
+        if (href.includes("/v1/capabilities")) {
+          return jsonResponse({
+            agents: [],
+            tools: [],
+            plugins: [],
+            skills: [],
+            models: [],
+            providers: [],
+            namespaces: [],
+          });
+        }
+        if (href.endsWith("/v1/config/agents/agent-a/meta")) {
+          return jsonResponse(
+            { error: "metadata failed with Cookie: session=raw-session-id" },
+            { ok: false, status: 403 },
+          );
+        }
+        if (href.endsWith("/v1/config/agents/agent-a")) {
+          return jsonResponse(agentSpec("agent-a"));
+        }
+        return jsonResponse({ error: "not found" }, { ok: false, status: 404 });
+      }),
+    );
+
+    const { container } = renderEditorRoute("/agents/agent-a");
+    await screen.findByText(/Agent metadata unavailable: metadata failed with Cookie: \*\*\*/i);
+    expect(container.textContent ?? "").not.toContain("raw-session-id");
+  });
+});
+
+describe("agent editor numeric inputs", () => {
+  it("keeps previous Basics numeric values while fields are blank or half-typed", async () => {
+    renderEditorRoute("/agents/new");
+    await screen.findByLabelText("Agent ID");
+
+    const maxRounds = screen.getByLabelText("Max rounds") as HTMLInputElement;
+    const retries = screen.getByLabelText("Max continuation retries") as HTMLInputElement;
+
+    fireEvent.change(maxRounds, { target: { value: "7" } });
+    expect(maxRounds.value).toBe("7");
+    fireEvent.change(maxRounds, { target: { value: "" } });
+    expect(maxRounds.value).toBe("7");
+
+    fireEvent.change(retries, { target: { value: "0" } });
+    expect(retries.value).toBe("0");
+    fireEvent.change(retries, { target: { value: "" } });
+    expect(retries.value).toBe("0");
+  });
 });
 
 describe("agent editor History tab", () => {
@@ -490,6 +544,21 @@ describe("DiffModal", () => {
     expect(dialog.textContent).not.toContain("old-client-secret");
     expect(dialog.textContent).not.toContain("new-client-secret");
     expect(screen.queryByText(/No semantic changes/i)).toBeNull();
+  });
+
+  it("redacts credential patterns from string diff values", () => {
+    const previous = agentSpec("diff-string-agent") as AgentSpec;
+    previous.system_prompt = "old prompt";
+    const current = agentSpec("diff-string-agent") as AgentSpec;
+    current.system_prompt = "new prompt with Authorization: Bearer sk-real-secret-value";
+
+    const { container } = render(
+      <DiffModal previous={previous} current={current} onClose={() => {}} />,
+    );
+
+    const dom = container.textContent ?? "";
+    expect(dom).toContain("Authorization: ***");
+    expect(dom).not.toContain("sk-real-secret-value");
   });
 });
 

@@ -1,4 +1,5 @@
 import { hasUnauthorizedHandler, requestUnauthorizedRetry } from "../auth-interceptor";
+import { redactSecretString } from "../agent-secret-redaction";
 
 export const BACKEND_URL = import.meta.env.VITE_BACKEND_URL ?? "http://127.0.0.1:38080";
 
@@ -17,20 +18,28 @@ export class ConfigApiError extends Error {
 }
 
 function extractErrorMessage(status: number, detail: unknown): string {
+  let message: string;
   if (typeof detail === "string" && detail.trim().length > 0) {
-    return detail;
-  }
-
-  if (
+    message = detail;
+  } else if (
     detail &&
     typeof detail === "object" &&
     "error" in detail &&
     typeof detail.error === "string"
   ) {
-    return detail.error;
+    message = detail.error;
+  } else if (
+    detail &&
+    typeof detail === "object" &&
+    "message" in detail &&
+    typeof detail.message === "string"
+  ) {
+    message = detail.message;
+  } else {
+    message = `Request failed with status ${status}`;
   }
 
-  return `Request failed with status ${status}`;
+  return redactSecretString(message);
 }
 
 async function readResponseBody(response: Response): Promise<unknown> {
@@ -66,10 +75,7 @@ export async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> 
 /// callers can parse the body themselves. The previous trace-detail
 /// code path called `fetch` directly and missed both the dev-env token
 /// fallback and the 401 retry — R11 #2.
-export async function fetchWithAdminAuth(
-  url: string,
-  init?: RequestInit,
-): Promise<Response> {
+export async function fetchWithAdminAuth(url: string, init?: RequestInit): Promise<Response> {
   let response = await fetch(url, withAdminAuth(init));
   if (response.status === 401 && hasUnauthorizedHandler()) {
     const refreshed = await requestUnauthorizedRetry();

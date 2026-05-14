@@ -6,6 +6,7 @@ import type { AgentSpec } from "./api/types";
 import { deepEqualCanonical } from "./agent-editor-canonical";
 
 export { canonicalStringify, deepEqualCanonical } from "./agent-editor-canonical";
+export { safeErrorMessage } from "./safe-error-message";
 export {
   changedRedactionMarkerPaths,
   computeRedactedDiff,

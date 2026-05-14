@@ -90,4 +90,22 @@ describe("ConfigApiError shape", () => {
     expect(err.message).toBe("I'm a teapot");
     expect(err.detail).toEqual({ error: "I'm a teapot" });
   });
+
+  it("redacts credential patterns from response error messages", () => {
+    const err = new ConfigApiError(500, {
+      error: "upstream failed with Authorization: Bearer sk-real-secret-value",
+    });
+
+    expect(err.message).toContain("Authorization: ***");
+    expect(err.message).not.toContain("sk-real-secret-value");
+  });
+
+  it("uses and redacts a response message field when error is absent", () => {
+    const err = new ConfigApiError(500, {
+      message: "upstream failed with api_key=raw-api-key-value",
+    });
+
+    expect(err.message).toContain("api_key=***");
+    expect(err.message).not.toContain("raw-api-key-value");
+  });
 });

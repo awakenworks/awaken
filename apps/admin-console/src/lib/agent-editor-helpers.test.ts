@@ -1215,6 +1215,15 @@ describe("ALLOWED_AGENT_FIELDS / unknownAgentSpecFields (R3 #3)", () => {
     expect(PATCHABLE_AGENT_FIELDS.filter((field) => !rustFieldSet.has(field))).toEqual([]);
   });
 
+  it("documents endpoint as backend-patchable but editor-locked", () => {
+    const rustPatchFields = new Set(rustAgentSpecPatchFields());
+
+    expect(rustPatchFields.has("endpoint")).toBe(true);
+    expect(ALLOWED_AGENT_FIELDS).toContain("endpoint");
+    expect(LOCKED_AGENT_FIELDS).toContain("endpoint");
+    expect(PATCHABLE_AGENT_FIELDS).not.toContain("endpoint");
+  });
+
   // R8 #6 — Drift guard: `ALLOWED_AGENT_FIELDS` is hand-maintained and the
   // editor's Raw JSON Apply path rejects any top-level key not in this
   // list. When `types.ts` (which mirrors the Rust `AgentSpec`) gains a

@@ -4,6 +4,7 @@ import { type AuditEvent, formatActor, summarizeChange } from "@/lib/audit-log";
 import { useToast } from "@/components/toast-provider";
 import { useConfirmDialog } from "@/components/confirm-dialog";
 import { useAuditLogInfiniteQuery } from "@/lib/query/hooks/audit";
+import { safeErrorMessage } from "@/lib/safe-error-message";
 import { hydrateAgentSpec } from "../spec-helpers";
 
 const ACTION_BADGE: Record<string, string> = {
@@ -36,11 +37,7 @@ export function HistoryPanel({
   );
   const page = historyQuery.data?.pages[0] ?? null;
   const loading = historyQuery.isFetching;
-  const error = historyQuery.error
-    ? historyQuery.error instanceof Error
-      ? historyQuery.error.message
-      : String(historyQuery.error)
-    : null;
+  const error = historyQuery.error ? safeErrorMessage(historyQuery.error) : null;
   const refetchHistory = historyQuery.refetch;
 
   useEffect(() => {
@@ -95,7 +92,7 @@ export function HistoryPanel({
       await onSpecRestored(hydrated);
       void refetchHistory();
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : String(err));
+      toast.error(safeErrorMessage(err));
     } finally {
       setRestoring(null);
     }
