@@ -2277,6 +2277,55 @@ async fn patch_overrides_null_clears_nullable_base_field() {
 }
 
 #[tokio::test]
+async fn patch_overrides_sections_null_value_deletes_base_section_key() {
+    let app = make_app().await;
+
+    use awaken_contract::contract::config_store::ConfigStore;
+
+    let mut raw = ConfigStore::get(app.store.as_ref(), "agents", "bootstrap")
+        .await
+        .expect("store read")
+        .expect("entry present");
+    raw["spec"]["sections"] = json!({
+        "permission": { "default_behavior": "ask", "rules": [] },
+        "observability": { "enabled": true }
+    });
+    ConfigStore::put(app.store.as_ref(), "agents", "bootstrap", &raw)
+        .await
+        .expect("store write");
+
+    let (status, body) = patch_overrides(
+        &app.router,
+        "bootstrap",
+        json!({"sections": {"permission": null}}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "body: {body}");
+    assert!(
+        !body["sections"]
+            .as_object()
+            .expect("sections object")
+            .contains_key("permission"),
+        "permission section must be deleted from the effective spec"
+    );
+    assert_eq!(body["sections"]["observability"], json!({"enabled": true}));
+
+    let raw = ConfigStore::get(app.store.as_ref(), "agents", "bootstrap")
+        .await
+        .expect("store read")
+        .expect("entry present");
+    let section_overrides = raw["meta"]["user_overrides"]["sections"]
+        .as_object()
+        .expect("section overrides object");
+    assert!(
+        section_overrides
+            .get("permission")
+            .is_some_and(Value::is_null),
+        "stored override should preserve the per-section delete marker"
+    );
+}
+
+#[tokio::test]
 async fn patch_overrides_rejects_unknown_field() {
     let app = make_app().await;
 

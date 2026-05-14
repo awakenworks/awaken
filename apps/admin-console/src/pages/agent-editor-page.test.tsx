@@ -814,6 +814,168 @@ describe("agent editor endpoint override banner (R14)", () => {
   });
 });
 
+describe("agent editor Raw JSON secret redaction", () => {
+  function stubRawJsonAgent(agentBody: AgentSpec, metaBody: Record<string, unknown>) {
+    const validateBodies: AgentSpec[] = [];
+    const patchBodies: Record<string, unknown>[] = [];
+    let currentAgent = JSON.parse(JSON.stringify(agentBody)) as AgentSpec;
+    const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
+      const u = String(url);
+      if (u.includes("/v1/capabilities")) {
+        return jsonResponse({
+          agents: [],
+          tools: [],
+          plugins: [],
+          skills: [],
+          models: [],
+          providers: [],
+          namespaces: [],
+        });
+      }
+      if (u.includes("/v1/config/agents/validate") && init?.method === "POST") {
+        const body = JSON.parse((init.body as string) ?? "{}") as AgentSpec;
+        validateBodies.push(body);
+        return jsonResponse({ ok: true, normalized: body });
+      }
+      if (u.endsWith(`/v1/config/agents/${agentBody.id}/meta`)) {
+        return jsonResponse(metaBody);
+      }
+      if (u.includes(`/v1/config/agents/${agentBody.id}/overrides`) && init?.method === "PATCH") {
+        const body = JSON.parse((init.body as string) ?? "{}") as Record<string, unknown>;
+        patchBodies.push(body);
+        if (body.sections && typeof body.sections === "object" && !Array.isArray(body.sections)) {
+          currentAgent = {
+            ...currentAgent,
+            sections: {
+              ...(currentAgent.sections ?? {}),
+              ...(body.sections as Record<string, unknown>),
+            },
+          };
+        }
+        return jsonResponse(currentAgent);
+      }
+      if (u.endsWith(`/v1/config/agents/${agentBody.id}`)) {
+        return jsonResponse(currentAgent);
+      }
+      if (u.includes("/v1/audit-log")) {
+        return jsonResponse({ items: [] });
+      }
+      return jsonResponse({ error: "not found" }, { ok: false, status: 404 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    return { validateBodies, patchBodies };
+  }
+
+  async function openRawJsonTextarea() {
+    const advancedTab = await screen.findByRole("tab", { name: "Advanced" });
+    fireEvent.click(advancedTab);
+    await screen.findByText("Raw JSON");
+    const textarea = screen
+      .getAllByRole("textbox")
+      .find(
+        (element): element is HTMLTextAreaElement =>
+          element instanceof HTMLTextAreaElement && element.value.includes('"sections"'),
+      );
+    if (!textarea) throw new Error("Raw JSON textarea not found");
+    return textarea;
+  }
+
+  it("does not render sections secrets into the Raw JSON textarea DOM", async () => {
+    const agent = agentSpec("raw-secret-agent") as AgentSpec;
+    agent.sections = {
+      oauth: { client_secret: "live-client-secret" },
+      observability: { api_key: "live-api-key" },
+    };
+    stubRawJsonAgent(agent, {
+      source: { kind: "builtin", binary_version: "1.0" },
+      hidden: false,
+      user_overrides: null,
+      created_at: 0,
+      updated_at: 0,
+    });
+
+    renderEditorRoute(`/agents/${agent.id}`);
+    await screen.findByText(/Edit raw-secret-agent/i);
+
+    const textarea = await openRawJsonTextarea();
+    expect(textarea.value).toContain('"client_secret": "***"');
+    expect(textarea.value).toContain('"api_key": "***"');
+    expect(textarea.value).not.toContain("live-client-secret");
+    expect(textarea.value).not.toContain("live-api-key");
+  });
+
+  it("restores unchanged Raw JSON redaction markers before validating the draft", async () => {
+    const agent = agentSpec("raw-restore-agent") as AgentSpec;
+    agent.sections = { oauth: { client_secret: "live-client-secret" } };
+    const { validateBodies } = stubRawJsonAgent(agent, {
+      source: { kind: "builtin", binary_version: "1.0" },
+      hidden: false,
+      user_overrides: null,
+      created_at: 0,
+      updated_at: 0,
+    });
+
+    renderEditorRoute(`/agents/${agent.id}`);
+    await screen.findByText(/Edit raw-restore-agent/i);
+
+    const textarea = await openRawJsonTextarea();
+    fireEvent.change(textarea, { target: { value: `${textarea.value}\n` } });
+    fireEvent.click(screen.getByRole("button", { name: /apply to draft/i }));
+
+    await waitFor(() => {
+      expect(validateBodies).toHaveLength(1);
+    });
+    expect(
+      ((validateBodies[0].sections?.oauth as Record<string, unknown>) ?? {}).client_secret,
+    ).toBe("live-client-secret");
+    expect(screen.queryByText(/Save will publish to the runtime config/i)).toBeNull();
+  });
+
+  it("keeps a changed Raw JSON redaction marker as the new sections secret on save", async () => {
+    const agent = agentSpec("raw-replace-agent") as AgentSpec;
+    agent.sections = { oauth: { client_secret: "old-client-secret" } };
+    const { validateBodies, patchBodies } = stubRawJsonAgent(agent, {
+      source: { kind: "builtin", binary_version: "1.0" },
+      hidden: false,
+      user_overrides: null,
+      created_at: 0,
+      updated_at: 0,
+    });
+
+    renderEditorRoute(`/agents/${agent.id}`);
+    await screen.findByText(/Edit raw-replace-agent/i);
+
+    const textarea = await openRawJsonTextarea();
+    fireEvent.change(textarea, {
+      target: {
+        value: textarea.value.replace('"client_secret": "***"', '"client_secret": "new-secret"'),
+      },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /apply to draft/i }));
+
+    await waitFor(() => {
+      expect(validateBodies).toHaveLength(1);
+    });
+    expect(
+      ((validateBodies[0].sections?.oauth as Record<string, unknown>) ?? {}).client_secret,
+    ).toBe("new-secret");
+
+    await screen.findByText(/Save will publish to the runtime config/i);
+    fireEvent.click(screen.getAllByRole("button", { name: /^save$/i })[0]);
+
+    await waitFor(() => {
+      expect(patchBodies).toHaveLength(1);
+    });
+    expect(JSON.stringify(patchBodies[0])).not.toContain("***");
+    expect(
+      (
+        ((patchBodies[0].sections as Record<string, unknown>).oauth as Record<string, unknown>) ??
+        {}
+      ).client_secret,
+    ).toBe("new-secret");
+  });
+});
+
 // ── Save → PATCH vs PUT branching ────────────────────────────────────────────
 
 describe("agent editor Save → PATCH vs PUT branching", () => {
