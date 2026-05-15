@@ -341,19 +341,18 @@ pub trait McpToolTransport: Send + Sync {
         Ok(())
     }
 
-    /// Current server-assigned session id, if any. Streamable HTTP
-    /// transports return the value cached after the most recent
-    /// successful `initialize`; stdio returns `None` (the protocol does
-    /// not define a session id for that transport). Display-only — do
-    /// not cache or persist outside the transport.
-    async fn current_session_id(&self) -> Option<String> {
-        None
-    }
-
     /// Wall-clock time of the current HTTP session's successful
     /// `initialize`, if the transport can report it live. Stdio returns
     /// `None`; manager snapshots fall back to their connect/reconnect cache.
     async fn current_session_started_at(&self) -> Option<SystemTime> {
+        None
+    }
+
+    /// HTTP session generation, if the transport has session state.
+    /// Streamable HTTP increments this counter on local session reset
+    /// and reinitialize cycles, including 404 session expiry. Stdio has
+    /// no session concept and returns `None`.
+    async fn current_session_generation(&self) -> Option<u64> {
         None
     }
 
@@ -731,10 +730,10 @@ impl PerCallSamplingGuard {
     }
 
     /// Explicitly drop the per-call entry with an `.await`'d lock.
-    /// Call this on every exit path of `call_tool` so cardinality-
-    /// based routing in `select_sampling_handler` doesn't observe a
-    /// stale entry from a call that just returned. Marks the guard
-    /// inactive so the sync `Drop` impl becomes a no-op safety net.
+    /// Call this on every exit path of `call_tool` so request-bound
+    /// routing does not observe a stale entry from a call that just
+    /// returned. Marks the guard inactive so the sync `Drop` impl
+    /// becomes a no-op safety net.
     async fn unregister(&mut self) {
         if !self.active {
             return;
@@ -782,13 +781,11 @@ pub(crate) struct ProgressAwareStdioTransport {
     timeout: Duration,
     capabilities: Option<ServerCapabilities>,
     /// Map of in-flight tool-call JSON-RPC ids → per-call sampling
-    /// decision (Bound | Denied). Populated by `call_tool` whenever the
-    /// caller supplies a `McpCallSampling` other than `Inherit`; emptied
-    /// via the `PerCallSamplingGuard` on every exit path. Stdio cannot
-    /// correlate a server-initiated `sampling/createMessage` to a
-    /// specific in-flight `tools/call` (no spec-mandated id field), so
-    /// the reader uses cardinality heuristics over this map — see
-    /// [`select_sampling_handler`].
+    /// decision (Bound | Denied). HTTP request-bound SSE can correlate
+    /// server requests back to one client request; stdio cannot. The
+    /// stdio reader therefore never consults this map for server-
+    /// initiated sampling, but the call guard still owns cleanup for
+    /// shared helper code and future transports.
     per_call_sampling: PerCallSamplingHandlers,
     /// Receiver half of the `notifications/.../list_changed` channel.
     /// The reader task owns the cloned sender; when this transport (and
@@ -885,7 +882,6 @@ impl ProgressAwareStdioTransport {
         let sampling_handler_reader = sampling_handler.clone();
         let per_call_sampling: PerCallSamplingHandlers =
             Arc::new(tokio::sync::Mutex::new(HashMap::new()));
-        let per_call_sampling_reader = Arc::clone(&per_call_sampling);
         let (list_changed_tx, list_changed_rx) = mpsc::unbounded_channel::<ListChangedKind>();
         let list_changed_tx_reader = list_changed_tx.clone();
         let (resource_updated_tx, resource_updated_rx) = mpsc::unbounded_channel::<String>();
@@ -926,12 +922,10 @@ impl ProgressAwareStdioTransport {
                         }
                         Ok(JsonRpcMessage::Request(request)) => {
                             let fallback = sampling_handler_reader.clone();
-                            let per_call = Arc::clone(&per_call_sampling_reader);
                             let wtx = write_tx_reader.clone();
                             let roots = Arc::clone(&roots_reader);
                             tokio::spawn(async move {
-                                let chosen =
-                                    select_sampling_handler(&per_call, fallback.as_ref()).await;
+                                let chosen = select_stdio_sampling_handler(fallback.as_ref());
                                 let response = handle_server_request(
                                     chosen.as_deref(),
                                     roots.as_slice(),
@@ -1352,9 +1346,8 @@ impl McpToolTransport for ProgressAwareStdioTransport {
                         // dropped on the reader floor rather than
                         // delivered to an orphaned channel.
                         self.forget_pending(id).await;
-                        // Deterministic guard cleanup before return —
-                        // ensures cardinality-based routing doesn't
-                        // observe a stale entry from this just-returned
+                        // Deterministic guard cleanup before return so
+                        // no request-bound sampling entry survives this
                         // call. The sync Drop is a backstop only.
                         handler_guard.unregister().await;
                         return Err(McpTransportError::TransportError(
@@ -1470,10 +1463,10 @@ pub(crate) struct ProgressAwareHttpTransport {
     initialize_lock: tokio::sync::Mutex<()>,
     session: Arc<tokio::sync::RwLock<HttpSessionState>>,
     sampling_handler: Option<Arc<dyn SamplingHandler>>,
-    /// Per-call sampling handlers; same semantics as the stdio variant.
+    /// Per-call sampling handlers for HTTP request-bound SSE streams.
     /// Populated by `call_tool` while a request is in flight; consulted
-    /// by `handle_server_request` for `sampling/createMessage`. See
-    /// `select_sampling_handler` for the routing rule.
+    /// by `process_sse_event` when `sampling/createMessage` arrives on
+    /// that same request stream.
     per_call_sampling: PerCallSamplingHandlers,
     /// Sender for `notifications/.../list_changed` events observed on
     /// the HTTP SSE listening stream (and on per-request SSE streams).
@@ -1515,6 +1508,11 @@ pub(crate) struct ProgressAwareHttpTransport {
     /// so a clean `close()` shuts it down even if `AbortHandle::abort`
     /// races a pending request.
     listener_alive: Arc<AtomicBool>,
+    /// `close()` is terminal for HTTP transports. Manager lifecycle
+    /// code drops closed runtimes and creates a fresh transport for
+    /// reconnect/re-enable, which avoids ambiguous listener restart
+    /// semantics after session teardown.
+    closed: AtomicBool,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -1625,10 +1623,19 @@ impl ProgressAwareHttpTransport {
             listener_started: AtomicBool::new(false),
             listener_abort: std::sync::Mutex::new(None),
             listener_alive: Arc::new(AtomicBool::new(true)),
+            closed: AtomicBool::new(false),
         })
     }
 
+    fn ensure_open(&self) -> Result<(), McpTransportError> {
+        if self.closed.load(Ordering::SeqCst) {
+            return Err(McpTransportError::ConnectionClosed);
+        }
+        Ok(())
+    }
+
     async fn initialize_if_needed(&self) -> Result<ServerCapabilities, McpTransportError> {
+        self.ensure_open()?;
         {
             let guard = self.capabilities.lock().await;
             if let Some(capabilities) = guard.clone() {
@@ -1895,6 +1902,7 @@ impl ProgressAwareHttpTransport {
         expect_response: bool,
         session: HttpSessionSnapshot,
     ) -> Result<HttpPostResponse, McpTransportError> {
+        self.ensure_open()?;
         let is_initialize = matches!(
             &message,
             JsonRpcMessage::Request(request) if request.method == "initialize"
@@ -2026,20 +2034,7 @@ impl ProgressAwareHttpTransport {
         response: JsonRpcResponse,
         request_session: &HttpSessionSnapshot,
     ) -> Result<(), McpTransportError> {
-        let current_session = self.session.read().await.snapshot();
-        if current_session.generation != request_session.generation
-            || current_session.session_id != request_session.session_id
-            || current_session.protocol_version != request_session.protocol_version
-        {
-            tracing::debug!(
-                stream_generation = request_session.generation,
-                current_generation = current_session.generation,
-                "dropping MCP per-request SSE response for stale HTTP session generation"
-            );
-            return Err(McpTransportError::ProtocolError(
-                MCP_SESSION_EXPIRED_AFTER_ACCEPT.to_string(),
-            ));
-        }
+        self.ensure_current_session_matches(request_session).await?;
 
         match self
             .post_message_with_session_snapshot(
@@ -2057,6 +2052,28 @@ impl ProgressAwareHttpTransport {
             }
             Err(err) => Err(err),
         }
+    }
+
+    async fn ensure_current_session_matches(
+        &self,
+        request_session: &HttpSessionSnapshot,
+    ) -> Result<(), McpTransportError> {
+        let current_session = self.session.read().await.snapshot();
+        if current_session.generation != request_session.generation
+            || current_session.session_id != request_session.session_id
+            || current_session.protocol_version != request_session.protocol_version
+        {
+            tracing::debug!(
+                stream_generation = request_session.generation,
+                current_generation = current_session.generation,
+                "dropping MCP per-request SSE response for stale HTTP session generation"
+            );
+            return Err(McpTransportError::ProtocolError(
+                MCP_SESSION_EXPIRED_AFTER_ACCEPT.to_string(),
+            ));
+        }
+
+        Ok(())
     }
 
     async fn decode_initialize_body(
@@ -2666,6 +2683,7 @@ impl ProgressAwareHttpTransport {
                 Ok(None)
             }
             JsonRpcMessage::Request(request) => {
+                self.ensure_current_session_matches(request_session).await?;
                 // HTTP per-request SSE stream: per spec 2025-11-25
                 // §Listening for Messages from the Server, messages on
                 // this stream "SHOULD relate to a single client request"
@@ -3355,8 +3373,8 @@ impl McpToolTransport for ProgressAwareHttpTransport {
                                 }
                             }
                             // Deterministic guard cleanup before
-                            // returning — cardinality routing must
-                            // not see a stale entry from this call.
+                            // returning so no request-bound sampling
+                            // entry survives this call.
                             handler_guard.unregister().await;
                             return Err(McpTransportError::TransportError(
                                 CANCELLED_BY_CLIENT.to_string(),
@@ -3459,6 +3477,9 @@ impl McpToolTransport for ProgressAwareHttpTransport {
     }
 
     async fn close(&self) -> Result<(), McpTransportError> {
+        if self.closed.swap(true, Ordering::SeqCst) {
+            return Ok(());
+        }
         // Per spec (2025-11-25 §Streamable HTTP / Session Management):
         // "Clients that no longer need a particular session SHOULD send an
         //  HTTP DELETE to the MCP endpoint with the MCP-Session-Id header,
@@ -3510,12 +3531,12 @@ impl McpToolTransport for ProgressAwareHttpTransport {
         Ok(())
     }
 
-    async fn current_session_id(&self) -> Option<String> {
-        self.session.read().await.session_id.clone()
-    }
-
     async fn current_session_started_at(&self) -> Option<SystemTime> {
         self.session.read().await.started_at
+    }
+
+    async fn current_session_generation(&self) -> Option<u64> {
+        Some(self.session.read().await.generation)
     }
 }
 
@@ -3760,32 +3781,13 @@ pub(crate) fn decode_http_response_payload(
 /// calls or contribute server-side echoing of `params._meta.awaken/in_response_to_call_id`.
 /// Stdio routing: server-initiated `sampling/createMessage` from a
 /// stdio server has no spec-mandated correlation id back to a specific
-/// in-flight `tools/call`, so we use cardinality:
-///   - 0 entries: nothing per-call to honor → fall back to transport-level
-///     fixed handler (preserves legacy behaviour for callers that don't
-///     wire a per-call factory).
-///   - 1 entry: that entry's decision is authoritative — `Bound(h)` →
-///     use h; `Denied` → reject (None). Never fall through on Denied,
-///     since the factory was explicitly consulted for this call.
-///   - More than one entry: ambiguous. Conservative — reject (None).
-///     Operators who need sampling correctness with concurrent stdio
-///     tool calls must serialize the calls. Falling through to the
-///     transport fallback would leak across agents (the bug the
-///     factory exists to prevent).
-async fn select_sampling_handler(
-    per_call: &PerCallSamplingHandlers,
+/// in-flight `tools/call`. We therefore never use per-call/per-agent
+/// handlers on stdio; only a transport-level fixed fallback can answer
+/// these requests.
+fn select_stdio_sampling_handler(
     fallback: Option<&Arc<dyn SamplingHandler>>,
 ) -> Option<Arc<dyn SamplingHandler>> {
-    let map = per_call.lock().await;
-    match map.len() {
-        0 => fallback.cloned(),
-        1 => match map.values().next() {
-            Some(PerCallSamplingEntry::Bound(h)) => Some(Arc::clone(h)),
-            Some(PerCallSamplingEntry::Denied) => None,
-            None => fallback.cloned(),
-        },
-        _ => None,
-    }
+    fallback.cloned()
 }
 
 pub(crate) async fn handle_server_request(
@@ -3889,6 +3891,7 @@ pub(crate) fn call_result_to_tool_data(call_result: &CallToolResult) -> Value {
 #[cfg(test)]
 mod tests {
     use std::fs;
+    use std::sync::atomic::AtomicUsize;
     use std::time::Instant;
 
     use super::*;
@@ -4504,6 +4507,86 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn stale_per_request_sse_sampling_request_does_not_invoke_handler() {
+        struct CountingSamplingHandler {
+            calls: Arc<AtomicUsize>,
+        }
+
+        #[async_trait]
+        impl SamplingHandler for CountingSamplingHandler {
+            async fn handle_create_message(
+                &self,
+                _params: CreateMessageParams,
+            ) -> Result<CreateMessageResult, McpTransportError> {
+                self.calls.fetch_add(1, Ordering::SeqCst);
+                use mcp::{Role, SamplingContent};
+                Ok(CreateMessageResult {
+                    role: Role::Assistant,
+                    content: vec![SamplingContent::Text {
+                        text: "should not run".to_string(),
+                        annotations: None,
+                        meta: None,
+                    }],
+                    model: "mock-model".to_string(),
+                    stop_reason: None,
+                    meta: None,
+                })
+            }
+        }
+
+        let calls = Arc::new(AtomicUsize::new(0));
+        let handler = Arc::new(CountingSamplingHandler {
+            calls: Arc::clone(&calls),
+        }) as Arc<dyn SamplingHandler>;
+        let cfg = mcp::transport::McpServerConnectionConfig::http(
+            "http-stale-sampling",
+            "http://127.0.0.1:9".to_string(),
+        );
+        let transport =
+            ProgressAwareHttpTransport::connect(&cfg, Some(handler), Arc::new(Vec::new()), true)
+                .unwrap();
+        {
+            let mut session = transport.session.write().await;
+            session.session_id = Some("session-new".to_string());
+            session.protocol_version = Some(MCP_PROTOCOL_VERSION.to_string());
+            session.generation = 2;
+        }
+
+        let stale_session = HttpSessionSnapshot {
+            session_id: Some("session-old".to_string()),
+            protocol_version: Some(MCP_PROTOCOL_VERSION.to_string()),
+            generation: 1,
+        };
+        let event = vec![format!(
+            "data: {}",
+            json!({
+                "jsonrpc": "2.0",
+                "id": 99,
+                "method": "sampling/createMessage",
+                "params": {
+                    "messages": [],
+                    "maxTokens": 1
+                }
+            })
+        )];
+
+        let err = transport
+            .process_sse_event(&event, 1, None, None, &stale_session)
+            .await
+            .expect_err("stale sampling request must be rejected before handler execution");
+
+        assert!(
+            matches!(&err, McpTransportError::ProtocolError(message) if message == MCP_SESSION_EXPIRED_AFTER_ACCEPT),
+            "expected stale accepted-request session error before handler execution, got: {err}"
+        );
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            0,
+            "stale per-request SSE sampling must not invoke local sampling handler"
+        );
+    }
+
+    #[tokio::test]
     async fn http_send_initialized_request_reinitializes_if_session_clears_after_gate() {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
@@ -4876,6 +4959,25 @@ mod tests {
         // Local state cleared after close().
         let session_after = transport.session.read().await.clone();
         assert!(session_after.session_id.is_none(), "session_id cleared");
+    }
+
+    #[tokio::test]
+    async fn http_transport_close_is_terminal() {
+        let cfg = mcp::transport::McpServerConnectionConfig::http(
+            "http-close-terminal",
+            "http://127.0.0.1:9",
+        );
+        let transport =
+            ProgressAwareHttpTransport::connect(&cfg, None, Arc::new(Vec::new()), false).unwrap();
+
+        transport.close().await.unwrap();
+        transport.close().await.unwrap();
+
+        let err = transport
+            .server_capabilities()
+            .await
+            .expect_err("closed HTTP transport must not reinitialize");
+        assert!(matches!(err, McpTransportError::ConnectionClosed));
     }
 
     // ── build_call_tool_meta tests ──
@@ -5373,7 +5475,7 @@ done
     }
 
     #[tokio::test]
-    async fn select_sampling_routes_single_in_flight_to_per_call() {
+    async fn stdio_sampling_uses_only_fixed_fallback() {
         let last_caller = Arc::new(tokio::sync::Mutex::new(None::<String>));
         let per_call: PerCallSamplingHandlers = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
         let agent_handler: Arc<dyn SamplingHandler> = Arc::new(TaggedSamplingHandler {
@@ -5389,106 +5491,23 @@ done
             .await
             .insert(42, PerCallSamplingEntry::Bound(agent_handler));
 
-        let chosen = select_sampling_handler(&per_call, Some(&fallback)).await;
+        let chosen = select_stdio_sampling_handler(Some(&fallback));
         let chosen = chosen.expect("a handler was selected");
 
-        // Invoke and verify which one handled it.
         let _ = chosen
             .handle_create_message(make_minimal_sampling_params())
             .await
             .expect("handler succeeded");
         assert_eq!(
             *last_caller.lock().await,
-            Some("agent-A".to_string()),
-            "single in-flight call -> per-call handler wins"
+            Some("fallback".to_string()),
+            "stdio has no request correlation; it must not route sampling to the in-flight agent"
         );
     }
 
-    #[tokio::test]
-    async fn select_sampling_falls_back_when_zero_in_flight() {
-        let last_caller = Arc::new(tokio::sync::Mutex::new(None::<String>));
-        let per_call: PerCallSamplingHandlers = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
-        let fallback: Arc<dyn SamplingHandler> = Arc::new(TaggedSamplingHandler {
-            tag: "fallback".into(),
-            last_caller: Arc::clone(&last_caller),
-        });
-
-        let chosen = select_sampling_handler(&per_call, Some(&fallback))
-            .await
-            .expect("fallback returned");
-        let _ = chosen
-            .handle_create_message(make_minimal_sampling_params())
-            .await;
-        assert_eq!(*last_caller.lock().await, Some("fallback".to_string()));
-    }
-
-    #[tokio::test]
-    async fn select_sampling_returns_none_when_multiple_in_flight() {
-        // With >1 in-flight calls we can't unambiguously route — return
-        // None so the server gets method-not-supported. This is a
-        // SECURITY fix: previously we fell back to the transport-level
-        // fixed handler, which could be a different agent's executor.
-        // The factory exists precisely to prevent that cross-agent
-        // leak, so the conservative fix is to refuse rather than guess.
-        let last_caller = Arc::new(tokio::sync::Mutex::new(None::<String>));
-        let per_call: PerCallSamplingHandlers = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
-        let agent_a: Arc<dyn SamplingHandler> = Arc::new(TaggedSamplingHandler {
-            tag: "agent-A".into(),
-            last_caller: Arc::clone(&last_caller),
-        });
-        let agent_b: Arc<dyn SamplingHandler> = Arc::new(TaggedSamplingHandler {
-            tag: "agent-B".into(),
-            last_caller: Arc::clone(&last_caller),
-        });
-        let fallback: Arc<dyn SamplingHandler> = Arc::new(TaggedSamplingHandler {
-            tag: "fallback".into(),
-            last_caller: Arc::clone(&last_caller),
-        });
-        per_call
-            .lock()
-            .await
-            .insert(1, PerCallSamplingEntry::Bound(agent_a));
-        per_call
-            .lock()
-            .await
-            .insert(2, PerCallSamplingEntry::Bound(agent_b));
-
-        assert!(
-            select_sampling_handler(&per_call, Some(&fallback))
-                .await
-                .is_none(),
-            "multiple in-flight => refuse rather than guess (no fallback)"
-        );
-    }
-
-    #[tokio::test]
-    async fn select_sampling_returns_none_on_denied_single_in_flight() {
-        // Factory was consulted and explicitly refused this call. The
-        // transport MUST NOT fall through to a transport-level fallback
-        // handler — that would re-introduce the cross-agent leak the
-        // factory exists to prevent.
-        let last_caller = Arc::new(tokio::sync::Mutex::new(None::<String>));
-        let per_call: PerCallSamplingHandlers = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
-        let fallback: Arc<dyn SamplingHandler> = Arc::new(TaggedSamplingHandler {
-            tag: "fallback".into(),
-            last_caller: Arc::clone(&last_caller),
-        });
-        per_call
-            .lock()
-            .await
-            .insert(7, PerCallSamplingEntry::Denied);
-        assert!(
-            select_sampling_handler(&per_call, Some(&fallback))
-                .await
-                .is_none(),
-            "Denied entry must NEVER fall through to fallback"
-        );
-    }
-
-    #[tokio::test]
-    async fn select_sampling_returns_none_when_no_handlers_anywhere() {
-        let per_call: PerCallSamplingHandlers = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
-        assert!(select_sampling_handler(&per_call, None).await.is_none());
+    #[test]
+    fn stdio_sampling_rejects_factory_only_without_fixed_fallback() {
+        assert!(select_stdio_sampling_handler(None).is_none());
     }
 
     #[tokio::test]

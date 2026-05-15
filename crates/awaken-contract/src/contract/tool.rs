@@ -259,6 +259,8 @@ pub enum ToolError {
     InvalidArguments(String),
     #[error("Execution failed: {0}")]
     ExecutionFailed(String),
+    #[error("Cancelled: {0}")]
+    Cancelled(String),
     #[error("Denied: {0}")]
     Denied(String),
     #[error("Not found: {0}")]
@@ -765,6 +767,10 @@ mod tests {
         assert_eq!(
             ToolError::ExecutionFailed("boom".into()).to_string(),
             "Execution failed: boom"
+        );
+        assert_eq!(
+            ToolError::Cancelled("by user".into()).to_string(),
+            "Cancelled: by user"
         );
         assert_eq!(ToolError::Denied("nope".into()).to_string(), "Denied: nope");
         assert_eq!(

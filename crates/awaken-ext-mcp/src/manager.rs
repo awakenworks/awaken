@@ -25,8 +25,8 @@ use crate::progress::{
 };
 use crate::sampling::{SamplingHandler, SamplingHandlerFactory};
 use crate::transport::{
-    McpPromptDefinition, McpPromptResult, McpResourceDefinition, McpToolTransport,
-    call_result_to_tool_data, connect_transport,
+    CANCELLED_BY_CLIENT, McpPromptDefinition, McpPromptResult, McpResourceDefinition,
+    McpToolTransport, call_result_to_tool_data, connect_transport,
 };
 
 // ── Metadata constants ──
@@ -41,6 +41,7 @@ const MCP_META_RESULT_CONTENT: &str = "mcp.result.content";
 const MCP_META_RESULT_STRUCTURED_CONTENT: &str = "mcp.result.structuredContent";
 const FAILURE_THRESHOLD: u64 = 3;
 const MAX_RECONNECT_ATTEMPTS: u32 = 5;
+const RESOURCE_UPDATED_CHANNEL_CAPACITY: usize = 1024;
 
 // ── Helper types ──
 
@@ -87,18 +88,15 @@ pub struct McpServerStatusSnapshot {
     /// True after the manager has given up reconnecting. The server is
     /// staying offline until manual restart.
     pub permanently_failed: bool,
-    /// Server-assigned MCP session id (Streamable HTTP transport only).
-    /// `None` for stdio transports (the protocol does not define a
-    /// session id concept there) and for HTTP servers that don't issue
-    /// one. Surfaced for diagnostics — admins debugging "is the server
-    /// invalidating our session?" want to see this value change after
-    /// a 404 → reinit cycle.
-    pub session_id: Option<String>,
-    /// Number of times the transport has been torn down and rebuilt since
-    /// the server was first enabled. Increments after every successful
-    /// reconnect (`finish_reconnect_success`). Operators use this to
-    /// spot flapping servers without trawling logs.
-    pub reconnect_count: u64,
+    /// HTTP session generation observed by the transport. Increments on
+    /// local session reset/reinitialize cycles, including HTTP 404
+    /// session expiry that does not rebuild the whole runtime.
+    pub session_generation: Option<u64>,
+    /// Number of times the transport runtime has been torn down and
+    /// rebuilt since the server was first enabled. This is distinct from
+    /// HTTP session reinitialization; use `session_generation` for 404
+    /// session reset churn.
+    pub transport_reconnect_count: u64,
     /// Wall-clock time of the most recent successful MCP `initialize`
     /// response (i.e. when this session was opened). `None` until the
     /// first connect succeeds. Distinct from `last_success_at`, which
@@ -237,9 +235,9 @@ impl Tool for McpTool {
         // Resolve per-agent sampling routing. Three states:
         //   - No factory wired → Inherit: legacy behaviour, transport
         //     falls back to its fixed (or absent) handler.
-        //   - Factory consulted and returned Some(h) → Bound: this
-        //     call's server-initiated sampling/createMessage routes to
-        //     THIS agent's executor.
+        //   - Factory consulted and returned Some(h) → Bound: request-
+        //     bound HTTP SSE sampling/createMessage routes to THIS
+        //     agent's executor.
         //   - Factory consulted and returned None → Denied: the factory
         //     refused to bind (agent model unresolved, opted out, etc.).
         //     The transport will reject sampling/createMessage for this
@@ -398,6 +396,9 @@ fn map_mcp_error(e: McpTransportError) -> ToolError {
     match e {
         McpTransportError::UnknownTool(name) => ToolError::NotFound(name),
         McpTransportError::Timeout(msg) => ToolError::ExecutionFailed(format!("timeout: {}", msg)),
+        McpTransportError::TransportError(msg) if msg == CANCELLED_BY_CLIENT => {
+            ToolError::Cancelled("client cancelled the MCP request".to_string())
+        }
         other => ToolError::ExecutionFailed(other.to_string()),
     }
 }
@@ -485,7 +486,7 @@ fn should_track_transport_failure(err: &McpTransportError) -> bool {
     ) || matches!(
         err,
         McpTransportError::TransportError(message)
-            if !message.contains("not supported")
+            if message != CANCELLED_BY_CLIENT && !message.contains("not supported")
     )
 }
 
@@ -552,13 +553,9 @@ struct McpServerSlot {
     /// response. Cached at connect/reconnect and used as a fallback when
     /// the transport cannot report a live value.
     last_init_at: Option<SystemTime>,
-    /// Last session id captured at connect/reconnect. Kept as a
-    /// fallback for `server_status_snapshot` — the snapshot prefers
-    /// the **live** value read from the transport (via
-    /// `current_session_id().await`), but falls back to this cache
-    /// when the runtime has been torn down (no transport available).
-    /// HTTP transport only; stdio leaves this `None`.
-    last_known_session_id: Option<String>,
+    /// Last HTTP session generation captured at connect/reconnect.
+    /// Used as a fallback when the runtime has been torn down.
+    last_known_session_generation: Option<u64>,
 }
 
 // ── Registry snapshot ──
@@ -575,14 +572,16 @@ struct McpRegistryState {
     periodic_refresh: PeriodicRefresher,
     /// Transport-level fallback handler for server-initiated
     /// `sampling/createMessage`. Set once at registry assembly; used
-    /// when there's no per-call handler in flight (or when multiple
-    /// calls are in flight and routing is ambiguous).
+    /// for unattributed server requests (stdio and HTTP GET listener)
+    /// and as the only mode where the client can advertise global
+    /// `sampling` capability.
     sampling_handler: Option<Arc<dyn SamplingHandler>>,
     /// Factory that resolves a per-call sampling handler based on the
-    /// calling agent's spec. Optional — when `None`, all sampling
-    /// flows through the transport-level fallback above. Wiring this
-    /// up is what fixes the "all agents share one LLM for sampling"
-    /// leak documented in the audit.
+    /// calling agent's spec. Optional — when `None`, request-bound
+    /// sampling flows through the transport-level fallback above.
+    /// Wiring this up fixes the "all agents share one LLM for
+    /// sampling" leak only for transports/events that carry a specific
+    /// client request attribution.
     sampling_handler_factory: Option<Arc<dyn SamplingHandlerFactory>>,
     /// Client-side roots advertised to every connected MCP server.
     /// `Arc` so all transports share the same backing list at zero
@@ -593,11 +592,12 @@ struct McpRegistryState {
     /// Sender half of the multiplexed `notifications/resources/updated`
     /// stream. Per-server forwarder tasks (one per active transport)
     /// pull from `take_resource_updated_receiver` and push
-    /// `ResourceUpdated { server, uri }` here. Receiver consumed once
+    /// `ResourceUpdated { server, uri }` here. Bounded to avoid a noisy
+    /// server exhausting process memory when the host is slow or not
+    /// subscribed; overflow events are dropped. Receiver consumed once
     /// via [`McpToolRegistryManager::take_resource_updated_receiver`].
-    resource_updated_tx: tokio::sync::mpsc::UnboundedSender<ResourceUpdated>,
-    resource_updated_rx:
-        tokio::sync::Mutex<Option<tokio::sync::mpsc::UnboundedReceiver<ResourceUpdated>>>,
+    resource_updated_tx: tokio::sync::mpsc::Sender<ResourceUpdated>,
+    resource_updated_rx: tokio::sync::Mutex<Option<tokio::sync::mpsc::Receiver<ResourceUpdated>>>,
 }
 
 /// Multiplexed `notifications/resources/updated` event surfaced from
@@ -1232,7 +1232,7 @@ fn finish_reconnect_success(
     runtime: McpServerRuntime,
     catalog: McpPublishedCatalog,
     attempted_at: SystemTime,
-    session_id: Option<String>,
+    session_generation: Option<u64>,
 ) -> Result<(), McpError> {
     let mut servers = write_lock(&state.servers);
     let index = find_server_index(&servers, server_name)?;
@@ -1243,13 +1243,12 @@ fn finish_reconnect_success(
         generation,
         catalog,
     });
-    // Successful reconnect: bump the diagnostic counter + mark the
-    // freshly-issued init timestamp. Operators reading the status snapshot
-    // can distinguish "first connect" (reconnect_count=0) from "flapping"
-    // (reconnect_count rising) without trawling logs.
+    // Successful runtime reconnect: bump the diagnostic counter + mark
+    // the freshly-issued init timestamp. HTTP session reset/reinit that
+    // keeps this runtime alive is exposed separately as session_generation.
     slot.reconnect_count = slot.reconnect_count.saturating_add(1);
     slot.last_init_at = Some(attempted_at);
-    slot.last_known_session_id = session_id;
+    slot.last_known_session_generation = session_generation;
     reset_all_server_health_on_success(slot, attempted_at);
     Ok(())
 }
@@ -1310,12 +1309,12 @@ fn finish_disable_transition(
     slot.health.last_attempt_at = Some(SystemTime::now());
     slot.health.last_error = close_error.map(ToString::to_string);
     // Clear the diagnostic fields that should reset on disable. The
-    // `last_known_session_id` doc says it's a fallback for when the
-    // runtime is torn down — once disabled, that fallback would
-    // surface stale info via `server_status_snapshot`. Similarly,
-    // `reconnect_count` is documented as reset by disable→enable,
+    // Clear diagnostic fields that should reset on disable. Once
+    // disabled, session generation would surface stale info via
+    // `server_status_snapshot`. Similarly,
+    // `transport_reconnect_count` is documented as reset by disable→enable,
     // and `last_init_at` belongs to the now-torn-down session.
-    slot.last_known_session_id = None;
+    slot.last_known_session_generation = None;
     slot.last_init_at = None;
     slot.reconnect_count = 0;
     Ok(())
@@ -1378,9 +1377,9 @@ async fn reconnect_server_locked(
         }
     };
 
-    // Capture the freshly-issued session id (HTTP) before we hand the
-    // runtime back to the slot map. Stdio's transport returns None.
-    let session_id = runtime.transport.current_session_id().await;
+    // Capture the freshly-issued session generation (HTTP) before we
+    // hand the runtime back to the slot map. Stdio returns None.
+    let session_generation = runtime.transport.current_session_generation().await;
     // Subscribe to the new transport's list_changed AND
     // resources/updated notifications BEFORE handing it back to the
     // slot map: once the runtime is owned by the slot we have no async
@@ -1395,7 +1394,7 @@ async fn reconnect_server_locked(
         runtime,
         catalog,
         SystemTime::now(),
-        session_id,
+        session_generation,
     )?;
     if let Some(rx) = resource_updated_rx {
         spawn_resource_updated_forwarder(resource_updated_tx, server_name.to_string(), rx);
@@ -1568,23 +1567,29 @@ where
 /// either the per-transport receiver closes (transport dropped) or the
 /// manager-wide sender errors (registry torn down).
 fn spawn_resource_updated_forwarder(
-    tx: tokio::sync::mpsc::UnboundedSender<ResourceUpdated>,
+    tx: tokio::sync::mpsc::Sender<ResourceUpdated>,
     server_name: String,
     mut rx: tokio::sync::mpsc::UnboundedReceiver<String>,
-) {
+) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         while let Some(uri) = rx.recv().await {
-            if tx
-                .send(ResourceUpdated {
-                    server: server_name.clone(),
-                    uri,
-                })
-                .is_err()
-            {
-                break;
+            match tx.try_send(ResourceUpdated {
+                server: server_name.clone(),
+                uri,
+            }) {
+                Ok(()) => {}
+                Err(tokio::sync::mpsc::error::TrySendError::Full(event)) => {
+                    tracing::warn!(
+                        server = %event.server,
+                        uri = %event.uri,
+                        capacity = RESOURCE_UPDATED_CHANNEL_CAPACITY,
+                        "dropping MCP resource update because manager channel is full"
+                    );
+                }
+                Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => break,
             }
         }
-    });
+    })
 }
 
 /// Consume `notifications/.../list_changed` events from `rx` and refresh
@@ -1807,8 +1812,9 @@ impl McpToolRegistryManager {
 
     /// Connect with both a transport-level fallback handler AND a
     /// per-agent factory. When the factory is `Some`, `McpTool::execute`
-    /// consults it at each call to route server-initiated
-    /// `sampling/createMessage` to the calling agent's executor.
+    /// consults it at each call so request-bound HTTP SSE
+    /// `sampling/createMessage` can route to the calling agent's
+    /// executor.
     /// Factory-only mode does not advertise global sampling capability;
     /// only a fixed transport-level fallback handler can safely answer
     /// sampling requests from streams without per-call attribution.
@@ -1822,8 +1828,8 @@ impl McpToolRegistryManager {
     ///   sampling for this call is REJECTED with method-not-supported.
     ///   It does NOT fall back to `sampling_handler` — that fallback
     ///   would re-introduce the cross-agent leak the factory exists
-    ///   to prevent. The fallback only covers the "no factory at all"
-    ///   and the ambiguous-cardinality cases at the transport layer.
+    ///   to prevent. The fallback only covers unattributed server
+    ///   requests or the "no factory at all" request-bound path.
     pub async fn connect_with_sampling_factory(
         configs: impl IntoIterator<Item = McpServerConnectionConfig>,
         sampling_handler: Option<Arc<dyn SamplingHandler>>,
@@ -1903,10 +1909,11 @@ impl McpToolRegistryManager {
     /// Variant of `from_tool_transports` that also accepts a
     /// [`SamplingHandlerFactory`]. When set, the factory is consulted
     /// at each `tools/call` to construct a per-agent
-    /// [`SamplingHandler`] — server-initiated `sampling/createMessage`
-    /// during that call then routes to the calling agent's LLM
-    /// executor. When `None`, sampling falls back to the fixed
-    /// `sampling_handler` (legacy behaviour).
+    /// [`SamplingHandler`] — request-bound HTTP SSE
+    /// `sampling/createMessage` during that call then routes to the
+    /// calling agent's LLM executor. When `None`, request-bound
+    /// sampling falls back to the fixed `sampling_handler` (legacy
+    /// behaviour).
     ///
     /// Delegates to [`Self::from_tool_transports_with_factory_and_roots`]
     /// with an empty roots list (the `roots` capability is not
@@ -1944,7 +1951,7 @@ impl McpToolRegistryManager {
         validate_server_configs(&configs)?;
         let servers = Self::build_servers(entries).await?;
         let (resource_updated_tx, resource_updated_rx) =
-            tokio::sync::mpsc::unbounded_channel::<ResourceUpdated>();
+            tokio::sync::mpsc::channel::<ResourceUpdated>(RESOURCE_UPDATED_CHANNEL_CAPACITY);
         let state = Arc::new(McpRegistryState {
             servers: RwLock::new(servers),
             snapshot: RwLock::new(McpRegistrySnapshot::default()),
@@ -2046,10 +2053,10 @@ impl McpToolRegistryManager {
                     return Err(error.into());
                 }
             };
-            // Capture the session id (HTTP only; stdio returns None) for
-            // the diagnostic snapshot. Done here while we're still async
-            // so the snapshot accessor can stay synchronous.
-            let last_known_session_id = transport.current_session_id().await;
+            // Capture HTTP session generation for the diagnostic
+            // snapshot. Done here while we're still async so the
+            // snapshot accessor can fall back after runtime teardown.
+            let last_known_session_generation = transport.current_session_generation().await;
 
             servers.push(McpServerSlot {
                 meta: McpServerMetadata {
@@ -2084,7 +2091,7 @@ impl McpToolRegistryManager {
                 lifecycle_lock: Arc::new(AsyncMutex::new(())),
                 reconnect_count: 0,
                 last_init_at: Some(connected_at),
-                last_known_session_id,
+                last_known_session_generation,
             });
         }
 
@@ -2131,7 +2138,7 @@ impl McpToolRegistryManager {
                 .filter_map(|slot| {
                     slot.lifecycle = McpServerLifecycle::Disabled;
                     slot.published_snapshot = None;
-                    slot.last_known_session_id = None;
+                    slot.last_known_session_generation = None;
                     slot.runtime.take()
                 })
                 .collect()
@@ -2181,12 +2188,14 @@ impl McpToolRegistryManager {
     /// the most recently discovered tool list.
     ///
     /// Async because HTTP session diagnostics are read **live** from the
-    /// transport (`current_session_id().await` and
+    /// transport (`current_session_generation().await` and
     /// `current_session_started_at().await`). The slot keeps cached
     /// connect/reconnect values, but `MCP session expired` triggers a
-    /// silent re-`initialize` that rotates the id and timestamp without
-    /// going through the reconnect path. Reading live closes that window
-    /// for admin/observability consumers.
+    /// silent re-`initialize` that rotates the id/generation/timestamp
+    /// without going through the reconnect path. Reading live closes
+    /// that window for admin/observability consumers. The returned
+    /// snapshot exposes the generation, not the raw `MCP-Session-Id`
+    /// header value.
     ///
     /// Returns [`McpError::UnknownServer`] when `server_name` is not registered.
     pub async fn server_status_snapshot(
@@ -2202,7 +2211,7 @@ impl McpToolRegistryManager {
             last_error,
             tools,
             health,
-            cached_session_id,
+            cached_session_generation,
             reconnect_count,
             cached_last_init_at,
             transport_for_session,
@@ -2232,7 +2241,7 @@ impl McpToolRegistryManager {
                 last_error,
                 tools,
                 slot.health.clone(),
-                slot.last_known_session_id.clone(),
+                slot.last_known_session_generation,
                 slot.reconnect_count,
                 slot.last_init_at,
                 transport_for_session,
@@ -2242,15 +2251,18 @@ impl McpToolRegistryManager {
         // Prefer live HTTP session diagnostics from the transport. Fall
         // back to cached values when there is no live runtime or when the
         // transport is stdio and has no HTTP session concept.
-        let (session_id, last_init_at) = match transport_for_session {
+        let (session_generation, last_init_at) = match transport_for_session {
             Some(transport) => (
-                transport.current_session_id().await.or(cached_session_id),
+                transport
+                    .current_session_generation()
+                    .await
+                    .or(cached_session_generation),
                 transport
                     .current_session_started_at()
                     .await
                     .or(cached_last_init_at),
             ),
-            None => (cached_session_id, cached_last_init_at),
+            None => (cached_session_generation, cached_last_init_at),
         };
 
         Ok(McpServerStatusSnapshot {
@@ -2262,8 +2274,8 @@ impl McpToolRegistryManager {
             last_success_at: health.last_success_at,
             reconnecting: health.reconnecting,
             permanently_failed: health.permanently_failed,
-            session_id,
-            reconnect_count,
+            session_generation,
+            transport_reconnect_count: reconnect_count,
             last_init_at,
         })
     }
@@ -2466,7 +2478,7 @@ impl McpToolRegistryManager {
     /// fresh per-server forwarder feeding into the same channel.
     pub async fn take_resource_updated_receiver(
         &self,
-    ) -> Option<tokio::sync::mpsc::UnboundedReceiver<ResourceUpdated>> {
+    ) -> Option<tokio::sync::mpsc::Receiver<ResourceUpdated>> {
         self.state.resource_updated_rx.lock().await.take()
     }
 
@@ -3117,6 +3129,7 @@ mod tests {
     struct FailingCallTransport {
         tools: Vec<McpToolDefinition>,
         connection_closed: bool,
+        cancelled: bool,
     }
 
     impl FailingCallTransport {
@@ -3124,6 +3137,15 @@ mod tests {
             Self {
                 tools: vec![MockTransport::tool_def(tool_name)],
                 connection_closed: true,
+                cancelled: false,
+            }
+        }
+
+        fn cancelled(tool_name: &str) -> Self {
+            Self {
+                tools: vec![MockTransport::tool_def(tool_name)],
+                connection_closed: false,
+                cancelled: true,
             }
         }
     }
@@ -3143,6 +3165,10 @@ mod tests {
         ) -> Result<CallToolResult, McpTransportError> {
             if self.connection_closed {
                 Err(McpTransportError::ConnectionClosed)
+            } else if self.cancelled {
+                Err(McpTransportError::TransportError(
+                    CANCELLED_BY_CLIENT.to_string(),
+                ))
             } else {
                 Err(McpTransportError::TransportError(
                     "scripted tool call failure".to_string(),
@@ -3337,7 +3363,7 @@ mod tests {
             lifecycle_lock: Arc::new(AsyncMutex::new(())),
             reconnect_count: 0,
             last_init_at: None,
-            last_known_session_id: None,
+            last_known_session_generation: None,
         }
     }
 
@@ -4180,6 +4206,31 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn tool_call_client_cancellation_does_not_update_health_or_reconnect() {
+        let transport =
+            Arc::new(FailingCallTransport::cancelled("echo")) as Arc<dyn McpToolTransport>;
+        let mgr = McpToolRegistryManager::from_transports(vec![(cfg("srv"), transport)])
+            .await
+            .unwrap();
+
+        let tool = mgr.registry().get("mcp__srv__echo").unwrap();
+        let ctx = awaken_contract::contract::tool::ToolCallContext::test_default();
+
+        for _ in 0..3 {
+            let err = tool.execute(json!({}), &ctx).await.unwrap_err();
+            assert!(matches!(err, ToolError::Cancelled(_)));
+        }
+
+        let health = mgr.server_health("srv").unwrap();
+        assert_eq!(health.consecutive_failures, 0);
+        assert_eq!(health.last_error, None);
+        let servers = read_lock(&mgr.state.servers);
+        assert_eq!(servers[0].rpc_health.consecutive_failures, 0);
+        assert_eq!(servers[0].lifecycle, McpServerLifecycle::Connected);
+        assert_eq!(servers[0].reconnect_attempts, 0);
+    }
+
+    #[tokio::test]
     async fn prompt_and_resource_failures_share_rpc_reconnect_budget() {
         let transport =
             Arc::new(FailingCatalogRpcTransport::new("echo")) as Arc<dyn McpToolTransport>;
@@ -4335,9 +4386,50 @@ mod tests {
     }
 
     #[test]
+    fn map_mcp_error_cancelled() {
+        let err = map_mcp_error(McpTransportError::TransportError(
+            CANCELLED_BY_CLIENT.to_string(),
+        ));
+        assert!(matches!(err, ToolError::Cancelled(msg) if msg.contains("cancelled")));
+    }
+
+    #[test]
     fn map_mcp_error_other() {
         let err = map_mcp_error(McpTransportError::TransportError("fail".to_string()));
         assert!(matches!(err, ToolError::ExecutionFailed(_)));
+    }
+
+    #[test]
+    fn client_cancellation_does_not_track_transport_failure() {
+        let err = McpTransportError::TransportError(CANCELLED_BY_CLIENT.to_string());
+        assert!(!should_track_transport_failure(&err));
+    }
+
+    #[tokio::test]
+    async fn resource_update_forwarder_drops_when_manager_channel_full() {
+        let (manager_tx, mut manager_rx) =
+            tokio::sync::mpsc::channel::<ResourceUpdated>(RESOURCE_UPDATED_CHANNEL_CAPACITY);
+        let (transport_tx, transport_rx) = mpsc::unbounded_channel::<String>();
+        let handle = spawn_resource_updated_forwarder(manager_tx, "srv".to_string(), transport_rx);
+
+        for idx in 0..(RESOURCE_UPDATED_CHANNEL_CAPACITY * 2) {
+            transport_tx
+                .send(format!("file:///resource-{idx}"))
+                .expect("transport receiver alive");
+        }
+        drop(transport_tx);
+        handle.await.expect("forwarder exits");
+
+        assert_eq!(
+            manager_rx.len(),
+            RESOURCE_UPDATED_CHANNEL_CAPACITY,
+            "bounded manager channel must not grow past capacity"
+        );
+        let mut drained = 0usize;
+        while manager_rx.try_recv().is_ok() {
+            drained += 1;
+        }
+        assert_eq!(drained, RESOURCE_UPDATED_CHANNEL_CAPACITY);
     }
 
     #[tokio::test]

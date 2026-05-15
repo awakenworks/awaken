@@ -4264,6 +4264,9 @@ async fn http_listener_404_after_initialize_forces_next_call_reinitialize() {
                 }
             })),
             "tools/call" => {
+                if request.headers.get("mcp-session-id").map(String::as_str) == Some("session-1") {
+                    return HttpResponseSpec::text(404, "session expired");
+                }
                 tool_call_sessions_for_handler
                     .lock()
                     .unwrap()
@@ -4400,12 +4403,36 @@ async fn http_listener_response_404_resets_session_before_next_call() {
 
     let cfg = McpServerConnectionConfig::http("http_listener_response_404", endpoint);
     let manager = McpToolRegistryManager::connect([cfg]).await.unwrap();
+    let initial_session_generation = manager
+        .server_status_snapshot("http_listener_response_404")
+        .await
+        .expect("initial status")
+        .session_generation;
     assert!(
         wait_until(Duration::from_secs(2), Duration::from_millis(10), || {
             response_404_count.load(Ordering::SeqCst) >= 1
         })
         .await,
         "listener should POST a response and observe the 404"
+    );
+    let start = Instant::now();
+    let mut reset_observed = initialize_count.load(Ordering::SeqCst) >= 2;
+    while start.elapsed() <= Duration::from_secs(2) {
+        let status = manager
+            .server_status_snapshot("http_listener_response_404")
+            .await
+            .expect("status after listener response 404");
+        if status.session_generation > initial_session_generation
+            || initialize_count.load(Ordering::SeqCst) >= 2
+        {
+            reset_observed = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert!(
+        reset_observed,
+        "listener response 404 should reset HTTP session generation"
     );
 
     let registry = manager.registry();
@@ -4788,7 +4815,7 @@ async fn http_call_tool_retries_once_on_session_expired() {
         .server_status_snapshot("http_session_retry")
         .await
         .expect("initial server status");
-    assert_eq!(status_before.session_id.as_deref(), Some("session-1"));
+    let initial_session_generation = status_before.session_generation;
     let initial_last_init_at = status_before
         .last_init_at
         .expect("initial last_init_at should be set");
@@ -4813,7 +4840,11 @@ async fn http_call_tool_retries_once_on_session_expired() {
         text.contains("call #2 ok"),
         "expected retry response in result, got: {text}"
     );
-    assert_eq!(status_after.session_id.as_deref(), Some("session-2"));
+    assert!(
+        status_after.session_generation > initial_session_generation,
+        "silent reinitialize must advance session_generation; before={initial_session_generation:?}, after={:?}",
+        status_after.session_generation
+    );
     assert!(
         status_after.last_init_at.expect("updated last_init_at") > initial_last_init_at,
         "silent reinitialize must update live last_init_at; before={initial_last_init_at:?}, after={:?}",

@@ -2189,12 +2189,11 @@ async fn mcp_status_returns_404_for_unknown_server() {
     assert_eq!(status, StatusCode::NOT_FOUND);
 }
 
-/// R9 #2 regression: the manager snapshot has `session_id`,
-/// `reconnect_count`, and `last_init_at` fields. The HTTP wire
-/// response forgot to surface them before R9; this test pins the
-/// fix so a future refactor of `get_mcp_server_status` doesn't
-/// silently drop them again. The session id is redacted on the wire;
-/// the raw MCP-Session-Id must never be returned by this route.
+/// R9 #2 regression: the manager snapshot has session diagnostics
+/// and `last_init_at`. The HTTP wire response forgot to surface them
+/// before R9; this test pins the fix so a future refactor of
+/// `get_mcp_server_status` doesn't silently drop them again. The raw
+/// MCP-Session-Id must never be returned by this route.
 #[tokio::test]
 async fn mcp_status_route_surfaces_session_reconnect_init_fields() {
     use std::time::SystemTime;
@@ -2233,8 +2232,8 @@ async fn mcp_status_route_surfaces_session_reconnect_init_fields() {
                 last_success_at: None,
                 reconnecting: false,
                 permanently_failed: false,
-                session_id: Some("test-session-xyz".to_string()),
-                reconnect_count: 3,
+                session_generation: Some(7),
+                transport_reconnect_count: 3,
                 // 2026-05-13 12:00:00 UTC, picked so the conversion to
                 // unix seconds is non-zero and we can assert on it.
                 last_init_at: Some(SystemTime::UNIX_EPOCH + Duration::from_secs(1_778_846_400)),
@@ -2307,19 +2306,24 @@ async fn mcp_status_route_surfaces_session_reconnect_init_fields() {
         request_json(&router, Method::GET, "/v1/mcp-servers/demo/status", None).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(
-        body["session_id"]
-            .as_str()
-            .map(|value| value.starts_with("sha256:")),
-        Some(true),
-        "session_id must be a redacted digest; body = {body}"
-    );
-    assert_ne!(
-        body["session_id"], "test-session-xyz",
-        "raw MCP session id must not surface on wire; body = {body}"
+        body["session_generation"], 7,
+        "session_generation must surface; body = {body}"
     );
     assert_eq!(
-        body["reconnect_count"], 3,
-        "reconnect_count must surface; body = {body}"
+        body["transport_reconnect_count"], 3,
+        "transport_reconnect_count must surface; body = {body}"
+    );
+    assert!(
+        body.get("session_id").is_none(),
+        "raw MCP session id must not surface"
+    );
+    assert!(
+        body.get("session_id_digest").is_none(),
+        "session digest is intentionally omitted"
+    );
+    assert!(
+        body.get("reconnect_count").is_none(),
+        "ambiguous reconnect_count key must not surface"
     );
     assert_eq!(
         body["last_init_at"], 1_778_846_400,

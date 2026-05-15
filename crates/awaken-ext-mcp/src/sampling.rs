@@ -197,14 +197,18 @@ fn sampling_content_kind(content: &SamplingContent) -> &'static str {
 }
 
 /// Reject sampling requests whose presence would silently change LLM
-/// behaviour. The MCP spec lets the server specify model preferences,
-/// stop sequences, tool choice, etc.; awaken's handler currently maps
+/// behaviour. The MCP spec lets the server specify stop sequences,
+/// context inclusion, tool choice, etc.; awaken's handler currently maps
 /// only a small subset (system prompt, temperature, max_tokens), so
 /// honouring these would produce a different reply than the server
 /// asked for — a class of bug that's invisible until model output goes
 /// subtly wrong. Returning an error puts the burden back on the server
 /// to either retry without the unsupported field or fall over to a
 /// different client.
+///
+/// `modelPreferences` is advisory in MCP sampling. The default handler
+/// uses the model already configured for the agent and ignores those
+/// hints instead of rejecting otherwise interoperable servers.
 ///
 /// Returns `Err` with a human-readable description of the offending
 /// field. `Ok(())` means every behavioural field is either absent or
@@ -222,9 +226,6 @@ fn reject_unsupported_sampling_fields(
     }
     if params.include_context.is_some() {
         unsupported.push("includeContext");
-    }
-    if params.model_preferences.is_some() {
-        unsupported.push("modelPreferences");
     }
     if params.tools.as_ref().is_some_and(|t| !t.is_empty()) {
         unsupported.push("tools");
@@ -615,26 +616,42 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn handle_create_message_rejects_include_context_and_model_preferences() {
+    async fn handle_create_message_rejects_include_context() {
         let executor = Arc::new(MockLlm {
             response_text: "ignored".into(),
         });
         let handler = DefaultSamplingHandler::new(executor, "m");
         let mut params = make_params("hi");
         params.include_context = Some("thisServer".into());
-        params.model_preferences = Some(mcp::ModelPreferences {
-            hints: None,
-            cost_priority: None,
-            speed_priority: None,
-            intelligence_priority: None,
-        });
         let err = handler
             .handle_create_message(params)
             .await
             .expect_err("must reject");
         let msg = format!("{err}");
         assert!(msg.contains("includeContext"), "got: {msg}");
-        assert!(msg.contains("modelPreferences"), "got: {msg}");
+        assert!(!msg.contains("modelPreferences"), "got: {msg}");
+    }
+
+    #[tokio::test]
+    async fn default_sampling_handler_ignores_model_preferences() {
+        let executor = Arc::new(MockLlm {
+            response_text: "ok".into(),
+        });
+        let handler = DefaultSamplingHandler::new(executor, "configured-model");
+        let mut params = make_params("hi");
+        params.model_preferences = Some(mcp::ModelPreferences {
+            hints: None,
+            cost_priority: None,
+            speed_priority: None,
+            intelligence_priority: None,
+        });
+
+        let result = handler
+            .handle_create_message(params)
+            .await
+            .expect("modelPreferences are advisory and should not fail basic sampling");
+
+        assert_eq!(result.model, "configured-model");
     }
 
     #[tokio::test]

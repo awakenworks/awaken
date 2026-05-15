@@ -347,6 +347,7 @@ fn tool_error_variants_display() {
             ToolError::ExecutionFailed("crash".into()),
             "Execution failed: crash",
         ),
+        (ToolError::Cancelled("by user".into()), "Cancelled: by user"),
         (ToolError::Denied("blocked".into()), "Denied: blocked"),
         (
             ToolError::NotFound("missing tool".into()),

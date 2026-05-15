@@ -172,8 +172,8 @@ Current built-in namespaces:
   "last_success_at": 1777708820,       // unix seconds, null until first success
   "reconnecting": false,
   "permanently_failed": false,         // true once the manager has given up
-  "session_id": "sha256:0123abcd...",  // redacted digest, null for stdio/no session
-  "reconnect_count": 0,                // successful runtime re-creations
+  "session_generation": 2,             // HTTP session reset/reinitialize generation
+  "transport_reconnect_count": 0,      // successful runtime re-creations
   "last_init_at": 1777708820           // unix seconds, null before initialize
 }
 ```
@@ -182,8 +182,10 @@ Current built-in namespaces:
 `McpRefreshHealth` budget. There is no separate "errors in last 24h"
 counter — the health budget is the source of truth.
 
-`session_id` is a stable SHA-256 prefix of the live HTTP MCP session id, not
-the raw `MCP-Session-Id` header value.
+The raw HTTP `MCP-Session-Id` is intentionally not exposed by this endpoint.
+`transport_reconnect_count` counts runtime tear-down/recreate cycles; HTTP
+404 session reset churn is visible through `session_generation` and
+`last_init_at`.
 
 ### Admin audit log
 

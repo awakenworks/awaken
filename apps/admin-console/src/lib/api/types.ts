@@ -151,10 +151,10 @@ export interface McpServerStatusResponse {
   last_success_at?: number | null;
   reconnecting: boolean;
   permanently_failed: boolean;
-  /** Redacted stable digest of the live HTTP session id. `null` for stdio transports. */
-  session_id?: string | null;
+  /** HTTP session generation, incremented on session reset/reinitialize cycles. */
+  session_generation?: number | null;
   /** Count of successful runtime re-creations since the server was first enabled. */
-  reconnect_count?: number;
+  transport_reconnect_count?: number;
   /** Unix seconds, omitted before first successful initialize. */
   last_init_at?: number | null;
 }

@@ -456,10 +456,9 @@ impl McpRegistryFactory for DefaultMcpRegistryFactory {
             .map(mcp_spec_to_connection_config)
             .collect::<Result<Vec<_>, _>>()?;
         // No fixed fallback handler — per-agent factory (when set) is
-        // the single source of sampling handlers. The transport's
-        // server-request path will reject `sampling/createMessage` with
-        // a "method not supported" error when neither factory nor
-        // fallback resolves a handler.
+        // request-bound routing infrastructure only. It is not
+        // advertised as global MCP sampling capability, and unattributed
+        // server requests (stdio / HTTP GET listener) are rejected.
         let manager = McpToolRegistryManager::connect_with_sampling_factory(
             configs,
             None,
