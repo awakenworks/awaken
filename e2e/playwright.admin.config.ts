@@ -8,7 +8,7 @@ export const TEST_ADMIN_TOKEN = 'test-bearer-abc';
 
 export default defineConfig({
   testDir: './tests',
-  testMatch: /admin-.*\.spec\.ts/,
+  testMatch: '**/admin-*.spec.ts',
   timeout: 180_000,
   expect: { timeout: 30_000 },
   retries: 0,
