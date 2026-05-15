@@ -19,7 +19,10 @@ const PROVIDER_RECORD = {
   updated_at: 2000,
 };
 
-function stubFetch(overrides?: Record<string, unknown>) {
+function stubFetch(
+  overrides?: Record<string, unknown>,
+  supportedAdapters = ["openai", "anthropic"],
+) {
   const fetchSpy = vi.fn(async (url: string, init?: RequestInit) => {
     const method = init?.method?.toUpperCase() ?? "GET";
     const urlStr = String(url);
@@ -37,7 +40,7 @@ function stubFetch(overrides?: Record<string, unknown>) {
             skills: [],
             models: [],
             providers: [],
-            supported_adapters: ["openai", "anthropic"],
+            supported_adapters: supportedAdapters,
             namespaces: [],
           }),
       };
@@ -107,6 +110,75 @@ afterEach(() => {
 });
 
 describe("ProvidersPage — Test connection button", () => {
+
+  it("runs provider tests from table rows and shows a toast", async () => {
+    const fetchSpy = stubFetch({ ok: true, latency_ms: 64, network_tested: false });
+    renderProviders();
+
+    const rowTestButton = await screen.findByRole("button", { name: /^test$/i }, { timeout: 5_000 });
+    await act(async () => {
+      fireEvent.click(rowTestButton);
+    });
+
+    await screen.findByText(/my-openai config OK · 64ms/i, undefined, { timeout: 5_000 });
+    const testCall = fetchSpy.mock.calls.find(([url, init]) => {
+      const method = (init as RequestInit | undefined)?.method?.toUpperCase();
+      return method === "POST" && String(url).includes("/v1/providers/my-openai/test");
+    });
+    expect(testCall).toBeDefined();
+  });
+
+  it("filters the provider list by search text", async () => {
+    stubFetch();
+    renderProviders();
+
+    await screen.findByText("my-openai", undefined, { timeout: 5_000 });
+    const search = screen.getByPlaceholderText(/search by id/i);
+
+    fireEvent.change(search, { target: { value: "missing" } });
+    expect(screen.getByText("No providers match the current filter.")).toBeTruthy();
+    expect(screen.queryByText("my-openai")).toBeNull();
+
+    fireEvent.change(search, { target: { value: "openai" } });
+    expect(screen.getByText("my-openai")).toBeTruthy();
+  });
+
+  it("validates service-account JSON before saving a Vertex provider", async () => {
+    const fetchSpy = stubFetch(undefined, ["anthropic", "openai", "vertex"]);
+    renderProviders();
+
+    const newButton = await screen.findByRole(
+      "button",
+      { name: /new provider/i },
+      { timeout: 5_000 },
+    );
+    fireEvent.click(newButton);
+    await screen.findByText(/create provider/i, undefined, { timeout: 5_000 });
+
+    fireEvent.change(screen.getByLabelText("Provider ID"), { target: { value: "vertex-main" } });
+    fireEvent.change(screen.getByLabelText("Adapter"), { target: { value: "vertex" } });
+    fireEvent.change(screen.getByLabelText("Credentials type"), {
+      target: { value: "service_account_json" },
+    });
+    fireEvent.change(screen.getByPlaceholderText(/paste the full json/i), {
+      target: { value: "not json" },
+    });
+
+    await act(async () => {
+      fireEvent.click(screen.getAllByRole("button", { name: /^save$/i })[0]);
+    });
+
+    expect(
+      screen.getAllByRole("alert").some((node) =>
+        (node.textContent ?? "").includes("Not valid JSON"),
+      ),
+    ).toBe(true);
+    const createCall = fetchSpy.mock.calls.find(([url, init]) => {
+      const method = (init as RequestInit | undefined)?.method?.toUpperCase();
+      return method === "POST" && String(url).includes("/v1/config/providers");
+    });
+    expect(createCall).toBeUndefined();
+  });
   it("does not show Test connection button when creating a new provider", async () => {
     stubFetch();
     renderProviders();
