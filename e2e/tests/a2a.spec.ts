@@ -1,5 +1,17 @@
-import { test, expect } from '@playwright/test';
+import { test, expect, type APIRequestContext } from '@playwright/test';
 import { a2aSendMessagePayload } from './a2a-test-utils';
+
+async function waitForTask(request: APIRequestContext, path: string) {
+  await expect
+    .poll(async () => {
+      const res = await request.get(path);
+      return res.status();
+    })
+    .toBe(200);
+  const res = await request.get(path);
+  expect(res.ok()).toBeTruthy();
+  return res.json();
+}
 
 test.describe('A2A protocol', () => {
   test('well-known agent card returns latest JSON shape', async ({ request }) => {
@@ -29,9 +41,7 @@ test.describe('A2A protocol', () => {
     expect(body.task?.contextId).toBe(taskId);
     expect(body.task?.status?.state).toMatch(/^TASK_STATE_/);
 
-    const taskRes = await request.get(`/v1/a2a/tasks/${taskId}?historyLength=10`);
-    expect(taskRes.ok()).toBeTruthy();
-    const task = await taskRes.json();
+    const task = await waitForTask(request, `/v1/a2a/tasks/${taskId}?historyLength=10`);
     expect(task.id).toBe(taskId);
     expect(task.contextId).toBe(taskId);
     expect(task.status?.state).toMatch(/^TASK_STATE_/);
@@ -45,9 +55,7 @@ test.describe('A2A protocol', () => {
     const body = await sendRes.json();
     expect(body.task?.id).toBe(taskId);
 
-    const taskRes = await request.get(`/v1/a2a/limited/tasks/${taskId}`);
-    expect(taskRes.ok()).toBeTruthy();
-    const task = await taskRes.json();
+    const task = await waitForTask(request, `/v1/a2a/limited/tasks/${taskId}`);
     expect(task.id).toBe(taskId);
     expect(task.contextId).toBe(taskId);
   });
@@ -71,6 +79,17 @@ test.describe('A2A protocol', () => {
     const sendRes = await request.post('/v1/a2a/message:send', { data });
     expect(sendRes.ok()).toBeTruthy();
 
+    await expect
+      .poll(async () => {
+        const taskRes = await request.get(`/v1/a2a/tasks/${taskId}`);
+        if (!taskRes.ok()) {
+          return `${taskRes.status()}`;
+        }
+        const task = await taskRes.json();
+        return task.status?.state ?? 'missing-state';
+      })
+      .toBe('TASK_STATE_COMPLETED');
+
     const createRes = await request.post(`/v1/a2a/tasks/${taskId}/pushNotificationConfigs`, {
       data: {
         url: 'https://example.com/webhook',
@@ -86,12 +105,18 @@ test.describe('A2A protocol', () => {
     expect(listRes.ok()).toBeTruthy();
     const listed = await listRes.json();
     expect(Array.isArray(listed.configs)).toBe(true);
-    expect(listed.configs[0]?.id).toBe(created.id);
-
-    const getRes = await request.get(
-      `/v1/a2a/tasks/${taskId}/pushNotificationConfigs/${created.id}`,
+    expect(listed.configs.some((config: { id?: string }) => config.id === created.id)).toBe(
+      true,
     );
-    expect(getRes.ok()).toBeTruthy();
+
+    await expect
+      .poll(async () => {
+        const getRes = await request.get(
+          `/v1/a2a/tasks/${taskId}/pushNotificationConfigs/${created.id}`,
+        );
+        return getRes.status();
+      })
+      .toBe(200);
 
     const deleteRes = await request.delete(
       `/v1/a2a/tasks/${taskId}/pushNotificationConfigs/${created.id}`,

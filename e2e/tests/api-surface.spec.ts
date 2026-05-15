@@ -39,6 +39,13 @@ async function expectNoServerError(label: string, response: APIResponse) {
   expect(response.status(), label).toBeLessThan(500);
 }
 
+async function expectJsonObject(label: string, response: APIResponse) {
+  expect(response.ok(), label).toBeTruthy();
+  const body = await response.json();
+  expect(body, `${label} body`).toEqual(expect.any(Object));
+  return body;
+}
+
 test.describe("HTTP API surface coverage", () => {
   test("covers public, runtime, protocol, and observability routes", async ({
     request,
@@ -53,9 +60,10 @@ test.describe("HTTP API surface coverage", () => {
     const threadRes = await request.post("/v1/threads", {
       data: { title: "API surface thread" },
     });
-    expect(threadRes.ok(), "POST /v1/threads").toBeTruthy();
-    const thread = await threadRes.json();
+    const thread = await expectJsonObject("POST /v1/threads", threadRes);
     const threadId = thread.id;
+    expect(threadId, "created thread id").toEqual(expect.any(String));
+    expect(thread.metadata?.title).toBe("API surface thread");
 
     const threadChecks = [
       ["GET /v1/threads", () => request.get("/v1/threads?limit=10&offset=0")],
@@ -120,15 +128,46 @@ test.describe("HTTP API surface coverage", () => {
       await expectNoServerError(label, await send());
     }
 
+    const listedThreads = await expectJsonObject(
+      "GET /v1/threads shape",
+      await request.get("/v1/threads?limit=10&offset=0"),
+    );
+    expect(Array.isArray(listedThreads.items), "thread list items").toBe(true);
+    expect(typeof listedThreads.limit).toBe("number");
+    const patchedThread = await expectJsonObject(
+      "GET /v1/threads/:id after patch",
+      await request.get(`/v1/threads/${threadId}`),
+    );
+    expect(patchedThread.metadata?.title).toBe("API surface thread updated");
+    expect(patchedThread.metadata?.custom?.source).toBe("api-surface");
+    const messages = await expectJsonObject(
+      "GET /v1/threads/:id/messages shape",
+      await request.get(`/v1/threads/${threadId}/messages`),
+    );
+    expect(Array.isArray(messages.messages), "thread messages").toBe(true);
+    expect(typeof messages.total).toBe("number");
+
+    const runThreadRes = await request.post("/v1/threads", {
+      data: { title: "API surface run thread" },
+    });
+    const runThread = await expectJsonObject(
+      "POST /v1/threads for run coverage",
+      runThreadRes,
+    );
+    const runThreadId = runThread.id;
+    expect(runThread.metadata?.title).toBe("API surface run thread");
+
     const runRes = await request.post("/v1/runs", {
       data: {
         agentId: "limited",
-        threadId,
+        threadId: runThreadId,
         messages: [{ role: "user", content: "run route coverage" }],
       },
     });
     expect(runRes.ok(), "POST /v1/runs").toBeTruthy();
     const runBody = await runRes.text();
+    const runEvents = sseJsonEvents(runBody);
+    expect(runEvents.length, "run SSE event count").toBeGreaterThan(0);
     const runId = firstRunId(runBody);
     expect(runId, "SSE run id").toBeTruthy();
 
@@ -158,15 +197,15 @@ test.describe("HTTP API surface coverage", () => {
       ],
       [
         "GET /v1/threads/:id/runs",
-        () => request.get(`/v1/threads/${threadId}/runs`),
+        () => request.get(`/v1/threads/${runThreadId}/runs`),
       ],
       [
         "GET /v1/threads/:id/runs/active",
-        () => request.get(`/v1/threads/${threadId}/runs/active`),
+        () => request.get(`/v1/threads/${runThreadId}/runs/active`),
       ],
       [
         "GET /v1/threads/:id/runs/latest",
-        () => request.get(`/v1/threads/${threadId}/runs/latest`),
+        () => request.get(`/v1/threads/${runThreadId}/runs/latest`),
       ],
       ["GET /v1/traces", () => request.get("/v1/traces")],
       ["GET /v1/traces/:run_id", () => request.get(`/v1/traces/${runId}`)],
@@ -178,6 +217,17 @@ test.describe("HTTP API surface coverage", () => {
 
     for (const [label, send] of runChecks) {
       await expectNoServerError(label, await send());
+    }
+    const runs = await expectJsonObject("GET /v1/runs shape", await request.get("/v1/runs"));
+    expect(Array.isArray(runs.items), "run list items").toBe(true);
+    expect(typeof runs.total).toBe("number");
+    const threadRuns = await expectJsonObject(
+      "GET /v1/threads/:id/runs shape",
+      await request.get(`/v1/threads/${runThreadId}/runs`),
+    );
+    expect(Array.isArray(threadRuns.items), "thread run list items").toBe(true);
+    for (const item of threadRuns.items) {
+      expect(item.thread_id).toBe(runThreadId);
     }
 
     const aiSdkPayload = {
@@ -194,7 +244,7 @@ test.describe("HTTP API surface coverage", () => {
       [
         "POST /v1/ai-sdk/threads/:thread_id/runs",
         () =>
-          request.post(`/v1/ai-sdk/threads/${threadId}/runs`, {
+          request.post(`/v1/ai-sdk/threads/${runThreadId}/runs`, {
             data: aiSdkPayload,
           }),
       ],
@@ -222,23 +272,23 @@ test.describe("HTTP API surface coverage", () => {
       ],
       [
         "GET /v1/ai-sdk/chat/:thread_id/stream",
-        () => request.get(`/v1/ai-sdk/chat/${threadId}/stream`),
+        () => request.get(`/v1/ai-sdk/chat/${runThreadId}/stream`),
       ],
       [
         "GET /v1/ai-sdk/threads/:thread_id/stream",
-        () => request.get(`/v1/ai-sdk/threads/${threadId}/stream`),
+        () => request.get(`/v1/ai-sdk/threads/${runThreadId}/stream`),
       ],
       [
         "GET /v1/ai-sdk/threads/:thread_id/messages",
-        () => request.get(`/v1/ai-sdk/threads/${threadId}/messages`),
+        () => request.get(`/v1/ai-sdk/threads/${runThreadId}/messages`),
       ],
       [
         "POST /v1/ai-sdk/threads/:thread_id/cancel",
-        () => request.post(`/v1/ai-sdk/threads/${threadId}/cancel`),
+        () => request.post(`/v1/ai-sdk/threads/${runThreadId}/cancel`),
       ],
       [
         "POST /v1/ai-sdk/threads/:thread_id/interrupt",
-        () => request.post(`/v1/ai-sdk/threads/${threadId}/interrupt`),
+        () => request.post(`/v1/ai-sdk/threads/${runThreadId}/interrupt`),
       ],
       [
         "POST /v1/ag-ui/run",
@@ -253,7 +303,7 @@ test.describe("HTTP API surface coverage", () => {
       [
         "POST /v1/ag-ui/threads/:thread_id/runs",
         () =>
-          request.post(`/v1/ag-ui/threads/${threadId}/runs`, {
+          request.post(`/v1/ag-ui/threads/${runThreadId}/runs`, {
             data: {
               agentId: "limited",
               messages: [{ role: "user", content: "AG-UI threaded" }],
@@ -271,11 +321,11 @@ test.describe("HTTP API surface coverage", () => {
       ],
       [
         "POST /v1/ag-ui/threads/:thread_id/interrupt",
-        () => request.post(`/v1/ag-ui/threads/${threadId}/interrupt`),
+        () => request.post(`/v1/ag-ui/threads/${runThreadId}/interrupt`),
       ],
       [
         "GET /v1/ag-ui/threads/:id/messages",
-        () => request.get(`/v1/ag-ui/threads/${threadId}/messages`),
+        () => request.get(`/v1/ag-ui/threads/${runThreadId}/messages`),
       ],
     ] as const;
 
@@ -284,14 +334,30 @@ test.describe("HTTP API surface coverage", () => {
     }
 
     const card = await request.get("/.well-known/agent-card.json");
-    expect(card.ok(), "GET /.well-known/agent-card.json").toBeTruthy();
+    const cardBody = await expectJsonObject("GET /.well-known/agent-card.json", card);
+    expect(cardBody.capabilities?.streaming).toBe(true);
+    expect(cardBody.supportedInterfaces?.[0]?.url).toContain("/v1/a2a");
     const { taskId, data } = a2aSendMessagePayload("A2A route surface");
     const a2aSend = await request.post("/v1/a2a/message:send", { data });
-    expect(a2aSend.ok(), "POST /v1/a2a/message:send").toBeTruthy();
+    const a2aSendBody = await expectJsonObject("POST /v1/a2a/message:send", a2aSend);
+    expect(a2aSendBody.task?.id).toBe(taskId);
+    await expect
+      .poll(async () => {
+        const taskRes = await request.get(`/v1/a2a/tasks/${taskId}`);
+        if (!taskRes.ok()) {
+          return `${taskRes.status()}`;
+        }
+        const task = await taskRes.json();
+        return task.status?.state ?? "missing-state";
+      })
+      .toBe("TASK_STATE_COMPLETED");
     const a2aChecks = [
       [
         "POST /v1/a2a/message:stream",
-        () => request.post("/v1/a2a/message:stream", { data }),
+        () =>
+          request.post("/v1/a2a/message:stream", {
+            data: a2aSendMessagePayload("A2A stream surface").data,
+          }),
       ],
       ["GET /v1/a2a/tasks/:id", () => request.get(`/v1/a2a/tasks/${taskId}`)],
       [
@@ -319,8 +385,21 @@ test.describe("HTTP API surface coverage", () => {
     for (const [label, send] of a2aChecks) {
       await expectNoServerError(label, await send());
     }
+    const a2aTask = await expectJsonObject(
+      "GET /v1/a2a/tasks/:id shape",
+      await request.get(`/v1/a2a/tasks/${taskId}`),
+    );
+    expect(a2aTask.id).toBe(taskId);
+    expect(a2aTask.contextId).toBe(taskId);
+    const pushConfigs = await expectJsonObject(
+      "GET /v1/a2a/tasks/:id/pushNotificationConfigs shape",
+      await request.get(`/v1/a2a/tasks/${taskId}/pushNotificationConfigs`),
+    );
+    expect(Array.isArray(pushConfigs.configs), "A2A push configs").toBe(true);
 
     const deleteThread = await request.delete(`/v1/threads/${threadId}`);
     await expectNoServerError("DELETE /v1/threads/:id", deleteThread);
+    const deleteRunThread = await request.delete(`/v1/threads/${runThreadId}`);
+    await expectNoServerError("DELETE /v1/threads/:run-thread-id", deleteRunThread);
   });
 });
