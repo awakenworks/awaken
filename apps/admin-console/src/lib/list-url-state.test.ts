@@ -317,6 +317,21 @@ describe("writeFixtureFilter", () => {
 // ---------------------------------------------------------------------------
 
 describe("readAuditFilter", () => {
+  it("deserialises all audit filter fields", () => {
+    const state = readAuditFilter(
+      p(
+        "since=2026-05-14T00%3A00%3A00Z&until=2026-05-15T00%3A00%3A00Z&action=update&resource=agents%2Frouter&actor=admin",
+      ),
+    );
+    expect(state).toEqual({
+      since: "2026-05-14T00:00:00Z",
+      until: "2026-05-15T00:00:00Z",
+      action: "update",
+      resource: "agents/router",
+      actor: "admin",
+    });
+  });
+
   it("deserialises ?action=restore correctly", () => {
     const state = readAuditFilter(p("action=restore"));
     expect(state.action).toBe("restore");
@@ -338,5 +353,32 @@ describe("readAuditFilter", () => {
     expect(written.get("action")).toBe("restore");
     const recovered = readAuditFilter(written);
     expect(recovered.action).toBe("restore");
+  });
+
+  it("writes and clears every non-default audit filter without losing unrelated params", () => {
+    const written = writeAuditFilter(p("tab=history"), {
+      since: "2026-05-14T00:00:00Z",
+      until: "2026-05-15T00:00:00Z",
+      action: "delete",
+      resource: "providers/main",
+      actor: "ops",
+    });
+    expect(written.get("tab")).toBe("history");
+    expect(readAuditFilter(written)).toEqual({
+      since: "2026-05-14T00:00:00Z",
+      until: "2026-05-15T00:00:00Z",
+      action: "delete",
+      resource: "providers/main",
+      actor: "ops",
+    });
+
+    const cleared = writeAuditFilter(written, {
+      since: "",
+      until: "",
+      action: "",
+      resource: "",
+      actor: "",
+    });
+    expect(cleared.toString()).toBe("tab=history");
   });
 });

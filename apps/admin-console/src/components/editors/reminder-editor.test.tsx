@@ -134,6 +134,30 @@ describe("ReminderConfigEditor", () => {
         ],
       }),
     );
+
+    fireEvent.change(screen.getByLabelText("Cooldown turns"), {
+      target: { value: "3" },
+    });
+    expect(onChange).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        rules: [
+          expect.objectContaining({
+            message: expect.objectContaining({ cooldown_turns: 3 }),
+          }),
+        ],
+      }),
+    );
+
+    fireEvent.click(screen.getAllByRole("button", { name: "Remove" }).at(-1)!);
+    expect(onChange).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        rules: [
+          expect.objectContaining({
+            output: { content: { fields: [] } },
+          }),
+        ],
+      }),
+    );
   });
 
   it("updates status/text rules and preserves rule ordering operations", () => {
@@ -209,6 +233,69 @@ describe("ReminderConfigEditor", () => {
     expect(onChange).toHaveBeenLastCalledWith(
       expect.objectContaining({
         rules: [expect.objectContaining({ name: "permission denied" })],
+      }),
+    );
+  });
+
+  it("renders reminder mode labels and summarizes more than two targets", () => {
+    const onChange = vi.fn();
+    render(
+      <ReminderConfigEditor
+        value={{
+          rules: [
+            {
+              name: "status",
+              tool: "job_status",
+              output: { status: "pending" },
+              message: { target: "system", content: "Wait.", cooldown_turns: 0 },
+            },
+            {
+              name: "text",
+              tool: "Bash(*)",
+              output: { content: "*denied*" },
+              message: { target: "suffix_system", content: "Check permissions.", cooldown_turns: 1 },
+            },
+            {
+              name: "fields",
+              tool: "get_weather",
+              output: { content: { fields: [] } },
+              message: { target: "session", content: "Remember weather.", cooldown_turns: 2 },
+            },
+            {
+              name: "status fields",
+              tool: "api_call",
+              output: { status: "error", content: { fields: [] } },
+              message: { target: "conversation", content: "Inspect response.", cooldown_turns: 3 },
+            },
+          ],
+        }}
+        onChange={onChange}
+      />,
+    );
+
+    expect(screen.getByText("System, Suffix system +2")).toBeTruthy();
+    expect(screen.getByText("Status")).toBeTruthy();
+    expect(screen.getByText("Text")).toBeTruthy();
+    expect(screen.getByText("Fields")).toBeTruthy();
+    expect(screen.getAllByText("Status + fields").length).toBeGreaterThan(0);
+
+    fireEvent.click(screen.getByText("fields").closest("button")!);
+    expect(screen.getByText("No field conditions configured yet.")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Add field condition" }));
+    expect(onChange).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        rules: [
+          expect.any(Object),
+          expect.any(Object),
+          expect.objectContaining({
+            output: {
+              content: {
+                fields: [expect.objectContaining({ path: "", op: "glob", value: "" })],
+              },
+            },
+          }),
+          expect.any(Object),
+        ],
       }),
     );
   });

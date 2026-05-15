@@ -95,11 +95,11 @@ afterEach(() => {
 describe("AgentDashboardPage", () => {
   it("renders missing id, loading, query error, and server error states", () => {
     renderDashboard("/missing");
-    expect(screen.getByText("Missing agent id.")).toBeTruthy();
+    expect(screen.getByText("Missing agent id.")).not.toBeNull();
 
     cleanup();
     const { rerender } = renderDashboard();
-    expect(screen.getByText("Loading runtime stats…")).toBeTruthy();
+    expect(screen.getByText("Loading runtime stats…")).not.toBeNull();
 
     statsState.value = { ...statsState.value, error: new Error("stats unavailable") };
     rerender(
@@ -109,7 +109,7 @@ describe("AgentDashboardPage", () => {
         </Routes>
       </MemoryRouter>,
     );
-    expect(screen.getByText("stats unavailable")).toBeTruthy();
+    expect(screen.getByText("stats unavailable")).not.toBeNull();
 
     statsState.value = {
       ...statsState.value,
@@ -123,7 +123,7 @@ describe("AgentDashboardPage", () => {
         </Routes>
       </MemoryRouter>,
     );
-    expect(screen.getByText("HTTP 500: runtime failed")).toBeTruthy();
+    expect(screen.getByText("HTTP 500: runtime failed")).not.toBeNull();
     expect(screen.getByRole("link", { name: "Edit configuration" }).getAttribute("href")).toBe(
       "/agents/research-agent",
     );
@@ -136,7 +136,7 @@ describe("AgentDashboardPage", () => {
     };
     const { rerender } = renderDashboard();
 
-    expect(screen.getByText("Runtime stats not configured")).toBeTruthy();
+    expect(screen.getByText("Runtime stats not configured")).not.toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Retry" }));
     expect(statsState.value.refetch).toHaveBeenCalledTimes(1);
 
@@ -153,8 +153,8 @@ describe("AgentDashboardPage", () => {
       </MemoryRouter>,
     );
 
-    expect(screen.getByText("No runtime activity yet")).toBeTruthy();
-    expect(screen.getByText("new-agent")).toBeTruthy();
+    expect(screen.getByText("No runtime activity yet")).not.toBeNull();
+    expect(screen.getByText("new-agent")).not.toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
     expect(statsState.value.refetch).toHaveBeenCalledTimes(1);
     expect(screen.getByRole("link", { name: "Audit history" }).getAttribute("href")).toContain(
@@ -170,14 +170,14 @@ describe("AgentDashboardPage", () => {
 
     renderDashboard("/agents/research-agent/dashboard?window=1h");
 
-    expect(screen.getByText("Dashboard · research-agent")).toBeTruthy();
-    expect(screen.getByText("Runtime health")).toBeTruthy();
+    expect(screen.getByText("Dashboard · research-agent")).not.toBeNull();
+    expect(screen.getByText("Runtime health")).not.toBeNull();
     expect(screen.getAllByText("20.0%")).toHaveLength(2);
-    expect(screen.getByText("Inference latency distribution")).toBeTruthy();
-    expect(screen.getByText("Lifecycle events")).toBeTruthy();
-    expect(screen.getByText("Tool failure rate")).toBeTruthy();
+    expect(screen.getByText("Inference latency distribution")).not.toBeNull();
+    expect(screen.getByText("Lifecycle events")).not.toBeNull();
+    expect(screen.getByText("Tool failure rate")).not.toBeNull();
     expect(screen.getAllByText("web.search")).toHaveLength(2);
-    expect(screen.getByText("Tool latency distributions")).toBeTruthy();
+    expect(screen.getByText("Tool latency distributions")).not.toBeNull();
     expect(screen.getByRole("link", { name: "Permission rules" }).getAttribute("href")).toBe(
       "/agents/research-agent?tab=plugins",
     );
@@ -209,9 +209,9 @@ describe("AgentDashboardPage", () => {
     renderDashboard();
 
     expect(screen.getAllByText("0.0%")).toHaveLength(2);
-    expect(screen.getByText("Refreshing…")).toBeTruthy();
+    expect(screen.getByText("Refreshing…")).not.toBeNull();
     expect(screen.queryByText("Inference latency distribution")).toBeNull();
-    expect(screen.getByText("No tool invocations recorded in the current window.")).toBeTruthy();
+    expect(screen.getByText("No tool invocations recorded in the current window.")).not.toBeNull();
     expect(screen.queryByText("Tool latency distributions")).toBeNull();
   });
 });

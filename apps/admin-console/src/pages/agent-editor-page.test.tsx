@@ -31,6 +31,12 @@ function stubCapabilitiesFetch() {
   return fetchSpy;
 }
 
+function fetchHref(input: string | URL | Request): string {
+  if (typeof input === "string") return input;
+  if (input instanceof URL) return input.href;
+  return input.url;
+}
+
 function jsonResponse(data: unknown, init?: { ok?: boolean; status?: number }) {
   return {
     ok: init?.ok ?? true,
@@ -374,6 +380,511 @@ describe("agent editor preview Recent runs wiring", () => {
     fireEvent.change(idInput, { target: { value: "my-new-agent" } });
 
     expect(screen.queryByTestId("open-recent-traces")).toBeNull();
+  });
+});
+
+describe("agent editor validate and override guards", () => {
+  it("posts the current draft to dry-run validation and reports success", async () => {
+    const fetchSpy = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const href = fetchHref(input);
+      const method = init?.method?.toUpperCase() ?? "GET";
+      if (method === "GET" && href.includes("/v1/capabilities")) {
+        return jsonResponse({
+          agents: [],
+          tools: [],
+          plugins: [],
+          skills: [],
+          models: [{ id: "model-a", upstream_model: "gpt-test" }],
+          providers: [],
+          namespaces: [],
+        });
+      }
+      if (method === "POST" && href.endsWith("/v1/config/agents/validate")) {
+        return jsonResponse({ ok: true, normalized: JSON.parse(String(init?.body)) });
+      }
+      throw new Error(`Unexpected fetch: ${method} ${href}`);
+    });
+    vi.stubGlobal("fetch", fetchSpy);
+
+    renderEditorRoute("/agents/new");
+    await screen.findByLabelText("Agent ID");
+
+    fireEvent.change(screen.getByLabelText("Agent ID"), { target: { value: "validate-agent" } });
+    fireEvent.change(screen.getByLabelText("Model"), { target: { value: "model-a" } });
+    fireEvent.change(screen.getByLabelText("System prompt"), {
+      target: { value: "Validate before saving." },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Validate" }));
+
+    await screen.findByText(/Validation passed/i);
+    const [, validateInit] = fetchSpy.mock.calls.find(([input, init]) => {
+      const href = fetchHref(input as string | URL | Request);
+      return init?.method === "POST" && href.endsWith("/v1/config/agents/validate");
+    })!;
+    expect(JSON.parse(String(validateInit?.body))).toMatchObject({
+      id: "validate-agent",
+      model_id: "model-a",
+      system_prompt: "Validate before saving.",
+    });
+  });
+
+  it("surfaces dry-run validation errors without saving", async () => {
+    const fetchSpy = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const href = fetchHref(input);
+      const method = init?.method?.toUpperCase() ?? "GET";
+      if (method === "GET" && href.includes("/v1/capabilities")) {
+        return jsonResponse({
+          agents: [],
+          tools: [],
+          plugins: [],
+          skills: [],
+          models: [{ id: "model-a", upstream_model: "gpt-test" }],
+          providers: [],
+          namespaces: [],
+        });
+      }
+      if (method === "POST" && href.endsWith("/v1/config/agents/validate")) {
+        return jsonResponse({ error: "model is not published" }, { ok: false, status: 422 });
+      }
+      if (method === "POST" && href.endsWith("/v1/config/agents")) {
+        return jsonResponse({ error: "should not save" }, { ok: false, status: 500 });
+      }
+      throw new Error(`Unexpected fetch: ${method} ${href}`);
+    });
+    vi.stubGlobal("fetch", fetchSpy);
+
+    renderEditorRoute("/agents/new");
+    await screen.findByLabelText("Agent ID");
+    fireEvent.change(screen.getByLabelText("Agent ID"), { target: { value: "invalid-agent" } });
+    fireEvent.change(screen.getByLabelText("Model"), { target: { value: "model-a" } });
+    fireEvent.click(screen.getByRole("button", { name: "Validate" }));
+
+    await screen.findByText(/Validation failed: model is not published/i);
+    expect(
+      fetchSpy.mock.calls.some(([input, init]) => {
+        const href = fetchHref(input as string | URL | Request);
+        return init?.method === "POST" && href.endsWith("/v1/config/agents");
+      }),
+    ).toBe(false);
+  });
+});
+
+describe("agent editor save API flows", () => {
+  it("creates a new agent with the normalized editor payload", async () => {
+    const fetchSpy = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const href = fetchHref(input);
+      const method = init?.method?.toUpperCase() ?? "GET";
+      if (method === "GET" && href.includes("/v1/capabilities")) {
+        return jsonResponse({
+          agents: [],
+          tools: [],
+          plugins: [],
+          skills: [],
+          models: [{ id: "model-a", upstream_model: "gpt-test" }],
+          providers: [],
+          namespaces: [],
+        });
+      }
+      if (method === "POST" && href.endsWith("/v1/config/agents")) {
+        return jsonResponse(JSON.parse(String(init?.body)));
+      }
+      if (method === "GET" && href.endsWith("/v1/config/agents/new-agent/meta")) {
+        return jsonResponse({
+          source: { kind: "user" },
+          hidden: false,
+          user_overrides: null,
+          created_at: 0,
+          updated_at: 0,
+        });
+      }
+      if (method === "GET" && href.endsWith("/v1/config/agents/new-agent")) {
+        return jsonResponse({
+          id: "new-agent",
+          model_id: "model-a",
+          system_prompt: "Respond with facts only.",
+          max_rounds: 12,
+          max_continuation_retries: 2,
+          plugin_ids: [],
+          sections: {},
+          delegates: [],
+        });
+      }
+      if (method === "GET" && href.includes("/v1/audit-log")) {
+        return jsonResponse({ items: [] });
+      }
+      throw new Error(`Unexpected fetch: ${method} ${href}`);
+    });
+    vi.stubGlobal("fetch", fetchSpy);
+
+    renderEditorRoute("/agents/new");
+    await screen.findByLabelText("Agent ID");
+
+    fireEvent.change(screen.getByLabelText("Agent ID"), { target: { value: "new-agent" } });
+    fireEvent.change(screen.getByLabelText("Model"), { target: { value: "model-a" } });
+    fireEvent.change(screen.getByLabelText("Max rounds"), { target: { value: "12" } });
+    fireEvent.change(screen.getByLabelText("System prompt"), {
+      target: { value: "Respond with facts only." },
+    });
+    fireEvent.click(screen.getAllByRole("button", { name: /^save$/i })[0]);
+
+    await waitFor(() => {
+      expect(
+        fetchSpy.mock.calls.filter(([input, init]) => {
+          const href = fetchHref(input as string | URL | Request);
+          return init?.method === "POST" && href.endsWith("/v1/config/agents");
+        }),
+      ).toHaveLength(1);
+    });
+    const [, createInit] = fetchSpy.mock.calls.find(([input, init]) => {
+      const href = fetchHref(input as string | URL | Request);
+      return init?.method === "POST" && href.endsWith("/v1/config/agents");
+    })!;
+    expect(JSON.parse(String(createInit?.body))).toEqual({
+      id: "new-agent",
+      model_id: "model-a",
+      system_prompt: "Respond with facts only.",
+      max_rounds: 12,
+      max_continuation_retries: 2,
+      plugin_ids: [],
+      sections: {},
+      delegates: [],
+    });
+  });
+
+  it("keeps edited draft visible when user-agent save fails", async () => {
+    const agentId = "user-save-fails";
+    const fetchSpy = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const href = fetchHref(input);
+      const method = init?.method?.toUpperCase() ?? "GET";
+      if (method === "GET" && href.includes("/v1/capabilities")) {
+        return jsonResponse({
+          agents: [],
+          tools: [],
+          plugins: [],
+          skills: [],
+          models: [{ id: "model-a", upstream_model: "gpt-test" }],
+          providers: [],
+          namespaces: [],
+        });
+      }
+      if (method === "GET" && href.endsWith(`/v1/config/agents/${agentId}/meta`)) {
+        return jsonResponse({
+          source: { kind: "user" },
+          hidden: false,
+          user_overrides: null,
+          created_at: 0,
+          updated_at: 0,
+        });
+      }
+      if (method === "PUT" && href.endsWith(`/v1/config/agents/${agentId}`)) {
+        return jsonResponse({ error: "validation failed" }, { ok: false, status: 422 });
+      }
+      if (method === "GET" && href.endsWith(`/v1/config/agents/${agentId}`)) {
+        return jsonResponse({
+          id: agentId,
+          model_id: "model-a",
+          system_prompt: "original prompt",
+          max_rounds: 8,
+          max_continuation_retries: 2,
+          plugin_ids: [],
+          sections: {},
+          delegates: [],
+        });
+      }
+      if (method === "GET" && href.includes("/v1/audit-log")) {
+        return jsonResponse({ items: [] });
+      }
+      throw new Error(`Unexpected fetch: ${method} ${href}`);
+    });
+    vi.stubGlobal("fetch", fetchSpy);
+
+    renderEditorRoute(`/agents/${agentId}`);
+    await screen.findByText(new RegExp(`Edit ${agentId}`, "i"));
+
+    const promptTextarea = screen.getByRole("textbox", { name: /system prompt/i });
+    fireEvent.change(promptTextarea, { target: { value: "edited prompt" } });
+    fireEvent.click(screen.getAllByRole("button", { name: /^save$/i })[0]);
+
+    await screen.findByText("validation failed");
+    expect((promptTextarea as HTMLTextAreaElement).value).toBe("edited prompt");
+    const [, updateInit] = fetchSpy.mock.calls.find(([input, init]) => {
+      const href = fetchHref(input as string | URL | Request);
+      return init?.method === "PUT" && href.endsWith(`/v1/config/agents/${agentId}`);
+    })!;
+    expect(JSON.parse(String(updateInit?.body))).toMatchObject({
+      id: agentId,
+      system_prompt: "edited prompt",
+    });
+  });
+
+  it("saves tool allow-list, plugin selection, and delegates from their tabs", async () => {
+    let createdAgent: unknown = null;
+    const fetchSpy = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const href = fetchHref(input);
+      const method = init?.method?.toUpperCase() ?? "GET";
+      if (method === "GET" && href.includes("/v1/capabilities")) {
+        return jsonResponse({
+          agents: ["new-agent", "helper-agent"],
+          tools: [
+            {
+              id: "tool-alpha",
+              name: "Alpha",
+              description: "Alpha tool",
+              source: { kind: "builtin" },
+            },
+            {
+              id: "tool-beta",
+              name: "Beta",
+              description: "Beta tool",
+              source: { kind: "plugin", id: "files" },
+            },
+          ],
+          plugins: [{ id: "logger-plugin", config_schemas: [] }],
+          skills: [],
+          models: [{ id: "model-a", upstream_model: "gpt-test" }],
+          providers: [],
+          namespaces: [],
+        });
+      }
+      if (method === "POST" && href.endsWith("/v1/config/agents")) {
+        createdAgent = JSON.parse(String(init?.body));
+        return jsonResponse(createdAgent);
+      }
+      if (method === "GET" && href.endsWith("/v1/config/agents/new-agent/meta")) {
+        return jsonResponse({
+          source: { kind: "user" },
+          hidden: false,
+          user_overrides: null,
+          created_at: 0,
+          updated_at: 0,
+        });
+      }
+      if (method === "GET" && href.endsWith("/v1/config/agents/new-agent")) {
+        return jsonResponse(
+          createdAgent ?? {
+            id: "new-agent",
+            model_id: "model-a",
+            system_prompt: "",
+            max_rounds: 16,
+            max_continuation_retries: 2,
+            plugin_ids: ["logger-plugin"],
+            allowed_tools: ["tool-alpha"],
+            delegates: ["helper-agent"],
+            sections: {},
+          },
+        );
+      }
+      if (method === "GET" && href.includes("/v1/audit-log")) {
+        return jsonResponse({ items: [] });
+      }
+      throw new Error(`Unexpected fetch: ${method} ${href}`);
+    });
+    vi.stubGlobal("fetch", fetchSpy);
+
+    renderEditorRoute("/agents/new");
+    await screen.findByLabelText("Agent ID");
+
+    fireEvent.change(screen.getByLabelText("Agent ID"), { target: { value: "new-agent" } });
+    fireEvent.change(screen.getByLabelText("Model"), { target: { value: "model-a" } });
+
+    fireEvent.click(screen.getByRole("tab", { name: "Tools" }));
+    fireEvent.click(screen.getByLabelText(/Custom selection/i));
+    fireEvent.click(screen.getByLabelText(/tool-beta/i));
+
+    fireEvent.click(screen.getByRole("tab", { name: "Plugins" }));
+    fireEvent.click(screen.getByLabelText(/logger-plugin/i));
+
+    fireEvent.click(screen.getByRole("tab", { name: "Delegates" }));
+    fireEvent.click(screen.getByLabelText("helper-agent"));
+
+    fireEvent.click(screen.getAllByRole("button", { name: /^save$/i })[0]);
+
+    await waitFor(() => {
+      expect(
+        fetchSpy.mock.calls.filter(([input, init]) => {
+          const href = fetchHref(input as string | URL | Request);
+          return init?.method === "POST" && href.endsWith("/v1/config/agents");
+        }),
+      ).toHaveLength(1);
+    });
+    const [, createInit] = fetchSpy.mock.calls.find(([input, init]) => {
+      const href = fetchHref(input as string | URL | Request);
+      return init?.method === "POST" && href.endsWith("/v1/config/agents");
+    })!;
+    expect(JSON.parse(String(createInit?.body))).toMatchObject({
+      id: "new-agent",
+      model_id: "model-a",
+      allowed_tools: ["tool-alpha"],
+      plugin_ids: ["logger-plugin"],
+      delegates: ["helper-agent"],
+    });
+  });
+});
+
+describe("agent editor review and history flows", () => {
+  it("shows a semantic diff for dirty existing agents and closes the modal", async () => {
+    const agentId = "diff-agent";
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: string | URL | Request) => {
+        const href = fetchHref(input);
+        if (href.includes("/v1/capabilities")) {
+          return jsonResponse({
+            agents: [],
+            tools: [],
+            plugins: [],
+            skills: [],
+            models: [{ id: "model-a", upstream_model: "gpt-test" }],
+            providers: [],
+            namespaces: [],
+          });
+        }
+        if (href.endsWith(`/v1/config/agents/${agentId}/meta`)) {
+          return jsonResponse({
+            source: { kind: "user" },
+            hidden: false,
+            user_overrides: null,
+            created_at: 0,
+            updated_at: 0,
+          });
+        }
+        if (href.endsWith(`/v1/config/agents/${agentId}`)) {
+          return jsonResponse({
+            id: agentId,
+            model_id: "model-a",
+            system_prompt: "old prompt",
+            max_rounds: 8,
+            max_continuation_retries: 2,
+            plugin_ids: [],
+            sections: { nested: { enabled: true } },
+            delegates: [],
+          });
+        }
+        if (href.includes("/v1/audit-log")) {
+          return jsonResponse({ items: [] });
+        }
+        throw new Error(`Unexpected fetch: ${href}`);
+      }),
+    );
+
+    renderEditorRoute(`/agents/${agentId}`);
+    await screen.findByText(new RegExp(`Edit ${agentId}`, "i"));
+
+    fireEvent.change(screen.getByLabelText("System prompt"), {
+      target: { value: "new prompt" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Diff vs published" }));
+
+    await screen.findByRole("dialog", { name: "Diff vs published" });
+    expect(screen.getByText("system_prompt")).toBeDefined();
+    expect(screen.getByText("old prompt")).toBeDefined();
+    expect(screen.getAllByText("new prompt").length).toBeGreaterThanOrEqual(1);
+
+    fireEvent.click(screen.getByRole("button", { name: "Close" }));
+    expect(screen.queryByRole("dialog", { name: "Diff vs published" })).toBeNull();
+  });
+
+  it("opens audit details and restores an agent version from history", async () => {
+    const agentId = "history-agent";
+    const event = {
+      id: "evt-restore-001",
+      ts: "2026-01-02T00:00:00Z",
+      actor: "hash9/admin",
+      action: "update",
+      resource: `agents/${agentId}`,
+      before: {
+        id: agentId,
+        model_id: "model-a",
+        system_prompt: "old prompt",
+        max_rounds: 8,
+      },
+      after: {
+        id: agentId,
+        model_id: "model-a",
+        system_prompt: "restored prompt",
+        max_rounds: 8,
+      },
+    };
+    let restored = false;
+    const fetchSpy = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const href = fetchHref(input);
+      const method = init?.method?.toUpperCase() ?? "GET";
+      if (method === "GET" && href.includes("/v1/capabilities")) {
+        return jsonResponse({
+          agents: [],
+          tools: [],
+          plugins: [],
+          skills: [],
+          models: [{ id: "model-a", upstream_model: "gpt-test" }],
+          providers: [],
+          namespaces: [],
+        });
+      }
+      if (method === "GET" && href.endsWith(`/v1/config/agents/${agentId}/meta`)) {
+        return jsonResponse({
+          source: { kind: "user" },
+          hidden: false,
+          user_overrides: null,
+          created_at: 0,
+          updated_at: 0,
+        });
+      }
+      if (
+        method === "POST" &&
+        href.endsWith(`/v1/config/agents/${agentId}/restore`)
+      ) {
+        restored = true;
+        return jsonResponse({});
+      }
+      if (method === "GET" && href.endsWith(`/v1/config/agents/${agentId}`)) {
+        return jsonResponse({
+          id: agentId,
+          model_id: "model-a",
+          system_prompt: restored ? "restored prompt" : "current prompt",
+          max_rounds: 8,
+          max_continuation_retries: 2,
+          plugin_ids: [],
+          sections: {},
+          delegates: [],
+        });
+      }
+      if (method === "GET" && href.includes("/v1/audit-log")) {
+        return jsonResponse({ items: [event] });
+      }
+      throw new Error(`Unexpected fetch: ${method} ${href}`);
+    });
+    vi.stubGlobal("fetch", fetchSpy);
+
+    renderEditorRoute(`/agents/${agentId}`);
+    await screen.findByText(new RegExp(`Edit ${agentId}`, "i"));
+    fireEvent.click(screen.getByRole("tab", { name: "History" }));
+
+    await screen.findByText("hash9");
+    fireEvent.click(screen.getByRole("button", { name: "View" }));
+    await screen.findByRole("dialog", { name: "Audit event details" });
+    expect(screen.getByText("evt-restore-001")).toBeDefined();
+    fireEvent.click(screen.getByRole("button", { name: "Close" }));
+
+    fireEvent.click(screen.getByRole("button", { name: "Restore" }));
+    await screen.findByRole("dialog", { name: "Restore agent to this version?" });
+    fireEvent.click(screen.getAllByRole("button", { name: "Restore" }).at(-1)!);
+
+    await screen.findByText("Agent restored to version evt-rest");
+    expect(
+      fetchSpy.mock.calls.some(([input, init]) => {
+        const href = fetchHref(input as string | URL | Request);
+        return (
+          init?.method === "POST" &&
+          href.endsWith(`/v1/config/agents/${agentId}/restore`) &&
+          JSON.parse(String(init.body)).version === "evt-restore-001"
+        );
+      }),
+    ).toBe(true);
+
+    fireEvent.click(screen.getByRole("tab", { name: "Basics" }));
+    expect((screen.getByLabelText("System prompt") as HTMLTextAreaElement).value).toBe(
+      "restored prompt",
+    );
   });
 });
 
@@ -825,6 +1336,73 @@ describe("agent editor source badges", () => {
       expect(deleteOverridesCalled).toBe(true);
     });
   });
+
+  it("clears one overridden field and refreshes the displayed draft", async () => {
+    const agentId = "field-reset";
+    let fieldResetCalled = false;
+    const fetchMock = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const href = fetchHref(input);
+      const method = init?.method?.toUpperCase() ?? "GET";
+      if (method === "GET" && href.includes("/v1/capabilities")) {
+        return jsonResponse({
+          agents: [],
+          tools: [],
+          plugins: [],
+          skills: [],
+          models: [{ id: "m1", upstream_model: "model-one" }],
+          providers: [],
+          namespaces: [],
+        });
+      }
+      if (
+        method === "DELETE" &&
+        href.endsWith(`/v1/config/agents/${agentId}/overrides/system_prompt`)
+      ) {
+        fieldResetCalled = true;
+        return jsonResponse({});
+      }
+      if (method === "GET" && href.endsWith(`/v1/config/agents/${agentId}/meta`)) {
+        return jsonResponse({
+          source: { kind: "builtin", binary_version: "1.0" },
+          hidden: false,
+          user_overrides: fieldResetCalled ? null : { system_prompt: "custom prompt" },
+          created_at: 0,
+          updated_at: 0,
+        });
+      }
+      if (method === "GET" && href.endsWith(`/v1/config/agents/${agentId}`)) {
+        return jsonResponse({
+          id: agentId,
+          model_id: "m1",
+          system_prompt: fieldResetCalled ? "default prompt" : "custom prompt",
+          max_rounds: 8,
+          plugin_ids: [],
+          sections: {},
+          delegates: [],
+        });
+      }
+      if (method === "GET" && href.includes("/v1/audit-log")) {
+        return jsonResponse({ items: [] });
+      }
+      throw new Error(`Unexpected fetch: ${method} ${href}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderEditorRoute(`/agents/${agentId}`);
+    await screen.findByText(new RegExp(`Edit ${agentId}`, "i"));
+    expect((screen.getByRole("textbox", { name: /system prompt/i }) as HTMLTextAreaElement).value).toBe(
+      "custom prompt",
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /^Reset to default$/i }));
+
+    await waitFor(() => {
+      expect(fieldResetCalled).toBe(true);
+      expect(
+        (screen.getByRole("textbox", { name: /system prompt/i }) as HTMLTextAreaElement).value,
+      ).toBe("default prompt");
+    });
+  });
 });
 
 // ── endpoint override banner (R14) ───────────────────────────────────────────
@@ -1197,6 +1775,65 @@ describe("agent editor context policy inputs", () => {
 // ── Save → PATCH vs PUT branching ────────────────────────────────────────────
 
 describe("agent editor Save → PATCH vs PUT branching", () => {
+  it("does not PATCH a builtin agent when no patchable fields changed", async () => {
+    const agentId = "unchanged-builtin";
+    const agentBody = {
+      id: agentId,
+      model_id: "m1",
+      system_prompt: "default prompt",
+      max_rounds: 8,
+      plugin_ids: [],
+      sections: {},
+      delegates: [],
+    };
+    let patchCalled = false;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+        const href = fetchHref(input);
+        const method = init?.method?.toUpperCase() ?? "GET";
+        if (method === "GET" && href.includes("/v1/capabilities")) {
+          return jsonResponse({
+            agents: [],
+            tools: [],
+            plugins: [],
+            skills: [],
+            models: [{ id: "m1", upstream_model: "model-one" }],
+            providers: [],
+            namespaces: [],
+          });
+        }
+        if (method === "GET" && href.endsWith(`/v1/config/agents/${agentId}/meta`)) {
+          return jsonResponse({
+            source: { kind: "builtin", binary_version: "1.0" },
+            hidden: false,
+            user_overrides: null,
+            created_at: 0,
+            updated_at: 0,
+          });
+        }
+        if (method === "PATCH" && href.endsWith(`/v1/config/agents/${agentId}/overrides`)) {
+          patchCalled = true;
+          return jsonResponse({});
+        }
+        if (method === "GET" && href.endsWith(`/v1/config/agents/${agentId}`)) {
+          return jsonResponse(agentBody);
+        }
+        if (method === "GET" && href.includes("/v1/audit-log")) {
+          return jsonResponse({ items: [] });
+        }
+        throw new Error(`Unexpected fetch: ${method} ${href}`);
+      }),
+    );
+
+    renderEditorRoute(`/agents/${agentId}`);
+    await screen.findByText(new RegExp(`Edit ${agentId}`, "i"));
+    fireEvent.click(screen.getByRole("button", { name: /^Save$/i }));
+
+    await screen.findByText(`Agent "${agentId}" saved (no patchable changes)`);
+    expect(patchCalled).toBe(false);
+  });
+
   it("Save calls PATCH /overrides for Builtin records", async () => {
     const agentId = "builtin-agent";
     const agentBody = {

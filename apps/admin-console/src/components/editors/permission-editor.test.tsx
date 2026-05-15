@@ -96,4 +96,59 @@ describe("PermissionConfigEditor", () => {
       }),
     );
   });
+
+  it("renders any-tool rules with less common scopes and can promote the selected rule", () => {
+    const onChange = vi.fn();
+    render(
+      <PermissionConfigEditor
+        value={{
+          default_behavior: "allow",
+          rules: [
+            { tool: "", behavior: "allow", scope: "once" },
+            { tool: "Read(src/**)", behavior: "deny", scope: "user" },
+          ],
+        }}
+        onChange={onChange}
+      />,
+    );
+
+    expect(screen.getByText("(any tool)")).toBeTruthy();
+    expect(screen.getByText("Scope · Once")).toBeTruthy();
+    expect(screen.getByText("Scope · User")).toBeTruthy();
+
+    fireEvent.click(screen.getByText("Read(src/**)").closest("button")!);
+    fireEvent.click(screen.getByRole("button", { name: "Move up" }));
+
+    expect(onChange).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        rules: [
+          expect.objectContaining({ tool: "Read(src/**)", scope: "user" }),
+          expect.objectContaining({ tool: "", scope: "once" }),
+        ],
+      }),
+    );
+  });
+
+  it("removing the only rule emits an empty ruleset", () => {
+    const onChange = vi.fn();
+    render(
+      <PermissionConfigEditor
+        value={{
+          default_behavior: "ask",
+          rules: [{ tool: "Bash(*)", behavior: "ask", scope: "project" }],
+        }}
+        onChange={onChange}
+      />,
+    );
+
+    expect(screen.getByRole("button", { name: "Move up" }).hasAttribute("disabled")).toBe(true);
+    expect(screen.getByRole("button", { name: "Move down" }).hasAttribute("disabled")).toBe(true);
+
+    fireEvent.click(screen.getByRole("button", { name: "Remove" }));
+
+    expect(onChange).toHaveBeenLastCalledWith({
+      default_behavior: "ask",
+      rules: [],
+    });
+  });
 });
