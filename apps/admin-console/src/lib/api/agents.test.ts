@@ -119,10 +119,9 @@ describe("agentsApi.agentPermissionPreview", () => {
   it("re-throws ConfigApiError on 404", async () => {
     mockFetch(404, { error: "agent not found: ghost-agent" });
 
-    await expect(agentsApi.agentPermissionPreview("ghost-agent")).rejects.toBeInstanceOf(
-      ConfigApiError,
-    );
-    await expect(agentsApi.agentPermissionPreview("ghost-agent")).rejects.toMatchObject({
+    const request = agentsApi.agentPermissionPreview("ghost-agent");
+    await expect(request).rejects.toBeInstanceOf(ConfigApiError);
+    await expect(request).rejects.toMatchObject({
       status: 404,
     });
   });
