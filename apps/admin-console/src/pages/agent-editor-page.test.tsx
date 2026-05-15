@@ -575,6 +575,8 @@ describe("agent editor save API flows", () => {
       max_continuation_retries: 2,
       plugin_ids: [],
       sections: {},
+      allowed_tools: ["*"],
+      excluded_tools: [],
       delegates: [],
     });
   });

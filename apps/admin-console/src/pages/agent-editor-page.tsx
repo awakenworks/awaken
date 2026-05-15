@@ -18,10 +18,10 @@ import { type AuditEvent, formatActor, summarizeChange } from "@/lib/audit-log";
 import { Field } from "@/components/form-components";
 import { AgentPreviewPanel } from "@/components/agent-preview-panel";
 import { PluginConfigWorkspace } from "@/components/plugin-config-workspace";
-import { ToolSelector } from "@/components/tool-selector";
 import { useToast } from "@/components/toast-provider";
 import { useConfirmDialog } from "@/components/confirm-dialog";
 import { useUnsavedChangesGuard } from "@/components/unsaved-changes-guard";
+import { ToolsPanel } from "./agent-editor/panels/tools-panel";
 import { useTranslation } from "react-i18next";
 import {
   AGENT_EDITOR_TABS,
@@ -61,6 +61,7 @@ import {
   unknownAgentSpecFields,
 } from "@/lib/agent-editor-helpers";
 import { safeErrorMessage } from "@/lib/safe-error-message";
+import { normalizeCatalogForSave } from "./agent-editor/spec-helpers";
 
 const EMPTY_AGENT: AgentSpec = {
   id: "",
@@ -231,7 +232,7 @@ export function AgentEditorPage() {
     let customizedSaveInFlight = false;
     try {
       const payload = {
-        ...spec,
+        ...normalizeCatalogForSave(spec),
         plugin_ids: [...(spec.plugin_ids ?? [])],
         delegates: [...(spec.delegates ?? [])],
       };
@@ -248,7 +249,10 @@ export function AgentEditorPage() {
         customizedSaveInFlight = true;
         // For Builtin/Customized records, use PATCH /overrides to preserve
         // upgrade tracking. Only patchable fields are included.
-        const plan = diffPatchableAgentFields(spec, originalSpec ?? spec);
+        const plan = diffPatchableAgentFields(
+          normalizeCatalogForSave(spec),
+          normalizeCatalogForSave(originalSpec ?? spec),
+        );
         const hasUpserts = Object.keys(plan.patch).length > 0;
         const hasClears = plan.clear.length > 0;
         if (!hasUpserts && !hasClears) {
@@ -632,9 +636,19 @@ export function AgentEditorPage() {
                   spec={spec}
                   capabilities={capabilities}
                   updateField={updateField}
-                  agentSaved={!isNew && savedSpec !== null}
-                  savedSpec={savedSpec}
-                />
+                  canResetFields={!isNew && isCustomized}
+                  overriddenFields={overriddenFields}
+                  onResetField={(field) => void handleResetField(field)}
+                >
+                  {capabilities ? (
+                    <AllowedExcludedToolsSection
+                      spec={spec}
+                      capabilities={capabilities}
+                      agentSaved={!isNew && savedSpec !== null}
+                      savedSpec={savedSpec}
+                    />
+                  ) : null}
+                </ToolsPanel>
               )}
               {tab.id === "plugins" && (
                 <PluginsPanel
@@ -1359,55 +1373,6 @@ function promptStats(value: string): { chars: number; lines: number; tokenEstima
   const lines = value.split("\n").length;
   const tokenEstimate = Math.ceil(chars / 4);
   return { chars, lines, tokenEstimate };
-}
-
-function ToolsPanel({
-  spec,
-  capabilities,
-  updateField,
-  agentSaved,
-  savedSpec,
-}: {
-  spec: AgentSpec;
-  capabilities: Capabilities | null;
-  updateField: <K extends keyof AgentSpec>(key: K, value: AgentSpec[K]) => void;
-  agentSaved: boolean;
-  savedSpec: AgentSpec | null;
-}) {
-  if (!capabilities || capabilities.tools.length === 0) {
-    return (
-      <div className="rounded-md border border-dashed border-line bg-surface p-6 text-sm text-fg-soft">
-        No tools are currently published. Once plugins or MCP servers register tools, they will
-        appear here.
-      </div>
-    );
-  }
-  return (
-    <div className="space-y-6">
-      <ToolSelector
-        title="Allowed Tools"
-        description='"All tools" is the default — every published tool is exposed. Switch to Custom to restrict the agent to a specific subset.'
-        tools={capabilities.tools}
-        value={spec.allowed_tools}
-        onChange={(next) => updateField("allowed_tools", next)}
-        variant="include"
-      />
-      <ToolSelector
-        title="Excluded Tools"
-        description="Excluded tools are removed from the effective allow-list, even if they appear in 'All tools'. Useful for keeping a tool published to other agents but blocking it here."
-        tools={capabilities.tools}
-        value={spec.excluded_tools}
-        onChange={(next) => updateField("excluded_tools", next)}
-        variant="exclude"
-      />
-      <AllowedExcludedToolsSection
-        spec={spec}
-        capabilities={capabilities}
-        agentSaved={agentSaved}
-        savedSpec={savedSpec}
-      />
-    </div>
-  );
 }
 
 /**

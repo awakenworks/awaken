@@ -1,3 +1,4 @@
+import { type ReactNode } from "react";
 import { type AgentSpec, type Capabilities } from "@/lib/config-api";
 import { ToolSelector } from "@/components/tool-selector";
 
@@ -8,6 +9,7 @@ export function ToolsPanel({
   canResetFields,
   overriddenFields,
   onResetField,
+  children,
 }: {
   spec: AgentSpec;
   capabilities: Capabilities | null;
@@ -15,6 +17,7 @@ export function ToolsPanel({
   canResetFields?: boolean;
   overriddenFields?: Set<string>;
   onResetField?: (field: string) => void;
+  children?: ReactNode;
 }) {
   if (!capabilities || capabilities.tools.length === 0) {
     return (
@@ -35,7 +38,7 @@ export function ToolsPanel({
     } as const;
   };
   return (
-    <>
+    <div className="space-y-6">
       <ToolSelector
         title="Allowed Tools"
         description='"All tools" is the default — every published tool is exposed. Switch to Custom to restrict the agent to a specific subset.'
@@ -54,6 +57,7 @@ export function ToolsPanel({
         variant="exclude"
         {...resetProps("excluded_tools")}
       />
-    </>
+      {children}
+    </div>
   );
 }
