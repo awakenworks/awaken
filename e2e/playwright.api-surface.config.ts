@@ -1,12 +1,12 @@
-import { defineConfig, devices } from '@playwright/test';
+import { defineConfig } from '@playwright/test';
 
 export default defineConfig({
   testDir: './tests',
-  testIgnore: /(admin-.*|api-surface)\.spec\.ts/,
+  testMatch: /api-surface\.spec\.ts/,
   timeout: 120_000,
   expect: { timeout: 30_000 },
   retries: 0,
-  workers: 4,
+  workers: 1,
   use: {
     baseURL: 'http://127.0.0.1:38080',
   },
