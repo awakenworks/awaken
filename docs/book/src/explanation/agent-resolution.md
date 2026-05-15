@@ -126,9 +126,9 @@ After merging, the spec's `allowed_tools` and `excluded_tools` fields are applie
 
 - `allowed_tools = Some(["*"])` -- all tools are kept.
 - `allowed_tools = Some([])` -- all tools are removed.
-- `allowed_tools = Some(list)` -- only tools whose ID matches a literal or glob entry is kept.
+- `allowed_tools = Some(list)` -- only tools whose ID matches a literal or tool-id pattern entry is kept.
 - `allowed_tools = None` -- deprecated legacy allow-all.
-- `excluded_tools = Some(list)` -- any tool whose ID matches a literal or glob entry is removed, even if it was in the allow list.
+- `excluded_tools = Some(list)` -- any tool whose ID matches a literal or tool-id pattern entry is removed, even if it was in the allow list.
 - `excluded_tools = None` -- no additional tools are removed.
 
 ## ExecutionEnv

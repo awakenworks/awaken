@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import type { ToolInfo } from "@/lib/config-api";
 import {
   applyToolSelectionMode,
+  catalogEntryInspections,
   groupSelectionState,
   groupToolsBySource,
   isLegacyCatalogValue,
@@ -9,8 +10,10 @@ import {
   isToolSelectionPatternBacked,
   toolSelectionPattern,
   nextAllowedTools,
+  removeCatalogEntry,
   setGroupSelection,
   toolSelectionMode,
+  type CatalogEntryInspection,
   type CatalogVariant,
   type ToolSelectionMode,
 } from "@/lib/agent-tool-selection";
@@ -99,6 +102,10 @@ export function ToolSelector({
   const derivedMode = toolSelectionMode(value, variant);
   const mode = modeOverride ?? derivedMode;
   const labels = LABELS_BY_VARIANT[variant];
+  const catalogEntries = useMemo(
+    () => catalogEntryInspections(value, allToolIds, variant),
+    [allToolIds, value, variant],
+  );
 
   useEffect(() => {
     if (!modeOverride) return;
@@ -132,6 +139,10 @@ export function ToolSelector({
       return;
     }
     onChange(setGroupSelection(value, allToolIds, groupToolIds, selected, variant));
+  }
+
+  function removeEntry(entry: string) {
+    onChange(removeCatalogEntry(value, entry));
   }
 
   const legacy = isLegacyCatalogValue(value);
@@ -233,7 +244,7 @@ export function ToolSelector({
 
           {filteredGroups.length === 0 ? (
             <div className="mt-4 rounded-md border border-dashed border-line px-4 py-3 text-sm text-fg-soft">
-              No tools match the current search.
+              {tools.length === 0 ? "No tools are currently published." : "No tools match the current search."}
             </div>
           ) : (
             <div className="mt-4 space-y-5">
@@ -268,7 +279,7 @@ export function ToolSelector({
                           disabled={hasPatternBackedSelection}
                           title={
                             hasPatternBackedSelection
-                              ? "This group includes glob-matched entries that cannot be cleared here."
+                              ? "This group includes pattern-backed entries that cannot be cleared here."
                               : undefined
                           }
                           className="rounded-md border border-line-strong bg-surface px-2 py-1 text-fg-soft hover:bg-muted"
@@ -287,7 +298,7 @@ export function ToolSelector({
                             key={tool.id}
                             title={
                               patternBacked
-                                ? `Matched by glob pattern \`${matchingPattern}\` — edit that entry in the raw config to change it.`
+                                ? `Matched by tool-id pattern \`${matchingPattern}\`.`
                                 : undefined
                             }
                             className={[
@@ -330,8 +341,64 @@ export function ToolSelector({
       ) : (
         <p className="mt-4 text-sm text-fg-soft">{labels.allBody}</p>
       )}
+      {catalogEntries.length > 0 ? (
+        <CatalogEntryList entries={catalogEntries} onRemove={removeEntry} />
+      ) : null}
     </section>
   );
+}
+
+function CatalogEntryList({
+  entries,
+  onRemove,
+}: {
+  entries: CatalogEntryInspection[];
+  onRemove: (entry: string) => void;
+}) {
+  return (
+    <div className="mt-4 rounded-md border border-line bg-soft p-4">
+      <div className="text-sm font-semibold text-fg-strong">Pattern / unmanaged catalog entries</div>
+      <div className="mt-3 space-y-2">
+        {entries.map((entry) => (
+          <div
+            key={entry.entry}
+            className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-line bg-surface px-3 py-2 text-sm"
+          >
+            <div className="min-w-0">
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="font-mono text-xs text-fg-strong">{entry.entry}</span>
+                {entry.usesWildcard ? (
+                  <span className="rounded-pill bg-muted px-1.5 text-[10px] font-medium text-fg-soft">
+                    wildcard
+                  </span>
+                ) : null}
+                {!entry.exactToolExists ? (
+                  <span className="rounded-pill bg-muted px-1.5 text-[10px] font-medium text-fg-soft">
+                    unmanaged
+                  </span>
+                ) : null}
+              </div>
+              <div className="mt-1 text-xs text-fg-soft">{catalogEntryMatchSummary(entry)}</div>
+            </div>
+            <button
+              type="button"
+              onClick={() => onRemove(entry.entry)}
+              className="rounded-md border border-line-strong bg-surface px-2 py-1 text-xs font-medium text-fg-soft hover:bg-muted"
+            >
+              Remove
+            </button>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function catalogEntryMatchSummary(entry: CatalogEntryInspection): string {
+  if (entry.matches.length === 0) return "No current tool matches";
+  const shown = entry.matches.slice(0, 4).join(", ");
+  const remaining = entry.matches.length - 4;
+  return remaining > 0 ? `Matches ${shown} +${remaining} more` : `Matches ${shown}`;
 }
 
 function ModeRadio({

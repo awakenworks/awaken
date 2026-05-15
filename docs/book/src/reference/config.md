@@ -74,6 +74,12 @@ Legacy `null` / missing values should be migrated to explicit values:
 | `allowed_tools`  | Allow all                 | `["*"]`              |
 | `excluded_tools` | Exclude none / block none | `[]`                 |
 
+Migration note: before catalog tool-id patterns were introduced, catalog
+entries were exact strings. Any existing entry containing an unescaped `*`
+now has wildcard semantics. Escape literal stars as `\*` before upgrading if
+the intended tool id contains a real `*`, and review entries such as `mcp:*`
+or `Bash*` because they may expose or remove more tools than before.
+
 Catalog entries are **tool-id patterns**, not filesystem globs. Tool ids are
 opaque strings, so `/`, `:`, and `_` are ordinary characters — `mcp:*` will
 match `mcp:weather/forecast`, and `tool/id/*` will match `tool/id/foo/bar`.
@@ -101,15 +107,17 @@ The Admin Console parity test
 oracle (`crates/awaken-tool-pattern/tests/catalog_glob_parity.rs`) share a
 single fixture; add cases there when reasoning about edge behavior.
 
-The Admin Console preserves existing pattern entries and marks tools selected
-by those entries as pattern-backed. The checkbox UI edits literal tool IDs;
-edit the JSON payload or raw config to change or remove pattern entries.
+The Admin Console preserves existing pattern/unmanaged entries, lists entries
+that are not a current exact tool id, shows which current tools they match, and
+allows removing stale entries directly from the Tools tab. Tools selected by a
+pattern are marked as pattern-backed; checkbox edits only add or remove literal
+current tool ids.
 
-When a non-empty catalog pattern matches no currently available tools, the
+When a non-empty catalog pattern matches no registered catalog tool, the
 resolver logs:
 
 ```text
-WARN catalog pattern matches no available tools — check the tool id or wildcard
+WARN catalog pattern matches no registered tools — check the tool id or wildcard
      agent_id=<id> field=<allowed_tools|excluded_tools> pattern=<pattern>
 ```
 

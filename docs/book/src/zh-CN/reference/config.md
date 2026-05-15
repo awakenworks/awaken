@@ -61,7 +61,7 @@ fn set_config<K: PluginConfigKey>(&mut self, config: K::Config) -> Result<(), St
 | `allowed_tools: []`        | 不允许任何工具                                         |
 | `excluded_tools: ["*"]`    | 在 allow-list 应用后阻断全部工具                       |
 | `excluded_tools: []`       | 不额外阻断任何工具                                     |
-| `["a", "mcp__*"]`         | 子集；条目可以是字面 tool id 或 wildcard（`*`）        |
+| `["a", "mcp__*"]`         | 子集；条目可以是字面 tool id 或 tool-id pattern        |
 
 旧的 `null` / 缺失值应迁移为显式值：
 
@@ -69,6 +69,11 @@ fn set_config<K: PluginConfigKey>(&mut self, config: K::Config) -> Result<(), St
 |------------------|---------------------------|------------|
 | `allowed_tools`  | 允许全部工具              | `["*"]`    |
 | `excluded_tools` | 不排除任何工具 / block none | `[]`       |
+
+迁移说明：引入 catalog tool-id pattern 之前，catalog 条目是精确字符串。
+现有条目中未转义的 `*` 现在具有 wildcard 语义。如果真实 tool id 包含字面
+`*`，升级前请写成 `\*`；也请检查 `mcp:*`、`Bash*` 等条目，因为它们可能
+暴露或移除比以前更多的工具。
 
 Catalog 条目是 **tool-id pattern**，不是文件系统 glob。Tool id 是不透明
 字符串，所以 `/`、`:`、`_` 都是普通字符——`mcp:*` 会匹配
@@ -95,14 +100,15 @@ Admin Console 的 parity 测试（`apps/admin-console/src/lib/catalog-glob-parit
 与 runtime oracle（`crates/awaken-tool-pattern/tests/catalog_glob_parity.rs`）
 共用同一份 fixture——边缘语义请在那里新增 case。
 
-Admin Console 会保留已有 pattern 条目，并把由这些条目选中的工具标记为
-pattern-backed。复选框 UI 只编辑字面 tool id；修改或删除 pattern 条目需要编辑
-JSON payload 或原始配置。
+Admin Console 会保留已有 pattern / unmanaged 条目，列出不是当前精确 tool id
+的条目，显示它们当前匹配了哪些工具，并允许在 Tools tab 里直接删除 stale
+条目。由 pattern 选中的工具会标记为 pattern-backed；复选框 UI 只新增或移除
+当前字面 tool id。
 
-当非空 catalog pattern 没有匹配到当前可用工具时，resolver 会输出：
+当非空 catalog pattern 没有匹配到已注册 catalog 工具时，resolver 会输出：
 
 ```text
-WARN catalog pattern matches no available tools — check the tool id or wildcard
+WARN catalog pattern matches no registered tools — check the tool id or wildcard
      agent_id=<id> field=<allowed_tools|excluded_tools> pattern=<pattern>
 ```
 

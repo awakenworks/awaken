@@ -2,7 +2,7 @@
 ///
 ///   ["*"]            - explicit all-pattern (matches every tool)
 ///   []               - explicit empty (matches nothing)
-///   ["a", "b*"]      - subset; entries may be literal ids or globs
+///   ["a", "b*"]      - subset; entries may be literal ids or tool-id patterns
 ///   null / undefined - deprecated legacy value; save migrates to explicit form
 ///
 /// The legacy `null`/`undefined` shape is retained for read compatibility
@@ -23,6 +23,22 @@ export function isLegacyCatalogValue(value: string[] | null | undefined): boolea
 
 export function isExplicitAll(value: string[] | null | undefined): boolean {
   return Array.isArray(value) && value.length === 1 && value[0] === EXPLICIT_ALL;
+}
+
+export function hasUnescapedCatalogWildcard(entry: string): boolean {
+  let escaped = false;
+  for (const char of entry) {
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (char === "\\") {
+      escaped = true;
+      continue;
+    }
+    if (char === EXPLICIT_ALL) return true;
+  }
+  return false;
 }
 
 /// Match a tool-id pattern against a literal tool id. Mirrors the runtime's
@@ -82,6 +98,47 @@ export function toolIdMatch(pattern: string, value: string): boolean {
 
 function isKnownToolId(entry: string, allToolIds: string[]): boolean {
   return allToolIds.includes(entry);
+}
+
+export interface CatalogEntryInspection {
+  entry: string;
+  exactToolExists: boolean;
+  usesWildcard: boolean;
+  matches: string[];
+}
+
+export function catalogEntryInspections(
+  value: string[] | null | undefined,
+  allToolIds: string[],
+  variant: CatalogVariant = "include",
+): CatalogEntryInspection[] {
+  if (!Array.isArray(value)) return [];
+  if (variant === "include" && isExplicitAll(value)) return [];
+
+  const seen = new Set<string>();
+  const entries: CatalogEntryInspection[] = [];
+  for (const entry of value) {
+    if (seen.has(entry)) continue;
+    seen.add(entry);
+    const usesWildcard = hasUnescapedCatalogWildcard(entry);
+    const exactToolExists = isKnownToolId(entry, allToolIds);
+    if (exactToolExists && !usesWildcard) continue;
+    entries.push({
+      entry,
+      exactToolExists,
+      usesWildcard,
+      matches: allToolIds.filter((toolId) => toolIdMatch(entry, toolId)),
+    });
+  }
+  return entries;
+}
+
+export function removeCatalogEntry(
+  value: string[] | null | undefined,
+  entry: string,
+): string[] {
+  if (!Array.isArray(value)) return [];
+  return value.filter((candidate) => candidate !== entry);
 }
 
 export function isToolAllowed(

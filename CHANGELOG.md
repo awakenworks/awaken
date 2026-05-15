@@ -7,6 +7,15 @@ Format follows [Keep a Changelog](https://keepachangelog.com/). Versions use [Se
 
 Development work lands here before the next versioned release.
 
+### Changed
+
+- Tool catalog semantics: `AgentSpec.allowed_tools` / `excluded_tools` now use explicit catalog
+  values: `["*"]` for allow-all, `[]` for block-none on `excluded_tools`, and
+  tool-id patterns matched by `awaken_tool_pattern::tool_id_match`. Existing
+  catalog entries containing an unescaped `*` change from exact-string matching
+  to wildcard matching; escape literal stars as `\*` when a real tool id
+  contains `*`.
+
 ## [0.5.0] - 2026-05-10
 
 The headline work since 0.4.0: every config record now flows through a CAS

@@ -24,10 +24,10 @@ use awaken_contract::registry_spec::AgentSpec;
 /// Argument-level expressions (`Bash(npm *)`) belong in the permission plugin
 /// (`sections.permission`) and have no meaning here.
 pub(super) fn filter_tools(tools: &mut HashMap<String, Arc<dyn Tool>>, spec: &AgentSpec) {
+    let original_tool_ids: Vec<String> = tools.keys().cloned().collect();
     if let Some(allow) = &spec.allowed_tools {
         warn_catalog_argument_patterns(&spec.id, "allowed_tools", allow);
-        let available_tool_ids: Vec<String> = tools.keys().cloned().collect();
-        warn_unmatched_catalog_patterns(&spec.id, "allowed_tools", allow, &available_tool_ids);
+        warn_unmatched_catalog_patterns(&spec.id, "allowed_tools", allow, &original_tool_ids);
         tools.retain(|id, _| catalog_pattern_matches(allow, id));
     } else {
         warn_legacy_allow_all(&spec.id);
@@ -35,8 +35,7 @@ pub(super) fn filter_tools(tools: &mut HashMap<String, Arc<dyn Tool>>, spec: &Ag
 
     if let Some(exclude) = &spec.excluded_tools {
         warn_catalog_argument_patterns(&spec.id, "excluded_tools", exclude);
-        let available_tool_ids: Vec<String> = tools.keys().cloned().collect();
-        warn_unmatched_catalog_patterns(&spec.id, "excluded_tools", exclude, &available_tool_ids);
+        warn_unmatched_catalog_patterns(&spec.id, "excluded_tools", exclude, &original_tool_ids);
         tools.retain(|id, _| !catalog_pattern_matches(exclude, id));
     }
 }
@@ -66,10 +65,16 @@ fn warn_catalog_argument_patterns(agent_id: &str, field: &str, patterns: &[Strin
 }
 
 pub(super) fn is_argument_level_catalog_pattern(pattern: &str) -> bool {
-    // Heuristic: `(` at this layer is almost always a misplaced permission-rule
-    // pattern such as `Bash(npm *)`. A literal `(` in a real tool id is rare
-    // enough that a stray warning is acceptable.
-    pattern.contains('(')
+    let Ok(parsed) = awaken_tool_pattern::parse_pattern(pattern) else {
+        return false;
+    };
+    match parsed.args {
+        awaken_tool_pattern::ArgMatcher::Any => false,
+        awaken_tool_pattern::ArgMatcher::Fields(_) => true,
+        awaken_tool_pattern::ArgMatcher::Primary { value, .. } => {
+            value.chars().any(|ch| matches!(ch, '*' | '?' | '[' | ']')) || value.contains(' ')
+        }
+    }
 }
 
 pub(super) fn unmatched_catalog_patterns(patterns: &[String], tool_ids: &[String]) -> Vec<String> {
@@ -99,7 +104,7 @@ fn warn_unmatched_catalog_patterns(
             agent_id = %agent_id,
             field = %field,
             pattern = %pattern,
-            "catalog pattern matches no available tools — check the tool id or wildcard"
+            "catalog pattern matches no registered tools — check the tool id or wildcard"
         );
     }
 }

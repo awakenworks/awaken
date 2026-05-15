@@ -388,7 +388,7 @@ describe("ToolSelector — glob-backed selections", () => {
 
     expect(forecastCheckbox.checked).toBe(true);
     expect(forecastCheckbox.disabled).toBe(true);
-    expect(screen.getByText("mcp:weather/*")).toBeTruthy();
+    expect(screen.getAllByText("mcp:weather/*").length).toBeGreaterThan(0);
 
     act(() => {
       fireEvent.click(forecastCheckbox);
@@ -437,6 +437,40 @@ describe("ToolSelector — glob-backed selections", () => {
     });
 
     expect(props.onChange).not.toHaveBeenCalled();
+  });
+});
+
+describe("ToolSelector — pattern / unmanaged catalog entries", () => {
+  it("lists unmatched catalog entries and removes them by raw value", () => {
+    const { props } = renderSelector({ value: ["Bash", "stale:*"] });
+
+    expect(screen.getByText("Pattern / unmanaged catalog entries")).toBeTruthy();
+    expect(screen.getByText("stale:*")).toBeTruthy();
+    expect(screen.getByText("No current tool matches")).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "Remove" }));
+
+    expect(props.onChange).toHaveBeenCalledWith(["Bash"]);
+  });
+
+  it("shows matching tools for wildcard entries", () => {
+    renderSelector({ value: ["mcp:weather/*"] });
+
+    expect(screen.getByText("Pattern / unmanaged catalog entries")).toBeTruthy();
+    expect(screen.getAllByText("mcp:weather/*").length).toBeGreaterThan(0);
+    expect(screen.getByText(/Matches mcp:weather\/forecast/)).toBeTruthy();
+  });
+
+  it("keeps catalog controls visible when no tools are published", () => {
+    const { props } = renderSelector({ value: ["stale:*"], tools: [] });
+
+    expect(screen.getByText("Allowed Tools")).toBeTruthy();
+    expect(screen.getAllByText("No tools are currently published.").length).toBeGreaterThan(0);
+    expect(screen.getByText("stale:*")).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "Remove" }));
+
+    expect(props.onChange).toHaveBeenCalledWith([]);
   });
 });
 

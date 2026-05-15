@@ -2,13 +2,16 @@ import { describe, expect, it } from "vitest";
 
 import {
   applyToolSelectionMode,
+  catalogEntryInspections,
   groupSelectionState,
   groupToolsBySource,
+  hasUnescapedCatalogWildcard,
   isExplicitAll,
   isLegacyCatalogValue,
   isToolAllowed,
   isToolSelectionPatternBacked,
   nextAllowedTools,
+  removeCatalogEntry,
   setGroupSelection,
   toolSelectionMode,
   toolSelectionPattern,
@@ -102,6 +105,51 @@ describe("isExplicitAll / isLegacyCatalogValue", () => {
     expect(isLegacyCatalogValue(undefined)).toBe(true);
     expect(isLegacyCatalogValue(["*"])).toBe(false);
     expect(isLegacyCatalogValue([])).toBe(false);
+  });
+});
+
+describe("catalogEntryInspections", () => {
+  it("lists stale exact entries and wildcard entries", () => {
+    expect(
+      catalogEntryInspections(["Bash", "OldTool", "mcp:*"], [
+        "Bash",
+        "mcp:weather/forecast",
+        "mcp:db/query",
+      ]),
+    ).toEqual([
+      {
+        entry: "OldTool",
+        exactToolExists: false,
+        usesWildcard: false,
+        matches: [],
+      },
+      {
+        entry: "mcp:*",
+        exactToolExists: false,
+        usesWildcard: true,
+        matches: ["mcp:weather/forecast", "mcp:db/query"],
+      },
+    ]);
+  });
+
+  it("does not hide exact current tool ids that contain an unescaped wildcard", () => {
+    expect(catalogEntryInspections(["tool*id"], ["tool*id", "toolXid"])).toEqual([
+      {
+        entry: "tool*id",
+        exactToolExists: true,
+        usesWildcard: true,
+        matches: ["tool*id", "toolXid"],
+      },
+    ]);
+  });
+
+  it("recognises escaped literal star entries", () => {
+    expect(hasUnescapedCatalogWildcard("\\*literal")).toBe(false);
+    expect(hasUnescapedCatalogWildcard("*literal")).toBe(true);
+  });
+
+  it("removes raw catalog entries without expanding patterns", () => {
+    expect(removeCatalogEntry(["Bash", "mcp:*", "Read"], "mcp:*")).toEqual(["Bash", "Read"]);
   });
 });
 

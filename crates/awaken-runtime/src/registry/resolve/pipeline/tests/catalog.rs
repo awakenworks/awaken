@@ -172,14 +172,15 @@ fn catalog_tool_id_match_handles_basic_wildcards() {
 }
 
 #[test]
-fn catalog_argument_pattern_detection_flags_parens() {
+fn catalog_argument_pattern_detection_flags_permission_style_args() {
     assert!(!is_argument_level_catalog_pattern("Bash"));
     assert!(!is_argument_level_catalog_pattern("mcp__github__*"));
+    assert!(!is_argument_level_catalog_pattern("literal(paren)"));
+    assert!(!is_argument_level_catalog_pattern("Bash(npm *"));
     assert!(is_argument_level_catalog_pattern("Bash(npm *)"));
     assert!(is_argument_level_catalog_pattern(
         r#"Edit(file_path ~ "src/**/*.rs")"#
     ));
-    assert!(is_argument_level_catalog_pattern("Bash(npm *"));
 }
 
 #[test]

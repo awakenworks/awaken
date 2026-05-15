@@ -123,9 +123,9 @@ flowchart LR
 
 - `allowed_tools = Some(["*"])` -- 保留所有工具。
 - `allowed_tools = Some([])` -- 移除所有工具。
-- `allowed_tools = Some(list)` -- 仅保留 ID 匹配字面条目或 glob 条目的工具。
+- `allowed_tools = Some(list)` -- 仅保留 ID 匹配字面条目或 tool-id pattern 条目的工具。
 - `allowed_tools = None` -- 已废弃的旧 allow-all 语义。
-- `excluded_tools = Some(list)` -- 任何 ID 匹配字面条目或 glob 条目的工具都会被移除，即使它在允许列表中。
+- `excluded_tools = Some(list)` -- 任何 ID 匹配字面条目或 tool-id pattern 条目的工具都会被移除，即使它在允许列表中。
 - `excluded_tools = None` -- 不额外移除任何工具。
 
 ## ExecutionEnv

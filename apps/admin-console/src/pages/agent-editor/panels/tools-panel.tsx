@@ -19,14 +19,7 @@ export function ToolsPanel({
   onResetField?: (field: string) => void;
   children?: ReactNode;
 }) {
-  if (!capabilities || capabilities.tools.length === 0) {
-    return (
-      <div className="rounded-md border border-dashed border-line bg-surface p-6 text-sm text-fg-soft">
-        No tools are currently published. Once plugins or MCP servers register tools, they will
-        appear here.
-      </div>
-    );
-  }
+  const tools = capabilities?.tools ?? [];
   const resetProps = (field: "allowed_tools" | "excluded_tools") => {
     if (!canResetFields || !overriddenFields?.has(field) || !onResetField) {
       return {};
@@ -39,10 +32,15 @@ export function ToolsPanel({
   };
   return (
     <div className="space-y-6">
+      {tools.length === 0 ? (
+        <div className="rounded-md border border-dashed border-line bg-surface p-4 text-sm text-fg-soft">
+          No tools are currently published.
+        </div>
+      ) : null}
       <ToolSelector
         title="Allowed Tools"
         description='"All tools" is the default — every published tool is exposed. Switch to Custom to restrict the agent to a specific subset.'
-        tools={capabilities.tools}
+        tools={tools}
         value={spec.allowed_tools}
         onChange={(next) => updateField("allowed_tools", next)}
         variant="include"
@@ -51,7 +49,7 @@ export function ToolsPanel({
       <ToolSelector
         title="Excluded Tools"
         description="Excluded tools are removed from the effective allow-list, even if they appear in 'All tools'. Useful for keeping a tool published to other agents but blocking it here."
-        tools={capabilities.tools}
+        tools={tools}
         value={spec.excluded_tools}
         onChange={(next) => updateField("excluded_tools", next)}
         variant="exclude"
