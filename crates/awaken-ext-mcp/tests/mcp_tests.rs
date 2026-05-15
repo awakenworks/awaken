@@ -80,7 +80,7 @@ impl McpToolTransport for FakeTransport {
         &self,
         name: &str,
         args: Value,
-        _progress_tx: Option<mpsc::UnboundedSender<McpProgressUpdate>>,
+        _progress_tx: Option<mpsc::Sender<McpProgressUpdate>>,
         _context: awaken_ext_mcp::McpCallContext,
     ) -> Result<CallToolResult, McpTransportError> {
         self.calls.lock().unwrap().push((name.to_string(), args));
@@ -105,20 +105,62 @@ impl McpToolTransport for FakeProgressTransport {
         &self,
         _name: &str,
         _args: Value,
-        progress_tx: Option<mpsc::UnboundedSender<McpProgressUpdate>>,
+        progress_tx: Option<mpsc::Sender<McpProgressUpdate>>,
         _context: awaken_ext_mcp::McpCallContext,
     ) -> Result<CallToolResult, McpTransportError> {
         if let Some(progress_tx) = progress_tx {
-            let _ = progress_tx.send(McpProgressUpdate {
+            let _ = progress_tx.try_send(McpProgressUpdate {
                 progress: 3.0,
                 total: Some(10.0),
                 message: Some("working".to_string()),
             });
-            let _ = progress_tx.send(McpProgressUpdate {
+            let _ = progress_tx.try_send(McpProgressUpdate {
                 progress: 10.0,
                 total: Some(10.0),
                 message: Some("done".to_string()),
             });
+        }
+        Ok(ok_text_result("ok"))
+    }
+
+    fn transport_type(&self) -> TransportTypeId {
+        TransportTypeId::Stdio
+    }
+}
+
+#[derive(Debug, Clone)]
+struct FakeProgressFloodTransport {
+    attempted: Arc<AtomicUsize>,
+    accepted: Arc<AtomicUsize>,
+}
+
+#[async_trait]
+impl McpToolTransport for FakeProgressFloodTransport {
+    async fn list_tools(&self) -> Result<Vec<McpToolDefinition>, McpTransportError> {
+        Ok(vec![McpToolDefinition::new("echo")])
+    }
+
+    async fn call_tool(
+        &self,
+        _name: &str,
+        _args: Value,
+        progress_tx: Option<mpsc::Sender<McpProgressUpdate>>,
+        _context: awaken_ext_mcp::McpCallContext,
+    ) -> Result<CallToolResult, McpTransportError> {
+        if let Some(progress_tx) = progress_tx {
+            for i in 0..10_000usize {
+                self.attempted.fetch_add(1, Ordering::SeqCst);
+                if progress_tx
+                    .try_send(McpProgressUpdate {
+                        progress: i as f64,
+                        total: Some(10_000.0),
+                        message: None,
+                    })
+                    .is_ok()
+                {
+                    self.accepted.fetch_add(1, Ordering::SeqCst);
+                }
+            }
         }
         Ok(ok_text_result("ok"))
     }
@@ -143,7 +185,7 @@ impl McpToolTransport for FakeStructuredTransport {
         &self,
         _name: &str,
         _args: Value,
-        _progress_tx: Option<mpsc::UnboundedSender<McpProgressUpdate>>,
+        _progress_tx: Option<mpsc::Sender<McpProgressUpdate>>,
         _context: awaken_ext_mcp::McpCallContext,
     ) -> Result<CallToolResult, McpTransportError> {
         Ok(self.result.clone())
@@ -243,7 +285,7 @@ impl McpToolTransport for FakeCatalogTransport {
         &self,
         _name: &str,
         _args: Value,
-        _progress_tx: Option<mpsc::UnboundedSender<McpProgressUpdate>>,
+        _progress_tx: Option<mpsc::Sender<McpProgressUpdate>>,
         _context: awaken_ext_mcp::McpCallContext,
     ) -> Result<CallToolResult, McpTransportError> {
         Ok(ok_text_result("ok"))
@@ -269,6 +311,7 @@ impl McpToolTransport for FakeCatalogTransport {
 struct FakeUiTransport {
     tools: Vec<McpToolDefinition>,
     resources: HashMap<String, (String, String)>, // uri -> (text, mimeType)
+    read_delay: Option<Duration>,
 }
 
 impl FakeUiTransport {
@@ -276,6 +319,7 @@ impl FakeUiTransport {
         Self {
             tools,
             resources: HashMap::new(),
+            read_delay: None,
         }
     }
 
@@ -287,6 +331,11 @@ impl FakeUiTransport {
     ) -> Self {
         self.resources
             .insert(uri.into(), (text.into(), mime.into()));
+        self
+    }
+
+    fn with_read_delay(mut self, delay: Duration) -> Self {
+        self.read_delay = Some(delay);
         self
     }
 }
@@ -301,7 +350,7 @@ impl McpToolTransport for FakeUiTransport {
         &self,
         _name: &str,
         _args: Value,
-        _progress_tx: Option<mpsc::UnboundedSender<McpProgressUpdate>>,
+        _progress_tx: Option<mpsc::Sender<McpProgressUpdate>>,
         _context: awaken_ext_mcp::McpCallContext,
     ) -> Result<CallToolResult, McpTransportError> {
         Ok(ok_text_result("ok"))
@@ -312,6 +361,9 @@ impl McpToolTransport for FakeUiTransport {
     }
 
     async fn read_resource(&self, uri: &str) -> Result<Value, McpTransportError> {
+        if let Some(delay) = self.read_delay {
+            tokio::time::sleep(delay).await;
+        }
         match self.resources.get(uri) {
             Some((text, mime)) => Ok(json!({
                 "contents": [{"uri": uri, "text": text, "mimeType": mime}]
@@ -858,6 +910,31 @@ async fn mcp_tool_forwards_progress_to_activity_reports() {
 }
 
 #[tokio::test]
+async fn mcp_tool_progress_flood_is_bounded_and_non_fatal() {
+    let attempted = Arc::new(AtomicUsize::new(0));
+    let accepted = Arc::new(AtomicUsize::new(0));
+    let transport = Arc::new(FakeProgressFloodTransport {
+        attempted: Arc::clone(&attempted),
+        accepted: Arc::clone(&accepted),
+    }) as Arc<dyn McpToolTransport>;
+    let manager = McpToolRegistryManager::from_transports([(cfg("s1"), transport)])
+        .await
+        .unwrap();
+    let reg = manager.registry();
+    let tool = reg.get("mcp__s1__echo").unwrap();
+
+    let ctx = ToolCallContext::test_default();
+    let result = tool.execute(json!({}), &ctx).await.unwrap();
+
+    assert!(result.result.is_success());
+    assert_eq!(attempted.load(Ordering::SeqCst), 10_000);
+    assert!(
+        accepted.load(Ordering::SeqCst) < attempted.load(Ordering::SeqCst),
+        "progress sender should apply bounded backpressure/drop instead of buffering flood"
+    );
+}
+
+#[tokio::test]
 async fn structured_mcp_results_are_preserved_in_tool_output() {
     let transport = Arc::new(FakeStructuredTransport {
         result: CallToolResult {
@@ -1075,7 +1152,7 @@ async fn manager_keeps_unsupported_fallback_when_capabilities_are_unknown() {
             &self,
             _name: &str,
             _args: Value,
-            _progress_tx: Option<mpsc::UnboundedSender<McpProgressUpdate>>,
+            _progress_tx: Option<mpsc::Sender<McpProgressUpdate>>,
             _context: awaken_ext_mcp::McpCallContext,
         ) -> Result<CallToolResult, McpTransportError> {
             Ok(ok_text_result("ok"))
@@ -1337,6 +1414,51 @@ async fn mcp_tool_execute_ui_fetch_failure_non_fatal() {
     assert!(result.result.is_success());
     // UI content should not be present when fetch fails
     assert!(!result.result.metadata.contains_key("mcp.ui.content"));
+    let status = manager.server_status_snapshot("s1").await.unwrap();
+    assert_eq!(
+        status.consecutive_failures, 0,
+        "optional UI resource hydration failures must not pollute MCP runtime health"
+    );
+}
+
+#[tokio::test]
+async fn mcp_tool_execute_ui_fetch_timeout_non_fatal() {
+    let mut def = McpToolDefinition::new("slow_ui");
+    def.meta = Some(json!({"ui": {"resourceUri": "ui://slow/render"}}));
+
+    let transport = Arc::new(
+        FakeUiTransport::new(vec![def.clone()])
+            .with_resource("ui://slow/render", "<html>slow</html>", "text/html")
+            .with_read_delay(Duration::from_secs(2)),
+    );
+    let manager = McpToolRegistryManager::from_transports([(
+        cfg("s1"),
+        transport as Arc<dyn McpToolTransport>,
+    )])
+    .await
+    .unwrap();
+    let reg = manager.registry();
+    let tool_id = reg
+        .ids()
+        .into_iter()
+        .find(|id| id.contains("slow_ui"))
+        .expect("slow_ui tool");
+    let tool = reg.get(&tool_id).unwrap();
+
+    let started = Instant::now();
+    let result = tool
+        .execute(json!({}), &ToolCallContext::test_default())
+        .await
+        .unwrap();
+
+    assert!(result.result.is_success());
+    assert!(!result.result.metadata.contains_key("mcp.ui.content"));
+    assert!(
+        started.elapsed() < Duration::from_secs(1),
+        "optional UI hydration should not stall the tool result hot path"
+    );
+    let status = manager.server_status_snapshot("s1").await.unwrap();
+    assert_eq!(status.consecutive_failures, 0);
 }
 
 #[tokio::test]
@@ -1507,7 +1629,7 @@ async fn mcp_tool_returns_error_for_transport_call_failure() {
             &self,
             _name: &str,
             _args: Value,
-            _progress_tx: Option<mpsc::UnboundedSender<McpProgressUpdate>>,
+            _progress_tx: Option<mpsc::Sender<McpProgressUpdate>>,
             _context: awaken_ext_mcp::McpCallContext,
         ) -> Result<CallToolResult, McpTransportError> {
             Err(McpTransportError::TransportError(
@@ -4962,7 +5084,7 @@ async fn manager_uses_live_capabilities_after_http_silent_reinitialize() {
 }
 
 #[tokio::test]
-async fn http_call_tool_with_is_error_result_returns_server_error() {
+async fn http_call_tool_with_is_error_result_returns_tool_error_result() {
     let (endpoint, server) = spawn_http_server(Arc::new(|request| {
         if request.method == "GET" {
             return HttpResponseSpec::text(405, "no listening stream");
@@ -4997,15 +5119,22 @@ async fn http_call_tool_with_is_error_result_returns_server_error() {
     let tool = registry.get(&tool_id).unwrap();
 
     let ctx = ToolCallContext::test_default();
-    let err = tool
+    let output = tool
         .execute(json!({"message":"x"}), &ctx)
         .await
-        .expect_err("should fail");
+        .expect("MCP tool execution errors are successful JSON-RPC results");
     server.abort();
-    assert!(matches!(
-        err,
-        awaken_contract::contract::tool::ToolError::ExecutionFailed(_)
-    ));
+    assert!(output.result.is_error());
+    assert_eq!(output.result.data, Value::String("tool failed".to_string()));
+    assert_eq!(output.result.message.as_deref(), Some("tool failed"));
+    assert_eq!(
+        output.result.metadata["mcp.result.isError"],
+        Value::Bool(true)
+    );
+    assert_eq!(
+        output.result.metadata["mcp.result.content"],
+        json!([{"type": "text", "text": "tool failed"}])
+    );
 }
 
 #[tokio::test]

@@ -10,9 +10,10 @@ use crate::manager::McpToolRegistry;
 /// Takes a snapshot of the [`McpToolRegistry`] at `register()` time and registers
 /// each discovered MCP tool through the [`PluginRegistrar`].
 ///
-/// **Known limitation**: tools are snapshotted once during `register()`. If MCP
-/// servers add or remove tools after registration (e.g. via periodic refresh),
-/// those changes will not be reflected until the next resolve cycle.
+/// **Known limitation**: tools are snapshotted once during `register()`. The
+/// underlying manager registry can refresh in response to periodic refresh or
+/// `notifications/tools/list_changed`, but an already-built awaken runtime
+/// keeps its registered tool set until the next resolve/register cycle.
 pub struct McpPlugin {
     registry: McpToolRegistry,
 }
@@ -49,7 +50,7 @@ mod tests {
     use mcp::transport::{McpTransportError, ServerCapabilities, TransportTypeId};
     use mcp::{CallToolResult, McpToolDefinition};
     use serde_json::{Value, json};
-    use std::sync::Arc;
+    use std::sync::{Arc, Mutex};
     use tokio::sync::mpsc;
 
     #[derive(Debug, Default)]
@@ -63,6 +64,23 @@ mod tests {
         }
     }
 
+    #[derive(Debug, Default)]
+    struct MutableMockTransport {
+        tools: Arc<Mutex<Vec<McpToolDefinition>>>,
+    }
+
+    impl MutableMockTransport {
+        fn with_tools(tools: Vec<McpToolDefinition>) -> Self {
+            Self {
+                tools: Arc::new(Mutex::new(tools)),
+            }
+        }
+
+        fn set_tools(&self, tools: Vec<McpToolDefinition>) {
+            *self.tools.lock().unwrap() = tools;
+        }
+    }
+
     #[async_trait]
     impl McpToolTransport for MockTransport {
         async fn list_tools(&self) -> Result<Vec<McpToolDefinition>, McpTransportError> {
@@ -73,7 +91,7 @@ mod tests {
             &self,
             name: &str,
             _args: Value,
-            _progress_tx: Option<mpsc::UnboundedSender<McpProgressUpdate>>,
+            _progress_tx: Option<mpsc::Sender<McpProgressUpdate>>,
             _context: crate::transport::McpCallContext,
         ) -> Result<CallToolResult, McpTransportError> {
             Ok(CallToolResult {
@@ -95,6 +113,35 @@ mod tests {
             &self,
         ) -> Result<Option<ServerCapabilities>, McpTransportError> {
             Ok(None)
+        }
+    }
+
+    #[async_trait]
+    impl McpToolTransport for MutableMockTransport {
+        async fn list_tools(&self) -> Result<Vec<McpToolDefinition>, McpTransportError> {
+            Ok(self.tools.lock().unwrap().clone())
+        }
+
+        async fn call_tool(
+            &self,
+            name: &str,
+            _args: Value,
+            _progress_tx: Option<mpsc::Sender<McpProgressUpdate>>,
+            _context: crate::transport::McpCallContext,
+        ) -> Result<CallToolResult, McpTransportError> {
+            Ok(CallToolResult {
+                content: vec![mcp::ToolContent::Text {
+                    text: format!("called {name}"),
+                    annotations: None,
+                    meta: None,
+                }],
+                structured_content: None,
+                is_error: None,
+            })
+        }
+
+        fn transport_type(&self) -> TransportTypeId {
+            TransportTypeId::Stdio
         }
     }
 
@@ -185,5 +232,41 @@ mod tests {
 
         let tool_ids = registrar.tool_ids_for_test();
         assert_eq!(tool_ids.len(), 3, "expected 3 tools, got: {tool_ids:?}");
+    }
+
+    #[tokio::test]
+    async fn register_uses_current_registry_snapshot_per_resolve_cycle() {
+        let transport = Arc::new(MutableMockTransport::with_tools(vec![tool_def("alpha")]));
+        let manager = McpToolRegistryManager::from_transports([(
+            cfg("server_a"),
+            Arc::clone(&transport) as Arc<dyn McpToolTransport>,
+        )])
+        .await
+        .unwrap();
+        let plugin = McpPlugin::new(manager.registry());
+
+        let mut first_registrar = PluginRegistrar::new_for_test();
+        plugin.register(&mut first_registrar).unwrap();
+        assert_eq!(
+            first_registrar.tool_ids_for_test(),
+            vec!["mcp__server_a__alpha".to_string()]
+        );
+
+        transport.set_tools(vec![tool_def("beta")]);
+        manager.refresh().await.unwrap();
+
+        assert_eq!(
+            first_registrar.tool_ids_for_test(),
+            vec!["mcp__server_a__alpha".to_string()],
+            "an already-built runtime registrar is not mutated after MCP list_changed/refresh"
+        );
+
+        let mut second_registrar = PluginRegistrar::new_for_test();
+        plugin.register(&mut second_registrar).unwrap();
+        assert_eq!(
+            second_registrar.tool_ids_for_test(),
+            vec!["mcp__server_a__beta".to_string()],
+            "a new resolve/register cycle observes the refreshed MCP registry snapshot"
+        );
     }
 }

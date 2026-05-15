@@ -14,9 +14,9 @@
 //!   1. `MCP_E2E_SERVER_BIN` env var (path to a pre-installed
 //!      `mcp-server-everything` executable). Preferred in CI so each
 //!      test doesn't pay the `npx` startup cost.
-//!   2. Fallback to `npx -y @modelcontextprotocol/server-everything
-//!      stdio`. First run downloads (~5s); subsequent runs hit the
-//!      npm cache.
+//!   2. Fallback to the pinned `npx -y
+//!      @modelcontextprotocol/server-everything@2026.1.26 stdio`.
+//!      First run downloads (~5s); subsequent runs hit the npm cache.
 //!
 //! ## Scope
 //!
@@ -35,6 +35,7 @@ use std::time::{Duration, Instant};
 use tokio::process::{Child, Command};
 
 static E2E_SERVER_LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
+const SERVER_EVERYTHING_PACKAGE: &str = "@modelcontextprotocol/server-everything@2026.1.26";
 
 async fn e2e_server_lock() -> tokio::sync::MutexGuard<'static, ()> {
     E2E_SERVER_LOCK
@@ -53,7 +54,7 @@ fn server_command() -> (String, Vec<String>) {
         "npx".to_string(),
         vec![
             "-y".to_string(),
-            "@modelcontextprotocol/server-everything".to_string(),
+            SERVER_EVERYTHING_PACKAGE.to_string(),
             "stdio".to_string(),
         ],
     )
@@ -67,7 +68,7 @@ fn streamable_http_server_command() -> (String, Vec<String>) {
         "npx".to_string(),
         vec![
             "-y".to_string(),
-            "@modelcontextprotocol/server-everything".to_string(),
+            SERVER_EVERYTHING_PACKAGE.to_string(),
             "streamableHttp".to_string(),
         ],
     )

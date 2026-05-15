@@ -24,6 +24,18 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo test --workspace --locked
 
+  mcp-reference-e2e:
+    name: MCP Reference E2E
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.93.0
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - run: cargo test --locked -p awaken-ext-mcp --test e2e_server_everything -- --ignored --test-threads=1
+
   book-doctests:
     name: Book Doctests
     runs-on: ubuntu-latest

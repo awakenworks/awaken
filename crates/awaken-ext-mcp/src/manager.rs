@@ -9,7 +9,7 @@ use async_trait::async_trait;
 use awaken_contract::PeriodicRefresher;
 use awaken_contract::contract::progress::ProgressStatus;
 use awaken_contract::contract::tool::{
-    Tool, ToolCallContext, ToolDescriptor, ToolError, ToolOutput, ToolResult,
+    Tool, ToolCallContext, ToolDescriptor, ToolError, ToolOutput, ToolResult, ToolStatus,
 };
 use futures::future::join_all;
 use mcp::McpToolDefinition;
@@ -25,8 +25,9 @@ use crate::progress::{
 };
 use crate::sampling::{SamplingHandler, SamplingHandlerFactory};
 use crate::transport::{
-    CANCELLED_BY_CLIENT, McpPromptDefinition, McpPromptResult, McpResourceDefinition,
-    McpToolTransport, call_result_to_tool_data, connect_transport,
+    CANCELLED_BY_CLIENT, ListChangedKind, MCP_PROGRESS_CHANNEL_CAPACITY, McpPromptDefinition,
+    McpPromptResult, McpResourceDefinition, McpToolTransport, call_result_to_tool_data,
+    connect_transport,
 };
 
 // ── Metadata constants ──
@@ -39,9 +40,14 @@ const MCP_META_UI_CONTENT: &str = "mcp.ui.content";
 const MCP_META_UI_MIME_TYPE: &str = "mcp.ui.mimeType";
 const MCP_META_RESULT_CONTENT: &str = "mcp.result.content";
 const MCP_META_RESULT_STRUCTURED_CONTENT: &str = "mcp.result.structuredContent";
+const MCP_META_RESULT_IS_ERROR: &str = "mcp.result.isError";
 const FAILURE_THRESHOLD: u64 = 3;
 const MAX_RECONNECT_ATTEMPTS: u32 = 5;
 const RESOURCE_UPDATED_CHANNEL_CAPACITY: usize = 1024;
+
+fn ui_resource_hydration_timeout() -> Duration {
+    Duration::from_millis(500)
+}
 
 // ── Helper types ──
 
@@ -261,7 +267,7 @@ impl Tool for McpTool {
             McpRuntimeOpKind::Rpc,
             |_| Ok(()),
             move |runtime| async move {
-                let (progress_tx, mut progress_rx) = mpsc::unbounded_channel();
+                let (progress_tx, mut progress_rx) = mpsc::channel(MCP_PROGRESS_CHANNEL_CAPACITY);
                 let mut call = Box::pin(runtime.transport.call_tool(
                     &tool_name,
                     args,
@@ -299,7 +305,18 @@ impl Tool for McpTool {
         };
 
         let data = call_result_to_tool_data(&res);
-        let mut result = ToolResult::success(self.descriptor.id.clone(), data);
+        let mut result = if res.is_error == Some(true) {
+            ToolResult {
+                tool_name: self.descriptor.id.clone(),
+                status: ToolStatus::Error,
+                data,
+                message: Some(crate::transport::tool_result_error_text(&res)),
+                suspension: None,
+                metadata: HashMap::new(),
+            }
+        } else {
+            ToolResult::success(self.descriptor.id.clone(), data)
+        };
 
         result.metadata.insert(
             MCP_META_SERVER.to_string(),
@@ -321,6 +338,11 @@ impl Tool for McpTool {
             result
                 .metadata
                 .insert(MCP_META_RESULT_STRUCTURED_CONTENT.to_string(), structured);
+        }
+        if res.is_error == Some(true) {
+            result
+                .metadata
+                .insert(MCP_META_RESULT_IS_ERROR.to_string(), Value::Bool(true));
         }
 
         if let Some(ref uri) = self.ui_resource_uri
@@ -353,15 +375,38 @@ async fn fetch_ui_resource(
     server_name: &str,
     uri: &str,
 ) -> Option<UiResourceContent> {
-    let value = with_runtime_lease(
-        state,
-        server_name,
-        McpRuntimeOpKind::Rpc,
-        |_| Ok(()),
-        |runtime| async move { runtime.transport.read_resource(uri).await },
+    tokio::time::timeout(
+        ui_resource_hydration_timeout(),
+        fetch_ui_resource_inner(state, server_name, uri),
     )
     .await
-    .ok()?;
+    .ok()
+    .flatten()
+}
+
+async fn fetch_ui_resource_inner(
+    state: &Arc<McpRegistryState>,
+    server_name: &str,
+    uri: &str,
+) -> Option<UiResourceContent> {
+    let mut runtime = {
+        let servers = read_lock(&state.servers);
+        let index = find_server_index(&servers, server_name).ok()?;
+        runtime_lease(&servers[index]).ok()?
+    };
+
+    if let Ok(live_capabilities) = runtime.transport.server_capabilities().await {
+        runtime.capabilities = live_capabilities.clone();
+        update_runtime_capabilities(
+            state.as_ref(),
+            server_name,
+            runtime.generation,
+            live_capabilities,
+        );
+    }
+
+    require_resources(&runtime).ok()?;
+    let value = runtime.transport.read_resource(uri).await.ok()?;
     let contents = value.get("contents")?.as_array()?;
     let first = contents.first()?;
     let text = first.get("text")?.as_str()?.to_string();
@@ -1569,7 +1614,7 @@ where
 fn spawn_resource_updated_forwarder(
     tx: tokio::sync::mpsc::Sender<ResourceUpdated>,
     server_name: String,
-    mut rx: tokio::sync::mpsc::UnboundedReceiver<String>,
+    mut rx: tokio::sync::mpsc::Receiver<String>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         while let Some(uri) = rx.recv().await {
@@ -1592,32 +1637,40 @@ fn spawn_resource_updated_forwarder(
     })
 }
 
-/// Consume `notifications/.../list_changed` events from `rx` and refresh
-/// the relevant catalogue for `server_name`.
+/// Consume `notifications/tools/list_changed` events from `rx` and refresh
+/// the cached tools catalogue for `server_name`.
 ///
 /// Spawned per-runtime — the task exits naturally when the transport
 /// drops (channel closes). Per MCP 2025-06-18: a server SHOULD emit
-/// these notifications when its tool / prompt / resource catalogue
-/// mutates, so polling can be supplemented (or replaced over time) by
-/// reactive refresh.
+/// this notification when its tool catalogue mutates, so polling can be
+/// supplemented (or replaced over time) by reactive refresh.
 ///
 /// Today the manager only caches the **tools** catalogue, so `Tools`
-/// drives a `refresh_server` (re-running `tools/list`); `Prompts` and
-/// `Resources` are logged at debug level since list operations for
-/// those surfaces hit the server live on each agent call.
+/// drives a `refresh_server` (re-running `tools/list`). Prompt/resource
+/// list operations hit the server live on each agent call.
 fn spawn_list_changed_watcher(
     state_weak: Weak<McpRegistryState>,
     server_name: String,
-    mut rx: tokio::sync::mpsc::UnboundedReceiver<crate::transport::ListChangedKind>,
+    mut rx: tokio::sync::mpsc::Receiver<ListChangedKind>,
 ) {
     tokio::spawn(async move {
+        let mut pending = HashSet::<ListChangedKind>::new();
         while let Some(kind) = rx.recv().await {
-            match kind {
-                crate::transport::ListChangedKind::Tools => {
+            pending.insert(kind);
+            while let Ok(kind) = rx.try_recv() {
+                pending.insert(kind);
+            }
+
+            loop {
+                let refresh_tools = pending.remove(&ListChangedKind::Tools);
+                let saw_prompts = pending.remove(&ListChangedKind::Prompts);
+                let saw_resources = pending.remove(&ListChangedKind::Resources);
+
+                if refresh_tools {
                     let Some(state) = state_weak.upgrade() else {
                         // Registry torn down — nothing to refresh, and
                         // no one to receive subsequent notifications.
-                        break;
+                        return;
                     };
                     if let Err(err) = refresh_server(Arc::clone(&state), server_name.clone()).await
                     {
@@ -1644,13 +1697,21 @@ fn spawn_list_changed_watcher(
                         );
                     }
                 }
-                crate::transport::ListChangedKind::Prompts
-                | crate::transport::ListChangedKind::Resources => {
+
+                if saw_prompts || saw_resources {
                     tracing::debug!(
                         server = %server_name,
-                        kind = ?kind,
+                        prompts = saw_prompts,
+                        resources = saw_resources,
                         "list_changed event received; no client-side cache to invalidate today"
                     );
+                }
+
+                while let Ok(kind) = rx.try_recv() {
+                    pending.insert(kind);
+                }
+                if pending.is_empty() {
+                    break;
                 }
             }
         }
@@ -2634,6 +2695,65 @@ mod tests {
     }
 
     #[derive(Debug)]
+    struct ListChangedTransport {
+        tools: Vec<McpToolDefinition>,
+        list_calls: Arc<AtomicUsize>,
+        list_changed_rx: tokio::sync::Mutex<Option<mpsc::Receiver<ListChangedKind>>>,
+    }
+
+    impl ListChangedTransport {
+        fn new(
+            tools: Vec<McpToolDefinition>,
+        ) -> (Self, mpsc::Sender<ListChangedKind>, Arc<AtomicUsize>) {
+            let (tx, rx) = mpsc::channel(crate::transport::LIST_CHANGED_CHANNEL_CAPACITY);
+            let list_calls = Arc::new(AtomicUsize::new(0));
+            (
+                Self {
+                    tools,
+                    list_calls: Arc::clone(&list_calls),
+                    list_changed_rx: tokio::sync::Mutex::new(Some(rx)),
+                },
+                tx,
+                list_calls,
+            )
+        }
+    }
+
+    #[async_trait]
+    impl McpToolTransport for ListChangedTransport {
+        async fn list_tools(&self) -> Result<Vec<McpToolDefinition>, McpTransportError> {
+            self.list_calls.fetch_add(1, Ordering::SeqCst);
+            Ok(self.tools.clone())
+        }
+
+        async fn call_tool(
+            &self,
+            name: &str,
+            _args: Value,
+            _progress_tx: Option<mpsc::Sender<McpProgressUpdate>>,
+            _context: crate::transport::McpCallContext,
+        ) -> Result<CallToolResult, McpTransportError> {
+            Ok(CallToolResult {
+                content: vec![mcp::ToolContent::Text {
+                    text: format!("called {name}"),
+                    annotations: None,
+                    meta: None,
+                }],
+                structured_content: None,
+                is_error: None,
+            })
+        }
+
+        fn transport_type(&self) -> TransportTypeId {
+            TransportTypeId::Stdio
+        }
+
+        async fn take_list_changed_receiver(&self) -> Option<mpsc::Receiver<ListChangedKind>> {
+            self.list_changed_rx.lock().await.take()
+        }
+    }
+
+    #[derive(Debug)]
     struct LifecycleRecordingTransport {
         tools: Vec<McpToolDefinition>,
         capabilities_error: Option<&'static str>,
@@ -2795,7 +2915,7 @@ mod tests {
             &self,
             name: &str,
             _args: Value,
-            _progress_tx: Option<mpsc::UnboundedSender<McpProgressUpdate>>,
+            _progress_tx: Option<mpsc::Sender<McpProgressUpdate>>,
             _context: crate::transport::McpCallContext,
         ) -> Result<CallToolResult, McpTransportError> {
             Ok(CallToolResult {
@@ -2824,7 +2944,7 @@ mod tests {
             &self,
             name: &str,
             _args: Value,
-            _progress_tx: Option<mpsc::UnboundedSender<McpProgressUpdate>>,
+            _progress_tx: Option<mpsc::Sender<McpProgressUpdate>>,
             _context: crate::transport::McpCallContext,
         ) -> Result<CallToolResult, McpTransportError> {
             Ok(CallToolResult {
@@ -2859,7 +2979,7 @@ mod tests {
             &self,
             name: &str,
             _args: Value,
-            _progress_tx: Option<mpsc::UnboundedSender<McpProgressUpdate>>,
+            _progress_tx: Option<mpsc::Sender<McpProgressUpdate>>,
             _context: crate::transport::McpCallContext,
         ) -> Result<CallToolResult, McpTransportError> {
             Ok(CallToolResult {
@@ -2894,7 +3014,7 @@ mod tests {
             &self,
             name: &str,
             _args: Value,
-            _progress_tx: Option<mpsc::UnboundedSender<McpProgressUpdate>>,
+            _progress_tx: Option<mpsc::Sender<McpProgressUpdate>>,
             _context: crate::transport::McpCallContext,
         ) -> Result<CallToolResult, McpTransportError> {
             Ok(CallToolResult {
@@ -2943,7 +3063,7 @@ mod tests {
             &self,
             name: &str,
             _args: Value,
-            _progress_tx: Option<mpsc::UnboundedSender<McpProgressUpdate>>,
+            _progress_tx: Option<mpsc::Sender<McpProgressUpdate>>,
             _context: crate::transport::McpCallContext,
         ) -> Result<CallToolResult, McpTransportError> {
             Ok(CallToolResult {
@@ -2990,7 +3110,7 @@ mod tests {
             &self,
             name: &str,
             _args: Value,
-            _progress_tx: Option<mpsc::UnboundedSender<McpProgressUpdate>>,
+            _progress_tx: Option<mpsc::Sender<McpProgressUpdate>>,
             _context: crate::transport::McpCallContext,
         ) -> Result<CallToolResult, McpTransportError> {
             Ok(CallToolResult {
@@ -3040,7 +3160,7 @@ mod tests {
             &self,
             name: &str,
             _args: Value,
-            _progress_tx: Option<mpsc::UnboundedSender<McpProgressUpdate>>,
+            _progress_tx: Option<mpsc::Sender<McpProgressUpdate>>,
             _context: crate::transport::McpCallContext,
         ) -> Result<CallToolResult, McpTransportError> {
             Ok(CallToolResult {
@@ -3105,7 +3225,7 @@ mod tests {
             &self,
             name: &str,
             _args: Value,
-            _progress_tx: Option<mpsc::UnboundedSender<McpProgressUpdate>>,
+            _progress_tx: Option<mpsc::Sender<McpProgressUpdate>>,
             _context: crate::transport::McpCallContext,
         ) -> Result<CallToolResult, McpTransportError> {
             self.calls.lock().unwrap().push(name.to_string());
@@ -3160,7 +3280,7 @@ mod tests {
             &self,
             _name: &str,
             _args: Value,
-            _progress_tx: Option<mpsc::UnboundedSender<McpProgressUpdate>>,
+            _progress_tx: Option<mpsc::Sender<McpProgressUpdate>>,
             _context: crate::transport::McpCallContext,
         ) -> Result<CallToolResult, McpTransportError> {
             if self.connection_closed {
@@ -3201,7 +3321,7 @@ mod tests {
             &self,
             _name: &str,
             _args: Value,
-            _progress_tx: Option<mpsc::UnboundedSender<McpProgressUpdate>>,
+            _progress_tx: Option<mpsc::Sender<McpProgressUpdate>>,
             _context: crate::transport::McpCallContext,
         ) -> Result<CallToolResult, McpTransportError> {
             unreachable!()
@@ -3222,7 +3342,7 @@ mod tests {
             &self,
             name: &str,
             _args: Value,
-            _progress_tx: Option<mpsc::UnboundedSender<McpProgressUpdate>>,
+            _progress_tx: Option<mpsc::Sender<McpProgressUpdate>>,
             _context: crate::transport::McpCallContext,
         ) -> Result<CallToolResult, McpTransportError> {
             Ok(CallToolResult {
@@ -3260,7 +3380,7 @@ mod tests {
             &self,
             name: &str,
             _args: Value,
-            _progress_tx: Option<mpsc::UnboundedSender<McpProgressUpdate>>,
+            _progress_tx: Option<mpsc::Sender<McpProgressUpdate>>,
             _context: crate::transport::McpCallContext,
         ) -> Result<CallToolResult, McpTransportError> {
             Ok(CallToolResult {
@@ -3550,7 +3670,7 @@ mod tests {
                 &self,
                 _name: &str,
                 _args: Value,
-                _progress_tx: Option<mpsc::UnboundedSender<McpProgressUpdate>>,
+                _progress_tx: Option<mpsc::Sender<McpProgressUpdate>>,
                 _context: crate::transport::McpCallContext,
             ) -> Result<CallToolResult, McpTransportError> {
                 unreachable!()
@@ -4409,12 +4529,14 @@ mod tests {
     async fn resource_update_forwarder_drops_when_manager_channel_full() {
         let (manager_tx, mut manager_rx) =
             tokio::sync::mpsc::channel::<ResourceUpdated>(RESOURCE_UPDATED_CHANNEL_CAPACITY);
-        let (transport_tx, transport_rx) = mpsc::unbounded_channel::<String>();
+        let (transport_tx, transport_rx) =
+            mpsc::channel::<String>(RESOURCE_UPDATED_CHANNEL_CAPACITY);
         let handle = spawn_resource_updated_forwarder(manager_tx, "srv".to_string(), transport_rx);
 
         for idx in 0..(RESOURCE_UPDATED_CHANNEL_CAPACITY * 2) {
             transport_tx
                 .send(format!("file:///resource-{idx}"))
+                .await
                 .expect("transport receiver alive");
         }
         drop(transport_tx);
@@ -4430,6 +4552,44 @@ mod tests {
             drained += 1;
         }
         assert_eq!(drained, RESOURCE_UPDATED_CHANNEL_CAPACITY);
+    }
+
+    #[tokio::test]
+    async fn list_changed_watcher_coalesces_bursts() {
+        let (transport, tx, list_calls) =
+            ListChangedTransport::new(vec![MockTransport::tool_def("echo")]);
+        for _ in 0..crate::transport::LIST_CHANGED_CHANNEL_CAPACITY {
+            tx.try_send(ListChangedKind::Tools)
+                .expect("list_changed channel accepts bounded burst");
+        }
+        assert!(
+            tx.try_send(ListChangedKind::Tools).is_err(),
+            "list_changed ingress must be bounded"
+        );
+
+        let manager = McpToolRegistryManager::from_transports([(
+            cfg("srv"),
+            Arc::new(transport) as Arc<dyn McpToolTransport>,
+        )])
+        .await
+        .unwrap();
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(1);
+        while list_calls.load(Ordering::SeqCst) < 2 {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "coalesced list_changed refresh did not run"
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        assert_eq!(
+            list_calls.load(Ordering::SeqCst),
+            2,
+            "initial discovery plus one coalesced refresh should handle the entire burst"
+        );
+        assert!(manager.registry().get("mcp__srv__echo").is_some());
     }
 
     #[tokio::test]

@@ -45,6 +45,9 @@ const MAX_SSE_EVENT_BYTES: usize = 1024 * 1024;
 const MAX_SSE_JSON_PAYLOAD_BYTES: usize = 1024 * 1024;
 const MAX_SSE_RETRY_DELAY_MS: u64 = 30_000;
 const MAX_SSE_RESUME_ATTEMPTS: u32 = 3;
+pub(crate) const LIST_CHANGED_CHANNEL_CAPACITY: usize = 128;
+pub(crate) const MCP_PROGRESS_CHANNEL_CAPACITY: usize = 128;
+pub(crate) const RESOURCE_UPDATED_INGRESS_CAPACITY: usize = 1024;
 
 /// Protocol versions awaken's transports know how to talk on the wire.
 ///
@@ -325,7 +328,7 @@ pub trait McpToolTransport: Send + Sync {
         &self,
         name: &str,
         args: Value,
-        progress_tx: Option<mpsc::UnboundedSender<McpProgressUpdate>>,
+        progress_tx: Option<mpsc::Sender<McpProgressUpdate>>,
         context: McpCallContext,
     ) -> Result<CallToolResult, McpTransportError>;
 
@@ -356,18 +359,18 @@ pub trait McpToolTransport: Send + Sync {
         None
     }
 
-    /// Take the receiver for `notifications/{tools,prompts,resources}/list_changed`
-    /// events. Each event names which catalogue changed so the host can
-    /// refresh only that surface. Per MCP 2025-11-25 §Server features,
-    /// servers that advertise `tools.listChanged` / `prompts.listChanged`
-    /// / `resources.listChanged` SHOULD emit these notifications when
-    /// the corresponding catalogue mutates — receiving one removes the
-    /// need for periodic polling.
+    /// Take the receiver for queued `notifications/tools/list_changed`
+    /// events. Per MCP 2025-11-25 §Server features, servers that
+    /// advertise `tools.listChanged` SHOULD emit this notification when
+    /// the tool catalogue mutates — receiving one removes the need for
+    /// periodic polling for that cached surface. Prompt/resource
+    /// list_changed notifications are parsed but not queued because
+    /// those catalogues are fetched live today.
     ///
     /// One-shot: callable at most once per transport instance. Returns
     /// `None` thereafter (and `None` for transports that don't emit
     /// these notifications, e.g. test stubs).
-    async fn take_list_changed_receiver(&self) -> Option<mpsc::UnboundedReceiver<ListChangedKind>> {
+    async fn take_list_changed_receiver(&self) -> Option<mpsc::Receiver<ListChangedKind>> {
         None
     }
 
@@ -394,7 +397,7 @@ pub trait McpToolTransport: Send + Sync {
     /// Each event carries the URI of the updated resource. The host
     /// can fetch the new contents via `read_resource` in response.
     /// One-shot like [`take_list_changed_receiver`].
-    async fn take_resource_updated_receiver(&self) -> Option<mpsc::UnboundedReceiver<String>> {
+    async fn take_resource_updated_receiver(&self) -> Option<mpsc::Receiver<String>> {
         None
     }
 
@@ -411,15 +414,19 @@ pub trait McpToolTransport: Send + Sync {
 }
 
 /// Which server-side catalogue the `notifications/.../list_changed`
-/// event refers to. The transport forwards one variant per notification;
-/// the manager dispatches a refresh against that catalogue.
+/// event refers to.
+///
+/// The manager currently caches only the tools catalogue, so transports
+/// forward `Tools` into the bounded refresh queue and ignore
+/// `Prompts`/`Resources` after parsing them. Prompt and resource lists
+/// are fetched live through the manager API today.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ListChangedKind {
     /// `notifications/tools/list_changed` — re-run `tools/list`.
     Tools,
-    /// `notifications/prompts/list_changed` — re-run `prompts/list`.
+    /// `notifications/prompts/list_changed` — parsed but not queued today.
     Prompts,
-    /// `notifications/resources/list_changed` — re-run `resources/list`.
+    /// `notifications/resources/list_changed` — parsed but not queued today.
     Resources,
 }
 
@@ -432,6 +439,29 @@ fn list_changed_method(method: &str) -> Option<ListChangedKind> {
         "notifications/prompts/list_changed" => Some(ListChangedKind::Prompts),
         "notifications/resources/list_changed" => Some(ListChangedKind::Resources),
         _ => None,
+    }
+}
+
+fn forward_list_changed(sender: &mpsc::Sender<ListChangedKind>, kind: ListChangedKind) {
+    match kind {
+        ListChangedKind::Tools => match sender.try_send(kind) {
+            Ok(()) => {}
+            Err(mpsc::error::TrySendError::Full(_)) => {
+                tracing::debug!(
+                    capacity = LIST_CHANGED_CHANNEL_CAPACITY,
+                    "coalescing MCP tools/list_changed notification because refresh queue is full"
+                );
+            }
+            Err(mpsc::error::TrySendError::Closed(_)) => {
+                tracing::debug!("dropping MCP tools/list_changed notification; receiver is closed");
+            }
+        },
+        ListChangedKind::Prompts | ListChangedKind::Resources => {
+            tracing::debug!(
+                kind = ?kind,
+                "ignoring MCP list_changed notification for uncached catalogue"
+            );
+        }
     }
 }
 
@@ -771,9 +801,8 @@ impl Drop for PerCallSamplingGuard {
 pub(crate) struct ProgressAwareStdioTransport {
     write_tx: mpsc::Sender<WriteRequest>,
     pending: PendingRequests,
-    progress_subscribers: Arc<
-        tokio::sync::Mutex<HashMap<ProgressTokenKey, mpsc::UnboundedSender<McpProgressUpdate>>>,
-    >,
+    progress_subscribers:
+        Arc<tokio::sync::Mutex<HashMap<ProgressTokenKey, mpsc::Sender<McpProgressUpdate>>>>,
     next_id: AtomicI64,
     next_progress_token: AtomicI64,
     alive: Arc<AtomicBool>,
@@ -791,12 +820,12 @@ pub(crate) struct ProgressAwareStdioTransport {
     /// The reader task owns the cloned sender; when this transport (and
     /// thus the reader task) is dropped, the channel closes naturally.
     /// Taken at most once by [`take_list_changed_receiver`].
-    list_changed_rx: tokio::sync::Mutex<Option<mpsc::UnboundedReceiver<ListChangedKind>>>,
+    list_changed_rx: tokio::sync::Mutex<Option<mpsc::Receiver<ListChangedKind>>>,
     /// Receiver half of the `notifications/resources/updated` channel.
     /// Each event is the URI of an updated resource. Mirrors the
     /// list_changed pattern — one-shot, taken via
     /// [`take_resource_updated_receiver`].
-    resource_updated_rx: tokio::sync::Mutex<Option<mpsc::UnboundedReceiver<String>>>,
+    resource_updated_rx: tokio::sync::Mutex<Option<mpsc::Receiver<String>>>,
     /// Client-defined roots advertised to the server during `initialize`
     /// and served on subsequent `roots/list` requests. Empty = roots
     /// capability not advertised. Held as an `Arc` so the spawned
@@ -848,7 +877,7 @@ impl ProgressAwareStdioTransport {
         let alive = Arc::new(AtomicBool::new(true));
         let pending: PendingRequests = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
         let progress_subscribers: Arc<
-            tokio::sync::Mutex<HashMap<ProgressTokenKey, mpsc::UnboundedSender<McpProgressUpdate>>>,
+            tokio::sync::Mutex<HashMap<ProgressTokenKey, mpsc::Sender<McpProgressUpdate>>>,
         > = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
 
         let (write_tx, mut write_rx) = mpsc::channel::<WriteRequest>(256);
@@ -882,9 +911,11 @@ impl ProgressAwareStdioTransport {
         let sampling_handler_reader = sampling_handler.clone();
         let per_call_sampling: PerCallSamplingHandlers =
             Arc::new(tokio::sync::Mutex::new(HashMap::new()));
-        let (list_changed_tx, list_changed_rx) = mpsc::unbounded_channel::<ListChangedKind>();
+        let (list_changed_tx, list_changed_rx) =
+            mpsc::channel::<ListChangedKind>(LIST_CHANGED_CHANNEL_CAPACITY);
         let list_changed_tx_reader = list_changed_tx.clone();
-        let (resource_updated_tx, resource_updated_rx) = mpsc::unbounded_channel::<String>();
+        let (resource_updated_tx, resource_updated_rx) =
+            mpsc::channel::<String>(RESOURCE_UPDATED_INGRESS_CAPACITY);
         let resource_updated_tx_reader = resource_updated_tx.clone();
         let roots_reader = Arc::clone(&roots);
         let mut reader = BufReader::new(stdout);
@@ -913,9 +944,9 @@ impl ProgressAwareStdioTransport {
                                 // the receiver yet (or has dropped it),
                                 // a send error just means the host is
                                 // not interested — drop silently.
-                                let _ = list_changed_tx_reader.send(kind);
+                                forward_list_changed(&list_changed_tx_reader, kind);
                             } else if let Some(uri) = resource_updated_uri(&notification) {
-                                let _ = resource_updated_tx_reader.send(uri);
+                                let _ = resource_updated_tx_reader.try_send(uri);
                             } else {
                                 handle_progress_notification(&progress_reader, notification).await;
                             }
@@ -1077,7 +1108,7 @@ impl ProgressAwareStdioTransport {
         &self,
         method: &str,
         params: Option<Value>,
-        progress_registration: Option<(ProgressTokenKey, mpsc::UnboundedSender<McpProgressUpdate>)>,
+        progress_registration: Option<(ProgressTokenKey, mpsc::Sender<McpProgressUpdate>)>,
     ) -> Result<Value, McpTransportError> {
         let id = self.next_id.fetch_add(1, Ordering::SeqCst);
         self.send_request_with_id(id, method, params, progress_registration, None)
@@ -1099,7 +1130,7 @@ impl ProgressAwareStdioTransport {
         id: i64,
         method: &str,
         params: Option<Value>,
-        progress_registration: Option<(ProgressTokenKey, mpsc::UnboundedSender<McpProgressUpdate>)>,
+        progress_registration: Option<(ProgressTokenKey, mpsc::Sender<McpProgressUpdate>)>,
         sent_flag: Option<Arc<AtomicBool>>,
     ) -> Result<Value, McpTransportError> {
         if !self.alive.load(Ordering::SeqCst) {
@@ -1244,7 +1275,7 @@ impl McpToolTransport for ProgressAwareStdioTransport {
         &self,
         name: &str,
         args: Value,
-        progress_tx: Option<mpsc::UnboundedSender<McpProgressUpdate>>,
+        progress_tx: Option<mpsc::Sender<McpProgressUpdate>>,
         context: McpCallContext,
     ) -> Result<CallToolResult, McpTransportError> {
         let McpCallContext {
@@ -1367,15 +1398,7 @@ impl McpToolTransport for ProgressAwareStdioTransport {
         handler_guard.unregister().await;
 
         let result = result?;
-        let call_result: CallToolResult = serde_json::from_value(result)?;
-
-        if call_result.is_error == Some(true) {
-            return Err(McpTransportError::ServerError(tool_result_error_text(
-                &call_result,
-            )));
-        }
-
-        Ok(call_result)
+        serde_json::from_value(result).map_err(Into::into)
     }
 
     fn transport_type(&self) -> TransportTypeId {
@@ -1386,11 +1409,11 @@ impl McpToolTransport for ProgressAwareStdioTransport {
         Ok(self.capabilities.clone())
     }
 
-    async fn take_list_changed_receiver(&self) -> Option<mpsc::UnboundedReceiver<ListChangedKind>> {
+    async fn take_list_changed_receiver(&self) -> Option<mpsc::Receiver<ListChangedKind>> {
         self.list_changed_rx.lock().await.take()
     }
 
-    async fn take_resource_updated_receiver(&self) -> Option<mpsc::UnboundedReceiver<String>> {
+    async fn take_resource_updated_receiver(&self) -> Option<mpsc::Receiver<String>> {
         self.resource_updated_rx.lock().await.take()
     }
 
@@ -1473,16 +1496,16 @@ pub(crate) struct ProgressAwareHttpTransport {
     /// Cloned into the listening-stream task at the point we add one;
     /// for now, [`process_sse_event`] dispatches synchronously through
     /// this sender so per-request streams report list_changed too.
-    list_changed_tx: mpsc::UnboundedSender<ListChangedKind>,
+    list_changed_tx: mpsc::Sender<ListChangedKind>,
     /// One-shot receiver, taken at most once by
     /// [`take_list_changed_receiver`].
-    list_changed_rx: tokio::sync::Mutex<Option<mpsc::UnboundedReceiver<ListChangedKind>>>,
+    list_changed_rx: tokio::sync::Mutex<Option<mpsc::Receiver<ListChangedKind>>>,
     /// Sender for `notifications/resources/updated` events; cloned by
     /// `process_sse_event` to forward each notification.
-    resource_updated_tx: mpsc::UnboundedSender<String>,
+    resource_updated_tx: mpsc::Sender<String>,
     /// One-shot receiver for resource-updated events; same pattern as
     /// `list_changed_rx`.
-    resource_updated_rx: tokio::sync::Mutex<Option<mpsc::UnboundedReceiver<String>>>,
+    resource_updated_rx: tokio::sync::Mutex<Option<mpsc::Receiver<String>>>,
     /// Client-defined roots; same semantics as the stdio variant.
     /// Non-empty → roots capability advertised at initialize and
     /// `roots/list` is served from this list.
@@ -1600,8 +1623,10 @@ impl ProgressAwareHttpTransport {
                 ))
             })?;
 
-        let (list_changed_tx, list_changed_rx) = mpsc::unbounded_channel::<ListChangedKind>();
-        let (resource_updated_tx, resource_updated_rx) = mpsc::unbounded_channel::<String>();
+        let (list_changed_tx, list_changed_rx) =
+            mpsc::channel::<ListChangedKind>(LIST_CHANGED_CHANNEL_CAPACITY);
+        let (resource_updated_tx, resource_updated_rx) =
+            mpsc::channel::<String>(RESOURCE_UPDATED_INGRESS_CAPACITY);
         Ok(Self {
             endpoint: endpoint.clone(),
             client,
@@ -1809,7 +1834,7 @@ impl ProgressAwareHttpTransport {
         &self,
         method: &str,
         params: Option<Value>,
-        progress_registration: Option<(ProgressTokenKey, mpsc::UnboundedSender<McpProgressUpdate>)>,
+        progress_registration: Option<(ProgressTokenKey, mpsc::Sender<McpProgressUpdate>)>,
     ) -> Result<Value, McpTransportError> {
         let id = self.next_id.fetch_add(1, Ordering::SeqCst);
         self.send_request_with_id(id, method, params, progress_registration, None, None)
@@ -1832,7 +1857,7 @@ impl ProgressAwareHttpTransport {
         id: i64,
         method: &str,
         params: Option<Value>,
-        progress_registration: Option<(ProgressTokenKey, mpsc::UnboundedSender<McpProgressUpdate>)>,
+        progress_registration: Option<(ProgressTokenKey, mpsc::Sender<McpProgressUpdate>)>,
         sent_flag: Option<Arc<AtomicBool>>,
         sent_session: Option<Arc<tokio::sync::Mutex<Option<HttpSessionSnapshot>>>>,
     ) -> Result<Value, McpTransportError> {
@@ -1869,7 +1894,7 @@ impl ProgressAwareHttpTransport {
         &self,
         method: &str,
         params: Option<Value>,
-        progress_registration: Option<(ProgressTokenKey, mpsc::UnboundedSender<McpProgressUpdate>)>,
+        progress_registration: Option<(ProgressTokenKey, mpsc::Sender<McpProgressUpdate>)>,
     ) -> Result<Value, McpTransportError> {
         self.initialize_if_needed().await?;
         match self
@@ -2339,7 +2364,7 @@ impl ProgressAwareHttpTransport {
         &self,
         response: reqwest::Response,
         request_id: i64,
-        progress_registration: Option<(ProgressTokenKey, mpsc::UnboundedSender<McpProgressUpdate>)>,
+        progress_registration: Option<(ProgressTokenKey, mpsc::Sender<McpProgressUpdate>)>,
         request_session: Option<HttpSessionSnapshot>,
     ) -> Result<Value, McpTransportError> {
         let content_type = response_content_type(&response);
@@ -2370,7 +2395,7 @@ impl ProgressAwareHttpTransport {
         &self,
         response: reqwest::Response,
         request_id: i64,
-        progress_registration: Option<(ProgressTokenKey, mpsc::UnboundedSender<McpProgressUpdate>)>,
+        progress_registration: Option<(ProgressTokenKey, mpsc::Sender<McpProgressUpdate>)>,
         request_session: HttpSessionSnapshot,
     ) -> Result<Value, McpTransportError> {
         let progress_key = progress_registration.as_ref().map(|(key, _)| key.clone());
@@ -2642,7 +2667,7 @@ impl ProgressAwareHttpTransport {
         lines: &[String],
         request_id: i64,
         progress_key: Option<&ProgressTokenKey>,
-        progress_tx: Option<&mpsc::UnboundedSender<McpProgressUpdate>>,
+        progress_tx: Option<&mpsc::Sender<McpProgressUpdate>>,
         request_session: &HttpSessionSnapshot,
     ) -> Result<Option<Result<Value, McpTransportError>>, McpTransportError> {
         let Some(payload) = sse_data_payload(lines, "HTTP SSE response")? else {
@@ -2671,14 +2696,14 @@ impl ProgressAwareHttpTransport {
                 if let Some(kind) = list_changed_method(&notification.method) {
                     // Forward to the host's `take_list_changed_receiver`
                     // consumer; best-effort if no one subscribed.
-                    let _ = self.list_changed_tx.send(kind);
+                    forward_list_changed(&self.list_changed_tx, kind);
                 } else if let Some(uri) = resource_updated_uri(&notification) {
-                    let _ = self.resource_updated_tx.send(uri);
+                    let _ = self.resource_updated_tx.try_send(uri);
                 } else if let (Some(expected_key), Some(sender)) = (progress_key, progress_tx)
                     && let Some((key, update)) = decode_progress_notification(notification)
                     && key == *expected_key
                 {
-                    let _ = sender.send(update);
+                    let _ = sender.try_send(update);
                 }
                 Ok(None)
             }
@@ -2785,8 +2810,8 @@ struct HttpListenerCtx {
     /// expiry would let subsequent calls send post_message() without
     /// a session id (spec violation — server returns 400/404 again).
     capabilities: Arc<tokio::sync::Mutex<Option<ServerCapabilities>>>,
-    list_changed_tx: mpsc::UnboundedSender<ListChangedKind>,
-    resource_updated_tx: mpsc::UnboundedSender<String>,
+    list_changed_tx: mpsc::Sender<ListChangedKind>,
+    resource_updated_tx: mpsc::Sender<String>,
     roots: Arc<Vec<Root>>,
     fallback_sampling: Option<Arc<dyn SamplingHandler>>,
     alive: Arc<AtomicBool>,
@@ -3060,9 +3085,9 @@ async fn process_listening_event(
     match message {
         JsonRpcMessage::Notification(notification) => {
             if let Some(kind) = list_changed_method(&notification.method) {
-                let _ = ctx.list_changed_tx.send(kind);
+                forward_list_changed(&ctx.list_changed_tx, kind);
             } else if let Some(uri) = resource_updated_uri(&notification) {
-                let _ = ctx.resource_updated_tx.send(uri);
+                let _ = ctx.resource_updated_tx.try_send(uri);
             }
             // progress notifications without a request_id can't be
             // routed; drop. The listening stream isn't tied to a
@@ -3214,7 +3239,7 @@ impl McpToolTransport for ProgressAwareHttpTransport {
         &self,
         name: &str,
         args: Value,
-        progress_tx: Option<mpsc::UnboundedSender<McpProgressUpdate>>,
+        progress_tx: Option<mpsc::Sender<McpProgressUpdate>>,
         context: McpCallContext,
     ) -> Result<CallToolResult, McpTransportError> {
         let McpCallContext {
@@ -3421,15 +3446,7 @@ impl McpToolTransport for ProgressAwareHttpTransport {
             }
         };
 
-        let call_result: CallToolResult = serde_json::from_value(result_value)?;
-
-        if call_result.is_error == Some(true) {
-            return Err(McpTransportError::ServerError(tool_result_error_text(
-                &call_result,
-            )));
-        }
-
-        Ok(call_result)
+        serde_json::from_value(result_value).map_err(Into::into)
     }
 
     fn transport_type(&self) -> TransportTypeId {
@@ -3440,11 +3457,11 @@ impl McpToolTransport for ProgressAwareHttpTransport {
         Ok(Some(self.initialize_if_needed().await?))
     }
 
-    async fn take_list_changed_receiver(&self) -> Option<mpsc::UnboundedReceiver<ListChangedKind>> {
+    async fn take_list_changed_receiver(&self) -> Option<mpsc::Receiver<ListChangedKind>> {
         self.list_changed_rx.lock().await.take()
     }
 
-    async fn take_resource_updated_receiver(&self) -> Option<mpsc::UnboundedReceiver<String>> {
+    async fn take_resource_updated_receiver(&self) -> Option<mpsc::Receiver<String>> {
         self.resource_updated_rx.lock().await.take()
     }
 
@@ -3652,7 +3669,7 @@ fn map_response_payload(payload: JsonRpcPayload) -> Result<Value, McpTransportEr
 
 async fn handle_progress_notification(
     subscribers: &Arc<
-        tokio::sync::Mutex<HashMap<ProgressTokenKey, mpsc::UnboundedSender<McpProgressUpdate>>>,
+        tokio::sync::Mutex<HashMap<ProgressTokenKey, mpsc::Sender<McpProgressUpdate>>>,
     >,
     notification: JsonRpcNotification,
 ) {
@@ -3660,10 +3677,14 @@ async fn handle_progress_notification(
         return;
     };
     let sender = subscribers.lock().await.get(&key).cloned();
-    if let Some(sender) = sender
-        && sender.send(update).is_err()
-    {
-        subscribers.lock().await.remove(&key);
+    if let Some(sender) = sender {
+        match sender.try_send(update) {
+            Ok(()) => {}
+            Err(mpsc::error::TrySendError::Full(_)) => {}
+            Err(mpsc::error::TrySendError::Closed(_)) => {
+                subscribers.lock().await.remove(&key);
+            }
+        }
     }
 }
 
@@ -3716,7 +3737,7 @@ fn parse_json_rpc_message(value: Value) -> Result<JsonRpcMessage, McpTransportEr
 pub(crate) fn decode_http_response_payload(
     body: Value,
     request_id: i64,
-    progress_registration: Option<(ProgressTokenKey, mpsc::UnboundedSender<McpProgressUpdate>)>,
+    progress_registration: Option<(ProgressTokenKey, mpsc::Sender<McpProgressUpdate>)>,
 ) -> Result<Value, McpTransportError> {
     let progress_key = progress_registration.as_ref().map(|(key, _)| key.clone());
     let progress_tx = progress_registration
@@ -3741,7 +3762,7 @@ pub(crate) fn decode_http_response_payload(
                 return;
             };
             if key == *expected_key {
-                let _ = sender.send(update);
+                let _ = sender.try_send(update);
             }
         }
         JsonRpcMessage::Request(_) => {}
@@ -4155,6 +4176,34 @@ mod tests {
         assert_eq!(list_changed_method("tools/list_changed"), None); // missing prefix
     }
 
+    #[test]
+    fn list_changed_forwarder_prioritizes_cached_tools_catalogue() {
+        let (tx, mut rx) = mpsc::channel(LIST_CHANGED_CHANNEL_CAPACITY);
+        for _ in 0..(LIST_CHANGED_CHANNEL_CAPACITY * 2) {
+            forward_list_changed(&tx, ListChangedKind::Prompts);
+            forward_list_changed(&tx, ListChangedKind::Resources);
+        }
+        forward_list_changed(&tx, ListChangedKind::Tools);
+
+        assert_eq!(rx.try_recv(), Ok(ListChangedKind::Tools));
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn list_changed_forwarder_bounds_duplicate_tools_notifications() {
+        let (tx, mut rx) = mpsc::channel(LIST_CHANGED_CHANNEL_CAPACITY);
+        for _ in 0..(LIST_CHANGED_CHANNEL_CAPACITY * 2) {
+            forward_list_changed(&tx, ListChangedKind::Tools);
+        }
+
+        assert_eq!(rx.len(), LIST_CHANGED_CHANNEL_CAPACITY);
+        let mut drained = 0usize;
+        while rx.try_recv().is_ok() {
+            drained += 1;
+        }
+        assert_eq!(drained, LIST_CHANGED_CHANNEL_CAPACITY);
+    }
+
     // ── protocol-version negotiation ──
 
     #[test]
@@ -4409,7 +4458,7 @@ mod tests {
 
     #[test]
     fn decode_http_batch_ignores_malformed_notifications() {
-        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (tx, mut rx) = mpsc::channel(MCP_PROGRESS_CHANNEL_CAPACITY);
         let body = json!([
             { "jsonrpc": "2.0", "method": "notifications/progress" },
             { "jsonrpc": "2.0", "method": "notifications/progress", "params": {"progressToken": {"bad": true}, "progress": "oops"} },
@@ -5715,7 +5764,7 @@ done
 
     #[test]
     fn decode_http_batch_emits_progress_before_and_after_response_in_order() {
-        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (tx, mut rx) = mpsc::channel(MCP_PROGRESS_CHANNEL_CAPACITY);
         let body = json!([
             {
                 "jsonrpc": "2.0",
@@ -6332,7 +6381,7 @@ done
 
     #[test]
     fn decode_http_response_progress_token_mismatch_not_emitted() {
-        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (tx, mut rx) = mpsc::channel(MCP_PROGRESS_CHANNEL_CAPACITY);
         let body = json!([
             {
                 "jsonrpc": "2.0",
@@ -6383,7 +6432,7 @@ done
 
     #[test]
     fn decode_http_response_progress_with_string_token() {
-        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (tx, mut rx) = mpsc::channel(MCP_PROGRESS_CHANNEL_CAPACITY);
         let body = json!([
             {
                 "jsonrpc": "2.0",
