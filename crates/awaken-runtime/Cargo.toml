@@ -29,7 +29,7 @@ reqwest = { workspace = true, features = ["form"] }
 schemars = { workspace = true }
 jsonschema = { workspace = true }
 parking_lot = { workspace = true }
-metrics = "0.24"
+metrics = { workspace = true }
 jsonwebtoken = { version = "10", default-features = false, features = ["use_pem", "rust_crypto"], optional = true }
 
 [features]

@@ -25,15 +25,15 @@ async-trait = { workspace = true }
 sqlx = { version = "0.8", features = ["runtime-tokio", "postgres", "json"], default-features = false, optional = true }
 rusqlite = { version = "0.32", features = ["bundled"], optional = true }
 async-nats = { version = "0.47", optional = true }
-metrics = { version = "0.24", optional = true }
-bytes = "1"
+metrics = { workspace = true, optional = true }
+bytes = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread", "time"] }
-tempfile = "3"
+tempfile = { workspace = true }
 proptest = { workspace = true }
 futures = { workspace = true }
-testcontainers = "0.23"
+testcontainers = { workspace = true }
 
 [features]
 default = []

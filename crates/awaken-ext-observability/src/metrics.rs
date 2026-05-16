@@ -520,16 +520,15 @@ mod attribution_tests {
 
     #[test]
     fn span_context_serializes_attribution_fields() {
-        let mut ctx = SpanContext::default();
-        ctx.prompt_id = Some("a1b2c3d4e5f6".to_string());
-        ctx.tool_desc_ids = vec!["t000aaaaaaaa".to_string(), "t111bbbbbbbb".to_string()];
-        ctx.skill_ids = vec!["s00000000000".to_string()];
-        ctx.release_tag = Some("agents.weather@stable".to_string());
-        // experiment_id is a ULID per ADR-0031 — use a realistic 26-char
-        // shape so the fixture survives a future newtype tightening.
-        ctx.experiment_id = Some("01HXEXP00000000000000000AB".to_string());
-        // variant_name is a human-readable label, not a content id.
-        ctx.variant_name = Some("candidate".to_string());
+        let ctx = SpanContext {
+            prompt_id: Some("a1b2c3d4e5f6".to_string()),
+            tool_desc_ids: vec!["t000aaaaaaaa".to_string(), "t111bbbbbbbb".to_string()],
+            skill_ids: vec!["s00000000000".to_string()],
+            release_tag: Some("agents.weather@stable".to_string()),
+            experiment_id: Some("01HXEXP00000000000000000AB".to_string()),
+            variant_name: Some("candidate".to_string()),
+            ..Default::default()
+        };
 
         let json = serde_json::to_value(&ctx).expect("serialise");
         assert_eq!(json["prompt_id"], "a1b2c3d4e5f6");

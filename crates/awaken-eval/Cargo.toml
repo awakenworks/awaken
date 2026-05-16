@@ -22,7 +22,7 @@ tracing = { workspace = true }
 reqwest = { workspace = true, optional = true }
 
 [dev-dependencies]
-tempfile = "3"
+tempfile = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "time"] }
 reqwest = { workspace = true, features = ["blocking"] }
 

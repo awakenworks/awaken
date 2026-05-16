@@ -3362,9 +3362,9 @@ mod tests {
 }
 
 #[cfg(test)]
+#[allow(clippy::field_reassign_with_default)]
 mod attribution_otel_tests {
     use super::*;
-    use crate::metrics::{GenAISpan, SpanContext};
 
     fn span_with_attribution() -> GenAISpan {
         let mut ctx = SpanContext::default();

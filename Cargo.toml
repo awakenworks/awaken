@@ -69,6 +69,11 @@ proptest = "1"
 secrecy = { version = "0.10", features = ["serde"] }
 subtle = "2.6"
 tokio-util = { version = "0.7", features = ["compat"] }
+bytes = "1"
+metrics = "0.24"
+metrics-exporter-prometheus = "0.16"
+tempfile = "3"
+testcontainers = "0.23"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
