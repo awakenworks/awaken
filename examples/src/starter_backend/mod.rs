@@ -2,11 +2,9 @@ pub mod frontend_tools;
 mod generative_ui_config;
 pub mod generative_ui_tools;
 pub mod phase_logger;
-pub mod research;
 pub mod scripted_executor;
 pub mod state;
 pub mod tools;
-pub mod travel;
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -58,18 +56,18 @@ use awaken_server::services::config_runtime::{
 };
 use awaken_stores::FileStore;
 
+use crate::research::tools::{
+    DeleteResourcesTool, ExtractResourcesTool, SearchTool, SetQuestionTool, WriteReportTool,
+};
 use crate::starter_backend::frontend_tools::FrontendToolPlugin;
 use crate::starter_backend::generative_ui_config::StarterPromptOverrides;
 use crate::starter_backend::generative_ui_tools::{SharedAgentResolver, StreamingGenerativeUiTool};
 use crate::starter_backend::phase_logger::PhaseLoggerPlugin;
-use crate::starter_backend::research::{
-    DeleteResourcesTool, ExtractResourcesTool, SearchTool, SetQuestionTool, WriteReportTool,
-};
 use crate::starter_backend::tools::{
     AppendNoteTool, AskUserQuestionTool, FailingTool, FinishTool, GetStockPriceTool,
     GetWeatherTool, ProgressDemoTool, ServerInfoTool, SetBackgroundColorTool,
 };
-use crate::starter_backend::travel::{
+use crate::travel::tools::{
     AddTripTool, DeleteTripTool, SearchPlacesTool, SelectTripTool, UpdateTripTool,
 };
 
