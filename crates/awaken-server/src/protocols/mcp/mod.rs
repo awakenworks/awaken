@@ -146,7 +146,7 @@ mod tests {
         let (_server, mut channels) = create_mcp_server(&runtime);
 
         let request = mcp::JsonRpcRequest {
-            jsonrpc: "2.0".to_string(),
+            jsonrpc: JSON_RPC_VERSION.to_string(),
             id: mcp::JsonRpcId::Number(1),
             method: "initialize".to_string(),
             params: None,
@@ -175,7 +175,7 @@ mod tests {
         let (_server, mut channels) = create_mcp_server(&runtime);
 
         let request = mcp::JsonRpcRequest {
-            jsonrpc: "2.0".to_string(),
+            jsonrpc: JSON_RPC_VERSION.to_string(),
             id: mcp::JsonRpcId::Number(2),
             method: "tools/list".to_string(),
             params: None,

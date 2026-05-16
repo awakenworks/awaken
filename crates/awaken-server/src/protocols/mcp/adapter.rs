@@ -17,6 +17,7 @@ use awaken_contract::contract::event::AgentEvent;
 use awaken_contract::contract::message::Message;
 use awaken_runtime::{AgentRuntime, RunRequest};
 
+use super::JSON_RPC_VERSION;
 use crate::transport::channel_sink::ChannelEventSink;
 
 /// An MCP tool backed by an Awaken agent.
@@ -58,7 +59,7 @@ impl AgentMcpTool {
                 "data": message,
             });
             let notification = JsonRpcNotification {
-                jsonrpc: "2.0".to_string(),
+                jsonrpc: JSON_RPC_VERSION.to_string(),
                 method: "notifications/message".to_string(),
                 params: Some(params),
             };
