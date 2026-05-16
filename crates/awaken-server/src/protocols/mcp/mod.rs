@@ -7,6 +7,10 @@ pub mod adapter;
 pub mod http;
 pub mod stdio;
 
+/// Wire-protocol version string used in every JSON-RPC envelope this module
+/// emits or accepts. The MCP spec pins it to `"2.0"`.
+pub(crate) const JSON_RPC_VERSION: &str = "2.0";
+
 use std::sync::Arc;
 
 use mcp::server::{McpServer, McpServerChannels, McpServerConfig};

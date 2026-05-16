@@ -26,12 +26,12 @@ use serde_json::Value;
 use tokio::sync::{Mutex, RwLock, Semaphore, mpsc, oneshot};
 use uuid::Uuid;
 
+use super::JSON_RPC_VERSION;
 use crate::app::AppState;
 use crate::http_sse::{format_sse_data_with_id, sse_body_stream, sse_response};
 
 const HEADER_SESSION_ID: &str = "MCP-Session-Id";
 const HEADER_PROTOCOL_VERSION: &str = "MCP-Protocol-Version";
-const JSON_RPC_VERSION: &str = "2.0";
 
 #[derive(Default)]
 pub struct McpHttpState {

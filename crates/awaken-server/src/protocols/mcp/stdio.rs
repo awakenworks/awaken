@@ -13,7 +13,7 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
 
 use awaken_runtime::AgentRuntime;
 
-const JSON_RPC_VERSION: &str = "2.0";
+use super::JSON_RPC_VERSION;
 
 /// Run the MCP stdio server on actual stdin/stdout.
 pub async fn serve_stdio(runtime: Arc<AgentRuntime>) {
