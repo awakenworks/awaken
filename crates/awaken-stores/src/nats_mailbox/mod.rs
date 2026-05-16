@@ -57,15 +57,12 @@ pub fn __test_encode_dispatch(dispatch: &RunDispatch) -> Vec<u8> {
 }
 
 pub struct NatsMailboxStore {
-    #[allow(dead_code)]
     pub(crate) client: async_nats::Client,
     pub(crate) jetstream: async_nats::jetstream::Context,
     pub(crate) kv_dispatch: async_nats::jetstream::kv::Store,
     pub(crate) kv_epoch: async_nats::jetstream::kv::Store,
     pub(crate) kv_thread_index: async_nats::jetstream::kv::Store,
     pub(crate) consumer: async_nats::jetstream::consumer::PullConsumer,
-    #[allow(dead_code)]
-    pub(crate) stream_name: String,
     pub(crate) authoritative_scan_timeout: std::time::Duration,
     pub(crate) live_request_timeout: std::time::Duration,
     pub(crate) index: Arc<tokio::sync::RwLock<DispatchIndex>>,
@@ -166,7 +163,6 @@ impl NatsMailboxStore {
             kv_epoch,
             kv_thread_index,
             consumer,
-            stream_name: config.stream_name,
             authoritative_scan_timeout,
             live_request_timeout,
             index,

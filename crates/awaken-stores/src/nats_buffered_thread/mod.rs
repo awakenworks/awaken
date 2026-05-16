@@ -126,13 +126,9 @@ impl HierarchyMutationTestHooks {
 
 pub struct NatsBufferedThreadStore<T: ThreadRunStore + Send + Sync + 'static> {
     pub(crate) inner: Arc<T>,
-    #[allow(dead_code)]
-    pub(crate) client: async_nats::Client,
     pub(crate) jetstream: async_nats::jetstream::Context,
     pub(crate) stream: async_nats::jetstream::stream::Stream,
     pub(crate) kv_hot: async_nats::jetstream::kv::Store,
-    #[allow(dead_code)]
-    pub(crate) consumer: async_nats::jetstream::consumer::PullConsumer,
     pub(crate) config: config::NatsBufferedThreadConfig,
     pub(crate) hierarchy_write_lock: tokio::sync::Mutex<()>,
     pub(crate) hierarchy_claim_options: hierarchy_claim::ClaimOptions,
@@ -210,11 +206,9 @@ impl<T: ThreadRunStore + Send + Sync + 'static> NatsBufferedThreadStore<T> {
 
         Ok(Self {
             inner,
-            client,
             jetstream,
             stream,
             kv_hot,
-            consumer,
             config,
             hierarchy_write_lock: tokio::sync::Mutex::new(()),
             hierarchy_claim_options: hierarchy_claim::ClaimOptions::default(),
