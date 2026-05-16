@@ -450,10 +450,7 @@ pub fn derive_actor(headers: &HeaderMap) -> String {
     let base = headers
         .get(axum::http::header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
-        .and_then(|s| {
-            s.strip_prefix("Bearer ")
-                .or_else(|| s.strip_prefix("bearer "))
-        })
+        .and_then(crate::auth::strip_bearer_prefix)
         .map(|token| {
             let hash = sha2::Sha256::digest(token.as_bytes());
             let hex = format!("{hash:x}");

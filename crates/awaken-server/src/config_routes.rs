@@ -641,10 +641,7 @@ fn ensure_admin_auth_for_token(
     let auth = auth
         .to_str()
         .map_err(|_| ApiError::Unauthorized("invalid Authorization header".into()))?;
-    let Some(token) = auth
-        .strip_prefix("Bearer ")
-        .or_else(|| auth.strip_prefix("bearer "))
-    else {
+    let Some(token) = crate::auth::strip_bearer_prefix(auth) else {
         return Err(ApiError::Unauthorized(
             "Authorization header must use Bearer authentication".into(),
         ));

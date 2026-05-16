@@ -151,10 +151,7 @@ fn ensure_extended_card_auth(st: &AppState, headers: &HeaderMap) -> Result<(), A
             "missing Authorization header for extendedAgentCard",
         ));
     };
-    let Some(token) = auth
-        .strip_prefix("Bearer ")
-        .or_else(|| auth.strip_prefix("bearer "))
-    else {
+    let Some(token) = crate::auth::strip_bearer_prefix(auth) else {
         return Err(A2aError::unauthenticated(
             "Authorization header must use Bearer authentication",
         ));
