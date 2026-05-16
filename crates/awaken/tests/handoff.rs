@@ -6,9 +6,6 @@
 //! - Changing active_hook_filter between phases via different specs
 
 use async_trait::async_trait;
-use awaken::agent::state::{
-    ContextMessageStore, ContextThrottleState, RunLifecycle, ToolCallStates,
-};
 use awaken::contract::active_agent::ActiveAgentIdKey;
 use awaken::registry::AgentSpec;
 use awaken::*;
@@ -88,17 +85,19 @@ impl PhaseHook for HandoffHook {
 // Plugin wrappers
 // ---------------------------------------------------------------------------
 
-struct LoopStatePlugin;
-impl Plugin for LoopStatePlugin {
+use awaken::loop_runner::LoopStatePlugin;
+
+/// Registers the handoff-specific ActiveAgentIdKey alongside the canonical
+/// LoopStatePlugin.
+struct ActiveAgentPlugin;
+impl Plugin for ActiveAgentPlugin {
     fn descriptor(&self) -> PluginDescriptor {
-        PluginDescriptor { name: "loop-state" }
+        PluginDescriptor {
+            name: "test-active-agent",
+        }
     }
     fn register(&self, r: &mut PluginRegistrar) -> Result<(), StateError> {
-        r.register_key::<RunLifecycle>(StateKeyOptions::default())?;
-        r.register_key::<ToolCallStates>(StateKeyOptions::default())?;
-        r.register_key::<ContextThrottleState>(StateKeyOptions::default())?;
         r.register_key::<ActiveAgentIdKey>(StateKeyOptions::default())?;
-        r.register_key::<ContextMessageStore>(StateKeyOptions::default())?;
         Ok(())
     }
 }
@@ -202,6 +201,7 @@ async fn hook_filtering_only_active_hook_filter_fire() {
 
     let runtime = PhaseRuntime::new(StateStore::new()).unwrap();
     runtime.store().install_plugin(LoopStatePlugin).unwrap();
+    runtime.store().install_plugin(ActiveAgentPlugin).unwrap();
 
     let tracker = Arc::new(MultiTrackerPlugin {
         trackers: vec![
@@ -237,6 +237,7 @@ async fn empty_active_hook_filter_runs_all_hooks() {
 
     let runtime = PhaseRuntime::new(StateStore::new()).unwrap();
     runtime.store().install_plugin(LoopStatePlugin).unwrap();
+    runtime.store().install_plugin(ActiveAgentPlugin).unwrap();
 
     let tracker = Arc::new(MultiTrackerPlugin {
         trackers: vec![
@@ -272,6 +273,7 @@ async fn config_values_accessible_in_hooks() {
 
     let runtime = PhaseRuntime::new(StateStore::new()).unwrap();
     runtime.store().install_plugin(LoopStatePlugin).unwrap();
+    runtime.store().install_plugin(ActiveAgentPlugin).unwrap();
 
     let tracker = Arc::new(SingleTrackerPlugin {
         id: "tracker",
@@ -311,6 +313,7 @@ async fn handoff_switches_spec_at_next_boundary() {
 
     let runtime = PhaseRuntime::new(StateStore::new()).unwrap();
     runtime.store().install_plugin(LoopStatePlugin).unwrap();
+    runtime.store().install_plugin(ActiveAgentPlugin).unwrap();
 
     let handoff_plugin = Arc::new(HandoffPlugin {
         target_agent: "reviewer".into(),
@@ -375,6 +378,7 @@ async fn deactivate_plugin_mid_run_via_configure() {
 
     let runtime = PhaseRuntime::new(StateStore::new()).unwrap();
     runtime.store().install_plugin(LoopStatePlugin).unwrap();
+    runtime.store().install_plugin(ActiveAgentPlugin).unwrap();
 
     let tracker = Arc::new(SingleTrackerPlugin {
         id: "tracker",
