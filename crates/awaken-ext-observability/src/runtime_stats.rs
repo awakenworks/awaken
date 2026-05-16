@@ -28,9 +28,7 @@ use std::time::{Duration, Instant};
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 
-use crate::metrics::{
-    AgentMetrics, DelegationSpan, GenAISpan, HandoffSpan, MetricsEvent, SuspensionSpan, ToolSpan,
-};
+use crate::metrics::{AgentMetrics, GenAISpan, MetricsEvent, ToolSpan};
 use crate::sink::MetricsSink;
 
 /// Default bucket length: 10 minutes.
@@ -603,19 +601,10 @@ pub fn parse_window_str(s: &str) -> Result<Duration, String> {
     Ok(Duration::from_secs(n * multiplier))
 }
 
-// ---------------------------------------------------------------------------
-// Suppress dead-code warnings for variant types only used through trait dispatch.
-// ---------------------------------------------------------------------------
-
-#[allow(dead_code)]
-fn _types_used(s: &SuspensionSpan, h: &HandoffSpan, d: &DelegationSpan) {
-    let _ = (s, h, d);
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::metrics::SpanContext;
+    use crate::metrics::{DelegationSpan, HandoffSpan, SpanContext, SuspensionSpan};
 
     fn ctx(agent: &str) -> SpanContext {
         SpanContext {
