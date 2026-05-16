@@ -12,9 +12,10 @@ Development work lands here before the next versioned release.
 - Tool catalog semantics: `AgentSpec.allowed_tools` / `excluded_tools` now use explicit catalog
   values: `["*"]` for allow-all, `[]` for block-none on `excluded_tools`, and
   tool-id patterns matched by `awaken_tool_pattern::tool_id_match`. Existing
-  catalog entries containing an unescaped `*` change from exact-string matching
-  to wildcard matching; escape literal stars as `\*` when a real tool id
-  contains `*`.
+  catalog entries containing an unescaped `*` or a literal `\` change from
+  exact-string matching to pattern matching; escape literal stars as `\*`
+  and literal backslashes as `\\` when a real tool id contains either
+  character.
 
 ## [0.5.0] - 2026-05-10
 

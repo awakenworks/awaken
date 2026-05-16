@@ -84,6 +84,15 @@ describe("isToolAllowed", () => {
     expect(isToolAllowed(["\\!Bash"], "!Bash")).toBe(true);
   });
 
+  it("requires escaped literal backslash to select the literal backslash tool id", () => {
+    // Raw `foo\bar` is interpreted as `foo` + `\b` (literal `b`) + `ar`, so
+    // it matches `foobar`, not the tool id that literally contains a
+    // backslash. Selecting the literal `foo\bar` requires `foo\\bar`.
+    expect(isToolAllowed(["foo\\bar"], "foo\\bar")).toBe(false);
+    expect(isToolAllowed(["foo\\bar"], "foobar")).toBe(true);
+    expect(isToolAllowed(["foo\\\\bar"], "foo\\bar")).toBe(true);
+  });
+
   it("does not throw on dangling escape or unusual chars", () => {
     expect(() => isToolAllowed(["\\"], "\\")).not.toThrow();
     expect(() => isToolAllowed(["["], "[")).not.toThrow();
@@ -176,6 +185,23 @@ describe("catalogEntryInspections", () => {
         usesWildcard: true,
         matches: ["tool*id", "toolXid"],
       },
+    ]);
+  });
+
+  it("does not hide raw backslash entries that equal a current tool id", () => {
+    // Catalog grammar treats `\` as the escape character, so a raw `foo\bar`
+    // entry whose text happens to equal a current tool id is NOT a safe
+    // literal — at runtime `\b` matches a literal `b`, so the entry
+    // authorises `foobar` instead of `foo\bar`. The Admin must surface the
+    // entry so the user can fix or remove it.
+    expect(
+      catalogEntryInspections(["foo\\bar"], ["foo\\bar", "foobar"]),
+    ).toEqual([
+      expect.objectContaining({
+        entry: "foo\\bar",
+        exactToolExists: true,
+        matches: ["foobar"],
+      }),
     ]);
   });
 
@@ -297,6 +323,25 @@ describe("nextAllowedTools", () => {
     expect(
       nextAllowedTools(["tool*id"], ["tool*id", "Other"], "Other", true),
     ).not.toEqual(["*"]);
+  });
+
+  it("does not collapse raw backslash entries to ['*']", () => {
+    // Same hazard as the wildcard case: `\` is the catalog escape character,
+    // so a raw entry whose text equals a tool id is still a pattern, not a
+    // safe literal — auto-collapsing would silently extend it to every
+    // future tool.
+    expect(
+      nextAllowedTools(["foo\\bar"], ["foo\\bar", "Other"], "Other", true),
+    ).not.toEqual(["*"]);
+  });
+
+  it("preserves raw backslash entries on uncheck", () => {
+    // Pattern-like entries (wildcard OR backslash-escaped) are managed
+    // through the catalog entry list, not the checkbox row, so unchecking
+    // their text-equal tool id must not silently drop them.
+    expect(
+      nextAllowedTools(["foo\\bar"], ["foo\\bar"], "foo\\bar", false),
+    ).toEqual(["foo\\bar"]);
   });
 
   it("refuses to collapse to ['*'] while an unmanaged entry remains", () => {
@@ -602,6 +647,15 @@ describe("setGroupSelection", () => {
     expect(
       setGroupSelection([], ["tool*id", "Other"], ["tool*id", "Other"], true),
     ).toEqual(["tool\\*id", "Other"]);
+  });
+
+  it("preserves raw backslash entries when clearing a group", () => {
+    // A raw `foo\bar` entry is not actually authorising the literal
+    // `foo\bar` tool, so clearing the group must not silently delete it;
+    // removal stays in the catalog entry list.
+    expect(
+      setGroupSelection(["foo\\bar", "Other"], ["foo\\bar", "Other"], ["foo\\bar"], false),
+    ).toEqual(["foo\\bar", "Other"]);
   });
 });
 

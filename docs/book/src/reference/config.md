@@ -76,8 +76,11 @@ Legacy `null` / missing values should be migrated to explicit values:
 
 Migration note: before catalog tool-id patterns were introduced, catalog
 entries were exact strings. Any existing entry containing an unescaped `*`
-now has wildcard semantics. Escape literal stars as `\*` before upgrading if
-the intended tool id contains a real `*`, and review entries such as `mcp:*`
+or a literal `\` now has pattern semantics. Escape literal stars as `\*`
+and literal backslashes as `\\` before upgrading if the intended tool id
+contains either character; for example, a raw `foo\bar` entry no longer
+matches the tool id `foo\bar` — the `\b` is parsed as a literal `b`, so
+the entry matches `foobar` instead. Also review entries such as `mcp:*`
 or `Bash*` because they may expose or remove more tools than before.
 
 Catalog entries are **tool-id patterns**, not filesystem globs. Tool ids are

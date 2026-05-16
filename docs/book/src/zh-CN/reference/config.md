@@ -71,9 +71,11 @@ fn set_config<K: PluginConfigKey>(&mut self, config: K::Config) -> Result<(), St
 | `excluded_tools` | 不排除任何工具 / block none | `[]`       |
 
 迁移说明：引入 catalog tool-id pattern 之前，catalog 条目是精确字符串。
-现有条目中未转义的 `*` 现在具有 wildcard 语义。如果真实 tool id 包含字面
-`*`，升级前请写成 `\*`；也请检查 `mcp:*`、`Bash*` 等条目，因为它们可能
-暴露或移除比以前更多的工具。
+现有条目中未转义的 `*` 或字面 `\` 现在都具有 pattern 语义。如果真实
+tool id 含有这两个字符，升级前请把字面 `*` 写成 `\*`、字面 `\` 写成
+`\\`——例如 `foo\bar` 这种 raw 条目不再匹配 tool id `foo\bar`，`\b`
+会被解析为字面 `b`，条目会改去匹配 `foobar`。同时请检查 `mcp:*`、
+`Bash*` 等条目，因为它们可能暴露或移除比以前更多的工具。
 
 Catalog 条目是 **tool-id pattern**，不是文件系统 glob。Tool id 是不透明
 字符串，所以 `/`、`:`、`_` 都是普通字符——`mcp:*` 会匹配

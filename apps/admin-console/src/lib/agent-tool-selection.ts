@@ -41,6 +41,29 @@ export function hasUnescapedCatalogWildcard(entry: string): boolean {
   return false;
 }
 
+/// `\` is the catalog escape character — its mere presence means the entry
+/// is parsed as a pattern, not a literal, even when no `*` follows. A raw
+/// `foo\bar` entry matches the literal tool id `foobar` (the `\b` escapes
+/// the `b`), not `foo\bar`. Anything containing `\` therefore cannot be
+/// treated as a safe text-equal literal.
+function hasCatalogEscape(entry: string): boolean {
+  return entry.includes("\\");
+}
+
+/// A "plain raw literal" is a catalog entry whose raw text equals a current
+/// tool id AND contains no catalog grammar characters. These are the only
+/// entries the Admin can manage purely through checkbox toggles —
+/// everything else (wildcard entries, backslash-escaped entries, unmanaged
+/// entries) belongs in the explicit catalog entry list so the user can
+/// see and remove it without accidentally widening or narrowing access.
+function isPlainRawCatalogLiteral(entry: string, allToolIds: string[]): boolean {
+  return (
+    isKnownToolId(entry, allToolIds) &&
+    !hasUnescapedCatalogWildcard(entry) &&
+    !hasCatalogEscape(entry)
+  );
+}
+
 /// Encode a literal tool id as a catalog entry. Catalog grammar treats `*`
 /// as a wildcard and `\` as the escape character, so any tool id containing
 /// either must be escaped before being written to `allowed_tools` /
@@ -131,9 +154,9 @@ export function catalogEntryInspections(
   for (const entry of value) {
     if (seen.has(entry)) continue;
     seen.add(entry);
+    if (isPlainRawCatalogLiteral(entry, allToolIds)) continue;
     const usesWildcard = hasUnescapedCatalogWildcard(entry);
     const exactToolExists = isKnownToolId(entry, allToolIds);
-    if (exactToolExists && !usesWildcard) continue;
     const matches = allToolIds.filter((toolId) => toolIdMatch(entry, toolId));
     const matchesCurrentToolOnly = !usesWildcard && matches.length === 1;
     entries.push({
@@ -207,17 +230,16 @@ export function toolSelectionPattern(
 }
 
 /// Decide whether a catalog subset can safely be re-written as `["*"]`.
-/// Only collapse when every entry is a plain raw literal that is part of
-/// the current tool id set AND every tool id is covered by exactly one
-/// such literal. Wildcard entries, escaped-literal entries (whose text
-/// differs from the raw tool id) and unmanaged entries all keep their
-/// individual form so the catalog never silently widens to include
-/// tools that were not previously authorised.
+/// Only collapse when every entry is a plain raw literal — a current tool
+/// id with no wildcard and no `\` escape — and every tool id is covered.
+/// Wildcard entries, backslash-bearing entries, escaped-literal entries
+/// and unmanaged entries all keep their individual form so the catalog
+/// never silently widens to include tools that were not previously
+/// authorised.
 function canCollapseToExplicitAll(entries: string[], allToolIds: string[]): boolean {
   return (
-    entries.every(
-      (entry) => isKnownToolId(entry, allToolIds) && !hasUnescapedCatalogWildcard(entry),
-    ) && allToolIds.every((toolId) => entries.includes(toolId))
+    entries.every((entry) => isPlainRawCatalogLiteral(entry, allToolIds)) &&
+    allToolIds.every((toolId) => entries.includes(toolId))
   );
 }
 
@@ -241,7 +263,10 @@ export function nextAllowedTools(
     }
     return next;
   }
-  return baseline.filter((id) => id !== toolId || hasUnescapedCatalogWildcard(id));
+  return baseline.filter(
+    (id) =>
+      id !== toolId || hasUnescapedCatalogWildcard(id) || hasCatalogEscape(id),
+  );
 }
 
 export type ToolSelectionMode = "all" | "custom";
@@ -370,7 +395,9 @@ export function setGroupSelection(
     }
   } else {
     for (const id of groupToolIds) {
-      baseline.delete(id);
+      if (isPlainRawCatalogLiteral(id, allToolIds)) {
+        baseline.delete(id);
+      }
       baseline.delete(escapeCatalogLiteral(id));
     }
   }
