@@ -22,4 +22,5 @@ pub mod query;
 pub mod request;
 pub mod routes;
 pub mod services;
+pub mod time;
 pub mod transport;

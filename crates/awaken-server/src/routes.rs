@@ -997,10 +997,7 @@ async fn submit_decision(
         action,
         result: payload.payload.clone(),
         reason: None,
-        updated_at: std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis() as u64)
-            .unwrap_or(0),
+        updated_at: crate::time::now_millis(),
     };
 
     RunControlService::new(st)
@@ -1042,10 +1039,7 @@ async fn submit_thread_decision(
         action,
         result: payload.payload.clone(),
         reason: None,
-        updated_at: std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis() as u64)
-            .unwrap_or(0),
+        updated_at: crate::time::now_millis(),
     };
 
     RunControlService::new(st)
