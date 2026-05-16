@@ -206,7 +206,12 @@ fn server_config_struct_literal_keeps_0_2_fields() {
 }
 
 #[test]
-fn api_error_exhaustive_match_keeps_0_2_variants() {
+fn api_error_named_variants_keep_0_2_paths() {
+    // `ApiError` is `#[non_exhaustive]`, so downstream code matching it
+    // must include a wildcard arm. This test only guarantees that the
+    // 0.2 named variants (and the post-0.2 additions listed below) still
+    // exist with the same shape — it does NOT guarantee that an
+    // exhaustive match without a wildcard arm still compiles.
     fn label(error: ApiError) -> &'static str {
         match error {
             ApiError::BadRequest(_) => "bad_request",
@@ -214,12 +219,10 @@ fn api_error_exhaustive_match_keeps_0_2_variants() {
             ApiError::NotFound(_) => "not_found",
             ApiError::ThreadNotFound(_) => "thread_not_found",
             ApiError::RunNotFound(_) => "run_not_found",
-            // Post-0.2 addition (PR #190 — `permission-preview` feature
-            // gate). Not part of the 0.2 surface itself, but listed here
-            // so the exhaustive match keeps compiling and a future
-            // refactor of `ApiError` still trips this test.
             ApiError::ServiceUnavailable(_) => "service_unavailable",
+            ApiError::Unauthorized(_) => "unauthorized",
             ApiError::Internal(_) => "internal",
+            _ => "other",
         }
     }
     assert_eq!(label(ApiError::NotFound("x".into())), "not_found");

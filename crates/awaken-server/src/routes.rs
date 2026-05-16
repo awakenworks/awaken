@@ -29,38 +29,7 @@ use crate::services::run_control_service::{
 };
 use awaken_runtime::RunRequest;
 
-/// API error type returned by route handlers.
-#[derive(Debug)]
-pub enum ApiError {
-    BadRequest(String),
-    Conflict(String),
-    NotFound(String),
-    ThreadNotFound(String),
-    RunNotFound(String),
-    /// Feature/route present but the backing capability isn't installed —
-    /// e.g. `permission-preview` requested but server was built without
-    /// `--features permission`. Distinct from 404 so callers can
-    /// differentiate "no such resource" from "feature not available".
-    ServiceUnavailable(String),
-    Internal(String),
-}
-
-impl IntoResponse for ApiError {
-    fn into_response(self) -> Response {
-        let (status, message) = match self {
-            ApiError::BadRequest(msg) => (StatusCode::BAD_REQUEST, msg),
-            ApiError::Conflict(msg) => (StatusCode::CONFLICT, msg),
-            ApiError::NotFound(msg) => (StatusCode::NOT_FOUND, msg),
-            ApiError::ThreadNotFound(id) => {
-                (StatusCode::NOT_FOUND, format!("thread not found: {id}"))
-            }
-            ApiError::RunNotFound(id) => (StatusCode::NOT_FOUND, format!("run not found: {id}")),
-            ApiError::ServiceUnavailable(msg) => (StatusCode::SERVICE_UNAVAILABLE, msg),
-            ApiError::Internal(msg) => (StatusCode::INTERNAL_SERVER_ERROR, msg),
-        };
-        (status, Json(json!({"error": message}))).into_response()
-    }
-}
+pub use crate::error::ApiError;
 
 pub(crate) fn map_mailbox_error(error: MailboxError) -> ApiError {
     match error {

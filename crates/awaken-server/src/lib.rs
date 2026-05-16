@@ -9,6 +9,7 @@
 
 pub mod app;
 pub mod config_routes;
+pub mod error;
 pub mod event_relay;
 pub mod http_run;
 pub mod http_sse;

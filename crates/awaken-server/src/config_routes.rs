@@ -119,7 +119,7 @@ pub fn config_routes() -> Router<AppState> {
 async fn get_capabilities(
     State(state): State<AppState>,
     headers: HeaderMap,
-) -> Result<impl IntoResponse, ConfigRouteError> {
+) -> Result<impl IntoResponse, ApiError> {
     ensure_admin_auth(&state, &headers)?;
     let service = ConfigService::new(&state).map_err(map_service_error)?;
     Ok(Json(
@@ -131,7 +131,7 @@ async fn get_schema(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(namespace): Path<String>,
-) -> Result<impl IntoResponse, ConfigRouteError> {
+) -> Result<impl IntoResponse, ApiError> {
     ensure_admin_auth(&state, &headers)?;
     let namespace = RouteConfigNamespace::parse(&namespace).map_err(map_service_error)?;
     let schema = match namespace {
@@ -145,7 +145,7 @@ async fn get_schema(
 async fn get_config_diagnostics(
     State(state): State<AppState>,
     headers: HeaderMap,
-) -> Result<impl IntoResponse, ConfigRouteError> {
+) -> Result<impl IntoResponse, ApiError> {
     ensure_admin_auth(&state, &headers)?;
     let service = ConfigService::new(&state).map_err(map_service_error)?;
     let diagnostics = service.registry_diagnostics().map_err(map_service_error)?;
@@ -156,7 +156,7 @@ async fn preview_provider_removal(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(id): Path<String>,
-) -> Result<impl IntoResponse, ConfigRouteError> {
+) -> Result<impl IntoResponse, ApiError> {
     ensure_admin_auth(&state, &headers)?;
     let service = ConfigService::new(&state).map_err(map_service_error)?;
     let preview = service
@@ -170,7 +170,7 @@ async fn list_agents(
     State(state): State<AppState>,
     headers: HeaderMap,
     query: Query<ListParams>,
-) -> Result<impl IntoResponse, ConfigRouteError> {
+) -> Result<impl IntoResponse, ApiError> {
     ensure_admin_auth(&state, &headers)?;
     list_config_inner(state, "agents".to_string(), query.0).await
 }
@@ -179,7 +179,7 @@ async fn get_agent(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(id): Path<String>,
-) -> Result<impl IntoResponse, ConfigRouteError> {
+) -> Result<impl IntoResponse, ApiError> {
     ensure_admin_auth(&state, &headers)?;
     get_config_inner(state, "agents".to_string(), id).await
 }
@@ -189,7 +189,7 @@ async fn list_config(
     headers: HeaderMap,
     Path(namespace): Path<String>,
     Query(params): Query<ListParams>,
-) -> Result<impl IntoResponse, ConfigRouteError> {
+) -> Result<impl IntoResponse, ApiError> {
     ensure_admin_auth(&state, &headers)?;
     list_config_inner(state, namespace, params).await
 }
@@ -198,7 +198,7 @@ async fn list_config_inner(
     state: AppState,
     namespace: String,
     params: ListParams,
-) -> Result<impl IntoResponse, ConfigRouteError> {
+) -> Result<impl IntoResponse, ApiError> {
     let namespace = RouteConfigNamespace::parse(&namespace).map_err(map_service_error)?;
     let service = ConfigService::new(&state).map_err(map_service_error)?;
     let items = match namespace {
@@ -221,13 +221,13 @@ async fn create_config(
     headers: HeaderMap,
     Path(namespace): Path<String>,
     Json(body): Json<Value>,
-) -> Result<impl IntoResponse, ConfigRouteError> {
+) -> Result<impl IntoResponse, ApiError> {
     ensure_admin_auth(&state, &headers)?;
     let namespace = RouteConfigNamespace::parse(&namespace).map_err(map_service_error)?;
     let namespace = match namespace {
         RouteConfigNamespace::Managed(namespace) => namespace,
         RouteConfigNamespace::Tools => {
-            return Err(map_service_error(namespace.read_only_error()).into());
+            return Err(map_service_error(namespace.read_only_error()));
         }
     };
     let service = ConfigService::new(&state).map_err(map_service_error)?;
@@ -252,13 +252,13 @@ async fn validate_config(
     Path(namespace): Path<String>,
     Query(params): Query<ValidateParams>,
     Json(body): Json<Value>,
-) -> Result<impl IntoResponse, ConfigRouteError> {
+) -> Result<impl IntoResponse, ApiError> {
     ensure_admin_auth(&state, &headers)?;
     let namespace = RouteConfigNamespace::parse(&namespace).map_err(map_service_error)?;
     let namespace = match namespace {
         RouteConfigNamespace::Managed(namespace) => namespace,
         RouteConfigNamespace::Tools => {
-            return Err(map_service_error(namespace.read_only_error()).into());
+            return Err(map_service_error(namespace.read_only_error()));
         }
     };
     let service = ConfigService::new(&state).map_err(map_service_error)?;
@@ -276,7 +276,7 @@ async fn get_config(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path((namespace, id)): Path<(String, String)>,
-) -> Result<impl IntoResponse, ConfigRouteError> {
+) -> Result<impl IntoResponse, ApiError> {
     ensure_admin_auth(&state, &headers)?;
     get_config_inner(state, namespace, id).await
 }
@@ -285,7 +285,7 @@ async fn get_config_inner(
     state: AppState,
     namespace: String,
     id: String,
-) -> Result<impl IntoResponse, ConfigRouteError> {
+) -> Result<impl IntoResponse, ApiError> {
     let namespace = RouteConfigNamespace::parse(&namespace).map_err(map_service_error)?;
     let service = ConfigService::new(&state).map_err(map_service_error)?;
     let value = match namespace {
@@ -301,7 +301,7 @@ async fn get_config_meta(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path((namespace, id)): Path<(String, String)>,
-) -> Result<impl IntoResponse, ConfigRouteError> {
+) -> Result<impl IntoResponse, ApiError> {
     ensure_admin_auth(&state, &headers)?;
     let namespace = RouteConfigNamespace::parse(&namespace).map_err(map_service_error)?;
     let service = ConfigService::new(&state).map_err(map_service_error)?;
@@ -319,7 +319,7 @@ async fn list_config_meta(
     headers: HeaderMap,
     Path(namespace): Path<String>,
     Query(params): Query<ListParams>,
-) -> Result<impl IntoResponse, ConfigRouteError> {
+) -> Result<impl IntoResponse, ApiError> {
     ensure_admin_auth(&state, &headers)?;
     let namespace = RouteConfigNamespace::parse(&namespace).map_err(map_service_error)?;
     let service = ConfigService::new(&state).map_err(map_service_error)?;
@@ -344,13 +344,13 @@ async fn put_config(
     headers: HeaderMap,
     Path((namespace, id)): Path<(String, String)>,
     Json(body): Json<Value>,
-) -> Result<impl IntoResponse, ConfigRouteError> {
+) -> Result<impl IntoResponse, ApiError> {
     ensure_admin_auth(&state, &headers)?;
     let namespace = RouteConfigNamespace::parse(&namespace).map_err(map_service_error)?;
     let namespace = match namespace {
         RouteConfigNamespace::Managed(namespace) => namespace,
         RouteConfigNamespace::Tools => {
-            return Err(map_service_error(namespace.read_only_error()).into());
+            return Err(map_service_error(namespace.read_only_error()));
         }
     };
     let service = ConfigService::new(&state).map_err(map_service_error)?;
@@ -372,22 +372,21 @@ async fn delete_config(
     }
     let namespace = match RouteConfigNamespace::parse(&namespace) {
         Ok(ns) => ns,
-        Err(e) => return ConfigRouteError::Api(map_service_error(e)).into_response(),
+        Err(e) => return map_service_error(e).into_response(),
     };
     let namespace = match namespace {
         RouteConfigNamespace::Managed(namespace) => namespace,
         RouteConfigNamespace::Tools => {
-            return ConfigRouteError::Api(map_service_error(namespace.read_only_error()))
-                .into_response();
+            return map_service_error(namespace.read_only_error()).into_response();
         }
     };
     let service = match ConfigService::new(&state) {
         Ok(s) => s,
-        Err(e) => return ConfigRouteError::Api(map_service_error(e)).into_response(),
+        Err(e) => return map_service_error(e).into_response(),
     };
     let blockers = match delete_blockers_for_route(&service, namespace, &id, params.force).await {
         Ok(blockers) => blockers,
-        Err(e) => return ConfigRouteError::Api(map_service_error(e)).into_response(),
+        Err(e) => return map_service_error(e).into_response(),
     };
     if !blockers.is_empty() {
         return (
@@ -404,7 +403,7 @@ async fn delete_config(
         .await
     {
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
-        Err(e) => ConfigRouteError::Api(map_service_error(e)).into_response(),
+        Err(e) => map_service_error(e).into_response(),
     }
 }
 
@@ -450,18 +449,17 @@ async fn restore_config(
     }
     let namespace = match RouteConfigNamespace::parse(&namespace) {
         Ok(ns) => ns,
-        Err(e) => return ConfigRouteError::Api(map_service_error(e)).into_response(),
+        Err(e) => return map_service_error(e).into_response(),
     };
     let namespace = match namespace {
         RouteConfigNamespace::Managed(namespace) => namespace,
         RouteConfigNamespace::Tools => {
-            return ConfigRouteError::Api(map_service_error(namespace.read_only_error()))
-                .into_response();
+            return map_service_error(namespace.read_only_error()).into_response();
         }
     };
     let service = match ConfigService::new(&state) {
         Ok(s) => s,
-        Err(e) => return ConfigRouteError::Api(map_service_error(e)).into_response(),
+        Err(e) => return map_service_error(e).into_response(),
     };
     match service
         .restore(namespace, &id, &body.version, &headers)
@@ -493,12 +491,8 @@ async fn restore_config(
             Json(json!({"error": msg})),
         )
             .into_response(),
-        Err(RestoreError::Service(e)) => {
-            ConfigRouteError::Api(map_service_error(e)).into_response()
-        }
-        Err(RestoreError::Storage(e)) => {
-            ConfigRouteError::Api(ApiError::Internal(e.to_string())).into_response()
-        }
+        Err(RestoreError::Service(e)) => map_service_error(e).into_response(),
+        Err(RestoreError::Storage(e)) => ApiError::Internal(e.to_string()).into_response(),
     }
 }
 
@@ -506,7 +500,7 @@ async fn test_provider_connection(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(id): Path<String>,
-) -> Result<impl IntoResponse, ConfigRouteError> {
+) -> Result<impl IntoResponse, ApiError> {
     ensure_admin_auth(&state, &headers)?;
     let service = ConfigService::new(&state).map_err(map_service_error)?;
     let result: ProviderTestResult = service
@@ -520,19 +514,20 @@ async fn get_mcp_server_status(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(id): Path<String>,
-) -> Result<impl IntoResponse, ConfigRouteError> {
+) -> Result<impl IntoResponse, ApiError> {
     ensure_admin_auth(&state, &headers)?;
 
     // 503 when no MCP runtime is configured.
-    let manager = state.config_runtime_manager.as_ref().ok_or_else(|| {
-        ConfigRouteError::ServiceUnavailable("MCP runtime is not configured".into())
-    })?;
+    let manager = state
+        .config_runtime_manager
+        .as_ref()
+        .ok_or_else(|| ApiError::ServiceUnavailable("MCP runtime is not configured".into()))?;
 
     // 404 when the id is unknown to the active registry.
     let status = manager
         .mcp_server_status(&id)
         .await
-        .ok_or_else(|| ConfigRouteError::Api(ApiError::NotFound(format!("mcp-server/{id}"))))?;
+        .ok_or_else(|| ApiError::NotFound(format!("mcp-server/{id}")))?;
 
     Ok(Json(json!({
         "connected": status.connected,
@@ -562,25 +557,26 @@ async fn post_mcp_server_restart(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(id): Path<String>,
-) -> Result<impl IntoResponse, ConfigRouteError> {
+) -> Result<impl IntoResponse, ApiError> {
     ensure_admin_auth(&state, &headers)?;
 
     // 503 when no MCP runtime is configured.
-    let manager = state.config_runtime_manager.as_ref().ok_or_else(|| {
-        ConfigRouteError::ServiceUnavailable("MCP runtime is not configured".into())
-    })?;
+    let manager = state
+        .config_runtime_manager
+        .as_ref()
+        .ok_or_else(|| ApiError::ServiceUnavailable("MCP runtime is not configured".into()))?;
 
     manager.mcp_server_reconnect(&id).await.map_err(|e| {
         // Map unknown-server errors (surfaced as InvalidConfig wrapping UnknownServer) to 404.
         let msg = e.to_string();
         if msg.contains("unknown server") || msg.contains("no MCP registry is active") {
             if msg.contains("no MCP registry") {
-                ConfigRouteError::ServiceUnavailable(msg)
+                ApiError::ServiceUnavailable(msg)
             } else {
-                ConfigRouteError::Api(ApiError::NotFound(format!("mcp-server/{id}")))
+                ApiError::NotFound(format!("mcp-server/{id}"))
             }
         } else {
-            ConfigRouteError::Api(ApiError::Internal(msg))
+            ApiError::Internal(msg)
         }
     })?;
 
@@ -605,57 +601,21 @@ async fn list_audit_log(
     State(state): State<AppState>,
     headers: HeaderMap,
     Query(query): Query<AuditQuery>,
-) -> Result<impl IntoResponse, ConfigRouteError> {
+) -> Result<impl IntoResponse, ApiError> {
     ensure_admin_auth(&state, &headers)?;
-    let audit = state.audit_log().ok_or_else(|| {
-        ConfigRouteError::ServiceUnavailable("audit log is not configured".into())
-    })?;
+    let audit = state
+        .audit_log()
+        .ok_or_else(|| ApiError::ServiceUnavailable("audit log is not configured".into()))?;
     let mut effective_query = query;
     effective_query.limit = effective_query.limit.clamp(1, 1000);
     let page = audit.query(effective_query).await.map_err(|e| match e {
-        AuditQueryError::InvalidCursor => {
-            ConfigRouteError::Api(ApiError::BadRequest("invalid cursor".into()))
-        }
-        AuditQueryError::Storage(storage_err) => {
-            ConfigRouteError::Api(ApiError::Internal(storage_err.to_string()))
-        }
+        AuditQueryError::InvalidCursor => ApiError::BadRequest("invalid cursor".into()),
+        AuditQueryError::Storage(storage_err) => ApiError::Internal(storage_err.to_string()),
     })?;
     Ok(Json(page))
 }
 
-#[derive(Debug)]
-pub(crate) enum ConfigRouteError {
-    Api(ApiError),
-    ServiceUnavailable(String),
-    Unauthorized(String),
-}
-
-impl From<ApiError> for ConfigRouteError {
-    fn from(error: ApiError) -> Self {
-        Self::Api(error)
-    }
-}
-
-impl IntoResponse for ConfigRouteError {
-    fn into_response(self) -> Response {
-        match self {
-            ConfigRouteError::Api(error) => error.into_response(),
-            ConfigRouteError::ServiceUnavailable(message) => (
-                StatusCode::SERVICE_UNAVAILABLE,
-                Json(json!({ "error": message })),
-            )
-                .into_response(),
-            ConfigRouteError::Unauthorized(message) => {
-                (StatusCode::UNAUTHORIZED, Json(json!({ "error": message }))).into_response()
-            }
-        }
-    }
-}
-
-pub(crate) fn ensure_admin_auth(
-    state: &AppState,
-    headers: &HeaderMap,
-) -> Result<(), ConfigRouteError> {
+pub(crate) fn ensure_admin_auth(state: &AppState, headers: &HeaderMap) -> Result<(), ApiError> {
     let config = crate::app::admin_api_config(state);
     ensure_admin_auth_for_token(config.bearer_token.as_ref(), headers)
 }
@@ -663,29 +623,29 @@ pub(crate) fn ensure_admin_auth(
 fn ensure_admin_auth_for_token(
     expected: Option<&awaken_contract::RedactedString>,
     headers: &HeaderMap,
-) -> Result<(), ConfigRouteError> {
+) -> Result<(), ApiError> {
     let Some(expected) = expected else {
         return Ok(());
     };
     let mut auth_values = headers.get_all(axum::http::header::AUTHORIZATION).iter();
     let Some(auth) = auth_values.next() else {
-        return Err(ConfigRouteError::Unauthorized(
+        return Err(ApiError::Unauthorized(
             "admin authentication required".into(),
         ));
     };
     if auth_values.next().is_some() {
-        return Err(ConfigRouteError::Unauthorized(
+        return Err(ApiError::Unauthorized(
             "multiple Authorization headers are not allowed".into(),
         ));
     }
     let auth = auth
         .to_str()
-        .map_err(|_| ConfigRouteError::Unauthorized("invalid Authorization header".into()))?;
+        .map_err(|_| ApiError::Unauthorized("invalid Authorization header".into()))?;
     let Some(token) = auth
         .strip_prefix("Bearer ")
         .or_else(|| auth.strip_prefix("bearer "))
     else {
-        return Err(ConfigRouteError::Unauthorized(
+        return Err(ApiError::Unauthorized(
             "Authorization header must use Bearer authentication".into(),
         ));
     };
@@ -695,9 +655,7 @@ fn ensure_admin_auth_for_token(
         .unwrap_u8()
         != 1
     {
-        return Err(ConfigRouteError::Unauthorized(
-            "invalid admin bearer token".into(),
-        ));
+        return Err(ApiError::Unauthorized("invalid admin bearer token".into()));
     }
     Ok(())
 }
@@ -713,12 +671,12 @@ async fn patch_agent_overrides_handler(
     }
     let service = match ConfigService::new(&state) {
         Ok(s) => s,
-        Err(e) => return ConfigRouteError::Api(map_service_error(e)).into_response(),
+        Err(e) => return map_service_error(e).into_response(),
     };
     match service.patch_agent_overrides(&id, body, &headers).await {
         Ok(spec) => Json(spec).into_response(),
         Err(e) if is_overrides_not_supported_for_user_record(&e) => unprocessable_error(e),
-        Err(e) => ConfigRouteError::Api(map_service_error(e)).into_response(),
+        Err(e) => map_service_error(e).into_response(),
     }
 }
 
@@ -733,12 +691,12 @@ async fn validate_agent_overrides_handler(
     }
     let service = match ConfigService::new(&state) {
         Ok(s) => s,
-        Err(e) => return ConfigRouteError::Api(map_service_error(e)).into_response(),
+        Err(e) => return map_service_error(e).into_response(),
     };
     match service.validate_agent_overrides(&id, body).await {
         Ok(spec) => Json(spec).into_response(),
         Err(e) if is_overrides_not_supported_for_user_record(&e) => unprocessable_error(e),
-        Err(e) => ConfigRouteError::Api(map_service_error(e)).into_response(),
+        Err(e) => map_service_error(e).into_response(),
     }
 }
 
@@ -752,12 +710,12 @@ async fn clear_agent_overrides_handler(
     }
     let service = match ConfigService::new(&state) {
         Ok(s) => s,
-        Err(e) => return ConfigRouteError::Api(map_service_error(e)).into_response(),
+        Err(e) => return map_service_error(e).into_response(),
     };
     match service.clear_agent_overrides(&id, &headers).await {
         Ok(spec) => Json(spec).into_response(),
         Err(e) if is_overrides_not_supported_for_user_record(&e) => unprocessable_error(e),
-        Err(e) => ConfigRouteError::Api(map_service_error(e)).into_response(),
+        Err(e) => map_service_error(e).into_response(),
     }
 }
 
@@ -771,7 +729,7 @@ async fn clear_agent_override_field_handler(
     }
     let service = match ConfigService::new(&state) {
         Ok(s) => s,
-        Err(e) => return ConfigRouteError::Api(map_service_error(e)).into_response(),
+        Err(e) => return map_service_error(e).into_response(),
     };
     match service
         .clear_agent_override_field(&id, &field, &headers)
@@ -779,7 +737,7 @@ async fn clear_agent_override_field_handler(
     {
         Ok(spec) => Json(spec).into_response(),
         Err(e) if is_overrides_not_supported_for_user_record(&e) => unprocessable_error(e),
-        Err(e) => ConfigRouteError::Api(map_service_error(e)).into_response(),
+        Err(e) => map_service_error(e).into_response(),
     }
 }
 
@@ -794,12 +752,12 @@ async fn patch_tool_overrides_handler(
     }
     let service = match ConfigService::new(&state) {
         Ok(s) => s,
-        Err(e) => return ConfigRouteError::Api(map_service_error(e)).into_response(),
+        Err(e) => return map_service_error(e).into_response(),
     };
     match service.patch_tool_overrides(&id, body, &headers).await {
         Ok(spec) => Json(spec).into_response(),
         Err(e) if is_overrides_not_supported_for_user_record(&e) => unprocessable_error(e),
-        Err(e) => ConfigRouteError::Api(map_service_error(e)).into_response(),
+        Err(e) => map_service_error(e).into_response(),
     }
 }
 
@@ -813,12 +771,12 @@ async fn clear_tool_overrides_handler(
     }
     let service = match ConfigService::new(&state) {
         Ok(s) => s,
-        Err(e) => return ConfigRouteError::Api(map_service_error(e)).into_response(),
+        Err(e) => return map_service_error(e).into_response(),
     };
     match service.clear_tool_overrides(&id, &headers).await {
         Ok(spec) => Json(spec).into_response(),
         Err(e) if is_overrides_not_supported_for_user_record(&e) => unprocessable_error(e),
-        Err(e) => ConfigRouteError::Api(map_service_error(e)).into_response(),
+        Err(e) => map_service_error(e).into_response(),
     }
 }
 
@@ -832,7 +790,7 @@ async fn clear_tool_override_field_handler(
     }
     let service = match ConfigService::new(&state) {
         Ok(s) => s,
-        Err(e) => return ConfigRouteError::Api(map_service_error(e)).into_response(),
+        Err(e) => return map_service_error(e).into_response(),
     };
     match service
         .clear_tool_override_field(&id, &field, &headers)
@@ -840,7 +798,7 @@ async fn clear_tool_override_field_handler(
     {
         Ok(spec) => Json(spec).into_response(),
         Err(e) if is_overrides_not_supported_for_user_record(&e) => unprocessable_error(e),
-        Err(e) => ConfigRouteError::Api(map_service_error(e)).into_response(),
+        Err(e) => map_service_error(e).into_response(),
     }
 }
 
@@ -928,7 +886,7 @@ mod tests {
                 HeaderValue::from_str(value).expect("valid header value"),
             );
             let err = ensure_admin_auth_for_token(Some(&expected), &headers).unwrap_err();
-            let ConfigRouteError::Unauthorized(message) = &err else {
+            let ApiError::Unauthorized(message) = &err else {
                 panic!("expected Unauthorized for {value:?}, got {err:?}");
             };
             assert!(
@@ -953,7 +911,7 @@ mod tests {
             HeaderValue::from_static("Bearer different"),
         );
         let err = ensure_admin_auth_for_token(Some(&expected), &headers).unwrap_err();
-        let ConfigRouteError::Unauthorized(message) = &err else {
+        let ApiError::Unauthorized(message) = &err else {
             panic!("expected Unauthorized for duplicate headers, got {err:?}");
         };
         assert!(

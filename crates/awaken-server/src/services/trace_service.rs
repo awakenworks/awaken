@@ -11,10 +11,10 @@ use axum::extract::{Path, Query, State};
 use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 
 use crate::app::AppState;
-use crate::config_routes::ConfigRouteError;
-use crate::routes::ApiError;
+use crate::error::ApiError;
 
 // ── Wire type ──────────────────────────────────────────────────────────────
 
@@ -101,27 +101,33 @@ fn map_trace_store_error(err: TraceStoreError) -> ApiError {
 // `Authorization` bearer token, which would otherwise be Debug-printed
 // into every tracing event under this span.
 #[tracing::instrument(skip_all, fields(agent_id = ?params.agent_id))]
-pub(crate) async fn list_traces(
+pub async fn list_traces(
     State(state): State<AppState>,
     headers: axum::http::HeaderMap,
     Query(params): Query<ListTracesQuery>,
-) -> Result<Response, ConfigRouteError> {
+) -> Result<Response, ApiError> {
     crate::config_routes::ensure_admin_auth(&state, &headers)?;
     let store = state
         .trace_store()
         .ok_or_else(|| ApiError::ServiceUnavailable("trace store not configured".into()))?;
 
+    // The `since` parse error preserves the original {error, detail}
+    // wire shape; clients depend on the two-field split.
     let since = match params.since.as_deref() {
         None => None,
-        Some(s) => Some(
-            chrono::DateTime::parse_from_rfc3339(s)
-                .map(std::time::SystemTime::from)
-                .map_err(|err| {
-                    ApiError::BadRequest(format!(
-                        "invalid `since` query parameter; expected RFC 3339 timestamp: {err}"
-                    ))
-                })?,
-        ),
+        Some(s) => match chrono::DateTime::parse_from_rfc3339(s) {
+            Ok(dt) => Some(std::time::SystemTime::from(dt)),
+            Err(err) => {
+                return Ok((
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({
+                        "error": "invalid `since` query parameter; expected RFC 3339 timestamp",
+                        "detail": err.to_string(),
+                    })),
+                )
+                    .into_response());
+            }
+        },
     };
 
     // Reject `limit=0` symmetrically with the event endpoint; `Some(0)`
@@ -129,7 +135,7 @@ pub(crate) async fn list_traces(
     // which is indistinguishable from "no runs matched". `None` falls
     // through to the store's default page size.
     if matches!(params.limit, Some(0)) {
-        return Err(ApiError::BadRequest("`limit` must be >= 1".into()).into());
+        return Err(ApiError::BadRequest("`limit` must be >= 1".into()));
     }
 
     let filter = TraceFilter {
@@ -172,12 +178,12 @@ pub struct GetTraceQuery {
 // materialises the whole run before slicing. Storage-level pagination is
 // tracked as a follow-up (`TraceStore::read_page`).
 #[tracing::instrument(skip_all, fields(run_id = %run_id))]
-pub(crate) async fn get_trace(
+pub async fn get_trace(
     State(state): State<AppState>,
     headers: axum::http::HeaderMap,
     Path(run_id): Path<String>,
     Query(params): Query<GetTraceQuery>,
-) -> Result<Response, ConfigRouteError> {
+) -> Result<Response, ApiError> {
     crate::config_routes::ensure_admin_auth(&state, &headers)?;
     let store = state
         .trace_store()
@@ -190,7 +196,7 @@ pub(crate) async fn get_trace(
     // Lower bound is 1, upper bound is `DEFAULT_TRACE_EVENT_PAGE`.
     let raw_limit = params.limit.unwrap_or(DEFAULT_TRACE_EVENT_PAGE);
     if raw_limit == 0 {
-        return Err(ApiError::BadRequest("`limit` must be >= 1".into()).into());
+        return Err(ApiError::BadRequest("`limit` must be >= 1".into()));
     }
     let limit = raw_limit.min(DEFAULT_TRACE_EVENT_PAGE);
 
@@ -237,11 +243,11 @@ pub(crate) async fn get_trace(
 //
 // `skip_all` keeps the bearer header out of trace logs.
 #[tracing::instrument(skip_all, fields(run_id = %run_id))]
-pub(crate) async fn pin_trace(
+pub async fn pin_trace(
     State(state): State<AppState>,
     headers: axum::http::HeaderMap,
     Path(run_id): Path<String>,
-) -> Result<Response, ConfigRouteError> {
+) -> Result<Response, ApiError> {
     crate::config_routes::ensure_admin_auth(&state, &headers)?;
     let store = state
         .trace_store()
