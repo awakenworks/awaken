@@ -11,6 +11,17 @@
 pub mod memory;
 pub mod memory_mailbox;
 
+/// Wall-clock time in milliseconds since the UNIX epoch.
+///
+/// Panics if the system clock is set before 1970 — a severely misconfigured
+/// system that cannot be meaningfully recovered from.
+pub(crate) fn current_millis() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("system clock before UNIX epoch")
+        .as_millis() as u64
+}
+
 #[cfg(feature = "file")]
 pub mod file;
 

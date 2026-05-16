@@ -1051,19 +1051,7 @@ fn owner_dir_name(owner: &ProfileOwner) -> String {
     }
 }
 
-/// Returns the current time in milliseconds since the UNIX epoch.
-///
-/// # Panics
-///
-/// Panics if the system clock is set before the UNIX epoch (1970-01-01).
-/// This is a truly exceptional condition that indicates a severely
-/// misconfigured system and cannot be meaningfully recovered from.
-fn current_millis() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .expect("system clock before UNIX epoch")
-        .as_millis() as u64
-}
+use crate::current_millis;
 
 #[async_trait]
 impl ProfileStore for FileStore {
