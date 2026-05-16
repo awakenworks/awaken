@@ -38,6 +38,8 @@ use crate::sampling::SamplingHandler;
 /// to surface the cancellation upward (e.g. as `ToolError::Cancelled`).
 pub const CANCELLED_BY_CLIENT: &str = "MCP request cancelled by client";
 
+const HEADER_SESSION_ID: &str = "MCP-Session-Id";
+const HEADER_PROTOCOL_VERSION: &str = "MCP-Protocol-Version";
 const MCP_SESSION_EXPIRED: &str = "MCP session expired";
 const MCP_SESSION_EXPIRED_AFTER_ACCEPT: &str = "MCP session expired after request was accepted";
 const MAX_SSE_LINE_BYTES: usize = 64 * 1024;
@@ -1715,13 +1717,11 @@ impl ProgressAwareHttpTransport {
             )
             .await?;
 
-        // Spec literal: `MCP-Session-Id`. HeaderMap::get is
-        // case-insensitive so this works regardless of how the server
-        // capitalises the response header.
+        // HeaderMap::get is case-insensitive (server casing irrelevant).
         let session_id = post_response
             .response
             .headers()
-            .get("MCP-Session-Id")
+            .get(HEADER_SESSION_ID)
             .and_then(|value| value.to_str().ok())
             .map(str::to_string);
 
@@ -1950,10 +1950,10 @@ impl ProgressAwareHttpTransport {
             ));
         }
         if let Some(ref protocol_version) = sent_protocol_version {
-            request = request.header("MCP-Protocol-Version", protocol_version.clone());
+            request = request.header(HEADER_PROTOCOL_VERSION, protocol_version.clone());
         }
         if let Some(ref session_id) = sent_session_id {
-            request = request.header("MCP-Session-Id", session_id.clone());
+            request = request.header(HEADER_SESSION_ID, session_id.clone());
         }
 
         request = match message {
@@ -2331,8 +2331,8 @@ impl ProgressAwareHttpTransport {
             .streaming_client
             .get(&self.endpoint)
             .header(reqwest::header::ACCEPT, "text/event-stream")
-            .header("MCP-Session-Id", session_id)
-            .header("MCP-Protocol-Version", MCP_PROTOCOL_VERSION)
+            .header(HEADER_SESSION_ID, session_id)
+            .header(HEADER_PROTOCOL_VERSION, MCP_PROTOCOL_VERSION)
             .header("Last-Event-ID", last_event_id);
 
         let response = tokio::time::timeout(self.timeout, request.send())
@@ -2620,10 +2620,10 @@ impl ProgressAwareHttpTransport {
             ));
         }
         if let Some(ref session_id) = sent_session_id {
-            request = request.header("MCP-Session-Id", session_id.clone());
+            request = request.header(HEADER_SESSION_ID, session_id.clone());
         }
         if let Some(ref protocol_version) = sent_protocol_version {
-            request = request.header("MCP-Protocol-Version", protocol_version.clone());
+            request = request.header(HEADER_PROTOCOL_VERSION, protocol_version.clone());
         }
         if let Some(id) = last_event_id {
             request = request.header("Last-Event-ID", id);
@@ -2846,10 +2846,10 @@ async fn run_http_listening_stream(ctx: HttpListenerCtx) {
             .get(&ctx.endpoint)
             .header(reqwest::header::ACCEPT, "text/event-stream");
         if let Some(ref id) = session_snapshot.session_id {
-            req = req.header("MCP-Session-Id", id.clone());
+            req = req.header(HEADER_SESSION_ID, id.clone());
         }
         if let Some(ref pv) = session_snapshot.protocol_version {
-            req = req.header("MCP-Protocol-Version", pv.clone());
+            req = req.header(HEADER_PROTOCOL_VERSION, pv.clone());
         }
         if let Some(ref id) = last_event_id {
             req = req.header("Last-Event-ID", id.clone());
@@ -3153,10 +3153,10 @@ async fn post_listener_response(
         ));
     }
     if let Some(ref pv) = sent_protocol_version {
-        req = req.header("MCP-Protocol-Version", pv.clone());
+        req = req.header(HEADER_PROTOCOL_VERSION, pv.clone());
     }
     if let Some(ref id) = sent_session_id {
-        req = req.header("MCP-Session-Id", id.clone());
+        req = req.header(HEADER_SESSION_ID, id.clone());
     }
     let http_response = req.json(&response).send().await.map_err(|e| {
         McpTransportError::TransportError(format!("listener response POST failed: {}", e))
@@ -3582,9 +3582,9 @@ impl ProgressAwareHttpTransport {
         let mut request = self
             .client
             .delete(&self.endpoint)
-            .header("MCP-Session-Id", session_id.to_string());
+            .header(HEADER_SESSION_ID, session_id.to_string());
         if let Some(protocol_version) = protocol_version {
-            request = request.header("MCP-Protocol-Version", protocol_version.to_string());
+            request = request.header(HEADER_PROTOCOL_VERSION, protocol_version.to_string());
         }
         match request.send().await {
             Ok(response) if response.status() == reqwest::StatusCode::METHOD_NOT_ALLOWED => {
@@ -4691,7 +4691,7 @@ mod tests {
                             200,
                             "application/json",
                             body,
-                            &[("MCP-Session-Id", format!("session-{initialize_count}"))],
+                            &[(HEADER_SESSION_ID, format!("session-{initialize_count}"))],
                         )
                         .await;
                     }
@@ -4840,7 +4840,7 @@ mod tests {
                             200,
                             "application/json",
                             body,
-                            &[("MCP-Session-Id", format!("session-{initialize_count}"))],
+                            &[(HEADER_SESSION_ID, format!("session-{initialize_count}"))],
                         )
                         .await;
                     }
