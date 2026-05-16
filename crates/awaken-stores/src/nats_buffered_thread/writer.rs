@@ -193,9 +193,4 @@ async fn checkpoint_after_prepare<T: ThreadRunStore + Send + Sync + 'static>(
     Ok(())
 }
 
-fn now_millis() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|duration| duration.as_millis() as u64)
-        .unwrap_or(0)
-}
+use super::recovery::now_millis;
