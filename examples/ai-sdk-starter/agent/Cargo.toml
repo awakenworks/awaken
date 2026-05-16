@@ -7,7 +7,7 @@ publish = false
 [dependencies]
 awaken-examples = { path = "../.." }
 tokio = { workspace = true, features = ["rt-multi-thread", "signal"] }
-clap = { version = "4", features = ["derive", "env"] }
+clap = { workspace = true }
 
 [[bin]]
 name = "ai-sdk-starter-agent"
