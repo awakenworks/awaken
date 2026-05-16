@@ -74,6 +74,13 @@ metrics = "0.24"
 metrics-exporter-prometheus = "0.16"
 tempfile = "3"
 testcontainers = "0.23"
+clap = { version = "4", features = ["derive", "env"] }
+mcp = { package = "model-context-protocol", version = "0.2", default-features = false }
+axum = { version = "0.7", default-features = false }
+tower = "0.5"
+tower-http = "0.6"
+sqlx = { version = "0.8", default-features = false }
+tracing-subscriber = "0.3"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
