@@ -283,14 +283,14 @@ export OPENAI_API_KEY=<your-key>
 cargo run --package awaken --example multi_turn
 
 # 全栈演示
-cd examples/ai-sdk-starter && npm install && npm run dev
+pnpm install && pnpm --filter awaken-ai-sdk-starter dev
 
 # 终端 1：admin console 使用的 starter backend
 AWAKEN_STORAGE_DIR=./target/admin-sessions cargo run -p ai-sdk-starter-agent
 
 # 终端 2：admin console
-npm --prefix apps/admin-console install
-npm --prefix apps/admin-console run dev
+pnpm install
+pnpm --filter awaken-admin-console dev
 ```
 
 | 目标 | 从这里开始 | 然后 |

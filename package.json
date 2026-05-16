@@ -1,0 +1,28 @@
+{
+  "name": "awaken",
+  "private": true,
+  "packageManager": "pnpm@10.18.1",
+  "scripts": {
+    "tokens:build": "pnpm --filter @awaken/design-tokens build",
+    "tokens:validate": "pnpm --filter @awaken/design-tokens validate",
+    "tokens:dev": "pnpm --filter @awaken/design-tokens dev",
+    "admin:dev": "pnpm --filter awaken-admin-console dev",
+    "admin:build": "pnpm --filter awaken-admin-console build",
+    "admin:test": "pnpm --filter awaken-admin-console test"
+  },
+  "engines": {
+    "node": ">=20",
+    "pnpm": ">=10"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "@scarf/scarf",
+      "esbuild",
+      "sharp",
+      "style-dictionary"
+    ],
+    "overrides": {
+      "rxjs": "7.8.1"
+    }
+  }
+}

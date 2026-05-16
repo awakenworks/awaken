@@ -1,7 +1,9 @@
-## Awaken Admin Console — Design Tokens
+## Awaken Design Tokens (`@awaken/design-tokens`)
 
 W3C Design Tokens Community Group (DTCG) compliant token source. Built with
-Style Dictionary v4 into `apps/admin-console/src/styles/generated/`.
+Style Dictionary v4 into `packages/design-tokens/dist/css/`, consumed via the
+package `exports` field by `awaken-admin-console`, `@awaken/www`, and any
+future Awaken surface.
 
 ### Layers
 
@@ -24,9 +26,9 @@ tokens/
 
 The `⇆ teams (parity)` files are byte-for-byte identical to
 `~/Codes/teams/web/design-tokens/` (after renaming the top-level namespace
-`os` → `aw`). A vitest under `src/__tests__/tokens.parity.test.ts`
-diffs the shared subtrees on every CI run; if teams or admin-console
-edits one of them and forgets to push the change to the other, CI fails.
+`os` → `aw`). A vitest under `tokens.parity.test.ts` diffs the shared subtrees on every CI
+run; if teams or Awaken edits one of them and forgets to push the change to
+the other, CI fails.
 
 The Awaken-specific files are *forks* — same DTCG schema, different
 brand values. Awaken uses warm-leaning slate neutrals + indigo accent
@@ -35,20 +37,30 @@ monochrome (black accent, hex neutrals).
 
 ### Build
 
+From the repo root:
+
 ```sh
 pnpm tokens:validate   # structural DTCG check
-pnpm tokens:build      # one-shot, runs as part of pnpm build / pnpm dev
+pnpm tokens:build      # one-shot, also runs implicitly via consumer predev/prebuild
 pnpm tokens:dev        # watch mode (re-emits on JSON edit)
 ```
 
-Outputs (consumed by `src/globals.css`):
+Outputs (consumed via package `exports`):
 
 ```
-src/styles/generated/
+dist/css/
 ├── tokens.css           :root + [data-theme="light"]
 ├── tokens-dark.css      [data-theme="dark"]
 ├── tokens-auto-dark.css @media (prefers-color-scheme: dark)
 └── tokens.json          DTCG round-trip (Figma / Storybook)
+```
+
+Consumers import via bare specifiers, e.g.
+
+```css
+@import "@awaken/design-tokens/css/tokens.css";
+@import "@awaken/design-tokens/css/tokens-dark.css";
+@import "@awaken/design-tokens/css/tokens-auto-dark.css";
 ```
 
 ### Conventions
@@ -64,9 +76,9 @@ src/styles/generated/
 
 ### Why fork instead of depend on teams or share a package?
 
-Today: teams and admin-console are independent monorepos with no shared
-package. Cross-repo coordination has a cost; we paid it once (this fork)
-and let CI catch drift on the small set of values that genuinely should
-match. When a third consumer appears or token-sync becomes a recurring
-pain, we'll lift to a shared package (see `docs/superpowers/specs/`
-for design memos).
+Today: teams and Awaken are independent monorepos with no shared package
+spanning both. Cross-repo coordination has a cost; we paid it once (this
+fork) and let CI catch drift on the small set of values that genuinely
+should match. Within Awaken the tokens are now a true shared workspace
+package (`@awaken/design-tokens`) so every internal surface stays aligned
+by construction.

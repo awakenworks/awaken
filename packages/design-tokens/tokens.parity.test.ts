@@ -7,7 +7,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const ours = resolve(__dirname, "tokens");
 const theirs = resolve(
   __dirname,
-  "../../../../teams/web/design-tokens/tokens",
+  "../../../teams/web/design-tokens/tokens",
 );
 
 const SHARED_FILES = [

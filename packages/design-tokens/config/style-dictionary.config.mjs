@@ -5,7 +5,7 @@ import fs from "node:fs/promises";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(__dirname, "..");
-const out = path.resolve(root, "../src/styles/generated");
+const out = path.resolve(root, "dist/css");
 
 /* DTCG-aware transforms (Style Dictionary v4 API: `filter` + `transform`).
  * Each $type gets serialized to its canonical CSS form.

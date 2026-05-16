@@ -23,7 +23,7 @@ AWAKEN_ADMIN_API_BEARER_TOKEN=dev-token \
 cargo run -p ai-sdk-starter-agent
 
 # Terminal 2 — admin console
-cd apps/admin-console && npm run dev
+pnpm --filter awaken-admin-console dev
 # → http://127.0.0.1:3002
 ```
 

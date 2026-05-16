@@ -1,0 +1,31 @@
+{
+  "name": "@awaken/design-tokens",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Awaken design tokens (DTCG + Style Dictionary v4) consumed by admin-console and www.",
+  "files": [
+    "dist",
+    "tokens",
+    "README.md"
+  ],
+  "exports": {
+    "./css/tokens.css": "./dist/css/tokens.css",
+    "./css/tokens-dark.css": "./dist/css/tokens-dark.css",
+    "./css/tokens-auto-dark.css": "./dist/css/tokens-auto-dark.css",
+    "./tokens.json": "./dist/css/tokens.json",
+    "./package.json": "./package.json"
+  },
+  "scripts": {
+    "build": "node config/style-dictionary.config.mjs",
+    "dev": "node config/style-dictionary.config.mjs --watch",
+    "validate": "node scripts/validate.mjs",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "style-dictionary": "^4.4.0"
+  },
+  "devDependencies": {
+    "vitest": "^4.0.18"
+  }
+}

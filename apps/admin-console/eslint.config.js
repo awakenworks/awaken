@@ -13,8 +13,6 @@ export default tseslint.config(
       "dist/**",
       "node_modules/**",
       "coverage/**",
-      "src/styles/generated/**",
-      "design-tokens/build/**",
     ],
   },
   {
@@ -58,7 +56,7 @@ export default tseslint.config(
     },
   },
   {
-    files: ["vite.config.ts", "*.config.{ts,js,mjs}", "design-tokens/**/*.{ts,js,mjs}"],
+    files: ["vite.config.ts", "*.config.{ts,js,mjs}"],
     languageOptions: {
       globals: { ...globals.node, ...globals.vitest },
     },

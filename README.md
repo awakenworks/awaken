@@ -308,14 +308,14 @@ awaken                   Facade crate with feature flags
 export OPENAI_API_KEY=<your-key>
 cargo run --package awaken --example multi_turn
 
-cd examples/ai-sdk-starter && npm install && npm run dev
+pnpm install && pnpm --filter awaken-ai-sdk-starter dev
 
 # Terminal 1: starter backend for admin console
 AWAKEN_STORAGE_DIR=./target/admin-sessions cargo run -p ai-sdk-starter-agent
 
 # Terminal 2: admin console
-npm --prefix apps/admin-console install
-npm --prefix apps/admin-console run dev
+pnpm install
+pnpm --filter awaken-admin-console dev
 ```
 
 | Goal | Start with | Then |

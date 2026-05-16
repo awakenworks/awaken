@@ -12,8 +12,8 @@ This page is a **surface inventory**. For walkthroughs, see
 
 | Layer | Lives at | Purpose |
 |---|---|---|
-| Token pipeline | `apps/admin-console/design-tokens/` | Style Dictionary v4 source for `--aw-*` CSS variables. JSON sources are split between Awaken-specific (warm-leaning slate + indigo) and a "shared with `~/Codes/teams`" subset enforced by `tokens.parity.test.ts` |
-| Generated CSS | `src/styles/generated/` (gitignored) | `tokens.css`, `tokens-dark.css`, `tokens-auto-dark.css`, `tokens.json` — produced by `npm run tokens:build` (auto-runs as `predev`/`prebuild`/`pretest`) |
+| Token pipeline | `packages/design-tokens/` (`@awaken/design-tokens`) | Style Dictionary v4 source for `--aw-*` CSS variables. JSON sources are split between Awaken-specific (warm-leaning slate + indigo) and a "shared with `~/Codes/teams`" subset enforced by `tokens.parity.test.ts`. Consumed via pnpm workspace dependency. |
+| Generated CSS | `packages/design-tokens/dist/css/` (gitignored) | `tokens.css`, `tokens-dark.css`, `tokens-auto-dark.css`, `tokens.json` — produced by `pnpm tokens:build` (auto-runs as `predev`/`prebuild`/`pretest`) and imported via `@awaken/design-tokens/css/*` |
 | Tailwind | `tailwind.config.ts` | `theme.extend` exposes the `--aw-*` tokens as semantic Tailwind classes (`bg-fg-strong`, `text-state-progress`, `shadow-card`, etc.) |
 | Routing | `src/app.tsx` (data router via `createBrowserRouter`) | Required for `useBlocker` (unsaved-changes guard) |
 | Auth | `src/components/auth-provider.tsx` | Bearer token in `localStorage`, surfaced as the topbar status pill |
@@ -142,13 +142,13 @@ Regressions / Newly fixed). No server persistence yet
 
 ## Token system
 
-The console **does not** consume the design package the design memo refers
-to (`@awaken/design`). Instead it has its own forked Style Dictionary
-pipeline at `design-tokens/`, with the shared `phase` / `chrome` / `agent`
-/ `tone` subtrees parity-checked against teams' upstream JSON. This means
-both products keep family resemblance without the cost of a cross-repo
-shared package — the trade-off is documented in
-`apps/admin-console/design-tokens/README.md`.
+The console consumes `@awaken/design-tokens`, a pnpm workspace package at
+`packages/design-tokens/` that runs Style Dictionary v4 over DTCG JSON
+sources. The shared `phase` / `chrome` / `agent` / `tone` subtrees are
+parity-checked against teams' upstream JSON, so both products keep family
+resemblance while every Awaken surface (admin console, www, future
+playgrounds) imports the same token build by construction. Details in
+`packages/design-tokens/README.md`.
 
 ## Disabled-feature notices
 

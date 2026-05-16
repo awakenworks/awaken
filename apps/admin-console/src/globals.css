@@ -1,6 +1,6 @@
-@import "./styles/generated/tokens.css";
-@import "./styles/generated/tokens-dark.css";
-@import "./styles/generated/tokens-auto-dark.css";
+@import "@awaken/design-tokens/css/tokens.css";
+@import "@awaken/design-tokens/css/tokens-dark.css";
+@import "@awaken/design-tokens/css/tokens-auto-dark.css";
 
 @tailwind base;
 @tailwind components;

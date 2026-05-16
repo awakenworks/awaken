@@ -6,8 +6,8 @@ Full-stack example: Next.js frontend with [CopilotKit](https://copilotkit.ai/) (
 
 ```bash
 cp .env.example .env          # fill in your LLM provider key
-npm install
-npm run dev                    # starts Next.js dev server + Rust backend
+pnpm install                  # run once at repo root
+pnpm dev                       # starts Next.js dev server + Rust backend
 ```
 
 Open http://localhost:3000 in your browser.
