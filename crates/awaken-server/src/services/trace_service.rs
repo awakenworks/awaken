@@ -11,9 +11,10 @@ use axum::extract::{Path, Query, State};
 use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use serde::{Deserialize, Serialize};
-use serde_json::json;
 
 use crate::app::AppState;
+use crate::config_routes::ConfigRouteError;
+use crate::routes::ApiError;
 
 // ── Wire type ──────────────────────────────────────────────────────────────
 
@@ -80,23 +81,15 @@ pub struct ListTracesQuery {
     pub since: Option<String>,
 }
 
-// ── Error wrapper ──────────────────────────────────────────────────────────
+// ── Error mapping ──────────────────────────────────────────────────────────
 
-/// Converts `TraceStoreError` to an HTTP response.
-pub struct TraceAppError(pub TraceStoreError);
-
-impl IntoResponse for TraceAppError {
-    fn into_response(self) -> Response {
-        let (status, msg) = match self.0 {
-            TraceStoreError::NotFound { run_id } => {
-                (StatusCode::NOT_FOUND, format!("trace not found: {run_id}"))
-            }
-            TraceStoreError::InvalidRunId(id) => {
-                (StatusCode::BAD_REQUEST, format!("invalid run id: {id}"))
-            }
-            err => (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()),
-        };
-        (status, Json(json!({ "error": msg }))).into_response()
+fn map_trace_store_error(err: TraceStoreError) -> ApiError {
+    match err {
+        TraceStoreError::NotFound { run_id } => {
+            ApiError::NotFound(format!("trace not found: {run_id}"))
+        }
+        TraceStoreError::InvalidRunId(id) => ApiError::BadRequest(format!("invalid run id: {id}")),
+        err => ApiError::Internal(err.to_string()),
     }
 }
 
@@ -108,37 +101,27 @@ impl IntoResponse for TraceAppError {
 // `Authorization` bearer token, which would otherwise be Debug-printed
 // into every tracing event under this span.
 #[tracing::instrument(skip_all, fields(agent_id = ?params.agent_id))]
-pub async fn list_traces(
+pub(crate) async fn list_traces(
     State(state): State<AppState>,
     headers: axum::http::HeaderMap,
     Query(params): Query<ListTracesQuery>,
-) -> Response {
-    if let Err(err) = crate::config_routes::ensure_admin_auth(&state, &headers) {
-        return err.into_response();
-    }
-    let Some(store) = state.trace_store() else {
-        return (
-            StatusCode::SERVICE_UNAVAILABLE,
-            Json(json!({ "error": "trace store not configured" })),
-        )
-            .into_response();
-    };
+) -> Result<Response, ConfigRouteError> {
+    crate::config_routes::ensure_admin_auth(&state, &headers)?;
+    let store = state
+        .trace_store()
+        .ok_or_else(|| ApiError::ServiceUnavailable("trace store not configured".into()))?;
 
     let since = match params.since.as_deref() {
         None => None,
-        Some(s) => match chrono::DateTime::parse_from_rfc3339(s) {
-            Ok(dt) => Some(std::time::SystemTime::from(dt)),
-            Err(err) => {
-                return (
-                    StatusCode::BAD_REQUEST,
-                    Json(json!({
-                        "error": "invalid `since` query parameter; expected RFC 3339 timestamp",
-                        "detail": err.to_string(),
-                    })),
-                )
-                    .into_response();
-            }
-        },
+        Some(s) => Some(
+            chrono::DateTime::parse_from_rfc3339(s)
+                .map(std::time::SystemTime::from)
+                .map_err(|err| {
+                    ApiError::BadRequest(format!(
+                        "invalid `since` query parameter; expected RFC 3339 timestamp: {err}"
+                    ))
+                })?,
+        ),
     };
 
     // Reject `limit=0` symmetrically with the event endpoint; `Some(0)`
@@ -146,11 +129,7 @@ pub async fn list_traces(
     // which is indistinguishable from "no runs matched". `None` falls
     // through to the store's default page size.
     if matches!(params.limit, Some(0)) {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(json!({ "error": "`limit` must be >= 1" })),
-        )
-            .into_response();
+        return Err(ApiError::BadRequest("`limit` must be >= 1".into()).into());
     }
 
     let filter = TraceFilter {
@@ -162,14 +141,9 @@ pub async fn list_traces(
         limit: params.limit,
     };
 
-    match store.list(&filter) {
-        Ok(summaries) => {
-            let runs: Vec<RunSummaryWire> =
-                summaries.into_iter().map(RunSummaryWire::from).collect();
-            Json(ListTracesResponse { runs }).into_response()
-        }
-        Err(err) => TraceAppError(err).into_response(),
-    }
+    let summaries = store.list(&filter).map_err(map_trace_store_error)?;
+    let runs: Vec<RunSummaryWire> = summaries.into_iter().map(RunSummaryWire::from).collect();
+    Ok(Json(ListTracesResponse { runs }).into_response())
 }
 
 /// Per-page event cap for `GET /v1/traces/:run_id`.  Trades response
@@ -198,22 +172,16 @@ pub struct GetTraceQuery {
 // materialises the whole run before slicing. Storage-level pagination is
 // tracked as a follow-up (`TraceStore::read_page`).
 #[tracing::instrument(skip_all, fields(run_id = %run_id))]
-pub async fn get_trace(
+pub(crate) async fn get_trace(
     State(state): State<AppState>,
     headers: axum::http::HeaderMap,
     Path(run_id): Path<String>,
     Query(params): Query<GetTraceQuery>,
-) -> Response {
-    if let Err(err) = crate::config_routes::ensure_admin_auth(&state, &headers) {
-        return err.into_response();
-    }
-    let Some(store) = state.trace_store() else {
-        return (
-            StatusCode::SERVICE_UNAVAILABLE,
-            Json(json!({ "error": "trace store not configured" })),
-        )
-            .into_response();
-    };
+) -> Result<Response, ConfigRouteError> {
+    crate::config_routes::ensure_admin_auth(&state, &headers)?;
+    let store = state
+        .trace_store()
+        .ok_or_else(|| ApiError::ServiceUnavailable("trace store not configured".into()))?;
 
     let offset = params.offset.unwrap_or(0);
     // F17: clamp `limit` to a positive value. `limit=0` would freeze a
@@ -222,13 +190,7 @@ pub async fn get_trace(
     // Lower bound is 1, upper bound is `DEFAULT_TRACE_EVENT_PAGE`.
     let raw_limit = params.limit.unwrap_or(DEFAULT_TRACE_EVENT_PAGE);
     if raw_limit == 0 {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(json!({
-                "error": "`limit` must be >= 1",
-            })),
-        )
-            .into_response();
+        return Err(ApiError::BadRequest("`limit` must be >= 1".into()).into());
     }
     let limit = raw_limit.min(DEFAULT_TRACE_EVENT_PAGE);
 
@@ -238,39 +200,36 @@ pub async fn get_trace(
     // direct writer could still produce a large vector here. A follow-up
     // adds `TraceStore::read_page(run_id, offset, limit)` so pagination
     // is also a storage-layer operation.
-    match store.read(&run_id) {
-        Ok(events) => {
-            let total = events.len();
-            let end = offset.saturating_add(limit).min(total);
-            let page = events.get(offset..end).unwrap_or(&[]);
-            // Serialise as NDJSON — one JSON line per event, terminated by '\n'.
-            let mut buf = String::new();
-            for event in page {
-                match serde_json::to_string(event) {
-                    Ok(line) => {
-                        buf.push_str(&line);
-                        buf.push('\n');
-                    }
-                    Err(err) => {
-                        tracing::warn!(run_id = %run_id, error = %err, "failed to serialise trace event");
-                    }
-                }
+    let events = store.read(&run_id).map_err(map_trace_store_error)?;
+    let total = events.len();
+    let end = offset.saturating_add(limit).min(total);
+    let page = events.get(offset..end).unwrap_or(&[]);
+    // Serialise as NDJSON — one JSON line per event, terminated by '\n'.
+    let mut buf = String::new();
+    for event in page {
+        match serde_json::to_string(event) {
+            Ok(line) => {
+                buf.push_str(&line);
+                buf.push('\n');
             }
-            // An empty result from a known run returns 200 with an empty body.
-            // `TraceStoreError::NotFound` is returned by `read` for a missing run.
-            let mut builder = Response::builder()
-                .status(StatusCode::OK)
-                .header(header::CONTENT_TYPE, "application/x-ndjson")
-                .header("x-trace-total-events", total.to_string());
-            if end < total {
-                builder = builder.header("x-trace-next-offset", end.to_string());
+            Err(err) => {
+                tracing::warn!(run_id = %run_id, error = %err, "failed to serialise trace event");
             }
-            builder
-                .body(Body::from(buf))
-                .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
         }
-        Err(err) => TraceAppError(err).into_response(),
     }
+    // An empty result from a known run returns 200 with an empty body.
+    // `TraceStoreError::NotFound` is returned by `read` for a missing run.
+    let mut builder = Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, "application/x-ndjson")
+        .header("x-trace-total-events", total.to_string());
+    if end < total {
+        builder = builder.header("x-trace-next-offset", end.to_string());
+    }
+    let resp = builder
+        .body(Body::from(buf))
+        .map_err(|e| ApiError::Internal(format!("response build failed: {e}")))?;
+    Ok(resp)
 }
 
 /// `POST /v1/traces/:run_id/pin` — mark a run as operator-pinned so it is
@@ -278,24 +237,18 @@ pub async fn get_trace(
 //
 // `skip_all` keeps the bearer header out of trace logs.
 #[tracing::instrument(skip_all, fields(run_id = %run_id))]
-pub async fn pin_trace(
+pub(crate) async fn pin_trace(
     State(state): State<AppState>,
     headers: axum::http::HeaderMap,
     Path(run_id): Path<String>,
-) -> Response {
-    if let Err(err) = crate::config_routes::ensure_admin_auth(&state, &headers) {
-        return err.into_response();
-    }
-    let Some(store) = state.trace_store() else {
-        return (
-            StatusCode::SERVICE_UNAVAILABLE,
-            Json(json!({ "error": "trace store not configured" })),
-        )
-            .into_response();
-    };
+) -> Result<Response, ConfigRouteError> {
+    crate::config_routes::ensure_admin_auth(&state, &headers)?;
+    let store = state
+        .trace_store()
+        .ok_or_else(|| ApiError::ServiceUnavailable("trace store not configured".into()))?;
 
-    match store.mark_referenced(&run_id, ReferenceKind::OperatorPin) {
-        Ok(()) => (StatusCode::NO_CONTENT).into_response(),
-        Err(err) => TraceAppError(err).into_response(),
-    }
+    store
+        .mark_referenced(&run_id, ReferenceKind::OperatorPin)
+        .map_err(map_trace_store_error)?;
+    Ok(StatusCode::NO_CONTENT.into_response())
 }
