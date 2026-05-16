@@ -141,6 +141,101 @@ describe("agent editor catalog save normalization", () => {
   });
 });
 
+describe("agent editor tool catalog preview", () => {
+  async function renderToolsPreview(overrides: Partial<AgentSpec>) {
+    const agentId = `preview-${Math.random().toString(36).slice(2, 8)}`;
+    const agentBody = {
+      ...agentSpec(agentId),
+      ...overrides,
+    };
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+        const href = fetchHref(input);
+        const method = init?.method?.toUpperCase() ?? "GET";
+        if (method === "GET" && href.includes("/v1/capabilities")) {
+          return jsonResponse({
+            agents: [],
+            tools: [
+              {
+                id: "Read",
+                name: "Read",
+                description: "Read local files",
+                source: { kind: "builtin" },
+              },
+              {
+                id: "mcp:weather/forecast",
+                name: "Forecast",
+                description: "Weather forecast",
+                source: { kind: "mcp", id: "weather" },
+              },
+              {
+                id: "mcp:db/query",
+                name: "Query",
+                description: "Database query",
+                source: { kind: "mcp", id: "db" },
+              },
+            ],
+            plugins: [],
+            skills: [],
+            models: [{ id: "model-a", upstream_model: "gpt-test" }],
+            providers: [],
+            namespaces: [],
+          });
+        }
+        if (method === "GET" && href.endsWith(`/v1/config/agents/${agentId}/meta`)) {
+          return jsonResponse({
+            source: { kind: "user" },
+            hidden: false,
+            user_overrides: null,
+            created_at: 0,
+            updated_at: 0,
+          });
+        }
+        if (method === "GET" && href.endsWith(`/v1/config/agents/${agentId}`)) {
+          return jsonResponse(agentBody);
+        }
+        if (method === "GET" && href.includes("/v1/audit-log")) {
+          return jsonResponse({ items: [] });
+        }
+        throw new Error(`Unexpected fetch: ${method} ${href}`);
+      }),
+    );
+
+    renderEditorRoute(`/agents/${agentId}?tab=tools`);
+    await screen.findByText("Allowed/excluded tools (pre-permission)");
+    return screen.getByTestId("catalog-preview-count").textContent ?? "";
+  }
+
+  it("treats allowed_tools ['*'] as every published tool", async () => {
+    const count = await renderToolsPreview({
+      allowed_tools: ["*"],
+      excluded_tools: [],
+    });
+
+    expect(count).toContain("3 / 3");
+  });
+
+  it("applies tool-id patterns in allowed_tools", async () => {
+    const count = await renderToolsPreview({
+      allowed_tools: ["mcp:*"],
+      excluded_tools: [],
+    });
+
+    expect(count).toContain("2 / 3");
+  });
+
+  it("applies tool-id patterns in excluded_tools", async () => {
+    const count = await renderToolsPreview({
+      allowed_tools: ["*"],
+      excluded_tools: ["mcp:*"],
+    });
+
+    expect(count).toContain("1 / 3");
+  });
+});
+
 describe("agent editor tab ARIA semantics", () => {
   async function waitForBasicsPanel() {
     await screen.findByLabelText("Agent ID", undefined, { timeout: 5000 });
@@ -1927,6 +2022,8 @@ describe("agent editor Save → PATCH vs PUT branching", () => {
 
     await screen.findByText(`Agent "${agentId}" saved (no patchable changes)`);
     expect(patchCalled).toBe(false);
+    expect(screen.getByText("Up to date")).toBeTruthy();
+    expect(screen.queryByText("Unsaved changes")).toBeNull();
   });
 
   it("does not PATCH legacy catalog normalization as builtin override fields", async () => {

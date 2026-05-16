@@ -26,7 +26,7 @@ use awaken_contract::registry_spec::AgentSpec;
 pub(super) fn filter_tools(tools: &mut HashMap<String, Arc<dyn Tool>>, spec: &AgentSpec) {
     let original_tool_ids: Vec<String> = tools.keys().cloned().collect();
     if let Some(allow) = &spec.allowed_tools {
-        warn_catalog_argument_patterns(&spec.id, "allowed_tools", allow);
+        warn_catalog_argument_patterns(&spec.id, "allowed_tools", allow, &original_tool_ids);
         warn_unmatched_catalog_patterns(&spec.id, "allowed_tools", allow, &original_tool_ids);
         tools.retain(|id, _| catalog_pattern_matches(allow, id));
     } else {
@@ -34,7 +34,7 @@ pub(super) fn filter_tools(tools: &mut HashMap<String, Arc<dyn Tool>>, spec: &Ag
     }
 
     if let Some(exclude) = &spec.excluded_tools {
-        warn_catalog_argument_patterns(&spec.id, "excluded_tools", exclude);
+        warn_catalog_argument_patterns(&spec.id, "excluded_tools", exclude, &original_tool_ids);
         warn_unmatched_catalog_patterns(&spec.id, "excluded_tools", exclude, &original_tool_ids);
         tools.retain(|id, _| !catalog_pattern_matches(exclude, id));
     }
@@ -50,9 +50,16 @@ pub(super) fn catalog_pattern_matches(patterns: &[String], tool_id: &str) -> boo
 
 /// Warn when a catalog entry parses as an argument-level pattern (`Bash(npm *)`).
 /// Catalog matching is tool-name only; such entries silently never match.
-fn warn_catalog_argument_patterns(agent_id: &str, field: &str, patterns: &[String]) {
+fn warn_catalog_argument_patterns(
+    agent_id: &str,
+    field: &str,
+    patterns: &[String],
+    tool_ids: &[String],
+) {
     for p in patterns {
-        if is_argument_level_catalog_pattern(p) {
+        if is_argument_level_catalog_pattern(p)
+            || is_argument_syntax_for_registered_tool(p, tool_ids)
+        {
             tracing::warn!(
                 agent_id = %agent_id,
                 field = %field,
@@ -62,6 +69,19 @@ fn warn_catalog_argument_patterns(agent_id: &str, field: &str, patterns: &[Strin
             );
         }
     }
+}
+
+pub(super) fn is_argument_syntax_for_registered_tool(pattern: &str, tool_ids: &[String]) -> bool {
+    if !pattern.contains('(') {
+        return false;
+    }
+    let Ok(parsed) = awaken_tool_pattern::parse_pattern(pattern) else {
+        return false;
+    };
+    if !tool_matcher_matches_any(&parsed.tool, tool_ids) {
+        return false;
+    }
+    true
 }
 
 pub(super) fn is_argument_level_catalog_pattern(pattern: &str) -> bool {
@@ -83,7 +103,10 @@ pub(super) fn unmatched_catalog_patterns(patterns: &[String], tool_ids: &[String
     }
     patterns
         .iter()
-        .filter(|pattern| !is_argument_level_catalog_pattern(pattern))
+        .filter(|pattern| {
+            !is_argument_level_catalog_pattern(pattern)
+                && !is_argument_syntax_for_registered_tool(pattern, tool_ids)
+        })
         .filter(|pattern| {
             !tool_ids
                 .iter()
@@ -178,4 +201,15 @@ pub(super) fn permission_rules_without_catalog_match(
         }
     }
     orphans
+}
+
+fn tool_matcher_matches_any(
+    matcher: &awaken_tool_pattern::ToolMatcher,
+    tool_ids: &[String],
+) -> bool {
+    tool_ids.iter().any(|id| match matcher {
+        awaken_tool_pattern::ToolMatcher::Exact(name) => name == id,
+        awaken_tool_pattern::ToolMatcher::Glob(g) => awaken_tool_pattern::wildcard_match(g, id),
+        awaken_tool_pattern::ToolMatcher::Regex(r) => r.is_match(id),
+    })
 }

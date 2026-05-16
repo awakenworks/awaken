@@ -65,7 +65,7 @@ state, argument-level rules) is a separate concern; see `sections["permission"]`
 | `allowed_tools: []`          | Allow no tools                                         |
 | `excluded_tools: ["*"]`      | Block all tools after the allow-list is applied        |
 | `excluded_tools: []`         | Block none                                             |
-| `["a", "mcp__*"]`           | Subset; entries may be literal tool ids or wildcards (`*`) |
+| `["a", "mcp__*"]`           | Subset; entries may be literal tool ids or tool-id patterns |
 
 Legacy `null` / missing values should be migrated to explicit values:
 
@@ -92,15 +92,16 @@ The grammar (see `awaken_tool_pattern::tool_id_match`):
 | `*`        | Matches any sequence of characters, including `/`, `:`, `_`         |
 | `\*`       | A literal `*`                                                        |
 | `\\`       | A literal `\`                                                        |
-| every other char | Literal (no special meaning, including `?`, `[`, `{`, `!`)    |
+| every other char | Literal (no special meaning, including `?`, `[`, `]`, `{`, `}`, `!`) |
 
-Filesystem-glob features (`**` path segments, `?` single-char wildcard,
-`[abc]` character classes, `{a,b}` alternation, leading-`!` negation), regex
-syntax (`/.../`) and argument-level patterns (`Bash(npm *)`,
-`Edit(file_path ~ "src/**")`) are intentionally absent — they belong to the
-permission-rule layer in `sections["permission"]`. To express "allow every
-tool except `Bash`", use `allowed_tools: ["*"]` plus `excluded_tools: ["Bash"]`,
-not `allowed_tools: ["!Bash"]`.
+Catalog entries are not permission globs. Filesystem-glob features (`**` path
+segments, `?` single-char wildcard, `[abc]` character classes, `{a,b}`
+alternation, leading-`!` negation), regex syntax (`/.../`), and argument-level
+patterns (`Bash(npm *)`, `Edit(file_path ~ "src/**")`) are intentionally absent
+— they belong to the permission-rule layer in `sections["permission"]`. In the
+catalog layer, `!Bash`, `Bash?`, and `Bash[0]` are literal tool-id patterns. To
+express "allow every tool except `Bash`", use `allowed_tools: ["*"]` plus
+`excluded_tools: ["Bash"]`, not `allowed_tools: ["!Bash"]`.
 
 The Admin Console parity test
 (`apps/admin-console/src/lib/catalog-glob-parity.test.ts`) and the runtime

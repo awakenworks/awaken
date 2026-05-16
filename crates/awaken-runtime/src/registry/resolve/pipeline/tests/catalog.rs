@@ -6,8 +6,8 @@ use serde_json::json;
 use super::*;
 use crate::registry::resolve::pipeline::catalog::{
     LEGACY_ALLOW_ALL_WARN_CACHE_LIMIT, catalog_pattern_matches, is_argument_level_catalog_pattern,
-    permission_rules_without_catalog_match, should_warn_legacy_allow_all,
-    unmatched_catalog_patterns,
+    is_argument_syntax_for_registered_tool, permission_rules_without_catalog_match,
+    should_warn_legacy_allow_all, unmatched_catalog_patterns,
 };
 
 #[test]
@@ -184,6 +184,25 @@ fn catalog_argument_pattern_detection_flags_permission_style_args() {
 }
 
 #[test]
+fn registered_tool_argument_syntax_detection_flags_simple_args() {
+    let tool_ids = vec!["Bash".to_string(), "literal(paren)".to_string()];
+
+    assert!(is_argument_syntax_for_registered_tool(
+        "Bash(npm)",
+        &tool_ids
+    ));
+    assert!(is_argument_syntax_for_registered_tool("Bash(*)", &tool_ids));
+    assert!(!is_argument_syntax_for_registered_tool(
+        "literal(paren)",
+        &tool_ids
+    ));
+    assert!(!is_argument_syntax_for_registered_tool(
+        "Other(npm)",
+        &tool_ids
+    ));
+}
+
+#[test]
 fn unmatched_catalog_patterns_returns_typos() {
     let patterns = vec![
         "read_*".to_string(),
@@ -196,6 +215,14 @@ fn unmatched_catalog_patterns_returns_typos() {
         unmatched_catalog_patterns(&patterns, &tool_ids),
         vec!["mcp_github_*".to_string()]
     );
+}
+
+#[test]
+fn unmatched_catalog_patterns_skips_registered_tool_argument_syntax() {
+    let patterns = vec!["Bash(npm)".to_string(), "literal(paren)".to_string()];
+    let tool_ids = vec!["Bash".to_string(), "literal(paren)".to_string()];
+
+    assert!(unmatched_catalog_patterns(&patterns, &tool_ids).is_empty());
 }
 
 #[test]

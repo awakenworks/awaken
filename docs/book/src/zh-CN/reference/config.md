@@ -87,13 +87,14 @@ Catalog 条目是 **tool-id pattern**，不是文件系统 glob。Tool id 是不
 | `*`        | 匹配任意字符序列，包括 `/`、`:`、`_`                            |
 | `\*`       | 字面 `*`                                                       |
 | `\\`       | 字面 `\`                                                       |
-| 其它字符    | 字面（`?`、`[`、`{`、`!` 都没有特殊含义）                       |
+| 其它字符    | 字面（`?`、`[`、`]`、`{`、`}`、`!` 都没有特殊含义）              |
 
-文件系统 glob 特性（`**` 路径段、`?` 单字符通配、`[abc]` 字符类、
-`{a,b}` 分支、开头 `!` 取反）、regex 语法（`/.../`）和参数级模式
-（`Bash(npm *)`、`Edit(file_path ~ "src/**")`）在 catalog 层**不**存在——
-它们属于 `sections["permission"]` 层。要表达"允许除 Bash 外所有工具"，
-请用 `allowed_tools: ["*"]` 加 `excluded_tools: ["Bash"]`，
+Catalog 条目不是 permission glob。文件系统 glob 特性（`**` 路径段、`?`
+单字符通配、`[abc]` 字符类、`{a,b}` 分支、开头 `!` 取反）、regex 语法
+（`/.../`）和参数级模式（`Bash(npm *)`、`Edit(file_path ~ "src/**")`）在
+catalog 层**不**存在——它们属于 `sections["permission"]` 层。在 catalog
+层，`!Bash`、`Bash?`、`Bash[0]` 都是字面 tool-id pattern。要表达"允许除
+Bash 外所有工具"，请用 `allowed_tools: ["*"]` 加 `excluded_tools: ["Bash"]`，
 而**不是** `allowed_tools: ["!Bash"]`。
 
 Admin Console 的 parity 测试（`apps/admin-console/src/lib/catalog-glob-parity.test.ts`）

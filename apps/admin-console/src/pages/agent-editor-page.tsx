@@ -62,6 +62,11 @@ import {
 } from "@/lib/agent-editor-helpers";
 import { safeErrorMessage } from "@/lib/safe-error-message";
 import { normalizeCatalogForSave } from "./agent-editor/spec-helpers";
+import {
+  catalogFieldsEqual,
+  catalogSpecsEqual,
+  computeCatalogPreviewTools,
+} from "./agent-editor/catalog-preview";
 
 const EMPTY_AGENT: AgentSpec = {
   id: "",
@@ -141,10 +146,10 @@ export function AgentEditorPage() {
       // so users could lose unsaved edits in context_policy, allowed/excluded
       // tools, delegates, reasoning_effort, sections, or Raw JSON without
       // triggering the unsaved-changes guard.
-      return !deepEqualCanonical(spec, EMPTY_AGENT);
+      return !catalogSpecsEqual(spec, EMPTY_AGENT);
     }
     if (!savedSpec) return false;
-    return !deepEqualCanonical(spec, savedSpec);
+    return !catalogSpecsEqual(spec, savedSpec);
   }, [spec, savedSpec, isNew, saving]);
 
   useUnsavedChangesGuard({ enabled: isDirty });
@@ -1381,19 +1386,6 @@ function promptStats(value: string): { chars: number; lines: number; tokenEstima
  * BeforeInference hook removes unconditionally-denied tools on top of this.
  * See `awaken-ext-permission::PermissionRuleset::unconditionally_denied_tools`.
  */
-function computeAllowedTools(
-  tools: Capabilities["tools"],
-  allowed: AgentSpec["allowed_tools"],
-  excluded: AgentSpec["excluded_tools"],
-): Capabilities["tools"] {
-  const excludedSet = new Set(excluded ?? []);
-  return tools.filter((tool) => {
-    if (allowed !== null && allowed !== undefined && !allowed.includes(tool.id)) return false;
-    if (excludedSet.has(tool.id)) return false;
-    return true;
-  });
-}
-
 function AllowedExcludedToolsSection({
   spec,
   capabilities,
@@ -1411,7 +1403,7 @@ function AllowedExcludedToolsSection({
   savedSpec: AgentSpec | null;
 }) {
   const visible = useMemo(
-    () => computeAllowedTools(capabilities.tools, spec.allowed_tools, spec.excluded_tools),
+    () => computeCatalogPreviewTools(capabilities.tools, spec.allowed_tools, spec.excluded_tools),
     [capabilities.tools, spec.allowed_tools, spec.excluded_tools],
   );
   const total = capabilities.tools.length;
@@ -1457,8 +1449,7 @@ function AllowedExcludedToolsSection({
       canonicalStringify([...savedPluginIds].sort()) ||
       canonicalStringify([...draftHookFilter].sort()) !==
         canonicalStringify([...savedHookFilter].sort()) ||
-      !deepEqualCanonical(spec.allowed_tools ?? null, savedSpec?.allowed_tools ?? null) ||
-      !deepEqualCanonical(spec.excluded_tools ?? null, savedSpec?.excluded_tools ?? null) ||
+      !catalogFieldsEqual(spec, savedSpec) ||
       !deepEqualCanonical(draftPermissionSection, savedPermissionSection));
   // Fetch the server-computed permission preview when the agent is saved
   // AND the saved spec has the permission plugin enabled.
@@ -1488,7 +1479,10 @@ function AllowedExcludedToolsSection({
           </p>
         </div>
         <div className="text-right">
-          <div className="font-mono text-xl font-semibold text-fg-strong">
+          <div
+            className="font-mono text-xl font-semibold text-fg-strong"
+            data-testid="catalog-preview-count"
+          >
             {visible.length}
             <span className="text-fg-faint"> / {total}</span>
           </div>
