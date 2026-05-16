@@ -1,9 +1,7 @@
 #![allow(missing_docs)]
 
 use async_trait::async_trait;
-use awaken::agent::state::{
-    ContextMessageStore, ContextThrottleState, PendingWorkKey, RunLifecycle, ToolCallStates,
-};
+use awaken::agent::state::{RunLifecycle, ToolCallStates};
 use awaken::contract::content::ContentBlock;
 use awaken::contract::event::AgentEvent;
 use awaken::contract::event_sink::{NullEventSink, VecEventSink};
@@ -136,22 +134,7 @@ impl Tool for SuspendingTool {
 // Helpers
 // ---------------------------------------------------------------------------
 
-struct LoopStatePlugin;
-
-impl Plugin for LoopStatePlugin {
-    fn descriptor(&self) -> PluginDescriptor {
-        PluginDescriptor { name: "loop-state" }
-    }
-
-    fn register(&self, registrar: &mut PluginRegistrar) -> Result<(), StateError> {
-        registrar.register_key::<RunLifecycle>(StateKeyOptions::default())?;
-        registrar.register_key::<ToolCallStates>(StateKeyOptions::default())?;
-        registrar.register_key::<ContextThrottleState>(StateKeyOptions::default())?;
-        registrar.register_key::<ContextMessageStore>(StateKeyOptions::default())?;
-        registrar.register_key::<PendingWorkKey>(StateKeyOptions::default())?;
-        Ok(())
-    }
-}
+use awaken::loop_runner::LoopStatePlugin;
 
 fn make_runtime() -> PhaseRuntime {
     let store = StateStore::new();
