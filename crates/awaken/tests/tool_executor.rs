@@ -4,9 +4,7 @@
 //! cross-hook state visibility, stop conditions, and phase interaction.
 
 use async_trait::async_trait;
-use awaken::agent::state::{
-    ContextThrottleState, RunLifecycle, SetInferenceOverride, ToolCallStates,
-};
+use awaken::agent::state::{RunLifecycle, SetInferenceOverride, ToolCallStates};
 use awaken::contract::content::ContentBlock;
 use awaken::contract::event::AgentEvent;
 use awaken::contract::event_sink::{NullEventSink, VecEventSink};
@@ -128,21 +126,7 @@ impl Tool for CountingTool {
 // Helpers
 // ---------------------------------------------------------------------------
 
-use awaken::agent::state::ContextMessageStore;
-
-struct LoopStatePlugin;
-impl Plugin for LoopStatePlugin {
-    fn descriptor(&self) -> PluginDescriptor {
-        PluginDescriptor { name: "loop-state" }
-    }
-    fn register(&self, r: &mut PluginRegistrar) -> Result<(), StateError> {
-        r.register_key::<RunLifecycle>(StateKeyOptions::default())?;
-        r.register_key::<ToolCallStates>(StateKeyOptions::default())?;
-        r.register_key::<ContextThrottleState>(StateKeyOptions::default())?;
-        r.register_key::<ContextMessageStore>(StateKeyOptions::default())?;
-        Ok(())
-    }
-}
+use awaken::loop_runner::LoopStatePlugin;
 
 fn make_runtime() -> PhaseRuntime {
     let store = StateStore::new();

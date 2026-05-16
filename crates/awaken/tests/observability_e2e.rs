@@ -5,9 +5,6 @@
 //! These tests use InMemorySink and require no external services.
 
 use async_trait::async_trait;
-use awaken::agent::state::{
-    ContextMessageStore, ContextThrottleState, RunLifecycle, ToolCallStates,
-};
 use awaken::contract::content::ContentBlock;
 use awaken::contract::event_sink::NullEventSink;
 use awaken::contract::executor::{InferenceExecutionError, InferenceRequest, LlmExecutor};
@@ -112,21 +109,7 @@ impl Tool for CalcTool {
 // Helpers
 // ---------------------------------------------------------------------------
 
-struct LoopStatePlugin;
-
-impl Plugin for LoopStatePlugin {
-    fn descriptor(&self) -> PluginDescriptor {
-        PluginDescriptor { name: "loop-state" }
-    }
-
-    fn register(&self, registrar: &mut PluginRegistrar) -> Result<(), StateError> {
-        registrar.register_key::<RunLifecycle>(StateKeyOptions::default())?;
-        registrar.register_key::<ToolCallStates>(StateKeyOptions::default())?;
-        registrar.register_key::<ContextThrottleState>(StateKeyOptions::default())?;
-        registrar.register_key::<ContextMessageStore>(StateKeyOptions::default())?;
-        Ok(())
-    }
-}
+use awaken::loop_runner::LoopStatePlugin;
 
 fn make_runtime() -> PhaseRuntime {
     let store = StateStore::new();

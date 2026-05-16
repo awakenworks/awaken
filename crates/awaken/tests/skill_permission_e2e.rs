@@ -21,9 +21,6 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use async_trait::async_trait;
 use serde_json::{Value, json};
 
-use awaken::agent::state::{
-    ContextMessageStore, ContextThrottleState, RunLifecycle, ToolCallStates,
-};
 use awaken::contract::content::ContentBlock;
 use awaken::contract::event::AgentEvent;
 use awaken::contract::event_sink::VecEventSink;
@@ -167,19 +164,7 @@ impl Tool for CountingWeatherTool {
 // Helpers
 // ---------------------------------------------------------------------------
 
-struct LoopStatePlugin;
-impl Plugin for LoopStatePlugin {
-    fn descriptor(&self) -> PluginDescriptor {
-        PluginDescriptor { name: "loop-state" }
-    }
-    fn register(&self, r: &mut PluginRegistrar) -> Result<(), StateError> {
-        r.register_key::<RunLifecycle>(StateKeyOptions::default())?;
-        r.register_key::<ToolCallStates>(StateKeyOptions::default())?;
-        r.register_key::<ContextThrottleState>(StateKeyOptions::default())?;
-        r.register_key::<ContextMessageStore>(StateKeyOptions::default())?;
-        Ok(())
-    }
-}
+use awaken::loop_runner::LoopStatePlugin;
 
 fn make_runtime() -> PhaseRuntime {
     let store = StateStore::new();
