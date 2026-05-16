@@ -58,16 +58,6 @@ pub(crate) fn wrap_user(spec: &Value) -> Result<Value, serde_json::Error> {
     record.to_value()
 }
 
-/// Wrap a bare spec Value into a Builtin-source envelope.
-#[allow(dead_code)]
-pub(crate) fn wrap_builtin(spec: &Value, binary_version: &str) -> Result<Value, serde_json::Error> {
-    let record = ConfigRecord {
-        spec: spec.clone(),
-        meta: RecordMeta::new_builtin(binary_version),
-    };
-    record.to_value()
-}
-
 /// If `value` is already an envelope (object containing `spec` and `meta`),
 /// return it unchanged. Otherwise wrap as User per `wrap_user`.
 ///
@@ -119,9 +109,7 @@ mod tests {
     use awaken_contract::{ConfigRecord, RecordSource};
     use serde_json::json;
 
-    use super::{
-        ensure_envelope, extract_timestamps, spec_field, unwrap_spec, wrap_builtin, wrap_user,
-    };
+    use super::{ensure_envelope, extract_timestamps, spec_field, unwrap_spec, wrap_user};
 
     #[test]
     fn wrap_user_creates_envelope_with_user_source() {
@@ -148,19 +136,6 @@ mod tests {
         let record: ConfigRecord<serde_json::Value> = serde_json::from_value(result).unwrap();
         assert_ne!(record.meta.created_at, 0);
         assert_ne!(record.meta.updated_at, 0);
-    }
-
-    #[test]
-    fn wrap_builtin_creates_envelope_with_binary_version() {
-        let spec = json!({"name": "builtin-model"});
-        let result = wrap_builtin(&spec, "v9.9.9").unwrap();
-        let record: ConfigRecord<serde_json::Value> = serde_json::from_value(result).unwrap();
-        match &record.meta.source {
-            RecordSource::Builtin { binary_version } => {
-                assert_eq!(binary_version, "v9.9.9");
-            }
-            other => panic!("expected Builtin source, got {:?}", other),
-        }
     }
 
     #[test]
