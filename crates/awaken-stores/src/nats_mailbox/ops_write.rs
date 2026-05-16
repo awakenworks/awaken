@@ -364,12 +364,7 @@ pub(super) async fn release_dedupe_lock(
     }
 }
 
-fn current_millis() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0)
-}
+use super::sweeper::current_millis;
 
 pub(crate) async fn append_thread_index(
     store: &NatsMailboxStore,
