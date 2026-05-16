@@ -73,7 +73,7 @@ pub(crate) async fn settle_thread_states<T: ThreadRunStore + Send + Sync + 'stat
     Ok(states)
 }
 
-fn now_millis() -> u64 {
+pub(super) fn now_millis() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|duration| duration.as_millis() as u64)

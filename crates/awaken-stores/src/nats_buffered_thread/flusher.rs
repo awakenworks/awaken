@@ -1097,12 +1097,7 @@ async fn flush_batch<T: ThreadRunStore + Send + Sync + 'static>(
     }
 }
 
-fn now_millis() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|duration| duration.as_millis() as u64)
-        .unwrap_or(0)
-}
+use super::recovery::now_millis;
 
 #[cfg(test)]
 mod tests {
