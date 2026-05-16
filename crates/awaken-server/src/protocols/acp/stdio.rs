@@ -395,12 +395,7 @@ fn permission_option_to_resume(option_id: &str) -> acp::Result<(ResumeDecisionAc
     ))
 }
 
-fn unix_timestamp_millis() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|duration| duration.as_millis() as u64)
-        .unwrap_or(0)
-}
+use crate::time::now_millis as unix_timestamp_millis;
 
 fn prompt_blocks_to_message_content(
     blocks: &[ContentBlock],
