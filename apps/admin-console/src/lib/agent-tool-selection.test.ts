@@ -344,6 +344,37 @@ describe("nextAllowedTools", () => {
     ).toEqual(["foo\\bar"]);
   });
 
+  it("removes the escaped literal entry when unchecking from ['*']", () => {
+    // Expanding from ["*"] seeds the baseline with escaped literal entries
+    // for any tool id that contains `*` or `\`. Unchecking the matching tool
+    // must drop that seed entry — otherwise the tool stays authorised even
+    // though the user just turned it off.
+    expect(
+      nextAllowedTools(["*"], ["tool*id", "Other"], "tool*id", false),
+    ).toEqual(["Other"]);
+  });
+
+  it("removes the escaped backslash entry when unchecking from ['*']", () => {
+    expect(
+      nextAllowedTools(["*"], ["foo\\bar", "Other"], "foo\\bar", false),
+    ).toEqual(["Other"]);
+  });
+
+  it("removes the escaped literal entry when unchecking from legacy allow-all", () => {
+    expect(
+      nextAllowedTools(undefined, ["tool*id", "Other"], "tool*id", false),
+    ).toEqual(["Other"]);
+  });
+
+  it("removes a pre-existing escaped literal entry when unchecking it", () => {
+    // The Admin already wrote `tool\*id` (the safe escaped form for the
+    // current tool id). A subsequent uncheck must remove it — keeping it
+    // would leave the tool authorised after the user turned it off.
+    expect(
+      nextAllowedTools(["tool\\*id", "Other"], ["tool*id", "Other"], "tool*id", false),
+    ).toEqual(["Other"]);
+  });
+
   it("refuses to collapse to ['*'] while an unmanaged entry remains", () => {
     // Every current tool id is now covered, but the catalog still holds an
     // unmanaged "unknown" entry — collapsing would silently extend its
@@ -681,5 +712,15 @@ describe("toolSelectionPattern", () => {
   it("returns ['*'] only as the pattern source for exclude variant", () => {
     expect(toolSelectionPattern(["*"], "Bash", "include")).toBe(null);
     expect(toolSelectionPattern(["*"], "Bash", "exclude")).toBe("*");
+  });
+
+  it("flags text-equal entries with dangling backslash as pattern-backed", () => {
+    // Entry and tool id are the same 2-char string `X\`. The matcher treats
+    // the dangling escape as a literal `\`, so the entry happens to match
+    // its own text. It is still grammatically a pattern (a plain raw
+    // literal must be free of catalog escape syntax), so the UI must
+    // manage it through the entry list rather than offer a checkbox toggle.
+    expect(toolSelectionPattern(["X\\"], "X\\")).toBe("X\\");
+    expect(isToolSelectionPatternBacked(["X\\"], "X\\")).toBe(true);
   });
 });

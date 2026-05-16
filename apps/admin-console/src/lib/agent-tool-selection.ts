@@ -222,7 +222,12 @@ export function toolSelectionPattern(
   if (!Array.isArray(allowedTools)) return null;
   if (isExplicitAll(allowedTools)) return variant === "exclude" ? EXPLICIT_ALL : null;
   for (const entry of allowedTools) {
-    if (toolIdMatch(entry, toolId) && (entry !== toolId || hasUnescapedCatalogWildcard(entry))) {
+    if (
+      toolIdMatch(entry, toolId) &&
+      (entry !== toolId ||
+        hasUnescapedCatalogWildcard(entry) ||
+        hasCatalogEscape(entry))
+    ) {
       return entry;
     }
   }
@@ -263,10 +268,17 @@ export function nextAllowedTools(
     }
     return next;
   }
-  return baseline.filter(
-    (id) =>
-      id !== toolId || hasUnescapedCatalogWildcard(id) || hasCatalogEscape(id),
-  );
+  // Unchecking the tool must drop both forms the Admin would have written
+  // for it — the bare literal id (when it is a plain raw literal) and the
+  // escaped literal seeded by `expandSubset` from `["*"]` / legacy
+  // allow-all. Wildcard, backslash-bearing and unmanaged entries stay put;
+  // those are managed exclusively through the explicit catalog entry list.
+  const literalEntry = escapeCatalogLiteral(toolId);
+  return baseline.filter((entry) => {
+    if (entry === literalEntry) return false;
+    if (entry === toolId && isPlainRawCatalogLiteral(entry, allToolIds)) return false;
+    return true;
+  });
 }
 
 export type ToolSelectionMode = "all" | "custom";
