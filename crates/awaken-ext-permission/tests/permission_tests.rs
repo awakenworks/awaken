@@ -2,6 +2,7 @@
 
 use awaken_ext_permission::*;
 use awaken_runtime::state::{MutationBatch, StateKey};
+use awaken_tool_pattern::pattern_matches;
 use serde_json::json;
 use std::collections::HashMap;
 
@@ -12,16 +13,16 @@ use std::collections::HashMap;
 #[test]
 fn matcher_exact_tool_any_args() {
     let p = ToolCallPattern::tool("Bash");
-    let result = matcher::pattern_matches(&p, "Bash", &json!({"command": "ls"}));
+    let result = pattern_matches(&p, "Bash", &json!({"command": "ls"}));
     assert!(result.is_match());
 }
 
 #[test]
 fn matcher_glob_tool_any_args() {
     let p = ToolCallPattern::tool_glob("mcp__*");
-    let result = matcher::pattern_matches(&p, "mcp__github__issues", &json!({}));
+    let result = pattern_matches(&p, "mcp__github__issues", &json!({}));
     assert!(result.is_match());
-    let result2 = matcher::pattern_matches(&p, "read_file", &json!({}));
+    let result2 = pattern_matches(&p, "read_file", &json!({}));
     assert!(!result2.is_match());
 }
 
@@ -34,10 +35,8 @@ fn matcher_primary_with_exact_op() {
             value: "git status".into(),
         },
     };
-    assert!(matcher::pattern_matches(&p, "Bash", &json!({"command": "git status"})).is_match());
-    assert!(
-        !matcher::pattern_matches(&p, "Bash", &json!({"command": "git status --short"})).is_match()
-    );
+    assert!(pattern_matches(&p, "Bash", &json!({"command": "git status"})).is_match());
+    assert!(!pattern_matches(&p, "Bash", &json!({"command": "git status --short"})).is_match());
 }
 
 #[test]
@@ -49,9 +48,9 @@ fn matcher_primary_with_regex_op() {
             value: "^(npm|yarn) ".into(),
         },
     };
-    assert!(matcher::pattern_matches(&p, "Bash", &json!({"command": "npm install"})).is_match());
-    assert!(matcher::pattern_matches(&p, "Bash", &json!({"command": "yarn add foo"})).is_match());
-    assert!(!matcher::pattern_matches(&p, "Bash", &json!({"command": "cargo build"})).is_match());
+    assert!(pattern_matches(&p, "Bash", &json!({"command": "npm install"})).is_match());
+    assert!(pattern_matches(&p, "Bash", &json!({"command": "yarn add foo"})).is_match());
+    assert!(!pattern_matches(&p, "Bash", &json!({"command": "cargo build"})).is_match());
 }
 
 // ---------------------------------------------------------------------------
@@ -439,9 +438,9 @@ fn overrides_cleared_leaves_policy_intact() {
 fn glob_pattern_edge_case_question_mark() {
     // "?" matches a single character
     let p = ToolCallPattern::tool_glob("mcp_?_read");
-    let result = matcher::pattern_matches(&p, "mcp_a_read", &json!({}));
+    let result = pattern_matches(&p, "mcp_a_read", &json!({}));
     assert!(result.is_match());
-    let result2 = matcher::pattern_matches(&p, "mcp_ab_read", &json!({}));
+    let result2 = pattern_matches(&p, "mcp_ab_read", &json!({}));
     assert!(!result2.is_match());
 }
 

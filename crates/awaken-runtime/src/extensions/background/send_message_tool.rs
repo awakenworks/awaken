@@ -24,9 +24,13 @@ pub const SEND_MESSAGE_TOOL_ID: &str = "send_message";
 // ── Types ────────────────────────────────────────────────────────────
 
 /// Recipient selector — who receives the message.
+///
+/// Retained as a public type for downstream callers that build typed
+/// requests. The current `send_message_tool` body parses arguments from
+/// raw JSON; this enum mirrors that wire format.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "relation", rename_all = "snake_case")]
-#[allow(dead_code)] // used by future typed API; current impl parses JSON directly
+#[allow(dead_code)]
 pub enum RecipientRef {
     /// Send to the parent agent that spawned the current task/agent.
     Parent,
