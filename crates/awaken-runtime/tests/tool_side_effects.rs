@@ -23,9 +23,7 @@ use awaken_contract::contract::tool::{
 use awaken_contract::state::{MergeStrategy, StateKey, StateKeyOptions};
 
 use awaken_runtime::RuntimeError;
-use awaken_runtime::agent::state::{
-    AddContextMessage, ContextMessageStore, ContextThrottleState, RunLifecycle, ToolCallStates,
-};
+use awaken_runtime::agent::state::{AddContextMessage, ContextMessageStore};
 use awaken_runtime::execution::ParallelToolExecutor;
 use awaken_runtime::loop_runner::{AgentLoopParams, build_agent_env, run_agent_loop};
 use awaken_runtime::phase::PhaseRuntime;
@@ -54,21 +52,7 @@ impl StateKey for Counter {
 // Plugins
 // ---------------------------------------------------------------------------
 
-struct LoopStatePlugin;
-
-impl Plugin for LoopStatePlugin {
-    fn descriptor(&self) -> PluginDescriptor {
-        PluginDescriptor { name: "loop-state" }
-    }
-
-    fn register(&self, r: &mut PluginRegistrar) -> Result<(), StateError> {
-        r.register_key::<RunLifecycle>(StateKeyOptions::default())?;
-        r.register_key::<ToolCallStates>(StateKeyOptions::default())?;
-        r.register_key::<ContextThrottleState>(StateKeyOptions::default())?;
-        r.register_key::<ContextMessageStore>(StateKeyOptions::default())?;
-        Ok(())
-    }
-}
+use awaken_runtime::loop_runner::LoopStatePlugin;
 
 struct CounterPlugin;
 
