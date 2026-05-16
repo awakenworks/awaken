@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   applyToolSelectionMode,
   catalogEntryInspections,
+  escapeCatalogLiteral,
   groupSelectionState,
   groupToolsBySource,
   hasUnescapedCatalogWildcard,
@@ -88,6 +89,35 @@ describe("isToolAllowed", () => {
     expect(() => isToolAllowed(["["], "[")).not.toThrow();
     expect(isToolAllowed(["["], "[")).toBe(true);
     expect(isToolAllowed(["["], "Bash")).toBe(false);
+  });
+});
+
+describe("escapeCatalogLiteral", () => {
+  it("returns plain tool ids untouched", () => {
+    expect(escapeCatalogLiteral("Bash")).toBe("Bash");
+    expect(escapeCatalogLiteral("mcp__github__issue")).toBe("mcp__github__issue");
+    expect(escapeCatalogLiteral("")).toBe("");
+  });
+
+  it("escapes unescaped stars to literal stars", () => {
+    expect(escapeCatalogLiteral("tool*id")).toBe("tool\\*id");
+    expect(escapeCatalogLiteral("*literal")).toBe("\\*literal");
+    expect(escapeCatalogLiteral("a*b*c")).toBe("a\\*b\\*c");
+  });
+
+  it("escapes backslashes before stars to preserve grammar", () => {
+    // "tool\id" must encode as "tool\\id" so the runtime treats it as literal.
+    expect(escapeCatalogLiteral("tool\\id")).toBe("tool\\\\id");
+    // "a\\*b" — backslash + star — escapes both so the runtime still sees
+    // literal `\` followed by literal `*`.
+    expect(escapeCatalogLiteral("a\\*b")).toBe("a\\\\\\*b");
+  });
+
+  it("produces output that round-trips through toolIdMatch", () => {
+    // The escaped form must match exactly its source tool id and nothing else.
+    expect(isToolAllowed([escapeCatalogLiteral("tool*id")], "tool*id")).toBe(true);
+    expect(isToolAllowed([escapeCatalogLiteral("tool*id")], "toolXid")).toBe(false);
+    expect(isToolAllowed([escapeCatalogLiteral("tool\\id")], "tool\\id")).toBe(true);
   });
 });
 
@@ -250,6 +280,33 @@ describe("nextAllowedTools", () => {
       ),
     ).not.toEqual(["*"]);
   });
+
+  it("escapes literal tool ids when adding via checkbox", () => {
+    // Raw `tool*id` would be interpreted by the runtime as a wildcard.
+    // The Admin UI must write the escaped form so the entry only authorises
+    // the current literal tool id.
+    expect(nextAllowedTools([], ["tool*id", "toolXid"], "tool*id", true)).toEqual([
+      "tool\\*id",
+    ]);
+  });
+
+  it("does not collapse text-equal wildcard entries to ['*']", () => {
+    // ["tool*id"] is a wildcard entry whose text happens to equal a current
+    // tool id. Adding `Other` must NOT auto-collapse to ["*"] because the
+    // wildcard would silently expand to cover every future tool too.
+    expect(
+      nextAllowedTools(["tool*id"], ["tool*id", "Other"], "Other", true),
+    ).not.toEqual(["*"]);
+  });
+
+  it("refuses to collapse to ['*'] while an unmanaged entry remains", () => {
+    // Every current tool id is now covered, but the catalog still holds an
+    // unmanaged "unknown" entry — collapsing would silently extend its
+    // authority to every future tool too.
+    expect(
+      nextAllowedTools(["unknown", "a"], ["a", "b"], "b", true),
+    ).toEqual(["unknown", "a", "b"]);
+  });
 });
 
 describe("isToolSelectionPatternBacked", () => {
@@ -332,6 +389,19 @@ describe("applyToolSelectionMode", () => {
 
   it("seeds custom mode with every known tool when prior value is ['*']", () => {
     expect(applyToolSelectionMode(["*"], "custom", ["a", "b"])).toEqual(["a", "b"]);
+  });
+
+  it("escapes literal tool ids when seeding custom mode from legacy state", () => {
+    expect(applyToolSelectionMode(undefined, "custom", ["tool*id"])).toEqual([
+      "tool\\*id",
+    ]);
+  });
+
+  it("escapes literal tool ids when seeding custom mode from ['*']", () => {
+    expect(applyToolSelectionMode(["*"], "custom", ["tool*id", "Other"])).toEqual([
+      "tool\\*id",
+      "Other",
+    ]);
   });
 });
 
@@ -517,6 +587,21 @@ describe("setGroupSelection", () => {
 
   it("ignores group ids that are not part of the catalog", () => {
     expect(setGroupSelection(["a"], allToolIds, ["a", "z"], false)).toEqual([]);
+  });
+
+  it("escapes literal tool ids when adding a group selection", () => {
+    expect(setGroupSelection([], ["tool*id", "Other"], ["tool*id"], true)).toEqual([
+      "tool\\*id",
+    ]);
+  });
+
+  it("does not collapse to ['*'] when escaped literals cover every tool id", () => {
+    // Even though every tool ends up addressable, the escaped literal entry
+    // is not text-equal to the raw tool id, so the safest behaviour is to
+    // keep the explicit subset instead of writing ["*"].
+    expect(
+      setGroupSelection([], ["tool*id", "Other"], ["tool*id", "Other"], true),
+    ).toEqual(["tool\\*id", "Other"]);
   });
 });
 

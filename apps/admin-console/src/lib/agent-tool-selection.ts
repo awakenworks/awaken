@@ -41,6 +41,15 @@ export function hasUnescapedCatalogWildcard(entry: string): boolean {
   return false;
 }
 
+/// Encode a literal tool id as a catalog entry. Catalog grammar treats `*`
+/// as a wildcard and `\` as the escape character, so any tool id containing
+/// either must be escaped before being written to `allowed_tools` /
+/// `excluded_tools` — otherwise the runtime expands the entry into a
+/// pattern that can authorise unrelated tools.
+export function escapeCatalogLiteral(toolId: string): string {
+  return toolId.replace(/\\/g, "\\\\").replace(/\*/g, "\\*");
+}
+
 /// Match a tool-id pattern against a literal tool id. Mirrors the runtime's
 /// `awaken_tool_pattern::tool_id_match` — see the shared parity fixture at
 /// `crates/awaken-tool-pattern/tests/fixtures/catalog-glob-parity.json`.
@@ -162,8 +171,10 @@ function expandSubset(
   allToolIds: string[],
   variant: CatalogVariant,
 ): string[] {
-  if (value == null) return variant === "include" ? [...allToolIds] : [];
-  if (isExplicitAll(value)) return [...allToolIds];
+  if (value == null) {
+    return variant === "include" ? allToolIds.map(escapeCatalogLiteral) : [];
+  }
+  if (isExplicitAll(value)) return allToolIds.map(escapeCatalogLiteral);
   return [...value];
 }
 
@@ -195,8 +206,19 @@ export function toolSelectionPattern(
   return null;
 }
 
-function hasUnmanagedCatalogEntries(value: string[], allToolIds: string[]): boolean {
-  return value.some((entry) => !isKnownToolId(entry, allToolIds));
+/// Decide whether a catalog subset can safely be re-written as `["*"]`.
+/// Only collapse when every entry is a plain raw literal that is part of
+/// the current tool id set AND every tool id is covered by exactly one
+/// such literal. Wildcard entries, escaped-literal entries (whose text
+/// differs from the raw tool id) and unmanaged entries all keep their
+/// individual form so the catalog never silently widens to include
+/// tools that were not previously authorised.
+function canCollapseToExplicitAll(entries: string[], allToolIds: string[]): boolean {
+  return (
+    entries.every(
+      (entry) => isKnownToolId(entry, allToolIds) && !hasUnescapedCatalogWildcard(entry),
+    ) && allToolIds.every((toolId) => entries.includes(toolId))
+  );
 }
 
 export function nextAllowedTools(
@@ -210,14 +232,11 @@ export function nextAllowedTools(
 
   const baseline = expandSubset(allowedTools, allToolIds, variant);
   if (checked) {
+    const entry = escapeCatalogLiteral(toolId);
     const next = isKnownToolId(toolId, allToolIds)
-      ? Array.from(new Set([...baseline, toolId]))
+      ? Array.from(new Set([...baseline, entry]))
       : baseline;
-    if (
-      variant === "include" &&
-      !hasUnmanagedCatalogEntries(next, allToolIds) &&
-      allToolIds.every((id) => next.includes(id))
-    ) {
+    if (variant === "include" && canCollapseToExplicitAll(next, allToolIds)) {
       return [EXPLICIT_ALL];
     }
     return next;
@@ -248,7 +267,7 @@ export function applyToolSelectionMode(
   if (mode === "all") return allModeValue(variant);
   if (current != null && !isExplicitAll(current)) return [...current];
   if (variant === "exclude" && current == null) return [];
-  return [...allToolIds];
+  return allToolIds.map(escapeCatalogLiteral);
 }
 
 export type ToolSourceKind = "mcp" | "plugin" | "builtin";
@@ -347,21 +366,17 @@ export function setGroupSelection(
 
   if (selected) {
     for (const id of groupToolIds) {
-      if (isKnownToolId(id, allToolIds)) baseline.add(id);
+      if (isKnownToolId(id, allToolIds)) baseline.add(escapeCatalogLiteral(id));
     }
   } else {
     for (const id of groupToolIds) {
       baseline.delete(id);
+      baseline.delete(escapeCatalogLiteral(id));
     }
   }
 
   const next = Array.from(baseline);
-  if (
-    selected &&
-    variant === "include" &&
-    !hasUnmanagedCatalogEntries(next, allToolIds) &&
-    allToolIds.every((id) => baseline.has(id))
-  ) {
+  if (selected && variant === "include" && canCollapseToExplicitAll(next, allToolIds)) {
     return [EXPLICIT_ALL];
   }
 
