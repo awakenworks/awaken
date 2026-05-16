@@ -4539,7 +4539,10 @@ async fn http_listener_response_404_resets_session_before_next_call() {
     );
     let start = Instant::now();
     let mut reset_observed = initialize_count.load(Ordering::SeqCst) >= 2;
-    while start.elapsed() <= Duration::from_secs(2) {
+    // 5s window matches the longer wait_until at the top of this file —
+    // CI runners can take >2s to drive the reinitialize path through the
+    // background listener.
+    while start.elapsed() <= Duration::from_secs(5) {
         let status = manager
             .server_status_snapshot("http_listener_response_404")
             .await
