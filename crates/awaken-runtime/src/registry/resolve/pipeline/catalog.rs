@@ -26,6 +26,7 @@ use awaken_contract::registry_spec::AgentSpec;
 pub(super) fn filter_tools(tools: &mut HashMap<String, Arc<dyn Tool>>, spec: &AgentSpec) {
     let original_tool_ids: Vec<String> = tools.keys().cloned().collect();
     if let Some(allow) = &spec.allowed_tools {
+        warn_catalog_wildcard_entries(&spec.id, "allowed_tools", allow);
         warn_catalog_argument_patterns(&spec.id, "allowed_tools", allow, &original_tool_ids);
         warn_unmatched_catalog_patterns(&spec.id, "allowed_tools", allow, &original_tool_ids);
         tools.retain(|id, _| catalog_pattern_matches(allow, id));
@@ -34,6 +35,7 @@ pub(super) fn filter_tools(tools: &mut HashMap<String, Arc<dyn Tool>>, spec: &Ag
     }
 
     if let Some(exclude) = &spec.excluded_tools {
+        warn_catalog_wildcard_entries(&spec.id, "excluded_tools", exclude);
         warn_catalog_argument_patterns(&spec.id, "excluded_tools", exclude, &original_tool_ids);
         warn_unmatched_catalog_patterns(&spec.id, "excluded_tools", exclude, &original_tool_ids);
         tools.retain(|id, _| !catalog_pattern_matches(exclude, id));
@@ -75,13 +77,26 @@ pub(super) fn is_argument_syntax_for_registered_tool(pattern: &str, tool_ids: &[
     if !pattern.contains('(') {
         return false;
     }
-    let Ok(parsed) = awaken_tool_pattern::parse_pattern(pattern) else {
-        return false;
+    let parsed = match awaken_tool_pattern::parse_pattern(pattern) {
+        Ok(parsed) => parsed,
+        Err(_) => return registered_tool_argument_syntax_prefix(pattern, tool_ids),
     };
+    if matches!(parsed.args, awaken_tool_pattern::ArgMatcher::Any) {
+        return false;
+    }
     if !tool_matcher_matches_any(&parsed.tool, tool_ids) {
         return false;
     }
     true
+}
+
+fn registered_tool_argument_syntax_prefix(pattern: &str, tool_ids: &[String]) -> bool {
+    tool_ids.iter().any(|tool_id| {
+        let Some(arg_part) = pattern.strip_prefix(tool_id) else {
+            return false;
+        };
+        arg_part.starts_with('(') && arg_part.ends_with(')') && arg_part.len() > 2
+    })
 }
 
 pub(super) fn is_argument_level_catalog_pattern(pattern: &str) -> bool {
@@ -95,6 +110,64 @@ pub(super) fn is_argument_level_catalog_pattern(pattern: &str) -> bool {
             value.chars().any(|ch| matches!(ch, '*' | '?' | '[' | ']')) || value.contains(' ')
         }
     }
+}
+
+pub(super) const CATALOG_WILDCARD_AUDIT_WARN_CACHE_LIMIT: usize = 1024;
+
+fn warn_catalog_wildcard_entries(agent_id: &str, field: &str, patterns: &[String]) {
+    static WARNED_ENTRIES: OnceLock<Mutex<VecDeque<String>>> = OnceLock::new();
+    let warned_entries = WARNED_ENTRIES.get_or_init(|| Mutex::new(VecDeque::new()));
+
+    for pattern in patterns {
+        if pattern == "*" || !has_unescaped_catalog_wildcard(pattern) {
+            continue;
+        }
+        let cache_key = format!("{agent_id}\0{field}\0{pattern}");
+        if !should_warn_catalog_wildcard_entry(&cache_key, warned_entries) {
+            continue;
+        }
+        tracing::warn!(
+            agent_id = %agent_id,
+            field = %field,
+            pattern = %pattern,
+            "catalog entry contains an unescaped '*' wildcard; escape it as '\\*' if this was intended as a literal tool id"
+        );
+    }
+}
+
+pub(super) fn has_unescaped_catalog_wildcard(pattern: &str) -> bool {
+    let mut escaped = false;
+    for ch in pattern.chars() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        if ch == '\\' {
+            escaped = true;
+            continue;
+        }
+        if ch == '*' {
+            return true;
+        }
+    }
+    false
+}
+
+pub(super) fn should_warn_catalog_wildcard_entry(
+    cache_key: &str,
+    warned_entries: &Mutex<VecDeque<String>>,
+) -> bool {
+    let mut warned_entries = warned_entries
+        .lock()
+        .expect("catalog wildcard warning cache poisoned");
+    if warned_entries.iter().any(|warned| warned == cache_key) {
+        return false;
+    }
+    if warned_entries.len() >= CATALOG_WILDCARD_AUDIT_WARN_CACHE_LIMIT {
+        warned_entries.pop_front();
+    }
+    warned_entries.push_back(cache_key.to_string());
+    true
 }
 
 pub(super) fn unmatched_catalog_patterns(patterns: &[String], tool_ids: &[String]) -> Vec<String> {

@@ -120,12 +120,16 @@ describe("catalogEntryInspections", () => {
       {
         entry: "OldTool",
         exactToolExists: false,
+        matchesCurrentToolOnly: false,
+        escapedLiteral: false,
         usesWildcard: false,
         matches: [],
       },
       {
         entry: "mcp:*",
         exactToolExists: false,
+        matchesCurrentToolOnly: false,
+        escapedLiteral: false,
         usesWildcard: true,
         matches: ["mcp:weather/forecast", "mcp:db/query"],
       },
@@ -137,8 +141,23 @@ describe("catalogEntryInspections", () => {
       {
         entry: "tool*id",
         exactToolExists: true,
+        matchesCurrentToolOnly: false,
+        escapedLiteral: false,
         usesWildcard: true,
         matches: ["tool*id", "toolXid"],
+      },
+    ]);
+  });
+
+  it("classifies escaped literal stars as current exact matches", () => {
+    expect(catalogEntryInspections(["foo\\*bar"], ["foo*bar"])).toEqual([
+      {
+        entry: "foo\\*bar",
+        exactToolExists: false,
+        matchesCurrentToolOnly: true,
+        escapedLiteral: true,
+        usesWildcard: false,
+        matches: ["foo*bar"],
       },
     ]);
   });
@@ -204,6 +223,12 @@ describe("nextAllowedTools", () => {
     ).toEqual(["mcp__github__*"]);
   });
 
+  it("preserves wildcard entries that are text-equal to a current tool id", () => {
+    expect(nextAllowedTools(["tool*id"], ["tool*id", "toolXid"], "tool*id", false)).toEqual([
+      "tool*id",
+    ]);
+  });
+
   it("preserves glob patterns when checking a non-matching tool", () => {
     expect(
       nextAllowedTools(
@@ -236,6 +261,12 @@ describe("isToolSelectionPatternBacked", () => {
     // No-longer-supported glob chars are literal, so they don't match those tool ids.
     expect(isToolSelectionPatternBacked(["mcp__github__read?"], "mcp__github__read1")).toBe(false);
     expect(isToolSelectionPatternBacked(["mcp__[ab]*"], "mcp__a_tool")).toBe(false);
+  });
+
+  it("treats text-equal wildcard entries as pattern-backed", () => {
+    expect(toolSelectionPattern(["tool*id"], "tool*id")).toBe("tool*id");
+    expect(isToolSelectionPatternBacked(["tool*id"], "tool*id")).toBe(true);
+    expect(isToolSelectionPatternBacked(["tool*id"], "toolXid")).toBe(true);
   });
 
   it("does not treat the include explicit-all sentinel as an unmanaged glob", () => {

@@ -461,6 +461,42 @@ describe("ToolSelector — pattern / unmanaged catalog entries", () => {
     expect(screen.getByText(/Matches mcp:weather\/forecast/)).toBeTruthy();
   });
 
+  it("disables every checkbox matched by a wildcard entry that equals a tool id", () => {
+    const { props } = renderSelector({
+      value: ["tool*id"],
+      tools: [
+        { id: "tool*id", name: "Literal Star", description: "Literal star id" },
+        { id: "toolXid", name: "Expanded Match", description: "Wildcard match" },
+      ],
+    });
+
+    const [literalCheckbox, expandedCheckbox] = screen.getAllByRole(
+      "checkbox",
+    ) as HTMLInputElement[];
+    expect(literalCheckbox.checked).toBe(true);
+    expect(expandedCheckbox.checked).toBe(true);
+    expect(literalCheckbox.disabled).toBe(true);
+    expect(expandedCheckbox.disabled).toBe(true);
+
+    fireEvent.click(literalCheckbox);
+    expect(props.onChange).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: "Remove" }));
+    expect(props.onChange).toHaveBeenCalledWith([]);
+  });
+
+  it("labels escaped literal star entries without marking them unmanaged", () => {
+    renderSelector({
+      value: ["foo\\*bar"],
+      tools: [{ id: "foo*bar", name: "Literal Star", description: "Literal star id" }],
+    });
+
+    expect(screen.getAllByText("foo\\*bar").length).toBeGreaterThan(0);
+    expect(screen.getByText("escaped literal")).toBeTruthy();
+    expect(screen.getByText("Escaped literal for foo*bar")).toBeTruthy();
+    expect(screen.queryByText("unmanaged")).toBeNull();
+  });
+
   it("keeps catalog controls visible when no tools are published", () => {
     const { props } = renderSelector({ value: ["stale:*"], tools: [] });
 

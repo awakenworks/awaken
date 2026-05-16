@@ -372,7 +372,12 @@ function CatalogEntryList({
                     wildcard
                   </span>
                 ) : null}
-                {!entry.exactToolExists ? (
+                {entry.escapedLiteral ? (
+                  <span className="rounded-pill bg-muted px-1.5 text-[10px] font-medium text-fg-soft">
+                    escaped literal
+                  </span>
+                ) : null}
+                {!entry.exactToolExists && !entry.matchesCurrentToolOnly ? (
                   <span className="rounded-pill bg-muted px-1.5 text-[10px] font-medium text-fg-soft">
                     unmanaged
                   </span>
@@ -396,6 +401,7 @@ function CatalogEntryList({
 
 function catalogEntryMatchSummary(entry: CatalogEntryInspection): string {
   if (entry.matches.length === 0) return "No current tool matches";
+  if (entry.escapedLiteral) return `Escaped literal for ${entry.matches[0]}`;
   const shown = entry.matches.slice(0, 4).join(", ");
   const remaining = entry.matches.length - 4;
   return remaining > 0 ? `Matches ${shown} +${remaining} more` : `Matches ${shown}`;

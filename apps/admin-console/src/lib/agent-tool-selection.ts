@@ -103,6 +103,8 @@ function isKnownToolId(entry: string, allToolIds: string[]): boolean {
 export interface CatalogEntryInspection {
   entry: string;
   exactToolExists: boolean;
+  matchesCurrentToolOnly: boolean;
+  escapedLiteral: boolean;
   usesWildcard: boolean;
   matches: string[];
 }
@@ -123,11 +125,15 @@ export function catalogEntryInspections(
     const usesWildcard = hasUnescapedCatalogWildcard(entry);
     const exactToolExists = isKnownToolId(entry, allToolIds);
     if (exactToolExists && !usesWildcard) continue;
+    const matches = allToolIds.filter((toolId) => toolIdMatch(entry, toolId));
+    const matchesCurrentToolOnly = !usesWildcard && matches.length === 1;
     entries.push({
       entry,
       exactToolExists,
+      matchesCurrentToolOnly,
+      escapedLiteral: matchesCurrentToolOnly && entry !== matches[0],
       usesWildcard,
-      matches: allToolIds.filter((toolId) => toolIdMatch(entry, toolId)),
+      matches,
     });
   }
   return entries;
@@ -182,7 +188,9 @@ export function toolSelectionPattern(
   if (!Array.isArray(allowedTools)) return null;
   if (isExplicitAll(allowedTools)) return variant === "exclude" ? EXPLICIT_ALL : null;
   for (const entry of allowedTools) {
-    if (entry !== toolId && toolIdMatch(entry, toolId)) return entry;
+    if (toolIdMatch(entry, toolId) && (entry !== toolId || hasUnescapedCatalogWildcard(entry))) {
+      return entry;
+    }
   }
   return null;
 }
@@ -214,7 +222,7 @@ export function nextAllowedTools(
     }
     return next;
   }
-  return baseline.filter((id) => id !== toolId);
+  return baseline.filter((id) => id !== toolId || hasUnescapedCatalogWildcard(id));
 }
 
 export type ToolSelectionMode = "all" | "custom";

@@ -5,9 +5,10 @@ use serde_json::json;
 
 use super::*;
 use crate::registry::resolve::pipeline::catalog::{
-    LEGACY_ALLOW_ALL_WARN_CACHE_LIMIT, catalog_pattern_matches, is_argument_level_catalog_pattern,
+    CATALOG_WILDCARD_AUDIT_WARN_CACHE_LIMIT, LEGACY_ALLOW_ALL_WARN_CACHE_LIMIT,
+    catalog_pattern_matches, has_unescaped_catalog_wildcard, is_argument_level_catalog_pattern,
     is_argument_syntax_for_registered_tool, permission_rules_without_catalog_match,
-    should_warn_legacy_allow_all, unmatched_catalog_patterns,
+    should_warn_catalog_wildcard_entry, should_warn_legacy_allow_all, unmatched_catalog_patterns,
 };
 
 #[test]
@@ -188,10 +189,20 @@ fn registered_tool_argument_syntax_detection_flags_simple_args() {
     let tool_ids = vec!["Bash".to_string(), "literal(paren)".to_string()];
 
     assert!(is_argument_syntax_for_registered_tool(
+        r#"Bash(= "ls")"#,
+        &tool_ids
+    ));
+    assert!(is_argument_syntax_for_registered_tool(
         "Bash(npm)",
         &tool_ids
     ));
-    assert!(is_argument_syntax_for_registered_tool("Bash(*)", &tool_ids));
+    assert!(is_argument_syntax_for_registered_tool(
+        r#"Bash(command = "ls")"#,
+        &tool_ids
+    ));
+    assert!(!is_argument_syntax_for_registered_tool(
+        "Bash(*)", &tool_ids
+    ));
     assert!(!is_argument_syntax_for_registered_tool(
         "literal(paren)",
         &tool_ids
@@ -219,10 +230,50 @@ fn unmatched_catalog_patterns_returns_typos() {
 
 #[test]
 fn unmatched_catalog_patterns_skips_registered_tool_argument_syntax() {
-    let patterns = vec!["Bash(npm)".to_string(), "literal(paren)".to_string()];
+    let patterns = vec![
+        r#"Bash(= "ls")"#.to_string(),
+        "Bash(npm)".to_string(),
+        r#"Bash(command = "ls")"#.to_string(),
+        "literal(paren)".to_string(),
+    ];
     let tool_ids = vec!["Bash".to_string(), "literal(paren)".to_string()];
 
     assert!(unmatched_catalog_patterns(&patterns, &tool_ids).is_empty());
+}
+
+#[test]
+fn catalog_wildcard_audit_detects_unescaped_stars() {
+    assert!(has_unescaped_catalog_wildcard("mcp:*"));
+    assert!(has_unescaped_catalog_wildcard("tool*id"));
+    assert!(!has_unescaped_catalog_wildcard(r"tool\*id"));
+    assert!(!has_unescaped_catalog_wildcard("Bash"));
+}
+
+#[test]
+fn catalog_wildcard_audit_warning_cache_is_bounded() {
+    let warned = Mutex::new(VecDeque::new());
+    assert!(should_warn_catalog_wildcard_entry(
+        "agent\0allowed_tools\0mcp:*",
+        &warned
+    ));
+    assert!(!should_warn_catalog_wildcard_entry(
+        "agent\0allowed_tools\0mcp:*",
+        &warned
+    ));
+
+    for n in 0..(CATALOG_WILDCARD_AUDIT_WARN_CACHE_LIMIT + 1) {
+        assert!(should_warn_catalog_wildcard_entry(
+            &format!("agent\0allowed_tools\0pattern-{n}*"),
+            &warned,
+        ));
+    }
+    assert_eq!(
+        warned
+            .lock()
+            .expect("test catalog wildcard warning cache poisoned")
+            .len(),
+        CATALOG_WILDCARD_AUDIT_WARN_CACHE_LIMIT
+    );
 }
 
 #[test]
