@@ -110,7 +110,7 @@ async fn publish(jetstream: &async_nats::jetstream::Context, dispatch: &RunDispa
     }
 }
 
-fn current_millis() -> u64 {
+pub(super) fn current_millis() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
