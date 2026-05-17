@@ -4540,10 +4540,10 @@ async fn http_listener_response_404_resets_session_before_next_call() {
     );
     let start = Instant::now();
     let mut reset_observed = initialize_count.load(Ordering::SeqCst) >= 2;
-    // 5s window matches the longer wait_until at the top of this file —
-    // CI runners can take >2s to drive the reinitialize path through the
-    // background listener.
-    while start.elapsed() <= Duration::from_secs(5) {
+    // CI runners under load can take >5s to drive the reinitialize path
+    // through the background listener; matches the longest wait_until in
+    // this file.
+    while start.elapsed() <= Duration::from_secs(10) {
         let status = manager
             .server_status_snapshot("http_listener_response_404")
             .await
@@ -4554,7 +4554,7 @@ async fn http_listener_response_404_resets_session_before_next_call() {
             reset_observed = true;
             break;
         }
-        tokio::time::sleep(Duration::from_millis(10)).await;
+        tokio::time::sleep(Duration::from_millis(50)).await;
     }
     assert!(
         reset_observed,

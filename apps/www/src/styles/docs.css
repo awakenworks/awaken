@@ -1,10 +1,14 @@
 /* Doc-content styling — implements the docs-styling.html design spec
  * (api.anthropic.com/v1/design/h/FvxxlQqeugM3x2VEiO96Zw → specs/docs-styling.html).
  *
- * Scoped to .sl-markdown-content so it only colours doc bodies; chrome
- * (top nav, sidebar) lives in awaken.css; landing in landing.css.
+ * Scope: doc-page content (.sl-markdown-content) plus Starlight doc-page
+ * chrome that lives outside that wrapper — page title (.content-panel
+ * h1#_top), right-rail TOC (starlight-toc, .right-sidebar), prev/next
+ * pager (.pagination-links), doc footer meta. Top nav + left sidebar
+ * + landing remain owned by awaken.css / landing.css.
  *
- * Every value flows from --aw-* tokens — no hardcoded oklch.
+ * Values flow from --aw-* tokens. The card-lift hover uses
+ * --aw-shadow-card-lift from @awaken/design-tokens.
  */
 
 /* ============ headings ============ */
@@ -407,7 +411,7 @@ h1.page-title,
   border-color: var(--aw-border-strong);
   transform: translateY(-1px);
   text-decoration: none;
-  box-shadow: 0 0 0 1px var(--aw-border-strong), 0 4px 12px oklch(0% 0 0 / 0.04);
+  box-shadow: var(--aw-shadow-card-lift);
 }
 .sl-markdown-content .card .title {
   font-size: 15px;

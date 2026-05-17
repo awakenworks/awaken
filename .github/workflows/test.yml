@@ -87,7 +87,7 @@ jobs:
           node-version: 22
           cache: 'pnpm'
       - run: pnpm install --frozen-lockfile
-      - run: pnpm --filter awaken-admin-console ci
+      - run: pnpm --filter awaken-admin-console run ci
 
   design-tokens-test:
     name: Design Tokens
