@@ -43,6 +43,9 @@ fn make_outcome(text: &str) -> ReplayOutcome {
         final_text: text.into(),
         metrics: AgentMetrics::default(),
         elapsed: Duration::from_millis(0),
+        error_type: None,
+        inference_error_count: 0,
+        runtime_failure: None,
     }
 }
 

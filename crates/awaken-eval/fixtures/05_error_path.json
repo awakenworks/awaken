@@ -1,14 +1,16 @@
 {
   "id": "05_error_path",
-  "description": "Failure mode — when the upstream LLM rate-limits, the framework must surface an empty answer and a non-empty error type without panicking.",
+  "description": "Failure mode — when the upstream LLM rate-limits, the framework must surface an empty answer and the captured error_type without panicking or silently retrying.",
   "user_input": "Long expensive prompt.",
-  "mock_response": {
-    "kind": "error",
-    "error_type": "rate_limit",
-    "message": "429 Too Many Requests"
-  },
+  "provider_script": [
+    {
+      "kind": "error",
+      "error_type": "rate_limit",
+      "message": "429 Too Many Requests"
+    }
+  ],
   "expect": {
     "final_answer_excludes": ["success"],
-    "max_duration_ms": 1000
+    "expected_error_type": "rate_limit"
   }
 }

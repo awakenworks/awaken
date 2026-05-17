@@ -70,6 +70,30 @@ pub fn score(outcome: &ReplayOutcome, expect: &Expectation) -> Vec<Failure> {
         }
     }
 
+    // Error type — verbatim match against the captured fixture error.
+    if let Some(expected) = &expect.expected_error_type {
+        match outcome.error_type.as_deref() {
+            Some(actual) if actual == expected => {}
+            Some(actual) => failures.push(Failure::ErrorTypeMismatch {
+                expected: expected.clone(),
+                actual: actual.to_string(),
+            }),
+            None => failures.push(Failure::ExpectedErrorMissing {
+                expected: expected.clone(),
+            }),
+        }
+    }
+
+    // Replay-time misbehaviour (script exhausted, unused script,
+    // non-scripted runtime error) — always a failure, independent of
+    // fixture expectations. Promoted last so it sits at the end of the
+    // failure list for diff stability.
+    if let Some(rf) = &outcome.runtime_failure {
+        failures.push(Failure::ReplayRuntimeFailure {
+            failure: rf.clone(),
+        });
+    }
+
     failures
 }
 
@@ -131,6 +155,9 @@ mod tests {
             final_text: text.into(),
             metrics,
             elapsed: Duration::from_millis(0),
+            error_type: None,
+            inference_error_count: 0,
+            runtime_failure: None,
         }
     }
 
@@ -465,6 +492,83 @@ mod tests {
         ] {
             assert!(kinds.contains(required), "missing failure kind {required}");
         }
+    }
+
+    // ── expected_error_type ─────────────────────────────────────────
+
+    #[test]
+    fn expected_error_type_pass_when_match() {
+        let mut o = outcome(AgentMetrics::default(), "");
+        o.error_type = Some("rate_limit".into());
+        let expect = Expectation {
+            expected_error_type: Some("rate_limit".into()),
+            ..Expectation::default()
+        };
+        assert!(score(&o, &expect).is_empty());
+    }
+
+    #[test]
+    fn expected_error_type_fail_when_run_succeeded() {
+        // Run produced no error_type — silently passing was the original
+        // 05_error_path bug. Make sure scoring catches it now.
+        let o = outcome(AgentMetrics::default(), "");
+        let expect = Expectation {
+            expected_error_type: Some("rate_limit".into()),
+            ..Expectation::default()
+        };
+        let failures = score(&o, &expect);
+        assert!(matches!(
+            failures.as_slice(),
+            [Failure::ExpectedErrorMissing { expected }] if expected == "rate_limit"
+        ));
+    }
+
+    #[test]
+    fn expected_error_type_fail_when_kind_differs() {
+        let mut o = outcome(AgentMetrics::default(), "");
+        o.error_type = Some("timeout".into());
+        let expect = Expectation {
+            expected_error_type: Some("rate_limit".into()),
+            ..Expectation::default()
+        };
+        let failures = score(&o, &expect);
+        assert!(matches!(
+            failures.as_slice(),
+            [Failure::ErrorTypeMismatch { expected, actual }]
+                if expected == "rate_limit" && actual == "timeout"
+        ));
+    }
+
+    // ── runtime_failure ─────────────────────────────────────────────
+
+    #[test]
+    fn runtime_failure_is_always_emitted_as_failure() {
+        use crate::outcome::ReplayRuntimeFailure;
+        let mut o = outcome(AgentMetrics::default(), "");
+        o.runtime_failure = Some(ReplayRuntimeFailure::ScriptExhausted { extra_calls: 1 });
+        let failures = score(&o, &Expectation::default());
+        assert!(matches!(
+            failures.as_slice(),
+            [Failure::ReplayRuntimeFailure {
+                failure: ReplayRuntimeFailure::ScriptExhausted { extra_calls: 1 }
+            }]
+        ));
+    }
+
+    #[test]
+    fn runtime_failure_does_not_short_circuit_other_failures() {
+        use crate::outcome::ReplayRuntimeFailure;
+        let mut o = outcome(AgentMetrics::default(), "no match");
+        o.runtime_failure = Some(ReplayRuntimeFailure::ProviderScriptUnused { remaining: 2 });
+        let expect = Expectation {
+            final_answer_contains: vec!["banana".into()],
+            ..Expectation::default()
+        };
+        let failures = score(&o, &expect);
+        assert_eq!(failures.len(), 2);
+        let kinds: Vec<&str> = failures.iter().map(Failure::kind).collect();
+        assert!(kinds.contains(&"answer_missing_phrase"));
+        assert!(kinds.contains(&"replay_runtime_failure"));
     }
 
     #[test]

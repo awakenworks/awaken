@@ -2,6 +2,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::outcome::ReplayRuntimeFailure;
+
 /// What a passing replay looks like.
 ///
 /// `Expectation` is intentionally a flat data struct: it is loaded from JSON
@@ -39,6 +41,13 @@ pub struct Expectation {
     /// `llm-judge` feature — the pure `score` function ignores it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub min_judge_score: Option<f32>,
+
+    /// Fixture-author-supplied `error_type` the run must surface.
+    /// Matched verbatim against [`crate::ReplayOutcome::error_type`].
+    /// Mostly used by failure-path fixtures (e.g. `rate_limit`) so that a
+    /// silently-swallowed error doesn't get away with an empty `final_text`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_error_type: Option<String>,
 }
 
 impl Expectation {
@@ -52,6 +61,7 @@ impl Expectation {
             && self.max_tokens_total.is_none()
             && self.max_duration_ms.is_none()
             && self.min_judge_score.is_none()
+            && self.expected_error_type.is_none()
     }
 }
 
@@ -80,6 +90,18 @@ pub enum Failure {
     /// The judge score fell below the configured threshold.
     /// (Emitted only by the `llm-judge` feature.)
     JudgeBelowThreshold { threshold: f32, actual: f32 },
+    /// `expected_error_type` was set but the run did not raise an inference
+    /// error (i.e. `ReplayOutcome::error_type` was `None`).
+    ExpectedErrorMissing { expected: String },
+    /// `expected_error_type` was set and an error did fire, but its
+    /// `error_type` did not match.
+    ErrorTypeMismatch { expected: String, actual: String },
+    /// The replay itself misbehaved: the runtime over-called the
+    /// scripted executor, left scripted events unused, or returned a
+    /// non-scripted error. Promoted from
+    /// [`crate::ReplayOutcome::runtime_failure`] so the NDJSON report
+    /// stays complete instead of the replayer aborting the batch.
+    ReplayRuntimeFailure { failure: ReplayRuntimeFailure },
 }
 
 impl Failure {
@@ -93,6 +115,9 @@ impl Failure {
             Failure::TokenBudgetExceeded { .. } => "token_budget_exceeded",
             Failure::DurationExceeded { .. } => "duration_exceeded",
             Failure::JudgeBelowThreshold { .. } => "judge_below_threshold",
+            Failure::ExpectedErrorMissing { .. } => "expected_error_missing",
+            Failure::ErrorTypeMismatch { .. } => "error_type_mismatch",
+            Failure::ReplayRuntimeFailure { .. } => "replay_runtime_failure",
         }
     }
 }
@@ -125,10 +150,20 @@ mod tests {
             max_tokens_total: Some(5000),
             max_duration_ms: Some(10_000),
             min_judge_score: Some(0.7),
+            expected_error_type: Some("rate_limit".into()),
         };
         let json = serde_json::to_string(&e).unwrap();
         let parsed: Expectation = serde_json::from_str(&json).unwrap();
         assert_eq!(e, parsed);
+    }
+
+    #[test]
+    fn expectation_with_expected_error_type_is_not_empty() {
+        let e = Expectation {
+            expected_error_type: Some("rate_limit".into()),
+            ..Expectation::default()
+        };
+        assert!(!e.is_empty());
     }
 
     #[test]
@@ -203,6 +238,25 @@ mod tests {
                     actual: 0.4,
                 },
                 "judge_below_threshold",
+            ),
+            (
+                Failure::ExpectedErrorMissing {
+                    expected: "rate_limit".into(),
+                },
+                "expected_error_missing",
+            ),
+            (
+                Failure::ErrorTypeMismatch {
+                    expected: "rate_limit".into(),
+                    actual: "timeout".into(),
+                },
+                "error_type_mismatch",
+            ),
+            (
+                Failure::ReplayRuntimeFailure {
+                    failure: ReplayRuntimeFailure::ScriptExhausted { extra_calls: 1 },
+                },
+                "replay_runtime_failure",
             ),
         ];
         for (f, k) in cases {

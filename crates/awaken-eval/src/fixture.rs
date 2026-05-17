@@ -1,16 +1,18 @@
 //! Fixture format and loader.
 //!
 //! Each fixture is a single JSON file describing a deterministic scenario:
-//! a user prompt, a scripted assistant response (consumed by the M4.3 mock
-//! executor), and an [`Expectation`] block declaring success criteria.
+//! a user prompt, the upstream `provider_script` to replay, and an
+//! [`Expectation`] block declaring success criteria.
 //!
-//! The format is intentionally minimal in 0.4.1 so it can grow without
-//! breaking older fixtures: unknown fields are accepted on deserialise and
-//! [`Fixture`] gains new optional fields additively.
+//! Legacy fixtures that only set `mock_response` keep loading; their
+//! response is shimmed into a single-element `provider_script` by
+//! [`Fixture::effective_script`].
 
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use awaken_contract::contract::inference::TokenUsage;
+use awaken_runtime::engine::ProviderScriptEvent;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -27,7 +29,29 @@ pub struct Fixture {
     pub description: Option<String>,
     /// User prompt that drives the run.
     pub user_input: String,
-    /// What the mock LLM returns when replayed without a real model.
+    /// Upstream events the [`ScriptedLlmExecutor`](awaken_runtime::engine::ScriptedLlmExecutor)
+    /// returns when this fixture is replayed. Empty for legacy fixtures —
+    /// see [`Fixture::effective_script`].
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub provider_script: Vec<ProviderScriptEvent>,
+    /// Originating production `run_id` when this fixture was curated from
+    /// a trace via `POST /v1/eval/datasets/:id/items`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_run_id: Option<String>,
+    /// Originating model id for the curated trace. Used as a mismatch
+    /// guard at replay time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_model_id: Option<String>,
+    /// When `true`, replay tolerates `provider_script` events that the
+    /// runtime never consumed (default: `false`). Use only for fixtures
+    /// where the runtime is genuinely allowed to stop early; otherwise
+    /// the assert catches dropped rounds, missed tool calls, or absent
+    /// retries that would otherwise pass silently on the legacy
+    /// "final_text only" expectation.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub allow_unused_provider_script: bool,
+    /// Legacy single-response field. Superseded by [`Self::provider_script`]
+    /// and removed once all fixtures have been migrated.
     #[serde(default)]
     pub mock_response: MockResponse,
     /// Success criteria.
@@ -35,15 +59,16 @@ pub struct Fixture {
     pub expect: Expectation,
 }
 
-/// What the mock LLM should return for a fixture run.
-///
-/// `MockResponse::Text` is the only variant in 0.4.1; richer modes (tool
-/// calls, multi-round) are deliberately deferred until the replay engine
-/// surfaces them.
+/// Legacy single-turn response specifier, superseded by
+/// [`Fixture::provider_script`]. Kept so already-committed fixtures keep
+/// loading; new fixtures should use `provider_script` directly.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum MockResponse {
-    /// Return a single assistant text block, usage zero.
+    /// Return a single assistant text block. [`Fixture::effective_script`]
+    /// shims this into a `ChatResponse` event with token counts seeded by
+    /// a `chars / 4` heuristic so `max_tokens_total` keeps having teeth
+    /// for un-migrated fixtures.
     Text { text: String },
     /// Return an inference error of the given type.
     Error { error_type: String, message: String },
@@ -97,6 +122,56 @@ impl Fixture {
             source,
         })
     }
+
+    /// Provider events to drive a [`ScriptedLlmExecutor`](awaken_runtime::engine::ScriptedLlmExecutor)
+    /// for this fixture. Prefers the explicit [`Self::provider_script`];
+    /// falls back to a single-element script synthesised from
+    /// [`Self::mock_response`] for legacy fixtures.
+    ///
+    /// Legacy `MockResponse::Text` does not carry a token count, so the
+    /// shim seeds tokens via the same `chars / 4` heuristic the original
+    /// `MockReplayer` used. Preserving this preserves the meaning of
+    /// `max_tokens_total` for any fixture that hasn't been migrated to
+    /// explicit `provider_script` — otherwise legacy budget assertions
+    /// would silently pass against a 0-token usage.
+    pub fn effective_script(&self) -> Vec<ProviderScriptEvent> {
+        if !self.provider_script.is_empty() {
+            return self.provider_script.clone();
+        }
+        match &self.mock_response {
+            MockResponse::Text { text } => {
+                let prompt_tokens = approximate_tokens(&self.user_input);
+                let completion_tokens = approximate_tokens(text);
+                let total_tokens = prompt_tokens.saturating_add(completion_tokens);
+                vec![ProviderScriptEvent::ChatResponse {
+                    content: text.clone(),
+                    tokens: TokenUsage {
+                        prompt_tokens: Some(prompt_tokens),
+                        completion_tokens: Some(completion_tokens),
+                        total_tokens: Some(total_tokens),
+                        ..Default::default()
+                    },
+                    finish_reason: awaken_contract::contract::inference::StopReason::EndTurn,
+                }]
+            }
+            MockResponse::Error {
+                error_type,
+                message,
+            } => vec![ProviderScriptEvent::Error {
+                error_type: error_type.clone(),
+                message: message.clone(),
+            }],
+        }
+    }
+}
+
+/// Coarse `chars / 4` token estimate. Matches the heuristic the original
+/// `MockReplayer` used so legacy fixtures keep producing comparable token
+/// counts after migration to [`Fixture::effective_script`].
+fn approximate_tokens(text: &str) -> i32 {
+    let chars = text.chars().count();
+    let tokens = chars.div_ceil(4);
+    i32::try_from(tokens).unwrap_or(i32::MAX)
 }
 
 /// Load every `*.json` file in `dir` as a [`Fixture`], returning them sorted
@@ -338,5 +413,130 @@ mod tests {
             other => panic!("expected Parse error, got {other:?}"),
         }
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    // ── provider_script / effective_script ──────────────────────────
+
+    #[test]
+    fn effective_script_uses_provider_script_when_present() {
+        let json = r#"{
+            "id": "explicit",
+            "user_input": "hi",
+            "provider_script": [
+                {"kind": "chat_response", "content": "hi back"},
+                {"kind": "tool_call", "id": "t1", "name": "noop", "arguments": {}}
+            ]
+        }"#;
+        let fx = Fixture::from_json(json).unwrap();
+        let script = fx.effective_script();
+        assert_eq!(script.len(), 2);
+        match &script[0] {
+            ProviderScriptEvent::ChatResponse { content, .. } => assert_eq!(content, "hi back"),
+            other => panic!("expected chat_response, got {other:?}"),
+        }
+        match &script[1] {
+            ProviderScriptEvent::ToolCall { name, .. } => assert_eq!(name, "noop"),
+            other => panic!("expected tool_call, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn effective_script_shims_legacy_text_mock_response() {
+        let fx =
+            Fixture::from_json(r#"{"id": "legacy", "user_input": "hi", "mock_response": {"kind": "text", "text": "ok"}}"#)
+                .unwrap();
+        let script = fx.effective_script();
+        assert_eq!(script.len(), 1);
+        match &script[0] {
+            ProviderScriptEvent::ChatResponse { content, .. } => assert_eq!(content, "ok"),
+            other => panic!("expected chat_response, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn effective_script_legacy_text_seeds_non_zero_token_estimate() {
+        // Regression guard for the review #1 finding: the legacy shim must
+        // populate TokenUsage instead of defaulting to zero, otherwise
+        // `max_tokens_total` assertions trivially pass against legacy
+        // fixtures even when the budget is exceeded.
+        let fx = Fixture::from_json(
+            r#"{
+              "id": "legacy_budget",
+              "user_input": "Long enough prompt to exceed one token",
+              "mock_response": {"kind": "text", "text": "A reply that is also longer than a single token bucket"}
+            }"#,
+        )
+        .unwrap();
+        let script = fx.effective_script();
+        match &script[0] {
+            ProviderScriptEvent::ChatResponse { tokens, .. } => {
+                assert!(
+                    tokens.prompt_tokens.unwrap_or(0) > 0,
+                    "expected non-zero prompt tokens, got {tokens:?}"
+                );
+                assert!(
+                    tokens.completion_tokens.unwrap_or(0) > 0,
+                    "expected non-zero completion tokens, got {tokens:?}"
+                );
+                assert!(
+                    tokens.total_tokens.unwrap_or(0) > 0,
+                    "expected non-zero total tokens, got {tokens:?}"
+                );
+            }
+            other => panic!("expected chat_response, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn effective_script_shims_legacy_error_mock_response() {
+        let fx = Fixture::from_json(
+            r#"{
+              "id": "legacy_err",
+              "user_input": "hi",
+              "mock_response": {"kind": "error", "error_type": "rate_limit", "message": "429"}
+            }"#,
+        )
+        .unwrap();
+        let script = fx.effective_script();
+        assert_eq!(script.len(), 1);
+        match &script[0] {
+            ProviderScriptEvent::Error {
+                error_type,
+                message,
+            } => {
+                assert_eq!(error_type, "rate_limit");
+                assert_eq!(message, "429");
+            }
+            other => panic!("expected error event, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn effective_script_shims_empty_default_mock_response() {
+        // No mock_response, no provider_script -> single empty-text event.
+        let fx = Fixture::from_json(r#"{"id": "empty", "user_input": "hi"}"#).unwrap();
+        let script = fx.effective_script();
+        assert_eq!(script.len(), 1);
+        match &script[0] {
+            ProviderScriptEvent::ChatResponse { content, .. } => assert!(content.is_empty()),
+            other => panic!("expected empty chat_response, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn fixture_round_trips_provider_script_and_source_metadata() {
+        let json = r#"{
+            "id": "curated",
+            "user_input": "hi",
+            "provider_script": [{"kind": "chat_response", "content": "hi"}],
+            "source_run_id": "01HXYZ",
+            "source_model_id": "claude-opus-4-7"
+        }"#;
+        let fx = Fixture::from_json(json).unwrap();
+        assert_eq!(fx.source_run_id.as_deref(), Some("01HXYZ"));
+        assert_eq!(fx.source_model_id.as_deref(), Some("claude-opus-4-7"));
+        let reserialised = serde_json::to_string(&fx).unwrap();
+        let round: Fixture = serde_json::from_str(&reserialised).unwrap();
+        assert_eq!(round, fx);
     }
 }

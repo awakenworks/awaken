@@ -262,6 +262,7 @@ mod tests {
             session_duration_ms: 100,
             elapsed_ms: 100,
             tool_calls_by_agent: Vec::new(),
+            error_type: None,
         }
     }
 
@@ -276,13 +277,18 @@ mod tests {
 
     #[test]
     fn ndjson_write_then_read_roundtrip() {
-        let reports = vec![
+        let mut reports = vec![
             report("alpha", true, vec![]),
             report("beta", false, vec![token_failure()]),
         ];
         let mut buf = Vec::new();
         write_ndjson(&mut buf, &reports).unwrap();
         let parsed = read_ndjson(Cursor::new(&buf)).unwrap();
+        // `elapsed_ms` is excluded from the serialised baseline (see
+        // `ReplayReport::elapsed_ms`), so it deserialises back as 0.
+        for r in &mut reports {
+            r.elapsed_ms = 0;
+        }
         assert_eq!(parsed, reports);
     }
 
@@ -322,10 +328,13 @@ mod tests {
     fn ndjson_path_round_trips_through_disk() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("reports.ndjson");
-        let reports = vec![report("x", true, vec![])];
+        let mut reports = vec![report("x", true, vec![])];
         write_ndjson_path(&path, &reports).unwrap();
         assert!(path.exists());
         let read = read_ndjson_path(&path).unwrap();
+        for r in &mut reports {
+            r.elapsed_ms = 0;
+        }
         assert_eq!(read, reports);
     }
 

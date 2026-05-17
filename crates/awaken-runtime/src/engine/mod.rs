@@ -10,9 +10,11 @@ pub mod convert;
 pub mod executor;
 pub mod mock;
 pub mod retry;
+pub mod scripted;
 pub mod streaming;
 
 pub use circuit_breaker::{CircuitBreaker, CircuitBreakerConfig};
 pub use executor::GenaiExecutor;
 pub use mock::{MockLlmExecutor, MockProviderProfile};
 pub use retry::{LlmRetryPolicy, RetryConfigKey, RetryingExecutor};
+pub use scripted::{ProviderScriptEvent, ScriptedLlmExecutor};

@@ -87,10 +87,16 @@ async fn full_replay_pipeline_round_trips_through_disk() {
     let dir = temp_dir();
     let report_path = dir.path().join("report.ndjson");
 
-    let reports = replay_dir(&bundled_fixtures_dir()).await;
+    let mut reports = replay_dir(&bundled_fixtures_dir()).await;
     write_ndjson_path(&report_path, &reports).unwrap();
 
     let read_back = read_ndjson_path(&report_path).unwrap();
+    // `elapsed_ms` is the wall-clock cost of the run — deliberately not
+    // serialised (see `ReplayReport::elapsed_ms`), so it deserialises
+    // back as 0.
+    for r in &mut reports {
+        r.elapsed_ms = 0;
+    }
     assert_eq!(read_back, reports);
 }
 

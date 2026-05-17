@@ -24,6 +24,7 @@ pub mod judge;
 pub mod outcome;
 pub mod replay;
 pub mod report;
+pub mod runtime_replayer;
 pub mod score;
 
 pub use expectation::{Expectation, Failure};
@@ -35,6 +36,7 @@ pub use report::{
     DiffEntry, DiffSummary, ReportError, diff_against_baseline, read_ndjson, read_ndjson_path,
     write_ndjson, write_ndjson_path,
 };
+pub use runtime_replayer::RuntimeReplayer;
 pub use score::score;
 
 #[cfg(feature = "llm-judge")]
