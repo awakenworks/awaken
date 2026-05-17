@@ -320,6 +320,13 @@ dependencies = [
 [[package]]
 name = "awaken-doctest"
 version = "0.5.1-dev"
+dependencies = [
+ "async-trait",
+ "awaken",
+ "schemars 1.2.1",
+ "serde",
+ "serde_json",
+]
 
 [[package]]
 name = "awaken-eval"

@@ -1,19 +1,23 @@
 //! Compile-tests for Awaken documentation code examples.
 //!
-//! ## Status
+//! ## How this works
 //!
-//! Empty after the Starlight docs migration retired the previous mdBook-
-//! based `book_doctests!()` macro. That macro compiled every `rust` fence
-//! in `docs/book/src/**/*.md` as a doctest; the migration to Starlight
-//! stripped `rust,ignore` modifiers (for Shiki compatibility), which would
-//! have flipped ~170 display-only snippets into compiled doctests — many of
-//! them pseudocode that never compiled standalone.
+//! Each `examples/*.rs` file under this crate is a self-contained smoke test
+//! for one public API surface that user docs reference. CI runs
+//! `cargo build --examples -p awaken-doctest` to catch API drift — if a
+//! rename or signature change in the runtime breaks an example, the build
+//! fails before the docs go stale.
 //!
-//! ## Going forward
+//! Adding coverage: drop a new `examples/<surface>.rs`. Keep it minimal
+//! (no live LLM calls, no network) and exercise only the trait / struct
+//! shape — `Box::new(...)` or `let _ = SpecStruct { ... }` is enough to
+//! pin the contract.
 //!
-//! Reintroduce doc snippet coverage by adding self-contained `.rs` files
-//! under `examples/` here, one per API surface the docs reference. CI then
-//! runs `cargo build --examples -p awaken-doctest` and `cargo test --examples
-//! -p awaken-doctest`. Docs in `apps/www/src/content/docs/` remain pure
-//! documentation, not test fixtures — they can cite example files by name
-//! without coupling their formatting to the test toolchain.
+//! ## History
+//!
+//! Previously this crate used `doc_comment::doctest!` to compile-test
+//! every `rust` fence in `docs/book/src/**/*.md` (mdBook source). The
+//! Starlight docs migration stripped `rust,ignore` modifiers for Shiki
+//! compatibility, which flipped ~170 display-only snippets into compiled
+//! doctests — most of them pseudocode that never compiled standalone.
+//! The macro was retired in favour of the explicit `examples/` approach.

@@ -6,5 +6,17 @@ description = "Compile-tests for Awaken documentation code examples"
 license.workspace = true
 publish = false
 
+# Deps are dev-side: examples below live in `examples/` and exercise the
+# public surfaces that user docs reference. `cargo build --examples` and
+# `cargo test --examples` catch API drift without coupling test status to
+# Markdown formatting (the prior `book_doctests!()` macro was retired by
+# the Starlight migration — see lib.rs for history).
+[dev-dependencies]
+awaken = { package = "awaken", version = "0.5.1-dev", path = "../awaken", features = ["full"] }
+async-trait = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+schemars = { workspace = true }
+
 [lints]
 workspace = true
