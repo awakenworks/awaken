@@ -6,6 +6,7 @@
 
 mod matcher;
 mod parser;
+mod tool_id;
 mod types;
 
 pub use matcher::{
@@ -13,6 +14,7 @@ pub use matcher::{
     schema_has_path, validate_pattern_fields, value_to_string, wildcard_match,
 };
 pub use parser::{PatternParseError, parse_pattern};
+pub use tool_id::{ToolIdPatternError, tool_id_match, validate_tool_id_pattern};
 pub use types::{
     ArgMatcher, FieldCondition, MatchOp, MatchResult, PathSegment, Specificity, ToolCallPattern,
     ToolMatcher,

@@ -299,6 +299,7 @@ name = "awaken-contract"
 version = "0.5.1-dev"
 dependencies = [
  "async-trait",
+ "awaken-tool-pattern",
  "base64 0.22.1",
  "futures",
  "jsonschema",
@@ -524,6 +525,7 @@ dependencies = [
  "awaken-protocol-a2a",
  "awaken-runtime",
  "awaken-stores",
+ "awaken-tool-pattern",
  "futures",
  "genai",
  "jsonschema",
@@ -623,6 +625,7 @@ dependencies = [
  "regex",
  "serde",
  "serde_json",
+ "thiserror 2.0.18",
 ]
 
 [[package]]

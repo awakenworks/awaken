@@ -1,0 +1,38 @@
+[
+  { "pattern": "Bash",             "value": "Bash",                          "expected": true,  "note": "literal exact match" },
+  { "pattern": "Bash",             "value": "Read",                          "expected": false, "note": "literal mismatch" },
+  { "pattern": "Bash",             "value": "BashExtra",                     "expected": false, "note": "literal is anchored full-string" },
+
+  { "pattern": "*",                "value": "anything",                      "expected": true,  "note": "wildcard matches any string" },
+  { "pattern": "*",                "value": "mcp:weather/forecast",          "expected": true,  "note": "wildcard crosses ':' and '/'" },
+  { "pattern": "*",                "value": "",                              "expected": true,  "note": "wildcard matches the empty string" },
+
+  { "pattern": "mcp:*",            "value": "mcp:weather/forecast",          "expected": true,  "note": "prefix wildcard, ':' is literal" },
+  { "pattern": "mcp:*",            "value": "plugin:reminder/add",           "expected": false, "note": "prefix mismatch" },
+  { "pattern": "mcp:weather/*",    "value": "mcp:weather/forecast",          "expected": true,  "note": "'/' is literal char in a tool id" },
+  { "pattern": "mcp:weather/*",    "value": "mcp:weather/foo/bar",           "expected": true,  "note": "wildcard spans multiple slashes" },
+  { "pattern": "mcp__github__*",   "value": "mcp__github__read_issue",       "expected": true,  "note": "underscore-prefixed wildcard" },
+  { "pattern": "mcp__github__*",   "value": "mcp__gitlab__issue",            "expected": false, "note": "prefix mismatch" },
+  { "pattern": "*issue",           "value": "mcp__github__read_issue",       "expected": true,  "note": "suffix wildcard" },
+  { "pattern": "*weather*",        "value": "mcp:weather/forecast",          "expected": true,  "note": "substring wildcard" },
+  { "pattern": "a*b",              "value": "a/b",                           "expected": true,  "note": "wildcard crosses '/' (no path semantics)" },
+  { "pattern": "a*/b",             "value": "a/x/b",                         "expected": true,  "note": "wildcard absorbs the extra '/' segment" },
+
+  { "pattern": "\\*literal",       "value": "*literal",                      "expected": true,  "note": "'\\*' is a literal star" },
+  { "pattern": "\\*literal",       "value": "Xliteral",                      "expected": false, "note": "literal star does not match other chars" },
+  { "pattern": "foo\\\\bar",       "value": "foo\\bar",                      "expected": true,  "note": "'\\\\' is a literal backslash" },
+
+  { "pattern": "!Bash",            "value": "!Bash",                         "expected": true,  "note": "'!' is an ordinary character, no negation" },
+  { "pattern": "!Bash",            "value": "Bash",                          "expected": false, "note": "literal full-string mismatch" },
+  { "pattern": "\\!Bash",          "value": "!Bash",                         "expected": true,  "note": "escaping '!' has no effect; both are literal" },
+
+  { "pattern": "{Bash}",           "value": "{Bash}",                        "expected": true,  "note": "braces are literal — no brace alternation" },
+  { "pattern": "{Bash}",           "value": "Bash",                          "expected": false, "note": "no brace expansion" },
+  { "pattern": "[abc]",            "value": "[abc]",                         "expected": true,  "note": "brackets are literal — no character class" },
+  { "pattern": "[abc]",            "value": "a",                             "expected": false, "note": "no character class" },
+  { "pattern": "tool?id",          "value": "tool?id",                       "expected": true,  "note": "'?' is literal — no single-char wildcard" },
+  { "pattern": "tool?id",          "value": "toolXid",                       "expected": false, "note": "'?' is literal — no wildcard" },
+
+  { "pattern": "Bash(npm *)",      "value": "Bash",                          "expected": false, "note": "argument syntax belongs in permission plugin, not catalog" },
+  { "pattern": "/B.*/",            "value": "Bash",                          "expected": false, "note": "regex syntax belongs in permission plugin, not catalog" }
+]
