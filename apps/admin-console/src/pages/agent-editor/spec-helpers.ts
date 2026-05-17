@@ -1,10 +1,4 @@
-import {
-  type AgentSpec,
-  type ConfigSourceState,
-  type RecordMeta,
-  ConfigApiError,
-  configApi,
-} from "@/lib/config-api";
+import { type AgentSpec, type RecordMeta, ConfigApiError, configApi } from "@/lib/config-api";
 
 export const EMPTY_AGENT: AgentSpec = {
   id: "",
@@ -17,30 +11,7 @@ export const EMPTY_AGENT: AgentSpec = {
   delegates: [],
 };
 
-export const PATCHABLE_FIELDS: Array<keyof AgentSpec> = [
-  "model_id",
-  "system_prompt",
-  "max_rounds",
-  "max_continuation_retries",
-  "plugin_ids",
-  "sections",
-  "allowed_tools",
-  "excluded_tools",
-  "delegates",
-  "reasoning_effort",
-];
-
 export type AgentSaveMode = "create" | "patch-overrides" | "put-full-spec";
-
-export function agentSaveMode(
-  isNew: boolean,
-  sourceState: ConfigSourceState | null,
-): AgentSaveMode {
-  if (isNew) return "create";
-  return sourceState === "builtin" || sourceState === "customized"
-    ? "patch-overrides"
-    : "put-full-spec";
-}
 
 export async function getOptionalAgentMeta(id: string): Promise<RecordMeta | null> {
   try {
@@ -83,40 +54,6 @@ export function prettyStableStringify(value: unknown): string {
 
 export function jsonSemanticallyEqual(left: unknown, right: unknown): boolean {
   return stableStringify(left) === stableStringify(right);
-}
-
-export function diffPatchableFields(
-  current: AgentSpec,
-  original: AgentSpec,
-): Record<string, unknown> {
-  const patch: Record<string, unknown> = {};
-  for (const key of PATCHABLE_FIELDS) {
-    const a = current[key];
-    const b = original[key];
-    if (!jsonSemanticallyEqual(a, b)) {
-      patch[key] = a === undefined ? null : a;
-    }
-  }
-  return patch;
-}
-
-export function fullAgentSavePayload(spec: AgentSpec): AgentSpec {
-  return {
-    ...spec,
-    plugin_ids: [...(spec.plugin_ids ?? [])],
-    delegates: [...(spec.delegates ?? [])],
-  };
-}
-
-export function agentSavePayload(
-  spec: AgentSpec,
-  originalSpec: AgentSpec | null,
-  mode: AgentSaveMode,
-): AgentSpec | Record<string, unknown> {
-  if (mode === "patch-overrides") {
-    return diffPatchableFields(spec, originalSpec ?? spec);
-  }
-  return fullAgentSavePayload(spec);
 }
 
 export function hydrateAgentSpec(spec: AgentSpec): AgentSpec {

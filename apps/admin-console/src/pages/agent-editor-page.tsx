@@ -18,7 +18,7 @@ import { type AuditEvent, formatActor, summarizeChange } from "@/lib/audit-log";
 import { Field } from "@/components/form-components";
 import { AgentPreviewPanel } from "@/components/agent-preview-panel";
 import { PluginConfigWorkspace } from "@/components/plugin-config-workspace";
-import { ToolSelector } from "@/components/tool-selector";
+import { ToolsPanel as ToolSelectorsPanel } from "./agent-editor/panels/tools-panel";
 import { useToast } from "@/components/toast-provider";
 import { useConfirmDialog } from "@/components/confirm-dialog";
 import { useUnsavedChangesGuard } from "@/components/unsaved-changes-guard";
@@ -60,6 +60,7 @@ import {
   togglePluginState,
   unknownAgentSpecFields,
 } from "@/lib/agent-editor-helpers";
+import { deriveAllowedMode, isToolAllowed, type AgentSpecCatalog } from "@/lib/tool-catalog";
 import { safeErrorMessage } from "@/lib/safe-error-message";
 
 const EMPTY_AGENT: AgentSpec = {
@@ -1374,32 +1375,17 @@ function ToolsPanel({
   agentSaved: boolean;
   savedSpec: AgentSpec | null;
 }) {
-  if (!capabilities || capabilities.tools.length === 0) {
+  // Loading-only gate (empty registry must still render pattern editors).
+  if (!capabilities) {
     return (
       <div className="rounded-md border border-dashed border-line bg-surface p-6 text-sm text-fg-soft">
-        No tools are currently published. Once plugins or MCP servers register tools, they will
-        appear here.
+        Loading published tool capabilities...
       </div>
     );
   }
   return (
     <div className="space-y-6">
-      <ToolSelector
-        title="Allowed Tools"
-        description='"All tools" is the default — every published tool is exposed. Switch to Custom to restrict the agent to a specific subset.'
-        tools={capabilities.tools}
-        value={spec.allowed_tools}
-        onChange={(next) => updateField("allowed_tools", next)}
-        variant="include"
-      />
-      <ToolSelector
-        title="Excluded Tools"
-        description="Excluded tools are removed from the effective allow-list, even if they appear in 'All tools'. Useful for keeping a tool published to other agents but blocking it here."
-        tools={capabilities.tools}
-        value={spec.excluded_tools}
-        onChange={(next) => updateField("excluded_tools", next)}
-        variant="exclude"
-      />
+      <ToolSelectorsPanel spec={spec} capabilities={capabilities} updateField={updateField} />
       <AllowedExcludedToolsSection
         spec={spec}
         capabilities={capabilities}
@@ -1410,23 +1396,17 @@ function ToolsPanel({
   );
 }
 
-/**
- * Computes `allowed_tools ∖ excluded_tools` over the published tool list.
- * This is **not** the final runtime tool set — the permission plugin's
- * BeforeInference hook removes unconditionally-denied tools on top of this.
- * See `awaken-ext-permission::PermissionRuleset::unconditionally_denied_tools`.
- */
-function computeAllowedTools(
-  tools: Capabilities["tools"],
-  allowed: AgentSpec["allowed_tools"],
-  excluded: AgentSpec["excluded_tools"],
-): Capabilities["tools"] {
-  const excludedSet = new Set(excluded ?? []);
-  return tools.filter((tool) => {
-    if (allowed !== null && allowed !== undefined && !allowed.includes(tool.id)) return false;
-    if (excludedSet.has(tool.id)) return false;
-    return true;
-  });
+/** Pre-permission visible tool set: mirrors Rust's `AgentSpec::tool_allowed`
+ * via the shared TS matcher. Permission BeforeInference hook may further
+ * filter at runtime. */
+function computeAllowedTools(tools: Capabilities["tools"], s: AgentSpec): Capabilities["tools"] {
+  const c: AgentSpecCatalog = {
+    allowed_tools: s.allowed_tools ?? undefined,
+    allowed_tool_patterns: s.allowed_tool_patterns ?? undefined,
+    excluded_tools: s.excluded_tools ?? undefined,
+    excluded_tool_patterns: s.excluded_tool_patterns ?? undefined,
+  };
+  return tools.filter((t) => isToolAllowed(c, t.id));
 }
 
 function AllowedExcludedToolsSection({
@@ -1446,14 +1426,14 @@ function AllowedExcludedToolsSection({
   savedSpec: AgentSpec | null;
 }) {
   const visible = useMemo(
-    () => computeAllowedTools(capabilities.tools, spec.allowed_tools, spec.excluded_tools),
-    [capabilities.tools, spec.allowed_tools, spec.excluded_tools],
+    () => computeAllowedTools(capabilities.tools, spec),
+    [capabilities.tools, spec],
   );
   const total = capabilities.tools.length;
-  const excludedCount = (spec.excluded_tools ?? []).length;
-  const allowedMode =
-    spec.allowed_tools === null || spec.allowed_tools === undefined ? "all" : "custom";
-  const allowedSize = spec.allowed_tools?.length ?? total;
+  const excludedCount =
+    (spec.excluded_tools ?? []).length + (spec.excluded_tool_patterns ?? []).length;
+  const allowedMode = deriveAllowedMode(spec);
+  const allowedSize = visible.length;
   // Gate on the SAVED spec — not the draft. The preview endpoint reads the
   // persisted record, so showing/hiding the block based on a dirty draft
   // would silently lie to the user: "you toggled permission on in the
@@ -1486,14 +1466,16 @@ function AllowedExcludedToolsSection({
   const draftHookFilter = spec.active_hook_filter ?? [];
   const draftPermissionSection = (spec.sections ?? {})["permission"];
   const savedPermissionSection = (savedSpec?.sections ?? {})["permission"];
+  const catalogFieldsDirty = (
+    ["allowed_tools", "allowed_tool_patterns", "excluded_tools", "excluded_tool_patterns"] as const
+  ).some((f) => !deepEqualCanonical(spec[f] ?? null, savedSpec?.[f] ?? null));
   const previewInputsDirty =
     agentSaved &&
     (canonicalStringify([...draftPluginIds].sort()) !==
       canonicalStringify([...savedPluginIds].sort()) ||
       canonicalStringify([...draftHookFilter].sort()) !==
         canonicalStringify([...savedHookFilter].sort()) ||
-      !deepEqualCanonical(spec.allowed_tools ?? null, savedSpec?.allowed_tools ?? null) ||
-      !deepEqualCanonical(spec.excluded_tools ?? null, savedSpec?.excluded_tools ?? null) ||
+      catalogFieldsDirty ||
       !deepEqualCanonical(draftPermissionSection, savedPermissionSection));
   // Fetch the server-computed permission preview when the agent is saved
   // AND the saved spec has the permission plugin enabled.

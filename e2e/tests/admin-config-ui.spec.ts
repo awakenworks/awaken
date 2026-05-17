@@ -469,6 +469,69 @@ test.describe('admin config UI', () => {
     expect(agent.active_hook_filter).toEqual(['permission']);
   });
 
+  // Round-trip coverage for the PR #199 fix: edits to
+  // `allowed_tool_patterns` / `excluded_tool_patterns` made through the
+  // Tools tab must survive a Save (PATCH /v1/config/agents/:id/overrides)
+  // and reload. Before the fix, `AgentSpecPatch` didn't carry these
+  // fields, so the merge silently passed through base values and the
+  // editor draft was discarded on the post-save GET.
+  test('preserves allowed_tool_patterns across an editor round-trip', async ({
+    page,
+    request,
+  }) => {
+    const agentId = `ui-pattern-roundtrip-${suffix()}`;
+
+    // 1. Seed an UserDefined agent so the editor has something to load.
+    const createResponse = await request.post(`${BACKEND_URL}/v1/config/agents`, {
+      headers: {
+        Authorization: `Bearer ${TEST_ADMIN_TOKEN}`,
+        'content-type': 'application/json',
+      },
+      data: {
+        id: agentId,
+        model_id: 'default',
+        system_prompt: 'Pattern round-trip seed prompt.',
+        max_rounds: 1,
+      },
+    });
+    expect(createResponse.ok()).toBeTruthy();
+
+    // 2. Open the editor and add `mcp:*` as an allowed pattern.
+    await page.goto(`/agents/${encodeURIComponent(agentId)}`);
+    await page.waitForURL(new RegExp(`/agents/${agentId}`));
+    await gotoEditorTab(page, 'Tools');
+
+    const allowedSelector = page.locator('[data-testid="tool-selector-allowed"]');
+    await allowedSelector.getByPlaceholder('e.g. mcp:*').fill('mcp:*');
+    await allowedSelector.getByRole('button', { name: 'Add pattern' }).click();
+    // Pattern row appears with the new value.
+    await expect(allowedSelector.locator('code', { hasText: /^mcp:\*$/ })).toBeVisible();
+
+    await page.getByRole('button', { name: /^Save$/ }).first().click();
+    await expect(
+      page.getByRole('alert').filter({ hasText: new RegExp(`Agent\\s+"${agentId}"\\s+saved`) }),
+    ).toBeVisible();
+
+    // 3. Re-fetch through the API: the new pattern must be persisted.
+    const refetched = await request.get(
+      `${BACKEND_URL}/v1/config/agents/${encodeURIComponent(agentId)}`,
+      { headers: { Authorization: `Bearer ${TEST_ADMIN_TOKEN}` } },
+    );
+    expect(refetched.ok()).toBeTruthy();
+    const agent = await refetched.json();
+    expect(agent.allowed_tool_patterns).toContain('mcp:*');
+
+    // 4. Reload and assert the Tools tab still shows the pattern — proves
+    //    the PATCH→merge→GET round trip preserved the user's edit.
+    await page.reload();
+    await gotoEditorTab(page, 'Tools');
+    await expect(
+      page
+        .locator('[data-testid="tool-selector-allowed"]')
+        .locator('code', { hasText: /^mcp:\*$/ }),
+    ).toBeVisible();
+  });
+
   // Defensive coverage for review #4 (stale `active_hook_filter` entries) is
   // implemented at the unit level in `partitionActiveHookFilter` + the
   // `ActiveHookFilterSection` component. Seeding stale entries through the

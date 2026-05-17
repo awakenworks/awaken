@@ -688,8 +688,17 @@ describe("agent editor save API flows", () => {
     fireEvent.change(screen.getByLabelText("Model"), { target: { value: "model-a" } });
 
     fireEvent.click(screen.getByRole("tab", { name: "Tools" }));
-    fireEvent.click(screen.getByLabelText(/Custom selection/i));
-    fireEvent.click(screen.getByLabelText(/tool-beta/i));
+    // New ToolSelector has no mode toggle — both literals + patterns sections
+    // are always visible. Check tool-alpha into the Allowed literal list.
+    const allowedSection = screen.getByTestId("tool-selector-allowed");
+    const tools = allowedSection.querySelectorAll(
+      "input[type='checkbox']",
+    ) as NodeListOf<HTMLInputElement>;
+    // Find the checkbox whose sibling shows the "tool-alpha" id.
+    const alphaCheckbox = Array.from(tools).find((cb) =>
+      cb.closest("label")?.textContent?.includes("tool-alpha"),
+    )!;
+    fireEvent.click(alphaCheckbox);
 
     fireEvent.click(screen.getByRole("tab", { name: "Plugins" }));
     fireEvent.click(screen.getByLabelText(/logger-plugin/i));
@@ -2036,3 +2045,4 @@ describe("agent editor Save → PATCH vs PUT branching", () => {
     expect(patchCalled).toBe(false);
   });
 });
+

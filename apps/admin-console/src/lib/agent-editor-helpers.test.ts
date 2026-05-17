@@ -283,7 +283,9 @@ describe("diffPatchableAgentFields", () => {
       max_continuation_retries: 5,
       delegates: ["other-agent"],
       allowed_tools: ["Bash"],
+      allowed_tool_patterns: ["mcp:*"],
       excluded_tools: ["Read"],
+      excluded_tool_patterns: ["danger:*"],
       reasoning_effort: "high",
       plugin_ids: ["permission", "reminder"],
       sections: { permission: { default_behavior: "deny", rules: [] } },
@@ -292,8 +294,10 @@ describe("diffPatchableAgentFields", () => {
     expect(Object.keys(plan.patch).sort()).toEqual(
       [
         "allowed_tools",
+        "allowed_tool_patterns",
         "delegates",
         "excluded_tools",
+        "excluded_tool_patterns",
         "max_continuation_retries",
         "max_rounds",
         "model_id",
@@ -324,6 +328,10 @@ describe("diffPatchableAgentFields", () => {
     // to "what does the customized PATCH path actually persist?".
     expect(PATCHABLE_AGENT_FIELDS).toContain("context_policy");
     expect(PATCHABLE_AGENT_FIELDS).toContain("active_hook_filter");
+    // Tool pattern fields must also patch through — the editor exposes
+    // them via ToolSelector and Save would silently drop edits otherwise.
+    expect(PATCHABLE_AGENT_FIELDS).toContain("allowed_tool_patterns");
+    expect(PATCHABLE_AGENT_FIELDS).toContain("excluded_tool_patterns");
   });
 });
 
@@ -1570,6 +1578,42 @@ describe("clear vs patch routing (R6 #A — supersedes R5 #2)", () => {
     expect(diffPatchableAgentFields(current, original)).toEqual({
       patch: {},
       clear: ["excluded_tools"],
+    });
+  });
+
+  it("routes allowed_tool_patterns revert to the clear list", () => {
+    const original = baseSpec({ allowed_tool_patterns: ["mcp:*"] });
+    const current: AgentSpec = { ...original, allowed_tool_patterns: undefined };
+    expect(diffPatchableAgentFields(current, original)).toEqual({
+      patch: {},
+      clear: ["allowed_tool_patterns"],
+    });
+  });
+
+  it("routes excluded_tool_patterns revert to the clear list", () => {
+    const original = baseSpec({ excluded_tool_patterns: ["danger:*"] });
+    const current: AgentSpec = { ...original, excluded_tool_patterns: undefined };
+    expect(diffPatchableAgentFields(current, original)).toEqual({
+      patch: {},
+      clear: ["excluded_tool_patterns"],
+    });
+  });
+
+  it("routes a new allowed_tool_patterns value to the patch", () => {
+    const original = baseSpec();
+    const current: AgentSpec = { ...original, allowed_tool_patterns: ["mcp:*"] };
+    expect(diffPatchableAgentFields(current, original)).toEqual({
+      patch: { allowed_tool_patterns: ["mcp:*"] },
+      clear: [],
+    });
+  });
+
+  it("routes a new excluded_tool_patterns value to the patch", () => {
+    const original = baseSpec();
+    const current: AgentSpec = { ...original, excluded_tool_patterns: ["danger:*"] };
+    expect(diffPatchableAgentFields(current, original)).toEqual({
+      patch: { excluded_tool_patterns: ["danger:*"] },
+      clear: [],
     });
   });
 

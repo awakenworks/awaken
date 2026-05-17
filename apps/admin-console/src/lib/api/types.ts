@@ -36,7 +36,9 @@ export interface AgentSpec {
   active_hook_filter?: string[];
   sections?: Record<string, unknown>;
   allowed_tools?: string[] | null;
+  allowed_tool_patterns?: string[] | null;
   excluded_tools?: string[] | null;
+  excluded_tool_patterns?: string[] | null;
   endpoint?: RemoteEndpoint | null;
   delegates?: string[];
   reasoning_effort?: string | number | null;

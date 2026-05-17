@@ -45,7 +45,7 @@ export type LockedAgentField = (typeof LOCKED_AGENT_FIELDS)[number];
  * the editor exposes in any form must appear here, otherwise edits to it
  * silently drop on the customized save path (this is the G1 data-loss bug).
  */
-export const PATCHABLE_AGENT_FIELDS: Array<keyof AgentSpec> = [
+export const PATCHABLE_AGENT_FIELDS = [
   "model_id",
   "system_prompt",
   "max_rounds",
@@ -55,10 +55,12 @@ export const PATCHABLE_AGENT_FIELDS: Array<keyof AgentSpec> = [
   "active_hook_filter",
   "sections",
   "allowed_tools",
+  "allowed_tool_patterns",
   "excluded_tools",
+  "excluded_tool_patterns",
   "delegates",
   "reasoning_effort",
-];
+] as const satisfies ReadonlyArray<keyof AgentSpec>;
 
 /**
  * Returns the name of the first locked field (`endpoint` or `registry`)
@@ -326,13 +328,13 @@ export function partitionActiveHookFilter(
  * disappear on Save (which only persists `PATCHABLE_AGENT_FIELDS` on the
  * customized PATCH path).
  */
-export const ALLOWED_AGENT_FIELDS: ReadonlyArray<keyof AgentSpec> = [
+export const ALLOWED_AGENT_FIELDS = [
   "id",
   "created_at",
   "updated_at",
   ...LOCKED_AGENT_FIELDS,
   ...PATCHABLE_AGENT_FIELDS,
-];
+] as const;
 
 /**
  * Returns the top-level keys of `parsed` that the editor cannot persist —

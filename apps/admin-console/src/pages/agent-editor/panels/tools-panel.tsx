@@ -1,3 +1,4 @@
+import { useMemo } from "react";
 import { type AgentSpec, type Capabilities } from "@/lib/config-api";
 import { ToolSelector } from "@/components/tool-selector";
 
@@ -10,31 +11,45 @@ export function ToolsPanel({
   capabilities: Capabilities | null;
   updateField: <K extends keyof AgentSpec>(key: K, value: AgentSpec[K]) => void;
 }) {
-  if (!capabilities || capabilities.tools.length === 0) {
+  const registered = useMemo(
+    () => (capabilities?.tools ?? []).map((t) => t.id),
+    [capabilities],
+  );
+
+  // Show the loading state ONLY while capabilities are still being
+  // fetched. Once `capabilities` resolves with an empty `tools` list, the
+  // pattern editors must render so operators can author forward-config
+  // (e.g. `excluded_tool_patterns: ["dangerous-*"]`) before tools are
+  // registered. `ToolSelector` itself handles `registered.length === 0`
+  // gracefully with a "No tools registered." sub-message.
+  if (!capabilities) {
     return (
       <div className="rounded-md border border-dashed border-line bg-surface p-6 text-sm text-fg-soft">
-        No tools are currently published. Once plugins or MCP servers register tools, they will
-        appear here.
+        Loading published tool capabilities...
       </div>
     );
   }
   return (
     <>
       <ToolSelector
-        title="Allowed Tools"
-        description='"All tools" is the default — every published tool is exposed. Switch to Custom to restrict the agent to a specific subset.'
-        tools={capabilities.tools}
-        value={spec.allowed_tools}
-        onChange={(next) => updateField("allowed_tools", next)}
-        variant="include"
+        label="Allowed"
+        registered={registered}
+        literals={spec.allowed_tools ?? []}
+        patterns={spec.allowed_tool_patterns ?? []}
+        onChange={(next) => {
+          updateField("allowed_tools", next.literals);
+          updateField("allowed_tool_patterns", next.patterns);
+        }}
       />
       <ToolSelector
-        title="Excluded Tools"
-        description="Excluded tools are removed from the effective allow-list, even if they appear in 'All tools'. Useful for keeping a tool published to other agents but blocking it here."
-        tools={capabilities.tools}
-        value={spec.excluded_tools}
-        onChange={(next) => updateField("excluded_tools", next)}
-        variant="exclude"
+        label="Excluded"
+        registered={registered}
+        literals={spec.excluded_tools ?? []}
+        patterns={spec.excluded_tool_patterns ?? []}
+        onChange={(next) => {
+          updateField("excluded_tools", next.literals);
+          updateField("excluded_tool_patterns", next.patterns);
+        }}
       />
     </>
   );
