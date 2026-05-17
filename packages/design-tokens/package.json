@@ -7,12 +7,14 @@
   "files": [
     "dist",
     "tokens",
+    "brand",
     "README.md"
   ],
   "exports": {
     "./css/tokens.css": "./dist/css/tokens.css",
     "./css/tokens-dark.css": "./dist/css/tokens-dark.css",
     "./css/tokens-auto-dark.css": "./dist/css/tokens-auto-dark.css",
+    "./css/brand-awaken.css": "./brand/brand-awaken.css",
     "./tokens.json": "./dist/css/tokens.json",
     "./package.json": "./package.json"
   },
