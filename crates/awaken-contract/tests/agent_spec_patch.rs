@@ -64,6 +64,18 @@ fn is_empty_false_when_any_field_set() {
         ..Default::default()
     };
     assert!(!patch.is_empty());
+
+    let patch = AgentSpecPatch {
+        allowed_tool_patterns: Some(Some(vec!["mcp:*".into()])),
+        ..Default::default()
+    };
+    assert!(!patch.is_empty());
+
+    let patch = AgentSpecPatch {
+        excluded_tool_patterns: Some(Some(vec!["danger:*".into()])),
+        ..Default::default()
+    };
+    assert!(!patch.is_empty());
 }
 
 // 3. serde_round_trip_full_patch
@@ -83,7 +95,9 @@ fn serde_round_trip_full_patch() {
         active_hook_filter: Some(["plugin-a".to_string()].into_iter().collect()),
         sections: Some(sections),
         allowed_tools: Some(Some(vec!["weather".into()])),
+        allowed_tool_patterns: Some(Some(vec!["mcp:*".into()])),
         excluded_tools: Some(Some(vec!["dangerous".into()])),
+        excluded_tool_patterns: Some(Some(vec!["danger:*".into()])),
         delegates: Some(vec!["delegate-a".into()]),
         reasoning_effort: None,
         endpoint: None,
@@ -220,7 +234,9 @@ fn merge_clears_nullable_fields_when_patch_value_is_null() {
     let base = AgentSpec {
         context_policy: Some(ContextWindowPolicy::default()),
         allowed_tools: Some(vec!["safe".into()]),
+        allowed_tool_patterns: Some(vec!["safe:*".into()]),
         excluded_tools: Some(vec!["danger".into()]),
+        excluded_tool_patterns: Some(vec!["danger:*".into()]),
         reasoning_effort: Some(ReasoningEffort::High),
         endpoint: Some(RemoteEndpoint {
             base_url: "https://example.com".into(),
@@ -232,7 +248,9 @@ fn merge_clears_nullable_fields_when_patch_value_is_null() {
     let patch: AgentSpecPatch = serde_json::from_value(json!({
         "context_policy": null,
         "allowed_tools": null,
+        "allowed_tool_patterns": null,
         "excluded_tools": null,
+        "excluded_tool_patterns": null,
         "reasoning_effort": null,
         "endpoint": null
     }))
@@ -240,8 +258,14 @@ fn merge_clears_nullable_fields_when_patch_value_is_null() {
 
     let result = merge_agent_spec(base, patch);
     assert_eq!(result.context_policy, None);
-    assert_eq!(result.allowed_tools, None);
+    // Clearing BOTH allow fields triggers the deny-all normalization:
+    // they end up as explicit empty lists so a JSON round-trip preserves
+    // the deny-all matcher rather than re-firing the legacy
+    // "absent = allow all" shim. See `merge_agent_spec` doc comment.
+    assert_eq!(result.allowed_tools, Some(vec![]));
+    assert_eq!(result.allowed_tool_patterns, Some(vec![]));
     assert_eq!(result.excluded_tools, None);
+    assert_eq!(result.excluded_tool_patterns, None);
     assert_eq!(result.reasoning_effort, None);
     assert_eq!(result.endpoint, None);
 }
@@ -250,13 +274,119 @@ fn merge_clears_nullable_fields_when_patch_value_is_null() {
 fn serde_preserves_nullable_field_clear_values() {
     let patch: AgentSpecPatch = serde_json::from_value(json!({
         "endpoint": null,
-        "allowed_tools": null
+        "allowed_tools": null,
+        "allowed_tool_patterns": null,
+        "excluded_tool_patterns": null
     }))
     .expect("nullable fields must accept explicit null");
 
     let encoded = serde_json::to_value(&patch).expect("patch serializes");
     assert_eq!(encoded["endpoint"], Value::Null);
     assert_eq!(encoded["allowed_tools"], Value::Null);
+    assert_eq!(encoded["allowed_tool_patterns"], Value::Null);
+    assert_eq!(encoded["excluded_tool_patterns"], Value::Null);
+}
+
+// Tri-state coverage for the pattern fields — mirrors `allowed_tools`.
+#[test]
+fn merge_keeps_allowed_tool_patterns_when_patch_absent() {
+    let base = AgentSpec {
+        allowed_tool_patterns: Some(vec!["mcp:*".into()]),
+        ..base_spec()
+    };
+    let patch = AgentSpecPatch::default();
+    let result = merge_agent_spec(base, patch);
+    assert_eq!(result.allowed_tool_patterns, Some(vec!["mcp:*".into()]));
+}
+
+#[test]
+fn merge_overrides_allowed_tool_patterns_when_patch_value() {
+    let base = AgentSpec {
+        allowed_tool_patterns: Some(vec!["mcp:*".into()]),
+        ..base_spec()
+    };
+    let patch = AgentSpecPatch {
+        allowed_tool_patterns: Some(Some(vec!["other:*".into()])),
+        ..Default::default()
+    };
+    let result = merge_agent_spec(base, patch);
+    assert_eq!(result.allowed_tool_patterns, Some(vec!["other:*".into()]));
+}
+
+#[test]
+fn merge_clears_allowed_tool_patterns_when_patch_null() {
+    // Base has only the pattern field set; the literal field is None.
+    // Clearing patterns drives both allow fields to None, which then trips
+    // the deny-all normalization (see `merge_agent_spec` doc).
+    let base = AgentSpec {
+        allowed_tool_patterns: Some(vec!["mcp:*".into()]),
+        ..base_spec()
+    };
+    let patch: AgentSpecPatch = serde_json::from_value(json!({
+        "allowed_tool_patterns": null
+    }))
+    .expect("nullable pattern field accepts null");
+    let result = merge_agent_spec(base, patch);
+    assert_eq!(result.allowed_tools, Some(vec![]));
+    assert_eq!(result.allowed_tool_patterns, Some(vec![]));
+}
+
+#[test]
+fn merge_clears_allowed_tool_patterns_preserves_literal_when_present() {
+    // Base sets both allow fields. Patch only nulls the pattern field;
+    // the literal field remains Some(..), so the deny-all normalization
+    // does not fire and `allowed_tool_patterns` stays cleared to None.
+    let base = AgentSpec {
+        allowed_tools: Some(vec!["Bash".into()]),
+        allowed_tool_patterns: Some(vec!["mcp:*".into()]),
+        ..base_spec()
+    };
+    let patch: AgentSpecPatch = serde_json::from_value(json!({
+        "allowed_tool_patterns": null
+    }))
+    .expect("nullable pattern field accepts null");
+    let result = merge_agent_spec(base, patch);
+    assert_eq!(result.allowed_tools, Some(vec!["Bash".into()]));
+    assert_eq!(result.allowed_tool_patterns, None);
+}
+
+#[test]
+fn merge_keeps_excluded_tool_patterns_when_patch_absent() {
+    let base = AgentSpec {
+        excluded_tool_patterns: Some(vec!["danger:*".into()]),
+        ..base_spec()
+    };
+    let patch = AgentSpecPatch::default();
+    let result = merge_agent_spec(base, patch);
+    assert_eq!(result.excluded_tool_patterns, Some(vec!["danger:*".into()]));
+}
+
+#[test]
+fn merge_overrides_excluded_tool_patterns_when_patch_value() {
+    let base = AgentSpec {
+        excluded_tool_patterns: Some(vec!["danger:*".into()]),
+        ..base_spec()
+    };
+    let patch = AgentSpecPatch {
+        excluded_tool_patterns: Some(Some(vec!["other:*".into()])),
+        ..Default::default()
+    };
+    let result = merge_agent_spec(base, patch);
+    assert_eq!(result.excluded_tool_patterns, Some(vec!["other:*".into()]));
+}
+
+#[test]
+fn merge_clears_excluded_tool_patterns_when_patch_null() {
+    let base = AgentSpec {
+        excluded_tool_patterns: Some(vec!["danger:*".into()]),
+        ..base_spec()
+    };
+    let patch: AgentSpecPatch = serde_json::from_value(json!({
+        "excluded_tool_patterns": null
+    }))
+    .expect("nullable pattern field accepts null");
+    let result = merge_agent_spec(base, patch);
+    assert_eq!(result.excluded_tool_patterns, None);
 }
 
 // 12b. merge_overrides_active_hook_filter
@@ -400,4 +530,61 @@ fn merge_preserves_pass_through_fields() {
     let result_value = serde_json::to_value(&result).unwrap();
 
     assert_eq!(base_value, result_value);
+}
+
+// ── deny-all round-trip pinning ─────────────────────────────────────────────
+
+#[test]
+fn merge_explicit_clear_of_both_allow_fields_yields_explicit_empty() {
+    let base = AgentSpec {
+        allowed_tools: Some(vec!["Bash".into()]),
+        allowed_tool_patterns: Some(vec!["mcp:*".into()]),
+        ..base_spec()
+    };
+    let patch: AgentSpecPatch = serde_json::from_value(json!({
+        "allowed_tools": null,
+        "allowed_tool_patterns": null,
+    }))
+    .expect("nullable allow fields accept null");
+    let merged = merge_agent_spec(base, patch);
+    assert_eq!(merged.allowed_tools, Some(vec![]));
+    assert_eq!(merged.allowed_tool_patterns, Some(vec![]));
+}
+
+#[test]
+fn deny_all_spec_survives_json_round_trip() {
+    let base = AgentSpec {
+        allowed_tools: Some(vec!["Bash".into()]),
+        allowed_tool_patterns: Some(vec!["mcp:*".into()]),
+        ..base_spec()
+    };
+    let patch: AgentSpecPatch = serde_json::from_value(json!({
+        "allowed_tools": null,
+        "allowed_tool_patterns": null,
+    }))
+    .expect("nullable allow fields accept null");
+    let merged = merge_agent_spec(base, patch);
+
+    // Round-trip through JSON — this is the path permission preview and
+    // other consumers take after `merge_agent_spec`. Without the
+    // normalization in `merge_agent_spec`, the AgentSpecRaw shim would
+    // reinject `allowed_tool_patterns = ["*"]` here and flip deny-all
+    // into allow-all.
+    let raw = serde_json::to_value(&merged).expect("merged spec serializes");
+    let parsed: AgentSpec = serde_json::from_value(raw).expect("merged spec re-parses");
+    assert!(!parsed.tool_allowed("Bash"));
+    assert!(!parsed.tool_allowed("mcp:weather"));
+    assert!(!parsed.tool_allowed(""));
+}
+
+#[test]
+fn deny_all_normalization_only_fires_when_base_starts_allow_all() {
+    // Base built via Default (which triggers the legacy shim through
+    // deserialize) has `allowed_tool_patterns = Some(vec!["*"])` and
+    // `allowed_tools = None`. An empty patch must NOT collapse to
+    // deny-all — the legacy shim path stays allow-all.
+    let default_spec: AgentSpec = AgentSpec::default();
+    assert_eq!(default_spec.allowed_tool_patterns, Some(vec!["*".into()]));
+    let merged = merge_agent_spec(default_spec, AgentSpecPatch::default());
+    assert!(merged.tool_allowed("anything"));
 }

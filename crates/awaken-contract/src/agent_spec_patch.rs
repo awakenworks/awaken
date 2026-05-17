@@ -55,8 +55,15 @@ pub struct AgentSpecPatch {
     /// JSON `null` in this map (handled at merge time).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sections: Option<HashMap<String, Value>>,
-    /// Whitelist of tool IDs. `Some([..])` overrides; `None` keeps base.
-    /// JSON `null` clears to "all tools"; missing inherits base.
+    /// Literal whitelist of tool IDs. Tri-state at merge time: missing
+    /// inherits the base value, JSON `null` sets the field to `None`, a
+    /// JSON value overrides.
+    ///
+    /// A PATCH that clears `allowed_tools` to `null` does NOT re-fire the
+    /// legacy "absent = allow all" shim — that shim runs only on initial
+    /// deserialize of a full `AgentSpec`, not on patch merge. A merged
+    /// spec with neither `allowed_tools` nor `allowed_tool_patterns` set
+    /// has no allow rules and the matcher denies every tool.
     #[serde(
         default,
         deserialize_with = "nullable_patch::deserialize",
@@ -64,7 +71,22 @@ pub struct AgentSpecPatch {
         skip_serializing_if = "nullable_patch::is_missing"
     )]
     pub allowed_tools: NullablePatch<Vec<String>>,
-    /// Blacklist of tool IDs. Same semantics as `allowed_tools`.
+    /// Glob patterns matched against tool IDs for the allow set. Same
+    /// tri-state merge semantics as `allowed_tools`: missing inherits
+    /// base, JSON `null` sets the field to `None`, value overrides. The
+    /// "absent = allow all" shim does not run on patch merge — clearing
+    /// both allow fields via PATCH yields a deny-all matcher.
+    #[serde(
+        default,
+        deserialize_with = "nullable_patch::deserialize",
+        serialize_with = "nullable_patch::serialize",
+        skip_serializing_if = "nullable_patch::is_missing"
+    )]
+    pub allowed_tool_patterns: NullablePatch<Vec<String>>,
+    /// Blacklist of tool IDs. Tri-state at merge time: missing inherits
+    /// base, JSON `null` sets the field to `None` (i.e. no literal
+    /// exclude rules), value overrides. Unlike the allow fields, clearing
+    /// the exclude fields is the safe "nothing excluded" state.
     #[serde(
         default,
         deserialize_with = "nullable_patch::deserialize",
@@ -72,6 +94,16 @@ pub struct AgentSpecPatch {
         skip_serializing_if = "nullable_patch::is_missing"
     )]
     pub excluded_tools: NullablePatch<Vec<String>>,
+    /// Glob patterns matched against tool IDs for the exclude set. Same
+    /// tri-state merge semantics as `excluded_tools`; clearing to `None`
+    /// means no pattern-based exclusions.
+    #[serde(
+        default,
+        deserialize_with = "nullable_patch::deserialize",
+        serialize_with = "nullable_patch::serialize",
+        skip_serializing_if = "nullable_patch::is_missing"
+    )]
+    pub excluded_tool_patterns: NullablePatch<Vec<String>>,
     /// Sub-agent IDs this agent can delegate to. `Some([..])` overrides.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub delegates: Option<Vec<String>>,
@@ -120,7 +152,9 @@ impl AgentSpecPatch {
             && self.active_hook_filter.is_none()
             && self.sections.is_none()
             && self.allowed_tools.is_none()
+            && self.allowed_tool_patterns.is_none()
             && self.excluded_tools.is_none()
+            && self.excluded_tool_patterns.is_none()
             && self.delegates.is_none()
             && self.reasoning_effort.is_none()
             && self.endpoint.is_none()
@@ -136,12 +170,28 @@ impl AgentSpecPatch {
 /// - `plugin_ids`: replace whole list when patch is `Some`.
 /// - `sections`: per-key shallow merge. Patch keys override base keys.
 ///   A patch value of JSON `null` deletes the corresponding base key.
-/// - Patch-supported option fields (`allowed_tools`, `excluded_tools`,
+/// - Patch-supported option fields (`allowed_tools`,
+///   `allowed_tool_patterns`, `excluded_tools`, `excluded_tool_patterns`,
 ///   `reasoning_effort`, `context_policy`, `endpoint`) are tri-state:
 ///   missing inherits, JSON `null` clears, and a JSON value overrides.
+///   The legacy "absent catalog = allow all" shim runs only on initial
+///   `AgentSpec` deserialize, never on merge — a PATCH that clears both
+///   allow fields to `null` produces a deny-all matcher.
 /// - Metadata fields pass through from `base` unchanged (id, registry).
+///
+/// Round-trip normalization (defense in depth): if BOTH `allowed_tools`
+/// and `allowed_tool_patterns` end up as `None` after the merge, they
+/// are rewritten to `Some(vec![])`. The deserialize side now distinguishes
+/// absent from explicit `null` via the double-Option pattern in
+/// `AgentSpecRaw`, so a `None`-`None` merged spec serialized as
+/// `{"allowed_tools": null, "allowed_tool_patterns": null}` would already
+/// re-parse as deny-all without this normalization. Kept anyway because
+/// it makes the merge path independently robust: any future caller that
+/// serializes via a path which drops nulls (custom formatters, lossy
+/// transcoding) still gets explicit `[]` to anchor the deny-all intent.
+/// Explicit empty lists serialize as `[]` and survive every round-trip.
 pub fn merge_agent_spec(base: AgentSpec, patch: AgentSpecPatch) -> AgentSpec {
-    AgentSpec {
+    let mut merged = AgentSpec {
         id: base.id,
         model_id: patch.model_id.unwrap_or(base.model_id),
         system_prompt: patch.system_prompt.unwrap_or(base.system_prompt),
@@ -154,13 +204,29 @@ pub fn merge_agent_spec(base: AgentSpec, patch: AgentSpecPatch) -> AgentSpec {
         active_hook_filter: patch.active_hook_filter.unwrap_or(base.active_hook_filter),
         sections: merge_sections(base.sections, patch.sections),
         allowed_tools: merge_nullable(base.allowed_tools, patch.allowed_tools),
+        allowed_tool_patterns: merge_nullable(
+            base.allowed_tool_patterns,
+            patch.allowed_tool_patterns,
+        ),
         excluded_tools: merge_nullable(base.excluded_tools, patch.excluded_tools),
+        excluded_tool_patterns: merge_nullable(
+            base.excluded_tool_patterns,
+            patch.excluded_tool_patterns,
+        ),
         delegates: patch.delegates.unwrap_or(base.delegates),
         reasoning_effort: merge_nullable(base.reasoning_effort, patch.reasoning_effort),
         endpoint: merge_nullable(base.endpoint, patch.endpoint),
         // Pass-through metadata:
         registry: base.registry,
+    };
+
+    // Pin the deny-all intent across a JSON round-trip. See doc comment.
+    if merged.allowed_tools.is_none() && merged.allowed_tool_patterns.is_none() {
+        merged.allowed_tools = Some(Vec::new());
+        merged.allowed_tool_patterns = Some(Vec::new());
     }
+
+    merged
 }
 
 fn merge_nullable<T>(base: Option<T>, patch: NullablePatch<T>) -> Option<T> {
