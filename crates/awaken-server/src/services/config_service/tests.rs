@@ -2142,3 +2142,113 @@ async fn patch_tool_overrides_apply_failure_emits_apply_failed_audit_event() {
         "ApplyFailed event must carry the before spec"
     );
 }
+
+// ── catalog validation on agent PUT (AgentSpec::validate_catalog wiring) ──
+
+#[tokio::test]
+async fn create_agent_rejects_invalid_tool_pattern() {
+    let config_store = Arc::new(awaken_stores::InMemoryStore::new());
+    let (state, _manager) = build_state(config_store.clone()).await;
+    let service = ConfigService::new(&state).expect("config service");
+
+    // Dangling `\` is an invalid pattern -> validate_catalog returns an
+    // Error issue -> PUT must reject with InvalidPayload.
+    let err = service
+        .create_with_headers(
+            ConfigNamespace::Agents,
+            json!({
+                "id": "bad-pattern-agent",
+                "model_id": "bootstrap",
+                "system_prompt": "test",
+                "allowed_tool_patterns": ["foo\\"],
+            }),
+            &axum::http::HeaderMap::new(),
+        )
+        .await
+        .expect_err("invalid pattern must be rejected");
+
+    let ConfigServiceError::InvalidPayload(msg) = &err else {
+        panic!("expected InvalidPayload, got {err:?}");
+    };
+    assert!(
+        msg.contains("allowed_tool_patterns"),
+        "error message must name the offending field: {msg}"
+    );
+    assert!(
+        msg.contains("bad-pattern-agent"),
+        "error message must name the agent id: {msg}"
+    );
+
+    // Spec must not have been persisted.
+    let stored = ConfigStore::get(config_store.as_ref(), "agents", "bad-pattern-agent")
+        .await
+        .expect("read");
+    assert!(stored.is_none(), "rejected spec must not reach the store");
+}
+
+#[tokio::test]
+async fn create_agent_accepts_star_in_literal_field_as_warning() {
+    let config_store = Arc::new(awaken_stores::InMemoryStore::new());
+    let (state, _manager) = build_state(config_store.clone()).await;
+    let service = ConfigService::new(&state).expect("config service");
+
+    // `mcp:*` in a literal field is a Warning, not an Error: spec loads.
+    let result = service
+        .create_with_headers(
+            ConfigNamespace::Agents,
+            json!({
+                "id": "warn-literal-agent",
+                "model_id": "bootstrap",
+                "system_prompt": "test",
+                "allowed_tools": ["mcp:*"],
+            }),
+            &axum::http::HeaderMap::new(),
+        )
+        .await
+        .expect("warning-only catalog must succeed");
+    assert_eq!(result["id"], "warn-literal-agent");
+
+    let stored = ConfigStore::get(config_store.as_ref(), "agents", "warn-literal-agent")
+        .await
+        .expect("read")
+        .expect("spec must be persisted despite warning");
+    let spec_value = stored.get("spec").unwrap_or(&stored);
+    assert_eq!(spec_value["id"], "warn-literal-agent");
+}
+
+#[tokio::test]
+async fn patch_agent_overrides_rejects_invalid_tool_pattern() {
+    let config_store = Arc::new(awaken_stores::InMemoryStore::new());
+    let (state, _manager) = build_state(config_store.clone()).await;
+    let service = ConfigService::new(&state).expect("config service");
+
+    // bootstrap_agent is registered as Builtin via apply_seed, so it accepts overrides.
+    let err = service
+        .patch_agent_overrides(
+            "bootstrap",
+            json!({ "allowed_tool_patterns": ["foo\\"] }),
+            &axum::http::HeaderMap::new(),
+        )
+        .await
+        .expect_err("invalid pattern in overrides must be rejected");
+    assert!(
+        matches!(err, ConfigServiceError::InvalidPayload(ref msg) if msg.contains("allowed_tool_patterns")),
+        "expected InvalidPayload naming the field, got {err:?}"
+    );
+}
+
+#[tokio::test]
+async fn validate_agent_overrides_surfaces_invalid_tool_pattern() {
+    let config_store = Arc::new(awaken_stores::InMemoryStore::new());
+    let (state, _manager) = build_state(config_store.clone()).await;
+    let service = ConfigService::new(&state).expect("config service");
+
+    let err = service
+        .validate_agent_overrides("bootstrap", json!({ "excluded_tool_patterns": [""] }))
+        .await
+        .expect_err("dry-run validation must reject invalid pattern");
+    assert!(
+        matches!(err, ConfigServiceError::InvalidPayload(ref msg) if msg.contains("excluded_tool_patterns")),
+        "expected InvalidPayload naming the field, got {err:?}"
+    );
+}

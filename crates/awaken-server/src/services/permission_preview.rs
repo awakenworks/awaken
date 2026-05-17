@@ -1,9 +1,11 @@
 //! Permission preview service — answers "what tools can the model actually
 //! see for this agent after the permission plugin filters?".
 //!
-//! Static analysis only: walks the agent's declared `allowed_tools` /
-//! `excluded_tools` over the tool registry to compute the candidate set,
-//! then subtracts tools that any permission rule marks as unconditionally
+//! Static analysis only: applies the spec's four catalog fields
+//! (`allowed_tools` / `allowed_tool_patterns` / `excluded_tools` /
+//! `excluded_tool_patterns`) over the tool registry via
+//! [`AgentSpec::tool_allowed`] to compute the candidate set, then
+//! subtracts tools that any permission rule marks as unconditionally
 //! denied (matching `Deny` + exact tool + `ArgMatcher::Any`). Rules whose
 //! match depends on runtime arguments are surfaced separately as
 //! informational entries — they cannot be resolved without an actual tool
@@ -37,7 +39,10 @@ pub struct PermissionPreviewResponse {
     /// Default behavior when no rule matches a call. `None` when the
     /// permission plugin isn't enabled.
     pub default_behavior: Option<String>,
-    /// `allowed_tools ∖ excluded_tools` over the full tool registry.
+    /// Tools from the registry that survive the spec's four catalog
+    /// fields (`AgentSpec::tool_allowed`). Equivalent to:
+    /// `(allowed_tools ∪ allowed_tool_patterns) − (excluded_tools ∪
+    /// excluded_tool_patterns)` intersected with registered tool ids.
     pub candidate_tools: Vec<String>,
     /// Tools from `candidate_tools` that the BeforeInference hook will
     /// unconditionally strip — i.e. only the deny rules that bite a tool
@@ -98,35 +103,28 @@ pub async fn preview_agent_permissions(
         .registry_set()
         .ok_or(PermissionPreviewError::RegistryUnavailable)?;
     let all_tools: Vec<String> = registries.tools.tool_ids().into_iter().collect();
-    let all_tool_set: HashSet<&str> = all_tools.iter().map(String::as_str).collect();
 
-    // candidate = (allowed ∩ registry).unwrap_or(registry) ∖ excluded
+    // candidate = registry filtered through AgentSpec::tool_allowed
     //
-    // INTERSECT WITH REGISTRY: an agent's `allowed_tools` is a string list
-    // written into config; nothing forces every entry to correspond to a
-    // currently-registered tool. Without filtering against the registry,
-    // a stale id (renamed plugin, removed MCP server, typo) would show up
-    // in `effective_tools` as if the model could call it — but the
-    // runtime tool catalog never offers it. The preview must mirror what
-    // the model actually sees.
-    let excluded: HashSet<&str> = spec
-        .excluded_tools
-        .as_deref()
-        .unwrap_or(&[])
+    // We use the canonical matcher so the preview accounts for ALL four
+    // catalog fields (literal + pattern, allow + exclude) the runtime
+    // honours. Walking only `allowed_tools` / `excluded_tools` would
+    // miss the pattern fields and lie about what the model sees —
+    // including the legacy "absent = allow all" sentinel, which the
+    // deserialize shim now expresses as
+    // `allowed_tool_patterns: Some(vec!["*"])`.
+    //
+    // INTERSECT WITH REGISTRY: an agent's allow lists are config strings
+    // and don't have to name currently-registered tools. Without the
+    // registry filter, a stale id (renamed plugin, removed MCP server,
+    // typo) would show up in `effective_tools` as if the model could
+    // call it — but the runtime tool catalog never offers it. Iterating
+    // the registry and asking `tool_allowed` for each id naturally
+    // restricts the result to ids that actually exist.
+    let mut candidate_tools: Vec<String> = all_tools
         .iter()
-        .map(String::as_str)
-        .collect();
-    let candidate_iter: Box<dyn Iterator<Item = String>> = match &spec.allowed_tools {
-        Some(allowed) => Box::new(
-            allowed
-                .iter()
-                .filter(|tool| all_tool_set.contains(tool.as_str()))
-                .cloned(),
-        ),
-        None => Box::new(all_tools.iter().cloned()),
-    };
-    let mut candidate_tools: Vec<String> = candidate_iter
-        .filter(|tool| !excluded.contains(tool.as_str()))
+        .filter(|id| spec.tool_allowed(id))
+        .cloned()
         .collect();
     candidate_tools.sort();
     candidate_tools.dedup();

@@ -1,3 +1,4 @@
+pub mod agent_catalog;
 pub mod audit_log;
 pub mod builtin_seed;
 pub mod config_envelope;
