@@ -111,7 +111,8 @@ pub fn read_ndjson_path(path: impl AsRef<Path>) -> Result<Vec<ReplayReport>, Rep
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum DiffEntry {
-    /// Both reports are present and `passed`. No change.
+    /// Both reports are present, both `passed`, and every observable
+    /// metric matched. No change.
     Unchanged { fixture_id: String },
     /// Baseline passed but the new run failed — a *regression*.
     Regression {
@@ -124,6 +125,15 @@ pub enum DiffEntry {
     StillFailing {
         fixture_id: String,
         new_failures: Vec<String>,
+    },
+    /// Both runs passed but at least one observable metric drifted
+    /// (final text, token counts, tool counts, error_type, etc.).
+    /// Surfaces silent regressions that don't change the pass/fail bit
+    /// — e.g. an inference being dropped from `inference_count` while
+    /// the answer-substring expectation still happens to match.
+    Drift {
+        fixture_id: String,
+        fields: Vec<String>,
     },
     /// Fixture only present in the baseline (deleted or filtered).
     MissingFromNew { fixture_id: String },
@@ -138,18 +148,74 @@ impl DiffEntry {
             | DiffEntry::Regression { fixture_id, .. }
             | DiffEntry::Fixed { fixture_id }
             | DiffEntry::StillFailing { fixture_id, .. }
+            | DiffEntry::Drift { fixture_id, .. }
             | DiffEntry::MissingFromNew { fixture_id }
             | DiffEntry::NewlyAdded { fixture_id, .. } => fixture_id,
         }
     }
 
-    /// Whether this entry should fail a CI gate.
+    /// Whether this entry should fail a CI gate. Regressions, missing
+    /// fixtures, field-level drift, and newly-added *failing* fixtures
+    /// are blocking — drift is included because a silently changing
+    /// baseline is exactly the kind of slow regression the eval gate
+    /// exists to catch; a newly added failing fixture is included so
+    /// `awaken-eval check` actually fails when a fresh fixture lands in
+    /// a broken state (otherwise the gate would only catch already-
+    /// committed-passing fixtures going red).
     pub fn is_blocking(&self) -> bool {
-        matches!(
-            self,
-            DiffEntry::Regression { .. } | DiffEntry::MissingFromNew { .. }
-        )
+        match self {
+            DiffEntry::Regression { .. }
+            | DiffEntry::MissingFromNew { .. }
+            | DiffEntry::Drift { .. } => true,
+            DiffEntry::NewlyAdded { passed, .. } => !*passed,
+            DiffEntry::Unchanged { .. }
+            | DiffEntry::Fixed { .. }
+            | DiffEntry::StillFailing { .. } => false,
+        }
     }
+}
+
+/// Field names compared between two passing reports. Order is stable so
+/// `Drift::fields` reads consistently across runs.
+fn diff_passing_fields(b: &ReplayReport, n: &ReplayReport) -> Vec<String> {
+    let mut diffs: Vec<&'static str> = Vec::new();
+    if b.final_text != n.final_text {
+        diffs.push("final_text");
+    }
+    if b.inference_count != n.inference_count {
+        diffs.push("inference_count");
+    }
+    if b.tool_count != n.tool_count {
+        diffs.push("tool_count");
+    }
+    if b.tool_failures != n.tool_failures {
+        diffs.push("tool_failures");
+    }
+    if b.total_input_tokens != n.total_input_tokens {
+        diffs.push("total_input_tokens");
+    }
+    if b.total_output_tokens != n.total_output_tokens {
+        diffs.push("total_output_tokens");
+    }
+    if b.total_tokens != n.total_tokens {
+        diffs.push("total_tokens");
+    }
+    if b.session_duration_ms != n.session_duration_ms {
+        diffs.push("session_duration_ms");
+    }
+    if b.error_type != n.error_type {
+        diffs.push("error_type");
+    }
+    if b.inference_error_count != n.inference_error_count {
+        diffs.push("inference_error_count");
+    }
+    if b.runtime_failure != n.runtime_failure {
+        diffs.push("runtime_failure");
+    }
+    if b.tool_calls_by_agent != n.tool_calls_by_agent {
+        diffs.push("tool_calls_by_agent");
+    }
+    diffs.into_iter().map(String::from).collect()
 }
 
 /// Aggregate result of a baseline diff.
@@ -187,6 +253,15 @@ impl DiffSummary {
             .filter(|e| matches!(e, DiffEntry::NewlyAdded { .. }))
             .count()
     }
+
+    /// Count of fixtures with field-level drift (both runs passed but
+    /// at least one observable metric changed).
+    pub fn drift(&self) -> usize {
+        self.entries
+            .iter()
+            .filter(|e| matches!(e, DiffEntry::Drift { .. }))
+            .count()
+    }
 }
 
 /// Compare a `new` run against a committed `baseline`, producing a
@@ -213,9 +288,19 @@ pub fn diff_against_baseline(baseline: &[ReplayReport], new: &[ReplayReport]) ->
         .into_iter()
         .map(|id| match (baseline_map.get(id), new_map.get(id)) {
             (Some(b), Some(n)) => match (b.passed, n.passed) {
-                (true, true) => DiffEntry::Unchanged {
-                    fixture_id: id.to_string(),
-                },
+                (true, true) => {
+                    let fields = diff_passing_fields(b, n);
+                    if fields.is_empty() {
+                        DiffEntry::Unchanged {
+                            fixture_id: id.to_string(),
+                        }
+                    } else {
+                        DiffEntry::Drift {
+                            fixture_id: id.to_string(),
+                            fields,
+                        }
+                    }
+                }
                 (true, false) => DiffEntry::Regression {
                     fixture_id: id.to_string(),
                     new_failures: n.failures.iter().map(|f| f.kind().to_string()).collect(),
@@ -259,10 +344,13 @@ mod tests {
             tool_failures: 0,
             total_input_tokens: 10,
             total_output_tokens: 5,
+            total_tokens: 15,
             session_duration_ms: 100,
             elapsed_ms: 100,
             tool_calls_by_agent: Vec::new(),
             error_type: None,
+            inference_error_count: 0,
+            runtime_failure: None,
         }
     }
 
@@ -433,11 +521,23 @@ mod tests {
     }
 
     #[test]
-    fn diff_newly_added_failing_does_not_block_either() {
-        // An added fixture that already fails is still informational —
-        // baseline never blessed it, so we don't gate. The CI workflow
-        // can choose to require all-green explicitly if desired.
+    fn diff_newly_added_failing_blocks_check() {
+        // Review v3 #4: a newly added failing fixture should block
+        // `awaken-eval check` so a broken fixture committed today
+        // actually fails CI. Previously this silently passed because
+        // the baseline never blessed it.
         let s = diff_against_baseline(&[], &[report("new", false, vec![token_failure()])]);
+        assert_eq!(s.added(), 1);
+        assert!(!s.is_clean());
+    }
+
+    #[test]
+    fn diff_newly_added_passing_does_not_block() {
+        // A newly added fixture that already passes is still
+        // informational — baseline never blessed it, but the new run is
+        // green, so the gate doesn't need to fire.
+        let s = diff_against_baseline(&[], &[report("new", true, vec![])]);
+        assert_eq!(s.added(), 1);
         assert!(s.is_clean());
     }
 
@@ -456,7 +556,7 @@ mod tests {
     }
 
     #[test]
-    fn diff_entry_is_blocking_only_for_regression_and_missing() {
+    fn diff_entry_is_blocking_for_regression_missing_and_drift() {
         assert!(
             !DiffEntry::Unchanged {
                 fixture_id: "x".into()
@@ -484,6 +584,13 @@ mod tests {
             .is_blocking()
         );
         assert!(
+            DiffEntry::Drift {
+                fixture_id: "x".into(),
+                fields: vec!["final_text".into()],
+            }
+            .is_blocking()
+        );
+        assert!(
             DiffEntry::MissingFromNew {
                 fixture_id: "x".into()
             }
@@ -496,6 +603,97 @@ mod tests {
             }
             .is_blocking()
         );
+        assert!(
+            DiffEntry::NewlyAdded {
+                fixture_id: "x".into(),
+                passed: false
+            }
+            .is_blocking(),
+            "newly added failing fixture must block check"
+        );
+    }
+
+    #[test]
+    fn diff_passing_pair_with_matching_metrics_is_unchanged() {
+        let b = report("a", true, vec![]);
+        let n = report("a", true, vec![]);
+        let s = diff_against_baseline(&[b], &[n]);
+        assert!(matches!(&s.entries[0], DiffEntry::Unchanged { .. }));
+        assert!(s.is_clean());
+    }
+
+    #[test]
+    fn diff_passing_pair_with_drifted_final_text_is_drift_and_blocks() {
+        let b = report("a", true, vec![]);
+        let mut n = report("a", true, vec![]);
+        n.final_text = "different".into();
+        let s = diff_against_baseline(&[b], &[n]);
+        assert_eq!(s.drift(), 1);
+        assert!(!s.is_clean());
+        match &s.entries[0] {
+            DiffEntry::Drift { fields, .. } => {
+                assert_eq!(fields, &vec!["final_text".to_string()]);
+            }
+            other => panic!("expected Drift, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn diff_passing_pair_with_drifted_inference_count_is_drift() {
+        // The motivating case from review v2 #5: failure path drops from
+        // inference_count: 1 to inference_count: 0 while the expectation
+        // (`final_answer_excludes`) still happens to pass.
+        let b = report("a", true, vec![]);
+        let mut n = report("a", true, vec![]);
+        n.inference_count = 0;
+        let s = diff_against_baseline(&[b], &[n]);
+        match &s.entries[0] {
+            DiffEntry::Drift { fields, .. } => {
+                assert_eq!(fields, &vec!["inference_count".to_string()]);
+            }
+            other => panic!("expected Drift, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn diff_passing_pair_with_drifted_total_tokens_only_is_drift() {
+        // Token-only providers can report TokenUsage.total_tokens
+        // without prompt/completion breakdown, so the report's
+        // total_input/output_tokens both stay 0. total_tokens is what
+        // scoring actually uses — drift on it must be observable.
+        let b = report("a", true, vec![]);
+        let mut n = report("a", true, vec![]);
+        n.total_tokens = 999;
+        let s = diff_against_baseline(&[b], &[n]);
+        match &s.entries[0] {
+            DiffEntry::Drift { fields, .. } => {
+                assert_eq!(fields, &vec!["total_tokens".to_string()]);
+            }
+            other => panic!("expected Drift, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn diff_passing_pair_lists_every_drifted_field() {
+        let b = report("a", true, vec![]);
+        let mut n = report("a", true, vec![]);
+        n.total_input_tokens = 9999;
+        n.total_output_tokens = 9999;
+        n.error_type = Some("rate_limit".into());
+        let s = diff_against_baseline(&[b], &[n]);
+        match &s.entries[0] {
+            DiffEntry::Drift { fields, .. } => {
+                assert_eq!(
+                    fields,
+                    &vec![
+                        "total_input_tokens".to_string(),
+                        "total_output_tokens".to_string(),
+                        "error_type".to_string(),
+                    ]
+                );
+            }
+            other => panic!("expected Drift, got {other:?}"),
+        }
     }
 
     #[test]

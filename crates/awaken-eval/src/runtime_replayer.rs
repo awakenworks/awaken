@@ -178,31 +178,13 @@ impl Replayer for RuntimeReplayer {
             Err(_) => scripted_error.as_ref().map(|(kind, _msg)| kind.clone()),
         };
 
-        // Decide on a single `runtime_failure` to attach to the outcome.
-        // Order matters: an over-call (script exhausted) is the most
-        // diagnostic signal (proves the runtime asked for more than the
-        // fixture promised), so it wins over the "unused script" check.
-        // A non-scripted runtime error (`Err(_)` without a captured
-        // scripted error) is the residual case.
-        let exhausted = executor.exhausted_calls();
-        let remaining = executor.remaining();
-        let runtime_failure = if exhausted > 0 {
-            Some(ReplayRuntimeFailure::ScriptExhausted {
-                extra_calls: exhausted,
-            })
-        } else if remaining > 0 && !fixture.allow_unused_provider_script {
-            Some(ReplayRuntimeFailure::ProviderScriptUnused { remaining })
-        } else if let Err(err) = &outcome {
-            if scripted_error.is_none() {
-                Some(ReplayRuntimeFailure::RuntimeError {
-                    message: err.to_string(),
-                })
-            } else {
-                None
-            }
-        } else {
-            None
-        };
+        let runtime_failure = decide_runtime_failure(
+            executor.exhausted_calls(),
+            executor.remaining(),
+            outcome.as_ref().err().map(|e| e.to_string()),
+            scripted_error.is_some(),
+            fixture.allow_unused_provider_script,
+        );
 
         ReplayOutcome {
             fixture_id: fixture.id.clone(),
@@ -214,6 +196,47 @@ impl Replayer for RuntimeReplayer {
             runtime_failure,
         }
     }
+}
+
+/// Pick the single most diagnostic [`ReplayRuntimeFailure`] for a
+/// completed replay. Precedence (highest first):
+///
+///  1. **`ScriptExhausted`** — the executor was called when its script
+///     was empty. Proves the runtime asked for more events than the
+///     fixture promised; outranks everything because it points directly
+///     at the runtime contract violation.
+///  2. **`RuntimeError`** — the run returned `Err` and no scripted event
+///     captured it. Catches non-scripted failures (model-guard mismatch,
+///     resolver error, internal bug). Must outrank
+///     `ProviderScriptUnused`: a `RuntimeError` often leaves the script
+///     untouched (e.g. upstream_model guard rejects before popping), so
+///     reporting "script unused" would hide the real cause.
+///  3. **`ProviderScriptUnused`** — the run completed or failed via a
+///     *scripted* error without consuming the whole script. Genuine
+///     "runtime stopped early" territory.
+fn decide_runtime_failure(
+    exhausted_calls: usize,
+    remaining: usize,
+    runtime_error_message: Option<String>,
+    has_scripted_error: bool,
+    allow_unused: bool,
+) -> Option<ReplayRuntimeFailure> {
+    if exhausted_calls > 0 {
+        return Some(ReplayRuntimeFailure::ScriptExhausted {
+            extra_calls: exhausted_calls,
+        });
+    }
+    if let Some(message) = runtime_error_message {
+        if !has_scripted_error {
+            return Some(ReplayRuntimeFailure::RuntimeError { message });
+        }
+        // Scripted error captured — the run failed *as expected*; only
+        // unused script remains a fixture-contract concern.
+    }
+    if remaining > 0 && !allow_unused {
+        return Some(ReplayRuntimeFailure::ProviderScriptUnused { remaining });
+    }
+    None
 }
 
 #[cfg(test)]
@@ -434,6 +457,89 @@ mod tests {
 
         let outcome = RuntimeReplayer::new().replay(&fx).await;
         assert_eq!(outcome.final_text, "ok");
+    }
+
+    // ── decide_runtime_failure precedence ────────────────────────────
+
+    #[test]
+    fn decide_script_exhausted_outranks_everything() {
+        let f = decide_runtime_failure(
+            /* exhausted_calls */ 2,
+            /* remaining */ 3,
+            /* runtime_error_message */ Some("boom".into()),
+            /* has_scripted_error */ true,
+            /* allow_unused */ false,
+        );
+        assert_eq!(
+            f,
+            Some(ReplayRuntimeFailure::ScriptExhausted { extra_calls: 2 })
+        );
+    }
+
+    #[test]
+    fn decide_runtime_error_outranks_provider_script_unused() {
+        // Review v3 #3: model-guard mismatch errors before consuming any
+        // script event; old code reported ProviderScriptUnused and hid
+        // the real failure. New precedence surfaces RuntimeError first.
+        let f = decide_runtime_failure(
+            0,
+            /* remaining */ 1,
+            Some("upstream_model mismatch".into()),
+            /* has_scripted_error */ false,
+            /* allow_unused */ false,
+        );
+        assert_eq!(
+            f,
+            Some(ReplayRuntimeFailure::RuntimeError {
+                message: "upstream_model mismatch".into()
+            })
+        );
+    }
+
+    #[test]
+    fn decide_scripted_error_plus_unused_script_falls_through_to_unused() {
+        // Run failed via a *scripted* error — that's the intended path,
+        // so don't promote it to RuntimeError. But the script also has
+        // leftover events: that IS a fixture-contract concern.
+        let f = decide_runtime_failure(
+            0,
+            /* remaining */ 2,
+            Some("inference failed: rate limited".into()),
+            /* has_scripted_error */ true,
+            /* allow_unused */ false,
+        );
+        assert_eq!(
+            f,
+            Some(ReplayRuntimeFailure::ProviderScriptUnused { remaining: 2 })
+        );
+    }
+
+    #[test]
+    fn decide_clean_run_returns_none() {
+        assert!(decide_runtime_failure(0, 0, None, false, false).is_none());
+    }
+
+    #[test]
+    fn decide_allow_unused_suppresses_provider_script_unused() {
+        let f = decide_runtime_failure(0, 5, None, false, /* allow_unused */ true);
+        assert!(f.is_none());
+    }
+
+    #[test]
+    fn decide_allow_unused_does_not_suppress_runtime_error() {
+        let f = decide_runtime_failure(
+            0,
+            5,
+            Some("boom".into()),
+            false,
+            /* allow_unused */ true,
+        );
+        assert_eq!(
+            f,
+            Some(ReplayRuntimeFailure::RuntimeError {
+                message: "boom".into()
+            })
+        );
     }
 
     #[tokio::test]
