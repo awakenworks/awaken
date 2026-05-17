@@ -200,5 +200,7 @@ async fn diff_detects_newly_added_without_blocking() {
     let extended = replay_dir(&dir.path().to_path_buf()).await;
     let summary = diff_against_baseline(&original, &extended);
     assert_eq!(summary.added(), 1);
-    assert!(summary.is_clean(), "newly added fixtures must not block CI");
+    // Passing newly-added fixtures don't block CI (failing ones do —
+    // see report::tests::diff_newly_added_failing_blocks_check).
+    assert!(summary.is_clean());
 }

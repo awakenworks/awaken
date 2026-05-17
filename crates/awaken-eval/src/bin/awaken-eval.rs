@@ -11,8 +11,10 @@
 //! fails its expectation.
 //!
 //! `check` parses two NDJSON reports and compares them with
-//! [`diff_against_baseline`]. Exit code is non-zero when the diff is not
-//! clean (regression or fixture missing from the new run).
+//! [`diff_against_baseline`]. Exit code is non-zero when any blocking
+//! entry is present: regression, field-level drift between two passing
+//! runs, fixture missing from the new run, or newly-added fixture that
+//! is already failing.
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -33,8 +35,9 @@ Usage:
 Subcommands:
   replay   Load fixtures from <DIR>, replay each through MockReplayer, score,
            and write one NDJSON line per fixture to <FILE>.
-  check    Compare two NDJSON reports; exit non-zero on regression or missing
-           fixture.
+  check    Compare two NDJSON reports; exit non-zero on regression, drift
+           (passing fixtures whose observable metrics changed), missing
+           fixture, or newly-added failing fixture.
 ";
 
 #[tokio::main]
@@ -148,24 +151,30 @@ async fn check_command(args: &[String]) -> Result<ExitCode, String> {
 
     let summary = diff_against_baseline(&baseline, &new);
     println!(
-        "awaken-eval check: {regressions} regression(s), {missing} missing, {added} added",
+        "awaken-eval check: {regressions} regression(s), {drift} drift, {missing} missing, {added} added",
         regressions = summary.regressions(),
+        drift = summary.drift(),
         missing = summary.missing(),
         added = summary.added(),
     );
     for entry in &summary.entries {
-        println!(
-            "  {kind:24} {id}",
-            kind = match entry {
-                awaken_eval::DiffEntry::Unchanged { .. } => "unchanged",
-                awaken_eval::DiffEntry::Regression { .. } => "regression",
-                awaken_eval::DiffEntry::Fixed { .. } => "fixed",
-                awaken_eval::DiffEntry::StillFailing { .. } => "still_failing",
-                awaken_eval::DiffEntry::MissingFromNew { .. } => "missing_from_new",
-                awaken_eval::DiffEntry::NewlyAdded { .. } => "newly_added",
-            },
-            id = entry.fixture_id()
-        );
+        let kind = match entry {
+            awaken_eval::DiffEntry::Unchanged { .. } => "unchanged",
+            awaken_eval::DiffEntry::Regression { .. } => "regression",
+            awaken_eval::DiffEntry::Fixed { .. } => "fixed",
+            awaken_eval::DiffEntry::StillFailing { .. } => "still_failing",
+            awaken_eval::DiffEntry::Drift { .. } => "drift",
+            awaken_eval::DiffEntry::MissingFromNew { .. } => "missing_from_new",
+            awaken_eval::DiffEntry::NewlyAdded { .. } => "newly_added",
+        };
+        if let awaken_eval::DiffEntry::Drift { fields, .. } = entry {
+            println!(
+                "  {kind:24} {id}  fields={fields:?}",
+                id = entry.fixture_id(),
+            );
+        } else {
+            println!("  {kind:24} {id}", id = entry.fixture_id());
+        }
     }
 
     if summary.is_clean() {

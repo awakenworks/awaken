@@ -64,30 +64,31 @@ pub struct ReplayOutcome {
 }
 
 impl ReplayOutcome {
-    /// Total tokens consumed across all inferences. Prefers the
-    /// span-level `total_tokens` field when an upstream provider
-    /// reports it (Anthropic, OpenAI both supply this directly), so
-    /// fixtures that set only `total_tokens` — without also breaking
-    /// it down into `prompt_tokens` and `completion_tokens` — still
-    /// get scored against `max_tokens_total`. Falls back to
-    /// `input + output` when no span reports a total.
+    /// Total tokens consumed across all inferences. Per-span fallback:
+    /// each span contributes its own `total_tokens` when set, otherwise
+    /// its `input_tokens + output_tokens`. Mixing the two within one
+    /// run (e.g. a first turn that reports only `total_tokens` and a
+    /// second turn that reports only `input/output`) sums correctly
+    /// instead of falling off the cliff at the all-or-nothing seam.
     ///
     /// Negative underlying values (`AgentMetrics` permits `i32`) are
-    /// clamped to zero on cast.
+    /// clamped to zero per span.
     pub fn total_tokens(&self) -> u32 {
-        let from_totals: i64 = self
+        let total: i64 = self
             .metrics
             .inferences
             .iter()
-            .filter_map(|s| s.total_tokens)
-            .map(i64::from)
+            .map(|s| {
+                if let Some(t) = s.total_tokens {
+                    i64::from(t).max(0)
+                } else {
+                    let input = i64::from(s.input_tokens.unwrap_or(0)).max(0);
+                    let output = i64::from(s.output_tokens.unwrap_or(0)).max(0);
+                    input + output
+                }
+            })
             .sum();
-        if from_totals > 0 {
-            return u32::try_from(from_totals).unwrap_or(u32::MAX);
-        }
-        let i = u32::try_from(self.metrics.total_input_tokens()).unwrap_or(0);
-        let o = u32::try_from(self.metrics.total_output_tokens()).unwrap_or(0);
-        i.saturating_add(o)
+        u32::try_from(total).unwrap_or(u32::MAX)
     }
 
     /// Names of tools invoked, in record order.
@@ -112,6 +113,17 @@ pub struct ReplayReport {
     pub tool_failures: usize,
     pub total_input_tokens: u32,
     pub total_output_tokens: u32,
+    /// What [`crate::score`] actually compares against `max_tokens_total`.
+    /// Per-span: `span.total_tokens` when set, otherwise
+    /// `input + output`. Surfaced on the report so baseline diff sees
+    /// the same value the scorer used — otherwise a fixture that only
+    /// reports `TokenUsage.total_tokens` could drift without
+    /// `total_input/output_tokens` changing.
+    ///
+    /// `#[serde(default)]` so pre-existing baselines (without the field)
+    /// still deserialise cleanly.
+    #[serde(default)]
+    pub total_tokens: u32,
     pub session_duration_ms: u64,
     /// Wall-clock duration of [`crate::replay`]. Excluded from the
     /// serialised baseline because it varies per-host and would otherwise
@@ -161,6 +173,7 @@ impl ReplayReport {
             tool_failures: outcome.metrics.tool_failures(),
             total_input_tokens: u32::try_from(outcome.metrics.total_input_tokens()).unwrap_or(0),
             total_output_tokens: u32::try_from(outcome.metrics.total_output_tokens()).unwrap_or(0),
+            total_tokens: outcome.total_tokens(),
             session_duration_ms: outcome.metrics.session_duration_ms,
             elapsed_ms: u64::try_from(outcome.elapsed.as_millis()).unwrap_or(u64::MAX),
             tool_calls_by_agent: outcome.metrics.stats_by_agent_and_tool(),
@@ -277,6 +290,39 @@ mod tests {
         };
         let o = outcome_with(metrics, "");
         assert_eq!(o.total_tokens(), 150);
+    }
+
+    #[test]
+    fn total_tokens_mixes_span_total_and_input_output_fallback() {
+        // Mixed shape: span 1 only reports `total_tokens`, span 2 only
+        // reports `input_tokens + output_tokens`. The earlier
+        // implementation returned 20 here (early-exit at first non-zero
+        // total) and silently dropped span 2 from the budget.
+        let metrics = AgentMetrics {
+            inferences: vec![
+                span_with_total(None, None, Some(20)),
+                span_with_total(Some(100), Some(50), None),
+            ],
+            ..Default::default()
+        };
+        let o = outcome_with(metrics, "");
+        assert_eq!(o.total_tokens(), 170);
+    }
+
+    #[test]
+    fn total_tokens_treats_negative_span_values_as_zero() {
+        // AgentMetrics permits i32 so a misbehaving provider could
+        // report a negative total. Per-span fallback should clamp
+        // instead of underflowing or polluting the sum.
+        let metrics = AgentMetrics {
+            inferences: vec![
+                span_with_total(None, None, Some(-5)),
+                span_with_total(Some(-7), Some(3), None),
+            ],
+            ..Default::default()
+        };
+        let o = outcome_with(metrics, "");
+        assert_eq!(o.total_tokens(), 3);
     }
 
     #[test]
@@ -575,5 +621,10 @@ mod tests {
         let parsed: ReplayReport = serde_json::from_str(legacy).unwrap();
         assert_eq!(parsed.fixture_id, "legacy");
         assert!(parsed.tool_calls_by_agent.is_empty());
+        // total_tokens is `#[serde(default)]` — legacy lines without it
+        // must still parse and default to 0.
+        assert_eq!(parsed.total_tokens, 0);
+        assert_eq!(parsed.inference_error_count, 0);
+        assert!(parsed.runtime_failure.is_none());
     }
 }
