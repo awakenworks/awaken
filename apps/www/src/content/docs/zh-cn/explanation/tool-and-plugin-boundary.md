@@ -51,11 +51,13 @@ pub trait Plugin: Send + Sync + 'static {
 
 | 注册方法 | 用途 |
 |---------------------|------|
-| `register_key::<K>()` | 注册状态键 |
+| `register_key::<K>(options)` | 注册状态键(options 携带 scope) |
+| `register_profile_key::<K>()` | 注册跨线程持久化的 agent profile typed key |
 | `register_tool_gate_hook()` | 注册纯判定的工具拦截钩子 |
+| `register_tool_policy_hook()` | 注册类型化 `ToolPolicyHook`(走同一个 `ToolGate` phase) |
 | `register_phase_hook()` | 在指定 phase 添加 hook |
 | `register_tool()` | 向运行时注入插件提供的工具 |
-| `register_effect_handler()` | 处理 effects |
+| `register_effect()` | 处理 hook 发出的命名 effect(由 `EffectSpec` 类型化) |
 | `register_scheduled_action()` | 处理 scheduled actions |
 | `register_request_transform()` | 在请求到达 LLM 前变换推理请求 |
 

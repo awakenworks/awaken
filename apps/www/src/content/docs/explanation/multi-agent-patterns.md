@@ -20,10 +20,12 @@ An agent can declare sub-agents it is allowed to delegate to:
 
 Each ID in `delegates` must be a registered agent in the `AgentSpecRegistry`. During resolution, the runtime creates an `AgentTool` for each delegate. From the LLM's perspective, each sub-agent appears as a regular tool named `agent_run_{delegate_id}`.
 
-When the LLM calls a delegate tool, the `AgentTool` dispatches to the appropriate backend:
+The `AgentTool` holds an `Arc<dyn ExecutionResolver>` (`crates/awaken-runtime/src/extensions/a2a/agent_tool.rs:38`), **not** a pre-selected backend. When the LLM calls the tool, `execute()` invokes `resolver.resolve_execution(&agent_id)` **at call time** (agent_tool.rs:169), and the resolver decides per call:
 
-- **Local agents** (no `endpoint` field) use `LocalBackend`, which resolves and executes the sub-agent inline within the same runtime.
-- **Remote agents** (with `endpoint` field) use `A2aBackend`, which sends an A2A `message:send` request and polls the resulting task for completion.
+- **Local agents** (no `endpoint` field) resolve to a local `ResolvedAgent` and execute inline within the same runtime.
+- **Remote agents** (with `endpoint` field) resolve to `ResolvedBackendAgent` and execute through the configured `ExecutionBackend` (today: A2A) — `message:send` request, then poll the resulting task for completion.
+
+Because resolution is deferred to call time, mutating the delegate's `AgentSpec` via the config API (e.g. flipping its `endpoint`) takes effect on the next tool call without rebuilding the parent agent.
 
 ## Remote Agents via A2A
 

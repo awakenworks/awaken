@@ -179,6 +179,26 @@ impl Plugin for WeatherPlugin {
 
 Plugin-registered tools are scoped to agents that activate that plugin.
 
+## Tool availability is config, not code
+
+`with_tool` puts the tool in the runtime registry — every running agent can potentially call it. *Which* tools a given agent is allowed to call is config, not Rust:
+
+```bash
+curl -sS -X PUT http://localhost:3000/v1/config/agents/assistant \
+  -H 'content-type: application/json' \
+  -d '{
+    "id": "assistant",
+    "model_id": "gpt-4o-mini",
+    "system_prompt": "You help with weather questions.",
+    "allowed_tools": ["get_weather"],
+    "excluded_tools": []
+  }'
+```
+
+`allowed_tools` whitelists; `excluded_tools` blacklists. Both apply on the next run — no rebuild, no restart. Add a tool in code once; gate it per agent via config.
+
+For finer per-call control (allow/deny/ask on argument shape, not just tool name), use the [Permission plugin](/how-to/enable-tool-permission-hitl/).
+
 ## Verify
 
 Send a message that should trigger the tool. Inspect the run result to confirm the tool was called and returned the expected output.

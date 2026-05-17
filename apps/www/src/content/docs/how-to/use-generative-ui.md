@@ -199,8 +199,9 @@ let agent_spec = agent_spec.with_section("generative-ui", serde_json::json!({
 
 1. Register the A2UI plugin and run the agent with a prompt that asks it to display information visually.
 2. The agent should call the `render_a2ui` tool with valid A2UI messages.
-3. Check the tool result in the event stream -- a successful call returns `{"a2ui": [...], "rendered": true}`.
-4. On the frontend, confirm the surface appears with the expected components.
+3. The tool result on `AgentEvent::ToolCallDone` is a small confirmation: `{"rendered": true, "count": N}` where `N` is the number of A2UI messages the LLM submitted.
+4. The actual UI markup is on the **tool call args**, not the result — the frontend reads it from `AgentEvent::ToolCallReady` (which carries `name = "render_a2ui"` and `arguments = { ..A2UI messages.. }`) and renders the surface from there.
+5. On the frontend, confirm the surface appears with the expected components.
 
 ## Common Errors
 

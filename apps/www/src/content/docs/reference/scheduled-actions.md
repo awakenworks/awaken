@@ -210,10 +210,18 @@ Which plugins **schedule** which actions:
 ## Defining Custom Actions
 
 Plugins can define their own actions by implementing `ScheduledActionSpec` and
-registering a handler via `PluginRegistrar::register_scheduled_action`.
+registering a handler that implements `TypedScheduledActionHandler<A>` via
+`PluginRegistrar::register_scheduled_action`.
+
+### Spec
+
+`ScheduledActionSpec` declares the action's identity, phase, and payload type.
+The default `encode_payload` / `decode_payload` impls use the runtime's JSON
+codec; override them only when you need custom serialization.
 
 ```rust
-use awaken_contract::model::{Phase, ScheduledActionSpec};
+use awaken_contract::error::StateError;
+use awaken_contract::model::{JsonValue, Phase, ScheduledActionSpec};
 
 pub struct MyCustomAction;
 
@@ -221,10 +229,35 @@ impl ScheduledActionSpec for MyCustomAction {
     const KEY: &'static str = "my_plugin.custom_action";
     const PHASE: Phase = Phase::BeforeInference;
     type Payload = MyPayload;
+
+    // Default impls of encode_payload / decode_payload come from the trait;
+    // override only when custom serialization is needed.
 }
 ```
 
-Then in your plugin's `register()`:
+### Handler
+
+The handler trait the runtime dispatches to:
+
+```rust
+#[async_trait]
+pub trait TypedScheduledActionHandler<A>: Send + Sync + 'static
+where
+    A: ScheduledActionSpec,
+{
+    async fn handle_typed(
+        &self,
+        ctx: &PhaseContext,
+        payload: A::Payload,
+    ) -> Result<StateCommand, StateError>;
+}
+```
+
+The handler receives a `PhaseContext` (snapshot + run metadata) and returns a
+`StateCommand`, which can carry state mutations, additional scheduled actions
+(triggering another convergence round), and effects.
+
+### Wiring
 
 ```rust
 fn register(&self, r: &mut PluginRegistrar) -> Result<(), StateError> {

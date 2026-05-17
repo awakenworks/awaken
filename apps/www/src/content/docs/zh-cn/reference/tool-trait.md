@@ -114,6 +114,16 @@ pub struct ToolCallContext {
     pub agent_spec: Arc<AgentSpec>,
     pub snapshot: Snapshot,
     pub activity_sink: Option<Arc<dyn EventSink>>,
+    /// 协同取消 token。长跑工具(MCP 调用、子 agent 执行)应周期性
+    /// `is_cancelled()` 或在 `tokio::select!` 里用 `cancelled()`。
+    pub cancellation_token: Option<CancellationToken>,
+    /// Resume 决策输入 —— runtime 在重放挂起的 tool call 时设置
+    /// (见 `ToolCallResumeMode`)。
+    pub resume_input: Option<ToolCallResume>,
+    /// 当前执行是恢复的某个挂起时的 suspension id。
+    pub suspension_id: Option<String>,
+    /// 当前执行是恢复的某个挂起时的 reason/action。
+    pub suspension_reason: Option<String>,
 }
 ```
 

@@ -8,18 +8,26 @@ description: "本页描述 run 和 tool call 的状态机、9 个 phase、终止
 ## RunStatus
 
 ```text
-Running --+--> Waiting --+--> Running (resume)
-          |              |
-          +--> Done      +--> Done
+Created --+--> Running --+--> Waiting --+--> Running (resume)
+          |              |              |
+          +--> Done      +--> Done      +--> Done
 ```
 
 ```rust
 pub enum RunStatus {
-    Running,
-    Waiting,
-    Done,
+    Created,  // 已持久化但还未执行
+    Running,  // 正在执行
+    Waiting,  // 暂停,等待外部决策
+    Done,     // 终态 —— 不可再迁移
 }
 ```
+
+- `Created -> Running`:runtime 接管该 run 并开始执行 phase。
+- `Created -> Done`:run 在任何 phase 执行前被取消或拒绝。
+- `Running -> Waiting`:工具调用挂起,run 等待外部输入。
+- `Waiting -> Running`:决策到达,run 恢复。
+- `Running -> Done` 或 `Waiting -> Done`:完成、取消或出错的终态迁移。
+- `Done -> *`:不允许。终态。
 
 ## ToolCallStatus
 

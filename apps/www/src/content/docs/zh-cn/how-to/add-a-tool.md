@@ -100,6 +100,26 @@ fn register(&self, registrar: &mut PluginRegistrar) -> Result<(), StateError> {
 
 通过插件注册的工具仅对激活了该插件的 agent 可见。
 
+## 工具开放范围是配置,不是代码
+
+`with_tool` 把工具放进 runtime registry —— 任何运行中的 agent 都*可能*调用它。给定 agent *允许*用哪些工具,是配置,不是 Rust:
+
+```bash
+curl -sS -X PUT http://localhost:3000/v1/config/agents/assistant \
+  -H 'content-type: application/json' \
+  -d '{
+    "id": "assistant",
+    "model_id": "gpt-4o-mini",
+    "system_prompt": "你帮用户处理天气问题。",
+    "allowed_tools": ["get_weather"],
+    "excluded_tools": []
+  }'
+```
+
+`allowed_tools` 是白名单,`excluded_tools` 是黑名单。两者都在下一个 run 生效 —— 不重新构建、不重启。工具在代码里加一次,通过配置按 agent 开关。
+
+需要更细的按调用控制(基于参数形状的 allow/deny/ask,不只是工具名),用 [Permission 插件](/zh-cn/how-to/enable-tool-permission-hitl/)。
+
 ## 验证
 
 发送一条应当触发该 tool 的消息，确认 run 结果里出现了预期的 tool 调用和返回值。

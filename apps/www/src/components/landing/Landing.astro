@@ -112,6 +112,47 @@ const docsBase = locale === "zh-CN" ? "/zh-cn" : "";
     </div>
   </section>
 
+  <!-- ============ THREE RULES ============ -->
+  <section class="band canvas">
+    <div class="wrap">
+      <div class="section-head">
+        <div>
+          <span class="eyebrow">{t("Design rules", "设计准则")}</span>
+          <h2>{t("Three rules, one runtime", "三条准则,一个运行时")}</h2>
+        </div>
+        <div class="right">
+          <a href={`${docsBase}/explanation/philosophy/`}>{t("Design philosophy →", "设计哲学 →")}</a>
+        </div>
+      </div>
+      <div class="decisions-grid">
+        <div class="callout">
+          <div class="eb">{t("01 · Tools / prompts split", "01 · 工具 / 提示词分层")}</div>
+          <h3>{t("Code for tools, config for prompts", "代码管工具,配置管提示词")}</h3>
+          <p set:html={t(
+            "Tools are Rust artefacts. Prompts, descriptions, reminders, permissions, skills live in spec. Edits take effect on the <b>next run</b> — no restart, no redeploy.",
+            "工具是 Rust 产物。提示词、描述、Reminder、权限、Skill 全部落在 spec。改动在<b>下一次 run</b> 生效 —— 无需重启,无需重新部署。",
+          )} />
+        </div>
+        <div class="callout">
+          <div class="eb">{t("02 · Single config plane", "02 · 单一配置面")}</div>
+          <h3>{t("One API, one console", "一个 API,一个控制台")}</h3>
+          <p set:html={t(
+            "<code>/v1/config/*</code> is the only mutation surface. Admin console is one consumer, your CI is another. Runtime reads what the console writes.",
+            "<code>/v1/config/*</code> 是唯一的变更入口。控制台是一个消费者,你的 CI 是另一个。Runtime 读的就是控制台写的。",
+          )} />
+        </div>
+        <div class="callout">
+          <div class="eb">{t("03 · Runtime is the platform", "03 · Runtime 就是平台")}</div>
+          <h3>{t("Tracing, eval, HITL built in", "追踪、Eval、HITL 内置")}</h3>
+          <p>{t(
+            "Booting the server enables OpenTelemetry GenAI traces, a queryable trace store, fixture-replay eval, and permission-gated HITL. No optional libraries to compose.",
+            "启动服务即开启 OpenTelemetry GenAI traces、可查询 trace store、fixture 回放的 Eval、Permission gate HITL。没有需要拼装的可选库。",
+          )}</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
   <!-- ============ PROTOCOL MATRIX ============ -->
   <section class="band">
     <div class="wrap">

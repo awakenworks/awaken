@@ -186,11 +186,77 @@ curl -sS -X PUT http://localhost:3000/v1/config/agents/research-assistant \
 - 移除 plugin id 但保留对应 section 不会激活该插件；未被消费的 section key 会作为可能的拼写错误记录日志。
 - 已经开始的 run 保持启动时的 snapshot。验证配置变更时，应在写入成功后新建 run。
 
+## 验证循环 —— 改、跑、看
+
+只有配置真的落到下一个 run,配置面才有意义。下面是验证步骤。服务全程不重启。
+
+### 1. 用原 prompt 跑一次
+
+```bash
+curl -sS -X POST http://localhost:3000/v1/runs \
+  -H 'content-type: application/json' \
+  -d '{
+    "agent_id": "research-assistant",
+    "thread_id": "verify-thread",
+    "messages": [{"role": "user", "content": "找一篇关于珊瑚白化的同行评审文献。"}]
+  }' | jq -r '.response'
+```
+
+留意回答的口吻、引用方式与工具选择。
+
+### 2. 只改 prompt —— 同一 id,不重启
+
+```bash
+curl -sS -X PUT http://localhost:3000/v1/config/agents/research-assistant \
+  -H 'content-type: application/json' \
+  -d '{
+    "id": "research-assistant",
+    "model_id": "research-default",
+    "system_prompt": "你是一个怀疑型研究助理。没有至少两篇独立同行评审文献时拒绝回答;每条都要附引用。",
+    "max_rounds": 12,
+    "plugin_ids": ["permission"],
+    "allowed_tools": ["web_search", "read_document", "summarize"]
+  }'
+```
+
+PUT 返回校验通过、已发布的配置。没有 build、没有重新部署、没有 SIGHUP。
+
+### 3. 再跑一次 —— 观察变化
+
+```bash
+curl -sS -X POST http://localhost:3000/v1/runs \
+  -H 'content-type: application/json' \
+  -d '{
+    "agent_id": "research-assistant",
+    "thread_id": "verify-thread-2",
+    "messages": [{"role": "user", "content": "找一篇关于珊瑚白化的同行评审文献。"}]
+  }' | jq -r '.response'
+```
+
+新 run 用的是步骤 2 发布的 snapshot。对比两次回答 —— 第二次应该要求两个源、拒绝单源回答。
+
+用全新 `thread_id` 排除前轮上下文残留;唯一变量是 prompt 改动。
+
+### 哪些字段可以中途改
+
+| 改动 | 进行中的 run | 下一个 run |
+|---|---|---|
+| `system_prompt` | 保持旧 prompt | 新 prompt |
+| `allowed_tools` / `excluded_tools` | 保持旧集合 | 新集合 |
+| `max_rounds`、`reasoning_effort` | 保持旧值 | 新值 |
+| `model_id`(只换 binding) | 保持旧 binding | 新 binding |
+| `plugin_ids`(新增) | 保持旧集合 | 下一轮起新插件生效 |
+| `plugin_ids`(移除) | 保持旧集合 | 被移除插件的 hook 停止触发 |
+| `sections.<plugin>`(由 `PluginConfigKey` 校验) | 保持旧值 | 新的按 key 校验后的值 |
+
+**已经开始的 run 永远跑完启动时的 snapshot** —— 这是契约。要不等 run drain 就验证改动,用全新 `thread_id` 起一个新 run。
+
 ## 相关
 
 - [Provider 与 Model 配置](/zh-cn/reference/provider-model-config/)
 - [配置](/zh-cn/reference/config/)
 - [HTTP API](/zh-cn/reference/http-api/)
+- [在线调优 Prompt](/zh-cn/how-to/hot-tune-prompts/)
 - [启用工具权限 HITL](/zh-cn/how-to/enable-tool-permission-hitl/)
 - [使用 Reminder 插件](/zh-cn/how-to/use-reminder-plugin/)
 - [使用延迟加载工具](/zh-cn/how-to/use-deferred-tools/)

@@ -1,82 +1,66 @@
 ---
 title: "简介"
-description: "> 请注意 —— 本 mdbook 站点正在迁移。 完整文档(含双语支持与内置搜索)已迁移至 apps/www(基于 Astro + Starlight)。新站点上线后本 mdbook 将退役,新链接请指向新站点。"
+description: "Awaken — Rust 智能体运行时,框架本身就是平台。工具先行,提示词在线调,追踪 / Eval / HITL 内置。"
 ---
 
-> **请注意 —— 本 mdbook 站点正在迁移。** 完整文档(含双语支持与内置搜索)已迁移至 **[`apps/www`](../../../apps/www/)**(基于 Astro + Starlight)。新站点上线后本 mdbook 将退役,新链接请指向新站点。
+**Awaken** 是用 Rust 写的生产级 AI 智能体运行时。**框架就是平台**:服务启动后,追踪、重放、Eval、权限裁决、管理控制台都已经在跑。
 
-**Awaken** 是一个用 Rust 构建的模块化 AI 智能体运行时框架。它提供基于阶段的执行模型（含快照隔离与确定性重放）、带键作用域（`thread` / `run`）和合并策略（`exclusive` / `commutative`）的类型化状态引擎、用于可扩展性的插件生命周期系统，以及支持 AI SDK v6、AG-UI、A2A 和 MCP（HTTP 及 stdio）的多协议服务面，以及 ACP stdio 协议面。
+三条设计准则决定其它一切:
+
+## 1 — 工具落在代码,提示词落在配置
+
+代码定义工具(类型化 schema、状态写入、延迟加载)。Spec / 配置承载 Agent 系统提示、工具描述、Reminder、Skill 目录、权限规则。
+
+改配置在**下一次 run** 生效。无需重启、无需重新部署、无需 schema 迁移。MCP server 通过 `tools/list_changed` 通知自动刷新;磁盘 Skill 包通过你在 bootstrap 启动一次的 `PeriodicRefresher` 刷新。Runtime 在每个新 run 重新从最新发布的配置快照解析。
+
+## 2 — 一个配置 API,一个管理控制台
+
+`/v1/config/*` 是 Agent、模型、Provider、插件、MCP server、Skill 包、权限、Trace 历史的**唯一**源。自带的管理控制台是其中一个消费者;你的 CI 可以是另一个。
+
+控制台写什么,runtime 读什么。没有需要单独维护的运维项目。
+
+## 3 — 可观测性 / Eval / HITL 跟着服务一起来
+
+服务启动自动暴露:
+
+- 覆盖每个 phase、工具、LLM 调用的 OpenTelemetry GenAI traces(`awaken-ext-observability`)。
+- 管理控制台直接查询的持久化 trace store。
+- 自带 fixture 回放、打分、baseline 对比的 Eval 框架(`awaken-eval`)。
+- Permission gate + mailbox 实现的 HITL 挂起 / 恢复。
+
+它们不是可选库,**就是** runtime。
+
+## 派生出来的四项能力
+
+上面三条结合,带来其它框架普遍不具备的四项性质:
+
+- **快照隔离 + 确定性重放。** 每个 phase 读取不可变 `Snapshot`,emit `MutationBatch`;`commit` 原子应用。保存的 snapshot 逐字节重放 —— 调试、回归、用历史流量跑 Eval 全部无需重付 LLM 成本。
+- **一套后端,四种协议。** 单 runtime 同时承接 AI SDK v6、AG-UI(CopilotKit)、A2A、MCP HTTP。前端选择不渗透到 agent 代码。
+- **权限裁决是 runtime primitive。** `Gate` phase 在工具决策与工具执行之间运行;`Allow` / `Deny` / `Ask` 规则匹配工具名 + 参数;`Ask` 通过 mailbox 挂起,回应后恢复。
+- **生成式 UI 是流式 primitive。** Agent 在同一条事件流上 emit A2UI / JSON Render / OpenUI Lang。前端无需为每个工具写胶水。
 
 ## Crate 概览
 
 | Crate | 说明 |
 |-------|------|
-| `awaken-contract` | 核心契约：类型、trait、状态模型、智能体规约 |
-| `awaken-runtime` | 执行引擎：阶段循环、插件系统、智能体循环、构建器 |
-| `awaken-server` | HTTP/SSE 网关与协议适配器 |
-| `awaken-stores` | 存储后端：内存、文件、PostgreSQL 和 SQLite mailbox |
-| `awaken-tool-pattern` | Glob/正则工具匹配，用于权限和提醒规则 |
-| `awaken-ext-permission` | 权限插件，支持 allow/deny/ask 策略 |
-| `awaken-ext-observability` | 基于 OpenTelemetry 的 LLM 和工具调用追踪 |
-| `awaken-ext-mcp` | Model Context Protocol 客户端集成 |
-| `awaken-ext-skills` | 技能包发现与激活 |
-| `awaken-ext-reminder` | 声明式提醒规则，在工具执行后触发 |
-| `awaken-ext-generative-ui` | 通过 A2UI、JSON Render 和 OpenUI Lang 提供声明式 UI 组件 |
+| `awaken-contract` | 类型、trait、状态模型、智能体规约 |
+| `awaken-runtime` | Phase 循环、插件系统、智能体循环、构建器 |
+| `awaken-server` | HTTP/SSE 网关 + 协议适配器 |
+| `awaken-stores` | 存储后端:内存、文件、Postgres、SQLite mailbox |
+| `awaken-tool-pattern` | 工具名 glob/regex 匹配,用于权限与 reminder 规则 |
+| `awaken-ext-permission` | 权限插件(allow/deny/ask) |
+| `awaken-ext-observability` | OpenTelemetry traces + metrics |
+| `awaken-ext-mcp` | MCP 客户端集成 |
+| `awaken-ext-skills` | Skill 包发现与激活 |
+| `awaken-ext-reminder` | 声明式 reminder 规则 |
+| `awaken-ext-generative-ui` | A2UI / JSON Render / OpenUI Lang |
 | `awaken-ext-deferred-tools` | 基于概率模型的延迟工具加载 |
-| `awaken` | 门面 crate，重新导出核心模块 |
+| `awaken` | 门面 crate,重新导出核心模块 |
 
-## 架构
+## 阅读路径
 
-```text
-应用代码
-  注册 tool / model / provider / plugin / agent spec
-        |
-        v
-AgentRuntime
-  将 AgentSpec 解析为 ResolvedExecution
-  从插件构建 ExecutionEnv
-  执行 phase loop，并暴露 cancel / decision 控制面
-        |
-        v
-服务与存储表面
-  HTTP 路由、SSE 回放、mailbox、协议适配器、thread/run 持久化
-```
-
-## 核心原则
-
-所有状态访问遵循快照隔离。阶段钩子看到的是不可变快照；变更收集在 `MutationBatch` 中，在收敛后原子性地应用。
-
-## 本书内容
-
-- **快速上手** — 用最小可运行流程建立整体心智模型
-- **构建 Agent** — 添加 Tool、Plugin、MCP、Skills、Reminder、Handoff 和 UI 能力
-- **服务与集成** — 暴露 HTTP 端点并接入 AI SDK 或 CopilotKit 前端
-- **状态与存储** — 选择持久化、上下文裁剪和状态访问模式
-- **运行与运维** — 用可观测性、权限、进度上报和测试加固生产行为
-- **参考** — API、协议、配置和 Schema 查阅页面
-- **架构** — 运行时分层、phase 执行与设计取舍
-
-## 推荐阅读路径
-
-如果你是第一次接触本项目，建议按以下顺序阅读：
-
-1. 先阅读 [快速上手](/zh-cn/get-started/)，并完成 [第一个 Agent](/zh-cn/tutorials/first-agent/)。
-2. 需要扩展能力时，进入 [构建 Agent](/zh-cn/build-agents/)。
-3. 需要对接 HTTP 客户端或前端时，进入 [服务与集成](/zh-cn/serve-and-integrate/)。
-4. 从演示走向生产时，阅读 [状态与存储](/zh-cn/state-and-storage/) 和 [运行与运维](/zh-cn/operate/)。
-5. 需要精确契约或运行时内部细节时，回到 [参考概览](/zh-cn/reference/overview/) 和 [架构](/zh-cn/explanation/architecture/)。
-
-## 仓库导航
-
-从文档进入代码时，以下路径最为重要：
-
-| 路径 | 用途 |
-|------|------|
-| `crates/awaken-contract/` | 核心契约：工具、事件、状态接口 |
-| `crates/awaken-runtime/` | 智能体运行时：执行引擎、插件、构建器 |
-| `crates/awaken-server/` | HTTP/SSE 服务端 |
-| `crates/awaken-stores/` | 存储后端 |
-| `crates/awaken/examples/` | 小型运行时示例 |
-| `examples/` | 全栈前端与服务端示例 |
-| `apps/admin-console/` | Config API 管理界面 |
-| `docs/book/src/` | 本文档源码 |
+1. [快速上手](/zh-cn/get-started/) → [第一个 Agent](/zh-cn/tutorials/first-agent/)。
+2. [构建 Agent](/zh-cn/build-agents/) —— 工具、MCP、Skill、Reminder、HITL、UI。
+3. [服务与集成](/zh-cn/serve-and-integrate/) —— AI SDK / CopilotKit / A2A / MCP 前端。
+4. [状态与存储](/zh-cn/state-and-storage/)、[运行与运维](/zh-cn/operate/) —— 生产加固。
+5. [设计哲学](/zh-cn/explanation/philosophy/) —— 三条准则背后的"为什么"。

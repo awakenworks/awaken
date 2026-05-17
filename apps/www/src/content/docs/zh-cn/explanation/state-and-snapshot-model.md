@@ -24,6 +24,8 @@ pub trait StateKey: 'static + Send + Sync {
 
 `StateKey` 同时把字符串键名、值类型、更新类型和合并规则绑定在一起。
 
+插件在 `Plugin::register` 中通过 `PluginRegistrar::register_key::<K>(options)` 注册;`StateKeyOptions` 携带 per-key scope(`Run` / `Thread`)等元数据。
+
 ## KeyScope
 
 ```rust
@@ -54,7 +56,7 @@ pub enum MergeStrategy {
 
 ```text
 Phase hook 读取: &Snapshot
-Phase hook 写入: MutationBatch
+Phase hook 返回: StateCommand { patch: MutationBatch, scheduled_actions, effects }
 ```
 
 这样同一 phase 内的所有 hook 都能看到一致状态。

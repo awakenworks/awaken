@@ -51,11 +51,13 @@ When `Plugin::register` is called, the plugin uses `PluginRegistrar` to declare 
 
 | Registration Method | Purpose |
 |---------------------|---------|
-| `register_key::<K>()` | Declare a `StateKey` for the plugin's state |
+| `register_key::<K>(options)` | Declare a `StateKey` for the plugin's state (options carry scope) |
+| `register_profile_key::<K>()` | Declare a typed profile key for cross-thread persistent agent profile data |
 | `register_tool_gate_hook()` | Add a pure tool-interception decision hook |
+| `register_tool_policy_hook()` | Add a typed `ToolPolicyHook` (runs through the same `ToolGate` phase) |
 | `register_phase_hook()` | Add a hook that runs at a specific phase |
 | `register_tool()` | Inject a tool into the runtime (plugin-provided tools) |
-| `register_effect_handler()` | Handle named effects emitted by hooks |
+| `register_effect()` | Handle named effects emitted by hooks (typed by `EffectSpec`) |
 | `register_scheduled_action()` | Handle named actions scheduled by hooks |
 | `register_request_transform()` | Transform inference requests before they reach the LLM |
 

@@ -18,7 +18,14 @@ agent 可以通过 `delegates` 声明它允许委托的子 agent：
 }
 ```
 
-解析时，运行时会为每个 delegate 生成一个 `AgentTool`，LLM 看见的是普通工具，例如 `agent_run_researcher`。
+解析时,运行时会为每个 delegate 生成一个 `AgentTool`,LLM 看见的是普通工具,例如 `agent_run_researcher`。
+
+`AgentTool` 持有 `Arc<dyn ExecutionResolver>`(`crates/awaken-runtime/src/extensions/a2a/agent_tool.rs:38`),**不**预选 backend。LLM 调用该工具时,`execute()` 在 **call time** 调 `resolver.resolve_execution(&agent_id)`(agent_tool.rs:169),resolver 按每次调用决定:
+
+- **本地 agent**(无 `endpoint`)解析为本地 `ResolvedAgent`,在同一 runtime 内联执行。
+- **远程 agent**(有 `endpoint`)解析为 `ResolvedBackendAgent`,经配置的 `ExecutionBackend`(当前是 A2A)执行 —— 发 `message:send`,然后轮询返回的 task 直到完成。
+
+因为解析推迟到 call time,通过配置 API 改 delegate 的 `AgentSpec`(例如翻转其 `endpoint`)在下一次工具调用立刻生效,无需重建父 agent。
 
 ## 通过 A2A 使用远程 agent
 

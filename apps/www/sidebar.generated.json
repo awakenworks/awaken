@@ -56,6 +56,13 @@
         }
       },
       {
+        "label": "Hot-Tune Prompts",
+        "slug": "how-to/hot-tune-prompts",
+        "translations": {
+          "zh-CN": "在线调优 Prompt"
+        }
+      },
+      {
         "label": "Add a Tool",
         "slug": "how-to/add-a-tool",
         "translations": {
@@ -372,6 +379,13 @@
       "zh-CN": "架构"
     },
     "items": [
+      {
+        "label": "Design Philosophy",
+        "slug": "explanation/philosophy",
+        "translations": {
+          "zh-CN": "设计哲学"
+        }
+      },
       {
         "label": "Architecture",
         "slug": "explanation/architecture",

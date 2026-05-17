@@ -13,16 +13,20 @@ description: "本文介绍插件系统的内部运作机制：插件如何注册
 
 **结构组件** 始终可用，不受激活状态影响：
 
-- 状态键（`register_key::<K>()`）
+- 状态键（`register_key::<K>(options)`）
+- Profile key（`register_profile_key::<K>()`）
 - 调度动作处理器（`register_scheduled_action::<A, H>()`）
 - 效果处理器（`register_effect::<E, H>()`）
 
 **行为组件** 仅在插件通过激活过滤器时才处于活跃状态：
 
 - 工具闸门钩子（`register_tool_gate_hook()`）
+- 类型化工具策略钩子（`register_tool_policy_hook()` —— 把 `ToolPolicyHook` 包装到同一个 `ToolGate` phase 执行）
 - 阶段钩子（`register_phase_hook()`）
 - 工具（`register_tool()`）
 - 请求变换（`register_request_transform()`）
+
+`register_request_transform()` 是 fire-and-forget(不返回 `Result`);其它注册方法都返回 `Result<(), StateError>`,重复注册在注册期就会失败。
 
 激活由 `AgentSpec.active_hook_filter` 控制：
 
