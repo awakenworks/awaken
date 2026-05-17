@@ -49,6 +49,130 @@ pub trait PluginConfigKey: 'static + Send + Sync {
 // AgentSpec
 // ---------------------------------------------------------------------------
 
+/// Internal helper used by `AgentSpec`'s `Deserialize` impl to apply the
+/// legacy "absent catalog = allow all" default. Not part of the public API.
+///
+/// Mirrors `AgentSpec`'s fields exactly (names, types, `#[serde(...)]`
+/// attributes). The `From` impl only modifies catalog fields; everything
+/// else passes through. Adding or renaming any `AgentSpec` field requires
+/// the corresponding update here AND in the `From` impl below — the
+/// compiler enforces the latter via the struct literal.
+///
+/// The catalog fields use the "double-Option" pattern via `double_option`
+/// so the `From` impl can tell apart three input states:
+///   * field absent → `None` (legacy YAML compat — shim may fire)
+///   * field present as JSON `null` → `Some(None)` (explicit user intent)
+///   * field present as JSON array → `Some(Some(vec))` (explicit value)
+///
+/// Without this, `null` and absent both collapse to `None` and the
+/// "absent catalog = allow all" shim silently flips a user-declared
+/// deny-all (`{"allowed_tools": null, "allowed_tool_patterns": null}`)
+/// into allow-all on the direct-PUT path.
+// schemars::JsonSchema kept because AgentSpec's derive transitively
+// requires it under #[serde(from = "AgentSpecRaw")].
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct AgentSpecRaw {
+    id: String,
+    model_id: String,
+    system_prompt: String,
+    #[serde(default = "default_max_rounds")]
+    max_rounds: usize,
+    #[serde(default = "default_max_continuation_retries")]
+    max_continuation_retries: usize,
+    #[serde(default)]
+    context_policy: Option<ContextWindowPolicy>,
+    #[serde(default)]
+    reasoning_effort: Option<ReasoningEffort>,
+    #[serde(default)]
+    plugin_ids: Vec<String>,
+    #[serde(default, alias = "active_plugins")]
+    active_hook_filter: HashSet<String>,
+    // --- catalog fields (subject to migration; double-Option so the
+    // `From` impl can distinguish absent from explicit-null) ---
+    #[serde(default, deserialize_with = "double_option")]
+    allowed_tools: Option<Option<Vec<String>>>,
+    #[serde(default, deserialize_with = "double_option")]
+    allowed_tool_patterns: Option<Option<Vec<String>>>,
+    #[serde(default, deserialize_with = "double_option")]
+    excluded_tools: Option<Option<Vec<String>>>,
+    #[serde(default, deserialize_with = "double_option")]
+    excluded_tool_patterns: Option<Option<Vec<String>>>,
+    // --- pass-through tail ---
+    #[serde(default)]
+    endpoint: Option<RemoteEndpoint>,
+    #[serde(default)]
+    delegates: Vec<String>,
+    #[serde(default)]
+    sections: HashMap<String, Value>,
+    #[serde(default)]
+    registry: Option<String>,
+}
+
+impl From<AgentSpecRaw> for AgentSpec {
+    fn from(raw: AgentSpecRaw) -> Self {
+        let (allowed_tools, allowed_tool_patterns) =
+            inject_legacy_allow_default(raw.allowed_tools, raw.allowed_tool_patterns);
+        // Excluded fields have no legacy shim — just collapse the
+        // double-Option down to a single Option<Vec<_>>.
+        let excluded_tools = raw.excluded_tools.flatten();
+        let excluded_tool_patterns = raw.excluded_tool_patterns.flatten();
+        AgentSpec {
+            id: raw.id,
+            model_id: raw.model_id,
+            system_prompt: raw.system_prompt,
+            max_rounds: raw.max_rounds,
+            max_continuation_retries: raw.max_continuation_retries,
+            context_policy: raw.context_policy,
+            reasoning_effort: raw.reasoning_effort,
+            plugin_ids: raw.plugin_ids,
+            active_hook_filter: raw.active_hook_filter,
+            allowed_tools,
+            allowed_tool_patterns,
+            excluded_tools,
+            excluded_tool_patterns,
+            endpoint: raw.endpoint,
+            delegates: raw.delegates,
+            sections: raw.sections,
+            registry: raw.registry,
+        }
+    }
+}
+
+/// Double-Option deserialize helper: distinguishes a missing JSON key
+/// from one explicitly set to `null`.
+///
+/// * key absent → `None` (combined with `#[serde(default)]`)
+/// * key present as `null` → `Some(None)`
+/// * key present as `T` → `Some(Some(T))`
+fn double_option<'de, D, T>(deserializer: D) -> Result<Option<Option<T>>, D::Error>
+where
+    D: Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Option::<T>::deserialize(deserializer).map(Some)
+}
+
+/// Apply the legacy "absent catalog = allow all" default.
+///
+/// The shim fires only when BOTH allow fields were truly absent from the
+/// input (`(None, None)`). An explicit `null` on either field is now
+/// observable here as `Some(None)` and is preserved as written — that's
+/// the user expressing "no allow rules", which the matcher honours as
+/// deny-all. Explicit lists likewise pass through unchanged.
+///
+/// Coupled to `Default::default` below — flip both together when the
+/// legacy "absent = allow all" default is retired.
+fn inject_legacy_allow_default(
+    literals: Option<Option<Vec<String>>>,
+    patterns: Option<Option<Vec<String>>>,
+) -> (Option<Vec<String>>, Option<Vec<String>>) {
+    match (literals, patterns) {
+        (None, None) => (None, Some(vec!["*".to_string()])),
+        (l, p) => (l.flatten(), p.flatten()),
+    }
+}
+
 /// Serializable agent definition referencing registries by ID.
 ///
 /// Can be saved to JSON, loaded from config files, or transmitted over the network.
@@ -57,7 +181,7 @@ pub trait PluginConfigKey: 'static + Send + Sync {
 /// Also serves as the runtime behavior configuration passed to hooks via
 /// `PhaseContext.agent_spec`. Plugins read their typed config via `spec.config::<K>()`.
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
-#[serde(deny_unknown_fields)]
+#[serde(from = "AgentSpecRaw")]
 pub struct AgentSpec {
     /// Unique agent identifier.
     pub id: String,
@@ -90,12 +214,37 @@ pub struct AgentSpec {
         alias = "active_plugins"
     )]
     pub active_hook_filter: HashSet<String>,
-    /// Allowed tool IDs (whitelist). `None` = all tools.
+    /// Literal tool IDs explicitly allowed. Never parsed as patterns; `*`
+    /// here matches nothing (flagged by validation).
+    /// `None` is equivalent to an empty list and means "no literal allow
+    /// rules"; it does NOT mean "allow all" — see `allowed_tool_patterns`.
+    ///
+    /// Back-compat: when both `allowed_tools` and `allowed_tool_patterns`
+    /// are absent in the input, a deserialize migration shim injects
+    /// `allowed_tool_patterns = vec!["*"]` so existing configs allow all.
+    ///
+    /// Serialized as JSON `null` when `None` (no `skip_serializing_if`),
+    /// so a `None` allow field survives a serialize→deserialize round
+    /// trip as `Some(None)` at the raw level rather than collapsing to
+    /// "absent" and re-firing the legacy shim.
     #[serde(default)]
     pub allowed_tools: Option<Vec<String>>,
-    /// Excluded tool IDs (blacklist). Applied after `allowed_tools`.
+    /// Glob patterns matched against tool IDs (anchored, `*` is the only
+    /// wildcard, `\` escapes). `["*"]` matches every tool. Union with
+    /// `allowed_tools` forms the final allow set.
+    ///
+    /// Serialized as JSON `null` when `None` (no `skip_serializing_if`)
+    /// for the same round-trip reason as `allowed_tools`.
     #[serde(default)]
+    pub allowed_tool_patterns: Option<Vec<String>>,
+    /// Literal tool IDs explicitly excluded. Applied after the allow set.
+    /// `None` = "no literal exclude rules".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub excluded_tools: Option<Vec<String>>,
+    /// Glob patterns matched against tool IDs for exclusion. Applied
+    /// after the allow set; deny is always stronger than allow.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub excluded_tool_patterns: Option<Vec<String>>,
     /// Optional remote endpoint. If set, this agent runs on a remote backend.
     /// If None, this agent runs locally.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -461,7 +610,21 @@ impl Default for AgentSpec {
             plugin_ids: Vec::new(),
             active_hook_filter: HashSet::new(),
             allowed_tools: None,
+            // Mirror the deserialize migration shim: a spec with no
+            // explicit catalog input allows every tool. Without this,
+            // `AgentSpec::new` / `..Default::default()` would silently
+            // produce a no-tools agent under the new catalog semantics
+            // (empty allow set blocks all). The shim is the contract for
+            // legacy configs; `Default` must match it so the three
+            // construction paths (JSON deserialize, `Default`, builder)
+            // agree.
+            //
+            // Coupled to `inject_legacy_allow_default` above — flip both
+            // together when the legacy "absent = allow all" default is
+            // retired.
+            allowed_tool_patterns: Some(vec!["*".into()]),
             excluded_tools: None,
+            excluded_tool_patterns: None,
             endpoint: None,
             delegates: Vec::new(),
             sections: HashMap::new(),
@@ -590,368 +753,9 @@ impl AgentSpec {
     }
 }
 
+mod catalog_match;
+mod catalog_validation;
+pub use catalog_validation::{IssueSeverity, ValidationIssue};
+
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use serde_json::json;
-
-    #[test]
-    fn agent_spec_serde_roundtrip() {
-        let spec = AgentSpec {
-            id: "coder".into(),
-            model_id: "claude-opus".into(),
-            system_prompt: "You are a coding assistant.".into(),
-            max_rounds: 8,
-            plugin_ids: vec!["permission".into(), "logging".into()],
-            allowed_tools: Some(vec!["read_file".into(), "write_file".into()]),
-            excluded_tools: Some(vec!["delete_file".into()]),
-            sections: {
-                let mut m = HashMap::new();
-                m.insert("permission".into(), json!({"mode": "strict"}));
-                m
-            },
-            ..Default::default()
-        };
-
-        let json_str = serde_json::to_string(&spec).unwrap();
-        let parsed: AgentSpec = serde_json::from_str(&json_str).unwrap();
-
-        assert_eq!(parsed.id, "coder");
-        assert_eq!(parsed.model_id, "claude-opus");
-        assert_eq!(parsed.system_prompt, "You are a coding assistant.");
-        assert_eq!(parsed.max_rounds, 8);
-        assert_eq!(parsed.plugin_ids, vec!["permission", "logging"]);
-        assert_eq!(
-            parsed.allowed_tools,
-            Some(vec!["read_file".into(), "write_file".into()])
-        );
-        assert_eq!(parsed.excluded_tools, Some(vec!["delete_file".into()]));
-        assert_eq!(parsed.sections["permission"]["mode"], "strict");
-    }
-
-    #[test]
-    fn agent_spec_defaults() {
-        let json_str = r#"{"id":"min","model_id":"m","system_prompt":"sp"}"#;
-        let spec: AgentSpec = serde_json::from_str(json_str).unwrap();
-
-        assert_eq!(spec.model_id, "m");
-        assert_eq!(spec.max_rounds, 16);
-        assert_eq!(spec.max_continuation_retries, 2);
-        assert!(spec.context_policy.is_none());
-        assert!(spec.plugin_ids.is_empty());
-        assert!(spec.active_hook_filter.is_empty());
-        assert!(spec.allowed_tools.is_none());
-        assert!(spec.excluded_tools.is_none());
-        assert!(spec.sections.is_empty());
-    }
-
-    #[test]
-    fn model_binding_spec_uses_canonical_names() {
-        let canonical = ModelBindingSpec {
-            id: "default".into(),
-            provider_id: "openai".into(),
-            upstream_model: "gpt-4o-mini".into(),
-        };
-
-        let encoded = serde_json::to_value(&canonical).unwrap();
-        assert_eq!(encoded["provider_id"], "openai");
-        assert_eq!(encoded["upstream_model"], "gpt-4o-mini");
-        assert!(encoded.get("provider").is_none());
-        assert!(encoded.get("model").is_none());
-    }
-
-    #[test]
-    fn provider_model_legacy_fields_are_rejected() {
-        let agent =
-            serde_json::from_str::<AgentSpec>(r#"{"id":"min","model":"m","system_prompt":"sp"}"#);
-        assert!(agent.is_err());
-
-        let model = serde_json::from_value::<ModelBindingSpec>(json!({
-            "id": "default",
-            "provider": "openai",
-            "model": "gpt-4o-mini"
-        }));
-        assert!(model.is_err());
-    }
-
-    #[test]
-    fn provider_spec_accepts_unknown_top_level_fields_for_compatibility() {
-        let spec = serde_json::from_value::<ProviderSpec>(json!({
-            "id": "p",
-            "adapter": "openai",
-            "future_top_level": true
-        }))
-        .expect("provider top-level unknown fields are ignored for compatibility");
-        assert_eq!(spec.id, "p");
-        assert_eq!(spec.adapter, "openai");
-    }
-
-    #[test]
-    fn mcp_server_spec_accepts_unknown_top_level_fields_for_compatibility() {
-        let spec = serde_json::from_value::<McpServerSpec>(json!({
-            "id": "mcp",
-            "transport": "http",
-            "url": "https://example.invalid",
-            "future_top_level": true
-        }))
-        .expect("mcp top-level unknown fields are ignored for compatibility");
-        assert_eq!(spec.id, "mcp");
-        assert_eq!(spec.transport, McpTransportKind::Http);
-    }
-
-    // -- Typed config tests (merged from AgentProfile) --
-
-    struct ModelNameKey;
-    impl PluginConfigKey for ModelNameKey {
-        const KEY: &'static str = "model_name";
-        type Config = ModelNameConfig;
-    }
-
-    #[derive(
-        Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema,
-    )]
-    struct ModelNameConfig {
-        pub name: String,
-    }
-
-    struct PermKey;
-    impl PluginConfigKey for PermKey {
-        const KEY: &'static str = "permission";
-        type Config = PermConfig;
-    }
-
-    #[derive(
-        Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema,
-    )]
-    struct PermConfig {
-        pub mode: String,
-    }
-
-    #[test]
-    fn typed_config_roundtrip() {
-        let spec = AgentSpec::new("test")
-            .with_config::<ModelNameKey>(ModelNameConfig {
-                name: "opus".into(),
-            })
-            .unwrap()
-            .with_config::<PermKey>(PermConfig {
-                mode: "strict".into(),
-            })
-            .unwrap();
-
-        let model: ModelNameConfig = spec.config::<ModelNameKey>().unwrap();
-        assert_eq!(model.name, "opus");
-
-        let perm: PermConfig = spec.config::<PermKey>().unwrap();
-        assert_eq!(perm.mode, "strict");
-    }
-
-    #[test]
-    fn missing_config_returns_default() {
-        let spec = AgentSpec::new("test");
-        let model: ModelNameConfig = spec.config::<ModelNameKey>().unwrap();
-        assert_eq!(model, ModelNameConfig::default());
-    }
-
-    #[test]
-    fn config_serializes_to_json() {
-        let spec = AgentSpec::new("coder")
-            .with_model_id("sonnet")
-            .with_config::<ModelNameKey>(ModelNameConfig {
-                name: "custom".into(),
-            })
-            .unwrap();
-
-        let json = serde_json::to_string(&spec).unwrap();
-        let parsed: AgentSpec = serde_json::from_str(&json).unwrap();
-
-        assert_eq!(parsed.id, "coder");
-        assert_eq!(parsed.model_id, "sonnet");
-
-        let model: ModelNameConfig = parsed.config::<ModelNameKey>().unwrap();
-        assert_eq!(model.name, "custom");
-    }
-
-    #[test]
-    fn multiple_configs_independent() {
-        let mut spec = AgentSpec::new("test");
-        spec.set_config::<ModelNameKey>(ModelNameConfig { name: "a".into() })
-            .unwrap();
-        spec.set_config::<PermKey>(PermConfig { mode: "b".into() })
-            .unwrap();
-
-        // Update one doesn't affect the other
-        spec.set_config::<ModelNameKey>(ModelNameConfig {
-            name: "updated".into(),
-        })
-        .unwrap();
-
-        let model: ModelNameConfig = spec.config::<ModelNameKey>().unwrap();
-        assert_eq!(model.name, "updated");
-
-        let perm: PermConfig = spec.config::<PermKey>().unwrap();
-        assert_eq!(perm.mode, "b");
-    }
-
-    #[test]
-    fn with_section_raw_json_still_works() {
-        let spec =
-            AgentSpec::new("test").with_section("custom", serde_json::json!({"key": "value"}));
-        assert_eq!(spec.sections["custom"]["key"], "value");
-    }
-
-    #[test]
-    fn remote_endpoint_canonical_roundtrip_uses_single_shape() {
-        let mut options = BTreeMap::new();
-        options.insert("poll_interval_ms".into(), json!(1000));
-        let endpoint = RemoteEndpoint {
-            backend: "a2a".into(),
-            base_url: "https://remote.example.com/v1/a2a".into(),
-            auth: Some(RemoteAuth::bearer("tok_123")),
-            target: Some("worker".into()),
-            timeout_ms: 60_000,
-            options,
-        };
-
-        let encoded = serde_json::to_value(&endpoint).unwrap();
-        assert_eq!(encoded["backend"], "a2a");
-        assert_eq!(encoded["auth"]["type"], "bearer");
-        assert_eq!(encoded["auth"]["token"], "tok_123");
-        assert_eq!(encoded["target"], "worker");
-        assert_eq!(encoded["options"]["poll_interval_ms"], 1000);
-        assert!(encoded.get("bearer_token").is_none());
-        assert!(encoded.get("agent_id").is_none());
-        assert!(encoded.get("poll_interval_ms").is_none());
-
-        let parsed: RemoteEndpoint = serde_json::from_value(encoded).unwrap();
-        assert_eq!(parsed, endpoint);
-    }
-
-    #[test]
-    fn remote_endpoint_legacy_a2a_input_normalizes_to_canonical_shape() {
-        let endpoint: RemoteEndpoint = serde_json::from_value(json!({
-            "base_url": "https://remote.example.com/v1/a2a",
-            "bearer_token": "tok_legacy",
-            "agent_id": "worker",
-            "poll_interval_ms": 750,
-            "timeout_ms": 60_000
-        }))
-        .unwrap();
-
-        assert_eq!(endpoint.backend, "a2a");
-        assert_eq!(
-            endpoint
-                .auth
-                .as_ref()
-                .and_then(|auth| auth.param_str("token")),
-            Some("tok_legacy")
-        );
-        assert_eq!(endpoint.target.as_deref(), Some("worker"));
-        assert_eq!(endpoint.options.get("poll_interval_ms"), Some(&json!(750)));
-        assert_eq!(endpoint.timeout_ms, 60_000);
-    }
-
-    #[test]
-    fn remote_endpoint_rejects_mixed_legacy_and_canonical_fields() {
-        let err = serde_json::from_value::<RemoteEndpoint>(json!({
-            "backend": "a2a",
-            "base_url": "https://remote.example.com/v1/a2a",
-            "auth": { "type": "bearer", "token": "tok_new" },
-            "bearer_token": "tok_old"
-        }))
-        .unwrap_err();
-
-        assert!(
-            err.to_string()
-                .contains("cannot mix legacy A2A endpoint fields")
-        );
-    }
-
-    #[test]
-    fn builder() {
-        let spec = AgentSpec::new("reviewer")
-            .with_model_id("claude-opus")
-            .with_hook_filter("permission")
-            .with_config::<PermKey>(PermConfig {
-                mode: "strict".into(),
-            })
-            .unwrap();
-
-        assert_eq!(spec.id, "reviewer");
-        assert_eq!(spec.model_id, "claude-opus");
-        assert!(spec.active_hook_filter.contains("permission"));
-    }
-
-    // ── ProviderSpec ───────────────────────────────────────────────────
-
-    #[test]
-    fn provider_spec_debug_does_not_leak_api_key() {
-        let spec = ProviderSpec {
-            id: "openai".into(),
-            adapter: "openai".into(),
-            api_key: Some("sk-super-secret-12345".into()),
-            ..ProviderSpec::default()
-        };
-        let debug = format!("{spec:?}");
-        assert!(
-            !debug.contains("sk-super-secret-12345"),
-            "ProviderSpec Debug must not contain the api_key value, got: {debug}"
-        );
-    }
-
-    #[test]
-    fn provider_spec_empty_string_api_key_deserializes_as_none() {
-        let json_str = r#"{"id":"x","adapter":"openai","api_key":""}"#;
-        let spec: ProviderSpec = serde_json::from_str(json_str).unwrap();
-        assert!(
-            spec.api_key.is_none(),
-            "empty-string api_key should deserialize as None"
-        );
-    }
-
-    #[test]
-    fn provider_spec_empty_string_base_url_deserializes_as_none() {
-        let json_str = r#"{"id":"x","adapter":"openai","base_url":""}"#;
-        let spec: ProviderSpec = serde_json::from_str(json_str).unwrap();
-        assert!(
-            spec.base_url.is_none(),
-            "empty-string base_url should deserialize as None"
-        );
-    }
-
-    #[test]
-    fn provider_spec_adapter_options_round_trip() {
-        let mut opts = BTreeMap::new();
-        opts.insert("headers".into(), json!({"OpenAI-Organization": "org-xyz"}));
-        let spec = ProviderSpec {
-            id: "openai".into(),
-            adapter: "openai".into(),
-            adapter_options: opts,
-            ..ProviderSpec::default()
-        };
-        let encoded = serde_json::to_string(&spec).unwrap();
-        let parsed: ProviderSpec = serde_json::from_str(&encoded).unwrap();
-        assert_eq!(
-            parsed
-                .adapter_options
-                .get("headers")
-                .and_then(|value| value.get("OpenAI-Organization"))
-                .and_then(Value::as_str),
-            Some("org-xyz")
-        );
-    }
-
-    #[test]
-    fn provider_spec_adapter_options_skipped_when_empty() {
-        let spec = ProviderSpec {
-            id: "openai".into(),
-            adapter: "openai".into(),
-            ..ProviderSpec::default()
-        };
-        let encoded = serde_json::to_string(&spec).unwrap();
-        assert!(
-            !encoded.contains("adapter_options"),
-            "expected adapter_options to be elided when empty, got: {encoded}"
-        );
-    }
-}
+mod tests;

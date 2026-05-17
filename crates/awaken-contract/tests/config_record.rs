@@ -55,6 +55,9 @@ fn legacy_envelope_without_user_overrides_decodes_cleanly() {
 }
 
 fn sample_agent_spec() -> AgentSpec {
+    // `Default::default()` already applies the legacy "allow all" shim
+    // (`allowed_tool_patterns = ["*"]`), so JSON round-trips are stable
+    // without extra opt-in here.
     AgentSpec {
         id: "x".into(),
         model_id: "y".into(),

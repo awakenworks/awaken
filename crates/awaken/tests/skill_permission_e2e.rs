@@ -278,7 +278,9 @@ fn make_agent_spec_deny_all_with_extra_allowed_tools(extra_allowed_tools: &[&str
         plugin_ids: Vec::new(),
         active_hook_filter: Default::default(),
         allowed_tools: None,
+        allowed_tool_patterns: None,
         excluded_tools: None,
+        excluded_tool_patterns: None,
         endpoint: None,
         delegates: Vec::new(),
         sections: HashMap::from([(

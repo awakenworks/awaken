@@ -4,6 +4,9 @@ use awaken_contract::{BuiltinSeedSet, BuiltinSpec};
 // ── helpers ──────────────────────────────────────────────────────────────────
 
 fn agent_spec() -> AgentSpec {
+    // `Default::default()` already applies the legacy "allow all" shim
+    // (`allowed_tool_patterns = ["*"]`), so this matches what the JSON
+    // deserialize round-trip produces without an explicit opt-in.
     AgentSpec {
         id: "test-agent".into(),
         model_id: "m".into(),
