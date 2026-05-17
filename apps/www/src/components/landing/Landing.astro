@@ -24,7 +24,8 @@ interface Props {
 const { locale } = Astro.props;
 const t = <T,>(en: T, zh: T): T => (locale === "zh-CN" ? zh : en);
 
-const docsBase = locale === "zh-CN" ? "/zh-cn" : "";
+const baseUrl = import.meta.env.BASE_URL.replace(/\/$/, "");
+const docsBase = locale === "zh-CN" ? `${baseUrl}/zh-cn` : baseUrl;
 ---
 
 <div class="landing-page">
