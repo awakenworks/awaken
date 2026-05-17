@@ -1,0 +1,473 @@
+[
+  {
+    "label": "Get Started",
+    "translations": {
+      "zh-CN": "快速上手"
+    },
+    "items": [
+      {
+        "label": "Get Started",
+        "slug": "get-started",
+        "translations": {
+          "zh-CN": "快速上手"
+        }
+      },
+      {
+        "label": "First Agent",
+        "slug": "tutorials/first-agent",
+        "translations": {
+          "zh-CN": "第一个 Agent"
+        }
+      },
+      {
+        "label": "First Tool",
+        "slug": "tutorials/first-tool",
+        "translations": {
+          "zh-CN": "第一个 Tool"
+        }
+      }
+    ]
+  },
+  {
+    "label": "Build Agents",
+    "translations": {
+      "zh-CN": "构建 Agent"
+    },
+    "items": [
+      {
+        "label": "Build Agents",
+        "slug": "build-agents",
+        "translations": {
+          "zh-CN": "构建 Agent 路径"
+        }
+      },
+      {
+        "label": "Build an Agent",
+        "slug": "how-to/build-an-agent",
+        "translations": {
+          "zh-CN": "构建 Agent"
+        }
+      },
+      {
+        "label": "Configure Agent Behavior",
+        "slug": "how-to/configure-agent-behavior",
+        "translations": {
+          "zh-CN": "通过配置调优 Agent 行为"
+        }
+      },
+      {
+        "label": "Add a Tool",
+        "slug": "how-to/add-a-tool",
+        "translations": {
+          "zh-CN": "添加 Tool"
+        }
+      },
+      {
+        "label": "Add a Plugin",
+        "slug": "how-to/add-a-plugin",
+        "translations": {
+          "zh-CN": "添加 Plugin"
+        }
+      },
+      {
+        "label": "Use Skills Subsystem",
+        "slug": "how-to/use-skills-subsystem",
+        "translations": {
+          "zh-CN": "使用 Skills 子系统"
+        }
+      },
+      {
+        "label": "Use MCP Tools",
+        "slug": "how-to/use-mcp-tools",
+        "translations": {
+          "zh-CN": "使用 MCP Tools"
+        }
+      },
+      {
+        "label": "Use Reminder Plugin",
+        "slug": "how-to/use-reminder-plugin",
+        "translations": {
+          "zh-CN": "使用 Reminder 插件"
+        }
+      },
+      {
+        "label": "Use Generative UI",
+        "slug": "how-to/use-generative-ui",
+        "translations": {
+          "zh-CN": "使用 Generative UI"
+        }
+      },
+      {
+        "label": "Use Agent Handoff",
+        "slug": "how-to/use-agent-handoff",
+        "translations": {
+          "zh-CN": "使用 Agent Handoff"
+        }
+      },
+      {
+        "label": "Use Deferred Tools",
+        "slug": "how-to/use-deferred-tools",
+        "translations": {
+          "zh-CN": "使用延迟加载工具"
+        }
+      }
+    ]
+  },
+  {
+    "label": "Serve & Integrate",
+    "translations": {
+      "zh-CN": "服务与集成"
+    },
+    "items": [
+      {
+        "label": "Serve & Integrate",
+        "slug": "serve-and-integrate",
+        "translations": {
+          "zh-CN": "服务与集成"
+        }
+      },
+      {
+        "label": "Expose HTTP SSE",
+        "slug": "how-to/expose-http-sse",
+        "translations": {
+          "zh-CN": "通过 SSE 暴露 HTTP"
+        }
+      },
+      {
+        "label": "Integrate AI SDK Frontend",
+        "slug": "how-to/integrate-ai-sdk-frontend",
+        "translations": {
+          "zh-CN": "集成 AI SDK 前端"
+        }
+      },
+      {
+        "label": "Integrate CopilotKit (AG-UI)",
+        "slug": "how-to/integrate-copilotkit-ag-ui",
+        "translations": {
+          "zh-CN": "集成 CopilotKit（AG-UI）"
+        }
+      }
+    ]
+  },
+  {
+    "label": "State & Storage",
+    "translations": {
+      "zh-CN": "状态与存储"
+    },
+    "items": [
+      {
+        "label": "State & Storage",
+        "slug": "state-and-storage",
+        "translations": {
+          "zh-CN": "状态与存储"
+        }
+      },
+      {
+        "label": "Use File Store",
+        "slug": "how-to/use-file-store",
+        "translations": {
+          "zh-CN": "使用文件存储"
+        }
+      },
+      {
+        "label": "Use Postgres Store",
+        "slug": "how-to/use-postgres-store",
+        "translations": {
+          "zh-CN": "使用 Postgres 存储"
+        }
+      },
+      {
+        "label": "Use NATS Stores",
+        "slug": "how-to/use-nats-stores"
+      },
+      {
+        "label": "Optimize Context Window",
+        "slug": "how-to/optimize-context-window",
+        "translations": {
+          "zh-CN": "优化上下文窗口"
+        }
+      },
+      {
+        "label": "State Keys",
+        "slug": "reference/state-keys",
+        "translations": {
+          "zh-CN": "状态键"
+        }
+      },
+      {
+        "label": "Thread Model",
+        "slug": "reference/thread-model",
+        "translations": {
+          "zh-CN": "线程模型"
+        }
+      }
+    ]
+  },
+  {
+    "label": "Operate",
+    "translations": {
+      "zh-CN": "运行与运维"
+    },
+    "items": [
+      {
+        "label": "Operate",
+        "slug": "operate",
+        "translations": {
+          "zh-CN": "运行与运维"
+        }
+      },
+      {
+        "label": "Enable Tool Permission HITL",
+        "slug": "how-to/enable-tool-permission-hitl",
+        "translations": {
+          "zh-CN": "启用工具权限 HITL"
+        }
+      },
+      {
+        "label": "Configure Stop Policies",
+        "slug": "how-to/configure-stop-policies",
+        "translations": {
+          "zh-CN": "配置停止策略"
+        }
+      },
+      {
+        "label": "Enable Observability",
+        "slug": "how-to/enable-observability",
+        "translations": {
+          "zh-CN": "启用可观测性"
+        }
+      },
+      {
+        "label": "Report Tool Progress",
+        "slug": "how-to/report-tool-progress",
+        "translations": {
+          "zh-CN": "上报 Tool 进度"
+        }
+      },
+      {
+        "label": "Testing Strategy",
+        "slug": "how-to/testing-strategy",
+        "translations": {
+          "zh-CN": "测试策略"
+        }
+      },
+      {
+        "label": "Use Shared State",
+        "slug": "how-to/use-shared-state"
+      },
+      {
+        "label": "Recover Streaming LLMs",
+        "slug": "how-to/recover-streaming-llms",
+        "translations": {
+          "zh-CN": "流式 LLM 错误恢复"
+        }
+      },
+      {
+        "label": "Use the Admin Console",
+        "slug": "how-to/use-admin-console"
+      }
+    ]
+  },
+  {
+    "label": "Reference",
+    "translations": {
+      "zh-CN": "参考"
+    },
+    "items": [
+      {
+        "label": "Overview",
+        "slug": "reference/overview",
+        "translations": {
+          "zh-CN": "概览"
+        }
+      },
+      {
+        "label": "Tool Trait",
+        "slug": "reference/tool-trait"
+      },
+      {
+        "label": "Scheduled Actions",
+        "slug": "reference/scheduled-actions"
+      },
+      {
+        "label": "Effects",
+        "slug": "reference/effects"
+      },
+      {
+        "label": "Events",
+        "slug": "reference/events",
+        "translations": {
+          "zh-CN": "事件"
+        }
+      },
+      {
+        "label": "HTTP API",
+        "slug": "reference/http-api"
+      },
+      {
+        "label": "Admin Console",
+        "slug": "reference/admin-console"
+      },
+      {
+        "label": "Config",
+        "slug": "reference/config",
+        "translations": {
+          "zh-CN": "配置"
+        }
+      },
+      {
+        "label": "Provider and Model Configuration",
+        "slug": "reference/provider-model-config",
+        "translations": {
+          "zh-CN": "Provider 与 Model 配置"
+        }
+      },
+      {
+        "label": "Errors",
+        "slug": "reference/errors",
+        "translations": {
+          "zh-CN": "错误"
+        }
+      },
+      {
+        "label": "AI SDK v6 Protocol",
+        "slug": "reference/protocols/ai-sdk-v6",
+        "translations": {
+          "zh-CN": "AI SDK v6 协议"
+        }
+      },
+      {
+        "label": "AG-UI Protocol",
+        "slug": "reference/protocols/ag-ui",
+        "translations": {
+          "zh-CN": "AG-UI 协议"
+        }
+      },
+      {
+        "label": "A2A Protocol",
+        "slug": "reference/protocols/a2a",
+        "translations": {
+          "zh-CN": "A2A 协议"
+        }
+      },
+      {
+        "label": "Cancellation",
+        "slug": "reference/cancellation",
+        "translations": {
+          "zh-CN": "取消"
+        }
+      },
+      {
+        "label": "Tool Execution Modes",
+        "slug": "reference/tool-execution-modes",
+        "translations": {
+          "zh-CN": "工具执行模式"
+        }
+      }
+    ]
+  },
+  {
+    "label": "Architecture",
+    "translations": {
+      "zh-CN": "架构"
+    },
+    "items": [
+      {
+        "label": "Architecture",
+        "slug": "explanation/architecture",
+        "translations": {
+          "zh-CN": "架构"
+        }
+      },
+      {
+        "label": "Agent Resolution",
+        "slug": "explanation/agent-resolution",
+        "translations": {
+          "zh-CN": "智能体解析"
+        }
+      },
+      {
+        "label": "State Management",
+        "slug": "explanation/state-management"
+      },
+      {
+        "label": "State and Snapshot Model",
+        "slug": "explanation/state-and-snapshot-model",
+        "translations": {
+          "zh-CN": "状态与快照模型"
+        }
+      },
+      {
+        "label": "Run Lifecycle and Phases",
+        "slug": "explanation/run-lifecycle-and-phases",
+        "translations": {
+          "zh-CN": "Run 生命周期与 Phases"
+        }
+      },
+      {
+        "label": "HITL and Mailbox",
+        "slug": "explanation/hitl-and-mailbox",
+        "translations": {
+          "zh-CN": "HITL 与 Mailbox"
+        }
+      },
+      {
+        "label": "Multi-Agent Patterns",
+        "slug": "explanation/multi-agent-patterns",
+        "translations": {
+          "zh-CN": "多智能体模式"
+        }
+      },
+      {
+        "label": "Tool and Plugin Boundary",
+        "slug": "explanation/tool-and-plugin-boundary",
+        "translations": {
+          "zh-CN": "Tool 与 Plugin 的边界"
+        }
+      },
+      {
+        "label": "Plugin Internals",
+        "slug": "explanation/plugin-internals",
+        "translations": {
+          "zh-CN": "插件系统内部机制"
+        }
+      },
+      {
+        "label": "Design Tradeoffs",
+        "slug": "explanation/design-tradeoffs",
+        "translations": {
+          "zh-CN": "设计取舍"
+        }
+      }
+    ]
+  },
+  {
+    "label": "Appendix",
+    "translations": {
+      "zh-CN": "附录"
+    },
+    "items": [
+      {
+        "label": "Glossary",
+        "slug": "appendix/glossary",
+        "translations": {
+          "zh-CN": "术语表"
+        }
+      },
+      {
+        "label": "FAQ",
+        "slug": "appendix/faq",
+        "translations": {
+          "zh-CN": "常见问题"
+        }
+      },
+      {
+        "label": "Migrating from Tirea",
+        "slug": "appendix/migration-from-tirea",
+        "translations": {
+          "zh-CN": "从 Tirea 迁移"
+        }
+      }
+    ]
+  }
+]

@@ -1,0 +1,35 @@
+---
+title: Awaken
+description: Production AI agent runtime for Rust — phase-based execution, snapshot isolation, deterministic replay.
+template: splash
+hero:
+  tagline: Production AI agent runtime for Rust. Phase-based execution, snapshot isolation, deterministic replay, multi-protocol surfaces.
+  image:
+    file: ../../assets/awaken-mark.svg
+  actions:
+    - text: Get started
+      link: /get-started/
+      icon: right-arrow
+      variant: primary
+    - text: GitHub
+      link: https://github.com/AwakenWorks/awaken
+      icon: external
+      variant: minimal
+---
+
+import { Card, CardGrid } from "@astrojs/starlight/components";
+
+<CardGrid stagger>
+  <Card title="Phase-based execution" icon="rocket">
+    A deterministic phase loop (resolve → prepare → prompt → stream → gate → tool → commit → events → finalize) gives every plugin a single, well-typed seam.
+  </Card>
+  <Card title="Snapshot isolation" icon="approve-check">
+    Every hook reads an immutable snapshot; mutations are collected in a typed batch and applied atomically. No partial writes, no surprise interleaving.
+  </Card>
+  <Card title="Multi-protocol server" icon="puzzle">
+    First-class adapters for AI SDK v6, AG-UI, A2A, MCP (HTTP + stdio), and ACP — wire any frontend without re-plumbing the runtime.
+  </Card>
+  <Card title="Built-in observability" icon="approve-check-circle">
+    OpenTelemetry traces, persistent trace store, judge sampling, and an admin console that surfaces phase-by-phase attribution for every run.
+  </Card>
+</CardGrid>
