@@ -636,9 +636,7 @@ mod tests {
         assert!(err.is_err());
     }
 
-    // -----------------------------------------------------------------------
     // Migrated from uncarve: additional builder tests
-    // -----------------------------------------------------------------------
 
     #[test]
     fn builder_with_plugin() {
