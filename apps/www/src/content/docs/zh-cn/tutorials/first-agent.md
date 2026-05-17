@@ -138,6 +138,38 @@ let result = runtime.run_to_completion(request).await?;
 - 应用服务：当调用方需要流式事件时，使用带 `EventSink` 的 `runtime.run(...)`
 - HTTP 服务器：将 `Arc<AgentRuntime>` 存储在应用状态中，暴露协议路由
 
+## 另一种方式:从配置加载 agent
+
+上面例子把 `system_prompt`、`model_id`、`max_rounds` 都写死在 Rust 里。这是一次性 CLI 最简单的路径。任何需要长跑的 agent —— 任何想不重新编译就改 prompt 的地方 —— 把 spec 移到配置里。
+
+`EchoTool` 和 provider 留在代码,去掉 `with_agent_spec`:
+
+```rust
+let runtime = AgentRuntimeBuilder::new()
+    .with_tool("echo", Arc::new(EchoTool))
+    .with_provider("openai", Arc::new(GenaiExecutor::new()))
+    .with_model_binding("gpt-4o-mini", ModelBinding {
+        provider_id: "openai".into(),
+        upstream_model: "gpt-4o-mini".into(),
+    })
+    .build()?;  // agent "assistant" 从配置 snapshot 解析
+```
+
+然后[暴露 HTTP/SSE](/zh-cn/how-to/expose-http-sse/),把 agent spec PUT 一次:
+
+```bash
+curl -sS -X PUT http://localhost:3000/v1/config/agents/assistant \
+  -H 'content-type: application/json' \
+  -d '{
+    "id": "assistant",
+    "model_id": "gpt-4o-mini",
+    "system_prompt": "你是一个有帮助的助理。被要求时使用 echo 工具。",
+    "max_rounds": 5
+  }'
+```
+
+之后想改 prompt,用同一个 id PUT 新的 `system_prompt`。下一次 `POST /v1/runs` 读到的就是新 snapshot —— 不重新构建、不重启。完整循环见[在线调优 Prompt](/zh-cn/how-to/hot-tune-prompts/)。
+
 ## 下一步阅读
 
 根据你的需求选择下一页：

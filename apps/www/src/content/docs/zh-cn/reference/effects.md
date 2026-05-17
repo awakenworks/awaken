@@ -47,8 +47,8 @@ pub struct TypedEffect {
 }
 ```
 
-- `TypedEffect::from_spec::<E>(payload)`：把 typed payload 序列化成 `TypedEffect`
-- `TypedEffect::decode::<E>()`：把 JSON 反序列化回具体 payload
+- `TypedEffect::from_spec::<E>(&payload)`：把 typed payload 序列化成 `TypedEffect`（**按引用** `&E::Payload` 传入）
+- `TypedEffect::decode::<E>(&self)`：把存储的 JSON 反序列化回具体 payload
 
 ## 注册 effect handler
 

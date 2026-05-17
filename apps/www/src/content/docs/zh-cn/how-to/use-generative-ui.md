@@ -181,10 +181,11 @@ let agent_spec = agent_spec.with_section("generative-ui", serde_json::json!({
 
 ## 验证
 
-1. 注册插件后，给 agent 一个“请以可视化方式展示内容”的提示
+1. 注册插件后，给 agent 一个"请以可视化方式展示内容"的提示
 2. 确认 agent 调用了 `render_a2ui`
-3. 事件流里应出现成功结果：`{"a2ui": [...], "rendered": true}`
-4. 前端上应看到对应 surface 和组件
+3. `AgentEvent::ToolCallDone` 上的 tool result 只是一个小确认：`{"rendered": true, "count": N}`（N 是 LLM 这次提交的 A2UI 消息数量）
+4. **真正的 UI markup 在 tool call args 上，不是 result** —— 前端从 `AgentEvent::ToolCallReady`（`name = "render_a2ui"`，`arguments = { ..A2UI 消息.. }`）里读出来渲染
+5. 前端上应看到对应 surface 和组件
 
 ## 常见错误
 

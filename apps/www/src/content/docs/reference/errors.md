@@ -50,6 +50,8 @@ pub enum ToolError {
     Denied(String),
     NotFound(String),
     Internal(String),
+    /// Tool execution cancelled (run cancelled, timeout, suspend cancel).
+    Cancelled(String),
 }
 ```
 
@@ -183,6 +185,9 @@ pub enum StorageError {
     AlreadyExists(String),
     VersionConflict { expected: u64, actual: u64 },
     Io(String),
+    /// Commit may have persisted durably but follow-up promotion / cache work
+    /// outcome is unknown to the caller (idempotent retry is safe).
+    CommitUnknown(String),
     Serialization(String),
 }
 ```

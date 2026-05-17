@@ -67,10 +67,11 @@ pub struct TypedEffect {
 
 Two methods bridge between the typed and erased worlds:
 
-- `TypedEffect::from_spec::<E>(payload)` -- serializes a typed payload into a
-  `TypedEffect`. Called internally by `StateCommand::emit`.
-- `TypedEffect::decode::<E>()` -- deserializes the JSON payload back into the
-  concrete `E::Payload` type.
+- `TypedEffect::from_spec::<E>(&payload)` -- serializes a typed payload into a
+  `TypedEffect`. Takes the payload **by reference** (`&E::Payload`). Called
+  internally by `StateCommand::emit`.
+- `TypedEffect::decode::<E>(&self)` -- deserializes the stored JSON payload back
+  into the concrete `E::Payload` type.
 
 You rarely need to use `TypedEffect` directly; `StateCommand::emit` and the
 handler trait handle serialization transparently.

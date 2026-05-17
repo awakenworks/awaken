@@ -166,14 +166,33 @@ pub enum RunRequestOrigin {
 
 ### MailboxStore Trait
 
-`MailboxStore` 负责 durable enqueue、原子 claim、ack/nack、cancel、lease 延长以及 interrupt。
+`MailboxStore` 定义持久化队列接口,trait 在 `crates/awaken-contract/src/contract/mailbox.rs`:
 
-实现必须保证：
+**Enqueue / claim / 生命周期:**
 
-- enqueue 持久化
-- claim 原子化，且只能一个消费者成功
-- ack/nack 校验 claim token
-- interrupt 与 dispatch epoch bump 原子完成
+- **enqueue** —— 持久化 dispatch,分配当前 dispatch epoch,重复 `dedupe_key` 直接拒绝
+- **claim** —— 为某个 mailbox 原子认领最多 N 个 `Queued` dispatch(基于 lease)
+- **claim_dispatch** —— 按 ID 认领单个 dispatch(用于 inline streaming)
+- **ack** —— 标记 dispatch 为 `Acked`(校验 claim token)
+- **nack** —— 把 dispatch 退回 `Queued` 重试
+- **dead_letter** —— 标记 dispatch 为 `DeadLetter`(永久失败)
+- **cancel** —— 取消一个 `Queued` dispatch
+- **extend_lease** —— 心跳延长活跃 claim
+- **interrupt** —— 原子 bump dispatch epoch,supersede 旧 `Queued` dispatch,返回活跃 `Claimed` dispatch 以便取消
+- **supersede_claimed** —— 新 epoch 到达时替换一个 `Claimed` dispatch
+
+**Runtime 投影(让 operator 能看见发生了什么):**
+
+- **record_dispatch_start** —— 把投影里的 `run_status` 置 `Running`
+- **record_run_result** —— 写入紧凑的 `RunDispatchResult` 投影(独立于 `ack` —— ack 只闭合队列生命周期,不代表业务结果)
+
+**查询:**
+
+- **load_dispatch** —— 按 ID 读单个 dispatch
+- **list_dispatches** —— 按 thread 分页列 dispatch
+- **reclaim_expired_leases** —— 回收 lease 过期但未 ack 的 dispatch
+
+实现必须保证:durable enqueue、原子 claim(且仅一个赢)、ack/nack/dead_letter 校验 claim token、interrupt 与 dispatch epoch bump 原子完成。两轨设计(队列生命周期 vs runtime 投影)让 operator 调试已消费 dispatch 时不会把 `Acked` 队列状态当成业务成功。
 
 ## Waiting Run 与 Run Control
 

@@ -133,10 +133,15 @@ async fn execute(&self, args: Value, ctx: &ToolCallContext) -> Result<ToolOutput
 
 ## 定义自定义 action
 
-插件可以通过实现 `ScheduledActionSpec` 来定义自己的 action：
+插件通过实现 `ScheduledActionSpec` 定义自己的 action,并实现 `TypedScheduledActionHandler<A>` 作为 runtime 调度的 handler,经 `PluginRegistrar::register_scheduled_action` 注册。
+
+### Spec
+
+`ScheduledActionSpec` 声明 action 的 identity、phase、payload 类型。默认的 `encode_payload` / `decode_payload` 实现走 runtime 的 JSON 编解码,仅在需要自定义序列化时才 override。
 
 ```rust
-use awaken_contract::model::{Phase, ScheduledActionSpec};
+use awaken_contract::error::StateError;
+use awaken_contract::model::{JsonValue, Phase, ScheduledActionSpec};
 
 pub struct MyCustomAction;
 
@@ -144,16 +149,45 @@ impl ScheduledActionSpec for MyCustomAction {
     const KEY: &'static str = "my_plugin.custom_action";
     const PHASE: Phase = Phase::BeforeInference;
     type Payload = MyPayload;
+
+    // 默认 encode_payload / decode_payload 来自 trait;
+    // 仅在需要自定义序列化时 override。
 }
 ```
 
-在 `register()` 中挂上 handler：
+### Handler
+
+Runtime dispatch 的 handler trait:
+
+```rust
+#[async_trait]
+pub trait TypedScheduledActionHandler<A>: Send + Sync + 'static
+where
+    A: ScheduledActionSpec,
+{
+    async fn handle_typed(
+        &self,
+        ctx: &PhaseContext,
+        payload: A::Payload,
+    ) -> Result<StateCommand, StateError>;
+}
+```
+
+Handler 收 `PhaseContext`(snapshot + run metadata),返回 `StateCommand` —— 可以携带状态变更、再调度 action(触发下一轮收敛)、emit effect。
+
+### 注册
 
 ```rust
 fn register(&self, r: &mut PluginRegistrar) -> Result<(), StateError> {
     r.register_scheduled_action::<MyCustomAction, _>(MyHandler)?;
     Ok(())
 }
+```
+
+其它插件 / 工具就能调度你的 action:
+
+```rust
+cmd.schedule_action::<MyCustomAction>(my_payload)?;
 ```
 
 ## 收敛与级联

@@ -94,7 +94,6 @@ section。
 | `POST` | `/v1/ai-sdk/agent-previews/runs` | 使用未保存的草稿 `AgentSpec` 运行；admin console 预览功能使用 |
 | `POST` | `/v1/ai-sdk/threads/:thread_id/runs` | 在指定 thread 上启动 run |
 | `POST` | `/v1/ai-sdk/agents/:agent_id/runs` | 在指定 agent 上启动 run |
-| `POST` | `/v1/ai-sdk/agent-previews/runs` | 使用当前 registries 运行草稿 `AgentSpec`，不会持久化该 agent |
 | `GET` | `/v1/ai-sdk/chat/:thread_id/stream` | 按 thread ID 续接 SSE |
 | `GET` | `/v1/ai-sdk/threads/:thread_id/stream` | 同上别名 |
 | `GET` | `/v1/ai-sdk/threads/:thread_id/messages` | 列出 thread 消息 |

@@ -205,18 +205,33 @@ pub enum RunRequestOrigin {
 
 ### MailboxStore Trait
 
-`MailboxStore` defines the persistent queue interface:
+`MailboxStore` defines the persistent queue interface. The trait surface lives at `crates/awaken-contract/src/contract/mailbox.rs`:
+
+**Enqueue / claim / lifecycle:**
 
 - **enqueue** -- persist a dispatch, assign the current dispatch epoch, reject duplicate `dedupe_key`
 - **claim** -- atomically claim up to N `Queued` dispatches for a mailbox (lease-based)
 - **claim_dispatch** -- claim a specific dispatch by ID (for inline streaming)
 - **ack** -- mark a dispatch as `Acked` (validates claim token)
-- **nack** -- return a dispatch to `Queued` for retry, or `DeadLetter` if max attempts exceeded
+- **nack** -- return a dispatch to `Queued` for retry
+- **dead_letter** -- mark a dispatch as `DeadLetter` (permanently failed)
 - **cancel** -- cancel a `Queued` dispatch
 - **extend_lease** -- heartbeat to extend an active claim
 - **interrupt** -- atomically bump the dispatch epoch, supersede stale `Queued` dispatches, return the active `Claimed` dispatch for cancellation
+- **supersede_claimed** -- replace a `Claimed` dispatch when a newer epoch arrives
 
-Implementations must guarantee: durable enqueue, atomic claim (exactly one winner), claim token validation on ack/nack, and atomic interrupt with a dispatch epoch bump.
+**Runtime projection (so operators can see what happened):**
+
+- **record_dispatch_start** -- mark `run_status = Running` for the projected runtime view
+- **record_run_result** -- write the compact `RunDispatchResult` projection (separate from `ack` — the ack only closes the queue lifecycle, not the business outcome)
+
+**Inspection:**
+
+- **load_dispatch** -- fetch a single dispatch by ID
+- **list_dispatches** -- list dispatches for a thread (paged, filterable)
+- **reclaim_expired_leases** -- recover dispatches whose lease expired without ack
+
+Implementations must guarantee: durable enqueue, atomic claim (exactly one winner), claim-token validation on ack / nack / dead_letter, and atomic interrupt with a dispatch epoch bump. The two-track design (queue lifecycle vs runtime projection) lets operators debug a consumed dispatch without conflating `Acked` queue state with run success.
 
 ## Waiting Runs and Run Control
 

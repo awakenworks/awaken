@@ -221,7 +221,6 @@ Filters: `?resource=`, `?action=`, `?actor=`, `?since=`, `?until=`,
 | `POST` | `/v1/ai-sdk/agent-previews/runs` | Run a draft `AgentSpec` without saving it; used by the admin console preview |
 | `POST` | `/v1/ai-sdk/threads/:thread_id/runs` | Start a thread-scoped AI SDK run |
 | `POST` | `/v1/ai-sdk/agents/:agent_id/runs` | Start an agent-scoped AI SDK run |
-| `POST` | `/v1/ai-sdk/agent-previews/runs` | Run a draft `AgentSpec` against the current registries without persisting it |
 | `GET` | `/v1/ai-sdk/chat/:thread_id/stream` | Resume an SSE stream by thread ID |
 | `GET` | `/v1/ai-sdk/threads/:thread_id/stream` | Alias for stream resume by thread ID |
 | `GET` | `/v1/ai-sdk/threads/:thread_id/messages` | List thread messages |

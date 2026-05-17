@@ -24,7 +24,7 @@ pub trait StateKey: 'static + Send + Sync {
 
 A `StateKey` is a zero-sized type that associates a string key, a value type, an update type, and a merge function. The `apply` method defines how an update transforms the current value. Serialization is handled through `encode`/`decode` with JSON as the interchange format.
 
-Plugins register their state keys through `PluginRegistrar::register_key::<K>()` during the `Plugin::register` callback.
+Plugins register their state keys through `PluginRegistrar::register_key::<K>(options)` during the `Plugin::register` callback. The `StateKeyOptions` carries the per-key scope (`Run` or `Thread`) and any extra registration metadata.
 
 ## KeyScope
 
@@ -59,9 +59,11 @@ When multiple hooks run in the same phase and produce `MutationBatch` values tha
 A `Snapshot` is an immutable view of the state at a point in time. Phase hooks receive a snapshot reference and can read any registered key's value. They cannot mutate the snapshot directly.
 
 ```text
-Phase hook receives: &Snapshot
-Phase hook writes to: MutationBatch
+Phase hook receives: &PhaseContext (which exposes &Snapshot)
+Phase hook returns:  StateCommand { patch: MutationBatch, scheduled_actions, effects }
 ```
+
+The `MutationBatch` carries state writes; `scheduled_actions` lets hooks enqueue work that the runtime will dispatch later; `effects` are named side-effects (e.g. external API calls) routed to the matching `register_effect` handler.
 
 This separation guarantees that hooks within the same phase see identical state regardless of execution order.
 

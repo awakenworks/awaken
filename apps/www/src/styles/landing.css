@@ -692,6 +692,13 @@ main:has(.landing-page) > .content-panel:has(.landing-page) {
   color: var(--aw-text-strong);
 }
 
+/* ============ decisions (Three Rules) grid ============ */
+.landing-page .decisions-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 16px;
+}
+
 /* ============ plugins grid ============ */
 .landing-page .plugins-grid {
   display: grid;
@@ -755,7 +762,8 @@ main:has(.landing-page) > .content-panel:has(.landing-page) {
   .landing-page .hero-grid,
   .landing-page .phase-loop,
   .landing-page .console-grid,
-  .landing-page .fit-grid { grid-template-columns: 1fr; }
+  .landing-page .fit-grid,
+  .landing-page .decisions-grid { grid-template-columns: 1fr; }
   .landing-page .proto-grid,
   .landing-page .plugins-grid { grid-template-columns: 1fr 1fr; }
 }

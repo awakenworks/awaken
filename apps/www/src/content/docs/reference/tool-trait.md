@@ -124,6 +124,17 @@ pub struct ToolCallContext {
     pub agent_spec: Arc<AgentSpec>,
     pub snapshot: Snapshot,
     pub activity_sink: Option<Arc<dyn EventSink>>,
+    /// Optional cancellation token for cooperative cancellation.
+    /// Long-running tools (MCP calls, sub-agent execution) should check
+    /// `is_cancelled()` periodically or use `cancelled()` in `tokio::select!`.
+    pub cancellation_token: Option<CancellationToken>,
+    /// Resume decision input — set when the runtime is replaying a suspended
+    /// tool call (see `ToolCallResumeMode`).
+    pub resume_input: Option<ToolCallResume>,
+    /// Active suspension id, if this execution is a resumed suspension.
+    pub suspension_id: Option<String>,
+    /// Suspension reason/action, if this execution is a resumed suspension.
+    pub suspension_reason: Option<String>,
 }
 ```
 

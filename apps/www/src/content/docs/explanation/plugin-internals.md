@@ -13,16 +13,20 @@ When a plugin is loaded, its `register()` method is called with a `PluginRegistr
 
 **Structural components** are always available regardless of activation state:
 
-- State keys (`register_key::<K>()`)
+- State keys (`register_key::<K>(options)`)
+- Profile keys (`register_profile_key::<K>()`)
 - Scheduled action handlers (`register_scheduled_action::<A, H>()`)
 - Effect handlers (`register_effect::<E, H>()`)
 
 **Behavioral components** are only active when the plugin passes the activation filter:
 
 - Tool gate hooks (`register_tool_gate_hook()`)
+- Typed tool policy hooks (`register_tool_policy_hook()` — wraps a `ToolPolicyHook` into the same `ToolGate` phase)
 - Phase hooks (`register_phase_hook()`)
 - Tools (`register_tool()`)
 - Request transforms (`register_request_transform()`)
+
+`register_request_transform()` is fire-and-forget (no validation `Result`); the other registration methods return `Result<(), StateError>` so duplicates fail at registration time.
 
 Activation is controlled by `AgentSpec.active_hook_filter`:
 

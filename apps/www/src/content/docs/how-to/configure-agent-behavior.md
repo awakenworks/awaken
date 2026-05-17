@@ -231,11 +231,77 @@ for a specific agent.
 - Active runs keep their starting snapshot. To validate a change, create a new
   run after the config write succeeds.
 
+## Verify the loop — edit, run, observe
+
+The config plane only matters if changes really land. This is the proof loop. The server stays running throughout.
+
+### 1. Run with the original prompt
+
+```bash
+curl -sS -X POST http://localhost:3000/v1/runs \
+  -H 'content-type: application/json' \
+  -d '{
+    "agent_id": "research-assistant",
+    "thread_id": "verify-thread",
+    "messages": [{"role": "user", "content": "Find one peer-reviewed source on coral bleaching."}]
+  }' | jq -r '.response'
+```
+
+Note the tone, citation behaviour, and tool choice in the response.
+
+### 2. Edit only the prompt — same id, no restart
+
+```bash
+curl -sS -X PUT http://localhost:3000/v1/config/agents/research-assistant \
+  -H 'content-type: application/json' \
+  -d '{
+    "id": "research-assistant",
+    "model_id": "research-default",
+    "system_prompt": "You are a skeptical research assistant. Refuse to answer without at least two independent peer-reviewed sources; cite each.",
+    "max_rounds": 12,
+    "plugin_ids": ["permission"],
+    "allowed_tools": ["web_search", "read_document", "summarize"]
+  }'
+```
+
+The PUT returns the validated, published config. No build, no redeploy, no SIGHUP.
+
+### 3. Run again — observe the change
+
+```bash
+curl -sS -X POST http://localhost:3000/v1/runs \
+  -H 'content-type: application/json' \
+  -d '{
+    "agent_id": "research-assistant",
+    "thread_id": "verify-thread-2",
+    "messages": [{"role": "user", "content": "Find one peer-reviewed source on coral bleaching."}]
+  }' | jq -r '.response'
+```
+
+The new run picks up the snapshot published in step 2. Compare the two responses — the second should now require two sources and refuse single-source answers.
+
+Use a fresh `thread_id` to avoid prior-turn carryover; the prompt change is the only independent variable.
+
+### What is safe to change mid-run
+
+| Change | Active runs | Next run |
+|---|---|---|
+| `system_prompt` | Keep old prompt | New prompt |
+| `allowed_tools`, `excluded_tools` | Keep old set | New set |
+| `max_rounds`, `reasoning_effort` | Keep old | New |
+| `model_id` (swap binding only) | Keep old binding | New binding |
+| `plugin_ids` (add) | Keep old set | New plugin runs from next round |
+| `plugin_ids` (remove) | Keep old set | Removed plugin's hooks stop firing |
+| `sections.<plugin>` (validated by `PluginConfigKey`) | Keep old | New per-key validated value |
+
+Active runs always finish on their starting snapshot — this is the contract. To validate a change without waiting for active runs to drain, start a new run with a fresh `thread_id`.
+
 ## Related
 
 - [Provider and Model Configuration](/reference/provider-model-config/)
 - [Config](/reference/config/)
 - [HTTP API](/reference/http-api/)
+- [Hot-Tune Prompts](/how-to/hot-tune-prompts/)
 - [Enable Tool Permission HITL](/how-to/enable-tool-permission-hitl/)
 - [Use Reminder Plugin](/how-to/use-reminder-plugin/)
 - [Use Deferred Tools](/how-to/use-deferred-tools/)

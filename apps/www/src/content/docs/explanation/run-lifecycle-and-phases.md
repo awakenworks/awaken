@@ -10,19 +10,22 @@ This page describes the state machines that govern run execution and tool call p
 A run's coarse lifecycle is captured by `RunStatus`:
 
 ```text
-Running --+--> Waiting --+--> Running (resume)
-          |              |
-          +--> Done      +--> Done
+Created --+--> Running --+--> Waiting --+--> Running (resume)
+          |              |              |
+          +--> Done      +--> Done      +--> Done
 ```
 
 ```rust
 pub enum RunStatus {
-    Running,  // Actively executing (default)
+    Created,  // Persisted but not yet executing
+    Running,  // Actively executing
     Waiting,  // Paused, waiting for external decisions
     Done,     // Terminal -- cannot transition further
 }
 ```
 
+- `Created -> Running`: the runtime picks up the run and begins executing phases.
+- `Created -> Done`: the run was cancelled or rejected before any phase ran.
 - `Running -> Waiting`: a tool call suspends, the run pauses for external input.
 - `Waiting -> Running`: decisions arrive, the run resumes.
 - `Running -> Done` or `Waiting -> Done`: terminal transition on completion, cancellation, or error.

@@ -1,82 +1,66 @@
 ---
 title: "Introduction"
-description: "> Heads up — this mdbook site is moving. The full documentation, with bilingual support and built-in search, is being maintained at apps/www as an Astro + Starlight site. This mdbook will be retired…"
+description: "Awaken — Rust agent runtime where the framework is itself the platform. Tools-first, live-tuned prompts, built-in tracing/eval/HITL."
 ---
 
-> **Heads up — this mdbook site is moving.** The full documentation, with bilingual support and built-in search, is being maintained at **[`apps/www`](../../apps/www/)** as an Astro + Starlight site. This mdbook will be retired once the new site is deployed. Please point new links at the upcoming site.
+**Awaken** is a production AI agent runtime written in Rust. The framework is the platform: when the server is up, tracing, replay, eval, permission gating, and an admin console are already running.
 
-**Awaken** is a modular AI agent runtime framework built in Rust. It provides phase-based execution with snapshot isolation and deterministic replay, a typed state engine with key scoping (`thread` / `run`) and merge strategies (`exclusive` / `commutative`), a plugin lifecycle system for extensibility, and a multi-protocol server surface supporting AI SDK v6, AG-UI, A2A, and MCP over HTTP and stdio, plus ACP over stdio.
+Three design rules drive everything else:
 
-## Crate Overview
+## 1 — Tools live in code, prompts live in config
+
+Code defines tools (typed schemas, state writes, deferred loading). Spec/config holds agent system prompts, tool descriptions, reminders, skill catalogs, permission rules.
+
+Editing config takes effect on the **next run**. No restart, no redeploy, no schema migration. MCP servers refresh automatically via the `tools/list_changed` notification; on-disk skill packages refresh via a `PeriodicRefresher` you start once at bootstrap. The runtime re-resolves from the latest published config snapshot on each new run.
+
+## 2 — One config API, one admin console
+
+`/v1/config/*` is the single source for agents, models, providers, plugins, MCP servers, skill packages, permissions, and trace history. The bundled admin console is one consumer; your CI can be another.
+
+What the console writes, the runtime reads. There is no separate ops project to maintain.
+
+## 3 — Observability/eval/HITL come with the server
+
+Started services automatically expose:
+
+- OpenTelemetry GenAI traces on every phase, tool, and LLM call (`awaken-ext-observability`).
+- A persistent trace store the admin console queries directly.
+- An eval framework with fixture replay, scoring, and baseline diffing (`awaken-eval`).
+- Permission-gated HITL via mailbox suspend/resume.
+
+These are not opt-in libraries. They are the runtime.
+
+## Four capabilities that follow
+
+The above three rules combine to give four properties most agent frameworks lack:
+
+- **Snapshot isolation + deterministic replay.** Each phase reads an immutable `Snapshot`, emits a `MutationBatch`; `commit` applies atomically. Saved snapshots replay byte-for-byte — debug, regression-test, or re-run eval over past traffic without re-paying LLM cost.
+- **One backend, four protocols.** Single runtime serves AI SDK v6, AG-UI (CopilotKit), A2A, and MCP HTTP from one process. Frontend choice does not propagate to agent code.
+- **Permission gates as runtime primitives.** `Gate` phase runs between tool decision and tool execution; `Allow` / `Deny` / `Ask` rules match on name + arguments; `Ask` suspends through mailbox and resumes when answered.
+- **Generative UI as streamed primitive.** Agents emit A2UI / JSON Render / OpenUI Lang documents on the same event stream as text. Frontend renders without per-tool glue.
+
+## Crate map
 
 | Crate | Description |
 |-------|-------------|
-| `awaken-contract` | Core contracts: types, traits, state model, agent specs |
-| `awaken-runtime` | Execution engine: phase loop, plugin system, agent loop, builder |
-| `awaken-server` | HTTP/SSE gateway with protocol adapters |
-| `awaken-stores` | Storage backends: memory, file, PostgreSQL, and SQLite mailbox |
+| `awaken-contract` | Types, traits, state model, agent specs |
+| `awaken-runtime` | Phase loop, plugin system, agent loop, builder |
+| `awaken-server` | HTTP/SSE gateway + protocol adapters |
+| `awaken-stores` | Storage backends: memory, file, Postgres, SQLite mailbox |
 | `awaken-tool-pattern` | Glob/regex tool matching for permission and reminder rules |
-| `awaken-ext-permission` | Permission plugin with allow/deny/ask policies |
-| `awaken-ext-observability` | OpenTelemetry-based LLM and tool call tracing |
-| `awaken-ext-mcp` | Model Context Protocol client integration |
+| `awaken-ext-permission` | Permission plugin (allow/deny/ask) |
+| `awaken-ext-observability` | OpenTelemetry traces + metrics |
+| `awaken-ext-mcp` | MCP client integration |
 | `awaken-ext-skills` | Skill package discovery and activation |
-| `awaken-ext-reminder` | Declarative reminder rules triggered after tool execution |
-| `awaken-ext-generative-ui` | Declarative UI components through A2UI, JSON Render, and OpenUI Lang |
+| `awaken-ext-reminder` | Declarative reminder rules |
+| `awaken-ext-generative-ui` | A2UI / JSON Render / OpenUI Lang |
 | `awaken-ext-deferred-tools` | Deferred tool loading with probabilistic promotion |
-| `awaken` | Facade crate that re-exports core modules |
+| `awaken` | Facade crate re-exporting core modules |
 
-## Architecture
+## Reading path
 
-```text
-Application code
-  registers tools / models / providers / plugins / agent specs
-        |
-        v
-AgentRuntime
-  resolves AgentSpec -> ResolvedExecution
-  builds ExecutionEnv from plugins
-  runs the phase loop and exposes cancel / decision control
-        |
-        v
-Server + storage surfaces
-  HTTP routes, SSE replay, mailbox, protocol adapters, thread/run persistence
-```
-
-## Core Principle
-
-All state access follows snapshot isolation. Phase hooks see an immutable snapshot; mutations are collected in a MutationBatch and applied atomically after convergence.
-
-## What's in This Book
-
-- **Get Started** — build a working mental model with the smallest runnable flows
-- **Build Agents** — add tools, plugins, MCP, skills, reminders, handoff, and UI capabilities
-- **Serve & Integrate** — expose HTTP endpoints and wire AI SDK or CopilotKit frontends
-- **State & Storage** — choose persistence, context shaping, and state lookup patterns
-- **Operate** — harden runtime behavior with observability, permissions, progress reporting, and tests
-- **Reference** — API, protocol, config, and schema lookup pages
-- **Architecture** — runtime layering, phase execution, and design tradeoffs
-
-## Recommended Reading Path
-
-If you are new to the repository, use this order:
-
-1. Start with [Get Started](/get-started/) and complete [First Agent](/tutorials/first-agent/).
-2. Move to [Build Agents](/build-agents/) when you are ready to add tools and plugins.
-3. Use [Serve & Integrate](/serve-and-integrate/) when the runtime needs to talk to HTTP clients or frontends.
-4. Use [State & Storage](/state-and-storage/) and [Operate](/operate/) as you move from demos to production behavior.
-5. Keep [Reference Overview](/reference/overview/) and [Architecture](/explanation/architecture/) open when you need exact contracts or runtime internals.
-
-## Repository Map
-
-These paths matter most when you move from docs into code:
-
-| Path | Purpose |
-|------|---------|
-| `crates/awaken-contract/` | Core contracts: tools, events, state interfaces |
-| `crates/awaken-runtime/` | Agent runtime: execution engine, plugins, builder |
-| `crates/awaken-server/` | HTTP/SSE server surfaces |
-| `crates/awaken-stores/` | Storage backends |
-| `crates/awaken/examples/` | Small runtime examples |
-| `examples/` | Full-stack frontend and server examples |
-| `apps/admin-console/` | Config API management UI |
-| `docs/book/src/` | This documentation source |
+1. [Get Started](/get-started/) → [First Agent](/tutorials/first-agent/).
+2. [Build Agents](/build-agents/) — tools, MCP, skills, reminders, HITL, UI.
+3. [Serve & Integrate](/serve-and-integrate/) — AI SDK / CopilotKit / A2A / MCP frontends.
+4. [State & Storage](/state-and-storage/), [Operate](/operate/) — production hardening.
+5. [Design Philosophy](/explanation/philosophy/) — the "why" behind the three rules.

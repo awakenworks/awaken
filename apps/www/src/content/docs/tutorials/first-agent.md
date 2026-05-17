@@ -138,6 +138,38 @@ Common usage patterns:
 - application service: use `runtime.run(...)` with an `EventSink` when callers need streaming events
 - HTTP server: store `Arc<AgentRuntime>` in app state and expose protocol routes
 
+## Alternative: load the agent from config
+
+The example above bakes `system_prompt`, `model_id`, and `max_rounds` into Rust. That's the simplest path for a one-shot CLI. For any longer-running agent — anywhere you want to tune the prompt without recompiling — move the spec into config.
+
+Keep `EchoTool` and the provider in code, drop `with_agent_spec`:
+
+```rust
+let runtime = AgentRuntimeBuilder::new()
+    .with_tool("echo", Arc::new(EchoTool))
+    .with_provider("openai", Arc::new(GenaiExecutor::new()))
+    .with_model_binding("gpt-4o-mini", ModelBinding {
+        provider_id: "openai".into(),
+        upstream_model: "gpt-4o-mini".into(),
+    })
+    .build()?;  // agent "assistant" will be resolved from the config snapshot
+```
+
+Then [expose HTTP/SSE](/how-to/expose-http-sse/) and PUT the agent spec once:
+
+```bash
+curl -sS -X PUT http://localhost:3000/v1/config/agents/assistant \
+  -H 'content-type: application/json' \
+  -d '{
+    "id": "assistant",
+    "model_id": "gpt-4o-mini",
+    "system_prompt": "You are a helpful assistant. Use the echo tool when asked.",
+    "max_rounds": 5
+  }'
+```
+
+To tweak the prompt later, just PUT the same id with a new `system_prompt`. The next `POST /v1/runs` reads the new snapshot — no rebuild, no restart. See [Hot-Tune Prompts](/how-to/hot-tune-prompts/) for the full loop.
+
 ## Which Doc To Read Next
 
 Use the next page based on what you want:
