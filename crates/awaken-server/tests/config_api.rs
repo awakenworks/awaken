@@ -3922,3 +3922,106 @@ async fn permission_preview_handles_missing_permission_section() {
     assert_eq!(body["candidate_tools"], json!(["Bash"]));
     assert_eq!(body["effective_tools"], json!(["Bash"]));
 }
+
+// Round-trip the four catalog fields (literal allow + pattern allow +
+// literal exclude + pattern exclude) through POST -> GET -> PUT -> GET.
+// Asserts that pattern fields aren't dropped by serde, the envelope
+// wrap/unwrap, or the API handlers. Pins the on-the-wire shape so a
+// future change that quietly stops persisting the new fields would
+// fail loudly here.
+#[tokio::test]
+async fn put_agent_spec_round_trips_pattern_fields() {
+    let app = make_app().await;
+
+    let spec = json!({
+        "id": "pattern-round-trip",
+        "model_id": "bootstrap",
+        "system_prompt": "",
+        "allowed_tools": ["Bash"],
+        "allowed_tool_patterns": ["mcp:*"],
+        "excluded_tool_patterns": ["dangerous-*"]
+    });
+
+    let (post_status, created) = request_json(
+        &app.router,
+        Method::POST,
+        "/v1/config/agents",
+        Some(spec.clone()),
+    )
+    .await;
+    assert_eq!(post_status, StatusCode::CREATED, "POST failed: {created}");
+    assert_eq!(created["allowed_tools"], json!(["Bash"]));
+    assert_eq!(created["allowed_tool_patterns"], json!(["mcp:*"]));
+    assert_eq!(created["excluded_tool_patterns"], json!(["dangerous-*"]));
+    // `excluded_tools` was not set; serde skips serialising `None`.
+    assert!(
+        created.get("excluded_tools").is_none(),
+        "excluded_tools should be absent when unset, got: {created}"
+    );
+
+    let (get_status, got) = request_json(
+        &app.router,
+        Method::GET,
+        "/v1/config/agents/pattern-round-trip",
+        None,
+    )
+    .await;
+    assert_eq!(get_status, StatusCode::OK);
+    assert_eq!(got["allowed_tools"], json!(["Bash"]));
+    assert_eq!(got["allowed_tool_patterns"], json!(["mcp:*"]));
+    assert_eq!(got["excluded_tool_patterns"], json!(["dangerous-*"]));
+    assert!(
+        got.get("excluded_tools").is_none(),
+        "GET should omit unset excluded_tools, got: {got}"
+    );
+
+    // PUT a full replacement that mutates each catalog field — including
+    // adding the previously-absent `excluded_tools` literal — to confirm
+    // the update path also persists all four fields.
+    let updated_spec = json!({
+        "id": "pattern-round-trip",
+        "model_id": "bootstrap",
+        "system_prompt": "",
+        "allowed_tools": ["Read"],
+        "allowed_tool_patterns": ["mcp:db-*", "Bash"],
+        "excluded_tools": ["Delete"],
+        "excluded_tool_patterns": ["dangerous-*", "legacy-*"]
+    });
+    let (put_status, put_body) = request_json(
+        &app.router,
+        Method::PUT,
+        "/v1/config/agents/pattern-round-trip",
+        Some(updated_spec),
+    )
+    .await;
+    assert_eq!(put_status, StatusCode::OK, "PUT failed: {put_body}");
+    assert_eq!(put_body["allowed_tools"], json!(["Read"]));
+    assert_eq!(
+        put_body["allowed_tool_patterns"],
+        json!(["mcp:db-*", "Bash"])
+    );
+    assert_eq!(put_body["excluded_tools"], json!(["Delete"]));
+    assert_eq!(
+        put_body["excluded_tool_patterns"],
+        json!(["dangerous-*", "legacy-*"])
+    );
+
+    let (final_status, final_got) = request_json(
+        &app.router,
+        Method::GET,
+        "/v1/config/agents/pattern-round-trip",
+        None,
+    )
+    .await;
+    assert_eq!(final_status, StatusCode::OK);
+    assert_eq!(final_got["allowed_tools"], json!(["Read"]));
+    assert_eq!(
+        final_got["allowed_tool_patterns"],
+        json!(["mcp:db-*", "Bash"])
+    );
+    assert_eq!(final_got["excluded_tools"], json!(["Delete"]));
+    assert_eq!(
+        final_got["excluded_tool_patterns"],
+        json!(["dangerous-*", "legacy-*"])
+    );
+}

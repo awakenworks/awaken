@@ -23,7 +23,8 @@ use awaken_runtime::registry::memory::{
 };
 use awaken_runtime::registry::resolve::RegistrySetResolver;
 use awaken_runtime::registry::{
-    AgentSpecRegistry, ModelBinding, PluginSource, RegistrySet, ToolRegistry,
+    AgentSpecRegistry, ModelBinding, PluginSource, RegistryDiagnostic, RegistrySet,
+    RegistryValidationError, ToolRegistry, diagnose_agent_spec,
 };
 use awaken_runtime::{AgentResolver, AgentRuntime};
 use genai::adapter::AdapterKind;
@@ -35,6 +36,8 @@ use serde_json::Value;
 use tokio::runtime::Handle;
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
+
+use crate::services::agent_catalog::check_catalog_errors;
 
 const CONFIG_LOAD_PAGE_SIZE: usize = 1024;
 
@@ -1310,34 +1313,27 @@ impl ConfigRuntimeManager {
         candidate: &RegistrySet,
         local_agents: &[AgentSpec],
     ) -> Result<(), ConfigRuntimeError> {
+        // Catalog validation mirrors the write-path guard.
+        check_catalog_errors(local_agents).map_err(ConfigRuntimeError::InvalidConfig)?;
         let mut diagnostics = Vec::new();
         for model_id in candidate.models.model_ids() {
             let Some(binding) = candidate.models.get_model(&model_id) else {
                 continue;
             };
-            if candidate
-                .providers
-                .get_provider(&binding.provider_id)
-                .is_none()
-            {
-                diagnostics.push(
-                    awaken_runtime::registry::RegistryDiagnostic::ModelMissingProvider {
-                        model_id,
-                        provider_id: binding.provider_id,
-                    },
-                );
+            let provider_id = binding.provider_id;
+            if candidate.providers.get_provider(&provider_id).is_none() {
+                diagnostics.push(RegistryDiagnostic::ModelMissingProvider {
+                    model_id,
+                    provider_id,
+                });
             }
         }
         for agent in local_agents {
-            diagnostics.extend(awaken_runtime::registry::diagnose_agent_spec(
-                candidate, agent,
-            ));
+            diagnostics.extend(diagnose_agent_spec(candidate, agent));
         }
         if !diagnostics.is_empty() {
-            return Err(ConfigRuntimeError::InvalidConfig(
-                awaken_runtime::registry::RegistryValidationError::from_diagnostics(diagnostics)
-                    .to_string(),
-            ));
+            let err = RegistryValidationError::from_diagnostics(diagnostics).to_string();
+            return Err(ConfigRuntimeError::InvalidConfig(err));
         }
 
         let resolver = RegistrySetResolver::new(candidate.clone());
@@ -1755,12 +1751,12 @@ fn canonicalize_value(value: &Value) -> Value {
 }
 
 fn map_seed_error(error: crate::services::builtin_seed::SeedError) -> ConfigRuntimeError {
-    use crate::services::builtin_seed::SeedError;
+    use crate::services::builtin_seed::SeedError as E;
+    use ConfigRuntimeError::{InvalidConfig, Storage};
     match error {
-        SeedError::Storage(e) => ConfigRuntimeError::Storage(e),
-        SeedError::Serde(e) => {
-            ConfigRuntimeError::Storage(StorageError::Serialization(e.to_string()))
-        }
+        E::Storage(e) => Storage(e),
+        e @ E::Serde(_) => Storage(StorageError::Serialization(e.to_string())),
+        e @ E::InvalidAgentCatalog { .. } => InvalidConfig(e.to_string()),
     }
 }
 

@@ -57,8 +57,9 @@ impl<'a> ConfigService<'a> {
     ) -> Result<(), ConfigServiceError> {
         match namespace {
             ConfigNamespace::Agents => {
-                awaken_contract::validate_agent_spec(body.clone())
+                let spec = awaken_contract::validate_agent_spec(body.clone())
                     .map_err(|e| ConfigServiceError::InvalidPayload(e.to_string()))?;
+                enforce_agent_spec_catalog(&spec)?;
             }
             ConfigNamespace::Models => {
                 awaken_contract::validate_model_binding_spec(body.clone())
@@ -196,4 +197,20 @@ where
 {
     serde_json::from_value(value.clone())
         .map_err(|error| ConfigServiceError::InvalidPayload(error.to_string()))
+}
+
+/// Run `AgentSpec::validate_catalog` and apply server-side policy:
+/// `Error` issues reject the write (aggregated for the admin); `Warning`
+/// issues are logged via `tracing::warn!` and the write proceeds.
+pub(super) fn enforce_agent_spec_catalog(spec: &AgentSpec) -> Result<(), ConfigServiceError> {
+    let errors = crate::services::agent_catalog::collect_catalog_errors(spec);
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(ConfigServiceError::InvalidPayload(format!(
+            "agent spec '{}' has invalid tool catalog: {}",
+            spec.id,
+            errors.join("; ")
+        )))
+    }
 }

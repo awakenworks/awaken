@@ -5,6 +5,7 @@ use serde_json::{Map, Value};
 
 use crate::services::config_envelope::apply_overrides;
 
+use super::normalization::enforce_agent_spec_catalog;
 use super::{
     ConfigNamespace, ConfigService, ConfigServiceError, map_runtime_error,
     overrides_not_supported_for_user_record,
@@ -34,9 +35,13 @@ impl<'a> ConfigService<'a> {
             return Err(overrides_not_supported_for_user_record());
         }
 
-        let normalized =
-            build_agent_overrides_patch(record.meta.user_overrides.as_ref(), &record.spec, &body)?
-                .unwrap_or_else(|| Value::Object(Map::new()));
+        let proposed_overrides =
+            build_agent_overrides_patch(record.meta.user_overrides.as_ref(), &record.spec, &body)?;
+        let effective_spec = apply_overrides(record.spec.clone(), proposed_overrides.as_ref())
+            .map_err(|e| ConfigServiceError::InvalidPayload(e.to_string()))?;
+        enforce_agent_spec_catalog(&effective_spec)?;
+
+        let normalized = proposed_overrides.unwrap_or_else(|| Value::Object(Map::new()));
 
         Ok(serde_json::json!({
             "ok": true,
@@ -76,6 +81,13 @@ impl<'a> ConfigService<'a> {
 
         let proposed_overrides =
             build_agent_overrides_patch(record.meta.user_overrides.as_ref(), &record.spec, &body)?;
+
+        // Reject patches whose effective spec has invalid tool catalog entries
+        // (e.g. unparseable pattern). Mirrors the create/update PUT enforcement
+        // in `validate_payload` so the overrides path can't bypass it.
+        let proposed_effective = apply_overrides(record.spec.clone(), proposed_overrides.as_ref())
+            .map_err(|e| ConfigServiceError::InvalidPayload(e.to_string()))?;
+        enforce_agent_spec_catalog(&proposed_effective)?;
 
         // Short-circuit: if the proposed overrides are identical to existing ones,
         // skip the store write, apply_locked, and audit emit — it's a no-op.
@@ -345,7 +357,13 @@ impl<'a> ConfigService<'a> {
 fn is_nullable_agent_patch_field(field: &str) -> bool {
     matches!(
         field,
-        "context_policy" | "allowed_tools" | "excluded_tools" | "reasoning_effort" | "endpoint"
+        "context_policy"
+            | "allowed_tools"
+            | "allowed_tool_patterns"
+            | "excluded_tools"
+            | "excluded_tool_patterns"
+            | "reasoning_effort"
+            | "endpoint"
     )
 }
 
@@ -362,7 +380,9 @@ const PATCHABLE_AGENT_SPEC_FIELDS: &[&str] = &[
     "active_hook_filter",
     "sections",
     "allowed_tools",
+    "allowed_tool_patterns",
     "excluded_tools",
+    "excluded_tool_patterns",
     "delegates",
     "reasoning_effort",
     "endpoint",
