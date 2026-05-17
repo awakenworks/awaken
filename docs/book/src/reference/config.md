@@ -16,8 +16,10 @@ pub struct AgentSpec {
     pub reasoning_effort: Option<ReasoningEffort>,
     pub plugin_ids: Vec<String>,
     pub active_hook_filter: HashSet<String>,
-    pub allowed_tools: Option<Vec<String>>,
-    pub excluded_tools: Option<Vec<String>>,
+    pub allowed_tools: Option<Vec<String>>,           // literal tool ids
+    pub excluded_tools: Option<Vec<String>>,          // literal tool ids
+    pub allowed_tool_patterns: Option<Vec<String>>,   // glob patterns
+    pub excluded_tool_patterns: Option<Vec<String>>,  // glob patterns
     pub endpoint: Option<RemoteEndpoint>,
     pub delegates: Vec<String>,
     pub sections: HashMap<String, Value>,
@@ -106,6 +108,70 @@ Current configurable plugin sections exposed by the starter runtime:
 | `generative-ui` | `generative-ui` | Dedicated A2UI prompt/catalog editor |
 | `ext-deferred-tools` | `deferred_tools` | Generic JSON Schema form |
 
+## Tool catalog
+
+Each agent's tool catalog is composed of four fields. Literals and patterns
+are independent; combine them freely.
+
+```yaml
+allowed_tools:          [Bash, Read]    # literal tool ids
+allowed_tool_patterns:  ["mcp:*"]       # glob patterns
+excluded_tools:         []              # literal tool ids
+excluded_tool_patterns: []              # glob patterns
+```
+
+The runtime computes:
+
+```text
+allow_set    = allowed_tools ∪ {id | ∃p ∈ allowed_tool_patterns. matches(p, id)}
+exclude_set  = excluded_tools ∪ {id | ∃p ∈ excluded_tool_patterns. matches(p, id)}
+final_set    = allow_set − exclude_set
+```
+
+Deny always wins: a tool in `excluded_*` is dropped even if it appears in
+`allowed_*`.
+
+### Pattern grammar
+
+Anchored full match. `*` matches any sequence of characters (including `/`,
+`:`, `_`). `\` escapes the next character — `\*` is a literal `*`, `\\` is a
+literal `\`. No `?`, no character classes, no `{…}`, no `!` negation.
+
+### "Allow all" shorthand
+
+The universal pattern is just `*`:
+
+```yaml
+allowed_tool_patterns: ["*"]
+```
+
+### Default behavior (backward compatibility)
+
+If an agent spec specifies **neither** `allowed_tools` nor
+`allowed_tool_patterns`, the runtime injects `allowed_tool_patterns: ["*"]`
+during deserialization. This preserves the historical "absent catalog =
+allow all" default. Any explicit value (including empty lists) suppresses
+the injection — `allowed_tools: []` with no `allowed_tool_patterns` means
+"no tools allowed".
+
+### Validation
+
+| Condition                                | Effect                          |
+|------------------------------------------|----------------------------------|
+| `*` in `allowed_tools` / `excluded_tools`| Warning at load; entry treated as a literal (matches nothing useful). |
+| Invalid pattern in `*_tool_patterns`     | **Error** at load; spec is rejected. |
+| Pattern matches no registered tool       | Warning at resolve time.        |
+| Catalog entry shaped like `name(args)`   | Warning at resolve time; belongs in `sections["permission"]`. |
+| Permission rule names tool removed by catalog | Warning at resolve time.   |
+
+### Migrating from the old single-field shape
+
+The old `allowed_tools: ["mcp:*"]` (literal entry containing `*`) silently
+matched nothing on prior releases. The new runtime emits a warning at load
+and continues to treat it as a literal. To actually use it as a glob, move
+the entry to `allowed_tool_patterns`. The admin console writes the new
+shape automatically.
+
 ## AgentSpecPatch
 
 `AgentSpecPatch` is the field-level override type for built-in agent
@@ -116,15 +182,24 @@ clears the base value.
 
 Patchable fields are `model_id`, `system_prompt`, `max_rounds`,
 `max_continuation_retries`, `context_policy`, `plugin_ids`,
-`active_hook_filter`, `sections`, `allowed_tools`, `excluded_tools`,
-`delegates`, `reasoning_effort`, and `endpoint`.
+`active_hook_filter`, `sections`, `allowed_tools`, `allowed_tool_patterns`,
+`excluded_tools`, `excluded_tool_patterns`, `delegates`,
+`reasoning_effort`, and `endpoint`.
 
 `sections` uses a shallow per-key merge. A JSON `null` value in the patch
 removes that section key from the effective spec. Optional fields such as
-`endpoint`, `allowed_tools`, `excluded_tools`, `context_policy`, and
-`reasoning_effort` are tri-state: missing means inherit, `null` means clear,
-and a value means override. Other list and scalar fields replace the base value
-when present.
+`endpoint`, `allowed_tools`, `allowed_tool_patterns`, `excluded_tools`,
+`excluded_tool_patterns`, `context_policy`, and `reasoning_effort` are
+tri-state: missing means inherit, `null` means clear, and a value means
+override. Other list and scalar fields replace the base value when
+present.
+
+Note on catalog patches: PATCH-level `null` does **not** re-fire the
+"absent catalog = allow all" shim — that shim only runs on initial
+deserialize of a full `AgentSpec`. If a PATCH clears both `allowed_tools`
+and `allowed_tool_patterns` to `null`, the merged spec has no allow rules
+and the matcher denies every tool. To restore the "allow all" default
+through a PATCH, set `allowed_tool_patterns: ["*"]` explicitly.
 
 Unknown patch fields are rejected. Use `validate_agent_spec_patch(value)` when a
 caller needs to apply Awaken's canonical parsing and unknown-field policy before

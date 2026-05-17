@@ -30,7 +30,7 @@ flowchart LR
         C1[Collect global tools] --> C2[Merge delegate agent tools]
         C2 --> C3[Merge plugin-registered tools]
         C3 --> C4[Check for ID conflicts]
-        C4 --> C5[Apply allowed/excluded filters]
+        C4 --> C5[Apply catalog filter]
     end
 
     Stage1 --> Stage2 --> Stage3
@@ -120,13 +120,32 @@ Tools are merged in this order:
 
 If a plugin-registered tool has the same ID as a global tool, resolution fails with `ResolveError::ToolIdConflict`. This is intentional -- silent overwriting would be a source of hard-to-debug issues.
 
-### Filtering
+### Catalog filtering
 
-After merging, the spec's `allowed_tools` and `excluded_tools` fields are applied:
+The resolver applies the catalog filter after tool collection and before
+the plugin pipeline. Matching rules:
 
-- `allowed_tools = None` -- all tools are kept.
-- `allowed_tools = Some(list)` -- only tools whose ID appears in the list are kept. Everything else is dropped.
-- `excluded_tools` -- any tool whose ID appears in this list is removed, even if it was in the allow list.
+1. Compute `allow_set` = literals in `allowed_tools` ∪ tools matching any
+   pattern in `allowed_tool_patterns`.
+2. Compute `exclude_set` = literals in `excluded_tools` ∪ tools matching
+   any pattern in `excluded_tool_patterns`.
+3. Surviving tools = `allow_set` − `exclude_set`.
+
+The "deny wins" precedence makes `excluded_tool_patterns` an open-ended
+safety net — `excluded_tool_patterns: ["dangerous-*"]` excludes future
+tools that match the shape, not just present ones. Literal exclusion is
+strictly point-in-time: it removes only the tool ids that are named.
+
+The runtime emits three categories of warning at resolve time:
+
+- **Unmatched pattern** -- a pattern in `*_tool_patterns` matched zero
+  registered tools. Likely a typo or stale entry from a different runtime.
+- **Permission-shaped catalog entry** -- an entry containing `(...)` was
+  probably meant for `sections["permission"]`.
+- **Orphan permission rule** -- a permission rule names a tool the catalog
+  has already filtered out.
+
+These warnings never block resolution; they are diagnostic only.
 
 ## ExecutionEnv
 

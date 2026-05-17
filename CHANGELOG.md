@@ -7,6 +7,40 @@ Format follows [Keep a Changelog](https://keepachangelog.com/). Versions use [Se
 
 Development work lands here before the next versioned release.
 
+### Changed
+
+- **AgentSpec catalog fields** — `allowed_tools` / `excluded_tools` are now
+  strict literal-id lists, and two new fields `allowed_tool_patterns` /
+  `excluded_tool_patterns` carry glob patterns (`*` is the only wildcard;
+  `\` escapes). The runtime computes
+  `(literals ∪ patterns) − (excluded literals ∪ excluded patterns)`; deny
+  wins.
+
+  Existing configs continue to work: a spec with neither catalog field
+  set has `allowed_tool_patterns: ["*"]` injected at load time
+  (preserving the prior "absent = allow all" default).
+
+  `AgentSpec::validate_catalog` (in `awaken-contract`) is now run on every
+  agent-spec PUT and on overrides PATCH/POST in `awaken-server`. Errors
+  (unparseable pattern syntax) reject the write with `InvalidPayload`;
+  warnings (`*` in a literal field) log via `tracing::warn!` and the spec
+  still loads.
+
+  The admin console replaces the previous mode toggle (All / Custom /
+  None) with two always-visible sections per axis — literal checkboxes
+  and a pattern list with inline match counts.
+
+### Added
+
+- `awaken-tool-pattern::tool_id_match` — tool-id glob matcher shared by
+  runtime and admin console. Cross-language parity enforced by a shared
+  JSON fixture run in both Rust and TypeScript test suites.
+
+- Resolve-time diagnostics: unmatched patterns, permission-shaped catalog
+  entries, and orphan permission rules each emit a `tracing` warning. The
+  orphan-rule check is scoped to literal tool ids; glob/regex permission
+  rules (`mcp:*`, `/B.*/`) are skipped to avoid false positives.
+
 ## [0.5.0] - 2026-05-10
 
 The headline work since 0.4.0: every config record now flows through a CAS

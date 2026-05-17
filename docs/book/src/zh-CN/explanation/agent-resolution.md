@@ -30,7 +30,7 @@ flowchart LR
         C1[Collect global tools] --> C2[Merge delegate agent tools]
         C2 --> C3[Merge plugin-registered tools]
         C3 --> C4[Check for ID conflicts]
-        C4 --> C5[Apply allowed/excluded filters]
+        C4 --> C5[Apply catalog filter]
     end
 
     Stage1 --> Stage2 --> Stage3
@@ -117,13 +117,29 @@ flowchart LR
 
 如果插件注册的工具与全局工具具有相同的 ID，解析会以 `ResolveError::ToolIdConflict` 失败。这是有意为之的 -- 静默覆盖会成为难以调试的问题来源。
 
-### 过滤
+### 目录过滤（Catalog filtering）
 
-合并后，应用规格的 `allowed_tools` 和 `excluded_tools` 字段：
+解析器在工具收集之后、插件流水线之前应用目录过滤。匹配规则：
 
-- `allowed_tools = None` -- 保留所有工具。
-- `allowed_tools = Some(list)` -- 仅保留 ID 出现在列表中的工具。其余全部丢弃。
-- `excluded_tools` -- 任何 ID 出现在此列表中的工具都会被移除，即使它在允许列表中。
+1. 计算 `allow_set` = `allowed_tools` 中的字面量 ∪ 匹配 `allowed_tool_patterns`
+   中任一模式的工具。
+2. 计算 `exclude_set` = `excluded_tools` 中的字面量 ∪ 匹配
+   `excluded_tool_patterns` 中任一模式的工具。
+3. 保留下来的工具 = `allow_set` − `exclude_set`。
+
+"拒绝优先"的优先级让 `excluded_tool_patterns` 成为一张开放式的安全网 ——
+`excluded_tool_patterns: ["dangerous-*"]` 会排除将来出现的同形工具，而不仅
+是当前已注册的。字面量排除则严格基于当下的快照：只会移除被点名的 tool id。
+
+运行时在解析阶段会发出三类 warning：
+
+- **未命中模式** -- `*_tool_patterns` 中的某条模式没有匹配任何已注册工具，
+  通常是拼写错误或来自另一个 runtime 的过时条目。
+- **形如 permission 的目录条目** -- 目录中出现含 `(...)` 的条目，很可能本意
+  是写到 `sections["permission"]` 里。
+- **孤立的 permission 规则** -- permission 规则引用了目录已经过滤掉的工具。
+
+这些 warning 不会阻塞解析，仅作为诊断信号。
 
 ## ExecutionEnv
 

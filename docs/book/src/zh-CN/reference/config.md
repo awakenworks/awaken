@@ -15,8 +15,10 @@ pub struct AgentSpec {
     pub reasoning_effort: Option<ReasoningEffort>,
     pub plugin_ids: Vec<String>,
     pub active_hook_filter: HashSet<String>,
-    pub allowed_tools: Option<Vec<String>>,
-    pub excluded_tools: Option<Vec<String>>,
+    pub allowed_tools: Option<Vec<String>>,           // 字面量 tool id
+    pub excluded_tools: Option<Vec<String>>,          // 字面量 tool id
+    pub allowed_tool_patterns: Option<Vec<String>>,   // glob 模式
+    pub excluded_tool_patterns: Option<Vec<String>>,  // glob 模式
     pub endpoint: Option<RemoteEndpoint>,
     pub delegates: Vec<String>,
     pub sections: HashMap<String, Value>,
@@ -99,6 +101,64 @@ starter runtime 当前暴露的可配置插件 section：
 | `generative-ui` | `generative-ui` | 专用 A2UI prompt/catalog 编辑器 |
 | `ext-deferred-tools` | `deferred_tools` | 通用 JSON Schema 表单 |
 
+## 工具目录（Tool catalog）
+
+每个 agent 的工具目录由四个字段组成：字面量与 glob 模式互相独立，可以自由组合。
+
+```yaml
+allowed_tools:          [Bash, Read]    # 字面量 tool id
+allowed_tool_patterns:  ["mcp:*"]       # glob 模式
+excluded_tools:         []              # 字面量 tool id
+excluded_tool_patterns: []              # glob 模式
+```
+
+运行时计算：
+
+```text
+allow_set    = allowed_tools ∪ {id | ∃p ∈ allowed_tool_patterns. matches(p, id)}
+exclude_set  = excluded_tools ∪ {id | ∃p ∈ excluded_tool_patterns. matches(p, id)}
+final_set    = allow_set − exclude_set
+```
+
+拒绝始终优先：只要工具命中 `excluded_*`，即使同时出现在 `allowed_*` 中也会被剔除。
+
+### 模式语法
+
+锚定全串匹配。`*` 匹配任意字符序列（包含 `/`、`:`、`_`）。`\` 转义下一字符 ——
+`\*` 表示字面 `*`，`\\` 表示字面 `\`。不支持 `?`、字符类、`{…}` 与 `!` 取反。
+
+### "允许全部" 简写
+
+通配模式就是单独的 `*`：
+
+```yaml
+allowed_tool_patterns: ["*"]
+```
+
+### 默认行为（向后兼容）
+
+如果 agent spec **既没有** `allowed_tools` 也没有 `allowed_tool_patterns`，
+运行时会在反序列化阶段注入 `allowed_tool_patterns: ["*"]`，保留旧版"未配置 =
+允许全部"的语义。任何显式值（包括空列表）都会抑制注入 ——
+`allowed_tools: []` 且未设置 `allowed_tool_patterns` 表示"不允许任何工具"。
+
+### 校验
+
+| 条件                                                | 影响                              |
+|-----------------------------------------------------|-----------------------------------|
+| `allowed_tools` / `excluded_tools` 中包含 `*`       | 加载时记录 warning；条目被当作字面量处理（无法匹配任何东西）。 |
+| `*_tool_patterns` 中的模式语法非法                  | 加载时报 **error**；spec 被拒绝。 |
+| 模式没有匹配任何已注册工具                          | 解析阶段记录 warning。            |
+| 目录条目形如 `name(args)`                           | 解析阶段记录 warning；应放到 `sections["permission"]`。 |
+| permission 规则引用被目录过滤掉的工具                | 解析阶段记录 warning。            |
+
+### 从旧的单字段形态迁移
+
+旧版的 `allowed_tools: ["mcp:*"]`（在字面量字段中放入含 `*` 的条目）此前不会
+匹配任何东西。新运行时在加载时记录 warning，并继续将其按字面量处理。要让它
+作为 glob 生效，请把条目移到 `allowed_tool_patterns`。admin console 已自动
+写入新形态。
+
 ## AgentSpecPatch
 
 `AgentSpecPatch` 是内置 agent 定制用的字段级覆盖类型。所有字段都是可选的：
@@ -107,14 +167,22 @@ starter runtime 当前暴露的可配置插件 section：
 
 可覆盖字段包括 `model_id`、`system_prompt`、`max_rounds`、
 `max_continuation_retries`、`context_policy`、`plugin_ids`、
-`active_hook_filter`、`sections`、`allowed_tools`、`excluded_tools`、
-`delegates`、`reasoning_effort` 和 `endpoint`。
+`active_hook_filter`、`sections`、`allowed_tools`、`allowed_tool_patterns`、
+`excluded_tools`、`excluded_tool_patterns`、`delegates`、`reasoning_effort`
+和 `endpoint`。
 
 `sections` 使用按 key 浅合并。patch 中某个 section key 的值为 JSON `null`
 时，会从 effective spec 中删除这个 section。`endpoint`、`allowed_tools`、
-`excluded_tools`、`context_policy`、`reasoning_effort` 等可选字段是三态：
-缺失表示继承，`null` 表示清空，给出值表示覆盖。其他列表和标量字段在出现时
-整体替换基础值。
+`allowed_tool_patterns`、`excluded_tools`、`excluded_tool_patterns`、
+`context_policy`、`reasoning_effort` 等可选字段是三态：缺失表示继承，`null`
+表示清空，给出值表示覆盖。其他列表和标量字段在出现时整体替换基础值。
+
+关于工具目录字段的特别说明：PATCH 中的 `null` **不会**重新触发"未配置 =
+允许全部"的兼容 shim —— 该 shim 只在完整 `AgentSpec` 的初次反序列化阶段
+运行。如果一个 PATCH 同时把 `allowed_tools` 与 `allowed_tool_patterns`
+清空为 `null`，合并后的 spec 没有任何 allow 规则，匹配器会拒绝所有工具。
+要通过 PATCH 恢复"允许全部"，请显式写入
+`allowed_tool_patterns: ["*"]`。
 
 未知 patch 字段会被拒绝。调用方需要在保存 patch 前复用 Awaken 的 canonical
 解析和未知字段策略时，可使用 `validate_agent_spec_patch(value)`。
