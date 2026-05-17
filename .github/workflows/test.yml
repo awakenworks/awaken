@@ -47,7 +47,7 @@ jobs:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@1.93.0
       - uses: Swatinem/rust-cache@v2
-      - run: bash scripts/test-book.sh
+      - run: cargo test --locked -p awaken-doctest
 
   ai-sdk-starter-build:
     # Build the frontend example to catch TypeScript errors

@@ -10,8 +10,8 @@
 让而来，详见下方鸣谢）。`awaken-agent` 是项目早期发布期的兼容包，导入名都是
 `awaken`。MSRV：Rust 1.93。
 
-在线文档：[GitHub Pages（英文）](https://awakenworks.github.io/awaken/) ·
-[GitHub Pages（中文）](https://awakenworks.github.io/awaken/zh-CN/) ·
+在线文档：[Awaken docs（英文）](https://awaken.dev) ·
+[中文文档](https://awaken.dev/zh-cn) ·
 [Changelog](./CHANGELOG.md)
 
 <p align="center">
@@ -21,7 +21,7 @@
 ## 0.4 给你什么
 
 - **一个 backend 同时多协议。** 同一个 runtime 同时提供 AI SDK v6、AG-UI / CopilotKit、A2A、MCP；它们都跑在同一个 `/v1/runs` 之上。
-- **流式 LLM 调用能从瞬时故障中恢复。** mid-stream 中断与 idle stall 会被识别，并按四种明确方案恢复：继续文本、回放已完成的 tool call、注入 cancelled tool 提示重启、整轮重启；`Retry-After` 被尊重；`StreamCheckpointStore` 契约让恢复可以跨进程。 ([详情](./docs/book/src/zh-CN/how-to/recover-streaming-llms.md))
+- **流式 LLM 调用能从瞬时故障中恢复。** mid-stream 中断与 idle stall 会被识别，并按四种明确方案恢复：继续文本、回放已完成的 tool call、注入 cancelled tool 提示重启、整轮重启；`Retry-After` 被尊重；`StreamCheckpointStore` 契约让恢复可以跨进程。 ([详情](https://awaken.dev/zh-cn/how-to/recover-streaming-llms))
 - **Thread 有父子层级。** sub-agent run 会创建子 thread，删除策略需显式指定（`reject` / `detach` / `cascade`）；`/v1/threads` 上的过滤与游标让带层级的 UI 直接好做。
 - **凭据自动遮蔽。** `ProviderSpec.api_key`、admin / A2A bearer token 都用 `RedactedString` 包裹：`Debug`/`Display` 输出 `***`，`Drop` 时清零，JSON 序列化保持不变。
 - **配置即控制面。** model、provider、prompt、reminder、permission、tool-loading 策略都在 `/v1/config/*` 与 `/v1/capabilities` 后面；apply 可以去抖，未变化的 provider executor 会被复用。
@@ -216,7 +216,7 @@ import { CopilotKit } from "@copilotkit/react-core";
 
 #### 托管配置
 
-把 `ConfigStore` 接入 `AppState` 后，可通过 `/v1/config/*` 管理 agents、models、providers 和 MCP servers。参考 [通过配置调优 Agent 行为](https://awakenworks.github.io/awaken/zh-CN/how-to/configure-agent-behavior.html) 调优 provider、model binding、工具和插件 section。[`apps/admin-console`](./apps/admin-console/) 使用同一套 API，并通过 `VITE_BACKEND_URL` 读取服务端地址。
+把 `ConfigStore` 接入 `AppState` 后，可通过 `/v1/config/*` 管理 agents、models、providers 和 MCP servers。参考 [通过配置调优 Agent 行为](https://awaken.dev/zh-cn/how-to/configure-agent-behavior) 调优 provider、model binding、工具和插件 section。[`apps/admin-console`](./apps/admin-console/) 使用同一套 API，并通过 `VITE_BACKEND_URL` 读取服务端地址。
 
 ## 内置插件
 
@@ -295,12 +295,12 @@ pnpm --filter awaken-admin-console dev
 
 | 目标 | 从这里开始 | 然后 |
 |---|---|---|
-| 构建第一个 Agent | [快速上手](https://awakenworks.github.io/awaken/zh-CN/get-started.html) | [构建 Agent 路径](https://awakenworks.github.io/awaken/zh-CN/build-agents.html) |
+| 构建第一个 Agent | [快速上手](https://awaken.dev/zh-cn/get-started) | [构建 Agent 路径](https://awaken.dev/zh-cn/build-agents) |
 | 查看全栈应用 | [AI SDK starter](./examples/ai-sdk-starter/) | [CopilotKit starter](./examples/copilotkit-starter/) |
-| 管理运行时配置 | [Admin Console](./apps/admin-console/) | [通过配置调优 Agent 行为](https://awakenworks.github.io/awaken/zh-CN/how-to/configure-agent-behavior.html) |
-| 探索 API | [参考文档](https://awakenworks.github.io/awaken/zh-CN/reference/overview.html) | `cargo doc --workspace --no-deps --open` |
-| 理解运行时 | [架构](https://awakenworks.github.io/awaken/zh-CN/explanation/architecture.html) | [Run 生命周期与 Phases](https://awakenworks.github.io/awaken/zh-CN/explanation/run-lifecycle-and-phases.html) |
-| 从 tirea 迁移 | [迁移指南](https://awakenworks.github.io/awaken/zh-CN/appendix/migration-from-tirea.html) | |
+| 管理运行时配置 | [Admin Console](./apps/admin-console/) | [通过配置调优 Agent 行为](https://awaken.dev/zh-cn/how-to/configure-agent-behavior) |
+| 探索 API | [参考文档](https://awaken.dev/zh-cn/reference/overview) | `cargo doc --workspace --no-deps --open` |
+| 理解运行时 | [架构](https://awaken.dev/zh-cn/explanation/architecture) | [Run 生命周期与 Phases](https://awaken.dev/zh-cn/explanation/run-lifecycle-and-phases) |
+| 从 tirea 迁移 | [迁移指南](https://awaken.dev/zh-cn/appendix/migration-from-tirea) | |
 
 ## 参与贡献
 

@@ -7,7 +7,7 @@ title: "Config"
 The serializable agent definition. Can be loaded from JSON/YAML or constructed
 programmatically via builder methods.
 
-```rust
+```rust,ignore
 pub struct AgentSpec {
     pub id: String,
     pub model_id: String,                            // model registry id
@@ -18,8 +18,10 @@ pub struct AgentSpec {
     pub reasoning_effort: Option<ReasoningEffort>,
     pub plugin_ids: Vec<String>,
     pub active_hook_filter: HashSet<String>,
-    pub allowed_tools: Option<Vec<String>>,
-    pub excluded_tools: Option<Vec<String>>,
+    pub allowed_tools: Option<Vec<String>>,           // literal tool ids
+    pub excluded_tools: Option<Vec<String>>,          // literal tool ids
+    pub allowed_tool_patterns: Option<Vec<String>>,   // glob patterns
+    pub excluded_tool_patterns: Option<Vec<String>>,  // glob patterns
     pub endpoint: Option<RemoteEndpoint>,
     pub delegates: Vec<String>,
     pub sections: HashMap<String, Value>,
@@ -31,7 +33,7 @@ pub struct AgentSpec {
 
 ### Builder methods
 
-```rust
+```rust,ignore
 AgentSpec::new(id) -> Self
     .with_model_id(model_id) -> Self
     .with_system_prompt(prompt) -> Self
@@ -46,7 +48,7 @@ AgentSpec::new(id) -> Self
 
 ### Typed config access
 
-```rust
+```rust,ignore
 /// Read a typed plugin config section. Returns default if missing.
 fn config<K: PluginConfigKey>(&self) -> Result<K::Config, StateError>
 
@@ -108,6 +110,70 @@ Current configurable plugin sections exposed by the starter runtime:
 | `generative-ui` | `generative-ui` | Dedicated A2UI prompt/catalog editor |
 | `ext-deferred-tools` | `deferred_tools` | Generic JSON Schema form |
 
+## Tool catalog
+
+Each agent's tool catalog is composed of four fields. Literals and patterns
+are independent; combine them freely.
+
+```yaml
+allowed_tools:          [Bash, Read]    # literal tool ids
+allowed_tool_patterns:  ["mcp:*"]       # glob patterns
+excluded_tools:         []              # literal tool ids
+excluded_tool_patterns: []              # glob patterns
+```
+
+The runtime computes:
+
+```text
+allow_set    = allowed_tools ∪ {id | ∃p ∈ allowed_tool_patterns. matches(p, id)}
+exclude_set  = excluded_tools ∪ {id | ∃p ∈ excluded_tool_patterns. matches(p, id)}
+final_set    = allow_set − exclude_set
+```
+
+Deny always wins: a tool in `excluded_*` is dropped even if it appears in
+`allowed_*`.
+
+### Pattern grammar
+
+Anchored full match. `*` matches any sequence of characters (including `/`,
+`:`, `_`). `\` escapes the next character — `\*` is a literal `*`, `\\` is a
+literal `\`. No `?`, no character classes, no `{…}`, no `!` negation.
+
+### "Allow all" shorthand
+
+The universal pattern is just `*`:
+
+```yaml
+allowed_tool_patterns: ["*"]
+```
+
+### Default behavior (backward compatibility)
+
+If an agent spec specifies **neither** `allowed_tools` nor
+`allowed_tool_patterns`, the runtime injects `allowed_tool_patterns: ["*"]`
+during deserialization. This preserves the historical "absent catalog =
+allow all" default. Any explicit value (including empty lists) suppresses
+the injection — `allowed_tools: []` with no `allowed_tool_patterns` means
+"no tools allowed".
+
+### Validation
+
+| Condition                                | Effect                          |
+|------------------------------------------|----------------------------------|
+| `*` in `allowed_tools` / `excluded_tools`| Warning at load; entry treated as a literal (matches nothing useful). |
+| Invalid pattern in `*_tool_patterns`     | **Error** at load; spec is rejected. |
+| Pattern matches no registered tool       | Warning at resolve time.        |
+| Catalog entry shaped like `name(args)`   | Warning at resolve time; belongs in `sections["permission"]`. |
+| Permission rule names tool removed by catalog | Warning at resolve time.   |
+
+### Migrating from the old single-field shape
+
+The old `allowed_tools: ["mcp:*"]` (literal entry containing `*`) silently
+matched nothing on prior releases. The new runtime emits a warning at load
+and continues to treat it as a literal. To actually use it as a glob, move
+the entry to `allowed_tool_patterns`. The admin console writes the new
+shape automatically.
+
 ## AgentSpecPatch
 
 `AgentSpecPatch` is the field-level override type for built-in agent
@@ -118,15 +184,24 @@ clears the base value.
 
 Patchable fields are `model_id`, `system_prompt`, `max_rounds`,
 `max_continuation_retries`, `context_policy`, `plugin_ids`,
-`active_hook_filter`, `sections`, `allowed_tools`, `excluded_tools`,
-`delegates`, `reasoning_effort`, and `endpoint`.
+`active_hook_filter`, `sections`, `allowed_tools`, `allowed_tool_patterns`,
+`excluded_tools`, `excluded_tool_patterns`, `delegates`,
+`reasoning_effort`, and `endpoint`.
 
 `sections` uses a shallow per-key merge. A JSON `null` value in the patch
 removes that section key from the effective spec. Optional fields such as
-`endpoint`, `allowed_tools`, `excluded_tools`, `context_policy`, and
-`reasoning_effort` are tri-state: missing means inherit, `null` means clear,
-and a value means override. Other list and scalar fields replace the base value
-when present.
+`endpoint`, `allowed_tools`, `allowed_tool_patterns`, `excluded_tools`,
+`excluded_tool_patterns`, `context_policy`, and `reasoning_effort` are
+tri-state: missing means inherit, `null` means clear, and a value means
+override. Other list and scalar fields replace the base value when
+present.
+
+Note on catalog patches: PATCH-level `null` does **not** re-fire the
+"absent catalog = allow all" shim — that shim only runs on initial
+deserialize of a full `AgentSpec`. If a PATCH clears both `allowed_tools`
+and `allowed_tool_patterns` to `null`, the merged spec has no allow rules
+and the matcher denies every tool. To restore the "allow all" default
+through a PATCH, set `allowed_tool_patterns: ["*"]` explicitly.
 
 Unknown patch fields are rejected. Use `validate_agent_spec_patch(value)` when a
 caller needs to apply Awaken's canonical parsing and unknown-field policy before
@@ -162,7 +237,7 @@ compatibility, but config write and validate surfaces use
 
 Controls context window management and auto-compaction.
 
-```rust
+```rust,no_run
 #[derive(Default)]
 pub enum ContextCompactionMode {
     #[default]
@@ -183,7 +258,7 @@ pub struct ContextWindowPolicy {
 
 ### ContextCompactionMode
 
-```rust
+```rust,no_run
 pub enum ContextCompactionMode {
     KeepRecentRawSuffix,       // Keep N recent messages raw, compact the rest
     CompactToSafeFrontier,     // Compact everything up to safe frontier
@@ -198,9 +273,9 @@ last-wins semantics.
 
 `upstream_model` and `fallback_upstream_models` are upstream model names for the already resolved
 provider. They do not re-resolve `AgentSpec.model_id` and do not switch providers.
-See [Provider and Model Configuration](/reference/provider-model-config/).
+See [Provider and Model Configuration](./provider-model-config.md).
 
-```rust
+```rust,no_run
 pub enum ReasoningEffort {
     None,
     Low,
@@ -222,14 +297,14 @@ pub struct InferenceOverride {
 
 ### Methods
 
-```rust
+```rust,ignore
 fn is_empty(&self) -> bool
 fn merge(&mut self, other: InferenceOverride)
 ```
 
 ### ReasoningEffort
 
-```rust
+```rust,no_run
 pub enum ReasoningEffort {
     None,
     Low,
@@ -244,7 +319,7 @@ pub enum ReasoningEffort {
 
 Binds a string key to a typed configuration struct at compile time.
 
-```rust
+```rust,ignore
 pub trait PluginConfigKey: 'static + Send + Sync {
     const KEY: &'static str;
     type Config: Default + Clone + Serialize + DeserializeOwned
@@ -260,7 +335,7 @@ their configuration via `agent_spec.config::<MyConfigKey>()`.
 Configuration for agents running on external backends. Today Awaken ships the
 `"a2a"` backend; backend-specific settings live under `options`.
 
-```rust
+```rust,ignore
 pub struct RemoteEndpoint {
     pub backend: String,
     pub base_url: String,
@@ -286,7 +361,7 @@ present. New config should use `auth`, `target`, and `options`.
 
 HTTP server configuration. Used when the `server` feature is enabled.
 
-```rust
+```rust,ignore
 use awaken::RedactedString;
 
 pub struct ServerConfig {
@@ -322,7 +397,7 @@ Admin/configuration API security settings. Attach this to `AppState` with
 `AppState::with_admin_api_config`, or use
 `AppState::with_admin_api_bearer_token` when only bearer auth is needed.
 
-```rust
+```rust,ignore
 use awaken::RedactedString;
 
 pub struct AdminApiConfig {
@@ -352,7 +427,7 @@ admin security struct remains source-compatible with 0.4.0 struct literals.
 Attach them to `AppState` with `AppState::with_audit_log_config` before calling
 `AppState::with_audit_log_from_config`.
 
-```rust
+```rust,ignore
 use awaken_server::app::AuditLogConfig;
 
 pub struct AuditLogConfig {
@@ -392,7 +467,7 @@ changes and publishes them to the live runtime.
 Configuration for the persistent run queue (mailbox). Controls lease timing,
 sweep/GC intervals, and retry behavior for failed dispatches.
 
-```rust
+```rust,ignore
 pub struct MailboxConfig {
     pub lease_ms: u64,                          // default: 30_000
     pub suspended_lease_ms: u64,                // default: 600_000
@@ -432,7 +507,7 @@ Retry is applied during agent resolution. A missing `"retry"` section uses
 with a separate hidden retry policy during provider construction. For streaming
 inference, retry and fallback only apply while opening the stream.
 
-```rust
+```rust,ignore
 pub struct LlmRetryPolicy {
     pub max_retries: u32,              // default: 2
     pub fallback_upstream_models: Vec<String>,  // default: []
@@ -452,7 +527,7 @@ pub struct LlmRetryPolicy {
 
 Register via the `RetryConfigKey` plugin config key (`"retry"` section):
 
-```rust
+```rust,ignore
 use awaken_runtime::engine::retry::RetryConfigKey;
 
 let spec = AgentSpec::new("my-agent")
@@ -470,7 +545,7 @@ short-circuiting requests to models that have experienced repeated consecutive
 failures. After a cooldown the circuit transitions to half-open, allowing
 limited probe requests before fully closing on success.
 
-```rust
+```rust,ignore
 pub struct CircuitBreakerConfig {
     pub failure_threshold: u32,    // default: 5
     pub cooldown: Duration,        // default: 30s
@@ -502,7 +577,7 @@ pub struct CircuitBreakerConfig {
 Plugins declare typed configuration sections using the `PluginConfigKey` trait,
 which binds a string key to a Rust struct at compile time:
 
-```rust
+```rust,ignore
 pub trait PluginConfigKey: 'static + Send + Sync {
     const KEY: &'static str;               // section name in AgentSpec.sections
     type Config: Default + Clone + Serialize + DeserializeOwned
@@ -516,7 +591,7 @@ Plugins override `config_schemas()` to return JSON Schemas generated from
 their config structs. The resolve pipeline (Stage 2) validates every
 `AgentSpec.sections` entry against these schemas before any hook runs.
 
-```rust
+```rust,ignore
 fn config_schemas(&self) -> Vec<ConfigSchema> {
     vec![ConfigSchema {
         key: RateLimitConfigKey::KEY,
@@ -530,13 +605,13 @@ fn config_schemas(&self) -> Vec<ConfigSchema> {
 Plugins read their typed config via `agent_spec.config::<K>()`. If the section
 is absent, the `Default` impl is returned.
 
-```rust
+```rust,ignore
 let cfg = ctx.agent_spec().config::<RateLimitConfigKey>()?;
 ```
 
 ### Worked example
 
-```rust
+```rust,ignore
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use awaken::PluginConfigKey;
@@ -622,14 +697,14 @@ Its agent config section key is `deferred_tools`, bound by
 | `disc_beta.thresh_mult` | `number` | `0.5` | Multiplier applied to the breakeven frequency threshold |
 | `disc_beta.gamma` | `number` | `2000.0` | Estimated token cost of one `ToolSearch` call |
 
-See [Use Deferred Tools](/how-to/use-deferred-tools/) for the activation
+See [Use Deferred Tools](../how-to/use-deferred-tools.md) for the activation
 heuristic, `ToolSearch` behavior, and the full DiscBeta probability model.
 
 ## ConfigStore
 
 `ConfigStore` is the async persistence contract behind the server-side `/v1/config/*` APIs. Use it when configuration must be created, listed, or updated at runtime instead of being baked into `AgentSpec`.
 
-```rust
+```rust,ignore
 #[async_trait]
 pub trait ConfigStore: Send + Sync {
     async fn get(&self, namespace: &str, id: &str) -> Result<Option<Value>, StorageError>;
@@ -659,7 +734,7 @@ Built-in implementations:
 
 ## Related
 
-- [Build an Agent](/how-to/build-an-agent/)
-- [Configure Agent Behavior](/how-to/configure-agent-behavior/)
-- [HTTP API](/reference/http-api/)
-- [Provider and Model Configuration](/reference/provider-model-config/)
+- [Build an Agent](../how-to/build-an-agent.md)
+- [Configure Agent Behavior](../how-to/configure-agent-behavior.md)
+- [HTTP API](./http-api.md)
+- [Provider and Model Configuration](./provider-model-config.md)

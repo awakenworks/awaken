@@ -11,7 +11,7 @@ A Rust agent runtime that serves AI SDK, CopilotKit, A2A, and MCP from the same 
 `awaken-agent` is a thin compatibility republish from when the project shipped
 under that name. Import path is `awaken` either way. MSRV: Rust 1.93.
 
-Docs: [GitHub Pages](https://awakenworks.github.io/awaken/) · [Chinese docs](https://awakenworks.github.io/awaken/zh-CN/) · [Changelog](./CHANGELOG.md)
+Docs: [Awaken docs](https://awaken.dev) · [中文文档](https://awaken.dev/zh-cn) · [Changelog](./CHANGELOG.md)
 
 <p align="center">
   <img src="./docs/assets/demo.svg" alt="Awaken demo — tool call + LLM streaming" width="800">
@@ -20,7 +20,7 @@ Docs: [GitHub Pages](https://awakenworks.github.io/awaken/) · [Chinese docs](ht
 ## What you get in 0.4
 
 - **Multi-protocol from one backend.** A single runtime serves AI SDK v6, AG-UI / CopilotKit, A2A, and MCP. The same `/v1/runs` powers all of them.
-- **Streaming LLM calls survive transient failures.** Mid-stream interruptions and idle stalls are detected and recovered through four explicit plans (continue text, replay completed tool calls, restart with a cancelled-tool hint, or whole restart). `Retry-After` is honored. A `StreamCheckpointStore` contract extends the same recovery across process restarts. ([details](./docs/book/src/how-to/recover-streaming-llms.md))
+- **Streaming LLM calls survive transient failures.** Mid-stream interruptions and idle stalls are detected and recovered through four explicit plans (continue text, replay completed tool calls, restart with a cancelled-tool hint, or whole restart). `Retry-After` is honored. A `StreamCheckpointStore` contract extends the same recovery across process restarts. ([details](https://awaken.dev/how-to/recover-streaming-llms))
 - **Threads have a parent-child lineage.** Sub-agent runs create child threads; deletion is explicit (`reject` / `detach` / `cascade`). Filters and cursors on `/v1/threads` make hierarchical UIs straightforward.
 - **Secrets stay redacted.** `ProviderSpec.api_key`, admin and A2A bearer tokens are wrapped in `RedactedString` — `Debug`/`Display` print `***`, the buffer is zeroized on drop, and the JSON wire format is unchanged.
 - **Configuration is the control plane.** Models, providers, prompts, reminders, permissions, and tool-loading policy live behind `/v1/config/*` and `/v1/capabilities`. Apply bursts can be debounced and provider executors are reused across unchanged specs.
@@ -208,7 +208,7 @@ import { CopilotKit } from "@copilotkit/react-core";
 
 #### Managed configuration
 
-Wire a `ConfigStore` into `AppState` to manage agents, models, providers, and MCP servers through `/v1/config/*`. Use the [configuration-driven tuning guide](https://awakenworks.github.io/awaken/how-to/configure-agent-behavior.html) to tune providers, model bindings, tools, and plugin sections. The Admin Console in [`apps/admin-console`](./apps/admin-console/) uses the same API and reads `VITE_BACKEND_URL` for the server base URL.
+Wire a `ConfigStore` into `AppState` to manage agents, models, providers, and MCP servers through `/v1/config/*`. Use the [configuration-driven tuning guide](https://awaken.dev/how-to/configure-agent-behavior) to tune providers, model bindings, tools, and plugin sections. The Admin Console in [`apps/admin-console`](./apps/admin-console/) uses the same API and reads `VITE_BACKEND_URL` for the server base URL.
 
 The console is a React 19 SPA with a "Lucid Control" design language — unified
 warm-light surface across sidebar and main area, geometric state indicators,
@@ -240,7 +240,7 @@ family.
 
 ![Command palette demo](./docs/assets/admin-console/cmdk.gif)
 
-📺 Full surface tour: [Admin Console reference](./docs/book/src/reference/admin-console.md) · operator user manual: [Use the Admin Console](./docs/book/src/how-to/use-admin-console.md).
+📺 Full surface tour: [Admin Console reference](https://awaken.dev/reference/admin-console) · operator user manual: [Use the Admin Console](https://awaken.dev/how-to/use-admin-console).
 
 ## Built-in plugins
 
@@ -320,12 +320,12 @@ pnpm --filter awaken-admin-console dev
 
 | Goal | Start with | Then |
 |---|---|---|
-| Build your first agent | [Get Started](https://awakenworks.github.io/awaken/get-started.html) | [Build Agents](https://awakenworks.github.io/awaken/build-agents.html) |
+| Build your first agent | [Get Started](https://awaken.dev/get-started) | [Build Agents](https://awaken.dev/build-agents) |
 | See a full-stack app | [AI SDK starter](./examples/ai-sdk-starter/) | [CopilotKit starter](./examples/copilotkit-starter/) |
-| Manage runtime config | [Admin Console](./apps/admin-console/) | [Configure Agent Behavior](https://awakenworks.github.io/awaken/how-to/configure-agent-behavior.html) |
-| Explore the API | [Reference docs](https://awakenworks.github.io/awaken/reference/overview.html) | `cargo doc --workspace --no-deps --open` |
-| Understand the runtime | [Architecture](https://awakenworks.github.io/awaken/explanation/architecture.html) | [Run Lifecycle and Phases](https://awakenworks.github.io/awaken/explanation/run-lifecycle-and-phases.html) |
-| Migrate from tirea | [Migration guide](https://awakenworks.github.io/awaken/appendix/migration-from-tirea.html) | |
+| Manage runtime config | [Admin Console](./apps/admin-console/) | [Configure Agent Behavior](https://awaken.dev/how-to/configure-agent-behavior) |
+| Explore the API | [Reference docs](https://awaken.dev/reference/overview) | `cargo doc --workspace --no-deps --open` |
+| Understand the runtime | [Architecture](https://awaken.dev/explanation/architecture) | [Run Lifecycle and Phases](https://awaken.dev/explanation/run-lifecycle-and-phases) |
+| Migrate from tirea | [Migration guide](https://awaken.dev/appendix/migration-from-tirea) | |
 
 ## Contributing
 

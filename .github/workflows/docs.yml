@@ -16,18 +16,17 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
-      - uses: dtolnay/rust-toolchain@1.93.0
-      - uses: Swatinem/rust-cache@v2
-      - name: Install mdBook
-        run: cargo install mdbook --locked --version 0.5.0
-      - name: Install mdBook Mermaid
-        run: cargo install mdbook-mermaid --locked
-      - name: Build docs
-        run: bash scripts/build-docs.sh
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: 'pnpm'
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter "@awaken/www" build
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v5
         with:
-          path: target/book
+          path: apps/www/dist
   deploy:
     name: Deploy Docs
     runs-on: ubuntu-latest

@@ -28,7 +28,7 @@ pre-commit:
     check-forbidden-docs:
       run: |
         FORBIDDEN_PATTERNS="STATUS|REPORT|SUMMARY|PROGRESS|IMPLEMENTATION|_LOG|_NOTES|QUICKREF|QUICK|_V[0-9]|_OLD|_NEW"
-        process_docs=$(git diff --cached --name-only --diff-filter=A | grep -E '\.md$' | grep -vE '^docs/(runbooks|book)/|^apps/www/src/content/docs/' | grep -iE "($FORBIDDEN_PATTERNS)" || true)
+        process_docs=$(git diff --cached --name-only --diff-filter=A | grep -E '\.md$' | grep -vE '^docs/runbooks/|^apps/www/src/content/docs/' | grep -iE "($FORBIDDEN_PATTERNS)" || true)
         if [ -n "$process_docs" ]; then
           echo "ERROR: Attempting to add process/status documents:"
           echo "$process_docs"
@@ -40,7 +40,7 @@ pre-commit:
           echo "  - 临时摘要: *_SUMMARY.md, *_QUICKREF.md, *_QUICK.md"
           echo "  - 冗余变体: *_V1.md, *_V2.md, *_OLD.md, *_NEW.md"
           echo ""
-          echo "例外: docs/runbooks/, docs/book/, apps/www/src/content/docs/"
+          echo "例外: docs/runbooks/, apps/www/src/content/docs/"
           echo ""
           echo "<system-reminder>"
           echo "→ Next: git reset HEAD <file> → grep -r '<concept>' docs/ to find canonical source → consolidate"

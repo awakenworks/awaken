@@ -6,7 +6,7 @@ title: "配置"
 
 `AgentSpec` 是可序列化的 agent 定义。它既可以从 JSON / YAML 加载，也可以用 builder 方法在代码里构造。
 
-```rust
+```rust,ignore
 pub struct AgentSpec {
     pub id: String,
     pub model_id: String,                            // model registry id
@@ -17,8 +17,10 @@ pub struct AgentSpec {
     pub reasoning_effort: Option<ReasoningEffort>,
     pub plugin_ids: Vec<String>,
     pub active_hook_filter: HashSet<String>,
-    pub allowed_tools: Option<Vec<String>>,
-    pub excluded_tools: Option<Vec<String>>,
+    pub allowed_tools: Option<Vec<String>>,           // 字面量 tool id
+    pub excluded_tools: Option<Vec<String>>,          // 字面量 tool id
+    pub allowed_tool_patterns: Option<Vec<String>>,   // glob 模式
+    pub excluded_tool_patterns: Option<Vec<String>>,  // glob 模式
     pub endpoint: Option<RemoteEndpoint>,
     pub delegates: Vec<String>,
     pub sections: HashMap<String, Value>,
@@ -30,7 +32,7 @@ pub struct AgentSpec {
 
 ### Builder 方法
 
-```rust
+```rust,ignore
 AgentSpec::new(id) -> Self
     .with_model_id(model_id) -> Self
     .with_system_prompt(prompt) -> Self
@@ -45,7 +47,7 @@ AgentSpec::new(id) -> Self
 
 ### 类型化配置访问
 
-```rust
+```rust,ignore
 fn config<K: PluginConfigKey>(&self) -> Result<K::Config, StateError>
 fn set_config<K: PluginConfigKey>(&mut self, config: K::Config) -> Result<(), StateError>
 ```
@@ -101,6 +103,64 @@ starter runtime 当前暴露的可配置插件 section：
 | `generative-ui` | `generative-ui` | 专用 A2UI prompt/catalog 编辑器 |
 | `ext-deferred-tools` | `deferred_tools` | 通用 JSON Schema 表单 |
 
+## 工具目录（Tool catalog）
+
+每个 agent 的工具目录由四个字段组成：字面量与 glob 模式互相独立，可以自由组合。
+
+```yaml
+allowed_tools:          [Bash, Read]    # 字面量 tool id
+allowed_tool_patterns:  ["mcp:*"]       # glob 模式
+excluded_tools:         []              # 字面量 tool id
+excluded_tool_patterns: []              # glob 模式
+```
+
+运行时计算：
+
+```text
+allow_set    = allowed_tools ∪ {id | ∃p ∈ allowed_tool_patterns. matches(p, id)}
+exclude_set  = excluded_tools ∪ {id | ∃p ∈ excluded_tool_patterns. matches(p, id)}
+final_set    = allow_set − exclude_set
+```
+
+拒绝始终优先：只要工具命中 `excluded_*`，即使同时出现在 `allowed_*` 中也会被剔除。
+
+### 模式语法
+
+锚定全串匹配。`*` 匹配任意字符序列（包含 `/`、`:`、`_`）。`\` 转义下一字符 ——
+`\*` 表示字面 `*`，`\\` 表示字面 `\`。不支持 `?`、字符类、`{…}` 与 `!` 取反。
+
+### "允许全部" 简写
+
+通配模式就是单独的 `*`：
+
+```yaml
+allowed_tool_patterns: ["*"]
+```
+
+### 默认行为（向后兼容）
+
+如果 agent spec **既没有** `allowed_tools` 也没有 `allowed_tool_patterns`，
+运行时会在反序列化阶段注入 `allowed_tool_patterns: ["*"]`，保留旧版"未配置 =
+允许全部"的语义。任何显式值（包括空列表）都会抑制注入 ——
+`allowed_tools: []` 且未设置 `allowed_tool_patterns` 表示"不允许任何工具"。
+
+### 校验
+
+| 条件                                                | 影响                              |
+|-----------------------------------------------------|-----------------------------------|
+| `allowed_tools` / `excluded_tools` 中包含 `*`       | 加载时记录 warning；条目被当作字面量处理（无法匹配任何东西）。 |
+| `*_tool_patterns` 中的模式语法非法                  | 加载时报 **error**；spec 被拒绝。 |
+| 模式没有匹配任何已注册工具                          | 解析阶段记录 warning。            |
+| 目录条目形如 `name(args)`                           | 解析阶段记录 warning；应放到 `sections["permission"]`。 |
+| permission 规则引用被目录过滤掉的工具                | 解析阶段记录 warning。            |
+
+### 从旧的单字段形态迁移
+
+旧版的 `allowed_tools: ["mcp:*"]`（在字面量字段中放入含 `*` 的条目）此前不会
+匹配任何东西。新运行时在加载时记录 warning，并继续将其按字面量处理。要让它
+作为 glob 生效，请把条目移到 `allowed_tool_patterns`。admin console 已自动
+写入新形态。
+
 ## AgentSpecPatch
 
 `AgentSpecPatch` 是内置 agent 定制用的字段级覆盖类型。所有字段都是可选的：
@@ -109,14 +169,22 @@ starter runtime 当前暴露的可配置插件 section：
 
 可覆盖字段包括 `model_id`、`system_prompt`、`max_rounds`、
 `max_continuation_retries`、`context_policy`、`plugin_ids`、
-`active_hook_filter`、`sections`、`allowed_tools`、`excluded_tools`、
-`delegates`、`reasoning_effort` 和 `endpoint`。
+`active_hook_filter`、`sections`、`allowed_tools`、`allowed_tool_patterns`、
+`excluded_tools`、`excluded_tool_patterns`、`delegates`、`reasoning_effort`
+和 `endpoint`。
 
 `sections` 使用按 key 浅合并。patch 中某个 section key 的值为 JSON `null`
 时，会从 effective spec 中删除这个 section。`endpoint`、`allowed_tools`、
-`excluded_tools`、`context_policy`、`reasoning_effort` 等可选字段是三态：
-缺失表示继承，`null` 表示清空，给出值表示覆盖。其他列表和标量字段在出现时
-整体替换基础值。
+`allowed_tool_patterns`、`excluded_tools`、`excluded_tool_patterns`、
+`context_policy`、`reasoning_effort` 等可选字段是三态：缺失表示继承，`null`
+表示清空，给出值表示覆盖。其他列表和标量字段在出现时整体替换基础值。
+
+关于工具目录字段的特别说明：PATCH 中的 `null` **不会**重新触发"未配置 =
+允许全部"的兼容 shim —— 该 shim 只在完整 `AgentSpec` 的初次反序列化阶段
+运行。如果一个 PATCH 同时把 `allowed_tools` 与 `allowed_tool_patterns`
+清空为 `null`，合并后的 spec 没有任何 allow 规则，匹配器会拒绝所有工具。
+要通过 PATCH 恢复"允许全部"，请显式写入
+`allowed_tool_patterns: ["*"]`。
 
 未知 patch 字段会被拒绝。调用方需要在保存 patch 前复用 Awaken 的 canonical
 解析和未知字段策略时，可使用 `validate_agent_spec_patch(value)`。
@@ -149,7 +217,7 @@ surface 使用 `validate_provider_spec(value)` 拒绝会被静默忽略的字段
 
 控制上下文窗口和自动压缩行为。
 
-```rust
+```rust,ignore
 pub struct ContextWindowPolicy {
     pub max_context_tokens: usize,
     pub max_output_tokens: usize,
@@ -163,7 +231,7 @@ pub struct ContextWindowPolicy {
 
 ### ContextCompactionMode
 
-```rust
+```rust,ignore
 pub enum ContextCompactionMode {
     KeepRecentRawSuffix,
     CompactToSafeFrontier,
@@ -175,9 +243,9 @@ pub enum ContextCompactionMode {
 用于单次推理的参数覆盖。所有字段都是 `Option`，多插件同时写时按字段 last-wins 合并。
 
 `upstream_model` 和 `fallback_upstream_models` 是当前已解析 provider 的上游模型名。它们不会重新解析
-`AgentSpec.model_id`，也不会切换 provider。详见 [Provider 与 Model 配置](/zh-cn/reference/provider-model-config/)。
+`AgentSpec.model_id`，也不会切换 provider。详见 [Provider 与 Model 配置](./provider-model-config.md)。
 
-```rust
+```rust,ignore
 pub struct InferenceOverride {
     pub upstream_model: Option<String>,      // 上游模型名
     pub fallback_upstream_models: Option<Vec<String>>, // 上游模型名列表
@@ -190,14 +258,14 @@ pub struct InferenceOverride {
 
 ### 方法
 
-```rust
+```rust,ignore
 fn is_empty(&self) -> bool
 fn merge(&mut self, other: InferenceOverride)
 ```
 
 ### ReasoningEffort
 
-```rust
+```rust,ignore
 pub enum ReasoningEffort {
     None,
     Low,
@@ -212,7 +280,7 @@ pub enum ReasoningEffort {
 
 把配置 section 名称和 Rust 配置结构绑定在一起：
 
-```rust
+```rust,ignore
 pub trait PluginConfigKey: 'static + Send + Sync {
     const KEY: &'static str;
     type Config: Default + Clone + Serialize + DeserializeOwned
@@ -224,7 +292,7 @@ pub trait PluginConfigKey: 'static + Send + Sync {
 
 远程 backend agent 的配置。当前内置的是 `"a2a"` backend，backend 专有参数放在 `options` 中：
 
-```rust
+```rust,ignore
 pub struct RemoteEndpoint {
     pub backend: String,
     pub base_url: String,
@@ -247,7 +315,7 @@ pub struct RemoteAuth {
 
 HTTP server 配置。需启用 `server` feature。
 
-```rust
+```rust,ignore
 use awaken::RedactedString;
 
 pub struct ServerConfig {
@@ -283,7 +351,7 @@ admin/configuration API 安全配置。通过
 `AppState::with_admin_api_config` 挂到 `AppState` 上；只需要 bearer
 认证时可使用 `AppState::with_admin_api_bearer_token`。
 
-```rust
+```rust,ignore
 use awaken::RedactedString;
 
 pub struct AdminApiConfig {
@@ -313,7 +381,7 @@ pub struct AdminApiConfig {
 `AppState::with_audit_log_from_config` 之前，可通过
 `AppState::with_audit_log_config` 挂到 `AppState`。
 
-```rust
+```rust,ignore
 use awaken_server::app::AuditLogConfig;
 
 pub struct AuditLogConfig {
@@ -348,7 +416,7 @@ pub struct AuditLogConfig {
 
 mailbox 持久化队列配置。控制租约计时、扫描/GC 间隔以及失败任务的重试行为。
 
-```rust
+```rust,ignore
 pub struct MailboxConfig {
     pub lease_ms: u64,                          // default: 30_000
     pub suspended_lease_ms: u64,                // default: 600_000
@@ -385,7 +453,7 @@ Retry 在 agent 解析阶段生效。缺失 `"retry"` section 时使用 `LlmRetr
 构造阶段不会额外隐藏一层 retry 策略。对于流式推理，retry 与 fallback 只作用于打开
 stream 的阶段。
 
-```rust
+```rust,ignore
 pub struct LlmRetryPolicy {
     pub max_retries: u32,              // default: 2
     pub fallback_upstream_models: Vec<String>,  // default: []
@@ -405,7 +473,7 @@ pub struct LlmRetryPolicy {
 
 通过 `"retry"` section 配置：
 
-```rust
+```rust,ignore
 use awaken_runtime::engine::retry::RetryConfigKey;
 
 let spec = AgentSpec::new("my-agent")
@@ -420,7 +488,7 @@ let spec = AgentSpec::new("my-agent")
 
 每个模型单独维护的熔断器配置。通过短路对失败过多的模型的请求，防止级联故障。冷却期过后熔断器进入半开状态，允许有限的探测请求；成功后完全关闭。
 
-```rust
+```rust,ignore
 pub struct CircuitBreakerConfig {
     pub failure_threshold: u32,    // default: 5
     pub cooldown: Duration,        // default: 30s
@@ -456,7 +524,7 @@ pub struct CircuitBreakerConfig {
 
 ### 声明 schema 用于校验
 
-```rust
+```rust,ignore
 fn config_schemas(&self) -> Vec<ConfigSchema> {
     vec![ConfigSchema {
         key: RateLimitConfigKey::KEY,
@@ -467,13 +535,13 @@ fn config_schemas(&self) -> Vec<ConfigSchema> {
 
 ### 在运行时读取配置
 
-```rust
+```rust,ignore
 let cfg = ctx.agent_spec().config::<RateLimitConfigKey>()?;
 ```
 
 ### 示例
 
-```rust
+```rust,ignore
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use awaken::PluginConfigKey;
@@ -542,13 +610,13 @@ section key 是 `deferred_tools`，由 `DeferredToolsConfigKey` 绑定。该 cra
 | `disc_beta.gamma` | `number` | `2000.0` | 一次 `ToolSearch` 调用的估算 token 成本 |
 
 自动启用启发式、`ToolSearch` 行为以及完整 DiscBeta 概率模型见
-[使用延迟加载工具](/zh-cn/how-to/use-deferred-tools/)。
+[使用延迟加载工具](../how-to/use-deferred-tools.md)。
 
 ## ConfigStore
 
 `ConfigStore` 是服务端 `/v1/config/*` 路由背后的异步配置持久化契约。适用于需要在运行时创建、列举和更新配置，而不是把配置静态写死在 `AgentSpec` 中的场景。
 
-```rust
+```rust,ignore
 #[async_trait]
 pub trait ConfigStore: Send + Sync {
     async fn get(&self, namespace: &str, id: &str) -> Result<Option<Value>, StorageError>;
@@ -578,7 +646,7 @@ pub trait ConfigStore: Send + Sync {
 
 ## 相关
 
-- [构建 Agent](/zh-cn/how-to/build-an-agent/)
-- [通过配置调优 Agent 行为](/zh-cn/how-to/configure-agent-behavior/)
-- [HTTP API](/zh-cn/reference/http-api/)
-- [Provider 与 Model 配置](/zh-cn/reference/provider-model-config/)
+- [构建 Agent](../how-to/build-an-agent.md)
+- [通过配置调优 Agent 行为](../how-to/configure-agent-behavior.md)
+- [HTTP API](./http-api.md)
+- [Provider 与 Model 配置](./provider-model-config.md)
