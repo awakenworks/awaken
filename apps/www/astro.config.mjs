@@ -19,7 +19,8 @@ const awakenShikiTheme = JSON.parse(
 );
 
 export default defineConfig({
-  site: "https://awaken.dev",
+  site: "https://awakenworks.github.io",
+  base: "/awaken",
   trailingSlash: "ignore",
   integrations: [
     mermaid({
