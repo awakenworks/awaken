@@ -8,6 +8,9 @@ apps/admin-console/node_modules/
 apps/admin-console/dist/
 apps/admin-console/.vite/
 apps/*/node_modules/
+apps/*/dist/
+apps/*/.vite/
+apps/*/.astro/
 packages/*/node_modules/
 packages/*/dist/
 e2e/node_modules/

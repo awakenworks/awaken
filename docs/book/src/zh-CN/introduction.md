@@ -1,5 +1,7 @@
 # 简介
 
+> **请注意 —— 本 mdbook 站点正在迁移。** 完整文档(含双语支持与内置搜索)已迁移至 **[`apps/www`](../../../apps/www/)**(基于 Astro + Starlight)。新站点上线后本 mdbook 将退役,新链接请指向新站点。
+
 **Awaken** 是一个用 Rust 构建的模块化 AI 智能体运行时框架。它提供基于阶段的执行模型（含快照隔离与确定性重放）、带键作用域（`thread` / `run`）和合并策略（`exclusive` / `commutative`）的类型化状态引擎、用于可扩展性的插件生命周期系统，以及支持 AI SDK v6、AG-UI、A2A 和 MCP（HTTP 及 stdio）的多协议服务面，以及 ACP stdio 协议面。
 
 ## Crate 概览

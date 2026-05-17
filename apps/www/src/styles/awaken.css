@@ -1,0 +1,133 @@
+/* Awaken design-token bridge for Starlight.
+ *
+ * Imports @awaken/design-tokens (admin-console source of truth) and
+ * remaps Starlight's --sl-color-* surface onto --aw-* so docs + admin
+ * console + future surfaces share the same brand palette and dark-mode
+ * behaviour. The aw-* vars already flip between light/dark via
+ * data-theme + prefers-color-scheme, so a single rule covers both
+ * Starlight themes. */
+
+@import "@awaken/design-tokens/css/tokens.css";
+@import "@awaken/design-tokens/css/tokens-dark.css";
+@import "@awaken/design-tokens/css/tokens-auto-dark.css";
+
+:root,
+:root[data-theme="light"],
+:root[data-theme="dark"] {
+  /* Surfaces */
+  --sl-color-bg: var(--aw-bg);
+  --sl-color-bg-nav: var(--aw-bg-elevated);
+  --sl-color-bg-sidebar: var(--aw-bg-canvas);
+  --sl-color-bg-inline-code: var(--aw-bg-muted);
+  --sl-color-bg-accent: var(--aw-accent-soft);
+
+  /* Text */
+  --sl-color-white: var(--aw-text-strong);
+  --sl-color-gray-1: var(--aw-text);
+  --sl-color-gray-2: var(--aw-text-soft);
+  --sl-color-gray-3: var(--aw-text-faint);
+  --sl-color-gray-4: var(--aw-border-strong);
+  --sl-color-gray-5: var(--aw-border);
+  --sl-color-gray-6: var(--aw-bg-elevated);
+  --sl-color-black: var(--aw-bg);
+  --sl-color-text: var(--aw-text);
+  --sl-color-text-invert: var(--aw-bg);
+  --sl-color-text-accent: var(--aw-accent);
+
+  /* Hairlines / borders */
+  --sl-color-hairline: var(--aw-border);
+  --sl-color-hairline-light: var(--aw-border);
+  --sl-color-hairline-shade: var(--aw-border-strong);
+
+  /* Accent (Awaken indigo) */
+  --sl-color-accent: var(--aw-accent);
+  --sl-color-accent-high: var(--aw-accent-text);
+  --sl-color-accent-low: var(--aw-accent-soft);
+
+  /* Typography */
+  --sl-font: var(--aw-font-sans);
+  --sl-font-mono: var(--aw-font-mono);
+}
+
+/* Chinese locale: prefer native CJK glyphs (matches admin-console). */
+:root[lang="zh-CN"],
+[lang="zh-CN"] {
+  --sl-font: "PingFang SC", "Microsoft YaHei", "Hiragino Sans GB",
+    "Noto Sans CJK SC", "Source Han Sans SC", var(--aw-font-sans);
+  letter-spacing: 0.005em;
+}
+
+/* Selection — match admin-console. */
+::selection {
+  background: var(--aw-accent-soft);
+  color: var(--aw-text-strong);
+}
+
+/* ============================================================
+ * Chrome alignment — bring Starlight defaults closer to the
+ * admin-console's "Lucid Control" stance: tighter type tracking,
+ * eyebrow-style section labels, accent-border instead of
+ * accent-fill on the active nav item, dark inline code.
+ * ============================================================ */
+
+/* Active sidebar item: left accent border + same text colour,
+ * matching admin-console's `border-l-2 border-accent` pattern.
+ * Starlight default fills the whole row with accent and inverts text
+ * which reads heavier than the surrounding chrome. */
+.sidebar-content a[aria-current="page"],
+.sidebar-content a[aria-current="page"]:hover {
+  background-color: var(--aw-accent-soft);
+  color: var(--aw-text-strong);
+  border-inline-start: 2px solid var(--aw-accent);
+  padding-inline-start: calc(0.5rem - 2px);
+}
+
+/* Sidebar section label: tiny eyebrow uppercase, matches admin
+ * nav groups (`AGENTS`, `RESOURCES`, `OBSERVE`). */
+.sidebar-content details > summary,
+.sidebar-content .top-level > summary,
+.sidebar-content .top-level > .group-label > span {
+  font-size: 0.6875rem;
+  font-weight: 600;
+  letter-spacing: var(--aw-tracking-eyebrow, 0.08em);
+  text-transform: uppercase;
+  color: var(--aw-text-soft);
+}
+
+/* Inline code: dark surface + light text, matches admin-console
+ * code chip style. Code BLOCKS keep Starlight's expressive-code
+ * styling (Shiki has its own theme integration). */
+:not(pre) > code {
+  background-color: var(--aw-code-bg);
+  color: var(--aw-code-fg);
+  border-radius: var(--aw-radius-sm);
+  padding: 0.1em 0.35em;
+  font-size: 0.875em;
+}
+
+/* Tighter heading tracking, matching admin's role-based em values. */
+.sl-markdown-content h1,
+h1.page-title {
+  letter-spacing: var(--aw-tracking-display-em, -0.018em);
+  font-weight: 700;
+}
+.sl-markdown-content h2 {
+  letter-spacing: var(--aw-tracking-title-em, -0.012em);
+}
+.sl-markdown-content h3 {
+  letter-spacing: var(--aw-tracking-heading-em, -0.008em);
+}
+
+/* Splash hero image: cap so the rounded square logo doesn't
+ * dominate the fold. */
+.hero img,
+.hero svg {
+  max-width: 280px;
+  max-height: 280px;
+}
+
+/* Focus ring: match admin's accent ring exactly. */
+:focus-visible {
+  outline: 2px solid var(--aw-focus);
+  outline-offset: 2px;
+}

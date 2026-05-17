@@ -1,0 +1,28 @@
+{
+  "name": "@awaken/www",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "predev": "pnpm --filter @awaken/design-tokens build",
+    "prebuild": "pnpm --filter @awaken/design-tokens build",
+    "dev": "astro dev --host 127.0.0.1 --port 3003",
+    "build": "astro check && astro build",
+    "preview": "astro preview --host 127.0.0.1 --port 3003",
+    "check": "astro check"
+  },
+  "dependencies": {
+    "mermaid": "^11.15.0"
+  },
+  "devDependencies": {
+    "@astrojs/check": "^0.9.4",
+    "@astrojs/mdx": "^5.0.6",
+    "@astrojs/sitemap": "^3.7.2",
+    "@astrojs/starlight": "^0.39.2",
+    "@awaken/design-tokens": "workspace:*",
+    "astro": "^6.3.3",
+    "astro-mermaid": "^2.0.1",
+    "sharp": "^0.34.0",
+    "typescript": "^5"
+  }
+}
