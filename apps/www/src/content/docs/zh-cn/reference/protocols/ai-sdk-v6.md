@@ -87,6 +87,6 @@ SSE 流（`text/event-stream`），每一行是一个 JSON 编码的 `UIStreamEv
 
 ## 相关
 
-- [事件](/events/)
-- [HTTP API](/http-api/)
-- [集成 AI SDK 前端](/../how-to/integrate-ai-sdk-frontend/)
+- [事件](/zh-cn/reference/events/)
+- [HTTP API](/zh-cn/reference/http-api/)
+- [集成 AI SDK 前端](/zh-cn/how-to/integrate-ai-sdk-frontend/)

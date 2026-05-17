@@ -96,5 +96,5 @@ Run the agent, then inspect the data directory. You should see JSON files under 
 
 ## Related
 
-- [Build an Agent](/build-an-agent/)
-- [Use Postgres Store](/use-postgres-store/)
+- [Build an Agent](/how-to/build-an-agent/)
+- [Use Postgres Store](/how-to/use-postgres-store/)

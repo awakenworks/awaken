@@ -131,7 +131,7 @@ let result = runtime.run_to_completion(request).await?;
 
 ## 相关
 
-- [添加 Tool](/add-a-tool/)
-- [添加 Plugin](/add-a-plugin/)
-- [使用文件存储](/use-file-store/)
-- [通过 SSE 暴露 HTTP](/expose-http-sse/)
+- [添加 Tool](/zh-cn/how-to/add-a-tool/)
+- [添加 Plugin](/zh-cn/how-to/add-a-plugin/)
+- [使用文件存储](/zh-cn/how-to/use-file-store/)
+- [通过 SSE 暴露 HTTP](/zh-cn/how-to/expose-http-sse/)

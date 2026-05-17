@@ -261,8 +261,8 @@ Turn 2:
 
 ## 另见
 
-- [HITL 与 Mailbox](/hitl-and-mailbox/)
-- [工具执行模式](/reference/tool-execution-modes/)
-- [状态与快照模型](/state-and-snapshot-model/)
-- [架构](/architecture/)
-- [取消](/reference/cancellation/)
+- [HITL 与 Mailbox](/zh-cn/explanation/hitl-and-mailbox/)
+- [工具执行模式](/zh-cn/reference/tool-execution-modes/)
+- [状态与快照模型](/zh-cn/explanation/state-and-snapshot-model/)
+- [架构](/zh-cn/explanation/architecture/)
+- [取消](/zh-cn/reference/cancellation/)

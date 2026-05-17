@@ -170,4 +170,4 @@ Use `ProfileKey` with a `StateScope` key when state must survive across runs **a
 
 - [State and Snapshot Model](/explanation/state-and-snapshot-model/)
 - [State Keys](/reference/state-keys/)
-- [Add a Plugin](/add-a-plugin/)
+- [Add a Plugin](/how-to/add-a-plugin/)

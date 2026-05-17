@@ -12,7 +12,7 @@ Awaken currently supports two integration styles:
 
 ## Prerequisites
 
-- A working awaken agent runtime (see [Build an Agent](/build-an-agent/))
+- A working awaken agent runtime (see [Build an Agent](/how-to/build-an-agent/))
 - For A2UI: a frontend that consumes A2UI messages from the event stream and a registered component catalog
 - For JSON Render or OpenUI Lang: a frontend renderer that consumes streamed tool output, such as the `ai-sdk-starter` or `openui-chat` examples
 
@@ -233,6 +233,6 @@ let agent_spec = agent_spec.with_section("generative-ui", serde_json::json!({
 
 ## Related
 
-- [Integrate CopilotKit / AG-UI](/integrate-copilotkit-ag-ui/)
-- [Integrate AI SDK Frontend](/integrate-ai-sdk-frontend/)
-- [Add a Plugin](/add-a-plugin/)
+- [Integrate CopilotKit / AG-UI](/how-to/integrate-copilotkit-ag-ui/)
+- [Integrate AI SDK Frontend](/how-to/integrate-ai-sdk-frontend/)
+- [Add a Plugin](/how-to/add-a-plugin/)

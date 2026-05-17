@@ -142,7 +142,7 @@ Common usage patterns:
 
 Use the next page based on what you want:
 
-- add typed state and stateful tools: [First Tool](/first-tool/)
+- add typed state and stateful tools: [First Tool](/tutorials/first-tool/)
 - learn how events map to the agent loop: [Events](/reference/events/)
 - expose the agent over HTTP: [Expose HTTP SSE](/how-to/expose-http-sse/)
 
@@ -155,6 +155,6 @@ Use the next page based on what you want:
 
 ## Next
 
-- [First Tool](/first-tool/)
+- [First Tool](/tutorials/first-tool/)
 - [Events](/reference/events/)
 - [Expose HTTP SSE](/how-to/expose-http-sse/)

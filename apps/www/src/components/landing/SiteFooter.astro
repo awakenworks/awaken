@@ -1,0 +1,182 @@
+---
+/**
+ * Site footer (brand + columns + badges + colophon).
+ *
+ * Rendered inline by Landing.astro because Starlight's splash template
+ * skips its own Footer component. For doc pages, a global Footer wrap
+ * via starlight.components.Footer is a separate follow-up.
+ */
+
+interface Props {
+  locale: "en" | "zh-CN";
+}
+
+const { locale } = Astro.props;
+const t = <T,>(en: T, zh: T): T => (locale === "zh-CN" ? zh : en);
+
+const docsBase = locale === "zh-CN" ? "/zh-cn" : "";
+---
+
+<footer class="site-footer">
+  <div class="wrap">
+    <div class="cols">
+      <div>
+        <div class="brand">
+          <span class="brand-mark" aria-hidden="true">
+            <svg viewBox="0 0 32 32" width="22" height="22" fill="none">
+              <path d="M10 22 L16 9 L22 22 M12.5 17.5 H19.5"
+                    stroke="currentColor" stroke-width="2.4"
+                    stroke-linecap="round" stroke-linejoin="round"></path>
+            </svg>
+          </span>
+          <span>Awaken</span>
+        </div>
+        <p class="blurb">
+          {t(
+            "A Rust agent runtime that serves AI SDK, CopilotKit, A2A, and MCP from the same backend.",
+            "一个 Rust 智能体运行时:单后端同时服务 AI SDK、CopilotKit、A2A 与 MCP。",
+          )}
+        </p>
+        <div class="badges">
+          <span class="badge">crates.io 0.5.0</span>
+          <span class="badge">MSRV 1.93</span>
+          <span class="badge">MIT / Apache-2.0</span>
+        </div>
+      </div>
+      <div>
+        <h5>{t("Learn", "学习")}</h5>
+        <ul>
+          <li><a href={`${docsBase}/get-started/`}>{t("Get started", "快速开始")}</a></li>
+          <li><a href={`${docsBase}/build-agents/`}>{t("Build agents", "构建 Agent")}</a></li>
+          <li><a href={`${docsBase}/serve-and-integrate/`}>{t("Serve & integrate", "服务与集成")}</a></li>
+          <li><a href={`${docsBase}/operate/`}>{t("Operate", "运行与运维")}</a></li>
+        </ul>
+      </div>
+      <div>
+        <h5>{t("Reference", "参考")}</h5>
+        <ul>
+          <li><a href={`${docsBase}/reference/overview/`}>{t("API overview", "API 概览")}</a></li>
+          <li><a href={`${docsBase}/reference/admin-console/`}>{t("Admin Console", "管理控制台")}</a></li>
+          <li><a href={`${docsBase}/explanation/architecture/`}>{t("Architecture", "架构")}</a></li>
+          <li><a href={`${docsBase}/appendix/migration-from-tirea/`}>{t("Migration", "迁移指南")}</a></li>
+        </ul>
+      </div>
+      <div>
+        <h5>{t("Community", "社区")}</h5>
+        <ul>
+          <li><a href="https://github.com/AwakenWorks/awaken">GitHub</a></li>
+          <li><a href="https://github.com/AwakenWorks/awaken/discussions">{t("Discussions", "讨论区")}</a></li>
+          <li><a href="https://github.com/AwakenWorks/awaken/blob/main/CHANGELOG.md">{t("Changelog", "更新日志")}</a></li>
+          <li><a href="https://github.com/AwakenWorks/awaken/blob/main/CONTRIBUTING.md">{t("Contributing", "参与贡献")}</a></li>
+        </ul>
+      </div>
+    </div>
+    <div class="bottom">
+      <span>
+        {t(
+          "© 2026 Awaken Works. Dual-licensed MIT / Apache-2.0.",
+          "© 2026 Awaken Works. 双协议授权 MIT / Apache-2.0。",
+        )}
+      </span>
+      <span class="colophon">
+        {t("— built with the same ", "— 与控制台共用 ")}
+        <code>@awaken/design-tokens</code>
+        {t(" as the console.", "。")}
+      </span>
+    </div>
+  </div>
+</footer>
+
+<style>
+  /* Site footer — paired with Landing.astro. Scoped via Astro so the rules
+   * don't leak into Starlight's own doc footer. */
+  .site-footer {
+    padding: 56px 0 80px;
+    background: var(--aw-bg-canvas);
+    border-top: 1px solid var(--aw-border);
+  }
+  .site-footer .wrap {
+    max-width: 1180px;
+    margin: 0 auto;
+    padding: 0 32px;
+  }
+  .site-footer .cols {
+    display: grid;
+    grid-template-columns: 2fr 1fr 1fr 1fr;
+    gap: 32px;
+  }
+  .site-footer .brand {
+    display: flex; align-items: center; gap: 10px;
+    font-weight: 600;
+    letter-spacing: var(--aw-tracking-title-em);
+    font-size: 17px;
+    color: var(--aw-text-strong);
+  }
+  .site-footer .brand-mark {
+    width: 28px; height: 28px; border-radius: 7px;
+    background: var(--aw-accent);
+    display: grid; place-items: center;
+    color: var(--aw-accent-text);
+  }
+  .site-footer .brand-mark svg { display: block; }
+  .site-footer h5 {
+    margin: 0 0 14px;
+    font-size: 11px;
+    letter-spacing: var(--aw-tracking-eyebrow);
+    text-transform: uppercase;
+    color: var(--aw-text-soft);
+    font-weight: 600;
+  }
+  .site-footer ul { list-style: none; padding: 0; margin: 0; }
+  .site-footer ul li { margin-bottom: 8px; }
+  .site-footer ul a {
+    font-size: 13.5px;
+    color: var(--aw-text-soft);
+    text-decoration: none;
+  }
+  .site-footer ul a:hover { color: var(--aw-text); }
+  .site-footer .blurb {
+    font-size: 13px;
+    color: var(--aw-text-soft);
+    line-height: 1.6;
+    margin: 10px 0 18px;
+    max-width: 320px;
+  }
+  .site-footer .badges { display: flex; gap: 6px; flex-wrap: wrap; }
+  .site-footer .badge {
+    font-family: var(--aw-font-mono);
+    font-size: 10px;
+    padding: 3px 8px;
+    border-radius: var(--aw-radius-sm);
+    background: var(--aw-bg-elevated);
+    border: 1px solid var(--aw-border);
+    color: var(--aw-text-soft);
+  }
+  .site-footer .bottom {
+    margin-top: 40px;
+    padding-top: 24px;
+    border-top: 1px solid var(--aw-border);
+    display: flex; align-items: center; justify-content: space-between;
+    gap: 16px;
+    flex-wrap: wrap;
+    font-size: 12px;
+    color: var(--aw-text-faint);
+  }
+  .site-footer .colophon {
+    font-family: var(--aw-font-mono);
+    font-size: 11px;
+  }
+  .site-footer .colophon code {
+    background: var(--aw-bg-muted) !important;
+    color: var(--aw-text) !important;
+    padding: 1px 5px;
+    border-radius: var(--aw-radius-sm);
+    font-size: inherit;
+  }
+  @media (max-width: 980px) {
+    .site-footer .cols { grid-template-columns: 1fr 1fr; }
+  }
+  @media (max-width: 640px) {
+    .site-footer .cols { grid-template-columns: 1fr; }
+  }
+</style>

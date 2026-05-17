@@ -16,6 +16,10 @@ use async_trait::async_trait;
 use serde_json::{Value, json};
 use awaken::contract::tool::{Tool, ToolCallContext, ToolDescriptor, ToolError, ToolResult, ToolOutput};
 
+async fn fetch_weather(_city: &str) -> Result<String, ToolError> {
+    Ok("晴,22°C".to_string())
+}
+
 pub struct WeatherTool;
 
 #[async_trait]

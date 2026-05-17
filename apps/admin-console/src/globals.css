@@ -77,6 +77,17 @@ samp {
   font-feature-settings: "liga" 1;
 }
 
+/* Inline code chip — dark surface + light text, matching the Awaken docs
+ * site (apps/www awaken.css). Code BLOCKS keep their own (Shiki / source)
+ * styling; this only targets <code> that lives outside <pre>. */
+:not(pre) > code {
+  background-color: var(--aw-code-bg);
+  color: var(--aw-code-fg);
+  border-radius: var(--aw-radius-sm);
+  padding: 0.1em 0.35em;
+  font-size: 0.875em;
+}
+
 a {
   color: inherit;
   text-decoration: none;

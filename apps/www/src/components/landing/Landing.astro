@@ -1,0 +1,481 @@
+---
+/**
+ * Awaken landing page — recreated from the Claude Design handoff at
+ * https://api.anthropic.com/v1/design/h/WTbcjdRDrToEgOevKrbvrQ
+ *
+ * Single component containing all sections so the EN and zh-CN MDX
+ * entry-points stay one-liners. Strings are localised inline via the
+ * `t()` helper; markup is identical across locales.
+ */
+
+import { Code } from "astro:components";
+import awakenTheme from "../../styles/shiki/awaken.json";
+import heroSnippet from "../../snippets/hero-quickstart.rs?raw";
+
+/* Note: SiteFooter is rendered globally by src/components/CustomFooter.astro
+ * (registered as starlight.components.Footer). Starlight 0.39 invokes the
+ * Footer override on splash pages too, so we DO NOT render <SiteFooter />
+ * here — that would duplicate it on the landing page. */
+
+interface Props {
+  locale: "en" | "zh-CN";
+}
+
+const { locale } = Astro.props;
+const t = <T,>(en: T, zh: T): T => (locale === "zh-CN" ? zh : en);
+
+const docsBase = locale === "zh-CN" ? "/zh-cn" : "";
+---
+
+<div class="landing-page">
+  <!-- ============ HERO ============ -->
+  <section class="hero">
+    <div class="wrap hero-grid">
+      <div class="hero-left">
+        <span class="hero-eyebrow">
+          <span class="dot"></span>
+          <span>{t("v0.5 · type-safe state · 9-phase loop", "v0.5 · 类型化状态 · 9 阶段循环")}</span>
+        </span>
+        <h1 class="hero-title">
+          {locale === "zh-CN" ? (
+            <Fragment>
+              <span class="accent">面向 Rust 的</span>生产级 AI Agent 运行时
+            </Fragment>
+          ) : (
+            <Fragment>
+              Production AI agent runtime<span class="accent"> for Rust.</span>
+            </Fragment>
+          )}
+        </h1>
+        <p class="hero-sub">
+          {t(
+            "One backend serves AI SDK, AG-UI, A2A, and MCP. Streams recover from mid-flight failures. State is typed, mutations are atomic, and the whole run is replayable from a snapshot.",
+            "单后端同时服务 AI SDK、AG-UI、A2A 与 MCP。流式中断可恢复,状态类型化,变更原子提交,整轮可基于快照重放。",
+          )}
+        </p>
+        <div class="hero-actions">
+          <a class="btn btn-primary" href={`${docsBase}/get-started/`}>
+            <span>{t("Get started", "快速开始")}</span>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round">
+              <path d="M5 12h14M13 6l6 6-6 6"></path>
+            </svg>
+          </a>
+          <a class="btn btn-secondary" href="https://github.com/AwakenWorks/awaken">
+            <svg viewBox="0 0 24 24" fill="currentColor">
+              <path d="M12 .3a12 12 0 0 0-3.8 23.4c.6.1.8-.3.8-.6v-2c-3.3.7-4-1.6-4-1.6-.5-1.4-1.4-1.8-1.4-1.8-1-.7.1-.7.1-.7 1.2.1 1.8 1.2 1.8 1.2 1 1.8 2.8 1.3 3.5 1 .1-.8.4-1.3.7-1.6-2.7-.3-5.5-1.3-5.5-6 0-1.2.5-2.3 1.3-3.1-.1-.4-.6-1.6.1-3.2 0 0 1-.3 3.3 1.2a11.5 11.5 0 0 1 6 0c2.3-1.5 3.3-1.2 3.3-1.2.7 1.6.2 2.8.1 3.2.8.8 1.3 1.9 1.3 3.1 0 4.6-2.8 5.6-5.5 5.9.5.4.8 1.1.8 2.2v3.3c0 .3.2.7.8.6A12 12 0 0 0 12 .3"></path>
+            </svg>
+            <span>{t("Star on GitHub", "Star 项目")}</span>
+          </a>
+        </div>
+        <div class="hero-meta">
+          <span>
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 6 9 17l-5-5"></path></svg>
+            <span>{t("Rust 1.93 MSRV", "MSRV: Rust 1.93")}</span>
+          </span>
+          <span>
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 6 9 17l-5-5"></path></svg>
+            <span><code>unsafe_code = "forbid"</code></span>
+          </span>
+          <span>
+            {t("Install", "安装")}:
+            <button
+              type="button"
+              class="copy-code"
+              data-copy="cargo add awaken"
+              aria-label={t("Copy install command", "复制安装命令")}
+            >
+              cargo add awaken
+              <svg class="copy-icon" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
+                <rect x="9" y="9" width="11" height="11" rx="2"></rect>
+                <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+              </svg>
+              <svg class="copy-icon-ok" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M20 6 9 17l-5-5"></path>
+              </svg>
+            </button>
+          </span>
+        </div>
+      </div>
+      <div class="hero-right">
+        <div class="terminal" role="img" aria-label={t("Rust quickstart", "Rust 快速开始")}>
+          <div class="terminal-bar">
+            <div class="dots"><span></span><span></span><span></span></div>
+            <span class="file">src/main.rs</span>
+            <span class="tag">awaken = "0.5"</span>
+          </div>
+          <Code code={heroSnippet} lang="rust" theme={awakenTheme as never} />
+          <div class="phase-ribbon" aria-hidden="true">
+            <span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ PROTOCOL MATRIX ============ -->
+  <section class="band">
+    <div class="wrap">
+      <div class="section-head">
+        <div>
+          <span class="eyebrow">{t("One runtime", "一个运行时")}</span>
+          <h2>{t("Four protocols, one backend", "四种协议,一套后端")}</h2>
+          <p set:html={t(
+            "Same <code>/v1/runs</code> handles every frontend. Switch protocols without touching agent code.",
+            "同一个 <code>/v1/runs</code> 服务所有前端。切换协议无需改动智能体代码。",
+          )} />
+        </div>
+        <div class="right">
+          <a href={`${docsBase}/serve-and-integrate/`}>{t("Wire-format reference →", "线协议参考 →")}</a>
+        </div>
+      </div>
+      <div class="proto-grid">
+        <article class="proto-card">
+          <div class="proto-icon">SDK</div>
+          <h3>AI SDK v6</h3>
+          <div class="proto-endpoint">POST /v1/ai-sdk/chat</div>
+          <p class="proto-desc" set:html={t(
+            "Stream chunks to Vercel AI SDK's <code>useChat()</code> — text, tool calls, and finish events.",
+            "把流式分块发到 Vercel AI SDK 的 <code>useChat()</code> —— 文本、工具调用、完成事件。",
+          )} />
+          <div class="proto-frontend">React · Next.js</div>
+        </article>
+        <article class="proto-card">
+          <div class="proto-icon">AG</div>
+          <h3>AG-UI</h3>
+          <div class="proto-endpoint">POST /v1/ag-ui/run</div>
+          <p class="proto-desc" set:html={t(
+            "CopilotKit's <code>&lt;CopilotKit&gt;</code> drop-in for chat, generative UI, and HITL.",
+            "CopilotKit 的 <code>&lt;CopilotKit&gt;</code> 直接接入,支持聊天、Generative UI 与 HITL。",
+          )} />
+          <div class="proto-frontend">CopilotKit</div>
+        </article>
+        <article class="proto-card">
+          <div class="proto-icon">A2A</div>
+          <h3>A2A</h3>
+          <div class="proto-endpoint">POST /v1/a2a/message:send</div>
+          <p class="proto-desc">{t(
+            "Agent-to-agent messaging — let other agents call yours as a remote sub-agent.",
+            "智能体间通信 —— 让其他智能体把你的当成远程子智能体调用。",
+          )}</p>
+          <div class="proto-frontend">{t("Foreign agents", "外部智能体")}</div>
+        </article>
+        <article class="proto-card">
+          <div class="proto-icon">MCP</div>
+          <h3>MCP</h3>
+          <div class="proto-endpoint">POST /v1/mcp</div>
+          <p class="proto-desc">{t(
+            "JSON-RPC 2.0 surface — host any MCP-compatible client with stdio or HTTP transport.",
+            "JSON-RPC 2.0 服务面 —— 通过 stdio 或 HTTP 传输承接任意 MCP 兼容客户端。",
+          )}</p>
+          <div class="proto-frontend">Claude · Cursor · Zed</div>
+        </article>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ 9-PHASE LOOP ============ -->
+  <section class="band canvas">
+    <div class="wrap">
+      <div class="section-head">
+        <div>
+          <span class="eyebrow">{t("Architecture", "架构")}</span>
+          <h2>{t("A 9-phase loop, not a DAG", "9 阶段循环,而非 DAG")}</h2>
+          <p>{t(
+            "Every run flows through nine typed phases. Plugins hook in by name. State commits atomically at the end of each round.",
+            "每次运行都流经 9 个类型化阶段。插件按名称挂载,状态在每轮结束时原子提交。",
+          )}</p>
+        </div>
+        <div class="right">
+          <a href={`${docsBase}/explanation/run-lifecycle-and-phases/`}>{t("Phase reference →", "阶段参考 →")}</a>
+        </div>
+      </div>
+      <div class="phase-loop">
+        <div class="phase-list">
+          <div class="phase-pill" style="--c: var(--aw-phase-resolve)"><span class="num">1</span> <span class="lbl">resolve</span></div>
+          <div class="phase-pill" style="--c: var(--aw-phase-prepare)"><span class="num">2</span> <span class="lbl">prepare</span></div>
+          <div class="phase-pill" style="--c: var(--aw-phase-prompt)"><span class="num">3</span> <span class="lbl">prompt</span></div>
+          <div class="phase-pill" style="--c: var(--aw-phase-stream)"><span class="num">4</span> <span class="lbl">stream</span></div>
+          <div class="phase-pill" style="--c: var(--aw-phase-gate)"><span class="num">5</span> <span class="lbl">gate</span></div>
+          <div class="phase-pill" style="--c: var(--aw-phase-tool)"><span class="num">6</span> <span class="lbl">tool</span></div>
+          <div class="phase-pill" style="--c: var(--aw-phase-commit)"><span class="num">7</span> <span class="lbl">commit</span></div>
+          <div class="phase-pill" style="--c: var(--aw-phase-events)"><span class="num">8</span> <span class="lbl">events</span></div>
+          <div class="phase-pill" style="--c: var(--aw-phase-finalize)"><span class="num">9</span> <span class="lbl">finalize</span></div>
+        </div>
+        <div class="phase-explain">
+          <h3>{t("Snapshot in, batch out.", "快照进,批次出。")}</h3>
+          <p set:html={t(
+            "Every phase reads an immutable state snapshot and returns a typed mutation batch. <code>commit</code> applies the batch atomically — no partial writes, no surprise interleaving when tools run in parallel.",
+            "每个阶段读取不可变的状态快照,返回类型化变更批次。<code>commit</code> 阶段原子应用,工具并行执行也不会出现部分写入或交叉污染。",
+          )} />
+          <p set:html={t(
+            "The pure <code>gate</code> phase decides which tool calls to authorise before <code>tool</code> executes — permission, reminder, and HITL plugins all hook in here.",
+            "纯函数的 <code>gate</code> 阶段在 <code>tool</code> 执行前裁决工具调用 —— 权限、提醒与 HITL 插件都挂载在此。",
+          )} />
+          <div class="phase-callout">
+            <b>{t("Stream recovery built in.", "内建流式恢复。")}</b>
+            <span set:html={t(
+              " Idle stalls and mid-stream errors are caught with four explicit plans: continue text, replay completed tools, restart with a cancelled-tool hint, or whole restart. <code>Retry-After</code> is honoured; checkpoints persist across process restarts.",
+              " 空闲超时与流中断由四个显式恢复计划处理:续写文本、回放已完成工具、提示工具取消重启、整轮重启。<code>Retry-After</code> 被遵守;检查点跨进程重启持久化。",
+            )} />
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ ADMIN CONSOLE PREVIEW ============ -->
+  <section class="band">
+    <div class="wrap">
+      <div class="section-head">
+        <div>
+          <span class="eyebrow">{t("Admin Console", "管理控制台")}</span>
+          <h2>{t("Operate it like a product, not a script", "把它当产品运营,而不是脚本")}</h2>
+          <p set:html={t(
+            "A React 19 SPA wired to the same <code>/v1/config/*</code> API. Manage agents, models, providers, plugins, MCP — with full audit trails.",
+            "一个 React 19 SPA,通过相同的 <code>/v1/config/*</code> API 管理智能体、模型、Provider、插件与 MCP —— 全程可审计。",
+          )} />
+        </div>
+        <div class="right">
+          <a href={`${docsBase}/reference/admin-console/`}>{t("Full surface tour →", "完整界面导览 →")}</a>
+        </div>
+      </div>
+      <div class="console-grid">
+        <div class="console-shot" aria-label={t("Admin Console preview", "管理控制台预览")}>
+          <div class="titlebar">
+            <span class="d"></span><span class="d"></span><span class="d"></span>
+            <span class="url">localhost:5173/agents</span>
+          </div>
+          <div class="console-body">
+            <aside class="console-side">
+              <div class="eb">{t("Agents", "智能体")}</div>
+              <div class="item act">Agents <span class="dot"></span></div>
+              <div class="item">Models <span class="dot"></span></div>
+              <div class="item">Providers <span class="dot w"></span></div>
+              <div class="item">Tools</div>
+              <div class="eb" style="margin-top: 8px">{t("Observe", "观测")}</div>
+              <div class="item">Traces</div>
+              <div class="item">Runs</div>
+              <div class="eb" style="margin-top: 8px">{t("Config", "配置")}</div>
+              <div class="item">Plugins</div>
+              <div class="item">MCP</div>
+            </aside>
+            <main class="console-main">
+              <div class="crumbs">Agents&nbsp;/&nbsp;<b>assistant</b></div>
+              <div class="console-cards">
+                <div class="cc">
+                  <div class="lbl">{t("Active runs", "活跃运行")}</div>
+                  <div class="num">14</div>
+                  <div class="delta">▲ 3 {t("last hour", "近一小时")}</div>
+                </div>
+                <div class="cc">
+                  <div class="lbl">p50 latency</div>
+                  <div class="num">420<span style="font-size: 11px; color: var(--aw-text-soft)">ms</span></div>
+                  <div class="delta" style="color: var(--aw-tone-success)">−6%</div>
+                </div>
+              </div>
+              <div class="console-table">
+                <div class="row head">
+                  <span>{t("Agent", "智能体")}</span><span>{t("Status", "状态")}</span><span>{t("Calls", "调用")}</span>
+                </div>
+                <div class="row">
+                  <span class="name">assistant</span>
+                  <span class="pill live">live</span>
+                  <span style="text-align: right; font-family: var(--aw-font-mono); font-size: 10.5px; color: var(--aw-text-soft)">2.1k</span>
+                </div>
+                <div class="row">
+                  <span class="name">researcher</span>
+                  <span class="pill agent">agent</span>
+                  <span style="text-align: right; font-family: var(--aw-font-mono); font-size: 10.5px; color: var(--aw-text-soft)">847</span>
+                </div>
+                <div class="row">
+                  <span class="name">summariser</span>
+                  <span class="pill">idle</span>
+                  <span style="text-align: right; font-family: var(--aw-font-mono); font-size: 10.5px; color: var(--aw-text-soft)">112</span>
+                </div>
+              </div>
+            </main>
+          </div>
+        </div>
+        <div class="console-callouts">
+          <div class="callout">
+            <div class="eb">{t("Config = control plane", "配置即控制面")}</div>
+            <h3>{t("Spec-first, runtime-applied", "声明先行,运行时即时生效")}</h3>
+            <p set:html={t(
+              "Models, providers, prompts, permissions, MCP — edit the spec and the next <code>/v1/runs</code> sees it. No restart.",
+              "模型、Provider、提示词、权限、MCP —— 编辑 spec,下一次 <code>/v1/runs</code> 即生效。无需重启。",
+            )} />
+          </div>
+          <div class="callout">
+            <div class="eb">{t("Observability", "可观测性")}</div>
+            <h3>{t("Phase-by-phase traces", "阶段级追踪")}</h3>
+            <p>{t(
+              "OpenTelemetry GenAI semantic conventions. Persistent trace store. Judge sampling. Click any phase for full inputs / outputs.",
+              "符合 OpenTelemetry GenAI 语义约定。持久化追踪存储,Judge 采样。任意阶段可下钻完整输入输出。",
+            )}</p>
+            <div class="stat">875 <small>{t("tests · 100% type-safe", "测试用例 · 100% 类型安全")}</small></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ FITS / DOESN'T ============ -->
+  <section class="band canvas">
+    <div class="wrap">
+      <div class="section-head">
+        <div>
+          <span class="eyebrow">{t("Honest scoping", "诚实的边界")}</span>
+          <h2>{t("When Awaken fits — and when it doesn't", "Awaken 适合 —— 与不适合 —— 的场景")}</h2>
+        </div>
+      </div>
+      <div class="fit-grid">
+        <div class="fit-card yes">
+          <h3>
+            <span>{t("Fits well", "适合")}</span>
+            <span class="tag">{t("use it", "选它")}</span>
+          </h3>
+          <ul class="fit-list">
+            <li set:html={t(
+              "You want a <b>Rust backend</b> for agents with compile-time guarantees.",
+              "你想要一个有编译期保障的 <b>Rust 后端</b> 跑智能体。",
+            )} />
+            <li set:html={t(
+              "You need <b>AI SDK + CopilotKit + A2A + MCP</b> from one process.",
+              "你需要单一进程同时承接 <b>AI SDK + CopilotKit + A2A + MCP</b>。",
+            )} />
+            <li set:html={t(
+              "Tools must <b>share state safely</b> under parallel execution.",
+              "工具并行执行下需要 <b>安全共享状态</b>。",
+            )} />
+            <li set:html={t(
+              "Runs need <b>auditable history</b>, checkpoints, and replay.",
+              "运行需要 <b>可审计的历史</b>、检查点与重放。",
+            )} />
+          </ul>
+        </div>
+        <div class="fit-card no">
+          <h3>
+            <span>{t("Not the right fit", "不适合")}</span>
+            <span class="tag">{t("look elsewhere", "另寻方案")}</span>
+          </h3>
+          <ul class="fit-list">
+            <li set:html={t(
+              "You need <b>built-in file/shell/web tools</b> — try OpenAI Agents SDK, Dify.",
+              "你需要 <b>内置的 file/shell/web 工具</b> —— 看看 OpenAI Agents SDK、Dify。",
+            )} />
+            <li set:html={t(
+              "You want a <b>visual workflow builder</b> — try Dify, LangGraph Studio.",
+              "你想要 <b>可视化工作流编辑器</b> —— 看看 Dify、LangGraph Studio。",
+            )} />
+            <li set:html={t(
+              "You're <b>prototyping in Python</b> — try LangGraph, AG2, PydanticAI.",
+              "你在 <b>用 Python 做原型</b> —— 看看 LangGraph、AG2、PydanticAI。",
+            )} />
+            <li set:html={t(
+              "You need <b>LLM-managed memory</b> as a subsystem — try Letta.",
+              "你需要 <b>由 LLM 管理的记忆子系统</b> —— 看看 Letta。",
+            )} />
+          </ul>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ BUILT-IN PLUGINS ============ -->
+  <section class="band">
+    <div class="wrap">
+      <div class="section-head">
+        <div>
+          <span class="eyebrow">{t("Plugins", "插件")}</span>
+          <h2>{t("Batteries that opt in", "按需开启的电池组")}</h2>
+          <p>{t(
+            "Seven typed extension surfaces. Enable per feature flag — or write your own against the same hooks.",
+            "七个类型化扩展点。按 feature flag 开启 —— 也可基于同样的 hook 自己写。",
+          )}</p>
+        </div>
+        <div class="right">
+          <a href={`${docsBase}/reference/overview/`}>{t("Plugin reference →", "插件参考 →")}</a>
+        </div>
+      </div>
+      <div class="plugins-grid">
+        <div class="plugin-card">
+          <div class="pname"><h4>Permission</h4><span class="flag">permission</span></div>
+          <p>{t(
+            "Allow / Deny / Ask rules on tool name + args. Deny > Allow > Ask. Ask suspends the run via the mailbox for HITL.",
+            "工具名 + 参数上的 Allow / Deny / Ask 规则。优先级 Deny > Allow > Ask。Ask 通过 mailbox 挂起等待 HITL。",
+          )}</p>
+        </div>
+        <div class="plugin-card">
+          <div class="pname"><h4>Reminder</h4><span class="flag">reminder</span></div>
+          <p>{t(
+            "Inject system or conversation-level messages when a tool call matches a configured pattern.",
+            "当工具调用匹配预设规则时,注入系统级或会话级消息。",
+          )}</p>
+        </div>
+        <div class="plugin-card">
+          <div class="pname"><h4>Observability</h4><span class="flag">observability</span></div>
+          <p>{t(
+            "OpenTelemetry traces & metrics aligned with the GenAI semantic conventions. OTLP, file, in-memory.",
+            "符合 GenAI 语义约定的 OpenTelemetry traces 与 metrics。支持 OTLP、文件、内存后端。",
+          )}</p>
+        </div>
+        <div class="plugin-card">
+          <div class="pname"><h4>MCP</h4><span class="flag">mcp</span></div>
+          <p>{t(
+            "Speak Model Context Protocol with any compatible server — their tools register as native Awaken tools.",
+            "与任意 MCP 兼容服务对话 —— 它们的工具注册为原生 Awaken 工具。",
+          )}</p>
+        </div>
+        <div class="plugin-card">
+          <div class="pname"><h4>Skills</h4><span class="flag">skills</span></div>
+          <p>{t(
+            "Skill packages discovered and injected as a catalog — the LLM activates them on demand.",
+            "技能包被自动发现并注入为目录 —— LLM 按需激活。",
+          )}</p>
+        </div>
+        <div class="plugin-card">
+          <div class="pname"><h4>Generative UI</h4><span class="flag">generative-ui</span></div>
+          <p>{t(
+            "Stream declarative UI via A2UI, JSON Render, and OpenUI Lang integrations.",
+            "通过 A2UI、JSON Render、OpenUI Lang 集成,流式输出声明式 UI。",
+          )}</p>
+        </div>
+        <div class="plugin-card">
+          <div class="pname"><h4>Deferred Tools</h4><span class="flag">deferred-tools</span></div>
+          <p set:html={t(
+            "Hides large tool schemas behind a <code>ToolSearch</code> step; idle tools re-defer with a Beta usage model.",
+            "把大体量工具 schema 藏在 <code>ToolSearch</code> 步骤后;空闲工具按 Beta 使用模型重新延后加载。",
+          )} />
+        </div>
+        <div class="plugin-card featured">
+          <div class="pname">
+            <h4>{t("Write your own", "自己写一个")}</h4>
+            <span class="flag">trait Plugin</span>
+          </div>
+          <p set:html={t(
+            "Same typed hooks the built-ins use: <code>ToolGateHook</code>, <code>BeforeToolExecute</code>, <code>PluginConfigKey</code>.",
+            "与内置插件共用的类型化 hook:<code>ToolGateHook</code>、<code>BeforeToolExecute</code>、<code>PluginConfigKey</code>。",
+          )} />
+        </div>
+      </div>
+    </div>
+  </section>
+
+</div>
+
+<script>
+  /* Click-to-copy on the hero install chip. Single inline handler so the
+   * pattern is easy to lift into a shared <CodeWithCopy> later. */
+  for (const btn of document.querySelectorAll<HTMLButtonElement>("button.copy-code")) {
+    btn.addEventListener("click", async () => {
+      const text = btn.getAttribute("data-copy") ?? btn.textContent ?? "";
+      try {
+        await navigator.clipboard.writeText(text.trim());
+        btn.classList.add("copied");
+        setTimeout(() => btn.classList.remove("copied"), 1500);
+      } catch {
+        /* clipboard API blocked — silently no-op */
+      }
+    });
+  }
+</script>

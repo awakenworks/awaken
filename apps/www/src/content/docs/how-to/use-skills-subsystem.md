@@ -173,6 +173,6 @@ The `SkillDiscoveryPlugin` injects a skills catalog into the LLM context before 
 
 ## Related
 
-- [Add a Tool](/add-a-tool/)
-- [Add a Plugin](/add-a-plugin/)
-- [Use MCP Tools](/use-mcp-tools/)
+- [Add a Tool](/how-to/add-a-tool/)
+- [Add a Plugin](/how-to/add-a-plugin/)
+- [Use MCP Tools](/how-to/use-mcp-tools/)

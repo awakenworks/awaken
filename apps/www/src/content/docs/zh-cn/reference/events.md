@@ -113,7 +113,7 @@ pub enum AgentEvent {
 消费者把对应 tool call（或整轮）的 partial buffer 丢掉、继续读流即可，恢复后
 的 delta 会通过常规的 `TextDelta` / `ToolCallDelta` 通道到来。四种恢复方案与
 `StreamCheckpointStore` 接入见
-[流式 LLM 错误恢复](/how-to/recover-streaming-llms/)。
+[流式 LLM 错误恢复](/zh-cn/how-to/recover-streaming-llms/)。
 
 ### Helper
 
@@ -237,4 +237,4 @@ pub struct TokenUsage {
 
 ## 相关
 
-- [Run 生命周期与 Phases](/explanation/run-lifecycle-and-phases/)
+- [Run 生命周期与 Phases](/zh-cn/explanation/run-lifecycle-and-phases/)

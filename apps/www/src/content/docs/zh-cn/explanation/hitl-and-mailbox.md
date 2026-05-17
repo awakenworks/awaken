@@ -217,6 +217,6 @@ pub struct MailboxInterrupt {
 
 ## 另见
 
-- [Run 生命周期与 Phases](/run-lifecycle-and-phases/)
-- [启用工具权限 HITL](/how-to/enable-tool-permission-hitl/)
+- [Run 生命周期与 Phases](/zh-cn/explanation/run-lifecycle-and-phases/)
+- [启用工具权限 HITL](/zh-cn/how-to/enable-tool-permission-hitl/)
 - ADR-0022: Run Dispatch Data Model

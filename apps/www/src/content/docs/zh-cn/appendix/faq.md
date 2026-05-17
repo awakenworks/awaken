@@ -46,7 +46,7 @@ title: "常见问题"
 
 ## 不连真实 LLM 怎么测试？
 
-实现一个返回固定响应的 `LlmExecutor` 即可。详细模式见[测试策略](/how-to/testing-strategy/)。
+实现一个返回固定响应的 `LlmExecutor` 即可。详细模式见[测试策略](/zh-cn/how-to/testing-strategy/)。
 
 ## 并行工具同时写同一个状态键会怎样？
 

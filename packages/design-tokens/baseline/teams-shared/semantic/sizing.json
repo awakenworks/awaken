@@ -1,0 +1,64 @@
+{
+  "os": {
+    "avatar-radius": {
+      "sm": {
+        "$value": "5px",
+        "$type": "dimension",
+        "$description": "16–20 px avatars"
+      },
+      "md": {
+        "$value": "6px",
+        "$type": "dimension",
+        "$description": "22–28 px avatars"
+      },
+      "lg": {
+        "$value": "8px",
+        "$type": "dimension",
+        "$description": "32–48 px avatars"
+      }
+    },
+    "row-h": {
+      "sm": {
+        "$value": "32px",
+        "$type": "dimension"
+      },
+      "md": {
+        "$value": "40px",
+        "$type": "dimension"
+      },
+      "lg": {
+        "$value": "48px",
+        "$type": "dimension"
+      }
+    },
+    "control-h": {
+      "sm": {
+        "$value": "24px",
+        "$type": "dimension"
+      },
+      "md": {
+        "$value": "28px",
+        "$type": "dimension"
+      },
+      "lg": {
+        "$value": "32px",
+        "$type": "dimension"
+      }
+    },
+    "card-padding": {
+      "$value": "{os.space.4}",
+      "$type": "dimension",
+      "$description": "16 px"
+    },
+    "card-padding-compact": {
+      "$value": "{os.space.3}",
+      "$type": "dimension",
+      "$description": "12 px"
+    },
+    "card-padding-rich": {
+      "$value": "{os.space.5}",
+      "$type": "dimension",
+      "$description": "20 px"
+    }
+  }
+}

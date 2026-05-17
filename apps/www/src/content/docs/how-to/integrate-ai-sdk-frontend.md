@@ -197,6 +197,6 @@ npm run dev
 
 ## Related
 
-- [Expose HTTP SSE](/expose-http-sse/)
+- [Expose HTTP SSE](/how-to/expose-http-sse/)
 - [AI SDK v6 Protocol Reference](/reference/protocols/ai-sdk-v6/)
-- [Integrate CopilotKit (AG-UI)](/integrate-copilotkit-ag-ui/)
+- [Integrate CopilotKit (AG-UI)](/how-to/integrate-copilotkit-ag-ui/)

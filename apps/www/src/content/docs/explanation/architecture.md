@@ -122,7 +122,7 @@ Three principles guide the architecture:
 
 ## See Also
 
-- [Run Lifecycle and Phases](/run-lifecycle-and-phases/) -- phase execution model
-- [State and Snapshot Model](/state-and-snapshot-model/) -- snapshot isolation details
-- [Design Tradeoffs](/design-tradeoffs/) -- rationale for key architectural decisions
-- [Tool and Plugin Boundary](/tool-and-plugin-boundary/) -- plugin vs tool design
+- [Run Lifecycle and Phases](/explanation/run-lifecycle-and-phases/) -- phase execution model
+- [State and Snapshot Model](/explanation/state-and-snapshot-model/) -- snapshot isolation details
+- [Design Tradeoffs](/explanation/design-tradeoffs/) -- rationale for key architectural decisions
+- [Tool and Plugin Boundary](/explanation/tool-and-plugin-boundary/) -- plugin vs tool design

@@ -174,13 +174,21 @@ Current built-in namespaces:
   "last_attempt_at": 1777708820,       // unix seconds, null until first probe
   "last_success_at": 1777708820,       // unix seconds, null until first success
   "reconnecting": false,
-  "permanently_failed": false          // true once the manager has given up
+  "permanently_failed": false,         // true once the manager has given up
+  "session_generation": 2,             // HTTP session reset/reinitialize generation
+  "transport_reconnect_count": 0,      // successful runtime re-creations
+  "last_init_at": 1777708820           // unix seconds, null before initialize
 }
 ```
 
 `consecutive_failures` + `last_success_at` are surfaced from the existing
 `McpRefreshHealth` budget. There is no separate "errors in last 24h"
 counter — the health budget is the source of truth.
+
+The raw HTTP `MCP-Session-Id` is intentionally not exposed by this endpoint.
+`transport_reconnect_count` counts runtime tear-down/recreate cycles; HTTP
+404 session reset churn is visible through `session_generation` and
+`last_init_at`.
 
 ### Admin audit log
 
@@ -314,4 +322,4 @@ MCP routes return JSON-RPC error objects instead of the generic shape above.
 ## Related
 
 - [Expose HTTP with SSE](/how-to/expose-http-sse/)
-- [Config](/config/)
+- [Config](/reference/config/)

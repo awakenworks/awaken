@@ -175,7 +175,7 @@ pub enum ContextCompactionMode {
 用于单次推理的参数覆盖。所有字段都是 `Option`，多插件同时写时按字段 last-wins 合并。
 
 `upstream_model` 和 `fallback_upstream_models` 是当前已解析 provider 的上游模型名。它们不会重新解析
-`AgentSpec.model_id`，也不会切换 provider。详见 [Provider 与 Model 配置](/provider-model-config/)。
+`AgentSpec.model_id`，也不会切换 provider。详见 [Provider 与 Model 配置](/zh-cn/reference/provider-model-config/)。
 
 ```rust
 pub struct InferenceOverride {
@@ -542,7 +542,7 @@ section key 是 `deferred_tools`，由 `DeferredToolsConfigKey` 绑定。该 cra
 | `disc_beta.gamma` | `number` | `2000.0` | 一次 `ToolSearch` 调用的估算 token 成本 |
 
 自动启用启发式、`ToolSearch` 行为以及完整 DiscBeta 概率模型见
-[使用延迟加载工具](/how-to/use-deferred-tools/)。
+[使用延迟加载工具](/zh-cn/how-to/use-deferred-tools/)。
 
 ## ConfigStore
 
@@ -578,7 +578,7 @@ pub trait ConfigStore: Send + Sync {
 
 ## 相关
 
-- [构建 Agent](/how-to/build-an-agent/)
-- [通过配置调优 Agent 行为](/how-to/configure-agent-behavior/)
-- [HTTP API](/http-api/)
-- [Provider 与 Model 配置](/provider-model-config/)
+- [构建 Agent](/zh-cn/how-to/build-an-agent/)
+- [通过配置调优 Agent 行为](/zh-cn/how-to/configure-agent-behavior/)
+- [HTTP API](/zh-cn/reference/http-api/)
+- [Provider 与 Model 配置](/zh-cn/reference/provider-model-config/)

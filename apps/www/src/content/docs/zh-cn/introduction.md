@@ -1,7 +1,9 @@
 ---
 title: "简介"
-description: "Awaken 是一个用 Rust 构建的模块化 AI 智能体运行时框架。它提供基于阶段的执行模型（含快照隔离与确定性重放）、带键作用域（thread / run）和合并策略（exclusive / commutative）的类型化状态引擎、用于可扩展性的插件生命周期系统，以及支持 AI SDK v6、AG-UI、A2A 和 MCP（HTTP 及 stdio）的多协议服务面，以及 ACP…"
+description: "> 请注意 —— 本 mdbook 站点正在迁移。 完整文档(含双语支持与内置搜索)已迁移至 apps/www(基于 Astro + Starlight)。新站点上线后本 mdbook 将退役,新链接请指向新站点。"
 ---
+
+> **请注意 —— 本 mdbook 站点正在迁移。** 完整文档(含双语支持与内置搜索)已迁移至 **[`apps/www`](../../../apps/www/)**(基于 Astro + Starlight)。新站点上线后本 mdbook 将退役,新链接请指向新站点。
 
 **Awaken** 是一个用 Rust 构建的模块化 AI 智能体运行时框架。它提供基于阶段的执行模型（含快照隔离与确定性重放）、带键作用域（`thread` / `run`）和合并策略（`exclusive` / `commutative`）的类型化状态引擎、用于可扩展性的插件生命周期系统，以及支持 AI SDK v6、AG-UI、A2A 和 MCP（HTTP 及 stdio）的多协议服务面，以及 ACP stdio 协议面。
 
@@ -58,11 +60,11 @@ AgentRuntime
 
 如果你是第一次接触本项目，建议按以下顺序阅读：
 
-1. 先阅读 [快速上手](/get-started/)，并完成 [第一个 Agent](/tutorials/first-agent/)。
-2. 需要扩展能力时，进入 [构建 Agent](/build-agents/)。
-3. 需要对接 HTTP 客户端或前端时，进入 [服务与集成](/serve-and-integrate/)。
-4. 从演示走向生产时，阅读 [状态与存储](/state-and-storage/) 和 [运行与运维](/operate/)。
-5. 需要精确契约或运行时内部细节时，回到 [参考概览](/reference/overview/) 和 [架构](/explanation/architecture/)。
+1. 先阅读 [快速上手](/zh-cn/get-started/)，并完成 [第一个 Agent](/zh-cn/tutorials/first-agent/)。
+2. 需要扩展能力时，进入 [构建 Agent](/zh-cn/build-agents/)。
+3. 需要对接 HTTP 客户端或前端时，进入 [服务与集成](/zh-cn/serve-and-integrate/)。
+4. 从演示走向生产时，阅读 [状态与存储](/zh-cn/state-and-storage/) 和 [运行与运维](/zh-cn/operate/)。
+5. 需要精确契约或运行时内部细节时，回到 [参考概览](/zh-cn/reference/overview/) 和 [架构](/zh-cn/explanation/architecture/)。
 
 ## 仓库导航
 

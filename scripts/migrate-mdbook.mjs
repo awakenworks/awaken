@@ -87,13 +87,45 @@ function stripHiddenRustLines(body) {
   return out.join("\n");
 }
 
-/** Rewrite `./foo.md`, `../foo.md`, `path/to/foo.md` → `/path/to/foo/` */
-function rewriteLinks(body) {
+/** Rewrite markdown link targets into Starlight slugs.
+ *
+ * Inputs:
+ *   body     — markdown source
+ *   relPath  — current file path relative to its src/ root, e.g. 'how-to/add-a-tool.md'
+ *   locale   — 'en' (no prefix) or 'zh-cn' (prefix '/zh-cn')
+ *
+ * Cases handled:
+ *   [x](./foo.md)            from how-to/add-a-tool.md → /how-to/foo/   (+ locale)
+ *   [x](../tutorials/y.md)   from how-to/x.md         → /tutorials/y/   (+ locale)
+ *   [x](foo.md)              from how-to/x.md         → /how-to/foo/    (+ locale, markdown relative)
+ *   [x](/operate.md)         (absolute from src root) → /operate/       (+ locale)
+ *   [x](https://...md)       external                 → unchanged
+ *   [x](./foo.md#section)    anchor preserved
+ */
+function rewriteLinks(body, relPath, locale) {
+  const localePrefix = locale === "zh-cn" ? "/zh-cn" : "";
+  const fileDir = path.posix.dirname(relPath.replaceAll("\\", "/"));
   return body.replace(
     /(\]\()(\.{1,2}\/)?([^)\s#]+?)\.md(#[^)]*)?\)/g,
-    (_match, openBracket, leading, target, anchor) => {
-      const cleaned = target.replace(/^\.\//, "");
-      return `${openBracket}/${cleaned}/${anchor ?? ""})`;
+    (match, openBracket, leading, target, anchor) => {
+      const full = (leading ?? "") + target;
+
+      // Skip external / schemed URLs (http://, https://, mailto:, etc.)
+      if (/^[a-z][a-z0-9+.-]*:/i.test(full) || full.startsWith("//")) {
+        return match;
+      }
+
+      let slug;
+      if (full.startsWith("/")) {
+        // Absolute path from src root.
+        slug = full.replace(/^\/+/, "");
+      } else {
+        // Markdown convention: relative to the current file's directory.
+        slug = path.posix.normalize(path.posix.join(fileDir || ".", full));
+        slug = slug.replace(/^\.\//, "");
+      }
+
+      return `${openBracket}${localePrefix}/${slug}/${anchor ?? ""})`;
     },
   );
 }
@@ -175,7 +207,7 @@ function yamlQuote(s) {
 async function migrateFile(srcAbs, locale, relPath) {
   const raw = await fs.readFile(srcAbs, "utf8");
   let body = stripHiddenRustLines(raw);
-  body = rewriteLinks(body);
+  body = rewriteLinks(body, relPath, locale);
 
   const { title, description, bodyWithoutH1 } = extractFrontmatterParts(body);
 

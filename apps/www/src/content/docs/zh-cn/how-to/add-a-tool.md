@@ -19,6 +19,10 @@ use async_trait::async_trait;
 use serde_json::{Value, json};
 use awaken::contract::tool::{Tool, ToolCallContext, ToolDescriptor, ToolError, ToolResult, ToolOutput};
 
+async fn fetch_weather(_city: &str) -> Result<String, ToolError> {
+    Ok("晴,22°C".to_string())
+}
+
 pub struct WeatherTool;
 
 #[async_trait]
@@ -119,5 +123,5 @@ fn register(&self, registrar: &mut PluginRegistrar) -> Result<(), StateError> {
 
 ## 相关
 
-- [构建 Agent](/build-an-agent/)
-- [添加 Plugin](/add-a-plugin/)
+- [构建 Agent](/zh-cn/how-to/build-an-agent/)
+- [添加 Plugin](/zh-cn/how-to/add-a-plugin/)

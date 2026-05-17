@@ -19,7 +19,8 @@
   "scripts": {
     "build": "node config/style-dictionary.config.mjs",
     "dev": "node config/style-dictionary.config.mjs --watch",
-    "validate": "node scripts/validate.mjs",
+    "validate": "node scripts/validate.mjs && node scripts/validate-shiki-theme.mjs",
+    "snapshot-baseline": "node scripts/snapshot-local-baseline.mjs",
     "test": "vitest run"
   },
   "dependencies": {

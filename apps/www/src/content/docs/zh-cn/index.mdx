@@ -1,35 +1,10 @@
 ---
 title: Awaken
-description: 生产可用的 Rust AI Agent 运行时 —— 阶段化执行、快照隔离、确定性重放。
+description: 面向 Rust 的生产级 AI Agent 运行时 —— 单后端同时服务 AI SDK、AG-UI、A2A 与 MCP,阶段化执行、快照隔离、可重放运行。
 template: splash
-hero:
-  tagline: 生产可用的 Rust AI Agent 运行时。阶段化执行、快照隔离、确定性重放、多协议服务面。
-  image:
-    file: ../../../assets/awaken-mark.svg
-  actions:
-    - text: 快速上手
-      link: /zh-cn/get-started/
-      icon: right-arrow
-      variant: primary
-    - text: GitHub
-      link: https://github.com/AwakenWorks/awaken
-      icon: external
-      variant: minimal
+pagefind: false
 ---
 
-import { Card, CardGrid } from "@astrojs/starlight/components";
+import Landing from "../../../components/landing/Landing.astro";
 
-<CardGrid stagger>
-  <Card title="阶段化执行" icon="rocket">
-    确定性的 phase loop(resolve → prepare → prompt → stream → gate → tool → commit → events → finalize)给每个插件一个清晰、强类型的接入点。
-  </Card>
-  <Card title="快照隔离" icon="approve-check">
-    每个 hook 读到的都是不可变快照;变更收集在类型化的 batch 里,在收敛后原子性地应用。没有半完成写入,没有意外的交叉执行。
-  </Card>
-  <Card title="多协议服务面" icon="puzzle">
-    AI SDK v6、AG-UI、A2A、MCP(HTTP + stdio)、ACP 全部一等公民支持 —— 接任何前端都不需要重新搭管线。
-  </Card>
-  <Card title="内置可观测性" icon="approve-check-circle">
-    OpenTelemetry traces、持久化 trace store、judge 采样,加上 admin console 把每一次 run 都按 phase 维度做归因。
-  </Card>
-</CardGrid>
+<Landing locale="zh-CN" />

@@ -1,0 +1,83 @@
+{
+  "color": {
+    "phase": {
+      "resolve": {
+        "$value": "oklch(60.0% 0.110 240)",
+        "$type": "color",
+        "$description": "Awaken runtime — resolve phase (input gathering / context fetch)"
+      },
+      "prepare": {
+        "$value": "oklch(60.0% 0.090 215)",
+        "$type": "color",
+        "$description": "Awaken — prepare (assemble messages, attach files)"
+      },
+      "prompt": {
+        "$value": "oklch(58.0% 0.130 270)",
+        "$type": "color",
+        "$description": "Awaken — prompt (calling the LLM)"
+      },
+      "stream": {
+        "$value": "oklch(60.0% 0.140 305)",
+        "$type": "color",
+        "$description": "Awaken — stream (tokens flowing back)"
+      },
+      "gate": {
+        "$value": "oklch(70.0% 0.135 78)",
+        "$type": "color",
+        "$description": "Awaken — gate (approval / tool gating)"
+      },
+      "tool": {
+        "$value": "oklch(60.0% 0.130 150)",
+        "$type": "color",
+        "$description": "Awaken — tool (tool execution)"
+      },
+      "commit": {
+        "$value": "oklch(58.0% 0.110 200)",
+        "$type": "color",
+        "$description": "Awaken — commit (writing back results)"
+      },
+      "events": {
+        "$value": "oklch(54.0% 0.080 260)",
+        "$type": "color",
+        "$description": "Awaken — events (side effects, notifications)"
+      },
+      "finalize": {
+        "$value": "oklch(48.0% 0.060 260)",
+        "$type": "color",
+        "$description": "Awaken — finalize (closing, cleanup)"
+      }
+    },
+    "chrome": {
+      "bg": {
+        "$value": "oklch(20.0% 0.020 250)",
+        "$type": "color",
+        "$description": "Awaken admin console — dark sidebar base (control surface)"
+      },
+      "bg-2": {
+        "$value": "oklch(24.0% 0.022 250)",
+        "$type": "color",
+        "$description": "Awaken admin — secondary chrome surface"
+      },
+      "line": {
+        "$value": "oklch(30.0% 0.018 250)",
+        "$type": "color",
+        "$description": "Awaken admin — chrome dividers"
+      },
+      "fg": {
+        "$value": "oklch(95.0% 0.005 80)",
+        "$type": "color",
+        "$description": "Awaken admin — chrome primary text on dark"
+      },
+      "fg-muted": {
+        "$value": "oklch(72.0% 0.010 250)",
+        "$type": "color",
+        "$description": "Awaken admin — chrome muted text"
+      },
+      "eyebrow": {
+        "$value": "oklch(82.0% 0.045 200)",
+        "$type": "color",
+        "$description": "Awaken admin — cyan eyebrow accent"
+      }
+    }
+  }
+}

@@ -107,4 +107,4 @@ Both appear identically to the LLM. The distinction is purely about ownership an
 - [Tool Trait Reference](/reference/tool-trait/)
 - [Add a Tool](/how-to/add-a-tool/)
 - [Add a Plugin](/how-to/add-a-plugin/)
-- [Run Lifecycle and Phases](/run-lifecycle-and-phases/)
+- [Run Lifecycle and Phases](/explanation/run-lifecycle-and-phases/)

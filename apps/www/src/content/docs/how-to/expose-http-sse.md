@@ -147,6 +147,6 @@ curl -X POST http://localhost:3000/v1/threads \
 
 ## Related
 
-- [Build an Agent](/build-an-agent/)
-- [Use File Store](/use-file-store/)
-- [Use Postgres Store](/use-postgres-store/)
+- [Build an Agent](/how-to/build-an-agent/)
+- [Use File Store](/how-to/use-file-store/)
+- [Use Postgres Store](/how-to/use-postgres-store/)

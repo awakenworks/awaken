@@ -1,0 +1,20 @@
+{
+  "source": "local-awaken",
+  "purpose": "Snapshot of Awaken's own shared tokens, NOT pulled from teams upstream. Parity test treats this as the agreed-upon baseline for drift detection within Awaken.",
+  "generated_at": "2026-05-17T03:14:38.553Z",
+  "awaken_git": {
+    "sha": "487884d8417cee0a42e687b11f46df5c76f253a0",
+    "branch": "refactor/design-tokens-package",
+    "dirty": false
+  },
+  "files": [
+    "primitives/motion.json",
+    "primitives/phase.json",
+    "primitives/radius.json",
+    "primitives/spacing.json",
+    "primitives/typography.json",
+    "primitives/colors.json",
+    "semantic/sizing.json",
+    "semantic/phase-chrome.json"
+  ]
+}

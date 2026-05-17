@@ -198,7 +198,7 @@ last-wins semantics.
 
 `upstream_model` and `fallback_upstream_models` are upstream model names for the already resolved
 provider. They do not re-resolve `AgentSpec.model_id` and do not switch providers.
-See [Provider and Model Configuration](/provider-model-config/).
+See [Provider and Model Configuration](/reference/provider-model-config/).
 
 ```rust
 pub enum ReasoningEffort {
@@ -661,5 +661,5 @@ Built-in implementations:
 
 - [Build an Agent](/how-to/build-an-agent/)
 - [Configure Agent Behavior](/how-to/configure-agent-behavior/)
-- [HTTP API](/http-api/)
-- [Provider and Model Configuration](/provider-model-config/)
+- [HTTP API](/reference/http-api/)
+- [Provider and Model Configuration](/reference/provider-model-config/)

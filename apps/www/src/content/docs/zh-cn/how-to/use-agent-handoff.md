@@ -140,5 +140,5 @@ let overlay = handoff.overlay("researcher");
 
 ## 相关
 
-- [添加 Plugin](/add-a-plugin/)
-- [构建 Agent](/build-an-agent/)
+- [添加 Plugin](/zh-cn/how-to/add-a-plugin/)
+- [构建 Agent](/zh-cn/how-to/build-an-agent/)

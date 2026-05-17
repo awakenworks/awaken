@@ -484,6 +484,6 @@ See `examples/live_test.rs` and `examples/tool_call_live.rs` for complete workin
 
 ## Related
 
-- [Add a Tool](/add-a-tool/)
-- [Add a Plugin](/add-a-plugin/)
-- [Build an Agent](/build-an-agent/)
+- [Add a Tool](/how-to/add-a-tool/)
+- [Add a Plugin](/how-to/add-a-plugin/)
+- [Build an Agent](/how-to/build-an-agent/)

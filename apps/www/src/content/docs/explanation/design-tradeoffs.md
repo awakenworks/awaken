@@ -87,7 +87,7 @@ This page documents key architectural decisions in Awaken and the tradeoffs they
 
 ## See Also
 
-- [Architecture](/architecture/) -- three-layer design
-- [State and Snapshot Model](/state-and-snapshot-model/) -- snapshot isolation details
-- [Run Lifecycle and Phases](/run-lifecycle-and-phases/) -- phase execution model
-- [Tool and Plugin Boundary](/tool-and-plugin-boundary/) -- plugin vs tool design
+- [Architecture](/explanation/architecture/) -- three-layer design
+- [State and Snapshot Model](/explanation/state-and-snapshot-model/) -- snapshot isolation details
+- [Run Lifecycle and Phases](/explanation/run-lifecycle-and-phases/) -- phase execution model
+- [Tool and Plugin Boundary](/explanation/tool-and-plugin-boundary/) -- plugin vs tool design

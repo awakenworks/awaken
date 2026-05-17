@@ -16,9 +16,10 @@
     "border":        { "$value": "{color.slate.line}",        "$type": "color" },
     "border-strong": { "$value": "{color.slate.line-strong}", "$type": "color" },
 
-    "accent":        { "$value": "{color.indigo.accent}", "$type": "color" },
-    "accent-soft":   { "$value": "{color.indigo.soft}",   "$type": "color" },
-    "accent-text":   { "$value": "{color.indigo.fg}",     "$type": "color" },
+    "accent":        { "$value": "{color.indigo.accent}",        "$type": "color" },
+    "accent-soft":   { "$value": "{color.indigo.soft}",          "$type": "color" },
+    "accent-text":   { "$value": "{color.indigo.fg}",            "$type": "color" },
+    "accent-hover":  { "$value": "oklch(51.0% 0.135 250)",       "$type": "color", "$description": "Primary CTA on hover — 8% darker than accent in light, +8% lighter in dark" },
 
     "link":             { "$value": "{color.blue.link}",       "$type": "color" },
     "link-hover":       { "$value": "{color.blue.link-hover}", "$type": "color" },
@@ -52,6 +53,23 @@
 
     "code-bg":      { "$value": "oklch(20.0% 0.018 250)", "$type": "color", "$description": "Code/pre block — always dark (terminal aesthetic, theme-invariant)" },
     "code-fg":      { "$value": "oklch(94.0% 0.005 80)",  "$type": "color", "$description": "Code/pre text — always light (paired with code-bg)" },
+
+    "code-chrome": {
+      "bg":     { "$value": "oklch(16.0% 0.018 250)", "$type": "color", "$description": "Terminal title bar / code tab strip — slightly darker than code-bg" },
+      "border": { "$value": "oklch(28.0% 0.018 250)", "$type": "color", "$description": "Hairline between terminal chrome and code body" },
+      "fg":     { "$value": "oklch(72.0% 0.012 250)", "$type": "color", "$description": "Terminal chrome text — file name, tab label" },
+      "faint":  { "$value": "oklch(35.0% 0.018 250)", "$type": "color", "$description": "Terminal traffic-light dots, faint markers" }
+    },
+
+    "syntax": {
+      "keyword": { "$value": "oklch(76.0% 0.140 270)", "$type": "color", "$description": "use / let / fn / async — violet" },
+      "type":    { "$value": "oklch(82.0% 0.135 78)",  "$type": "color", "$description": "AgentSpec, Result, Arc — amber" },
+      "string":  { "$value": "oklch(76.0% 0.140 160)", "$type": "color", "$description": "string literals — green" },
+      "fn":      { "$value": "oklch(78.0% 0.140 220)", "$type": "color", "$description": "function calls — blue" },
+      "comment": { "$value": "oklch(58.0% 0.010 250)", "$type": "color", "$description": "comments — muted gray (italic by convention)" },
+      "num":     { "$value": "oklch(82.0% 0.140 50)",  "$type": "color", "$description": "numeric literals — orange" }
+    },
+
     "overlay":      { "$value": "oklch(15.0% 0 0 / 0.5)", "$type": "color", "$description": "Modal/dialog backdrop scrim" }
   }
 }

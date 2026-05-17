@@ -175,6 +175,6 @@ agent_spec.plugin_ids.push("reminder".into());
 
 ## 相关
 
-- [启用工具权限 HITL](/enable-tool-permission-hitl/) -- 使用相同的工具模式 DSL
-- [添加 Plugin](/add-a-plugin/)
-- [构建 Agent](/build-an-agent/)
+- [启用工具权限 HITL](/zh-cn/how-to/enable-tool-permission-hitl/) -- 使用相同的工具模式 DSL
+- [添加 Plugin](/zh-cn/how-to/add-a-plugin/)
+- [构建 Agent](/zh-cn/how-to/build-an-agent/)

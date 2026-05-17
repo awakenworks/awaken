@@ -232,4 +232,4 @@ pub enum UnknownKeyPolicy {
 
 ## Related
 
-- [Tool Trait Reference](/tool-trait/)
+- [Tool Trait Reference](/reference/tool-trait/)

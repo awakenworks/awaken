@@ -99,6 +99,6 @@ pub enum DecisionReplayPolicy {
 
 ## 相关
 
-- [Tool Trait](/tool-trait/)
-- [HITL 与 Mailbox](/explanation/hitl-and-mailbox/)
-- [事件](/events/)
+- [Tool Trait](/zh-cn/reference/tool-trait/)
+- [HITL 与 Mailbox](/zh-cn/explanation/hitl-and-mailbox/)
+- [事件](/zh-cn/reference/events/)

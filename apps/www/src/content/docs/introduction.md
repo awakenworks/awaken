@@ -1,7 +1,9 @@
 ---
 title: "Introduction"
-description: "Awaken is a modular AI agent runtime framework built in Rust. It provides phase-based execution with snapshot isolation and deterministic replay, a typed state engine with key scoping (thread / run)…"
+description: "> Heads up — this mdbook site is moving. The full documentation, with bilingual support and built-in search, is being maintained at apps/www as an Astro + Starlight site. This mdbook will be retired…"
 ---
+
+> **Heads up — this mdbook site is moving.** The full documentation, with bilingual support and built-in search, is being maintained at **[`apps/www`](../../apps/www/)** as an Astro + Starlight site. This mdbook will be retired once the new site is deployed. Please point new links at the upcoming site.
 
 **Awaken** is a modular AI agent runtime framework built in Rust. It provides phase-based execution with snapshot isolation and deterministic replay, a typed state engine with key scoping (`thread` / `run`) and merge strategies (`exclusive` / `commutative`), a plugin lifecycle system for extensibility, and a multi-protocol server surface supporting AI SDK v6, AG-UI, A2A, and MCP over HTTP and stdio, plus ACP over stdio.
 

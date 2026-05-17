@@ -129,6 +129,6 @@ after the turn commits.
   taxonomy and accessors.
 - [Events](/reference/events/) for `ToolCallCancel` / `StreamReset`
   semantics.
-- [Optimize the Context Window](/optimize-context-window/) for the
+- [Optimize the Context Window](/how-to/optimize-context-window/) for the
   separate truncation-recovery path used when the model itself stops with
   `MaxTokens`.

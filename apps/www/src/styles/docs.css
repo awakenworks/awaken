@@ -1,0 +1,482 @@
+/* Doc-content styling — implements the docs-styling.html design spec
+ * (api.anthropic.com/v1/design/h/FvxxlQqeugM3x2VEiO96Zw → specs/docs-styling.html).
+ *
+ * Scoped to .sl-markdown-content so it only colours doc bodies; chrome
+ * (top nav, sidebar) lives in awaken.css; landing in landing.css.
+ *
+ * Every value flows from --aw-* tokens — no hardcoded oklch.
+ */
+
+/* ============ headings ============ */
+.sl-markdown-content h1,
+h1.page-title,
+.content-panel h1#_top {
+  margin: 0 0 8px;
+  font-size: clamp(36px, 4vw, 48px);
+  font-weight: 700;
+  color: var(--aw-text-strong);
+  letter-spacing: var(--aw-tracking-display-em, -0.028em);
+  line-height: 1.05;
+  text-wrap: balance;
+}
+.sl-markdown-content h2 {
+  margin: 56px 0 12px;
+  font-size: 28px;
+  font-weight: 700;
+  color: var(--aw-text-strong);
+  letter-spacing: var(--aw-tracking-title-em, -0.018em);
+  line-height: 1.15;
+  scroll-margin-top: 80px;
+  position: relative;
+}
+.sl-markdown-content h3 {
+  margin: 36px 0 8px;
+  font-size: 20px;
+  font-weight: 600;
+  color: var(--aw-text-strong);
+  letter-spacing: var(--aw-tracking-heading-em, -0.012em);
+  scroll-margin-top: 80px;
+  position: relative;
+}
+.sl-markdown-content h4 {
+  margin: 24px 0 6px;
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--aw-text-strong);
+  letter-spacing: var(--aw-tracking-section-em, -0.008em);
+}
+.sl-markdown-content h5 {
+  margin: 18px 0 4px;
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--aw-text);
+  letter-spacing: 0.01em;
+  text-transform: uppercase;
+}
+.sl-markdown-content h6 {
+  margin: 14px 0 2px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--aw-text-soft);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+/* Heading anchor (Starlight wraps headings with <AnchorHeading>; the link
+ * sits inside the heading). Show on heading hover, like the spec. */
+.sl-markdown-content h2 > a,
+.sl-markdown-content h3 > a,
+.sl-markdown-content h4 > a {
+  color: var(--aw-text-faint);
+  text-decoration: none;
+  margin-left: 0.5rem;
+  opacity: 0;
+  transition: opacity 120ms;
+  font-weight: 400;
+  font-size: 0.7em;
+}
+.sl-markdown-content h2:hover > a,
+.sl-markdown-content h3:hover > a,
+.sl-markdown-content h4:hover > a { opacity: 1; }
+
+/* ============ paragraphs + inline ============ */
+.sl-markdown-content p {
+  margin: 12px 0;
+  color: var(--aw-text);
+  font-size: 15.5px;
+  line-height: 1.65;
+}
+.sl-markdown-content p.lead {
+  font-size: 17px;
+  color: var(--aw-text-soft);
+}
+.sl-markdown-content p.small {
+  font-size: 13.5px;
+  color: var(--aw-text-soft);
+}
+.sl-markdown-content ul,
+.sl-markdown-content ol {
+  margin: 14px 0;
+  padding-left: 24px;
+  color: var(--aw-text);
+  font-size: 15.5px;
+}
+.sl-markdown-content li {
+  margin-bottom: 6px;
+  line-height: 1.6;
+}
+.sl-markdown-content li::marker { color: var(--aw-text-faint); }
+.sl-markdown-content ul ul,
+.sl-markdown-content ol ol,
+.sl-markdown-content ul ol,
+.sl-markdown-content ol ul { margin: 6px 0; }
+
+.sl-markdown-content strong {
+  color: var(--aw-text-strong);
+  font-weight: 600;
+}
+.sl-markdown-content em { font-style: italic; }
+.sl-markdown-content del {
+  color: var(--aw-text-faint);
+  text-decoration: line-through;
+}
+.sl-markdown-content mark {
+  background: var(--aw-tone-warn-bg, color-mix(in oklch, var(--aw-tone-warn) 16%, transparent));
+  color: var(--aw-text);
+  padding: 1px 4px;
+  border-radius: var(--aw-radius-sm);
+}
+
+/* ============ kbd chip ============ */
+.sl-markdown-content kbd {
+  display: inline-block;
+  padding: 1px 6px;
+  font-size: 0.85em;
+  font-family: var(--aw-font-mono);
+  background: var(--aw-bg-soft);
+  border: 1px solid var(--aw-border);
+  border-radius: var(--aw-radius-sm);
+  box-shadow: 0 1px 0 var(--aw-border);
+  color: var(--aw-text);
+  line-height: 1.5;
+}
+
+/* ============ inline badges (utility, used via raw HTML in MDX) ============ */
+.sl-markdown-content .badge {
+  display: inline-flex; align-items: center;
+  font-family: var(--aw-font-mono);
+  font-size: 10px;
+  font-weight: 500;
+  padding: 1px 6px;
+  border-radius: 3px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  margin: 0 2px;
+  vertical-align: middle;
+}
+.sl-markdown-content .badge.new        { background: color-mix(in oklch, var(--aw-tone-success) 18%, transparent); color: var(--aw-tone-success); }
+.sl-markdown-content .badge.deprecated { background: var(--aw-bg-muted); color: var(--aw-text-faint); }
+.sl-markdown-content .badge.beta       { background: color-mix(in oklch, var(--aw-tone-warn) 18%, transparent); color: var(--aw-tone-warn); }
+.sl-markdown-content .badge.alpha      { background: color-mix(in oklch, var(--aw-tone-error) 18%, transparent); color: var(--aw-tone-error); }
+.sl-markdown-content .badge.agent      { background: var(--aw-agent-tint); color: var(--aw-agent-fg); }
+
+/* ============ dl / definition list ============ */
+.sl-markdown-content dl {
+  margin: 16px 0;
+  display: grid;
+  grid-template-columns: 140px 1fr;
+  gap: 8px 24px;
+  border-top: 1px solid var(--aw-border);
+  padding-top: 16px;
+}
+.sl-markdown-content dl dt {
+  font-family: var(--aw-font-mono);
+  font-size: 13px;
+  color: var(--aw-text-soft);
+  padding-top: 1px;
+}
+.sl-markdown-content dl dd {
+  margin: 0;
+  font-size: 14.5px;
+  color: var(--aw-text);
+  line-height: 1.55;
+}
+
+/* ============ blockquote ============ */
+.sl-markdown-content blockquote {
+  margin: 20px 0;
+  padding: 4px 20px;
+  border-left: 3px solid var(--aw-border-strong);
+  color: var(--aw-text-soft);
+  font-size: 15.5px;
+  line-height: 1.6;
+  background: transparent;
+}
+.sl-markdown-content blockquote p {
+  margin: 8px 0;
+  color: inherit;
+}
+
+/* ============ details / summary ============ */
+.sl-markdown-content details {
+  margin: 16px 0;
+  border: 1px solid var(--aw-border);
+  border-radius: var(--aw-radius-md);
+  background: var(--aw-bg-elevated);
+  overflow: hidden;
+}
+.sl-markdown-content details > summary {
+  cursor: pointer;
+  padding: 12px 16px;
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--aw-text);
+  display: flex; align-items: center; gap: 10px;
+  user-select: none;
+  list-style: none;
+}
+.sl-markdown-content details > summary::-webkit-details-marker { display: none; }
+.sl-markdown-content details > summary::before {
+  content: "›";
+  font-family: var(--aw-font-mono);
+  color: var(--aw-text-faint);
+  transition: transform 120ms;
+}
+.sl-markdown-content details[open] > summary::before {
+  transform: rotate(90deg);
+}
+.sl-markdown-content details > *:not(summary) {
+  padding: 0 16px 14px;
+  margin-top: -4px;
+  font-size: 14.5px;
+  color: var(--aw-text-soft);
+  line-height: 1.6;
+}
+
+/* horizontal rule */
+.sl-markdown-content hr {
+  margin: 36px 0;
+  border: 0;
+  border-top: 1px solid var(--aw-border);
+}
+
+/* ============ tables ============
+ * Default markdown <table> picks up the .tbl visual treatment. Variant
+ * classes (.tbl-yesno, .tbl-api, .tbl-scroll) opt in via raw HTML in MDX
+ * for API references or yes/no matrices. */
+.sl-markdown-content table {
+  margin: 18px 0;
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13.5px;
+  border: 1px solid var(--aw-border);
+  border-radius: var(--aw-radius-md);
+  overflow: hidden;
+  background: var(--aw-bg-elevated);
+}
+.sl-markdown-content table th {
+  text-align: left;
+  padding: 10px 12px;
+  background: var(--aw-bg-soft);
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  font-weight: 600;
+  color: var(--aw-text-soft);
+  border-bottom: 1px solid var(--aw-border);
+}
+.sl-markdown-content table td {
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--aw-border);
+  vertical-align: top;
+  color: var(--aw-text);
+}
+.sl-markdown-content table tr:last-child td { border-bottom: 0; }
+.sl-markdown-content table td code,
+.sl-markdown-content table th code { font-size: 11.5px; }
+.sl-markdown-content table tr:hover td { background: var(--aw-bg-soft); }
+
+.sl-markdown-content .tbl-yesno td:nth-child(2),
+.sl-markdown-content .tbl-yesno td:nth-child(3) {
+  text-align: center;
+  font-family: var(--aw-font-mono);
+  font-size: 12px;
+}
+.sl-markdown-content .tbl-yesno .yes     { color: var(--aw-tone-success); }
+.sl-markdown-content .tbl-yesno .no      { color: var(--aw-text-faint); }
+.sl-markdown-content .tbl-yesno .partial { color: var(--aw-tone-warn); }
+
+.sl-markdown-content .tbl-api td:nth-child(1),
+.sl-markdown-content .tbl-api td:nth-child(2),
+.sl-markdown-content .tbl-api td:nth-child(3) { font-family: var(--aw-font-mono); }
+.sl-markdown-content .tbl-api td:nth-child(2),
+.sl-markdown-content .tbl-api td:nth-child(3) {
+  font-size: 11.5px;
+  color: var(--aw-text-soft);
+}
+.sl-markdown-content .tbl-api .req { color: var(--aw-tone-error); font-weight: 500; }
+.sl-markdown-content .tbl-api .opt { color: var(--aw-text-faint); }
+
+/* ============ Starlight Aside → docs-styling callout ============
+ * Starlight renders <Aside type="note|tip|caution|danger"> as
+ * <aside class="starlight-aside starlight-aside--{type}">. We retheme
+ * to match the design's callout palette (icon dot + tinted bg + accent
+ * left border). */
+.sl-markdown-content .starlight-aside {
+  margin: 20px 0;
+  padding: 14px 16px 14px 14px;
+  border-radius: var(--aw-radius-md);
+  border-left: 3px solid var(--c, var(--aw-tone-info));
+  background: var(--bg, color-mix(in oklch, var(--aw-tone-info) 10%, transparent));
+  font-size: 14.5px;
+  color: var(--aw-text);
+  line-height: 1.55;
+}
+.sl-markdown-content .starlight-aside .starlight-aside__title {
+  color: var(--aw-text-strong);
+  font-weight: 600;
+  display: flex; align-items: center; gap: 8px;
+  font-size: 13px;
+  margin-bottom: 4px;
+}
+.sl-markdown-content .starlight-aside .starlight-aside__title::before {
+  content: "";
+  width: 8px; height: 8px;
+  border-radius: 50%;
+  background: var(--c, var(--aw-tone-info));
+  flex: none;
+}
+.sl-markdown-content .starlight-aside .starlight-aside__icon { display: none; }
+.sl-markdown-content .starlight-aside p { color: var(--aw-text); margin: 4px 0; }
+.sl-markdown-content .starlight-aside p:last-child { margin-bottom: 0; }
+.sl-markdown-content .starlight-aside--note     { --c: var(--aw-tone-info);    --bg: color-mix(in oklch, var(--aw-tone-info) 10%, transparent); }
+.sl-markdown-content .starlight-aside--tip      { --c: var(--aw-tone-success); --bg: color-mix(in oklch, var(--aw-tone-success) 10%, transparent); }
+.sl-markdown-content .starlight-aside--caution  { --c: var(--aw-tone-warn);    --bg: color-mix(in oklch, var(--aw-tone-warn) 10%, transparent); }
+.sl-markdown-content .starlight-aside--danger   { --c: var(--aw-tone-error);   --bg: color-mix(in oklch, var(--aw-tone-error) 10%, transparent); }
+
+/* ============ Starlight Steps ============
+ * Renders <ol class="sl-steps">. We add a connector line + numbered
+ * accent circle, matching the design's vertical step guide. */
+.sl-markdown-content .sl-steps {
+  margin: 24px 0;
+  padding-left: 0;
+  list-style: none;
+  counter-reset: step;
+}
+.sl-markdown-content .sl-steps > li {
+  position: relative;
+  padding-left: 50px;
+  margin-bottom: 18px;
+  counter-increment: step;
+  min-height: 36px;
+}
+.sl-markdown-content .sl-steps > li::before {
+  content: counter(step);
+  position: absolute;
+  left: 0; top: 0;
+  width: 32px; height: 32px;
+  border-radius: 50%;
+  background: var(--aw-bg-elevated);
+  border: 2px solid var(--aw-accent);
+  color: var(--aw-accent);
+  font-family: var(--aw-font-mono);
+  font-weight: 600;
+  font-size: 13px;
+  display: grid; place-items: center;
+  z-index: 1;
+}
+.sl-markdown-content .sl-steps > li:not(:last-child)::after {
+  content: "";
+  position: absolute;
+  left: 16px; top: 36px;
+  width: 2px;
+  height: calc(100% - 18px);
+  background: var(--aw-border);
+}
+.sl-markdown-content .sl-steps > li > h3,
+.sl-markdown-content .sl-steps > li > h4 {
+  margin-top: 4px;
+}
+
+/* ============ Starlight FileTree ============ */
+.sl-markdown-content starlight-file-tree {
+  display: block;
+  margin: 18px 0;
+  padding: 18px 22px;
+  background: var(--aw-bg-canvas);
+  border: 1px solid var(--aw-border);
+  border-radius: var(--aw-radius-md);
+  font-family: var(--aw-font-mono);
+  font-size: 12.5px;
+  line-height: 1.7;
+  color: var(--aw-text);
+}
+
+/* ============ Starlight Card / CardGrid (in doc pages) ============
+ * Reuses Landing's dcard treatment but scoped here for doc-page usage. */
+.sl-markdown-content .card {
+  padding: 18px;
+  border: 1px solid var(--aw-border);
+  border-radius: var(--aw-radius-md);
+  background: var(--aw-bg-elevated);
+  text-decoration: none;
+  color: var(--aw-text);
+  transition: border-color 120ms, transform 120ms, box-shadow 120ms;
+}
+.sl-markdown-content .card:hover {
+  border-color: var(--aw-border-strong);
+  transform: translateY(-1px);
+  text-decoration: none;
+  box-shadow: 0 0 0 1px var(--aw-border-strong), 0 4px 12px oklch(0% 0 0 / 0.04);
+}
+.sl-markdown-content .card .title {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--aw-text-strong);
+  letter-spacing: -0.005em;
+  margin: 0 0 6px;
+}
+.sl-markdown-content .card p {
+  margin: 0;
+  font-size: 13px;
+  color: var(--aw-text-soft);
+  line-height: 1.55;
+}
+
+/* ============ Starlight Pagination (Prev / Next at page bottom) ============ */
+.pagination-links {
+  margin-top: 56px;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+.pagination-links a {
+  padding: 16px 18px;
+  border: 1px solid var(--aw-border);
+  border-radius: var(--aw-radius-md);
+  background: var(--aw-bg-elevated);
+  text-decoration: none;
+  color: var(--aw-text);
+  transition: border-color 120ms, transform 120ms;
+  display: flex; flex-direction: column; gap: 4px;
+}
+.pagination-links a:hover {
+  border-color: var(--aw-border-strong);
+  text-decoration: none;
+  transform: translateY(-1px);
+}
+.pagination-links a > span:first-child {
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--aw-text-faint);
+}
+.pagination-links a > span:last-child {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--aw-text-strong);
+}
+.pagination-links a[rel="next"] {
+  text-align: right;
+  align-items: flex-end;
+}
+
+/* ============ TOC — active section accent ============
+ * Starlight renders <starlight-toc> with internal links. Active link
+ * gets aria-current; bump its weight + accent left border. */
+.right-sidebar nav a[aria-current="true"],
+starlight-toc nav a[aria-current="true"] {
+  color: var(--aw-text-strong);
+  font-weight: 500;
+  border-left: 2px solid var(--aw-accent);
+  padding-left: calc(0.75rem - 2px);
+  background: transparent;
+}
+
+/* ============ doc footer (Edit page + Last updated) ============ */
+.sl-flex.meta,
+footer.sl-flex .meta {
+  font-size: 12.5px;
+  color: var(--aw-text-soft);
+}

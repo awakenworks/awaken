@@ -16,9 +16,10 @@
     "border":        { "$value": "{color.slate-dark.line}",        "$type": "color" },
     "border-strong": { "$value": "{color.slate-dark.line-strong}", "$type": "color" },
 
-    "accent":      { "$value": "{color.indigo-dark.accent}", "$type": "color" },
-    "accent-soft": { "$value": "{color.indigo-dark.soft}",   "$type": "color" },
-    "accent-text": { "$value": "{color.indigo-dark.fg}",     "$type": "color" },
+    "accent":       { "$value": "{color.indigo-dark.accent}", "$type": "color" },
+    "accent-soft":  { "$value": "{color.indigo-dark.soft}",   "$type": "color" },
+    "accent-text":  { "$value": "{color.indigo-dark.fg}",     "$type": "color" },
+    "accent-hover": { "$value": "oklch(76.0% 0.150 240)",     "$type": "color", "$description": "Primary CTA on hover — +8% lighter than accent in dark mode" },
 
     "link":       { "$value": "{color.blue.link-hover}",          "$type": "color" },
     "link-hover": { "$value": "{color.blue.focus}",               "$type": "color" },
@@ -52,6 +53,23 @@
 
     "code-bg":      { "$value": "oklch(20.0% 0.018 250)", "$type": "color" },
     "code-fg":      { "$value": "oklch(94.0% 0.005 80)",  "$type": "color" },
+
+    "code-chrome": {
+      "bg":     { "$value": "oklch(16.0% 0.018 250)", "$type": "color" },
+      "border": { "$value": "oklch(28.0% 0.018 250)", "$type": "color" },
+      "fg":     { "$value": "oklch(72.0% 0.012 250)", "$type": "color" },
+      "faint":  { "$value": "oklch(35.0% 0.018 250)", "$type": "color" }
+    },
+
+    "syntax": {
+      "keyword": { "$value": "oklch(76.0% 0.140 270)", "$type": "color" },
+      "type":    { "$value": "oklch(82.0% 0.135 78)",  "$type": "color" },
+      "string":  { "$value": "oklch(76.0% 0.140 160)", "$type": "color" },
+      "fn":      { "$value": "oklch(78.0% 0.140 220)", "$type": "color" },
+      "comment": { "$value": "oklch(58.0% 0.010 250)", "$type": "color" },
+      "num":     { "$value": "oklch(82.0% 0.140 50)",  "$type": "color" }
+    },
+
     "overlay":      { "$value": "oklch(0% 0 0 / 0.65)",   "$type": "color" }
   }
 }

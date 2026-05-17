@@ -295,6 +295,6 @@ for (tool_id, mode) in &state.modes {
 
 ## Related
 
-- [Add a Plugin](/add-a-plugin/)
-- [Add a Tool](/add-a-tool/)
-- [Optimize Context Window](/optimize-context-window/)
+- [Add a Plugin](/how-to/add-a-plugin/)
+- [Add a Tool](/how-to/add-a-tool/)
+- [Optimize Context Window](/how-to/optimize-context-window/)

@@ -142,9 +142,9 @@ let result = runtime.run_to_completion(request).await?;
 
 根据你的需求选择下一页：
 
-- 添加类型化状态和有状态工具：[第一个 Tool](/../tutorials/first-tool/)
-- 了解事件如何映射到智能体循环：[事件参考](/../reference/events/)
-- 通过 HTTP 暴露智能体：[暴露 HTTP SSE](/../how-to/expose-http-sse/)
+- 添加类型化状态和有状态工具：[第一个 Tool](/zh-cn/../tutorials/first-tool/)
+- 了解事件如何映射到智能体循环：[事件参考](/zh-cn/../reference/events/)
+- 通过 HTTP 暴露智能体：[暴露 HTTP SSE](/zh-cn/../how-to/expose-http-sse/)
 
 ## 常见错误
 
@@ -155,6 +155,6 @@ let result = runtime.run_to_completion(request).await?;
 
 ## 下一步
 
-- [第一个 Tool](/../tutorials/first-tool/)
-- [事件参考](/../reference/events/)
-- [暴露 HTTP SSE](/../how-to/expose-http-sse/)
+- [第一个 Tool](/zh-cn/../tutorials/first-tool/)
+- [事件参考](/zh-cn/../reference/events/)
+- [暴露 HTTP SSE](/zh-cn/../how-to/expose-http-sse/)

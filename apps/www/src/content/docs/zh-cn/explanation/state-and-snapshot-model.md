@@ -103,6 +103,6 @@ pub struct MutationBatch {
 
 ## 另见
 
-- [状态键](/reference/state-keys/)
-- [Run 生命周期与 Phases](/run-lifecycle-and-phases/)
-- [架构](/architecture/)
+- [状态键](/zh-cn/reference/state-keys/)
+- [Run 生命周期与 Phases](/zh-cn/explanation/run-lifecycle-and-phases/)
+- [架构](/zh-cn/explanation/architecture/)

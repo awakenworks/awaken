@@ -1,0 +1,42 @@
+{
+  "os": {
+    "ease": {
+      "$value": [
+        0.2,
+        0.7,
+        0.2,
+        1
+      ],
+      "$type": "cubicBezier",
+      "$description": "House standard ease"
+    },
+    "ease-out": {
+      "$value": [
+        0.16,
+        1,
+        0.3,
+        1
+      ],
+      "$type": "cubicBezier",
+      "$description": "Decelerate-to-rest"
+    },
+    "duration": {
+      "instant": {
+        "$value": "80ms",
+        "$type": "duration"
+      },
+      "fast": {
+        "$value": "120ms",
+        "$type": "duration"
+      },
+      "base": {
+        "$value": "180ms",
+        "$type": "duration"
+      },
+      "slow": {
+        "$value": "280ms",
+        "$type": "duration"
+      }
+    }
+  }
+}

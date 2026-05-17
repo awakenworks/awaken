@@ -1,0 +1,198 @@
+{
+  "os": {
+    "font": {
+      "sans": {
+        "$value": [
+          "Inter",
+          "system-ui",
+          "-apple-system",
+          "Segoe UI",
+          "Roboto",
+          "Arial",
+          "sans-serif"
+        ],
+        "$type": "fontFamily",
+        "$description": "Body type stack (DTCG fontFamily array)"
+      },
+      "mono": {
+        "$value": [
+          "JetBrains Mono",
+          "ui-monospace",
+          "SFMono-Regular",
+          "Roboto Mono",
+          "Menlo",
+          "Monaco",
+          "Consolas",
+          "monospace"
+        ],
+        "$type": "fontFamily"
+      },
+      "size": {
+        "micro": {
+          "$value": "11px",
+          "$type": "dimension"
+        },
+        "xs": {
+          "$value": "12px",
+          "$type": "dimension"
+        },
+        "sm": {
+          "$value": "13px",
+          "$type": "dimension"
+        },
+        "base": {
+          "$value": "14px",
+          "$type": "dimension"
+        },
+        "md": {
+          "$value": "16px",
+          "$type": "dimension"
+        },
+        "lg": {
+          "$value": "20px",
+          "$type": "dimension"
+        },
+        "xl": {
+          "$value": "24px",
+          "$type": "dimension"
+        },
+        "2xl": {
+          "$value": "32px",
+          "$type": "dimension"
+        },
+        "display": {
+          "$value": "40px",
+          "$type": "dimension"
+        },
+        "hero": {
+          "$value": "56px",
+          "$type": "dimension"
+        },
+        "title": {
+          "$value": "30px",
+          "$type": "dimension",
+          "$description": "Awaken add — design role 'title' (page H1)"
+        },
+        "section": {
+          "$value": "14px",
+          "$type": "dimension",
+          "$description": "Awaken add — design role 'section' (subsection heading)"
+        },
+        "heading": {
+          "$value": "20px",
+          "$type": "dimension",
+          "$description": "Awaken add — design role 'heading' (sm heading, alias of lg)"
+        }
+      }
+    },
+    "weight": {
+      "regular": {
+        "$value": 400,
+        "$type": "fontWeight"
+      },
+      "medium": {
+        "$value": 500,
+        "$type": "fontWeight"
+      },
+      "semibold": {
+        "$value": 600,
+        "$type": "fontWeight"
+      },
+      "bold": {
+        "$value": 700,
+        "$type": "fontWeight"
+      }
+    },
+    "leading": {
+      "tight": {
+        "$value": 1.15,
+        "$type": "number"
+      },
+      "snug": {
+        "$value": 1.35,
+        "$type": "number"
+      },
+      "normal": {
+        "$value": 1.5,
+        "$type": "number"
+      },
+      "relaxed": {
+        "$value": 1.65,
+        "$type": "number"
+      }
+    },
+    "tracking": {
+      "hero": {
+        "$value": "-2.4px",
+        "$type": "dimension"
+      },
+      "display": {
+        "$value": "-1.6px",
+        "$type": "dimension"
+      },
+      "xl": {
+        "$value": "-0.96px",
+        "$type": "dimension"
+      },
+      "lg": {
+        "$value": "-0.48px",
+        "$type": "dimension"
+      },
+      "md": {
+        "$value": "-0.2px",
+        "$type": "dimension"
+      },
+      "base": {
+        "$value": "-0.1px",
+        "$type": "dimension"
+      },
+      "tight": {
+        "$value": "-0.3px",
+        "$type": "dimension"
+      },
+      "mono": {
+        "$value": "0.01em",
+        "$type": "dimension"
+      },
+      "caps": {
+        "$value": "0.08em",
+        "$type": "dimension"
+      },
+      "hero-em": {
+        "$value": "-0.040em",
+        "$type": "dimension",
+        "$description": "Awaken add — design v2 hero (em-based)"
+      },
+      "display-em": {
+        "$value": "-0.030em",
+        "$type": "dimension",
+        "$description": "Awaken add — design v2 display"
+      },
+      "title-em": {
+        "$value": "-0.022em",
+        "$type": "dimension",
+        "$description": "Awaken add — design v2 title (page H1)"
+      },
+      "heading-em": {
+        "$value": "-0.015em",
+        "$type": "dimension",
+        "$description": "Awaken add — design v2 heading (17-20px headings)"
+      },
+      "section-em": {
+        "$value": "-0.008em",
+        "$type": "dimension",
+        "$description": "Awaken add — design v2 section heading"
+      },
+      "tight-em": {
+        "$value": "-0.003em",
+        "$type": "dimension",
+        "$description": "Awaken add — design v2 tight (table column header)"
+      },
+      "eyebrow": {
+        "$value": "0.180em",
+        "$type": "dimension",
+        "$description": "Awaken add — design v2 eyebrow (uppercase tracking)"
+      }
+    }
+  }
+}

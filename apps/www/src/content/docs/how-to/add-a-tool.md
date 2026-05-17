@@ -202,5 +202,5 @@ Send a message that should trigger the tool. Inspect the run result to confirm t
 
 ## Related
 
-- [Build an Agent](/build-an-agent/)
-- [Add a Plugin](/add-a-plugin/)
+- [Build an Agent](/how-to/build-an-agent/)
+- [Add a Plugin](/how-to/add-a-plugin/)

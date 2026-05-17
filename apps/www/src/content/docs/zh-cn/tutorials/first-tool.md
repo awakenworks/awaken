@@ -10,8 +10,8 @@ title: "第一个 Tool"
 
 ## 前置条件
 
-- 先完成 [第一个 Agent](/first-agent/)。
-- 复用 [第一个 Agent](/first-agent/) 中的运行时依赖。
+- 先完成 [第一个 Agent](/zh-cn/tutorials/first-agent/)。
+- 复用 [第一个 Agent](/zh-cn/tutorials/first-agent/) 中的运行时依赖。
 
 ```toml
 [dependencies]
@@ -284,9 +284,9 @@ println!("tool_call_done_seen: {}", tool_done);
 
 ## 下一步阅读
 
-- 了解完整工具生命周期：[Tool Trait](/../reference/tool-trait/)
-- 添加跨运行管理状态的插件：[添加插件](/how-to/add-a-plugin/)
-- 学习状态范围规则：[State Keys](/../reference/state-keys/)
+- 了解完整工具生命周期：[Tool Trait](/zh-cn/../reference/tool-trait/)
+- 添加跨运行管理状态的插件：[添加插件](/zh-cn/how-to/add-a-plugin/)
+- 学习状态范围规则：[State Keys](/zh-cn/../reference/state-keys/)
 
 ## 常见错误
 

@@ -11,6 +11,13 @@ const sidebar = JSON.parse(
   readFileSync(new URL("./sidebar.generated.json", import.meta.url), "utf8"),
 );
 
+/* Awaken Shiki theme — colours driven by --aw-syntax-* + --aw-code-* tokens.
+ * Edit packages/design-tokens/tokens/semantic/colors-{light,dark}.json then
+ * resync apps/www/src/styles/shiki/awaken.json. */
+const awakenShikiTheme = JSON.parse(
+  readFileSync(new URL("./src/styles/shiki/awaken.json", import.meta.url), "utf8"),
+);
+
 export default defineConfig({
   site: "https://awaken.dev",
   trailingSlash: "ignore",
@@ -131,12 +138,27 @@ export default defineConfig({
         root: { label: "English", lang: "en" },
         "zh-cn": { label: "简体中文", lang: "zh-CN" },
       },
-      customCss: ["./src/styles/awaken.css"],
+      customCss: [
+        "./src/styles/awaken.css",
+        "./src/styles/landing.css",
+        "./src/styles/docs.css",
+      ],
       editLink: {
         baseUrl: "https://github.com/AwakenWorks/awaken/edit/main/apps/www/",
       },
       lastUpdated: true,
       sidebar,
+      components: {
+        Footer: "./src/components/CustomFooter.astro",
+      },
+      expressiveCode: {
+        themes: [awakenShikiTheme],
+        styleOverrides: {
+          borderColor: "var(--aw-border)",
+          borderRadius: "var(--aw-radius-md)",
+          codeBackground: "var(--aw-code-bg)",
+        },
+      },
     }),
     mdx(),
     sitemap({

@@ -10,8 +10,8 @@ Implement one tool that reads typed state from `ToolCallContext` during executio
 
 ## Prerequisites
 
-- Complete [First Agent](/first-agent/) first.
-- Reuse the runtime dependencies from [First Agent](/first-agent/).
+- Complete [First Agent](/tutorials/first-agent/) first.
+- Reuse the runtime dependencies from [First Agent](/tutorials/first-agent/).
 
 ```toml
 [dependencies]

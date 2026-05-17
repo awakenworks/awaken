@@ -138,6 +138,6 @@ and see the latest snapshot; in-flight runs keep the tool set they resolved with
 
 ## Related
 
-- [Add a Tool](/add-a-tool/)
-- [Add a Plugin](/add-a-plugin/)
-- [Use Skills Subsystem](/use-skills-subsystem/)
+- [Add a Tool](/how-to/add-a-tool/)
+- [Add a Plugin](/how-to/add-a-plugin/)
+- [Use Skills Subsystem](/how-to/use-skills-subsystem/)

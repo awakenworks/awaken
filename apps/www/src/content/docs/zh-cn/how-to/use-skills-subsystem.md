@@ -167,6 +167,6 @@ let runtime = AgentRuntimeBuilder::new()
 
 ## 相关
 
-- [添加 Tool](/add-a-tool/)
-- [添加 Plugin](/add-a-plugin/)
-- [使用 MCP Tools](/use-mcp-tools/)
+- [添加 Tool](/zh-cn/how-to/add-a-tool/)
+- [添加 Plugin](/zh-cn/how-to/add-a-plugin/)
+- [使用 MCP Tools](/zh-cn/how-to/use-mcp-tools/)

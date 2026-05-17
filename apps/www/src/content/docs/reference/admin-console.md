@@ -24,7 +24,7 @@ This page is a **surface inventory**. For walkthroughs, see
 ## Backend dependencies
 
 Every screen consumes one or more endpoints from
-[HTTP API](/http-api/). The console is built so that **no UI element
+[HTTP API](/reference/http-api/). The console is built so that **no UI element
 fabricates data** — when an endpoint returns `503` or `null`, the
 corresponding widget collapses to a placeholder or a "feature disabled"
 notice. This is enforced by code review, not by runtime check.
@@ -184,6 +184,6 @@ the console can show real data:
 ## Related
 
 - [Use the Admin Console](/how-to/use-admin-console/) — operator user manual
-- [HTTP API](/http-api/) — endpoint reference
+- [HTTP API](/reference/http-api/) — endpoint reference
 - [Enable Observability](/how-to/enable-observability/) — turn on
   runtime stats so the agents-list "Inferences" column starts working

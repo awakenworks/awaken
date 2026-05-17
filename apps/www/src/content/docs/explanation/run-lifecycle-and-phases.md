@@ -374,8 +374,8 @@ No events are lost between SSE connections because:
 
 ## See Also
 
-- [HITL and Mailbox](/hitl-and-mailbox/) -- suspension, resume, and decision handling
+- [HITL and Mailbox](/explanation/hitl-and-mailbox/) -- suspension, resume, and decision handling
 - [Tool Execution Modes](/reference/tool-execution-modes/) -- Sequential vs Parallel execution
-- [State and Snapshot Model](/state-and-snapshot-model/) -- how state is read and written during phases
-- [Architecture](/architecture/) -- three-layer overview
+- [State and Snapshot Model](/explanation/state-and-snapshot-model/) -- how state is read and written during phases
+- [Architecture](/explanation/architecture/) -- three-layer overview
 - [Cancellation](/reference/cancellation/) -- auto-cancellation on new message

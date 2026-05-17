@@ -175,7 +175,7 @@ When the `a2a` feature is enabled, the builder supports `with_remote_agents()` t
 
 ## See Also
 
-- [Architecture](/architecture/) -- system layers and request sequence
-- [Run Lifecycle and Phases](/run-lifecycle-and-phases/) -- what happens after resolution
-- [Tool and Plugin Boundary](/tool-and-plugin-boundary/) -- when to use tools vs plugins
-- [Design Tradeoffs](/design-tradeoffs/) -- rationale for key decisions
+- [Architecture](/explanation/architecture/) -- system layers and request sequence
+- [Run Lifecycle and Phases](/explanation/run-lifecycle-and-phases/) -- what happens after resolution
+- [Tool and Plugin Boundary](/explanation/tool-and-plugin-boundary/) -- when to use tools vs plugins
+- [Design Tradeoffs](/explanation/design-tradeoffs/) -- rationale for key decisions

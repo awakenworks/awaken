@@ -147,4 +147,4 @@ and that the `status` field transitions from `"running"` to `"done"`.
 
 - [Tool Trait Reference](/reference/tool-trait/)
 - [Events Reference](/reference/events/)
-- [Add a Tool](/add-a-tool/)
+- [Add a Tool](/how-to/add-a-tool/)

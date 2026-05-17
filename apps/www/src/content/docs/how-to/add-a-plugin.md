@@ -203,5 +203,5 @@ Run the agent and inspect the state snapshot. The `audit_log` key should contain
 
 ## Related
 
-- [Build an Agent](/build-an-agent/)
-- [Add a Tool](/add-a-tool/)
+- [Build an Agent](/how-to/build-an-agent/)
+- [Add a Tool](/how-to/add-a-tool/)

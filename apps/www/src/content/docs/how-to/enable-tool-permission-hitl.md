@@ -193,6 +193,6 @@ The pattern syntax supports:
 
 ## Related
 
-- [Add a Plugin](/add-a-plugin/)
+- [Add a Plugin](/how-to/add-a-plugin/)
 - [HITL and Mailbox](/explanation/hitl-and-mailbox/)
 - [Tool Trait Reference](/reference/tool-trait/)

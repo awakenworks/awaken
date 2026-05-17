@@ -1,0 +1,106 @@
+{
+  "$schema": "vscode://schemas/color-theme",
+  "name": "awaken",
+  "displayName": "Awaken",
+  "type": "dark",
+  "semanticHighlighting": true,
+  "_comment": "Mirrors --aw-syntax-* + --aw-code-* tokens from @awaken/design-tokens. Expressive Code's VS Code theme parser rejects oklch in the 'colors' block, so values here are hex approximations of the oklch source-of-truth (annotated alongside). When you change the syntax tokens in packages/design-tokens/tokens/semantic/colors-{light,dark}.json, resync this file.",
+
+  "colors": {
+    "editor.background": "#1a1d28",
+    "editor.foreground": "#ecebe5",
+    "editorLineNumber.foreground": "#777b85",
+    "editor.selectionBackground": "#5550e959"
+  },
+
+  "tokenColors": [
+    {
+      "_token": "--aw-syntax-comment (oklch 58% 0.010 250)",
+      "scope": ["comment", "comment.block", "comment.line", "punctuation.definition.comment"],
+      "settings": { "foreground": "#777b85", "fontStyle": "italic" }
+    },
+    {
+      "_token": "--aw-syntax-keyword (oklch 76% 0.140 270)",
+      "scope": [
+        "keyword",
+        "keyword.control",
+        "keyword.operator.expression",
+        "keyword.other",
+        "storage",
+        "storage.type",
+        "storage.modifier",
+        "variable.language",
+        "keyword.declaration"
+      ],
+      "settings": { "foreground": "#a297e0" }
+    },
+    {
+      "_token": "--aw-syntax-type (oklch 82% 0.135 78)",
+      "scope": [
+        "entity.name.type",
+        "entity.name.class",
+        "entity.name.namespace",
+        "entity.other.inherited-class",
+        "support.type",
+        "support.class",
+        "meta.type",
+        "meta.generic"
+      ],
+      "settings": { "foreground": "#d8b164" }
+    },
+    {
+      "_token": "--aw-syntax-string (oklch 76% 0.140 160)",
+      "scope": [
+        "string",
+        "string.quoted",
+        "string.quoted.double",
+        "string.quoted.single",
+        "string.template",
+        "punctuation.definition.string"
+      ],
+      "settings": { "foreground": "#5ec19a" }
+    },
+    {
+      "_token": "--aw-syntax-fn (oklch 78% 0.140 220)",
+      "scope": [
+        "entity.name.function",
+        "support.function",
+        "meta.function-call",
+        "entity.name.function.macro",
+        "meta.macro"
+      ],
+      "settings": { "foreground": "#62b3de" }
+    },
+    {
+      "_token": "--aw-syntax-num (oklch 82% 0.140 50)",
+      "scope": [
+        "constant.numeric",
+        "constant.numeric.integer",
+        "constant.numeric.float",
+        "constant.numeric.hex",
+        "constant.language.boolean"
+      ],
+      "settings": { "foreground": "#e6a86b" }
+    },
+    {
+      "_token": "--aw-code-fg (oklch 94% 0.005 80) — punctuation/variables blend with fg",
+      "scope": [
+        "punctuation",
+        "punctuation.separator",
+        "punctuation.terminator",
+        "punctuation.section",
+        "meta.brace",
+        "variable",
+        "variable.other",
+        "meta.path",
+        "support.variable"
+      ],
+      "settings": { "foreground": "#ecebe5" }
+    },
+    {
+      "_token": "--aw-syntax-comment (italic, faded — used for attributes like #[tokio::main])",
+      "scope": ["meta.attribute", "punctuation.definition.annotation", "meta.annotation"],
+      "settings": { "foreground": "#777b85", "fontStyle": "italic" }
+    }
+  ]
+}

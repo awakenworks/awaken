@@ -163,6 +163,6 @@ When the LLM stops due to `MaxTokens` after producing partial text or incomplete
 
 ## Related
 
-- [Build an Agent](/build-an-agent/)
-- [Add a Plugin](/add-a-plugin/)
+- [Build an Agent](/how-to/build-an-agent/)
+- [Add a Plugin](/how-to/add-a-plugin/)
 - [State Keys](/reference/state-keys/)

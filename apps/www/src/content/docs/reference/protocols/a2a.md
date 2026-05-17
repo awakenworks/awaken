@@ -156,5 +156,5 @@ Agents with an `endpoint` field are resolved as remote backend agents when a mat
 
 ## Related
 
-- [Multi-Agent Patterns](/../explanation/multi-agent-patterns/) — delegation and handoff design
+- [Multi-Agent Patterns](/explanation/multi-agent-patterns/) — delegation and handoff design
 - [A2A Specification](https://a2a-protocol.org/latest/specification/) — official protocol reference

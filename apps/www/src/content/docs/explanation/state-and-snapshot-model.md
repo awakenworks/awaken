@@ -150,6 +150,6 @@ Choose shared state when you need **dynamic scoping** or **cross-boundary access
 ## See Also
 
 - [State Keys](/reference/state-keys/)
-- [Run Lifecycle and Phases](/run-lifecycle-and-phases/)
-- [Architecture](/architecture/)
+- [Run Lifecycle and Phases](/explanation/run-lifecycle-and-phases/)
+- [Architecture](/explanation/architecture/)
 - [Use Shared State](/how-to/use-shared-state/)

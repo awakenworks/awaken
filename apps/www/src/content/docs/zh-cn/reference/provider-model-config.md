@@ -193,7 +193,7 @@ Awaken 托管配置不应再使用这些旧字段。
 - `PUT` `api_key: null` 或 `""` 会清空 key。
 
 进程内的存储类型是 `RedactedString`（详见
-[配置参考 — 凭据处理](/config/#凭据处理)）。
+[配置参考 — 凭据处理](/zh-cn/reference/config/#凭据处理)）。
 
 ## Runtime 快照行为
 
@@ -273,6 +273,6 @@ Provider factory 只返回 provider executor；retry 由解析流水线添加，
 
 ## 相关
 
-- [通过配置调优 Agent 行为](/how-to/configure-agent-behavior/)
-- [配置](/config/)
-- [智能体解析](/explanation/agent-resolution/)
+- [通过配置调优 Agent 行为](/zh-cn/how-to/configure-agent-behavior/)
+- [配置](/zh-cn/reference/config/)
+- [智能体解析](/zh-cn/explanation/agent-resolution/)

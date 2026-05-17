@@ -91,6 +91,6 @@ This ensures the frontend receives well-formed block boundaries even though the 
 
 ## Related
 
-- [Events](/events/) -- full `AgentEvent` enum
-- [HTTP API](/http-api/) -- server configuration
-- [Integrate AI SDK Frontend](/../how-to/integrate-ai-sdk-frontend/) -- frontend integration guide
+- [Events](/reference/events/) -- full `AgentEvent` enum
+- [HTTP API](/reference/http-api/) -- server configuration
+- [Integrate AI SDK Frontend](/how-to/integrate-ai-sdk-frontend/) -- frontend integration guide

@@ -120,6 +120,6 @@ pub trait ExecutionBackend: Send + Sync {
 
 ## 另见
 
-- [A2A 协议](/reference/protocols/a2a/)
-- [架构](/architecture/)
-- [Tool 与 Plugin 的边界](/tool-and-plugin-boundary/)
+- [A2A 协议](/zh-cn/reference/protocols/a2a/)
+- [架构](/zh-cn/explanation/architecture/)
+- [Tool 与 Plugin 的边界](/zh-cn/explanation/tool-and-plugin-boundary/)

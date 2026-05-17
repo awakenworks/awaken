@@ -185,6 +185,6 @@ OTel spans follow GenAI semantic conventions: the root agent span uses `gen_ai.o
 
 ## Related
 
-- [Add a Plugin](/add-a-plugin/)
+- [Add a Plugin](/how-to/add-a-plugin/)
 - [Events](/reference/events/)
 - [Architecture](/explanation/architecture/)

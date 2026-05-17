@@ -120,7 +120,7 @@ awaken
 
 ## 另见
 
-- [Run 生命周期与阶段](/run-lifecycle-and-phases/) -- 阶段执行模型
-- [状态与快照模型](/state-and-snapshot-model/) -- 快照隔离详解
-- [设计权衡](/design-tradeoffs/) -- 关键架构决策的理由
-- [工具与插件边界](/tool-and-plugin-boundary/) -- 插件与工具的设计边界
+- [Run 生命周期与阶段](/zh-cn/explanation/run-lifecycle-and-phases/) -- 阶段执行模型
+- [状态与快照模型](/zh-cn/explanation/state-and-snapshot-model/) -- 快照隔离详解
+- [设计权衡](/zh-cn/explanation/design-tradeoffs/) -- 关键架构决策的理由
+- [工具与插件边界](/zh-cn/explanation/tool-and-plugin-boundary/) -- 插件与工具的设计边界

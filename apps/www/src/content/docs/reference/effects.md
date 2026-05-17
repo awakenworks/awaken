@@ -4,7 +4,7 @@ description: "Effects are typed, fire-and-forget side-effect events. Unlike sche
 ---
 
 Effects are typed, fire-and-forget side-effect events. Unlike
-[scheduled actions](/scheduled-actions/) (which execute within a phase
+[scheduled actions](/reference/scheduled-actions/) (which execute within a phase
 convergence loop and can cascade), effects are dispatched **after commit** and
 are **terminal** -- handlers cannot produce new `StateCommand`s, actions, or
 effects.
@@ -256,4 +256,4 @@ handler needs to mutate state or schedule further work.
 ## See also
 
 - [Plugin Internals](/explanation/plugin-internals/)
-- [Scheduled Actions](/scheduled-actions/)
+- [Scheduled Actions](/reference/scheduled-actions/)

@@ -212,7 +212,7 @@ Without this:
   column.
 - Per-agent dashboard cannot render its latency histogram.
 
-See [Enable Observability](/enable-observability/) for the full
+See [Enable Observability](/how-to/enable-observability/) for the full
 recipe.
 
 ## Switch to dark mode
@@ -238,4 +238,4 @@ system colour scheme (`tokens-auto-dark.css` honours
 
 - [Admin Console reference](/reference/admin-console/)
 - [HTTP API](/reference/http-api/)
-- [Enable Observability](/enable-observability/)
+- [Enable Observability](/how-to/enable-observability/)

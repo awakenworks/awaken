@@ -1,0 +1,15 @@
+---
+/**
+ * Replaces Starlight's default Footer with the default + our SiteFooter
+ * stacked below. Splash-template pages (landing) don't invoke the Footer
+ * component, so they keep their inline SiteFooter inside Landing.astro.
+ */
+import Default from "@astrojs/starlight/components/Footer.astro";
+import SiteFooter from "./landing/SiteFooter.astro";
+
+const locale: "en" | "zh-CN" =
+  Astro.currentLocale === "zh-cn" ? "zh-CN" : "en";
+---
+
+<Default><slot /></Default>
+<SiteFooter locale={locale} />

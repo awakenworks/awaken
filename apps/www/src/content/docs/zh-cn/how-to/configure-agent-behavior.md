@@ -188,10 +188,10 @@ curl -sS -X PUT http://localhost:3000/v1/config/agents/research-assistant \
 
 ## 相关
 
-- [Provider 与 Model 配置](/reference/provider-model-config/)
-- [配置](/reference/config/)
-- [HTTP API](/reference/http-api/)
-- [启用工具权限 HITL](/enable-tool-permission-hitl/)
-- [使用 Reminder 插件](/use-reminder-plugin/)
-- [使用延迟加载工具](/use-deferred-tools/)
-- [优化上下文窗口](/optimize-context-window/)
+- [Provider 与 Model 配置](/zh-cn/reference/provider-model-config/)
+- [配置](/zh-cn/reference/config/)
+- [HTTP API](/zh-cn/reference/http-api/)
+- [启用工具权限 HITL](/zh-cn/how-to/enable-tool-permission-hitl/)
+- [使用 Reminder 插件](/zh-cn/how-to/use-reminder-plugin/)
+- [使用延迟加载工具](/zh-cn/how-to/use-deferred-tools/)
+- [优化上下文窗口](/zh-cn/how-to/optimize-context-window/)

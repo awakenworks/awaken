@@ -171,6 +171,6 @@ npm run dev
 
 ## Related
 
-- [Expose HTTP SSE](/expose-http-sse/)
+- [Expose HTTP SSE](/how-to/expose-http-sse/)
 - [AG-UI Protocol Reference](/reference/protocols/ag-ui/)
-- [Integrate AI SDK Frontend](/integrate-ai-sdk-frontend/)
+- [Integrate AI SDK Frontend](/how-to/integrate-ai-sdk-frontend/)

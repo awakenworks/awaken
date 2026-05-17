@@ -87,7 +87,7 @@ description: "本页总结 Awaken 几个关键架构决策及其权衡。"
 
 ## 另见
 
-- [架构](/architecture/) -- 三层设计
-- [状态与快照模型](/state-and-snapshot-model/) -- Snapshot Isolation 详解
-- [Run 生命周期与 Phases](/run-lifecycle-and-phases/) -- phase 执行模型
-- [Tool 与 Plugin 的边界](/tool-and-plugin-boundary/) -- plugin 与 tool 的设计边界
+- [架构](/zh-cn/explanation/architecture/) -- 三层设计
+- [状态与快照模型](/zh-cn/explanation/state-and-snapshot-model/) -- Snapshot Isolation 详解
+- [Run 生命周期与 Phases](/zh-cn/explanation/run-lifecycle-and-phases/) -- phase 执行模型
+- [Tool 与 Plugin 的边界](/zh-cn/explanation/tool-and-plugin-boundary/) -- plugin 与 tool 的设计边界
