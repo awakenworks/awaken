@@ -1,6 +1,7 @@
 @import "@awaken/design-tokens/css/tokens.css";
 @import "@awaken/design-tokens/css/tokens-dark.css";
 @import "@awaken/design-tokens/css/tokens-auto-dark.css";
+@import "@awaken/design-tokens/css/brand-awaken.css";
 
 @tailwind base;
 @tailwind components;
@@ -75,6 +76,15 @@ pre,
 samp {
   font-family: var(--aw-font-mono);
   font-feature-settings: "liga" 1;
+}
+
+/* CJK keeps a native sans alongside mono — pure mono is illegible in
+ * dense Chinese paragraphs. App-specific because it sets font-family
+ * directly (www does the equivalent through Starlight's --sl-font). */
+:root[data-locale="zh-CN"],
+[data-locale="zh-CN"] {
+  font-family: "PingFang SC", "Microsoft YaHei", "Hiragino Sans GB",
+    "Noto Sans CJK SC", "Source Han Sans SC", var(--aw-font-mono);
 }
 
 /* Inline code chip — dark surface + light text, matching the Awaken docs

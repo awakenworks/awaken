@@ -10,6 +10,7 @@
 @import "@awaken/design-tokens/css/tokens.css";
 @import "@awaken/design-tokens/css/tokens-dark.css";
 @import "@awaken/design-tokens/css/tokens-auto-dark.css";
+@import "@awaken/design-tokens/css/brand-awaken.css";
 
 :root,
 :root[data-theme="light"],
@@ -130,4 +131,13 @@ h1.page-title {
 :focus-visible {
   outline: 2px solid var(--aw-focus);
   outline-offset: 2px;
+}
+
+/* CJK keeps a native sans alongside mono — pure mono is illegible in
+ * dense Chinese paragraphs. App-specific because it overrides Starlight's
+ * --sl-font; admin console has the equivalent rule on font-family. */
+:root[lang="zh-CN"],
+[lang="zh-CN"] {
+  --sl-font: "PingFang SC", "Microsoft YaHei", "Hiragino Sans GB",
+    "Noto Sans CJK SC", "Source Han Sans SC", var(--aw-font-mono);
 }
