@@ -26,6 +26,7 @@ fn sample_report(id: &str, passed: bool) -> ReplayReport {
         error_type: None,
         inference_error_count: 0,
         runtime_failure: None,
+        cost_usd: None,
     }
 }
 
@@ -40,12 +41,14 @@ fn sample_run(id: &str, dataset: &str, started: u64) -> EvalRun {
                 cell: None,
                 report: sample_report("alpha", true),
                 trace_run_id: Some("trace-alpha".into()),
+                sample_index: None,
             },
             EvalRunItem {
                 fixture_id: "beta".into(),
                 cell: None,
                 report: sample_report("beta", false),
                 trace_run_id: None,
+                sample_index: None,
             },
         ],
         started_at_secs: started,
@@ -95,6 +98,8 @@ fn file_store_list_filters_by_dataset_and_sorts_newest_first() {
 
     let filter = EvalRunFilter {
         dataset_id: Some("DS1".into()),
+        since_secs: None,
+        until_secs: None,
         limit: None,
     };
     let summaries = store.list(&filter).unwrap();
@@ -114,6 +119,8 @@ fn file_store_list_limit_truncates_after_sort() {
     }
     let filter = EvalRunFilter {
         dataset_id: None,
+        since_secs: None,
+        until_secs: None,
         limit: Some(2),
     };
     let summaries = store.list(&filter).unwrap();
@@ -224,4 +231,82 @@ fn mint_run_id_produces_unique_26_char_ulids() {
     assert_ne!(a, b);
     assert_eq!(a.len(), 26);
     assert_eq!(b.len(), 26);
+}
+
+#[test]
+fn eval_run_item_serde_omits_sample_index_when_none() {
+    // Back-compat: single-sample runs must produce the same JSON shape
+    // they did before the flakiness feature landed — no `sample_index`
+    // field. Catches accidental skip_serializing_if removals.
+    let item = EvalRunItem {
+        fixture_id: "alpha".into(),
+        cell: None,
+        report: sample_report("alpha", true),
+        trace_run_id: None,
+        sample_index: None,
+    };
+    let json = serde_json::to_string(&item).unwrap();
+    assert!(!json.contains("sample_index"), "json: {json}");
+}
+
+#[test]
+fn eval_run_item_serde_round_trips_sample_index() {
+    let item = EvalRunItem {
+        fixture_id: "alpha".into(),
+        cell: None,
+        report: sample_report("alpha", true),
+        trace_run_id: None,
+        sample_index: Some(2),
+    };
+    let json = serde_json::to_string(&item).unwrap();
+    assert!(json.contains(r#""sample_index":2"#));
+    let parsed: EvalRunItem = serde_json::from_str(&json).unwrap();
+    assert_eq!(parsed, item);
+}
+
+#[test]
+fn eval_run_item_deserialises_legacy_json_without_sample_index() {
+    // A pre-flakiness EvalRun JSON on disk must continue to parse.
+    let legacy = r#"{
+        "fixture_id": "alpha",
+        "report": {
+            "fixture_id": "alpha",
+            "passed": true,
+            "failures": [],
+            "final_text": "ok",
+            "inference_count": 1,
+            "tool_count": 0,
+            "tool_failures": 0,
+            "total_input_tokens": 10,
+            "total_output_tokens": 5,
+            "total_tokens": 15,
+            "session_duration_ms": 1
+        }
+    }"#;
+    let parsed: EvalRunItem = serde_json::from_str(legacy).unwrap();
+    assert!(parsed.sample_index.is_none());
+    assert!(parsed.cell.is_none());
+}
+
+#[test]
+fn file_store_list_full_filters_by_since_until() {
+    let tmp = tempfile::tempdir().unwrap();
+    let store = FileEvalRunStore::new(tmp.path()).unwrap();
+    for (id, started) in [
+        ("EARLY", 1_700_000_000),
+        ("MID", 1_700_000_500),
+        ("LATE", 1_700_001_000),
+    ] {
+        store.write(&sample_run(id, "DS", started)).unwrap();
+    }
+    // since=200, until=800 keeps only MID (EARLY < since; LATE >= until).
+    let filter = EvalRunFilter {
+        dataset_id: None,
+        since_secs: Some(1_700_000_200),
+        until_secs: Some(1_700_000_800),
+        limit: None,
+    };
+    let runs = store.list_full(&filter).unwrap();
+    assert_eq!(runs.len(), 1);
+    assert_eq!(runs[0].id, "MID");
 }

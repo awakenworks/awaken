@@ -124,6 +124,8 @@ pub enum DiffEntry {
         fixture_id: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         cell: Option<crate::eval_run::MatrixCell>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        sample_index: Option<u32>,
     },
     /// Baseline passed but the new run failed — a *regression*.
     Regression {
@@ -131,12 +133,16 @@ pub enum DiffEntry {
         new_failures: Vec<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         cell: Option<crate::eval_run::MatrixCell>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        sample_index: Option<u32>,
     },
     /// Baseline failed but the new run passed — a *fix*.
     Fixed {
         fixture_id: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         cell: Option<crate::eval_run::MatrixCell>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        sample_index: Option<u32>,
     },
     /// Both runs failed; failure set differs.
     StillFailing {
@@ -144,6 +150,8 @@ pub enum DiffEntry {
         new_failures: Vec<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         cell: Option<crate::eval_run::MatrixCell>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        sample_index: Option<u32>,
     },
     /// Both runs passed but at least one observable metric drifted
     /// (final text, token counts, tool counts, error_type, etc.).
@@ -155,12 +163,16 @@ pub enum DiffEntry {
         fields: Vec<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         cell: Option<crate::eval_run::MatrixCell>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        sample_index: Option<u32>,
     },
     /// Fixture only present in the baseline (deleted or filtered).
     MissingFromNew {
         fixture_id: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         cell: Option<crate::eval_run::MatrixCell>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        sample_index: Option<u32>,
     },
     /// Fixture only present in the new run (added).
     NewlyAdded {
@@ -168,6 +180,8 @@ pub enum DiffEntry {
         passed: bool,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         cell: Option<crate::eval_run::MatrixCell>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        sample_index: Option<u32>,
     },
 }
 
@@ -194,6 +208,20 @@ impl DiffEntry {
             | DiffEntry::Drift { cell, .. }
             | DiffEntry::MissingFromNew { cell, .. }
             | DiffEntry::NewlyAdded { cell, .. } => cell.as_ref(),
+        }
+    }
+
+    /// Zero-based sample index when produced by a flakiness-sampling run.
+    /// `None` for default single-sample runs.
+    pub fn sample_index(&self) -> Option<u32> {
+        match self {
+            DiffEntry::Unchanged { sample_index, .. }
+            | DiffEntry::Regression { sample_index, .. }
+            | DiffEntry::Fixed { sample_index, .. }
+            | DiffEntry::StillFailing { sample_index, .. }
+            | DiffEntry::Drift { sample_index, .. }
+            | DiffEntry::MissingFromNew { sample_index, .. }
+            | DiffEntry::NewlyAdded { sample_index, .. } => *sample_index,
         }
     }
 
@@ -257,6 +285,13 @@ fn diff_passing_fields(b: &ReplayReport, n: &ReplayReport) -> Vec<String> {
     }
     if b.tool_calls_by_agent != n.tool_calls_by_agent {
         diffs.push("tool_calls_by_agent");
+    }
+    // `cost_usd` is Option<f64>; bit-equality is enough because both
+    // sides compute via the same compute_cost_usd path. A price bump
+    // or token drift turns a passing run into a Drift entry — exactly
+    // what a regression diff should catch.
+    if b.cost_usd != n.cost_usd {
+        diffs.push("cost_usd");
     }
     diffs.into_iter().map(String::from).collect()
 }
@@ -333,6 +368,7 @@ pub fn diff_against_baseline(baseline: &[ReplayReport], new: &[ReplayReport]) ->
             pair_to_entry(
                 id.to_string(),
                 None,
+                None,
                 baseline_map.get(id).copied(),
                 new_map.get(id).copied(),
             )
@@ -353,14 +389,16 @@ pub fn diff_eval_items(
     baseline: &[crate::eval_run::EvalRunItem],
     new: &[crate::eval_run::EvalRunItem],
 ) -> DiffSummary {
-    // Owned `(String, MatrixCell)` keys keep the lifetime story simple
-    // and let us BTreeMap-key without a static empty-cell trick. The
-    // clone cost is negligible (cells are tiny — at most a model_id).
-    type Key = (String, crate::eval_run::MatrixCell);
+    // `(fixture_id, cell, sample_index)` — sample_index defaults to None
+    // (= single-sample run) so legacy diffs key identically to before.
+    // Including the field is what keeps three samples of the same
+    // (fixture, cell) from silently collapsing in a map.
+    type Key = (String, crate::eval_run::MatrixCell, Option<u32>);
     let key_of = |item: &crate::eval_run::EvalRunItem| -> Key {
         (
             item.fixture_id.clone(),
             item.cell.clone().unwrap_or_default(),
+            item.sample_index,
         )
     };
 
@@ -380,7 +418,7 @@ pub fn diff_eval_items(
     let entries = all_keys
         .into_iter()
         .map(|key| {
-            let (fixture_id, cell) = &key;
+            let (fixture_id, cell, sample_index) = &key;
             let cell_opt = if *cell == crate::eval_run::MatrixCell::default() {
                 None
             } else {
@@ -388,7 +426,7 @@ pub fn diff_eval_items(
             };
             let b = baseline_map.get(&key).map(|i| &i.report);
             let n = new_map.get(&key).map(|i| &i.report);
-            pair_to_entry(fixture_id.clone(), cell_opt, b, n)
+            pair_to_entry(fixture_id.clone(), cell_opt, *sample_index, b, n)
         })
         .collect();
 
@@ -401,6 +439,7 @@ pub fn diff_eval_items(
 fn pair_to_entry(
     fixture_id: String,
     cell: Option<crate::eval_run::MatrixCell>,
+    sample_index: Option<u32>,
     baseline: Option<&ReplayReport>,
     new: Option<&ReplayReport>,
 ) -> DiffEntry {
@@ -409,12 +448,17 @@ fn pair_to_entry(
             (true, true) => {
                 let fields = diff_passing_fields(b, n);
                 if fields.is_empty() {
-                    DiffEntry::Unchanged { fixture_id, cell }
+                    DiffEntry::Unchanged {
+                        fixture_id,
+                        cell,
+                        sample_index,
+                    }
                 } else {
                     DiffEntry::Drift {
                         fixture_id,
                         fields,
                         cell,
+                        sample_index,
                     }
                 }
             }
@@ -422,19 +466,30 @@ fn pair_to_entry(
                 fixture_id,
                 new_failures: n.failures.iter().map(|f| f.kind().to_string()).collect(),
                 cell,
+                sample_index,
             },
-            (false, true) => DiffEntry::Fixed { fixture_id, cell },
+            (false, true) => DiffEntry::Fixed {
+                fixture_id,
+                cell,
+                sample_index,
+            },
             (false, false) => DiffEntry::StillFailing {
                 fixture_id,
                 new_failures: n.failures.iter().map(|f| f.kind().to_string()).collect(),
                 cell,
+                sample_index,
             },
         },
-        (Some(_), None) => DiffEntry::MissingFromNew { fixture_id, cell },
+        (Some(_), None) => DiffEntry::MissingFromNew {
+            fixture_id,
+            cell,
+            sample_index,
+        },
         (None, Some(n)) => DiffEntry::NewlyAdded {
             fixture_id,
             passed: n.passed,
             cell,
+            sample_index,
         },
         (None, None) => unreachable!("key collected from at least one side"),
     }

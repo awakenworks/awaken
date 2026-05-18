@@ -147,6 +147,8 @@ mod tests {
             id: "m1".to_owned(),
             provider_id: "openai".to_owned(),
             upstream_model: "gpt-4o".to_owned(),
+            input_token_price_per_million_usd: None,
+            output_token_price_per_million_usd: None,
         };
         assert!(matches!(BuiltinSpec::model(spec), BuiltinSpec::Model(_)));
     }

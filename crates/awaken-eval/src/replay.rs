@@ -72,6 +72,7 @@ mod tests {
             allow_unused_provider_script: false,
             mock_response: mock,
             expect: Expectation::default(),
+            continued_turns: vec![],
         }
     }
 

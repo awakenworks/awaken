@@ -70,6 +70,7 @@ mod tests {
             allow_unused_provider_script: false,
             mock_response: MockResponse::Text { text: "42".into() },
             expect: Expectation::default(),
+            continued_turns: vec![],
         }
     }
 

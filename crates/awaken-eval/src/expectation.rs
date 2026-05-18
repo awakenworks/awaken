@@ -1,8 +1,73 @@
 //! Declarative success criteria for a fixture run.
 
 use serde::{Deserialize, Serialize};
+use serde_json::Value as JsonValue;
 
 use crate::outcome::ReplayRuntimeFailure;
+
+/// How [`Expectation::tool_sequence`] is matched against the recorded tool
+/// invocations.
+///
+/// `Exact` (default) requires the recorded names to equal the expected list
+/// element-wise. `OrderedSubseq` only requires the expected names to appear
+/// as a subsequence — useful when intermediate, unrelated tool calls are
+/// permitted but the *required* ones must still happen in order.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolSequenceMode {
+    #[default]
+    Exact,
+    OrderedSubseq,
+}
+
+impl ToolSequenceMode {
+    pub fn is_default(&self) -> bool {
+        matches!(self, ToolSequenceMode::Exact)
+    }
+}
+
+/// Constraint on how many times a [`ToolCallMatcher`] must match.
+///
+/// `Exactly(0)` is a "must never happen" constraint that complements the
+/// existing [`Expectation::forbidden_tools`] (which is name-only) by adding
+/// an `args_subset` filter.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "op", content = "n", rename_all = "snake_case")]
+pub enum CountConstraint {
+    Exactly(u32),
+    AtLeast(u32),
+    AtMost(u32),
+}
+
+impl CountConstraint {
+    /// Returns `true` when `actual` satisfies the constraint.
+    pub fn allows(self, actual: u32) -> bool {
+        match self {
+            CountConstraint::Exactly(n) => actual == n,
+            CountConstraint::AtLeast(n) => actual >= n,
+            CountConstraint::AtMost(n) => actual <= n,
+        }
+    }
+}
+
+/// A per-call matcher for [`Expectation::required_tool_calls`].
+///
+/// `name` is matched against [`awaken_ext_observability::ToolSpan::name`].
+/// `args_subset`, when set, must be a structural subset of the recorded
+/// `call_arguments`: every key in a JSON object must be present in the
+/// recorded payload with a subset-matching value, primitives must equal
+/// verbatim, and arrays must be the same length and elementwise subset-match
+/// (strict to keep ordering-sensitive args unambiguous).
+///
+/// `count` defaults to "at least one matching call" when omitted.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ToolCallMatcher {
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub args_subset: Option<JsonValue>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub count: Option<CountConstraint>,
+}
 
 /// What a passing replay looks like.
 ///
@@ -25,9 +90,20 @@ pub struct Expectation {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tool_sequence: Vec<String>,
 
+    /// How to interpret `tool_sequence`. Defaults to [`ToolSequenceMode::Exact`]
+    /// so existing fixtures behave unchanged.
+    #[serde(default, skip_serializing_if = "ToolSequenceMode::is_default")]
+    pub tool_sequence_mode: ToolSequenceMode,
+
     /// Tool names the agent must never invoke.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub forbidden_tools: Vec<String>,
+
+    /// Per-call matchers covering tool name + optional args-subset + optional
+    /// count constraint. Independent of `tool_sequence` (which only checks
+    /// names). Empty = no constraint.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub required_tool_calls: Vec<ToolCallMatcher>,
 
     /// Upper bound on input + output tokens summed across the run.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -58,6 +134,7 @@ impl Expectation {
             && self.final_answer_excludes.is_empty()
             && self.tool_sequence.is_empty()
             && self.forbidden_tools.is_empty()
+            && self.required_tool_calls.is_empty()
             && self.max_tokens_total.is_none()
             && self.max_duration_ms.is_none()
             && self.min_judge_score.is_none()
@@ -77,12 +154,28 @@ pub enum Failure {
     /// A forbidden substring appeared in the assistant answer.
     AnswerContainsExcludedPhrase { phrase: String },
     /// The recorded tool sequence does not match the expected order.
+    /// `mode` records which match strategy was used; defaults to `exact` for
+    /// legacy NDJSON lines without the field.
     ToolSequenceMismatch {
         expected: Vec<String>,
         actual: Vec<String>,
+        #[serde(default, skip_serializing_if = "ToolSequenceMode::is_default")]
+        mode: ToolSequenceMode,
     },
     /// A tool listed in `forbidden_tools` was invoked.
     ForbiddenToolUsed { tool: String },
+    /// A [`ToolCallMatcher`] in `required_tool_calls` did not find a
+    /// satisfying invocation. `actual_matches` counts the calls that
+    /// matched both `name` and `args_subset` (if any), letting diffs see
+    /// whether the args filter or the count constraint failed.
+    RequiredToolCallNotSatisfied {
+        name: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        expected_count: Option<CountConstraint>,
+        actual_matches: u32,
+        #[serde(default, skip_serializing_if = "is_false")]
+        args_filter_set: bool,
+    },
     /// The combined token count exceeded the budget.
     TokenBudgetExceeded { budget: u32, actual: u32 },
     /// The recorded session duration exceeded the budget.
@@ -112,6 +205,7 @@ impl Failure {
             Failure::AnswerContainsExcludedPhrase { .. } => "answer_contains_excluded_phrase",
             Failure::ToolSequenceMismatch { .. } => "tool_sequence_mismatch",
             Failure::ForbiddenToolUsed { .. } => "forbidden_tool_used",
+            Failure::RequiredToolCallNotSatisfied { .. } => "required_tool_call_not_satisfied",
             Failure::TokenBudgetExceeded { .. } => "token_budget_exceeded",
             Failure::DurationExceeded { .. } => "duration_exceeded",
             Failure::JudgeBelowThreshold { .. } => "judge_below_threshold",
@@ -119,6 +213,27 @@ impl Failure {
             Failure::ErrorTypeMismatch { .. } => "error_type_mismatch",
             Failure::ReplayRuntimeFailure { .. } => "replay_runtime_failure",
         }
+    }
+}
+
+fn is_false(b: &bool) -> bool {
+    !b
+}
+
+/// Recursive structural subset: every leaf in `subset` must equal the
+/// corresponding leaf in `actual`. Objects are subset-matched key-by-key;
+/// arrays must be the same length with element-wise subset matching;
+/// primitives must equal. Returns `false` when `actual` is `Null` and
+/// `subset` is not.
+pub(crate) fn json_subset(subset: &JsonValue, actual: &JsonValue) -> bool {
+    match (subset, actual) {
+        (JsonValue::Object(s), JsonValue::Object(a)) => s
+            .iter()
+            .all(|(k, sv)| a.get(k).map(|av| json_subset(sv, av)).unwrap_or(false)),
+        (JsonValue::Array(s), JsonValue::Array(a)) => {
+            s.len() == a.len() && s.iter().zip(a).all(|(sv, av)| json_subset(sv, av))
+        }
+        (s, a) => s == a,
     }
 }
 
@@ -146,7 +261,13 @@ mod tests {
             final_answer_contains: vec!["alpha".into(), "beta".into()],
             final_answer_excludes: vec!["secret".into()],
             tool_sequence: vec!["search".into(), "write".into()],
+            tool_sequence_mode: ToolSequenceMode::OrderedSubseq,
             forbidden_tools: vec!["delete".into()],
+            required_tool_calls: vec![ToolCallMatcher {
+                name: "search".into(),
+                args_subset: Some(serde_json::json!({"query": "x"})),
+                count: Some(CountConstraint::AtLeast(1)),
+            }],
             max_tokens_total: Some(5000),
             max_duration_ms: Some(10_000),
             min_judge_score: Some(0.7),
@@ -155,6 +276,80 @@ mod tests {
         let json = serde_json::to_string(&e).unwrap();
         let parsed: Expectation = serde_json::from_str(&json).unwrap();
         assert_eq!(e, parsed);
+    }
+
+    #[test]
+    fn tool_sequence_mode_omitted_in_default_serialised_form() {
+        let e = Expectation {
+            tool_sequence: vec!["a".into()],
+            ..Expectation::default()
+        };
+        let json = serde_json::to_string(&e).unwrap();
+        assert!(!json.contains("tool_sequence_mode"));
+    }
+
+    #[test]
+    fn tool_sequence_mode_emitted_when_non_default() {
+        let e = Expectation {
+            tool_sequence: vec!["a".into()],
+            tool_sequence_mode: ToolSequenceMode::OrderedSubseq,
+            ..Expectation::default()
+        };
+        let json = serde_json::to_string(&e).unwrap();
+        assert!(json.contains(r#""tool_sequence_mode":"ordered_subseq""#));
+    }
+
+    #[test]
+    fn count_constraint_allows_matches_semantics() {
+        assert!(CountConstraint::Exactly(2).allows(2));
+        assert!(!CountConstraint::Exactly(2).allows(1));
+        assert!(CountConstraint::AtLeast(2).allows(5));
+        assert!(!CountConstraint::AtLeast(2).allows(1));
+        assert!(CountConstraint::AtMost(2).allows(2));
+        assert!(!CountConstraint::AtMost(2).allows(3));
+    }
+
+    #[test]
+    fn json_subset_object_subset_matches() {
+        let actual = serde_json::json!({"a": 1, "b": 2, "c": {"d": 3, "e": 4}});
+        let subset = serde_json::json!({"a": 1, "c": {"d": 3}});
+        assert!(json_subset(&subset, &actual));
+    }
+
+    #[test]
+    fn json_subset_object_missing_key_fails() {
+        let actual = serde_json::json!({"a": 1});
+        let subset = serde_json::json!({"b": 2});
+        assert!(!json_subset(&subset, &actual));
+    }
+
+    #[test]
+    fn json_subset_array_requires_equal_length_and_element_match() {
+        let actual = serde_json::json!([1, 2, 3]);
+        assert!(json_subset(&serde_json::json!([1, 2, 3]), &actual));
+        assert!(!json_subset(&serde_json::json!([1, 2]), &actual));
+        assert!(!json_subset(&serde_json::json!([1, 2, 4]), &actual));
+    }
+
+    #[test]
+    fn json_subset_primitive_value_mismatch_fails() {
+        assert!(!json_subset(
+            &serde_json::json!({"x": "a"}),
+            &serde_json::json!({"x": "b"}),
+        ));
+    }
+
+    #[test]
+    fn expectation_with_required_tool_calls_is_not_empty() {
+        let e = Expectation {
+            required_tool_calls: vec![ToolCallMatcher {
+                name: "x".into(),
+                args_subset: None,
+                count: None,
+            }],
+            ..Expectation::default()
+        };
+        assert!(!e.is_empty());
     }
 
     #[test]
@@ -211,8 +406,18 @@ mod tests {
                 Failure::ToolSequenceMismatch {
                     expected: vec!["a".into()],
                     actual: vec![],
+                    mode: ToolSequenceMode::Exact,
                 },
                 "tool_sequence_mismatch",
+            ),
+            (
+                Failure::RequiredToolCallNotSatisfied {
+                    name: "search".into(),
+                    expected_count: Some(CountConstraint::AtLeast(1)),
+                    actual_matches: 0,
+                    args_filter_set: true,
+                },
+                "required_tool_call_not_satisfied",
             ),
             (
                 Failure::ForbiddenToolUsed { tool: "rm".into() },

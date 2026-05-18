@@ -222,6 +222,8 @@ mod tests {
                 id: "opus".to_string(),
                 provider_id: "anthropic".to_string(),
                 upstream_model: "claude-opus-4-0-20250514".to_string(),
+                input_token_price_per_million_usd: None,
+                output_token_price_per_million_usd: None,
             }],
             agents: vec![AgentSpec {
                 id: "coder".into(),

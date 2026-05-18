@@ -246,7 +246,11 @@ impl Replayer for RuntimeReplayer {
 
 impl RuntimeReplayer {
     async fn replay_scripted(&self, fixture: &Fixture) -> ReplayOutcome {
-        let script = fixture.effective_script();
+        // Combined script across turn 0 + every continued turn. The
+        // ScriptedLlmExecutor's pointer advances naturally as each turn's
+        // agent loop pulls events, so concatenation is sufficient — no
+        // mid-replay re-seeding required.
+        let script = fixture.combined_script();
         let sink = InMemorySink::new();
         // When a tee sink is wired (typically by the server's eval-run
         // service to forward into a TraceStore), the observability
@@ -314,34 +318,51 @@ impl RuntimeReplayer {
                 .expect("scripted runtime builds"),
         );
 
-        let request = RunRequest::new(
-            format!("eval-thread-{}", fixture.id),
-            vec![Message::user(&fixture.user_input)],
-        )
-        .with_agent_id(DEFAULT_AGENT_ID);
+        let thread_id = format!("eval-thread-{}", fixture.id);
+        let inputs: Vec<&str> = std::iter::once(fixture.user_input.as_str())
+            .chain(
+                fixture
+                    .continued_turns
+                    .iter()
+                    .map(|t| t.user_input.as_str()),
+            )
+            .collect();
 
         let start = Instant::now();
-        let outcome = runtime.run_to_completion(request).await;
+        let mut final_text = String::new();
+        let mut last_error_msg: Option<String> = None;
+        // Same-thread reuse: each successive run_to_completion loads the
+        // prior turn's history from the in-memory store and appends the
+        // new user input — see RunRequest::thread_id docstring. First
+        // error short-circuits the dialogue; the surviving turns'
+        // expected behaviour is undefined past an error anyway.
+        for input in inputs {
+            let request = RunRequest::new(thread_id.clone(), vec![Message::user(input)])
+                .with_agent_id(DEFAULT_AGENT_ID);
+            match runtime.run_to_completion(request).await {
+                Ok(result) => final_text = result.response,
+                Err(err) => {
+                    final_text = String::new();
+                    last_error_msg = Some(err.to_string());
+                    break;
+                }
+            }
+        }
         let elapsed = start.elapsed();
 
-        let final_text = match &outcome {
-            Ok(result) => result.response.clone(),
-            Err(_) => String::new(),
-        };
-
         let scripted_error = executor.first_error();
-        let error_type = match &outcome {
-            Ok(_) => None,
+        let error_type = match &last_error_msg {
+            None => None,
             // Prefer the *fixture-author-supplied* error_type captured by
             // the executor before the variant got flattened into
             // `AgentLoopError::InferenceFailed(String)`.
-            Err(_) => scripted_error.as_ref().map(|(kind, _msg)| kind.clone()),
+            Some(_) => scripted_error.as_ref().map(|(kind, _msg)| kind.clone()),
         };
 
         let runtime_failure = decide_runtime_failure(
             executor.exhausted_calls(),
             executor.remaining(),
-            outcome.as_ref().err().map(|e| e.to_string()),
+            last_error_msg,
             scripted_error.is_some(),
             fixture.allow_unused_provider_script,
         );

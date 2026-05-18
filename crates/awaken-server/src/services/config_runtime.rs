@@ -2583,11 +2583,7 @@ mod tests {
                     adapter: "openai".into(),
                     ..Default::default()
                 }),
-                BuiltinSpec::Model(ModelBindingSpec {
-                    id: "m1".into(),
-                    provider_id: "p1".into(),
-                    upstream_model: "m1-model".into(),
-                }),
+                BuiltinSpec::Model(ModelBindingSpec::new("m1", "p1", "m1-model")),
                 BuiltinSpec::Agent(Box::new(AgentSpec {
                     id: "a1".into(),
                     model_id: "m1".into(),
@@ -2839,11 +2835,11 @@ mod tests {
                     adapter: "openai".into(),
                     ..Default::default()
                 }),
-                BuiltinSpec::Model(ModelBindingSpec {
-                    id: "seed-model".into(),
-                    provider_id: "seed-provider".into(),
-                    upstream_model: "gpt-4o".into(),
-                }),
+                BuiltinSpec::Model(ModelBindingSpec::new(
+                    "seed-model",
+                    "seed-provider",
+                    "gpt-4o",
+                )),
             ],
         };
 
@@ -2893,11 +2889,11 @@ mod tests {
                     adapter: "openai".into(),
                     ..Default::default()
                 }),
-                BuiltinSpec::Model(ModelBindingSpec {
-                    id: "idem-model".into(),
-                    provider_id: "idem-provider".into(),
-                    upstream_model: "gpt-4o".into(),
-                }),
+                BuiltinSpec::Model(ModelBindingSpec::new(
+                    "idem-model",
+                    "idem-provider",
+                    "gpt-4o",
+                )),
             ],
         };
 
@@ -3069,11 +3065,11 @@ mod tests {
                     adapter: "stub".into(),
                     ..Default::default()
                 }),
-                BuiltinSpec::Model(awaken_contract::ModelBindingSpec {
-                    id: "boot-model".into(),
-                    provider_id: "boot-prov".into(),
-                    upstream_model: "gpt-4o".into(),
-                }),
+                BuiltinSpec::Model(awaken_contract::ModelBindingSpec::new(
+                    "boot-model",
+                    "boot-prov",
+                    "gpt-4o",
+                )),
                 BuiltinSpec::Agent(Box::new(AgentSpec {
                     id: "shared".into(),
                     model_id: "boot-model".into(),
@@ -3152,11 +3148,7 @@ mod tests {
                     adapter: "openai".into(),
                     ..Default::default()
                 }),
-                BuiltinSpec::Model(ModelBindingSpec {
-                    id: "m".into(),
-                    provider_id: "p".into(),
-                    upstream_model: "gpt-4o".into(),
-                }),
+                BuiltinSpec::Model(ModelBindingSpec::new("m", "p", "gpt-4o")),
                 BuiltinSpec::Agent(Box::new(AgentSpec {
                     id: "x".into(),
                     model_id: "m".into(),
@@ -3216,11 +3208,7 @@ mod tests {
                     adapter: "openai".into(),
                     ..Default::default()
                 }),
-                BuiltinSpec::Model(ModelBindingSpec {
-                    id: "m".into(),
-                    provider_id: "p".into(),
-                    upstream_model: "gpt-4o".into(),
-                }),
+                BuiltinSpec::Model(ModelBindingSpec::new("m", "p", "gpt-4o")),
                 BuiltinSpec::Agent(Box::new(AgentSpec {
                     id: "a".into(),
                     model_id: "m".into(),
@@ -3310,11 +3298,7 @@ mod tests {
                     adapter: "openai".into(),
                     ..Default::default()
                 }),
-                BuiltinSpec::Model(ModelBindingSpec {
-                    id: "m".into(),
-                    provider_id: "p".into(),
-                    upstream_model: "gpt-4o".into(),
-                }),
+                BuiltinSpec::Model(ModelBindingSpec::new("m", "p", "gpt-4o")),
                 BuiltinSpec::Agent(Box::new(AgentSpec {
                     id: "y".into(),
                     model_id: "m".into(),
@@ -3366,11 +3350,7 @@ mod tests {
                     adapter: "openai".into(),
                     ..Default::default()
                 }),
-                BuiltinSpec::Model(ModelBindingSpec {
-                    id: "m".into(),
-                    provider_id: "p".into(),
-                    upstream_model: "gpt-4o".into(),
-                }),
+                BuiltinSpec::Model(ModelBindingSpec::new("m", "p", "gpt-4o")),
             ],
         };
         manager.apply_seed(&seed).await.expect("apply_seed");
@@ -3428,11 +3408,7 @@ mod tests {
                     adapter: "openai".into(),
                     ..Default::default()
                 }),
-                BuiltinSpec::Model(ModelBindingSpec {
-                    id: "m".into(),
-                    provider_id: "p".into(),
-                    upstream_model: "gpt-4o".into(),
-                }),
+                BuiltinSpec::Model(ModelBindingSpec::new("m", "p", "gpt-4o")),
                 BuiltinSpec::Agent(Box::new(AgentSpec {
                     id: "a".into(),
                     model_id: "m".into(),
@@ -3463,11 +3439,7 @@ mod tests {
                     adapter: "openai".into(),
                     ..Default::default()
                 }),
-                BuiltinSpec::Model(ModelBindingSpec {
-                    id: "m".into(),
-                    provider_id: "p".into(),
-                    upstream_model: "gpt-4o".into(),
-                }),
+                BuiltinSpec::Model(ModelBindingSpec::new("m", "p", "gpt-4o")),
                 BuiltinSpec::Agent(Box::new(AgentSpec {
                     id: "a".into(),
                     model_id: "m".into(),
@@ -3636,11 +3608,7 @@ mod tests {
                     adapter: "openai".into(),
                     ..Default::default()
                 }),
-                BuiltinSpec::Model(ModelBindingSpec {
-                    id: "test-model".into(),
-                    provider_id: "test-prov".into(),
-                    upstream_model: "gpt-4o".into(),
-                }),
+                BuiltinSpec::Model(ModelBindingSpec::new("test-model", "test-prov", "gpt-4o")),
                 BuiltinSpec::Agent(Box::new(AgentSpec {
                     id: "agent-using-echo".into(),
                     model_id: "test-model".into(),

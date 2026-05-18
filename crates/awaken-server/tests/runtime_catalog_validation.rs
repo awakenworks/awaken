@@ -78,6 +78,8 @@ async fn make_manager() -> (ConfigRuntimeManager, Arc<dyn ConfigStore>) {
                 id: "m".into(),
                 provider_id: "p".into(),
                 upstream_model: "gpt-4o".into(),
+                input_token_price_per_million_usd: None,
+                output_token_price_per_million_usd: None,
             }),
         ],
     };

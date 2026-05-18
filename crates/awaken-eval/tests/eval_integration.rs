@@ -290,6 +290,7 @@ async fn trace_curate_round_trips_through_file_store_and_replays() {
         allow_unused_provider_script: false,
         mock_response: MockResponse::default(),
         expect: Expectation::default(),
+        continued_turns: vec![],
     };
 
     let outcomes = replay_all(&RuntimeReplayer::new(), std::slice::from_ref(&fixture)).await;
@@ -358,6 +359,7 @@ mod live_mode {
             allow_unused_provider_script: false,
             mock_response: MockResponse::default(),
             expect: Expectation::default(),
+            continued_turns: vec![],
         }
     }
 
@@ -462,4 +464,103 @@ async fn trace_curate_preserves_multi_turn_order() {
     let events = store.read(run_id).unwrap();
     let conversion = trace_to_provider_script(&events).unwrap();
     assert_eq!(conversion.provider_script.len(), 2);
+}
+
+// ── Multi-turn dialogue replay ──────────────────────────────────────
+
+#[tokio::test]
+async fn dialogue_fixture_replays_two_turns_on_same_thread() {
+    // Turn 0 responds "first answer"; turn 1 responds "second answer".
+    // Combined script feeds both turns; ScriptedLlmExecutor pointer
+    // advances across turns. final_text is the LAST turn's reply.
+    use awaken_contract::contract::inference::{StopReason, TokenUsage};
+    use awaken_eval::fixture::DialogueTurn;
+    use awaken_runtime::engine::ProviderScriptEvent;
+    fn turn_response(text: &str) -> ProviderScriptEvent {
+        ProviderScriptEvent::ChatResponse {
+            content: text.into(),
+            tokens: TokenUsage {
+                prompt_tokens: Some(5),
+                completion_tokens: Some(3),
+                total_tokens: Some(8),
+                ..Default::default()
+            },
+            finish_reason: StopReason::EndTurn,
+        }
+    }
+    let fixture = Fixture {
+        id: "dialogue-2".into(),
+        description: None,
+        user_input: "hello".into(),
+        provider_script: vec![turn_response("first answer")],
+        source_run_id: None,
+        source_model_id: None,
+        allow_unused_provider_script: false,
+        mock_response: MockResponse::default(),
+        expect: Expectation {
+            final_answer_contains: vec!["second answer".into()],
+            ..Expectation::default()
+        },
+        continued_turns: vec![DialogueTurn {
+            user_input: "follow up".into(),
+            provider_script: vec![turn_response("second answer")],
+        }],
+    };
+    let replayer = RuntimeReplayer::new();
+    let outcomes = replay_all(&replayer, std::slice::from_ref(&fixture)).await;
+    let outcome = &outcomes[0];
+    assert_eq!(outcome.final_text, "second answer");
+    // Both turns' inference spans landed in metrics.
+    assert_eq!(outcome.metrics.inferences.len(), 2);
+    // Tokens summed across turns: 8 + 8 = 16.
+    assert_eq!(outcome.total_tokens(), 16);
+    assert!(
+        outcome.runtime_failure.is_none(),
+        "{:?}",
+        outcome.runtime_failure
+    );
+    // Scoring against last-turn final_text passes.
+    assert!(score(outcome, &fixture.expect).is_empty());
+}
+
+#[tokio::test]
+async fn dialogue_fixture_first_turn_error_short_circuits_second() {
+    // When turn 0 surfaces a scripted error, the dialogue must abort
+    // BEFORE attempting turn 1 — otherwise the second turn's script
+    // would get consumed against a broken thread and the test would
+    // see a stale "ProviderScriptUnused" signal for the wrong reason.
+    use awaken_eval::fixture::DialogueTurn;
+    use awaken_runtime::engine::ProviderScriptEvent;
+    let fixture = Fixture {
+        id: "dialogue-err".into(),
+        description: None,
+        user_input: "broken".into(),
+        provider_script: vec![ProviderScriptEvent::Error {
+            error_type: "rate_limit".into(),
+            message: "429".into(),
+        }],
+        source_run_id: None,
+        source_model_id: None,
+        allow_unused_provider_script: true,
+        mock_response: MockResponse::default(),
+        expect: Expectation::default(),
+        continued_turns: vec![DialogueTurn {
+            user_input: "follow up never sent".into(),
+            provider_script: vec![ProviderScriptEvent::ChatResponse {
+                content: "unreachable".into(),
+                tokens: Default::default(),
+                finish_reason: awaken_contract::contract::inference::StopReason::EndTurn,
+            }],
+        }],
+    };
+    let replayer = RuntimeReplayer::new();
+    let outcomes = replay_all(&replayer, std::slice::from_ref(&fixture)).await;
+    let outcome = &outcomes[0];
+    assert_eq!(outcome.error_type.as_deref(), Some("rate_limit"));
+    assert_eq!(outcome.final_text, "");
+    // Turn 1's script event must remain unused — the dialogue did
+    // not advance past the error.
+    // (allow_unused_provider_script=true suppresses the Failure but the
+    // count itself is still observable via metrics.)
+    assert_eq!(outcome.metrics.inferences.len(), 0, "turn 1 must not fire");
 }

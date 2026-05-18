@@ -57,6 +57,26 @@ pub struct Fixture {
     /// Success criteria.
     #[serde(default)]
     pub expect: Expectation,
+    /// Additional dialogue turns after the initial `user_input`. When
+    /// non-empty, [`RuntimeReplayer`] runs N+1 successive agent loops on
+    /// the same thread (turn 0 = `user_input` + `provider_script`, turns
+    /// 1..N = `continued_turns[i].user_input` + their scripts), so
+    /// multi-user-turn conversations replay faithfully.
+    ///
+    /// Empty by default; legacy single-turn fixtures behave unchanged.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub continued_turns: Vec<DialogueTurn>,
+}
+
+/// One follow-up user turn in a multi-turn dialogue fixture. Mirrors the
+/// `(user_input, provider_script)` pair on [`Fixture`] but without the
+/// fixture-wide metadata (id / source_run_id / expect — those live on
+/// the parent `Fixture` only).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DialogueTurn {
+    pub user_input: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub provider_script: Vec<ProviderScriptEvent>,
 }
 
 /// Legacy single-turn response specifier, superseded by
@@ -162,6 +182,18 @@ impl Fixture {
                 message: message.clone(),
             }],
         }
+    }
+
+    /// `effective_script` (turn 0) concatenated with every
+    /// [`DialogueTurn::provider_script`]. The replayer consumes this as
+    /// one combined script — the [`ScriptedLlmExecutor`] pointer advances
+    /// naturally as each turn's agent loop pulls events.
+    pub fn combined_script(&self) -> Vec<ProviderScriptEvent> {
+        let mut script = self.effective_script();
+        for turn in &self.continued_turns {
+            script.extend(turn.provider_script.iter().cloned());
+        }
+        script
     }
 }
 

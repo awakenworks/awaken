@@ -672,7 +672,7 @@ async fn start_eval_run_caps_total_cells() {
         body["error"]
             .as_str()
             .unwrap_or("")
-            .contains("expands to 150 cells"),
+            .contains("expands to 150 units"),
         "body: {body}"
     );
 }
@@ -746,6 +746,677 @@ async fn online_eval_404s_on_unknown_model() {
     );
 }
 
+// ── Flakiness sampling (samples=N per cell) — validation paths ───────────
+
+#[tokio::test]
+async fn start_eval_run_400s_when_samples_above_cap() {
+    let app = build_test_app().await;
+    let fixtures = vec![sample_fixture("f1")];
+    let (status, _) = request(
+        &app.router,
+        "POST",
+        "/v1/eval/datasets",
+        Some(json!({ "id": "DS-S", "spec": { "fixtures": fixtures } })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, body) = request(
+        &app.router,
+        "POST",
+        "/v1/eval/runs",
+        Some(json!({
+            "dataset_id": "DS-S",
+            "models": ["m1"],
+            "samples": 50,
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(
+        body["error"].as_str().unwrap_or("").contains("samples=50"),
+        "body: {body}"
+    );
+}
+
+#[tokio::test]
+async fn start_eval_run_400s_when_samples_without_models() {
+    let app = build_test_app().await;
+    let fixtures = vec![sample_fixture("f1")];
+    let (status, _) = request(
+        &app.router,
+        "POST",
+        "/v1/eval/datasets",
+        Some(json!({ "id": "DS-S2", "spec": { "fixtures": fixtures } })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, body) = request(
+        &app.router,
+        "POST",
+        "/v1/eval/runs",
+        Some(json!({
+            "dataset_id": "DS-S2",
+            "samples": 3,
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(
+        body["error"]
+            .as_str()
+            .unwrap_or("")
+            .contains("deterministic"),
+        "body: {body}"
+    );
+}
+
+#[tokio::test]
+async fn start_eval_run_400s_when_samples_blow_total_units() {
+    // 25 fixtures × 2 models × 3 samples = 150 > MAX_CELLS_PER_SYNC_RUN (100).
+    let app = build_test_app().await;
+    let fixtures: Vec<_> = (0..25).map(|i| sample_fixture(&format!("f{i}"))).collect();
+    let (status, _) = request(
+        &app.router,
+        "POST",
+        "/v1/eval/datasets",
+        Some(json!({ "id": "DS-S3", "spec": { "fixtures": fixtures } })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, body) = request(
+        &app.router,
+        "POST",
+        "/v1/eval/runs",
+        Some(json!({
+            "dataset_id": "DS-S3",
+            "models": ["m1", "m2"],
+            "samples": 3,
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(
+        body["error"].as_str().unwrap_or("").contains("150 units"),
+        "body: {body}"
+    );
+}
+
+#[tokio::test]
+async fn online_eval_400s_on_samples_above_cap() {
+    let app = build_test_app().await;
+    let (status, body) = request(
+        &app.router,
+        "POST",
+        "/v1/eval/online",
+        Some(json!({ "user_input": "test", "models": ["m"], "samples": 50 })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(
+        body["error"].as_str().unwrap_or("").contains("samples=50"),
+        "body: {body}"
+    );
+}
+
+#[tokio::test]
+async fn online_eval_400s_when_total_units_blow_cap() {
+    // 4 models × 3 samples = 12 > MAX_CELLS_PER_SYNC_ONLINE (10).
+    let app = build_test_app().await;
+    let (status, body) = request(
+        &app.router,
+        "POST",
+        "/v1/eval/online",
+        Some(json!({
+            "user_input": "test",
+            "models": ["m1", "m2", "m3", "m4"],
+            "samples": 3,
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(
+        body["error"].as_str().unwrap_or("").contains("12 units"),
+        "body: {body}"
+    );
+}
+
+// ── LLM-as-judge — validation paths ──────────────────────────────────────
+
+#[tokio::test]
+async fn start_eval_run_400s_when_judge_without_models() {
+    let app = build_test_app().await;
+    let fixtures = vec![sample_fixture("f1")];
+    let (status, _) = request(
+        &app.router,
+        "POST",
+        "/v1/eval/datasets",
+        Some(json!({ "id": "DS-J", "spec": { "fixtures": fixtures } })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, body) = request(
+        &app.router,
+        "POST",
+        "/v1/eval/runs",
+        Some(json!({
+            "dataset_id": "DS-J",
+            "judge": { "model_id": "some-judge" },
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(
+        body["error"].as_str().unwrap_or("").contains("judge"),
+        "body: {body}"
+    );
+}
+
+#[tokio::test]
+async fn start_eval_run_404s_on_unknown_judge_model() {
+    let app = build_test_app().await;
+    let fixtures = vec![sample_fixture("f1")];
+    let (status, _) = request(
+        &app.router,
+        "POST",
+        "/v1/eval/datasets",
+        Some(json!({ "id": "DS-J2", "spec": { "fixtures": fixtures } })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, body) = request(
+        &app.router,
+        "POST",
+        "/v1/eval/runs",
+        Some(json!({
+            "dataset_id": "DS-J2",
+            "models": ["replay-model"],
+            "judge": { "model_id": "missing-judge" },
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert!(
+        body["error"]
+            .as_str()
+            .unwrap_or("")
+            .contains("missing-judge"),
+        "body: {body}"
+    );
+}
+
+#[tokio::test]
+async fn online_eval_404s_on_unknown_judge_model() {
+    let app = build_test_app().await;
+    let (status, body) = request(
+        &app.router,
+        "POST",
+        "/v1/eval/online",
+        Some(json!({
+            "user_input": "test",
+            "models": ["m"],
+            "judge": { "model_id": "missing-judge" },
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    let err = body["error"].as_str().unwrap_or("");
+    assert!(
+        err.contains("missing-judge") || err.contains("m"),
+        "body: {body}"
+    );
+}
+
+// ── Import from prod traces (POST /v1/eval/datasets/:id/import-traces) ──
+
+#[tokio::test]
+async fn import_traces_appends_curatable_traces_and_skips_existing() {
+    let app = build_test_app().await;
+    // Seed two traces with content capture + write indices so list()
+    // returns them.
+    use awaken_ext_observability::trace_store::RunSummary;
+    use std::time::{Duration, UNIX_EPOCH};
+    for (id, started) in [
+        ("01HXIMP0000000000000000001", 1_700_000_100),
+        ("01HXIMP0000000000000000002", 1_700_000_200),
+    ] {
+        app.trace_store
+            .append(
+                id,
+                &MetricsEvent::Inference(captured_inference_span(id, "ok", true)),
+            )
+            .unwrap();
+        let summary = RunSummary {
+            run_id: id.into(),
+            agent_id: "default".into(),
+            started_at: UNIX_EPOCH + Duration::from_secs(started),
+            ended_at: None,
+            prompt_ids: vec![],
+            experiment_id: None,
+            variant_name: None,
+            final_status: None,
+            judge_score: None,
+        };
+        app.trace_store.write_index_for_run(id, &summary).unwrap();
+    }
+
+    // Empty dataset to receive imported fixtures.
+    let (status, body) = request(
+        &app.router,
+        "POST",
+        "/v1/eval/datasets",
+        Some(json!({ "id": "DS-IMP", "spec": {} })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let rev = body["meta"]["revision"].as_u64().unwrap();
+
+    // First import — two new fixtures land.
+    let (status, body) = request(
+        &app.router,
+        "POST",
+        "/v1/eval/datasets/DS-IMP/import-traces",
+        Some(json!({ "expected_revision": rev })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "body: {body}");
+    assert_eq!(body["imported_count"], 2);
+    assert_eq!(body["skipped_count"], 0);
+    let new_rev = body["dataset_revision"].as_u64().unwrap();
+
+    // Second import with same traces — all skipped (no clobber), no
+    // revision bump.
+    let (status, body) = request(
+        &app.router,
+        "POST",
+        "/v1/eval/datasets/DS-IMP/import-traces",
+        Some(json!({ "expected_revision": new_rev })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["imported_count"], 0);
+    assert_eq!(body["skipped_count"], 2);
+    assert_eq!(body["dataset_revision"], new_rev);
+}
+
+#[tokio::test]
+async fn import_traces_409s_on_stale_revision() {
+    let app = build_test_app().await;
+    let (_, body) = request(
+        &app.router,
+        "POST",
+        "/v1/eval/datasets",
+        Some(json!({ "id": "DS-IMP2", "spec": {} })),
+    )
+    .await;
+    let rev = body["meta"]["revision"].as_u64().unwrap();
+    let (status, body) = request(
+        &app.router,
+        "POST",
+        "/v1/eval/datasets/DS-IMP2/import-traces",
+        Some(json!({ "expected_revision": rev + 99 })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert!(
+        body["error"]
+            .as_str()
+            .unwrap_or("")
+            .contains("revision conflict"),
+        "body: {body}"
+    );
+}
+
+#[tokio::test]
+async fn import_traces_400s_when_trace_lacks_user_and_skip_disabled() {
+    let app = build_test_app().await;
+    use awaken_ext_observability::trace_store::RunSummary;
+    use std::time::{Duration, UNIX_EPOCH};
+    let id = "01HXIMP0000000000000000099";
+    app.trace_store
+        .append(
+            id,
+            &MetricsEvent::Inference(captured_inference_span(id, "ok", false)),
+        )
+        .unwrap();
+    let summary = RunSummary {
+        run_id: id.into(),
+        agent_id: "default".into(),
+        started_at: UNIX_EPOCH + Duration::from_secs(1_700_000_300),
+        ended_at: None,
+        prompt_ids: vec![],
+        experiment_id: None,
+        variant_name: None,
+        final_status: None,
+        judge_score: None,
+    };
+    app.trace_store.write_index_for_run(id, &summary).unwrap();
+
+    let (_, body) = request(
+        &app.router,
+        "POST",
+        "/v1/eval/datasets",
+        Some(json!({ "id": "DS-IMP3", "spec": {} })),
+    )
+    .await;
+    let rev = body["meta"]["revision"].as_u64().unwrap();
+
+    // Default (skip_uncuratable=false) surfaces the missing user_input as 400.
+    let (status, body) = request(
+        &app.router,
+        "POST",
+        "/v1/eval/datasets/DS-IMP3/import-traces",
+        Some(json!({ "expected_revision": rev })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(
+        body["error"]
+            .as_str()
+            .unwrap_or("")
+            .contains("request_messages"),
+        "body: {body}"
+    );
+
+    // With skip flag set, the same call returns 200 / imported=0.
+    let (status, body) = request(
+        &app.router,
+        "POST",
+        "/v1/eval/datasets/DS-IMP3/import-traces",
+        Some(json!({ "expected_revision": rev, "skip_uncuratable": true })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["imported_count"], 0);
+    assert_eq!(body["skipped_count"], 1);
+}
+
+// ── Dialogue importer (POST /v1/eval/datasets/:id/import-dialogue) ──────
+
+#[tokio::test]
+async fn import_dialogue_stitches_runs_into_multiturn_fixture() {
+    let app = build_test_app().await;
+    // Seed two captured runs to act as the two dialogue turns.
+    for (id, text) in [
+        ("01HXDLG0000000000000000001", "first answer"),
+        ("01HXDLG0000000000000000002", "second answer"),
+    ] {
+        app.trace_store
+            .append(
+                id,
+                &MetricsEvent::Inference(captured_inference_span(id, text, true)),
+            )
+            .unwrap();
+    }
+    // Empty dataset to receive the stitched dialogue.
+    let (_, body) = request(
+        &app.router,
+        "POST",
+        "/v1/eval/datasets",
+        Some(json!({ "id": "DS-DLG", "spec": {} })),
+    )
+    .await;
+    let rev = body["meta"]["revision"].as_u64().unwrap();
+
+    let (status, body) = request(
+        &app.router,
+        "POST",
+        "/v1/eval/datasets/DS-DLG/import-dialogue",
+        Some(json!({
+            "expected_revision": rev,
+            "run_ids": [
+                "01HXDLG0000000000000000001",
+                "01HXDLG0000000000000000002",
+            ],
+            "fixture_id": "two-turn-dialogue",
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "body: {body}");
+    assert_eq!(body["fixture_id"], "two-turn-dialogue");
+
+    // Verify the stitched fixture has 1 turn 0 + 1 continued turn.
+    let (_, body) = request(&app.router, "GET", "/v1/eval/datasets/DS-DLG", None).await;
+    let fx = &body["spec"]["fixtures"][0];
+    assert_eq!(fx["id"], "two-turn-dialogue");
+    assert_eq!(fx["user_input"], "auto prompt");
+    let continued = fx["continued_turns"].as_array().unwrap();
+    assert_eq!(continued.len(), 1, "second run becomes one continued turn");
+    assert_eq!(continued[0]["user_input"], "auto prompt");
+}
+
+#[tokio::test]
+async fn import_dialogue_400s_on_empty_run_ids() {
+    let app = build_test_app().await;
+    let (_, body) = request(
+        &app.router,
+        "POST",
+        "/v1/eval/datasets",
+        Some(json!({ "id": "DS-DLG2", "spec": {} })),
+    )
+    .await;
+    let rev = body["meta"]["revision"].as_u64().unwrap();
+    let (status, body) = request(
+        &app.router,
+        "POST",
+        "/v1/eval/datasets/DS-DLG2/import-dialogue",
+        Some(json!({ "expected_revision": rev, "run_ids": [] })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(
+        body["error"].as_str().unwrap_or("").contains("non-empty"),
+        "body: {body}"
+    );
+}
+
+#[tokio::test]
+async fn import_dialogue_409s_on_duplicate_fixture_id() {
+    let app = build_test_app().await;
+    let run_id = "01HXDLG0000000000000000099";
+    app.trace_store
+        .append(
+            run_id,
+            &MetricsEvent::Inference(captured_inference_span(run_id, "hi", true)),
+        )
+        .unwrap();
+    // Dataset that already has a fixture with the would-be name.
+    let (_, body) = request(
+        &app.router,
+        "POST",
+        "/v1/eval/datasets",
+        Some(json!({
+            "id": "DS-DLG3",
+            "spec": { "fixtures": [sample_fixture("already-here")] }
+        })),
+    )
+    .await;
+    let rev = body["meta"]["revision"].as_u64().unwrap();
+
+    let (status, body) = request(
+        &app.router,
+        "POST",
+        "/v1/eval/datasets/DS-DLG3/import-dialogue",
+        Some(json!({
+            "expected_revision": rev,
+            "run_ids": [run_id],
+            "fixture_id": "already-here",
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert!(
+        body["error"]
+            .as_str()
+            .unwrap_or("")
+            .contains("already-here"),
+        "body: {body}"
+    );
+}
+
+// ── Cross-run trend (GET /v1/eval/trend) ─────────────────────────────────
+
+fn seeded_run(id: &str, dataset_id: &str, started: u64, items: Vec<EvalRunItem>) -> EvalRun {
+    EvalRun {
+        id: id.into(),
+        dataset_id: dataset_id.into(),
+        dataset_revision: 1,
+        items,
+        started_at_secs: started,
+        ended_at_secs: started + 1,
+    }
+}
+
+fn item_with_model(
+    fixture_id: &str,
+    passed: bool,
+    model: Option<&str>,
+    cost: Option<f64>,
+    duration_ms: u64,
+) -> EvalRunItem {
+    use awaken_eval::{MatrixCell, ReplayReport};
+    EvalRunItem {
+        fixture_id: fixture_id.into(),
+        cell: model.map(|m| MatrixCell {
+            model_id: Some(m.into()),
+        }),
+        report: ReplayReport {
+            fixture_id: fixture_id.into(),
+            passed,
+            failures: vec![],
+            final_text: "".into(),
+            inference_count: 1,
+            tool_count: 0,
+            tool_failures: 0,
+            total_input_tokens: 1,
+            total_output_tokens: 1,
+            total_tokens: 2,
+            session_duration_ms: duration_ms,
+            elapsed_ms: 0,
+            tool_calls_by_agent: vec![],
+            error_type: None,
+            inference_error_count: 0,
+            runtime_failure: None,
+            cost_usd: cost,
+        },
+        trace_run_id: None,
+        sample_index: None,
+    }
+}
+
+#[tokio::test]
+async fn trend_default_groups_all_items_into_single_series() {
+    let app = build_test_app().await;
+    for (id, started, passed) in [
+        ("TR1", 1_700_000_100, true),
+        ("TR2", 1_700_000_200, false),
+        ("TR3", 1_700_000_300, true),
+    ] {
+        let items = vec![item_with_model("a", passed, Some("m1"), Some(0.01), 100)];
+        app.eval_run_store
+            .write(&seeded_run(id, "DS-T", started, items))
+            .unwrap();
+    }
+    let (status, body) = request(&app.router, "GET", "/v1/eval/trend?dataset_id=DS-T", None).await;
+    assert_eq!(status, StatusCode::OK);
+    let groups = body["groups"].as_array().unwrap();
+    assert_eq!(groups.len(), 1, "default group_by is none → one group");
+    let points = groups[0]["points"].as_array().unwrap();
+    assert_eq!(points.len(), 3);
+    // Ascending by started_at_secs.
+    let starts: Vec<u64> = points
+        .iter()
+        .map(|p| p["started_at_secs"].as_u64().unwrap())
+        .collect();
+    assert!(starts.windows(2).all(|w| w[0] <= w[1]));
+    // Run TR2 had passed=false → its pass_rate is 0.
+    let tr2 = points.iter().find(|p| p["run_id"] == "TR2").unwrap();
+    assert_eq!(tr2["pass_rate"].as_f64().unwrap(), 0.0);
+    // Cost summed correctly.
+    assert!((tr2["total_cost_usd"].as_f64().unwrap() - 0.01).abs() < 1e-9);
+}
+
+#[tokio::test]
+async fn trend_filters_by_since_until() {
+    let app = build_test_app().await;
+    for (id, started) in [
+        ("EARLY", 1_700_000_000),
+        ("MID", 1_700_000_500),
+        ("LATE", 1_700_001_000),
+    ] {
+        app.eval_run_store
+            .write(&seeded_run(
+                id,
+                "DS-TF",
+                started,
+                vec![item_with_model("a", true, Some("m1"), None, 1)],
+            ))
+            .unwrap();
+    }
+    let url = "/v1/eval/trend?dataset_id=DS-TF&since_secs=1700000200&until_secs=1700000800";
+    let (status, body) = request(&app.router, "GET", url, None).await;
+    assert_eq!(status, StatusCode::OK);
+    let points = body["groups"][0]["points"].as_array().unwrap();
+    let ids: Vec<&str> = points
+        .iter()
+        .map(|p| p["run_id"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        ids,
+        vec!["MID"],
+        "EARLY < since, LATE >= until — both excluded"
+    );
+}
+
+#[tokio::test]
+async fn trend_group_by_model_splits_into_per_model_series() {
+    let app = build_test_app().await;
+    let items = vec![
+        item_with_model("a", true, Some("opus"), Some(0.01), 100),
+        item_with_model("b", false, Some("opus"), Some(0.02), 200),
+        item_with_model("a", true, Some("haiku"), Some(0.001), 50),
+    ];
+    app.eval_run_store
+        .write(&seeded_run("TM1", "DS-TM", 1_700_000_100, items))
+        .unwrap();
+    let (status, body) = request(
+        &app.router,
+        "GET",
+        "/v1/eval/trend?dataset_id=DS-TM&group_by=model",
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let groups = body["groups"].as_array().unwrap();
+    // Two groups, one per model_id.
+    assert_eq!(groups.len(), 2);
+    let opus = groups
+        .iter()
+        .find(|g| g["key"]["model_id"] == "opus")
+        .unwrap();
+    let opus_pt = &opus["points"][0];
+    assert_eq!(opus_pt["item_count"].as_u64().unwrap(), 2);
+    assert_eq!(opus_pt["passed_count"].as_u64().unwrap(), 1);
+    assert!((opus_pt["pass_rate"].as_f64().unwrap() - 0.5).abs() < 1e-9);
+    assert!((opus_pt["total_cost_usd"].as_f64().unwrap() - 0.03).abs() < 1e-9);
+}
+
+#[tokio::test]
+async fn trend_400s_on_unsupported_group_by() {
+    let app = build_test_app().await;
+    let (status, body) =
+        request(&app.router, "GET", "/v1/eval/trend?group_by=provider", None).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(
+        body["error"].as_str().unwrap_or("").contains("provider"),
+        "body: {body}"
+    );
+}
+
 // ── Auth ──────────────────────────────────────────────────────────────────
 
 #[tokio::test]
@@ -808,7 +1479,9 @@ fn item(fixture_id: &str, passed: bool, final_text: &str) -> EvalRunItem {
             error_type: None,
             inference_error_count: 0,
             runtime_failure: None,
+            cost_usd: None,
         },
         trace_run_id: None,
+        sample_index: None,
     }
 }

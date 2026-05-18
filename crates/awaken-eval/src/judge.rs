@@ -1,25 +1,26 @@
-//! LLM-backed grading through a TensorZero `[functions.judge]` chat
-//! function.
+//! LLM-backed grading.
 //!
-//! This module is gated behind the `llm-judge` feature; enable it with:
+//! Two implementations of the [`Judge`] trait are bundled:
 //!
-//! ```toml
-//! awaken-eval = { version = "0.4", features = ["llm-judge"] }
-//! ```
+//! * [`TensorZeroJudge`] — talks to a TensorZero gateway over the OpenAI-
+//!   compatible chat endpoint. Useful when a separate grading function is
+//!   already deployed there.
+//! * [`LlmExecutorJudge`] — wraps any [`awaken_contract::contract::executor::LlmExecutor`]
+//!   so server runs can grade with the same registered model bindings they
+//!   already use for replay.
 //!
-//! The judge sends the user prompt + assistant answer to the configured
-//! TensorZero gateway and parses the reply as a JSON object of the shape
-//! `{"score": 0.0-1.0, "reasoning": "..."}`. When `submit_feedback` is
-//! enabled, the resulting score is also POSTed to the gateway's `/feedback`
-//! endpoint as the `response_quality` metric so it accumulates in
-//! ClickHouse for offline analysis.
-//!
-//! The whole module is purely additive on top of M4: replayers, fixtures,
-//! and pure scoring continue to work unchanged when the feature is absent.
+//! Both share the parse helpers (`parse_score_payload` etc) so swapping
+//! backends keeps the same `{"score": ..., "reasoning": "..."}` contract.
+
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use serde::Deserialize;
 use thiserror::Error;
+
+use awaken_contract::contract::content::ContentBlock;
+use awaken_contract::contract::executor::{InferenceRequest, LlmExecutor};
+use awaken_contract::contract::message::Message;
 
 use crate::expectation::{Expectation, Failure};
 use crate::outcome::ReplayOutcome;
@@ -264,6 +265,80 @@ impl Judge for TensorZeroJudge {
             score,
             reasoning: parsed.reasoning,
             inference_id,
+        })
+    }
+}
+
+/// [`Judge`] implementation backed by an arbitrary
+/// [`awaken_contract::contract::executor::LlmExecutor`]. Lets the server
+/// reuse the same registered model bindings (and their cost tracking) for
+/// grading that it already uses for replay — no separate gateway needed.
+#[derive(Clone)]
+pub struct LlmExecutorJudge {
+    executor: Arc<dyn LlmExecutor>,
+    upstream_model: String,
+    system_prompt: String,
+}
+
+impl LlmExecutorJudge {
+    pub fn new(executor: Arc<dyn LlmExecutor>, upstream_model: impl Into<String>) -> Self {
+        Self {
+            executor,
+            upstream_model: upstream_model.into(),
+            system_prompt: DEFAULT_SYSTEM_PROMPT.to_string(),
+        }
+    }
+
+    pub fn with_system_prompt(mut self, prompt: impl Into<String>) -> Self {
+        self.system_prompt = prompt.into();
+        self
+    }
+}
+
+#[async_trait]
+impl Judge for LlmExecutorJudge {
+    async fn judge(
+        &self,
+        outcome: &ReplayOutcome,
+        user_prompt: &str,
+        rubric: Option<&str>,
+    ) -> Result<JudgeResult, JudgeError> {
+        let mut messages = vec![
+            Message::user(user_prompt),
+            Message::assistant(outcome.final_text.clone()),
+        ];
+        let grading_instruction = match rubric {
+            Some(r) => format!("Apply this rubric and respond with the JSON object only:\n{r}"),
+            None => "Score the assistant answer with respect to the original user request. \
+                     Respond with the JSON object only."
+                .to_string(),
+        };
+        messages.push(Message::user(grading_instruction));
+
+        let request = InferenceRequest {
+            upstream_model: self.upstream_model.clone(),
+            messages,
+            tools: Vec::new(),
+            system: vec![ContentBlock::text(self.system_prompt.clone())],
+            overrides: None,
+            enable_prompt_cache: false,
+        };
+        let result = self
+            .executor
+            .execute(request)
+            .await
+            .map_err(|err| JudgeError::Parse {
+                body: format!("executor returned error: {err}"),
+            })?;
+        let content = result.text();
+        let parsed = parse_score_payload(&content).ok_or(JudgeError::Parse { body: content })?;
+        if !parsed.score.is_finite() {
+            return Err(JudgeError::NonFiniteScore(parsed.score));
+        }
+        Ok(JudgeResult {
+            score: parsed.score.clamp(0.0, 1.0),
+            reasoning: parsed.reasoning,
+            inference_id: None,
         })
     }
 }
@@ -572,6 +647,81 @@ mod tests {
         ));
         let result = result.unwrap();
         assert!((result.score - 0.4).abs() < 1e-6);
+    }
+
+    // ── LlmExecutorJudge ────────────────────────────────────────────
+
+    struct StubExecutor {
+        response_body: String,
+    }
+
+    #[async_trait]
+    impl LlmExecutor for StubExecutor {
+        async fn execute(
+            &self,
+            _request: awaken_contract::contract::executor::InferenceRequest,
+        ) -> Result<
+            awaken_contract::contract::inference::StreamResult,
+            awaken_contract::contract::executor::InferenceExecutionError,
+        > {
+            use awaken_contract::contract::content::ContentBlock;
+            use awaken_contract::contract::inference::StreamResult;
+            Ok(StreamResult {
+                content: vec![ContentBlock::text(self.response_body.clone())],
+                tool_calls: Vec::new(),
+                usage: None,
+                stop_reason: None,
+                has_incomplete_tool_calls: false,
+            })
+        }
+        fn name(&self) -> &str {
+            "stub-judge-executor"
+        }
+    }
+
+    #[tokio::test]
+    async fn llm_executor_judge_returns_parsed_score() {
+        let stub: Arc<dyn LlmExecutor> = Arc::new(StubExecutor {
+            response_body: r#"{"score": 0.85, "reasoning": "looks fine"}"#.into(),
+        });
+        let judge = LlmExecutorJudge::new(stub, "upstream-x");
+        let outcome = make_outcome("the answer is 4");
+        let result = judge.judge(&outcome, "what is 2+2?", None).await.unwrap();
+        assert!((result.score - 0.85).abs() < 1e-6);
+        assert_eq!(result.reasoning.as_deref(), Some("looks fine"));
+    }
+
+    #[tokio::test]
+    async fn llm_executor_judge_parses_code_fenced_score() {
+        let stub: Arc<dyn LlmExecutor> = Arc::new(StubExecutor {
+            response_body: "```json\n{\"score\": 0.5}\n```".into(),
+        });
+        let judge = LlmExecutorJudge::new(stub, "x");
+        let outcome = make_outcome("");
+        let result = judge.judge(&outcome, "p", None).await.unwrap();
+        assert!((result.score - 0.5).abs() < 1e-6);
+    }
+
+    #[tokio::test]
+    async fn llm_executor_judge_clamps_score_to_unit_interval() {
+        let stub: Arc<dyn LlmExecutor> = Arc::new(StubExecutor {
+            response_body: r#"{"score": 1.5}"#.into(),
+        });
+        let judge = LlmExecutorJudge::new(stub, "x");
+        let outcome = make_outcome("");
+        let result = judge.judge(&outcome, "p", None).await.unwrap();
+        assert!((result.score - 1.0).abs() < 1e-6);
+    }
+
+    #[tokio::test]
+    async fn llm_executor_judge_garbage_returns_parse_error() {
+        let stub: Arc<dyn LlmExecutor> = Arc::new(StubExecutor {
+            response_body: "not-json".into(),
+        });
+        let judge = LlmExecutorJudge::new(stub, "x");
+        let outcome = make_outcome("");
+        let err = judge.judge(&outcome, "p", None).await.unwrap_err();
+        assert!(matches!(err, JudgeError::Parse { .. }));
     }
 
     #[tokio::test]

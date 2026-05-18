@@ -858,11 +858,8 @@ Deterministic compatibility directives:\n\
     let provider_factory = Arc::new(StarterProviderFactory::new(Arc::clone(&credential_broker)))
         as Arc<dyn ProviderExecutorFactory>;
     let default_provider = build_default_provider_spec(&args.model);
-    let default_model = ModelBindingSpec {
-        id: DEFAULT_MODEL_ID.into(),
-        provider_id: DEFAULT_PROVIDER_ID.into(),
-        upstream_model: args.model.clone(),
-    };
+    let default_model =
+        ModelBindingSpec::new(DEFAULT_MODEL_ID, DEFAULT_PROVIDER_ID, args.model.clone());
     // -- MCP managed defaults --
 
     let managed_mcp_servers = if let Some(ref cmd_str) = args.mcp_server_cmd {

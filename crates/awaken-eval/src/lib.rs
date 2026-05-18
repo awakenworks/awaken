@@ -22,7 +22,6 @@ pub mod dataset;
 pub mod eval_run;
 pub mod expectation;
 pub mod fixture;
-#[cfg(feature = "llm-judge")]
 pub mod judge;
 pub mod outcome;
 pub mod replay;
@@ -48,5 +47,7 @@ pub use report::{
 pub use runtime_replayer::RuntimeReplayer;
 pub use score::score;
 
-#[cfg(feature = "llm-judge")]
-pub use judge::{Judge, JudgeConfig, JudgeError, JudgeResult, TensorZeroJudge, score_with_judge};
+pub use judge::{
+    Judge, JudgeConfig, JudgeError, JudgeResult, LlmExecutorJudge, TensorZeroJudge,
+    score_with_judge,
+};

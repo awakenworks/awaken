@@ -176,6 +176,13 @@ pub struct ReplayReport {
     /// can flag drift.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub runtime_failure: Option<ReplayRuntimeFailure>,
+    /// Cost of the replay in USD. Computed server-side from the
+    /// resolved `ModelBindingSpec` pricing × token counts; left `None`
+    /// when the binding has no pricing or the run was scripted. Drift
+    /// detection treats this as an observable so a silent price bump
+    /// surfaces in regression diffs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cost_usd: Option<f64>,
 }
 
 fn is_zero_usize(n: &usize) -> bool {
@@ -203,6 +210,7 @@ impl ReplayReport {
             error_type: outcome.error_type.clone(),
             inference_error_count: outcome.inference_error_count,
             runtime_failure: outcome.runtime_failure.clone(),
+            cost_usd: None,
         }
     }
 }

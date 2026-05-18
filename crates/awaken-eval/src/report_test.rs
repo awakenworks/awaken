@@ -20,6 +20,7 @@ fn report(id: &str, passed: bool, failures: Vec<Failure>) -> ReplayReport {
         error_type: None,
         inference_error_count: 0,
         runtime_failure: None,
+        cost_usd: None,
     }
 }
 
@@ -186,7 +187,7 @@ fn diff_newly_added_does_not_block_ci() {
     assert!(s.is_clean());
     assert!(matches!(
         &s.entries[0],
-        DiffEntry::NewlyAdded { fixture_id, passed: true, cell: None } if fixture_id == "new"
+        DiffEntry::NewlyAdded { fixture_id, passed: true, cell: None, .. } if fixture_id == "new"
     ));
 }
 
@@ -230,6 +231,7 @@ fn diff_entry_is_blocking_for_regression_missing_and_drift() {
     assert!(
         !DiffEntry::Unchanged {
             fixture_id: "x".into(),
+            sample_index: None,
             cell: None
         }
         .is_blocking()
@@ -237,6 +239,7 @@ fn diff_entry_is_blocking_for_regression_missing_and_drift() {
     assert!(
         DiffEntry::Regression {
             fixture_id: "x".into(),
+            sample_index: None,
             new_failures: vec![],
             cell: None
         }
@@ -245,6 +248,7 @@ fn diff_entry_is_blocking_for_regression_missing_and_drift() {
     assert!(
         !DiffEntry::Fixed {
             fixture_id: "x".into(),
+            sample_index: None,
             cell: None
         }
         .is_blocking()
@@ -252,6 +256,7 @@ fn diff_entry_is_blocking_for_regression_missing_and_drift() {
     assert!(
         !DiffEntry::StillFailing {
             fixture_id: "x".into(),
+            sample_index: None,
             new_failures: vec![],
             cell: None
         }
@@ -260,6 +265,7 @@ fn diff_entry_is_blocking_for_regression_missing_and_drift() {
     assert!(
         DiffEntry::Drift {
             fixture_id: "x".into(),
+            sample_index: None,
             fields: vec!["final_text".into()],
             cell: None
         }
@@ -268,6 +274,7 @@ fn diff_entry_is_blocking_for_regression_missing_and_drift() {
     assert!(
         DiffEntry::MissingFromNew {
             fixture_id: "x".into(),
+            sample_index: None,
             cell: None
         }
         .is_blocking()
@@ -275,6 +282,7 @@ fn diff_entry_is_blocking_for_regression_missing_and_drift() {
     assert!(
         !DiffEntry::NewlyAdded {
             fixture_id: "x".into(),
+            sample_index: None,
             passed: true,
             cell: None
         }
@@ -283,6 +291,7 @@ fn diff_entry_is_blocking_for_regression_missing_and_drift() {
     assert!(
         DiffEntry::NewlyAdded {
             fixture_id: "x".into(),
+            sample_index: None,
             passed: false,
             cell: None
         }
@@ -375,6 +384,23 @@ fn diff_passing_pair_lists_every_drifted_field() {
 }
 
 #[test]
+fn diff_passing_pair_with_drifted_cost_usd_is_drift() {
+    // A silent price bump (same tokens, new dollar amount) must surface
+    // as Drift so cost regressions don't sneak past the gate the way
+    // they would if only failures were tracked.
+    let b = report("a", true, vec![]);
+    let mut n = report("a", true, vec![]);
+    n.cost_usd = Some(0.025);
+    let s = diff_against_baseline(&[b], &[n]);
+    match &s.entries[0] {
+        DiffEntry::Drift { fields, .. } => {
+            assert_eq!(fields, &vec!["cost_usd".to_string()]);
+        }
+        other => panic!("expected Drift, got {other:?}"),
+    }
+}
+
+#[test]
 fn diff_summary_serde_roundtrip() {
     let s = diff_against_baseline(
         &[
@@ -405,7 +431,20 @@ fn item(fixture_id: &str, passed: bool, model: Option<&str>, text: &str) -> Eval
         }),
         report: r,
         trace_run_id: None,
+        sample_index: None,
     }
+}
+
+fn sampled_item(
+    fixture_id: &str,
+    passed: bool,
+    model: Option<&str>,
+    sample: u32,
+    text: &str,
+) -> EvalRunItem {
+    let mut i = item(fixture_id, passed, model, text);
+    i.sample_index = Some(sample);
+    i
 }
 
 #[test]
@@ -471,6 +510,62 @@ fn diff_eval_items_pairs_by_fixture_id_and_cell() {
 }
 
 #[test]
+fn diff_eval_items_keys_by_sample_index_so_samples_dont_collide() {
+    // 3 samples of the same (fixture, cell) must produce 3 independent
+    // diff entries, not silently collapse into one. The bug this guards
+    // against: BTreeMap::collect would otherwise keep the last item per
+    // (fixture_id, cell) key and lose the others.
+    let baseline = vec![
+        sampled_item("alpha", true, Some("m1"), 0, "ok"),
+        sampled_item("alpha", true, Some("m1"), 1, "ok"),
+        sampled_item("alpha", true, Some("m1"), 2, "ok"),
+    ];
+    let new = vec![
+        sampled_item("alpha", true, Some("m1"), 0, "ok"),
+        sampled_item("alpha", false, Some("m1"), 1, "broken"),
+        sampled_item("alpha", true, Some("m1"), 2, "ok"),
+    ];
+    let s = diff_eval_items(&baseline, &new);
+    assert_eq!(s.entries.len(), 3, "one entry per sample");
+    let sample1 = s.entries.iter().find(|e| e.sample_index() == Some(1));
+    assert!(matches!(sample1, Some(DiffEntry::Regression { .. })));
+    // The other two samples must show Unchanged, not collapse.
+    let unchanged_count = s
+        .entries
+        .iter()
+        .filter(|e| matches!(e, DiffEntry::Unchanged { .. }))
+        .count();
+    assert_eq!(unchanged_count, 2);
+}
+
+#[test]
+fn diff_eval_items_different_samples_count_as_added_missing() {
+    // Baseline ran samples=1 (sample_index = None); new ran samples=3
+    // (sample_index Some(0,1,2)). The diff treats None vs Some as
+    // different keys — surfaces "you changed run config" instead of
+    // silently averaging.
+    let baseline = vec![item("alpha", true, Some("m1"), "ok")];
+    let new = vec![
+        sampled_item("alpha", true, Some("m1"), 0, "ok"),
+        sampled_item("alpha", true, Some("m1"), 1, "ok"),
+    ];
+    let s = diff_eval_items(&baseline, &new);
+    assert_eq!(s.entries.len(), 3);
+    let missing = s
+        .entries
+        .iter()
+        .filter(|e| matches!(e, DiffEntry::MissingFromNew { .. }))
+        .count();
+    let added = s
+        .entries
+        .iter()
+        .filter(|e| matches!(e, DiffEntry::NewlyAdded { .. }))
+        .count();
+    assert_eq!(missing, 1, "the unsampled baseline becomes MissingFromNew");
+    assert_eq!(added, 2, "both new samples are NewlyAdded");
+}
+
+#[test]
 fn diff_eval_items_different_models_count_as_added_missing() {
     // Baseline cell exists only for m1; new cell exists only for
     // m2. They share fixture_id but the model axis is part of the
@@ -501,6 +596,7 @@ fn diff_entry_serde_round_trips_cell_field() {
         cell: Some(MatrixCell {
             model_id: Some("claude-opus-4-7".into()),
         }),
+        sample_index: None,
     };
     let json = serde_json::to_string(&entry).unwrap();
     assert!(
@@ -518,6 +614,7 @@ fn diff_entry_serde_omits_cell_when_none() {
     let entry = DiffEntry::Unchanged {
         fixture_id: "x".into(),
         cell: None,
+        sample_index: None,
     };
     let json = serde_json::to_string(&entry).unwrap();
     assert!(!json.contains("cell"));

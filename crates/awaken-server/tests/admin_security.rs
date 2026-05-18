@@ -99,6 +99,8 @@ async fn build_secure_admin_router() -> axum::Router {
                 id: "bootstrap".into(),
                 provider_id: "bootstrap".into(),
                 upstream_model: "bootstrap-model".into(),
+                input_token_price_per_million_usd: None,
+                output_token_price_per_million_usd: None,
             }),
             BuiltinSpec::agent(bootstrap_agent()),
         ],

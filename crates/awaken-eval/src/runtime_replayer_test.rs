@@ -17,6 +17,7 @@ fn text_fixture(id: &str, prompt: &str, response: &str) -> Fixture {
             text: response.into(),
         },
         expect: Expectation::default(),
+        continued_turns: vec![],
     }
 }
 
@@ -31,6 +32,7 @@ fn scripted_fixture(id: &str, prompt: &str, script: Vec<ProviderScriptEvent>) ->
         allow_unused_provider_script: false,
         mock_response: MockResponse::default(),
         expect: Expectation::default(),
+        continued_turns: vec![],
     }
 }
 

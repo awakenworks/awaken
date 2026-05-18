@@ -20,6 +20,8 @@ async fn exercise_store(store: Arc<dyn ConfigStore>) {
         id: "gpt-4o-mini".into(),
         provider_id: "openai".into(),
         upstream_model: "gpt-4o-mini".into(),
+        input_token_price_per_million_usd: None,
+        output_token_price_per_million_usd: None,
     };
     let agent = AgentSpec {
         id: "assistant".into(),

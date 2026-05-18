@@ -12,21 +12,16 @@ use awaken_ext_observability::trace_store::{TraceStore, file::FileTraceStore};
 use serde_json::{Value, json};
 
 const HELP: &str = "\
-awaken-eval — fixture-driven replay and scoring framework
-
-Offline:
-  replay --fixtures <DIR> --report <FILE>
-  check  --baseline <FILE> --new <FILE>
-  curate --trace-root <DIR> --run-id <RUN> [--user-input <TEXT>] --out <FILE>
-
-Server (--server <URL> or $AWAKEN_SERVER_URL, --bearer or $AWAKEN_BEARER_TOKEN):
-  push   --dataset <ID> --fixtures <DIR> [--force]   wholesale overwrite (--force required if exists)
-  append --dataset <ID> --fixture-file <FILE>        atomic single-fixture append (CAS on revision)
-  run    --dataset <ID> [--baseline <RUN>] [--out <FILE>]
-  pull   --run <RUN> [--baseline <RUN>] --out <FILE>
-  online --prompt <TEXT> --models <ID,ID,...> [--persist] [--out <FILE>]
-         ad-hoc online evaluation: prompt × N models in parallel
+awaken-eval — fixture-driven replay/scoring + server-side dataset ops
+Offline:  replay | check | curate (see --help on each)
+Server (--server <URL> / $AWAKEN_SERVER_URL, --bearer / $AWAKEN_BEARER_TOKEN):
+  push | append | run | pull | online | import-traces | import-dialogue
 ";
+
+#[path = "awaken-eval_cmds/import_dialogue.rs"]
+mod import_dialogue;
+#[path = "awaken-eval_cmds/import_traces.rs"]
+mod import_traces;
 
 #[tokio::main]
 async fn main() -> ExitCode {
@@ -55,6 +50,8 @@ async fn run(args: Vec<String>) -> Result<ExitCode, String> {
         "pull" => pull_command(&args[1..]).await,
         "online" => online_command(&args[1..]).await,
         "append" => append_command(&args[1..]).await,
+        "import-traces" => import_traces::run(&args[1..]).await,
+        "import-dialogue" => import_dialogue::run(&args[1..]).await,
         other => Err(format!(
             "unknown subcommand {other:?} (try `awaken-eval --help`)"
         )),
@@ -246,6 +243,7 @@ async fn curate_command(args: &[String]) -> Result<ExitCode, String> {
         allow_unused_provider_script: allow_unused,
         mock_response: Default::default(),
         expect: Expectation::default(),
+        continued_turns: vec![],
     };
 
     let json = serde_json::to_string_pretty(&fixture)

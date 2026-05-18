@@ -11,6 +11,7 @@
 
 use awaken_contract::config_record::{ConfigRecord, RecordMeta, validate_config_record};
 use awaken_contract::contract::config_store::extract_meta_revision;
+use awaken_eval::fixture::DialogueTurn;
 use awaken_eval::{
     DATASETS_NAMESPACE, DatasetSpec, Expectation, Fixture, MockResponse, trace_to_provider_script,
 };
@@ -385,6 +386,7 @@ pub async fn curate_items(
         allow_unused_provider_script: body.allow_unused_provider_script,
         mock_response: MockResponse::default(),
         expect: Expectation::default(),
+        continued_turns: vec![],
     };
     record.spec.fixtures.push(fixture);
 
@@ -400,4 +402,312 @@ pub async fn curate_items(
         .map_err(map_storage_error)?;
 
     Ok((StatusCode::CREATED, Json(record)).into_response())
+}
+
+// ── Bulk import from prod traces ─────────────────────────────────────────
+
+/// Body for [`import_traces`]. Defaults treat all axes as "no filter";
+/// the operator must opt into the slice of prod traffic they want
+/// promoted to fixtures so the endpoint doesn't accidentally dump the
+/// whole trace store on a single dataset.
+#[derive(Debug, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+pub struct ImportTracesRequest {
+    /// Required CAS guard, same shape as `AppendFixtureRequest`.
+    pub expected_revision: u64,
+    #[serde(default)]
+    pub agent_id: Option<String>,
+    /// Inclusive lower bound on the trace's `started_at` (epoch seconds).
+    #[serde(default)]
+    pub since_secs: Option<u64>,
+    /// Hard cap on traces fetched + considered for curation. Defaults
+    /// to 50 so a misconfigured filter can't accidentally walk the
+    /// whole store.
+    #[serde(default)]
+    pub max_count: Option<usize>,
+    /// When true, traces whose curation fails (no captured user_input,
+    /// malformed events) are silently skipped. Default false — curation
+    /// failures surface so the operator notices their capture policy
+    /// isn't enabled.
+    #[serde(default)]
+    pub skip_uncuratable: bool,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ImportTracesResponse {
+    pub imported_count: usize,
+    pub skipped_count: usize,
+    pub dataset_revision: u64,
+}
+
+const DEFAULT_IMPORT_MAX: usize = 50;
+
+/// `POST /v1/eval/datasets/:id/import-traces` — sample prod traces and
+/// promote them to fixtures in one shot.
+///
+/// Closes the loop between production observability and the regression
+/// dataset: an operator filters traces by agent / time, the server runs
+/// [`trace_to_provider_script`] on each, and appends the resulting
+/// fixtures under CAS. Traces whose `run_id` matches an existing fixture
+/// id are skipped (no clobber).
+#[tracing::instrument(skip_all, fields(id = %id, agent_id = ?body.agent_id))]
+pub async fn import_traces(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    Json(body): Json<ImportTracesRequest>,
+) -> Result<Response, ApiError> {
+    crate::config_routes::ensure_admin_auth(&state, &headers)?;
+    let store = config_store_or_unavailable(&state)?;
+    let trace_store = state
+        .trace_store()
+        .ok_or_else(|| ApiError::ServiceUnavailable("trace store not configured".into()))?;
+
+    // Load + CAS-check the dataset.
+    let existing_value = store
+        .get(DATASETS_NAMESPACE, &id)
+        .await
+        .map_err(map_storage_error)?
+        .ok_or_else(|| ApiError::NotFound(format!("dataset not found: {id}")))?;
+    let existing_revision = extract_meta_revision(&existing_value).unwrap_or(0);
+    if existing_revision != body.expected_revision {
+        return Err(ApiError::Conflict(format!(
+            "revision conflict: expected {}, actual {}",
+            body.expected_revision, existing_revision,
+        )));
+    }
+    let mut record: ConfigRecord<DatasetSpec> = validate_config_record(existing_value)
+        .map_err(|err| ApiError::Internal(err.to_string()))?;
+
+    // Build the trace filter. since_secs → SystemTime for the
+    // observability layer's existing TraceFilter.
+    let since = body
+        .since_secs
+        .map(|s| std::time::UNIX_EPOCH + std::time::Duration::from_secs(s));
+    let max_count = body.max_count.unwrap_or(DEFAULT_IMPORT_MAX);
+    let filter = awaken_ext_observability::trace_store::TraceFilter {
+        agent_id: body.agent_id.clone(),
+        since,
+        limit: Some(max_count),
+        ..Default::default()
+    };
+    let summaries = trace_store.list(&filter).map_err(map_trace_store_error)?;
+
+    let existing_ids: std::collections::HashSet<String> =
+        record.spec.fixtures.iter().map(|f| f.id.clone()).collect();
+    let mut imported = 0usize;
+    let mut skipped = 0usize;
+    for summary in summaries {
+        if existing_ids.contains(&summary.run_id) {
+            skipped += 1;
+            continue;
+        }
+        let events = trace_store
+            .read(&summary.run_id)
+            .map_err(map_trace_store_error)?;
+        let conversion = match trace_to_provider_script(&events) {
+            Ok(c) => c,
+            Err(err) if body.skip_uncuratable => {
+                tracing::warn!(run_id = %summary.run_id, %err, "skipping uncuratable trace");
+                skipped += 1;
+                continue;
+            }
+            Err(err) => {
+                return Err(ApiError::BadRequest(format!(
+                    "curating trace {}: {err}",
+                    summary.run_id
+                )));
+            }
+        };
+        let user_input = match conversion.user_input.clone() {
+            Some(u) => u,
+            None if body.skip_uncuratable => {
+                skipped += 1;
+                continue;
+            }
+            None => {
+                return Err(ApiError::BadRequest(format!(
+                    "trace {} did not capture request_messages — \
+                     enable ContentCapture::Enabled or set skip_uncuratable=true",
+                    summary.run_id
+                )));
+            }
+        };
+        record.spec.fixtures.push(Fixture {
+            id: summary.run_id.clone(),
+            description: Some(format!("Imported from trace {}", summary.run_id)),
+            user_input,
+            provider_script: conversion.provider_script,
+            source_run_id: Some(summary.run_id),
+            source_model_id: conversion.source_model_id,
+            allow_unused_provider_script: false,
+            mock_response: MockResponse::default(),
+            expect: Expectation::default(),
+            continued_turns: vec![],
+        });
+        imported += 1;
+    }
+
+    if imported == 0 {
+        return Ok(Json(ImportTracesResponse {
+            imported_count: 0,
+            skipped_count: skipped,
+            dataset_revision: existing_revision,
+        })
+        .into_response());
+    }
+
+    record.meta.updated_at = awaken_contract::time::now_ms();
+    record.meta.revision = record.meta.revision.saturating_add(1);
+    let value = record
+        .to_value()
+        .map_err(|err| ApiError::Internal(err.to_string()))?;
+    store
+        .put_if_revision(DATASETS_NAMESPACE, &id, &value, existing_revision)
+        .await
+        .map_err(map_storage_error)?;
+
+    Ok(Json(ImportTracesResponse {
+        imported_count: imported,
+        skipped_count: skipped,
+        dataset_revision: record.meta.revision,
+    })
+    .into_response())
+}
+
+// ── Dialogue importer (POST /v1/eval/datasets/:id/import-dialogue) ──────
+
+/// Body for [`import_dialogue`]. Stitches multiple trace runs of the
+/// same conversation thread into one multi-turn fixture.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ImportDialogueRequest {
+    pub expected_revision: u64,
+    /// Ordered list of run_ids to stitch — first run becomes turn 0
+    /// (sets `fixture.user_input` + `provider_script`); remainder
+    /// populate `continued_turns` in order.
+    pub run_ids: Vec<String>,
+    /// Optional fixture id. Defaults to `run_ids[0]` for provenance.
+    #[serde(default)]
+    pub fixture_id: Option<String>,
+    #[serde(default)]
+    pub description: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ImportDialogueResponse {
+    pub fixture_id: String,
+    pub dataset_revision: u64,
+}
+
+/// `POST /v1/eval/datasets/:id/import-dialogue` — assemble one multi-turn
+/// dialogue fixture from N successive trace runs (same conversation
+/// thread). Each run must be curatable (have `request_messages`
+/// captured on its first inference) — partial traces 400 out.
+#[tracing::instrument(skip_all, fields(id = %id, run_count = body.run_ids.len()))]
+pub async fn import_dialogue(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    Json(body): Json<ImportDialogueRequest>,
+) -> Result<Response, ApiError> {
+    crate::config_routes::ensure_admin_auth(&state, &headers)?;
+    if body.run_ids.is_empty() {
+        return Err(ApiError::BadRequest("run_ids must be non-empty".into()));
+    }
+    let store = config_store_or_unavailable(&state)?;
+    let trace_store = state
+        .trace_store()
+        .ok_or_else(|| ApiError::ServiceUnavailable("trace store not configured".into()))?;
+
+    let existing_value = store
+        .get(DATASETS_NAMESPACE, &id)
+        .await
+        .map_err(map_storage_error)?
+        .ok_or_else(|| ApiError::NotFound(format!("dataset not found: {id}")))?;
+    let existing_revision = extract_meta_revision(&existing_value).unwrap_or(0);
+    if existing_revision != body.expected_revision {
+        return Err(ApiError::Conflict(format!(
+            "revision conflict: expected {}, actual {}",
+            body.expected_revision, existing_revision,
+        )));
+    }
+    let mut record: ConfigRecord<DatasetSpec> = validate_config_record(existing_value)
+        .map_err(|err| ApiError::Internal(err.to_string()))?;
+
+    let fixture_id = body
+        .fixture_id
+        .clone()
+        .unwrap_or_else(|| body.run_ids[0].clone());
+    if record.spec.fixtures.iter().any(|f| f.id == fixture_id) {
+        return Err(ApiError::Conflict(format!(
+            "dataset already has fixture {fixture_id}"
+        )));
+    }
+
+    // Curate each run in order. First → turn 0; rest → continued_turns.
+    let mut turn_inputs: Vec<(String, Vec<awaken_runtime::engine::ProviderScriptEvent>)> =
+        Vec::with_capacity(body.run_ids.len());
+    let mut source_model_id: Option<String> = None;
+    for run_id in &body.run_ids {
+        let events = trace_store.read(run_id).map_err(map_trace_store_error)?;
+        let conversion = trace_to_provider_script(&events)
+            .map_err(|err| ApiError::BadRequest(format!("curating trace {run_id}: {err}")))?;
+        let user_input = conversion.user_input.ok_or_else(|| {
+            ApiError::BadRequest(format!(
+                "trace {run_id} did not capture request_messages — \
+                 enable ContentCapture::Enabled on the originating run"
+            ))
+        })?;
+        // Pin the source model from the first run; later runs of the
+        // same dialogue should share it (the agent isn't usually
+        // swapped mid-conversation).
+        if source_model_id.is_none() {
+            source_model_id = conversion.source_model_id;
+        }
+        turn_inputs.push((user_input, conversion.provider_script));
+    }
+
+    let mut iter = turn_inputs.into_iter();
+    let (first_input, first_script) = iter.next().expect("at least one run_id (validated above)");
+    let continued_turns: Vec<DialogueTurn> = iter
+        .map(|(user_input, provider_script)| DialogueTurn {
+            user_input,
+            provider_script,
+        })
+        .collect();
+
+    let fixture = Fixture {
+        id: fixture_id.clone(),
+        description: Some(
+            body.description
+                .clone()
+                .unwrap_or_else(|| format!("Stitched dialogue from {} runs", body.run_ids.len())),
+        ),
+        user_input: first_input,
+        provider_script: first_script,
+        source_run_id: Some(body.run_ids[0].clone()),
+        source_model_id,
+        allow_unused_provider_script: false,
+        mock_response: MockResponse::default(),
+        expect: Expectation::default(),
+        continued_turns,
+    };
+    record.spec.fixtures.push(fixture);
+
+    record.meta.updated_at = awaken_contract::time::now_ms();
+    record.meta.revision = record.meta.revision.saturating_add(1);
+    let value = record
+        .to_value()
+        .map_err(|err| ApiError::Internal(err.to_string()))?;
+    store
+        .put_if_revision(DATASETS_NAMESPACE, &id, &value, existing_revision)
+        .await
+        .map_err(map_storage_error)?;
+
+    Ok(Json(ImportDialogueResponse {
+        fixture_id,
+        dataset_revision: record.meta.revision,
+    })
+    .into_response())
 }

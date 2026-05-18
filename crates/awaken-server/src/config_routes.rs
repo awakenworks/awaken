@@ -1020,11 +1020,11 @@ mod tests {
                         adapter: "stub".into(),
                         ..Default::default()
                     }),
-                    BuiltinSpec::model(ModelBindingSpec {
-                        id: "bootstrap".into(),
-                        provider_id: "bootstrap".into(),
-                        upstream_model: "bootstrap-model".into(),
-                    }),
+                    BuiltinSpec::model(ModelBindingSpec::new(
+                        "bootstrap",
+                        "bootstrap",
+                        "bootstrap-model",
+                    )),
                     BuiltinSpec::agent(bootstrap_agent()),
                 ],
             };
@@ -1533,11 +1533,11 @@ mod tests {
                         adapter: "stub".into(),
                         ..Default::default()
                     }),
-                    BuiltinSpec::model(ModelBindingSpec {
-                        id: "bootstrap".into(),
-                        provider_id: "bootstrap".into(),
-                        upstream_model: "bootstrap-model".into(),
-                    }),
+                    BuiltinSpec::model(ModelBindingSpec::new(
+                        "bootstrap",
+                        "bootstrap",
+                        "bootstrap-model",
+                    )),
                     BuiltinSpec::agent(bootstrap_agent()),
                     BuiltinSpec::tool(ToolSpec {
                         id: id.into(),

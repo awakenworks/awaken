@@ -43,7 +43,7 @@ pub(crate) fn config_store_or_unavailable(
 pub(crate) async fn resolve_live_executor(
     state: &AppState,
     model_id: &str,
-) -> Result<(Arc<dyn LlmExecutor>, String), ApiError> {
+) -> Result<ResolvedLiveExecutor, ApiError> {
     let store = config_store_or_unavailable(state)?;
 
     let binding_value = store
@@ -80,7 +80,20 @@ pub(crate) async fn resolve_live_executor(
 
     let executor = build_genai_provider_executor_with_broker(&provider, state.credential_broker())
         .map_err(|err| ApiError::Internal(format!("building provider executor: {err}")))?;
-    Ok((executor, binding.upstream_model))
+    Ok(ResolvedLiveExecutor {
+        upstream_model: binding.upstream_model.clone(),
+        binding,
+        executor,
+    })
+}
+
+/// Result of [`resolve_live_executor`]. Carries the executor *plus* the
+/// resolved [`ModelBindingSpec`] so callers can read pricing (and other
+/// future binding metadata) without a second registry lookup.
+pub(crate) struct ResolvedLiveExecutor {
+    pub executor: Arc<dyn LlmExecutor>,
+    pub upstream_model: String,
+    pub binding: ModelBindingSpec,
 }
 
 /// Translate `ConfigStore` errors into HTTP-shaped `ApiError`s.

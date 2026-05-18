@@ -1,10 +1,5 @@
 //! Axum router setup — unified route registration.
-use crate::services::dataset_service::{
-    append_fixture, create_dataset, curate_items, delete_dataset, get_dataset, list_datasets,
-    put_dataset,
-};
-use crate::services::eval_run_service::{get_eval_run, list_eval_runs, start_eval_run};
-use crate::services::online_eval_service::start_online_eval;
+use crate::eval_routes_mod::eval_routes;
 use crate::services::trace_service::{get_trace, list_traces, pin_trace};
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
@@ -111,20 +106,6 @@ fn trace_routes() -> Router<AppState> {
         .route("/v1/traces/:run_id/pin", post(pin_trace))
 }
 
-fn eval_routes() -> Router<AppState> {
-    Router::new()
-        .route("/v1/eval/datasets", get(list_datasets).post(create_dataset))
-        .route(
-            "/v1/eval/datasets/:id",
-            get(get_dataset).put(put_dataset).delete(delete_dataset),
-        )
-        .route("/v1/eval/datasets/:id/items", post(curate_items))
-        .route("/v1/eval/datasets/:id/fixtures", post(append_fixture))
-        .route("/v1/eval/runs", get(list_eval_runs).post(start_eval_run))
-        .route("/v1/eval/runs/:id", get(get_eval_run))
-        .route("/v1/eval/online", post(start_online_eval))
-}
-
 fn health_routes() -> Router<AppState> {
     Router::new()
         .route("/health", get(health_ready))
@@ -166,21 +147,15 @@ fn run_routes() -> Router<AppState> {
 }
 
 fn admin_routes() -> Router<AppState> {
-    // The permission-preview route is registered unconditionally so the
-    // server can return a meaningful 503 when the `permission` feature
-    // is not compiled in — gating the route registration on the feature
-    // would make the route a generic 404 (Axum "no route"), which the
-    // client cannot distinguish from "agent not found" (also 404). 503
-    // matches the convention used by `runtime-stats` / trace routes for
-    // "capability not installed".
+    // permission-preview is always registered so the handler returns 503
+    // when the `permission` feature is absent (a 404 would be ambiguous
+    // with "agent not found"). Matches `runtime-stats` / trace conventions.
+    let permission_preview = get(get_agent_permission_preview);
     config_routes()
         .route("/v1/system/info", get(system_info))
         .route("/v1/agents/:id/runtime-stats", get(get_agent_runtime_stats))
         .route("/v1/agents/runtime-stats", get(list_agents_runtime_stats))
-        .route(
-            "/v1/agents/:id/permission-preview",
-            get(get_agent_permission_preview),
-        )
+        .route("/v1/agents/:id/permission-preview", permission_preview)
 }
 
 #[tracing::instrument(skip(state))]

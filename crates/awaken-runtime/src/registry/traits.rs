@@ -130,6 +130,8 @@ mod tests {
             id: "default".into(),
             provider_id: "openai".into(),
             upstream_model: "gpt-4o-mini".into(),
+            input_token_price_per_million_usd: None,
+            output_token_price_per_million_usd: None,
         };
 
         let binding = ModelBinding::from(&spec);

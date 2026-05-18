@@ -71,6 +71,14 @@ pub struct EvalRunItem {
     /// `awaken.replay=true` set on the spans).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub trace_run_id: Option<String>,
+    /// Zero-based index of this sample within a flakiness-sampling run.
+    /// `None` for single-sample runs (default, current behaviour) so the
+    /// wire shape stays unchanged. Set to `Some(i)` only when the request
+    /// explicitly asks for `samples >= 2`. Diff pairing keys include this
+    /// field so two samples of the same `(fixture_id, cell)` stay
+    /// independent entries instead of silently colliding in a map.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sample_index: Option<u32>,
 }
 
 /// One cell of a matrix evaluation. Each axis is optional so the cell
@@ -117,11 +125,15 @@ pub enum EvalRunStoreError {
     InvalidRunId(String),
 }
 
-/// Filter for [`EvalRunStore::list`].
+/// Filter for [`EvalRunStore::list`] and [`EvalRunStore::list_full`].
 #[derive(Debug, Clone, Default)]
 pub struct EvalRunFilter {
     /// Limit to runs that exercised this dataset.
     pub dataset_id: Option<String>,
+    /// Inclusive lower bound on `started_at_secs`. `None` = no lower bound.
+    pub since_secs: Option<u64>,
+    /// Exclusive upper bound on `started_at_secs`. `None` = no upper bound.
+    pub until_secs: Option<u64>,
     /// Cap on returned entries. `None` = implementation default.
     pub limit: Option<usize>,
 }
@@ -156,6 +168,18 @@ pub trait EvalRunStore: Send + Sync {
     fn write(&self, run: &EvalRun) -> Result<(), EvalRunStoreError>;
     fn read(&self, run_id: &str) -> Result<EvalRun, EvalRunStoreError>;
     fn list(&self, filter: &EvalRunFilter) -> Result<Vec<EvalRunSummary>, EvalRunStoreError>;
+    /// Full-run variant of `list`. Used by the trend endpoint which needs
+    /// per-item aggregates (cost, latency) that `EvalRunSummary` doesn't
+    /// carry. Defaults to walking `list` + `read` so custom impls only
+    /// override when they can serve full runs in one pass.
+    fn list_full(&self, filter: &EvalRunFilter) -> Result<Vec<EvalRun>, EvalRunStoreError> {
+        let summaries = self.list(filter)?;
+        let mut runs = Vec::with_capacity(summaries.len());
+        for s in summaries {
+            runs.push(self.read(&s.id)?);
+        }
+        Ok(runs)
+    }
     /// Delete every persisted run whose `started_at_secs` is older than
     /// `older_than_secs`. Returns the number of runs removed. Implementations
     /// should clean up empty shard directories after deleting their last
@@ -239,10 +263,20 @@ impl EvalRunStore for FileEvalRunStore {
     }
 
     fn list(&self, filter: &EvalRunFilter) -> Result<Vec<EvalRunSummary>, EvalRunStoreError> {
+        let runs = self.list_full(filter)?;
+        let mut summaries: Vec<EvalRunSummary> = runs.iter().map(EvalRunSummary::from).collect();
+        summaries.sort_by(|a, b| b.started_at_secs.cmp(&a.started_at_secs));
+        if let Some(limit) = filter.limit {
+            summaries.truncate(limit);
+        }
+        Ok(summaries)
+    }
+
+    fn list_full(&self, filter: &EvalRunFilter) -> Result<Vec<EvalRun>, EvalRunStoreError> {
         let root = self.runs_root();
-        let mut summaries = Vec::new();
+        let mut runs: Vec<EvalRun> = Vec::new();
         if !root.exists() {
-            return Ok(summaries);
+            return Ok(runs);
         }
         for shard_entry in fs::read_dir(&root)? {
             let shard = shard_entry?.path();
@@ -263,16 +297,26 @@ impl EvalRunStore for FileEvalRunStore {
                 {
                     continue;
                 }
-                summaries.push(EvalRunSummary::from(&run));
+                if let Some(since) = filter.since_secs
+                    && run.started_at_secs < since
+                {
+                    continue;
+                }
+                if let Some(until) = filter.until_secs
+                    && run.started_at_secs >= until
+                {
+                    continue;
+                }
+                runs.push(run);
             }
         }
-        // Newest-first so the typical "list recent runs" query returns
-        // the freshest results without a follow-up sort.
-        summaries.sort_by(|a, b| b.started_at_secs.cmp(&a.started_at_secs));
+        // Newest-first matches `list` ordering. Callers needing time-series
+        // (e.g. trend) can re-sort ascending.
+        runs.sort_by(|a, b| b.started_at_secs.cmp(&a.started_at_secs));
         if let Some(limit) = filter.limit {
-            summaries.truncate(limit);
+            runs.truncate(limit);
         }
-        Ok(summaries)
+        Ok(runs)
     }
 
     fn prune(&self, older_than_secs: u64) -> Result<u64, EvalRunStoreError> {

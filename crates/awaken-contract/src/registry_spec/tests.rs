@@ -57,6 +57,8 @@ fn model_binding_spec_uses_canonical_names() {
         id: "default".into(),
         provider_id: "openai".into(),
         upstream_model: "gpt-4o-mini".into(),
+        input_token_price_per_million_usd: None,
+        output_token_price_per_million_usd: None,
     };
 
     let encoded = serde_json::to_value(&canonical).unwrap();
@@ -354,4 +356,65 @@ fn provider_spec_adapter_options_skipped_when_empty() {
         !encoded.contains("adapter_options"),
         "expected adapter_options to be elided when empty, got: {encoded}"
     );
+}
+
+#[test]
+fn model_binding_spec_compute_cost_usd_with_both_prices() {
+    let s = ModelBindingSpec {
+        id: "m".into(),
+        provider_id: "p".into(),
+        upstream_model: "x".into(),
+        input_token_price_per_million_usd: Some(3.0),
+        output_token_price_per_million_usd: Some(15.0),
+    };
+    // 1000 input × 3/1M = 0.003; 500 output × 15/1M = 0.0075; total 0.0105.
+    let cost = s.compute_cost_usd(1000, 500).unwrap();
+    assert!((cost - 0.0105).abs() < 1e-9, "cost = {cost}");
+}
+
+#[test]
+fn model_binding_spec_compute_cost_usd_missing_either_returns_none() {
+    let base = ModelBindingSpec {
+        id: "m".into(),
+        provider_id: "p".into(),
+        upstream_model: "x".into(),
+        input_token_price_per_million_usd: None,
+        output_token_price_per_million_usd: Some(15.0),
+    };
+    assert!(base.compute_cost_usd(100, 100).is_none());
+    let only_input = ModelBindingSpec {
+        input_token_price_per_million_usd: Some(3.0),
+        output_token_price_per_million_usd: None,
+        ..base.clone()
+    };
+    assert!(only_input.compute_cost_usd(100, 100).is_none());
+    let neither = ModelBindingSpec {
+        input_token_price_per_million_usd: None,
+        output_token_price_per_million_usd: None,
+        ..base
+    };
+    assert!(neither.compute_cost_usd(100, 100).is_none());
+}
+
+#[test]
+fn model_binding_spec_legacy_json_without_pricing_deserialises() {
+    // Pre-pricing ModelBindingSpec JSON must continue to parse so config
+    // stores written before this change keep loading.
+    let json = r#"{"id":"m","provider_id":"p","upstream_model":"x"}"#;
+    let s: ModelBindingSpec = serde_json::from_str(json).unwrap();
+    assert!(s.input_token_price_per_million_usd.is_none());
+    assert!(s.output_token_price_per_million_usd.is_none());
+}
+
+#[test]
+fn model_binding_spec_pricing_omitted_from_serialised_form_when_none() {
+    let s = ModelBindingSpec {
+        id: "m".into(),
+        provider_id: "p".into(),
+        upstream_model: "x".into(),
+        input_token_price_per_million_usd: None,
+        output_token_price_per_million_usd: None,
+    };
+    let encoded = serde_json::to_string(&s).unwrap();
+    assert!(!encoded.contains("price"), "{encoded}");
 }
