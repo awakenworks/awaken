@@ -851,14 +851,11 @@ pub fn build_service_router(state: AppState) -> std::io::Result<axum::Router> {
 }
 
 pub fn validate_admin_surface(state: &AppState) -> std::io::Result<()> {
+    crate::eval_limits::validate_eval_limits(&state.config.eval_limits)?;
     let admin = admin_api_config(state);
-    // Any of the admin surfaces that expose sensitive data must be gated
-    // when binding a non-loopback address. Trace routes count as a
-    // sensitive surface in their own right (they reveal prompts, tool
-    // arguments, tool results, agent/run/thread linkage), so a deployment
-    // that disables config routes but enables trace routes still needs a
-    // bearer token. The previous short-circuit on `!expose_config_routes`
-    // missed this case entirely.
+    // Any admin surface exposing sensitive data (config OR trace routes —
+    // trace reveals prompts/tool args/results) needs a bearer token when
+    // bound to a non-loopback address.
     let any_sensitive_route_exposed =
         admin.expose_config_routes || (admin.expose_trace_routes && state.trace_store().is_some());
     if !any_sensitive_route_exposed {

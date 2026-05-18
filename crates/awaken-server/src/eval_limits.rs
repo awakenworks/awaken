@@ -48,3 +48,59 @@ impl Default for EvalLimits {
         }
     }
 }
+
+impl EvalLimits {
+    /// Reject configurations that would hang every request: a
+    /// `Semaphore::new(0)` makes `acquire_owned()` block forever, so
+    /// the first eval task posted to the server would never return.
+    /// Caller (server startup) propagates this as a fatal load error
+    /// instead of letting the box come up in a wedged state.
+    pub fn validate(&self) -> Result<(), String> {
+        if self.max_concurrent_matrix_cells == 0 {
+            return Err("eval_limits.max_concurrent_matrix_cells must be > 0".into());
+        }
+        if self.max_concurrent_online_cells == 0 {
+            return Err("eval_limits.max_concurrent_online_cells must be > 0".into());
+        }
+        Ok(())
+    }
+}
+
+/// Boot-time guard: maps [`EvalLimits::validate`] into `std::io::Error`
+/// so the server's startup chain (which already returns `io::Result`)
+/// can refuse to come up without growing a fresh error type.
+pub fn validate_eval_limits(limits: &EvalLimits) -> std::io::Result<()> {
+    limits
+        .validate()
+        .map_err(|err| std::io::Error::new(std::io::ErrorKind::InvalidInput, err))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn validate_rejects_zero_matrix_concurrency() {
+        let lim = EvalLimits {
+            max_concurrent_matrix_cells: 0,
+            ..EvalLimits::default()
+        };
+        let err = lim.validate().unwrap_err();
+        assert!(err.contains("max_concurrent_matrix_cells"), "{err}");
+    }
+
+    #[test]
+    fn validate_rejects_zero_online_concurrency() {
+        let lim = EvalLimits {
+            max_concurrent_online_cells: 0,
+            ..EvalLimits::default()
+        };
+        let err = lim.validate().unwrap_err();
+        assert!(err.contains("max_concurrent_online_cells"), "{err}");
+    }
+
+    #[test]
+    fn validate_accepts_defaults() {
+        assert!(EvalLimits::default().validate().is_ok());
+    }
+}
