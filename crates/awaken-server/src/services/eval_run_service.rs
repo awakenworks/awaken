@@ -425,6 +425,25 @@ fn compute_diff(
         }
         other => map_eval_run_store_error(other),
     })?;
+    // Refuse to diff across different datasets or different revisions
+    // of the same dataset. The fixture set behind a (dataset_id,
+    // revision) pair is the schema both runs were scored against;
+    // matching fixture_ids across snapshots can refer to materially
+    // different prompts/expectations and the diff would be meaningless
+    // (or worse, silently misleading). Operators wanting cross-revision
+    // comparison should explicitly snapshot and rerun.
+    if baseline.dataset_id != new_run.dataset_id {
+        return Err(ApiError::BadRequest(format!(
+            "cannot diff across datasets: baseline={} new={}",
+            baseline.dataset_id, new_run.dataset_id,
+        )));
+    }
+    if baseline.dataset_revision != new_run.dataset_revision {
+        return Err(ApiError::BadRequest(format!(
+            "cannot diff across dataset revisions of {}: baseline rev={} new rev={}",
+            new_run.dataset_id, baseline.dataset_revision, new_run.dataset_revision,
+        )));
+    }
     // Use matrix-aware pairing when either side carries a cell. Single
     // unified call site — `diff_eval_items` handles the cell-less path
     // identically to the report-based diff.
