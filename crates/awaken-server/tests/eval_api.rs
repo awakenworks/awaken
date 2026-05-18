@@ -464,6 +464,64 @@ async fn get_eval_run_with_baseline_surfaces_diff() {
 }
 
 #[tokio::test]
+async fn get_eval_run_baseline_400s_on_dataset_id_mismatch() {
+    // Baseline run is for DS-DIFF; new run is for DS-OTHER. The
+    // diff is meaningless across dataset schemas, so the route must
+    // reject rather than silently produce a misleading diff on
+    // coincidentally-matching fixture ids.
+    let app = build_test_app().await;
+    let baseline = baseline_run("BASE-X");
+    let mut other = baseline_run("NEW-X");
+    other.dataset_id = "DS-OTHER".into();
+    app.eval_run_store.write(&baseline).unwrap();
+    app.eval_run_store.write(&other).unwrap();
+
+    let (status, body) = request(
+        &app.router,
+        "GET",
+        "/v1/eval/runs/NEW-X?baseline=BASE-X",
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(
+        body["error"]
+            .as_str()
+            .unwrap_or("")
+            .contains("across datasets"),
+        "body: {body}"
+    );
+}
+
+#[tokio::test]
+async fn get_eval_run_baseline_400s_on_dataset_revision_mismatch() {
+    // Same dataset_id, different revision — the fixture set behind
+    // each revision may differ; reject rather than silently diff.
+    let app = build_test_app().await;
+    let baseline = baseline_run("BASE-R");
+    let mut newer = baseline_run("NEW-R");
+    newer.dataset_revision = 2;
+    app.eval_run_store.write(&baseline).unwrap();
+    app.eval_run_store.write(&newer).unwrap();
+
+    let (status, body) = request(
+        &app.router,
+        "GET",
+        "/v1/eval/runs/NEW-R?baseline=BASE-R",
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(
+        body["error"]
+            .as_str()
+            .unwrap_or("")
+            .contains("dataset revisions"),
+        "body: {body}"
+    );
+}
+
+#[tokio::test]
 async fn get_eval_run_with_unknown_baseline_returns_404() {
     let app = build_test_app().await;
     let run = baseline_run("LONELY");
