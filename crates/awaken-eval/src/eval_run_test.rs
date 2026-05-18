@@ -37,11 +37,13 @@ fn sample_run(id: &str, dataset: &str, started: u64) -> EvalRun {
         items: vec![
             EvalRunItem {
                 fixture_id: "alpha".into(),
+                cell: None,
                 report: sample_report("alpha", true),
                 trace_run_id: Some("trace-alpha".into()),
             },
             EvalRunItem {
                 fixture_id: "beta".into(),
+                cell: None,
                 report: sample_report("beta", false),
                 trace_run_id: None,
             },

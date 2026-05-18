@@ -34,7 +34,7 @@ pub use curate::{CurateError, TraceConversion, trace_to_provider_script};
 pub use dataset::{DATASETS_NAMESPACE, DatasetSpec};
 pub use eval_run::{
     EvalRun, EvalRunFilter, EvalRunItem, EvalRunStore, EvalRunStoreError, EvalRunSummary,
-    FileEvalRunStore, mint_run_id,
+    FileEvalRunStore, MatrixCell, expand_cells, mint_run_id,
 };
 pub use expectation::{Expectation, Failure};
 pub use fixture::load_directory;
@@ -42,8 +42,8 @@ pub use fixture::{Fixture, FixtureError, MockResponse};
 pub use outcome::{ReplayOutcome, ReplayReport};
 pub use replay::{MockReplayer, Replayer, replay_all};
 pub use report::{
-    DiffEntry, DiffSummary, ReportError, diff_against_baseline, read_ndjson, read_ndjson_path,
-    write_ndjson, write_ndjson_path,
+    DiffEntry, DiffSummary, ReportError, diff_against_baseline, diff_eval_items, read_ndjson,
+    read_ndjson_path, write_ndjson, write_ndjson_path,
 };
 pub use runtime_replayer::RuntimeReplayer;
 pub use score::score;

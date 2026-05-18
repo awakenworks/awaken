@@ -44,6 +44,17 @@ pub struct ListDatasetsResponse {
     pub datasets: Vec<DatasetSummaryWire>,
 }
 
+/// Body for `POST /v1/eval/datasets/:id/fixtures` — atomic single-fixture
+/// append with revision CAS. Avoids the "two operators each push a full
+/// dataset list" race that PUT has, where one operator's appends get
+/// silently dropped by the other's replace.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AppendFixtureRequest {
+    pub fixture: Fixture,
+    pub expected_revision: u64,
+}
+
 /// Body for `POST /v1/eval/datasets/:id/items { from_run_id, user_input }`.
 ///
 /// `from_run_id` identifies a run in the [`TraceStore`]. `user_input` is
@@ -242,6 +253,58 @@ pub async fn put_dataset(
 pub struct PutDatasetRequest {
     pub expected_revision: u64,
     pub spec: DatasetSpec,
+}
+
+/// `POST /v1/eval/datasets/:id/fixtures` — atomically append a single
+/// fixture to the dataset. Race-safe alternative to PUT for the "iterate
+/// fixture by fixture" workflow: PUT requires re-sending the whole list
+/// and silently drops appends made by concurrent admins between GET and
+/// PUT.
+///
+/// Rejects with 409 when `expected_revision` doesn't match (operator
+/// should re-GET, decide whether to retry). Rejects with 409 when the
+/// fixture id already exists in the dataset (use PUT to mutate).
+#[tracing::instrument(skip_all, fields(id = %id, fixture_id = %body.fixture.id))]
+pub async fn append_fixture(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    Json(body): Json<AppendFixtureRequest>,
+) -> Result<Response, ApiError> {
+    crate::config_routes::ensure_admin_auth(&state, &headers)?;
+    let store = config_store_or_unavailable(&state)?;
+    let existing_value = store
+        .get(DATASETS_NAMESPACE, &id)
+        .await
+        .map_err(map_storage_error)?
+        .ok_or_else(|| ApiError::NotFound(format!("dataset not found: {id}")))?;
+    let existing_revision = extract_meta_revision(&existing_value).unwrap_or(0);
+    if existing_revision != body.expected_revision {
+        return Err(ApiError::Conflict(format!(
+            "revision conflict: expected {}, actual {existing_revision}",
+            body.expected_revision
+        )));
+    }
+    let mut record: ConfigRecord<DatasetSpec> = validate_config_record(existing_value)
+        .map_err(|err| ApiError::Internal(err.to_string()))?;
+    if record.spec.fixtures.iter().any(|f| f.id == body.fixture.id) {
+        return Err(ApiError::Conflict(format!(
+            "dataset already has fixture {} (use PUT to replace the whole spec)",
+            body.fixture.id
+        )));
+    }
+    record.spec.fixtures.push(body.fixture);
+    let now = awaken_contract::time::now_ms();
+    record.meta.updated_at = now;
+    record.meta.revision = record.meta.revision.saturating_add(1);
+    let value = record
+        .to_value()
+        .map_err(|err| ApiError::Internal(err.to_string()))?;
+    store
+        .put_if_revision(DATASETS_NAMESPACE, &id, &value, body.expected_revision)
+        .await
+        .map_err(map_storage_error)?;
+    Ok((StatusCode::CREATED, Json(record)).into_response())
 }
 
 /// `DELETE /v1/eval/datasets/:id` — remove the dataset. Idempotent.

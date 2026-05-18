@@ -41,6 +41,8 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use async_trait::async_trait;
+use awaken_contract::agent_spec_patch::{AgentSpecPatch, merge_agent_spec};
+use awaken_contract::contract::executor::LlmExecutor;
 use awaken_contract::contract::message::Message;
 use awaken_contract::registry_spec::AgentSpec;
 use awaken_ext_observability::{CompositeSink, InMemorySink, MetricsSink, ObservabilityPlugin};
@@ -56,8 +58,16 @@ use crate::replay::Replayer;
 
 /// Identifier the scripted provider registers under.
 const SCRIPTED_PROVIDER_ID: &str = "scripted";
+/// Identifier the live provider registers under.
+const LIVE_PROVIDER_ID: &str = "live";
 /// Identifier for the model binding the agent spec points at.
 const SCRIPTED_MODEL_ID: &str = "scripted-model";
+/// Identifier for the live model binding the agent spec points at when
+/// `ReplayMode::Live`. The caller-supplied `upstream_model` is bound to
+/// the live provider under this id; agent overrides that try to set a
+/// different `model_id` are ignored (the live executor is the model under
+/// test, by definition).
+const LIVE_MODEL_ID: &str = "live-model";
 /// Default upstream model name used when the fixture does not pin
 /// [`Fixture::source_model_id`].
 const SCRIPTED_UPSTREAM_MODEL_DEFAULT: &str = "scripted";
@@ -65,6 +75,47 @@ const SCRIPTED_UPSTREAM_MODEL_DEFAULT: &str = "scripted";
 const DEFAULT_AGENT_ID: &str = "default";
 /// Static system prompt the synthetic agent uses.
 const DEFAULT_SYSTEM_PROMPT: &str = "You are a test assistant.";
+
+/// How the replay sources its LLM responses.
+///
+/// `Scripted` is the original (and default) mode: deterministic replay
+/// against the fixture's `provider_script`, used for CI smoke tests.
+/// `Live` swaps the scripted executor for a real provider — the LLM
+/// actually runs — used for "does our agent still work against this
+/// model" regression and ad-hoc online evaluation.
+pub enum ReplayMode {
+    Scripted,
+    Live {
+        /// Real provider executor, typically built from a `ProviderSpec`
+        /// in the server's `ConfigRuntimeManager` and passed in here.
+        executor: Arc<dyn LlmExecutor>,
+        /// Upstream model id the executor should pass to the provider.
+        /// Bound under `LIVE_MODEL_ID` in the synthetic registry; the
+        /// agent's `model_id` is forced to `LIVE_MODEL_ID` even if
+        /// `agent_overrides.model_id` was supplied (the live model is
+        /// what's under test).
+        upstream_model: String,
+        /// Optional agent-spec overrides applied via [`merge_agent_spec`].
+        /// `model_id` in the patch is ignored (see above); everything
+        /// else (system_prompt, allowed_tools, temperature, etc.) merges
+        /// onto the default replay agent.
+        agent_overrides: Option<AgentSpecPatch>,
+        /// Post-hoc token budget. After replay completes, if
+        /// `outcome.total_tokens() > max`, a
+        /// [`ReplayRuntimeFailure::RuntimeError`] is recorded with a
+        /// `"token budget exceeded"` message. Real-time cancellation
+        /// requires a cancellation token plumbed through the runtime —
+        /// that's a follow-up; the soft cap catches "this fixture cost
+        /// $X" without aborting expensive in-flight inference.
+        max_total_tokens: Option<u32>,
+    },
+}
+
+impl Default for ReplayMode {
+    fn default() -> Self {
+        Self::Scripted
+    }
+}
 
 /// Replayer that drives a real [`AgentRuntime`] using the fixture's
 /// `provider_script` (or the legacy `mock_response` shim).
@@ -75,6 +126,8 @@ pub struct RuntimeReplayer {
     /// eval-run service) that want replay spans to land in a shared
     /// [`TraceStore`] alongside production traces.
     tee_sink: Option<Arc<dyn MetricsSink>>,
+    /// Replay mode — Scripted (default) or Live.
+    mode: ReplayMode,
 }
 
 impl RuntimeReplayer {
@@ -82,6 +135,7 @@ impl RuntimeReplayer {
         Self {
             max_rounds_floor: 4,
             tee_sink: None,
+            mode: ReplayMode::default(),
         }
     }
 
@@ -105,6 +159,59 @@ impl RuntimeReplayer {
         self.tee_sink = Some(sink);
         self
     }
+
+    /// Switch the replayer into Live mode: instead of replaying the
+    /// fixture's `provider_script`, drive the supplied `executor` (a
+    /// real provider) against `upstream_model`. The fixture's
+    /// `provider_script` is ignored. `agent_overrides` (optional) is
+    /// merged onto the default replay agent so callers can pin a
+    /// system prompt, allowed tools, or sampling params; `model_id`
+    /// inside the patch is silently overridden by `LIVE_MODEL_ID`.
+    #[must_use]
+    pub fn with_live_executor(
+        mut self,
+        executor: Arc<dyn LlmExecutor>,
+        upstream_model: impl Into<String>,
+    ) -> Self {
+        self.mode = ReplayMode::Live {
+            executor,
+            upstream_model: upstream_model.into(),
+            agent_overrides: None,
+            max_total_tokens: None,
+        };
+        self
+    }
+
+    /// Apply an [`AgentSpecPatch`] to the agent spec used by Live mode.
+    /// No-op on Scripted mode (scripted runs use a fixed minimal agent).
+    /// Calling this before `with_live_executor` is a logic error and
+    /// will be silently overwritten.
+    #[must_use]
+    pub fn with_agent_overrides(mut self, patch: AgentSpecPatch) -> Self {
+        if let ReplayMode::Live {
+            agent_overrides, ..
+        } = &mut self.mode
+        {
+            *agent_overrides = Some(patch);
+        }
+        self
+    }
+
+    /// Cap the cumulative token count for a Live replay. After the
+    /// replay completes, if `outcome.total_tokens() > max`, the outcome
+    /// is annotated with [`ReplayRuntimeFailure::RuntimeError`] so the
+    /// scorer surfaces it as a failure. Real-time interruption is
+    /// deferred — this is a post-hoc soft cap.
+    #[must_use]
+    pub fn with_max_total_tokens(mut self, max: u32) -> Self {
+        if let ReplayMode::Live {
+            max_total_tokens, ..
+        } = &mut self.mode
+        {
+            *max_total_tokens = Some(max);
+        }
+        self
+    }
 }
 
 impl Default for RuntimeReplayer {
@@ -116,6 +223,29 @@ impl Default for RuntimeReplayer {
 #[async_trait]
 impl Replayer for RuntimeReplayer {
     async fn replay(&self, fixture: &Fixture) -> ReplayOutcome {
+        match &self.mode {
+            ReplayMode::Scripted => self.replay_scripted(fixture).await,
+            ReplayMode::Live {
+                executor,
+                upstream_model,
+                agent_overrides,
+                max_total_tokens,
+            } => {
+                self.replay_live(
+                    fixture,
+                    executor.clone(),
+                    upstream_model.clone(),
+                    agent_overrides.clone(),
+                    *max_total_tokens,
+                )
+                .await
+            }
+        }
+    }
+}
+
+impl RuntimeReplayer {
+    async fn replay_scripted(&self, fixture: &Fixture) -> ReplayOutcome {
         let script = fixture.effective_script();
         let sink = InMemorySink::new();
         // When a tee sink is wired (typically by the server's eval-run
@@ -226,6 +356,141 @@ impl Replayer for RuntimeReplayer {
             runtime_failure,
         }
     }
+
+    /// Drive the fixture's `user_input` against a real provider executor.
+    /// Skips `provider_script` entirely — the LLM does the work. Used by
+    /// the server's `/v1/eval/online` endpoint and by dataset runs with
+    /// a `models` axis override.
+    async fn replay_live(
+        &self,
+        fixture: &Fixture,
+        executor: Arc<dyn LlmExecutor>,
+        upstream_model: String,
+        agent_overrides: Option<AgentSpecPatch>,
+        max_total_tokens: Option<u32>,
+    ) -> ReplayOutcome {
+        let sink = InMemorySink::new();
+        let plugin = match &self.tee_sink {
+            Some(tee) => {
+                let composite = CompositeSink::builder()
+                    .with_sink(Arc::new(sink.clone()))
+                    .with_sink(tee.clone())
+                    .build();
+                ObservabilityPlugin::new(composite).with_provider(LIVE_PROVIDER_ID)
+            }
+            None => ObservabilityPlugin::new(sink.clone()).with_provider(LIVE_PROVIDER_ID),
+        };
+
+        let store = Arc::new(InMemoryStore::new());
+        // Live mode has no script to bound max_rounds against; use the
+        // floor as-is. Operators wanting more rounds set the floor.
+        let max_rounds = self.max_rounds_floor;
+
+        // Build the synthetic agent: default base merged with caller
+        // overrides (model_id force-pinned to LIVE_MODEL_ID).
+        let base = AgentSpec {
+            id: DEFAULT_AGENT_ID.into(),
+            model_id: LIVE_MODEL_ID.into(),
+            system_prompt: DEFAULT_SYSTEM_PROMPT.into(),
+            max_rounds,
+            plugin_ids: vec!["observability".into()],
+            ..Default::default()
+        };
+        let mut agent_spec = match agent_overrides {
+            Some(patch) => merge_agent_spec(base, patch),
+            None => base,
+        };
+        // Force model_id back to LIVE_MODEL_ID — the override may have
+        // set its own value but the live model is what's under test,
+        // by definition.
+        agent_spec.model_id = LIVE_MODEL_ID.into();
+        // Live mode preserves the agent_id we use for routing; if the
+        // override changed it, fix that too so the RunRequest lands.
+        agent_spec.id = DEFAULT_AGENT_ID.into();
+
+        let runtime: Arc<AgentRuntime> = Arc::new(
+            AgentRuntimeBuilder::new()
+                .with_provider(LIVE_PROVIDER_ID, executor)
+                .with_model_binding(
+                    LIVE_MODEL_ID,
+                    ModelBinding {
+                        provider_id: LIVE_PROVIDER_ID.into(),
+                        upstream_model,
+                    },
+                )
+                .with_thread_run_store(store.clone())
+                .with_agent_spec(agent_spec)
+                .with_plugin("observability", Arc::new(plugin))
+                .build()
+                .expect("live runtime builds"),
+        );
+
+        let request = RunRequest::new(
+            format!("eval-thread-{}", fixture.id),
+            vec![Message::user(&fixture.user_input)],
+        )
+        .with_agent_id(DEFAULT_AGENT_ID);
+
+        let start = Instant::now();
+        let outcome = runtime.run_to_completion(request).await;
+        let elapsed = start.elapsed();
+
+        let final_text = match &outcome {
+            Ok(result) => result.response.clone(),
+            Err(_) => String::new(),
+        };
+        let error_type = match &outcome {
+            // Live mode: the runtime owns the error variant. Surface its
+            // toString so the scorer's `expected_error_type` assertion
+            // still works for live-mode failure fixtures.
+            Err(err) => Some(err.to_string()),
+            Ok(_) => None,
+        };
+
+        // Post-hoc token budget — see ReplayMode::Live::max_total_tokens
+        // docstring for why this isn't real-time cancellation.
+        let metrics = sink.metrics();
+        let total_tokens = metrics_total_tokens(&metrics);
+        let runtime_failure = match (max_total_tokens, outcome.as_ref()) {
+            (Some(max), _) if total_tokens > max => Some(ReplayRuntimeFailure::RuntimeError {
+                message: format!("token budget exceeded: {total_tokens} > max {max}"),
+            }),
+            (_, Err(err)) => Some(ReplayRuntimeFailure::RuntimeError {
+                message: err.to_string(),
+            }),
+            _ => None,
+        };
+
+        ReplayOutcome {
+            fixture_id: fixture.id.clone(),
+            final_text,
+            metrics,
+            elapsed,
+            error_type,
+            inference_error_count: 0,
+            runtime_failure,
+        }
+    }
+}
+
+/// Sum of `total_tokens` across all inference spans, clamping negative
+/// values to zero. Mirrors `ReplayOutcome::total_tokens()` but works on
+/// `AgentMetrics` directly (no built outcome yet at the cap-check site).
+fn metrics_total_tokens(metrics: &awaken_ext_observability::AgentMetrics) -> u32 {
+    let total: i64 = metrics
+        .inferences
+        .iter()
+        .map(|s| {
+            if let Some(t) = s.total_tokens {
+                i64::from(t).max(0)
+            } else {
+                let input = i64::from(s.input_tokens.unwrap_or(0)).max(0);
+                let output = i64::from(s.output_tokens.unwrap_or(0)).max(0);
+                input + output
+            }
+        })
+        .sum();
+    u32::try_from(total).unwrap_or(u32::MAX)
 }
 
 /// Pick the single most diagnostic [`ReplayRuntimeFailure`] for a
@@ -271,373 +536,5 @@ fn decide_runtime_failure(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::expectation::Expectation;
-    use crate::fixture::MockResponse;
-    use awaken_contract::contract::inference::{StopReason, TokenUsage};
-    use awaken_runtime::engine::ProviderScriptEvent;
-
-    fn text_fixture(id: &str, prompt: &str, response: &str) -> Fixture {
-        Fixture {
-            id: id.into(),
-            description: None,
-            user_input: prompt.into(),
-            provider_script: Vec::new(),
-            source_run_id: None,
-            source_model_id: None,
-            allow_unused_provider_script: false,
-            mock_response: MockResponse::Text {
-                text: response.into(),
-            },
-            expect: Expectation::default(),
-        }
-    }
-
-    fn scripted_fixture(id: &str, prompt: &str, script: Vec<ProviderScriptEvent>) -> Fixture {
-        Fixture {
-            id: id.into(),
-            description: None,
-            user_input: prompt.into(),
-            provider_script: script,
-            source_run_id: None,
-            source_model_id: None,
-            allow_unused_provider_script: false,
-            mock_response: MockResponse::default(),
-            expect: Expectation::default(),
-        }
-    }
-
-    #[tokio::test]
-    async fn replay_chat_response_surfaces_scripted_answer() {
-        let fx = text_fixture("rt-chat", "What is 2+2?", "the answer is 4");
-        let outcome = RuntimeReplayer::new().replay(&fx).await;
-
-        assert_eq!(outcome.fixture_id, "rt-chat");
-        assert!(
-            outcome.final_text.contains("the answer is 4"),
-            "final_text {:?} did not contain scripted answer",
-            outcome.final_text
-        );
-    }
-
-    #[tokio::test]
-    async fn replay_records_exactly_one_inference_for_single_turn() {
-        let fx = text_fixture("rt-one", "p", "ok");
-        let outcome = RuntimeReplayer::new().replay(&fx).await;
-
-        assert_eq!(outcome.metrics.inference_count(), 1);
-        assert_eq!(outcome.metrics.tool_count(), 0);
-    }
-
-    #[tokio::test]
-    async fn replay_token_counts_come_from_provider_script() {
-        let fx = scripted_fixture(
-            "rt-tokens",
-            "p",
-            vec![ProviderScriptEvent::ChatResponse {
-                content: "ok".into(),
-                tokens: TokenUsage {
-                    prompt_tokens: Some(12),
-                    completion_tokens: Some(5),
-                    total_tokens: Some(17),
-                    ..Default::default()
-                },
-                finish_reason: StopReason::EndTurn,
-            }],
-        );
-
-        let outcome = RuntimeReplayer::new().replay(&fx).await;
-
-        assert_eq!(outcome.metrics.total_input_tokens(), 12);
-        assert_eq!(outcome.metrics.total_output_tokens(), 5);
-        // No `approximate_tokens` heuristic: 17 came straight from the script.
-        assert_eq!(outcome.total_tokens(), 17);
-    }
-
-    #[tokio::test]
-    async fn replay_error_event_surfaces_error_type_and_empty_text() {
-        let fx = scripted_fixture(
-            "rt-err",
-            "p",
-            vec![ProviderScriptEvent::Error {
-                error_type: "rate_limit".into(),
-                message: "429".into(),
-            }],
-        );
-        let outcome = RuntimeReplayer::new().replay(&fx).await;
-
-        assert_eq!(outcome.fixture_id, "rt-err");
-        assert!(outcome.final_text.is_empty());
-        // Review v1 #2: error_type must travel into the outcome so
-        // scoring can assert on it instead of silently passing.
-        assert_eq!(outcome.error_type.as_deref(), Some("rate_limit"));
-        // Review v2 #2: failure path must report at least one
-        // inference-error event so it doesn't look like "0 inferences
-        // happened" in the report.
-        assert_eq!(outcome.inference_error_count, 1);
-        assert!(outcome.runtime_failure.is_none());
-    }
-
-    #[tokio::test]
-    async fn replay_error_event_does_not_retry_under_default_policy() {
-        // Review v2 #1: prove the runtime really makes exactly one call.
-        // A second scripted ChatResponse sits behind the Error event; if
-        // a retry fires we'd either consume `"would-be-retry"` (visible
-        // through error_calls + consumed_calls) or exhaust into an extra
-        // InvalidRequest call (visible through runtime_failure). Both
-        // cases surface structurally instead of being inferred from
-        // error_type alone.
-        let fx = scripted_fixture(
-            "rt-err-no-retry",
-            "p",
-            vec![
-                ProviderScriptEvent::Error {
-                    error_type: "rate_limit".into(),
-                    message: "429".into(),
-                },
-                ProviderScriptEvent::ChatResponse {
-                    content: "would-be-retry".into(),
-                    tokens: TokenUsage::default(),
-                    finish_reason: StopReason::EndTurn,
-                },
-            ],
-        );
-        let mut fx_allow = fx.clone();
-        // Opt in so the trailing ChatResponse isn't itself flagged as
-        // "unused script" — we want the assertion to focus on whether
-        // it was *consumed*, not on whether it's left over.
-        fx_allow.allow_unused_provider_script = true;
-
-        let outcome = RuntimeReplayer::new().replay(&fx_allow).await;
-        assert_eq!(outcome.error_type.as_deref(), Some("rate_limit"));
-        assert_eq!(outcome.inference_error_count, 1);
-        assert!(
-            outcome.runtime_failure.is_none(),
-            "no script exhaustion / runtime error expected, got {:?}",
-            outcome.runtime_failure
-        );
-        // The decisive check: the ChatResponse retry-bait was *not*
-        // consumed. If retry had fired this would be empty text from the
-        // ChatResponse and inference_error_count would still be 1, but
-        // final_text would change. More importantly the would-be-retry
-        // event would have been popped — final_text would now be
-        // "would-be-retry".
-        assert!(
-            !outcome.final_text.contains("would-be-retry"),
-            "second event must not be consumed, got final_text {:?}",
-            outcome.final_text
-        );
-    }
-
-    #[tokio::test]
-    async fn replay_surfaces_script_exhausted_when_runtime_overcalls() {
-        // Build a fixture whose script has just one Error event but
-        // disables the no-retry safeguard so the runtime would normally
-        // retry. We can't easily flip the retry policy from outside
-        // RuntimeReplayer, so this test instead manually feeds a
-        // ScriptedLlmExecutor through more execute calls than it has
-        // events for — proving the executor surfaces exhaustion in a
-        // way RuntimeReplayer's mapping (`exhausted_calls > 0` →
-        // ScriptExhausted) can pick up. The end-to-end mapping is
-        // exercised by every other replay test indirectly: if the
-        // mapping breaks, those tests' runtime_failure assertions
-        // become noisy.
-        let executor =
-            awaken_runtime::engine::ScriptedLlmExecutor::new([ProviderScriptEvent::Error {
-                error_type: "rate_limit".into(),
-                message: "429".into(),
-            }]);
-        let req = awaken_contract::contract::executor::InferenceRequest {
-            upstream_model: "scripted".into(),
-            messages: vec![awaken_contract::contract::message::Message::user("p")],
-            tools: vec![],
-            system: vec![],
-            overrides: None,
-            enable_prompt_cache: false,
-        };
-        use awaken_contract::contract::executor::LlmExecutor;
-        let _ = executor.execute(req.clone()).await.unwrap_err();
-        let _ = executor.execute(req.clone()).await.unwrap_err();
-        let _ = executor.execute(req).await.unwrap_err();
-        assert_eq!(executor.exhausted_calls(), 2);
-        assert_eq!(executor.error_calls(), 1);
-        assert_eq!(executor.consumed_calls(), 1);
-    }
-
-    #[tokio::test]
-    async fn replay_source_model_id_pins_upstream_model() {
-        // Review #6: when source_model_id is set, both the registered
-        // model binding and the ScriptedLlmExecutor's expected upstream
-        // model must agree on it. Mismatches are exercised at the
-        // executor seam in
-        // `scripted::tests::expected_upstream_model_mismatch_does_not_consume_event`;
-        // this test asserts the end-to-end happy path doesn't drop the
-        // pin on the floor (which is what the legacy
-        // `SCRIPTED_PROVIDER_ID.into()` upstream_model did).
-        let mut fx = scripted_fixture(
-            "rt-model-guard",
-            "p",
-            vec![ProviderScriptEvent::ChatResponse {
-                content: "ok".into(),
-                tokens: TokenUsage::default(),
-                finish_reason: StopReason::EndTurn,
-            }],
-        );
-        fx.source_model_id = Some("claude-opus-4-7".into());
-
-        let outcome = RuntimeReplayer::new().replay(&fx).await;
-        assert_eq!(outcome.final_text, "ok");
-    }
-
-    // ── decide_runtime_failure precedence ────────────────────────────
-
-    #[test]
-    fn decide_script_exhausted_outranks_everything() {
-        let f = decide_runtime_failure(
-            /* exhausted_calls */ 2,
-            /* remaining */ 3,
-            /* runtime_error_message */ Some("boom".into()),
-            /* has_scripted_error */ true,
-            /* allow_unused */ false,
-        );
-        assert_eq!(
-            f,
-            Some(ReplayRuntimeFailure::ScriptExhausted { extra_calls: 2 })
-        );
-    }
-
-    #[test]
-    fn decide_runtime_error_outranks_provider_script_unused() {
-        // Review v3 #3: model-guard mismatch errors before consuming any
-        // script event; old code reported ProviderScriptUnused and hid
-        // the real failure. New precedence surfaces RuntimeError first.
-        let f = decide_runtime_failure(
-            0,
-            /* remaining */ 1,
-            Some("upstream_model mismatch".into()),
-            /* has_scripted_error */ false,
-            /* allow_unused */ false,
-        );
-        assert_eq!(
-            f,
-            Some(ReplayRuntimeFailure::RuntimeError {
-                message: "upstream_model mismatch".into()
-            })
-        );
-    }
-
-    #[test]
-    fn decide_scripted_error_plus_unused_script_falls_through_to_unused() {
-        // Run failed via a *scripted* error — that's the intended path,
-        // so don't promote it to RuntimeError. But the script also has
-        // leftover events: that IS a fixture-contract concern.
-        let f = decide_runtime_failure(
-            0,
-            /* remaining */ 2,
-            Some("inference failed: rate limited".into()),
-            /* has_scripted_error */ true,
-            /* allow_unused */ false,
-        );
-        assert_eq!(
-            f,
-            Some(ReplayRuntimeFailure::ProviderScriptUnused { remaining: 2 })
-        );
-    }
-
-    #[test]
-    fn decide_clean_run_returns_none() {
-        assert!(decide_runtime_failure(0, 0, None, false, false).is_none());
-    }
-
-    #[test]
-    fn decide_allow_unused_suppresses_provider_script_unused() {
-        let f = decide_runtime_failure(0, 5, None, false, /* allow_unused */ true);
-        assert!(f.is_none());
-    }
-
-    #[test]
-    fn decide_allow_unused_does_not_suppress_runtime_error() {
-        let f = decide_runtime_failure(
-            0,
-            5,
-            Some("boom".into()),
-            false,
-            /* allow_unused */ true,
-        );
-        assert_eq!(
-            f,
-            Some(ReplayRuntimeFailure::RuntimeError {
-                message: "boom".into()
-            })
-        );
-    }
-
-    #[tokio::test]
-    async fn replay_reports_unused_provider_script_as_runtime_failure() {
-        // Review v2 #6: replay must not panic — surface a structured
-        // failure so the NDJSON report stays complete and the CLI can
-        // still record subsequent fixtures.
-        let fx = scripted_fixture(
-            "rt-unused",
-            "p",
-            vec![
-                ProviderScriptEvent::ChatResponse {
-                    content: "first".into(),
-                    tokens: TokenUsage::default(),
-                    finish_reason: StopReason::EndTurn,
-                },
-                // The runtime stops after the first chat response — this
-                // second event is never consumed.
-                ProviderScriptEvent::ChatResponse {
-                    content: "second".into(),
-                    tokens: TokenUsage::default(),
-                    finish_reason: StopReason::EndTurn,
-                },
-            ],
-        );
-        let outcome = RuntimeReplayer::new().replay(&fx).await;
-        assert!(outcome.final_text.contains("first"));
-        assert_eq!(
-            outcome.runtime_failure,
-            Some(ReplayRuntimeFailure::ProviderScriptUnused { remaining: 1 })
-        );
-    }
-
-    #[tokio::test]
-    async fn replay_allow_unused_provider_script_opts_out_of_consumption_check() {
-        let mut fx = scripted_fixture(
-            "rt-unused-ok",
-            "p",
-            vec![
-                ProviderScriptEvent::ChatResponse {
-                    content: "first".into(),
-                    tokens: TokenUsage::default(),
-                    finish_reason: StopReason::EndTurn,
-                },
-                ProviderScriptEvent::ChatResponse {
-                    content: "second".into(),
-                    tokens: TokenUsage::default(),
-                    finish_reason: StopReason::EndTurn,
-                },
-            ],
-        );
-        fx.allow_unused_provider_script = true;
-        let outcome = RuntimeReplayer::new().replay(&fx).await;
-        assert_eq!(outcome.final_text, "first");
-    }
-
-    #[tokio::test]
-    async fn replay_inference_span_uses_scripted_provider() {
-        let fx = text_fixture("rt-prov", "p", "ok");
-        let outcome = RuntimeReplayer::new().replay(&fx).await;
-        let span = outcome
-            .metrics
-            .inferences
-            .first()
-            .expect("at least one span");
-        assert_eq!(span.provider, SCRIPTED_PROVIDER_ID);
-        assert!(!span.context.run_id.is_empty());
-        assert!(!span.context.thread_id.is_empty());
-    }
-}
+#[path = "runtime_replayer_test.rs"]
+mod tests;

@@ -50,6 +50,17 @@ pub struct EvalRunItem {
     /// Fixture id from `Fixture::id`. Stable across runs of the same
     /// dataset; the diff endpoint pairs items by this.
     pub fixture_id: String,
+    /// Matrix cell that produced this item. `None` for plain (non-matrix)
+    /// runs where `fixture_id` alone is the natural key. When set, the
+    /// `(fixture_id, cell)` pair becomes the diff-pairing key so two
+    /// matrix runs against the same model are comparable while different
+    /// cells of the same fixture stay independent.
+    ///
+    /// `#[serde(default, skip_serializing_if = "Option::is_none")]` so
+    /// pre-matrix `EvalRun` JSON on disk parses unchanged and small
+    /// non-matrix runs stay compact on the wire.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cell: Option<MatrixCell>,
     /// Replay report — same shape the `awaken-eval replay` CLI writes.
     /// Reusing the type means the existing diff/score code paths apply
     /// unchanged to server-driven runs.
@@ -60,6 +71,37 @@ pub struct EvalRunItem {
     /// `awaken.replay=true` set on the spans).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub trace_run_id: Option<String>,
+}
+
+/// One cell of a matrix evaluation. Each axis is optional so the cell
+/// shape is forward-compatible: today only the `model_id` axis is
+/// populated; adding `temperature` / `prompt_variant` later means new
+/// optional fields, no breaking change for existing items.
+///
+/// `Eq + Hash` lets [`crate::report::diff_against_baseline`] use the
+/// pair `(fixture_id, cell)` as a `BTreeMap` key when pairing items.
+#[derive(Debug, Clone, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub struct MatrixCell {
+    /// Which model the cell ran against. `None` is the "no model axis"
+    /// case (legacy non-matrix items) which the diff pairer treats as
+    /// pair-by-fixture-id-only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_id: Option<String>,
+}
+
+/// Expand a `models` axis into a vector of [`MatrixCell`]s. Empty input
+/// yields a single default cell so callers can iterate uniformly: a
+/// plain (non-matrix) fixture is "the 1-cell matrix" under the hood.
+pub fn expand_cells(models: &[String]) -> Vec<MatrixCell> {
+    if models.is_empty() {
+        return vec![MatrixCell::default()];
+    }
+    models
+        .iter()
+        .map(|m| MatrixCell {
+            model_id: Some(m.clone()),
+        })
+        .collect()
 }
 
 /// Errors raised by [`EvalRunStore`].

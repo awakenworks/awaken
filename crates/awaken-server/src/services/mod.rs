@@ -7,6 +7,7 @@ pub mod config_service;
 pub mod dataset_service;
 pub mod eval_common;
 pub mod eval_run_service;
+pub mod online_eval_service;
 #[cfg(feature = "permission")]
 pub mod permission_preview;
 pub mod run_control_service;

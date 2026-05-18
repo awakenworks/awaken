@@ -8,11 +8,14 @@
 use std::sync::Arc;
 
 use awaken_contract::contract::config_store::ConfigStore;
+use awaken_contract::contract::executor::LlmExecutor;
 use awaken_contract::contract::storage::StorageError;
+use awaken_contract::registry_spec::{ModelBindingSpec, ProviderSpec};
 use awaken_ext_observability::trace_store::TraceStoreError;
 
 use crate::app::AppState;
 use crate::error::ApiError;
+use crate::services::config_runtime::build_genai_provider_executor_with_broker;
 
 /// Fetch the attached `ConfigStore` or surface a 503 — both eval
 /// services depend on it being wired and otherwise return identical
@@ -24,6 +27,60 @@ pub(crate) fn config_store_or_unavailable(
         .config_store
         .clone()
         .ok_or_else(|| ApiError::ServiceUnavailable("config store not configured".into()))
+}
+
+/// Resolve a `model_id` against the registry to a live executor + its
+/// upstream model name. Used by online eval and the matrix path of the
+/// dataset run endpoint when fixtures execute against real providers.
+///
+/// Composition:
+///   1. Read `model_bindings/{model_id}` → `ModelBindingSpec`
+///   2. Read `providers/{provider_id}` → `ProviderSpec`
+///   3. `build_genai_provider_executor_with_broker(spec, broker)`
+///
+/// `NotFound` on either lookup becomes `404` with a message identifying
+/// which side missed.
+pub(crate) async fn resolve_live_executor(
+    state: &AppState,
+    model_id: &str,
+) -> Result<(Arc<dyn LlmExecutor>, String), ApiError> {
+    let store = config_store_or_unavailable(state)?;
+
+    let binding_value = store
+        .get("models", model_id)
+        .await
+        .map_err(map_storage_error)?
+        .ok_or_else(|| {
+            ApiError::NotFound(format!(
+                "model binding not found: models/{model_id} (register via /v1/config/models)"
+            ))
+        })?;
+    // ConfigStore may store either a bare-spec or the ConfigRecord
+    // envelope; awaken_contract::config_record::ConfigRecord::from_value
+    // handles both shapes transparently.
+    let binding_record =
+        awaken_contract::config_record::ConfigRecord::<ModelBindingSpec>::from_value(binding_value)
+            .map_err(|err| ApiError::Internal(format!("decoding model binding: {err}")))?;
+    let binding = binding_record.spec;
+
+    let provider_value = store
+        .get("providers", &binding.provider_id)
+        .await
+        .map_err(map_storage_error)?
+        .ok_or_else(|| {
+            ApiError::NotFound(format!(
+                "provider not found: providers/{} (referenced by model {model_id})",
+                binding.provider_id
+            ))
+        })?;
+    let provider_record =
+        awaken_contract::config_record::ConfigRecord::<ProviderSpec>::from_value(provider_value)
+            .map_err(|err| ApiError::Internal(format!("decoding provider: {err}")))?;
+    let provider = provider_record.spec;
+
+    let executor = build_genai_provider_executor_with_broker(&provider, state.credential_broker())
+        .map_err(|err| ApiError::Internal(format!("building provider executor: {err}")))?;
+    Ok((executor, binding.upstream_model))
 }
 
 /// Translate `ConfigStore` errors into HTTP-shaped `ApiError`s.

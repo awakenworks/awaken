@@ -503,6 +503,249 @@ async fn get_eval_run_with_unknown_baseline_returns_404() {
     assert_eq!(status, StatusCode::NOT_FOUND);
 }
 
+// ── Atomic fixture append (POST /v1/eval/datasets/:id/fixtures) ──────────
+
+#[tokio::test]
+async fn append_fixture_adds_to_existing_dataset_and_bumps_revision() {
+    let app = build_test_app().await;
+    let (status, _) = request(
+        &app.router,
+        "POST",
+        "/v1/eval/datasets",
+        Some(json!({
+            "id": "DS-APPEND",
+            "spec": { "fixtures": [sample_fixture("alpha")] }
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, body) = request(
+        &app.router,
+        "POST",
+        "/v1/eval/datasets/DS-APPEND/fixtures",
+        Some(json!({
+            "fixture": sample_fixture("beta"),
+            "expected_revision": 0
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "body: {body}");
+    assert_eq!(body["meta"]["revision"], 1);
+    let names: Vec<&str> = body["spec"]["fixtures"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|f| f["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(names, vec!["alpha", "beta"]);
+}
+
+#[tokio::test]
+async fn append_fixture_409s_on_stale_revision() {
+    let app = build_test_app().await;
+    let (status, _) = request(
+        &app.router,
+        "POST",
+        "/v1/eval/datasets",
+        Some(json!({
+            "id": "DS-STALE",
+            "spec": { "fixtures": [sample_fixture("a")] }
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, body) = request(
+        &app.router,
+        "POST",
+        "/v1/eval/datasets/DS-STALE/fixtures",
+        Some(json!({
+            "fixture": sample_fixture("b"),
+            "expected_revision": 99
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "body: {body}");
+}
+
+#[tokio::test]
+async fn append_fixture_409s_on_duplicate_id() {
+    let app = build_test_app().await;
+    let (status, _) = request(
+        &app.router,
+        "POST",
+        "/v1/eval/datasets",
+        Some(json!({
+            "id": "DS-DUP-FX",
+            "spec": { "fixtures": [sample_fixture("alpha")] }
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, body) = request(
+        &app.router,
+        "POST",
+        "/v1/eval/datasets/DS-DUP-FX/fixtures",
+        Some(json!({
+            "fixture": sample_fixture("alpha"),
+            "expected_revision": 0
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "body: {body}");
+    assert!(
+        body["error"]
+            .as_str()
+            .unwrap_or("")
+            .contains("already has fixture"),
+        "body: {body}"
+    );
+}
+
+// ── Dataset run matrix-mode validation ────────────────────────────────────
+
+#[tokio::test]
+async fn start_eval_run_with_models_404s_on_unknown_model() {
+    // Dataset has fixtures (scripted) but the matrix references an
+    // unregistered model — fast-fail with 404 before any cell runs.
+    let app = build_test_app().await;
+    let (status, _) = request(
+        &app.router,
+        "POST",
+        "/v1/eval/datasets",
+        Some(json!({
+            "id": "DS-MATRIX",
+            "spec": { "fixtures": [sample_fixture("alpha")] }
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, body) = request(
+        &app.router,
+        "POST",
+        "/v1/eval/runs",
+        Some(json!({
+            "dataset_id": "DS-MATRIX",
+            "models": ["unknown-model"]
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert!(
+        body["error"]
+            .as_str()
+            .unwrap_or("")
+            .contains("unknown-model"),
+        "body: {body}"
+    );
+}
+
+#[tokio::test]
+async fn start_eval_run_caps_total_cells() {
+    // 50 fixtures × 3 models = 150 cells exceeds MAX_CELLS_PER_SYNC_RUN (100).
+    let app = build_test_app().await;
+    let fixtures: Vec<_> = (0..50).map(|i| sample_fixture(&format!("f{i}"))).collect();
+    let (status, _) = request(
+        &app.router,
+        "POST",
+        "/v1/eval/datasets",
+        Some(json!({ "id": "DS-BIG", "spec": { "fixtures": fixtures } })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, body) = request(
+        &app.router,
+        "POST",
+        "/v1/eval/runs",
+        Some(json!({
+            "dataset_id": "DS-BIG",
+            "models": ["m1", "m2", "m3"]
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(
+        body["error"]
+            .as_str()
+            .unwrap_or("")
+            .contains("expands to 150 cells"),
+        "body: {body}"
+    );
+}
+
+// ── Online eval (POST /v1/eval/online) — validation paths ────────────────
+//
+// The happy path (cell execution against a real provider) is unit-tested
+// in awaken-eval's runtime_replayer Live mode; the integration tests
+// here cover the server-side validation and registry-lookup branches
+// that don't require a live LLM.
+
+#[tokio::test]
+async fn online_eval_400s_on_empty_models() {
+    let app = build_test_app().await;
+    let (status, body) = request(
+        &app.router,
+        "POST",
+        "/v1/eval/online",
+        Some(json!({ "user_input": "test", "models": [] })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(
+        body["error"].as_str().unwrap_or("").contains("models"),
+        "body: {body}"
+    );
+}
+
+#[tokio::test]
+async fn online_eval_400s_on_too_many_models() {
+    // MAX_CELLS_PER_SYNC_ONLINE = 10; 11 must be rejected up-front
+    // before any provider lookup or token spend.
+    let app = build_test_app().await;
+    let models: Vec<String> = (0..11).map(|i| format!("m{i}")).collect();
+    let (status, body) = request(
+        &app.router,
+        "POST",
+        "/v1/eval/online",
+        Some(json!({ "user_input": "test", "models": models })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(
+        body["error"]
+            .as_str()
+            .unwrap_or("")
+            .contains("exceed sync online cap"),
+        "body: {body}"
+    );
+}
+
+#[tokio::test]
+async fn online_eval_404s_on_unknown_model() {
+    // No model bindings registered in this TestApp's config_store —
+    // the resolver must surface a NotFound with the missing id.
+    let app = build_test_app().await;
+    let (status, body) = request(
+        &app.router,
+        "POST",
+        "/v1/eval/online",
+        Some(json!({ "user_input": "test", "models": ["missing-model"] })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert!(
+        body["error"]
+            .as_str()
+            .unwrap_or("")
+            .contains("missing-model"),
+        "body: {body}"
+    );
+}
+
 // ── Auth ──────────────────────────────────────────────────────────────────
 
 #[tokio::test]
@@ -547,6 +790,7 @@ fn item(fixture_id: &str, passed: bool, final_text: &str) -> EvalRunItem {
     use awaken_eval::ReplayReport;
     EvalRunItem {
         fixture_id: fixture_id.into(),
+        cell: None,
         report: ReplayReport {
             fixture_id: fixture_id.into(),
             passed,

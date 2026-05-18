@@ -108,23 +108,42 @@ pub fn read_ndjson_path(path: impl AsRef<Path>) -> Result<Vec<ReplayReport>, Rep
 }
 
 /// One row of the baseline-vs-new comparison.
+///
+/// Every variant carries an optional `cell: Option<MatrixCell>`. For
+/// non-matrix runs (CLI `awaken-eval check`, dataset runs without a
+/// `models` axis) the field stays `None` and the wire shape is
+/// unchanged. For matrix runs the diff pairer keys by
+/// `(fixture_id, cell)` so two cells of the same fixture stay
+/// independent entries.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum DiffEntry {
     /// Both reports are present, both `passed`, and every observable
     /// metric matched. No change.
-    Unchanged { fixture_id: String },
+    Unchanged {
+        fixture_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cell: Option<crate::eval_run::MatrixCell>,
+    },
     /// Baseline passed but the new run failed — a *regression*.
     Regression {
         fixture_id: String,
         new_failures: Vec<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cell: Option<crate::eval_run::MatrixCell>,
     },
     /// Baseline failed but the new run passed — a *fix*.
-    Fixed { fixture_id: String },
+    Fixed {
+        fixture_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cell: Option<crate::eval_run::MatrixCell>,
+    },
     /// Both runs failed; failure set differs.
     StillFailing {
         fixture_id: String,
         new_failures: Vec<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cell: Option<crate::eval_run::MatrixCell>,
     },
     /// Both runs passed but at least one observable metric drifted
     /// (final text, token counts, tool counts, error_type, etc.).
@@ -134,23 +153,47 @@ pub enum DiffEntry {
     Drift {
         fixture_id: String,
         fields: Vec<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cell: Option<crate::eval_run::MatrixCell>,
     },
     /// Fixture only present in the baseline (deleted or filtered).
-    MissingFromNew { fixture_id: String },
+    MissingFromNew {
+        fixture_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cell: Option<crate::eval_run::MatrixCell>,
+    },
     /// Fixture only present in the new run (added).
-    NewlyAdded { fixture_id: String, passed: bool },
+    NewlyAdded {
+        fixture_id: String,
+        passed: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cell: Option<crate::eval_run::MatrixCell>,
+    },
 }
 
 impl DiffEntry {
     pub fn fixture_id(&self) -> &str {
         match self {
-            DiffEntry::Unchanged { fixture_id }
+            DiffEntry::Unchanged { fixture_id, .. }
             | DiffEntry::Regression { fixture_id, .. }
-            | DiffEntry::Fixed { fixture_id }
+            | DiffEntry::Fixed { fixture_id, .. }
             | DiffEntry::StillFailing { fixture_id, .. }
             | DiffEntry::Drift { fixture_id, .. }
-            | DiffEntry::MissingFromNew { fixture_id }
+            | DiffEntry::MissingFromNew { fixture_id, .. }
             | DiffEntry::NewlyAdded { fixture_id, .. } => fixture_id,
+        }
+    }
+
+    /// Matrix cell that produced this entry. `None` for non-matrix runs.
+    pub fn cell(&self) -> Option<&crate::eval_run::MatrixCell> {
+        match self {
+            DiffEntry::Unchanged { cell, .. }
+            | DiffEntry::Regression { cell, .. }
+            | DiffEntry::Fixed { cell, .. }
+            | DiffEntry::StillFailing { cell, .. }
+            | DiffEntry::Drift { cell, .. }
+            | DiffEntry::MissingFromNew { cell, .. }
+            | DiffEntry::NewlyAdded { cell, .. } => cell.as_ref(),
         }
     }
 
@@ -286,430 +329,117 @@ pub fn diff_against_baseline(baseline: &[ReplayReport], new: &[ReplayReport]) ->
 
     let entries = all_ids
         .into_iter()
-        .map(|id| match (baseline_map.get(id), new_map.get(id)) {
-            (Some(b), Some(n)) => match (b.passed, n.passed) {
-                (true, true) => {
-                    let fields = diff_passing_fields(b, n);
-                    if fields.is_empty() {
-                        DiffEntry::Unchanged {
-                            fixture_id: id.to_string(),
-                        }
-                    } else {
-                        DiffEntry::Drift {
-                            fixture_id: id.to_string(),
-                            fields,
-                        }
-                    }
-                }
-                (true, false) => DiffEntry::Regression {
-                    fixture_id: id.to_string(),
-                    new_failures: n.failures.iter().map(|f| f.kind().to_string()).collect(),
-                },
-                (false, true) => DiffEntry::Fixed {
-                    fixture_id: id.to_string(),
-                },
-                (false, false) => DiffEntry::StillFailing {
-                    fixture_id: id.to_string(),
-                    new_failures: n.failures.iter().map(|f| f.kind().to_string()).collect(),
-                },
-            },
-            (Some(_), None) => DiffEntry::MissingFromNew {
-                fixture_id: id.to_string(),
-            },
-            (None, Some(n)) => DiffEntry::NewlyAdded {
-                fixture_id: id.to_string(),
-                passed: n.passed,
-            },
-            (None, None) => unreachable!("id collected from at least one side"),
+        .map(|id| {
+            pair_to_entry(
+                id.to_string(),
+                None,
+                baseline_map.get(id).copied(),
+                new_map.get(id).copied(),
+            )
         })
         .collect();
 
     DiffSummary { entries }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::expectation::Failure;
-    use std::io::Cursor;
+/// Pair eval-run items by `(fixture_id, cell)` for matrix-aware
+/// comparison, then produce a [`DiffSummary`]. Two cells of the same
+/// fixture become independent entries — a regression in
+/// `(alpha, claude-opus)` doesn't collide with `(alpha, gpt-4o)`. Used
+/// by the server's `compute_diff` when at least one item carries a
+/// matrix cell. CLI `awaken-eval check` keeps using the
+/// `ReplayReport`-based [`diff_against_baseline`] for its NDJSON flow.
+pub fn diff_eval_items(
+    baseline: &[crate::eval_run::EvalRunItem],
+    new: &[crate::eval_run::EvalRunItem],
+) -> DiffSummary {
+    // Owned `(String, MatrixCell)` keys keep the lifetime story simple
+    // and let us BTreeMap-key without a static empty-cell trick. The
+    // clone cost is negligible (cells are tiny — at most a model_id).
+    type Key = (String, crate::eval_run::MatrixCell);
+    let key_of = |item: &crate::eval_run::EvalRunItem| -> Key {
+        (
+            item.fixture_id.clone(),
+            item.cell.clone().unwrap_or_default(),
+        )
+    };
 
-    fn report(id: &str, passed: bool, failures: Vec<Failure>) -> ReplayReport {
-        ReplayReport {
-            fixture_id: id.into(),
-            passed,
-            failures,
-            final_text: format!("text-{id}"),
-            inference_count: 1,
-            tool_count: 0,
-            tool_failures: 0,
-            total_input_tokens: 10,
-            total_output_tokens: 5,
-            total_tokens: 15,
-            session_duration_ms: 100,
-            elapsed_ms: 100,
-            tool_calls_by_agent: Vec::new(),
-            error_type: None,
-            inference_error_count: 0,
-            runtime_failure: None,
+    let baseline_map: BTreeMap<Key, &crate::eval_run::EvalRunItem> =
+        baseline.iter().map(|i| (key_of(i), i)).collect();
+    let new_map: BTreeMap<Key, &crate::eval_run::EvalRunItem> =
+        new.iter().map(|i| (key_of(i), i)).collect();
+
+    let mut all_keys: Vec<Key> = baseline_map.keys().cloned().collect();
+    for k in new_map.keys() {
+        if !all_keys.contains(k) {
+            all_keys.push(k.clone());
         }
     }
+    all_keys.sort();
 
-    fn token_failure() -> Failure {
-        Failure::TokenBudgetExceeded {
-            budget: 100,
-            actual: 200,
-        }
-    }
+    let entries = all_keys
+        .into_iter()
+        .map(|key| {
+            let (fixture_id, cell) = &key;
+            let cell_opt = if *cell == crate::eval_run::MatrixCell::default() {
+                None
+            } else {
+                Some(cell.clone())
+            };
+            let b = baseline_map.get(&key).map(|i| &i.report);
+            let n = new_map.get(&key).map(|i| &i.report);
+            pair_to_entry(fixture_id.clone(), cell_opt, b, n)
+        })
+        .collect();
 
-    // ── write/read NDJSON ───────────────────────────────────────────
+    DiffSummary { entries }
+}
 
-    #[test]
-    fn ndjson_write_then_read_roundtrip() {
-        let mut reports = vec![
-            report("alpha", true, vec![]),
-            report("beta", false, vec![token_failure()]),
-        ];
-        let mut buf = Vec::new();
-        write_ndjson(&mut buf, &reports).unwrap();
-        let parsed = read_ndjson(Cursor::new(&buf)).unwrap();
-        // `elapsed_ms` is excluded from the serialised baseline (see
-        // `ReplayReport::elapsed_ms`), so it deserialises back as 0.
-        for r in &mut reports {
-            r.elapsed_ms = 0;
-        }
-        assert_eq!(parsed, reports);
-    }
-
-    #[test]
-    fn ndjson_one_line_per_report() {
-        let reports = vec![report("a", true, vec![]), report("b", true, vec![])];
-        let mut buf = Vec::new();
-        write_ndjson(&mut buf, &reports).unwrap();
-        let text = String::from_utf8(buf).unwrap();
-        assert_eq!(text.lines().count(), 2);
-        assert!(text.ends_with('\n'));
-    }
-
-    #[test]
-    fn ndjson_skips_blank_lines() {
-        let payload = "\n\n";
-        let parsed = read_ndjson(Cursor::new(payload.as_bytes())).unwrap();
-        assert!(parsed.is_empty());
-    }
-
-    #[test]
-    fn ndjson_read_returns_parse_error_for_garbage() {
-        let payload = "{\"valid\": true}\nnot-json\n";
-        let err = read_ndjson(Cursor::new(payload.as_bytes())).unwrap_err();
-        match err {
-            ReportError::Parse { line, .. } => {
-                // First non-empty line is line 1; the bad line is line 2
-                // OR line 1 if "valid": true alone fails (different schema).
-                // We just assert line is between 1 and 2 inclusive.
-                assert!((1..=2).contains(&line), "unexpected line {line}");
+/// Inner pairing logic shared by [`diff_against_baseline`] (cell = None)
+/// and [`diff_eval_items`] (cell may be set). Keeps the four-quadrant
+/// pass/fail × pass/fail decision in one place.
+fn pair_to_entry(
+    fixture_id: String,
+    cell: Option<crate::eval_run::MatrixCell>,
+    baseline: Option<&ReplayReport>,
+    new: Option<&ReplayReport>,
+) -> DiffEntry {
+    match (baseline, new) {
+        (Some(b), Some(n)) => match (b.passed, n.passed) {
+            (true, true) => {
+                let fields = diff_passing_fields(b, n);
+                if fields.is_empty() {
+                    DiffEntry::Unchanged { fixture_id, cell }
+                } else {
+                    DiffEntry::Drift {
+                        fixture_id,
+                        fields,
+                        cell,
+                    }
+                }
             }
-            other => panic!("expected Parse error, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn ndjson_path_round_trips_through_disk() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("reports.ndjson");
-        let mut reports = vec![report("x", true, vec![])];
-        write_ndjson_path(&path, &reports).unwrap();
-        assert!(path.exists());
-        let read = read_ndjson_path(&path).unwrap();
-        for r in &mut reports {
-            r.elapsed_ms = 0;
-        }
-        assert_eq!(read, reports);
-    }
-
-    #[test]
-    fn ndjson_path_creates_missing_parent_dirs() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("nested/sub/reports.ndjson");
-        write_ndjson_path(&path, &[report("x", true, vec![])]).unwrap();
-        assert!(path.exists());
-    }
-
-    #[test]
-    fn ndjson_read_path_io_error_for_missing_file() {
-        let err = read_ndjson_path("/nonexistent/awaken-eval/missing.ndjson").unwrap_err();
-        match err {
-            ReportError::Io { .. } => {}
-            other => panic!("expected Io error, got {other:?}"),
-        }
-    }
-
-    // ── diff_against_baseline ───────────────────────────────────────
-
-    #[test]
-    fn diff_unchanged_when_both_pass() {
-        let s = diff_against_baseline(&[report("a", true, vec![])], &[report("a", true, vec![])]);
-        assert!(s.is_clean());
-        assert_eq!(s.regressions(), 0);
-        assert!(matches!(
-            &s.entries[0],
-            DiffEntry::Unchanged { fixture_id } if fixture_id == "a"
-        ));
-    }
-
-    #[test]
-    fn diff_regression_when_baseline_passed_new_failed() {
-        let s = diff_against_baseline(
-            &[report("a", true, vec![])],
-            &[report("a", false, vec![token_failure()])],
-        );
-        assert_eq!(s.regressions(), 1);
-        assert!(!s.is_clean());
-        match &s.entries[0] {
-            DiffEntry::Regression {
+            (true, false) => DiffEntry::Regression {
                 fixture_id,
-                new_failures,
-            } => {
-                assert_eq!(fixture_id, "a");
-                assert_eq!(new_failures, &vec!["token_budget_exceeded".to_string()]);
-            }
-            other => panic!("expected Regression, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn diff_fixed_when_baseline_failed_new_passed() {
-        let s = diff_against_baseline(
-            &[report("a", false, vec![token_failure()])],
-            &[report("a", true, vec![])],
-        );
-        assert_eq!(s.regressions(), 0);
-        assert!(s.is_clean());
-        assert!(matches!(
-            &s.entries[0],
-            DiffEntry::Fixed { fixture_id } if fixture_id == "a"
-        ));
-    }
-
-    #[test]
-    fn diff_still_failing_does_not_block_ci() {
-        let s = diff_against_baseline(
-            &[report("a", false, vec![token_failure()])],
-            &[report("a", false, vec![token_failure()])],
-        );
-        assert!(
-            s.is_clean(),
-            "still-failing should not block when baseline already failed"
-        );
-    }
-
-    #[test]
-    fn diff_missing_blocks_ci() {
-        let s = diff_against_baseline(&[report("gone", true, vec![])], &[]);
-        assert_eq!(s.missing(), 1);
-        assert!(!s.is_clean());
-    }
-
-    #[test]
-    fn diff_newly_added_does_not_block_ci() {
-        let s = diff_against_baseline(&[], &[report("new", true, vec![])]);
-        assert_eq!(s.added(), 1);
-        assert!(s.is_clean());
-        assert!(matches!(
-            &s.entries[0],
-            DiffEntry::NewlyAdded { fixture_id, passed: true } if fixture_id == "new"
-        ));
-    }
-
-    #[test]
-    fn diff_newly_added_failing_blocks_check() {
-        // Review v3 #4: a newly added failing fixture should block
-        // `awaken-eval check` so a broken fixture committed today
-        // actually fails CI. Previously this silently passed because
-        // the baseline never blessed it.
-        let s = diff_against_baseline(&[], &[report("new", false, vec![token_failure()])]);
-        assert_eq!(s.added(), 1);
-        assert!(!s.is_clean());
-    }
-
-    #[test]
-    fn diff_newly_added_passing_does_not_block() {
-        // A newly added fixture that already passes is still
-        // informational — baseline never blessed it, but the new run is
-        // green, so the gate doesn't need to fire.
-        let s = diff_against_baseline(&[], &[report("new", true, vec![])]);
-        assert_eq!(s.added(), 1);
-        assert!(s.is_clean());
-    }
-
-    #[test]
-    fn diff_entries_sorted_by_id() {
-        let s = diff_against_baseline(
-            &[report("zeta", true, vec![]), report("alpha", true, vec![])],
-            &[
-                report("beta", true, vec![]),
-                report("alpha", true, vec![]),
-                report("zeta", true, vec![]),
-            ],
-        );
-        let ids: Vec<&str> = s.entries.iter().map(DiffEntry::fixture_id).collect();
-        assert_eq!(ids, vec!["alpha", "beta", "zeta"]);
-    }
-
-    #[test]
-    fn diff_entry_is_blocking_for_regression_missing_and_drift() {
-        assert!(
-            !DiffEntry::Unchanged {
-                fixture_id: "x".into()
-            }
-            .is_blocking()
-        );
-        assert!(
-            DiffEntry::Regression {
-                fixture_id: "x".into(),
-                new_failures: vec![]
-            }
-            .is_blocking()
-        );
-        assert!(
-            !DiffEntry::Fixed {
-                fixture_id: "x".into()
-            }
-            .is_blocking()
-        );
-        assert!(
-            !DiffEntry::StillFailing {
-                fixture_id: "x".into(),
-                new_failures: vec![]
-            }
-            .is_blocking()
-        );
-        assert!(
-            DiffEntry::Drift {
-                fixture_id: "x".into(),
-                fields: vec!["final_text".into()],
-            }
-            .is_blocking()
-        );
-        assert!(
-            DiffEntry::MissingFromNew {
-                fixture_id: "x".into()
-            }
-            .is_blocking()
-        );
-        assert!(
-            !DiffEntry::NewlyAdded {
-                fixture_id: "x".into(),
-                passed: true
-            }
-            .is_blocking()
-        );
-        assert!(
-            DiffEntry::NewlyAdded {
-                fixture_id: "x".into(),
-                passed: false
-            }
-            .is_blocking(),
-            "newly added failing fixture must block check"
-        );
-    }
-
-    #[test]
-    fn diff_passing_pair_with_matching_metrics_is_unchanged() {
-        let b = report("a", true, vec![]);
-        let n = report("a", true, vec![]);
-        let s = diff_against_baseline(&[b], &[n]);
-        assert!(matches!(&s.entries[0], DiffEntry::Unchanged { .. }));
-        assert!(s.is_clean());
-    }
-
-    #[test]
-    fn diff_passing_pair_with_drifted_final_text_is_drift_and_blocks() {
-        let b = report("a", true, vec![]);
-        let mut n = report("a", true, vec![]);
-        n.final_text = "different".into();
-        let s = diff_against_baseline(&[b], &[n]);
-        assert_eq!(s.drift(), 1);
-        assert!(!s.is_clean());
-        match &s.entries[0] {
-            DiffEntry::Drift { fields, .. } => {
-                assert_eq!(fields, &vec!["final_text".to_string()]);
-            }
-            other => panic!("expected Drift, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn diff_passing_pair_with_drifted_inference_count_is_drift() {
-        // The motivating case from review v2 #5: failure path drops from
-        // inference_count: 1 to inference_count: 0 while the expectation
-        // (`final_answer_excludes`) still happens to pass.
-        let b = report("a", true, vec![]);
-        let mut n = report("a", true, vec![]);
-        n.inference_count = 0;
-        let s = diff_against_baseline(&[b], &[n]);
-        match &s.entries[0] {
-            DiffEntry::Drift { fields, .. } => {
-                assert_eq!(fields, &vec!["inference_count".to_string()]);
-            }
-            other => panic!("expected Drift, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn diff_passing_pair_with_drifted_total_tokens_only_is_drift() {
-        // Token-only providers can report TokenUsage.total_tokens
-        // without prompt/completion breakdown, so the report's
-        // total_input/output_tokens both stay 0. total_tokens is what
-        // scoring actually uses — drift on it must be observable.
-        let b = report("a", true, vec![]);
-        let mut n = report("a", true, vec![]);
-        n.total_tokens = 999;
-        let s = diff_against_baseline(&[b], &[n]);
-        match &s.entries[0] {
-            DiffEntry::Drift { fields, .. } => {
-                assert_eq!(fields, &vec!["total_tokens".to_string()]);
-            }
-            other => panic!("expected Drift, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn diff_passing_pair_lists_every_drifted_field() {
-        let b = report("a", true, vec![]);
-        let mut n = report("a", true, vec![]);
-        n.total_input_tokens = 9999;
-        n.total_output_tokens = 9999;
-        n.error_type = Some("rate_limit".into());
-        let s = diff_against_baseline(&[b], &[n]);
-        match &s.entries[0] {
-            DiffEntry::Drift { fields, .. } => {
-                assert_eq!(
-                    fields,
-                    &vec![
-                        "total_input_tokens".to_string(),
-                        "total_output_tokens".to_string(),
-                        "error_type".to_string(),
-                    ]
-                );
-            }
-            other => panic!("expected Drift, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn diff_summary_serde_roundtrip() {
-        let s = diff_against_baseline(
-            &[
-                report("a", true, vec![]),
-                report("b", false, vec![token_failure()]),
-            ],
-            &[
-                report("a", false, vec![token_failure()]),
-                report("b", true, vec![]),
-            ],
-        );
-        let json = serde_json::to_string(&s).unwrap();
-        let parsed: DiffSummary = serde_json::from_str(&json).unwrap();
-        assert_eq!(parsed, s);
+                new_failures: n.failures.iter().map(|f| f.kind().to_string()).collect(),
+                cell,
+            },
+            (false, true) => DiffEntry::Fixed { fixture_id, cell },
+            (false, false) => DiffEntry::StillFailing {
+                fixture_id,
+                new_failures: n.failures.iter().map(|f| f.kind().to_string()).collect(),
+                cell,
+            },
+        },
+        (Some(_), None) => DiffEntry::MissingFromNew { fixture_id, cell },
+        (None, Some(n)) => DiffEntry::NewlyAdded {
+            fixture_id,
+            passed: n.passed,
+            cell,
+        },
+        (None, None) => unreachable!("key collected from at least one side"),
     }
 }
+
+#[cfg(test)]
+#[path = "report_test.rs"]
+mod tests;

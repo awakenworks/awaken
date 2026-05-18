@@ -302,6 +302,111 @@ async fn trace_curate_round_trips_through_file_store_and_replays() {
     );
 }
 
+// ── Live mode: real provider drives replay ──────────────────────────
+
+mod live_mode {
+    use super::*;
+    use async_trait::async_trait;
+    use awaken_contract::contract::executor::{
+        InferenceExecutionError, InferenceRequest, LlmExecutor,
+    };
+    use awaken_contract::contract::inference::{StopReason, StreamResult, TokenUsage};
+    use std::sync::Arc;
+
+    /// Always returns the same canned response with a token usage that
+    /// the test can compare against `outcome.total_tokens()`.
+    struct CannedExecutor {
+        response: String,
+        total_tokens: i32,
+    }
+
+    #[async_trait]
+    impl LlmExecutor for CannedExecutor {
+        async fn execute(
+            &self,
+            _request: InferenceRequest,
+        ) -> Result<StreamResult, InferenceExecutionError> {
+            Ok(StreamResult {
+                content: vec![awaken_contract::contract::content::ContentBlock::text(
+                    self.response.clone(),
+                )],
+                tool_calls: vec![],
+                usage: Some(TokenUsage {
+                    prompt_tokens: Some(10),
+                    completion_tokens: Some(5),
+                    total_tokens: Some(self.total_tokens),
+                    ..Default::default()
+                }),
+                stop_reason: Some(StopReason::EndTurn),
+                has_incomplete_tool_calls: false,
+            })
+        }
+
+        fn name(&self) -> &str {
+            "canned"
+        }
+    }
+
+    fn ad_hoc_fixture(prompt: &str) -> Fixture {
+        Fixture {
+            id: "ad-hoc".into(),
+            description: None,
+            user_input: prompt.into(),
+            provider_script: vec![],
+            source_run_id: None,
+            source_model_id: None,
+            allow_unused_provider_script: false,
+            mock_response: MockResponse::default(),
+            expect: Expectation::default(),
+        }
+    }
+
+    #[tokio::test]
+    async fn live_mode_drives_real_executor_and_recovers_response() {
+        let executor: Arc<dyn LlmExecutor> = Arc::new(CannedExecutor {
+            response: "the answer is 42".into(),
+            total_tokens: 15,
+        });
+        let replayer = RuntimeReplayer::new().with_live_executor(executor, "claude-opus-4-7-test");
+        let fixture = ad_hoc_fixture("what is six times seven");
+        let outcomes = replay_all(&replayer, std::slice::from_ref(&fixture)).await;
+        let outcome = &outcomes[0];
+        assert_eq!(outcome.final_text, "the answer is 42");
+        assert_eq!(outcome.total_tokens(), 15);
+        assert!(
+            outcome.runtime_failure.is_none(),
+            "{:?}",
+            outcome.runtime_failure
+        );
+        assert!(outcome.error_type.is_none());
+    }
+
+    #[tokio::test]
+    async fn live_mode_post_hoc_token_budget_surfaces_runtime_failure() {
+        // Executor reports 100 tokens; cap is 50 → must annotate as
+        // RuntimeError with a "token budget exceeded" message.
+        let executor: Arc<dyn LlmExecutor> = Arc::new(CannedExecutor {
+            response: "long answer".into(),
+            total_tokens: 100,
+        });
+        let replayer = RuntimeReplayer::new()
+            .with_live_executor(executor, "claude-opus-4-7-test")
+            .with_max_total_tokens(50);
+        let fixture = ad_hoc_fixture("anything");
+        let outcomes = replay_all(&replayer, std::slice::from_ref(&fixture)).await;
+        let outcome = &outcomes[0];
+        match &outcome.runtime_failure {
+            Some(awaken_eval::outcome::ReplayRuntimeFailure::RuntimeError { message }) => {
+                assert!(
+                    message.contains("token budget exceeded"),
+                    "wrong message: {message}"
+                );
+            }
+            other => panic!("expected RuntimeError, got {other:?}"),
+        }
+    }
+}
+
 #[tokio::test]
 async fn runtime_replayer_tee_sink_routes_spans_to_trace_store() {
     use awaken_ext_observability::trace_store::TraceStoreSink;

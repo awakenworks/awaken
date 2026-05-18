@@ -1,40 +1,4 @@
-//! `awaken-eval` CLI.
-//!
-//! Subcommands:
-//!
-//!   awaken-eval replay --fixtures <DIR> --report <FILE>
-//!   awaken-eval check  --baseline <FILE> --new <FILE>
-//!   awaken-eval curate --trace-root <DIR> --run-id <RUN> --user-input <TEXT> --out <FILE>
-//!
-//! `replay` loads every `*.json` fixture from `<DIR>`, runs them through
-//! the bundled [`MockReplayer`], scores each outcome, and writes one NDJSON
-//! line per fixture to `<FILE>`. Exit code is non-zero when any fixture
-//! fails its expectation.
-//!
-//! `check` parses two NDJSON reports and compares them with
-//! [`diff_against_baseline`]. Exit code is non-zero when any blocking
-//! entry is present: regression, field-level drift between two passing
-//! runs, fixture missing from the new run, or newly-added fixture that
-//! is already failing.
-//!
-//! `curate` reads a production trace via `FileTraceStore`, reconstructs
-//! the upstream `provider_script` from captured spans (requires
-//! `ContentCapture::Enabled` on the originating run), and writes a
-//! starter [`Fixture`] JSON to `<FILE>`. `--user-input` is required because
-//! the original request messages are not persisted today; operators copy
-//! the prompt from their trace UI.
-//!
-//! ## Server-talking subcommands (ADR-0032 D8)
-//!
-//!   awaken-eval push --server <URL> --dataset <ID> --fixtures <DIR>
-//!     Upserts a dataset by uploading every fixture in <DIR>.
-//!   awaken-eval run  --server <URL> --dataset <ID> [--baseline <RUN>] [--out <FILE>]
-//!     Starts a server-side eval run, optionally diffing against a baseline.
-//!   awaken-eval pull --server <URL> --run <RUN> [--baseline <RUN>] --out <FILE>
-//!     Fetches a persisted run (+ optional diff) and writes JSON to <FILE>.
-//!
-//! `--server` falls back to `AWAKEN_SERVER_URL`; admin auth is taken
-//! from `--bearer` or `AWAKEN_BEARER_TOKEN`.
+//! `awaken-eval` CLI — see HELP for the subcommand surface.
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -51,15 +15,17 @@ const HELP: &str = "\
 awaken-eval — fixture-driven replay and scoring framework
 
 Offline:
-  awaken-eval replay --fixtures <DIR> --report <FILE>
-  awaken-eval check  --baseline <FILE> --new <FILE>
-  awaken-eval curate --trace-root <DIR> --run-id <RUN> --user-input <TEXT> --out <FILE> [--allow-unused]
+  replay --fixtures <DIR> --report <FILE>
+  check  --baseline <FILE> --new <FILE>
+  curate --trace-root <DIR> --run-id <RUN> [--user-input <TEXT>] --out <FILE>
 
-Server (ADR-0032 D8 — uses --server <URL> or AWAKEN_SERVER_URL,
-                       --bearer <TOK> or AWAKEN_BEARER_TOKEN for admin auth):
-  awaken-eval push --dataset <ID> --fixtures <DIR>
-  awaken-eval run  --dataset <ID> [--baseline <RUN>] [--out <FILE>]
-  awaken-eval pull --run <RUN> [--baseline <RUN>] --out <FILE>
+Server (--server <URL> or $AWAKEN_SERVER_URL, --bearer or $AWAKEN_BEARER_TOKEN):
+  push   --dataset <ID> --fixtures <DIR> [--force]   wholesale overwrite (--force required if exists)
+  append --dataset <ID> --fixture-file <FILE>        atomic single-fixture append (CAS on revision)
+  run    --dataset <ID> [--baseline <RUN>] [--out <FILE>]
+  pull   --run <RUN> [--baseline <RUN>] --out <FILE>
+  online --prompt <TEXT> --models <ID,ID,...> [--persist] [--out <FILE>]
+         ad-hoc online evaluation: prompt × N models in parallel
 ";
 
 #[tokio::main]
@@ -87,6 +53,8 @@ async fn run(args: Vec<String>) -> Result<ExitCode, String> {
         "push" => push_command(&args[1..]).await,
         "run" => run_remote_command(&args[1..]).await,
         "pull" => pull_command(&args[1..]).await,
+        "online" => online_command(&args[1..]).await,
+        "append" => append_command(&args[1..]).await,
         other => Err(format!(
             "unknown subcommand {other:?} (try `awaken-eval --help`)"
         )),
@@ -349,6 +317,7 @@ async fn push_command(args: &[String]) -> Result<ExitCode, String> {
     let mut dataset_id: Option<String> = None;
     let mut fixtures_dir: Option<PathBuf> = None;
     let mut description: Option<String> = None;
+    let mut force = false;
     let mut iter = args.iter();
     while let Some(arg) = iter.next() {
         match arg.as_str() {
@@ -365,6 +334,7 @@ async fn push_command(args: &[String]) -> Result<ExitCode, String> {
             "--description" => {
                 description = Some(iter.next().ok_or("--description requires a value")?.into());
             }
+            "--force" => force = true,
             other => return Err(format!("unknown argument {other:?}")),
         }
     }
@@ -401,6 +371,34 @@ async fn push_command(args: &[String]) -> Result<ExitCode, String> {
         ok_or_status(resp).await?;
         println!("awaken-eval: created dataset {dataset_id}");
         return Ok(ExitCode::SUCCESS);
+    }
+
+    // `push` is whole-spec overwrite; require --force when the dataset
+    // already exists so concurrent fixtures aren't silently dropped.
+    if !force {
+        let get_url = format!("{server}/v1/eval/datasets/{dataset_id}");
+        let existing = ok_or_status(
+            client
+                .get(&get_url)
+                .send()
+                .await
+                .map_err(|err| format!("GET {get_url}: {err}"))?,
+        )
+        .await?;
+        let existing_json: Value = existing
+            .json()
+            .await
+            .map_err(|err| format!("decoding existing dataset: {err}"))?;
+        let n = existing_json
+            .get("spec")
+            .and_then(|s| s.get("fixtures"))
+            .and_then(Value::as_array)
+            .map(|a| a.len())
+            .unwrap_or(0);
+        return Err(format!(
+            "dataset {dataset_id} already exists with {n} fixture(s). \
+             Pass --force to overwrite, or use `awaken-eval append` to add a single fixture."
+        ));
     }
 
     // Update path with bounded retry for revision races.
@@ -596,4 +594,206 @@ fn write_value(path: &std::path::Path, value: &Value) -> Result<(), String> {
         .map_err(|err| format!("serialising response: {err}"))?;
     std::fs::write(path, json).map_err(|err| format!("writing {}: {err}", path.display()))?;
     Ok(())
+}
+
+async fn online_command(args: &[String]) -> Result<ExitCode, String> {
+    let mut server: Option<String> = None;
+    let mut bearer: Option<String> = None;
+    let mut prompt: Option<String> = None;
+    let mut models: Option<Vec<String>> = None;
+    let mut persist: Option<bool> = None;
+    let mut out: Option<PathBuf> = None;
+    let mut iter = args.iter();
+    while let Some(arg) = iter.next() {
+        match arg.as_str() {
+            "--server" => server = Some(iter.next().ok_or("--server requires a value")?.into()),
+            "--bearer" => bearer = Some(iter.next().ok_or("--bearer requires a value")?.into()),
+            "--prompt" => prompt = Some(iter.next().ok_or("--prompt requires a value")?.into()),
+            "--models" => {
+                let csv: &str = iter.next().ok_or("--models requires a value")?;
+                models = Some(csv.split(',').map(|s| s.trim().to_string()).collect());
+            }
+            "--persist" => {
+                let v: &str = iter.next().ok_or("--persist requires true|false")?;
+                persist = Some(matches!(v, "true" | "1" | "yes"));
+            }
+            "--out" => out = Some(PathBuf::from(iter.next().ok_or("--out requires a value")?)),
+            other => return Err(format!("unknown argument {other:?}")),
+        }
+    }
+    let server = resolve_server(server)?;
+    let bearer = resolve_bearer(bearer);
+    let prompt = prompt.ok_or("--prompt <TEXT> is required")?;
+    let models = models.ok_or("--models <ID,ID,...> is required")?;
+    if models.is_empty() || models.iter().any(|m| m.is_empty()) {
+        return Err("--models must contain at least one non-empty model id".into());
+    }
+
+    let client = http_client(bearer.as_deref())?;
+    let url = format!("{server}/v1/eval/online");
+    let mut body = json!({
+        "user_input": prompt,
+        "models": models,
+    });
+    if let Some(p) = persist {
+        body["persist"] = json!(p);
+    }
+    let resp = ok_or_status(
+        client
+            .post(&url)
+            .json(&body)
+            .send()
+            .await
+            .map_err(|err| format!("POST {url}: {err}"))?,
+    )
+    .await?;
+    let value: Value = resp
+        .json()
+        .await
+        .map_err(|err| format!("decoding online response: {err}"))?;
+
+    let run_id = value
+        .get("run")
+        .and_then(|r| r.get("id"))
+        .and_then(Value::as_str)
+        .unwrap_or("?");
+    let items = value
+        .get("run")
+        .and_then(|r| r.get("items"))
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let persisted = value
+        .get("persisted")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+
+    let persisted_marker = if persisted {
+        " (persisted)"
+    } else {
+        " (ephemeral)"
+    };
+    println!("awaken-eval online: run {run_id}{persisted_marker}");
+    for item in &items {
+        let model = item
+            .get("cell")
+            .and_then(|c| c.get("model_id"))
+            .and_then(Value::as_str)
+            .unwrap_or("?");
+        let passed = item
+            .get("report")
+            .and_then(|r| r.get("passed"))
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        let tokens = item
+            .get("report")
+            .and_then(|r| r.get("total_tokens"))
+            .and_then(Value::as_u64)
+            .unwrap_or(0);
+        let trace = item
+            .get("trace_run_id")
+            .and_then(Value::as_str)
+            .unwrap_or("-");
+        println!(
+            "  {model:30}  {} tokens={tokens:>6}  trace={trace}",
+            if passed { "PASS" } else { "FAIL" }
+        );
+    }
+
+    if let Some(out_path) = out {
+        write_value(&out_path, &value)?;
+        println!("awaken-eval: wrote {} → {}", out_path.display(), run_id);
+    }
+    let any_failed = items.iter().any(|i| {
+        !i.get("report")
+            .and_then(|r| r.get("passed"))
+            .and_then(Value::as_bool)
+            .unwrap_or(true)
+    });
+    Ok(if any_failed {
+        ExitCode::from(1)
+    } else {
+        ExitCode::SUCCESS
+    })
+}
+
+async fn append_command(args: &[String]) -> Result<ExitCode, String> {
+    let mut server: Option<String> = None;
+    let mut bearer: Option<String> = None;
+    let mut dataset_id: Option<String> = None;
+    let mut fixture_file: Option<PathBuf> = None;
+    let mut iter = args.iter();
+    while let Some(arg) = iter.next() {
+        match arg.as_str() {
+            "--server" => server = Some(iter.next().ok_or("--server requires a value")?.into()),
+            "--bearer" => bearer = Some(iter.next().ok_or("--bearer requires a value")?.into()),
+            "--dataset" => {
+                dataset_id = Some(iter.next().ok_or("--dataset requires a value")?.into());
+            }
+            "--fixture-file" => {
+                fixture_file = Some(PathBuf::from(
+                    iter.next().ok_or("--fixture-file requires a value")?,
+                ));
+            }
+            other => return Err(format!("unknown argument {other:?}")),
+        }
+    }
+    let server = resolve_server(server)?;
+    let bearer = resolve_bearer(bearer);
+    let dataset_id = dataset_id.ok_or("--dataset <ID> is required")?;
+    let fixture_file = fixture_file.ok_or("--fixture-file <FILE> is required")?;
+
+    let fixture_json = std::fs::read_to_string(&fixture_file)
+        .map_err(|err| format!("reading {}: {err}", fixture_file.display()))?;
+    let fixture: Value = serde_json::from_str(&fixture_json)
+        .map_err(|err| format!("parsing {}: {err}", fixture_file.display()))?;
+
+    let client = http_client(bearer.as_deref())?;
+    let get_url = format!("{server}/v1/eval/datasets/{dataset_id}");
+    let existing = ok_or_status(
+        client
+            .get(&get_url)
+            .send()
+            .await
+            .map_err(|err| format!("GET {get_url}: {err}"))?,
+    )
+    .await?;
+    let existing_json: Value = existing
+        .json()
+        .await
+        .map_err(|err| format!("decoding existing dataset: {err}"))?;
+    let revision = existing_json
+        .get("meta")
+        .and_then(|m| m.get("revision"))
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+
+    let url = format!("{server}/v1/eval/datasets/{dataset_id}/fixtures");
+    let body = json!({ "fixture": fixture, "expected_revision": revision });
+    let resp = ok_or_status(
+        client
+            .post(&url)
+            .json(&body)
+            .send()
+            .await
+            .map_err(|err| format!("POST {url}: {err}"))?,
+    )
+    .await?;
+    let result: Value = resp
+        .json()
+        .await
+        .map_err(|err| format!("decoding append response: {err}"))?;
+    let new_rev = result
+        .get("meta")
+        .and_then(|m| m.get("revision"))
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let n = result
+        .get("spec")
+        .and_then(|s| s.get("fixtures"))
+        .and_then(Value::as_array)
+        .map(|a| a.len())
+        .unwrap_or(0);
+    println!("awaken-eval: appended to {dataset_id} → revision {new_rev}, {n} fixture(s) total");
+    Ok(ExitCode::SUCCESS)
 }

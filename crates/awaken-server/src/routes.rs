@@ -1,9 +1,10 @@
 //! Axum router setup — unified route registration.
-
 use crate::services::dataset_service::{
-    create_dataset, curate_items, delete_dataset, get_dataset, list_datasets, put_dataset,
+    append_fixture, create_dataset, curate_items, delete_dataset, get_dataset, list_datasets,
+    put_dataset,
 };
 use crate::services::eval_run_service::{get_eval_run, list_eval_runs, start_eval_run};
+use crate::services::online_eval_service::start_online_eval;
 use crate::services::trace_service::{get_trace, list_traces, pin_trace};
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
@@ -75,9 +76,6 @@ fn map_run_control_error(error: RunControlError) -> ApiError {
 }
 
 /// Build the complete router for the given state.
-///
-/// Honors [`AdminApiConfig::expose_config_routes`] — when disabled, the
-/// `/v1/config/*` and `/v1/agents` admin CRUD endpoints are not mounted.
 pub fn build_router(state: &AppState) -> Router<AppState> {
     crate::metrics::install_recorder();
 
@@ -113,7 +111,6 @@ fn trace_routes() -> Router<AppState> {
         .route("/v1/traces/:run_id/pin", post(pin_trace))
 }
 
-/// ADR-0032 D1+D6+D7: dataset CRUD, trace→fixture curation, eval runs, diff.
 fn eval_routes() -> Router<AppState> {
     Router::new()
         .route("/v1/eval/datasets", get(list_datasets).post(create_dataset))
@@ -122,8 +119,10 @@ fn eval_routes() -> Router<AppState> {
             get(get_dataset).put(put_dataset).delete(delete_dataset),
         )
         .route("/v1/eval/datasets/:id/items", post(curate_items))
+        .route("/v1/eval/datasets/:id/fixtures", post(append_fixture))
         .route("/v1/eval/runs", get(list_eval_runs).post(start_eval_run))
         .route("/v1/eval/runs/:id", get(get_eval_run))
+        .route("/v1/eval/online", post(start_online_eval))
 }
 
 fn health_routes() -> Router<AppState> {
