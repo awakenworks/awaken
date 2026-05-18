@@ -721,6 +721,70 @@ async fn online_eval_404s_on_unknown_model() {
     );
 }
 
+#[tokio::test]
+async fn online_eval_404s_on_unknown_agent_id() {
+    // `agent_id` resolution runs BEFORE per-cell model resolution so a
+    // typo'd agent surfaces a 404 immediately, with the missing id in
+    // the body — operators don't get an opaque 500 after token spend.
+    let app = build_test_app().await;
+    let (status, body) = request(
+        &app.router,
+        "POST",
+        "/v1/eval/online",
+        Some(json!({
+            "user_input": "test",
+            "models": ["missing-model"],
+            "agent_id": "missing-agent",
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert!(
+        body["error"]
+            .as_str()
+            .unwrap_or("")
+            .contains("missing-agent"),
+        "body: {body}"
+    );
+}
+
+#[tokio::test]
+async fn start_eval_run_404s_on_unknown_agent_id() {
+    // Same wiring on the dataset run path — agent lookup runs before
+    // model resolution so a typo'd agent fails before the matrix even
+    // starts.
+    let app = build_test_app().await;
+    let fixtures = vec![sample_fixture("f1")];
+    let (status, _) = request(
+        &app.router,
+        "POST",
+        "/v1/eval/datasets",
+        Some(json!({ "id": "DS-AGT", "spec": { "fixtures": fixtures } })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, body) = request(
+        &app.router,
+        "POST",
+        "/v1/eval/runs",
+        Some(json!({
+            "dataset_id": "DS-AGT",
+            "models": ["missing-model"],
+            "agent_id": "missing-agent",
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert!(
+        body["error"]
+            .as_str()
+            .unwrap_or("")
+            .contains("missing-agent"),
+        "body: {body}"
+    );
+}
+
 // ── Flakiness sampling (samples=N per cell) — validation paths ───────────
 
 #[tokio::test]
@@ -1365,168 +1429,6 @@ async fn online_eval_400s_when_revise_max_retries_above_cap() {
             .as_str()
             .unwrap_or("")
             .contains("revise_max_retries=50"),
-        "body: {body}"
-    );
-}
-
-// ── Cross-run trend (GET /v1/eval/trend) ─────────────────────────────────
-
-fn seeded_run(id: &str, dataset_id: &str, started: u64, items: Vec<EvalRunItem>) -> EvalRun {
-    EvalRun {
-        id: id.into(),
-        dataset_id: dataset_id.into(),
-        dataset_revision: 1,
-        items,
-        started_at_secs: started,
-        ended_at_secs: started + 1,
-    }
-}
-
-fn item_with_model(
-    fixture_id: &str,
-    passed: bool,
-    model: Option<&str>,
-    cost: Option<f64>,
-    duration_ms: u64,
-) -> EvalRunItem {
-    use awaken_eval::{MatrixCell, ReplayReport};
-    EvalRunItem {
-        fixture_id: fixture_id.into(),
-        cell: model.map(|m| MatrixCell {
-            model_id: Some(m.into()),
-        }),
-        report: ReplayReport {
-            fixture_id: fixture_id.into(),
-            passed,
-            failures: vec![],
-            final_text: "".into(),
-            inference_count: 1,
-            tool_count: 0,
-            tool_failures: 0,
-            total_input_tokens: 1,
-            total_output_tokens: 1,
-            total_tokens: 2,
-            session_duration_ms: duration_ms,
-            elapsed_ms: 0,
-            tool_calls_by_agent: vec![],
-            error_type: None,
-            inference_error_count: 0,
-            runtime_failure: None,
-            revision_count: 0,
-            judge_score: None,
-            judge_reasoning: None,
-            cost_usd: cost,
-        },
-        trace_run_id: None,
-        sample_index: None,
-    }
-}
-
-#[tokio::test]
-async fn trend_default_groups_all_items_into_single_series() {
-    let app = build_test_app().await;
-    for (id, started, passed) in [
-        ("TR1", 1_700_000_100, true),
-        ("TR2", 1_700_000_200, false),
-        ("TR3", 1_700_000_300, true),
-    ] {
-        let items = vec![item_with_model("a", passed, Some("m1"), Some(0.01), 100)];
-        app.eval_run_store
-            .write(&seeded_run(id, "DS-T", started, items))
-            .unwrap();
-    }
-    let (status, body) = request(&app.router, "GET", "/v1/eval/trend?dataset_id=DS-T", None).await;
-    assert_eq!(status, StatusCode::OK);
-    let groups = body["groups"].as_array().unwrap();
-    assert_eq!(groups.len(), 1, "default group_by is none → one group");
-    let points = groups[0]["points"].as_array().unwrap();
-    assert_eq!(points.len(), 3);
-    // Ascending by started_at_secs.
-    let starts: Vec<u64> = points
-        .iter()
-        .map(|p| p["started_at_secs"].as_u64().unwrap())
-        .collect();
-    assert!(starts.windows(2).all(|w| w[0] <= w[1]));
-    // Run TR2 had passed=false → its pass_rate is 0.
-    let tr2 = points.iter().find(|p| p["run_id"] == "TR2").unwrap();
-    assert_eq!(tr2["pass_rate"].as_f64().unwrap(), 0.0);
-    // Cost summed correctly.
-    assert!((tr2["total_cost_usd"].as_f64().unwrap() - 0.01).abs() < 1e-9);
-}
-
-#[tokio::test]
-async fn trend_filters_by_since_until() {
-    let app = build_test_app().await;
-    for (id, started) in [
-        ("EARLY", 1_700_000_000),
-        ("MID", 1_700_000_500),
-        ("LATE", 1_700_001_000),
-    ] {
-        app.eval_run_store
-            .write(&seeded_run(
-                id,
-                "DS-TF",
-                started,
-                vec![item_with_model("a", true, Some("m1"), None, 1)],
-            ))
-            .unwrap();
-    }
-    let url = "/v1/eval/trend?dataset_id=DS-TF&since_secs=1700000200&until_secs=1700000800";
-    let (status, body) = request(&app.router, "GET", url, None).await;
-    assert_eq!(status, StatusCode::OK);
-    let points = body["groups"][0]["points"].as_array().unwrap();
-    let ids: Vec<&str> = points
-        .iter()
-        .map(|p| p["run_id"].as_str().unwrap())
-        .collect();
-    assert_eq!(
-        ids,
-        vec!["MID"],
-        "EARLY < since, LATE >= until — both excluded"
-    );
-}
-
-#[tokio::test]
-async fn trend_group_by_model_splits_into_per_model_series() {
-    let app = build_test_app().await;
-    let items = vec![
-        item_with_model("a", true, Some("opus"), Some(0.01), 100),
-        item_with_model("b", false, Some("opus"), Some(0.02), 200),
-        item_with_model("a", true, Some("haiku"), Some(0.001), 50),
-    ];
-    app.eval_run_store
-        .write(&seeded_run("TM1", "DS-TM", 1_700_000_100, items))
-        .unwrap();
-    let (status, body) = request(
-        &app.router,
-        "GET",
-        "/v1/eval/trend?dataset_id=DS-TM&group_by=model",
-        None,
-    )
-    .await;
-    assert_eq!(status, StatusCode::OK);
-    let groups = body["groups"].as_array().unwrap();
-    // Two groups, one per model_id.
-    assert_eq!(groups.len(), 2);
-    let opus = groups
-        .iter()
-        .find(|g| g["key"]["model_id"] == "opus")
-        .unwrap();
-    let opus_pt = &opus["points"][0];
-    assert_eq!(opus_pt["item_count"].as_u64().unwrap(), 2);
-    assert_eq!(opus_pt["passed_count"].as_u64().unwrap(), 1);
-    assert!((opus_pt["pass_rate"].as_f64().unwrap() - 0.5).abs() < 1e-9);
-    assert!((opus_pt["total_cost_usd"].as_f64().unwrap() - 0.03).abs() < 1e-9);
-}
-
-#[tokio::test]
-async fn trend_400s_on_unsupported_group_by() {
-    let app = build_test_app().await;
-    let (status, body) =
-        request(&app.router, "GET", "/v1/eval/trend?group_by=provider", None).await;
-    assert_eq!(status, StatusCode::BAD_REQUEST);
-    assert!(
-        body["error"].as_str().unwrap_or("").contains("provider"),
         "body: {body}"
     );
 }

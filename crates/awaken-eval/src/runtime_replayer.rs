@@ -2,15 +2,14 @@
 //! per-fixture [`ScriptedLlmExecutor`] and harvests the resulting
 //! observability spans into a [`ReplayOutcome`].
 //!
-//! Unlike [`crate::replay::MockReplayer`], which synthesised a single
-//! `GenAISpan` from heuristics, `RuntimeReplayer` exercises the full agent
-//! loop and lets `awaken-ext-observability` record real spans. For
-//! fixtures driven by an explicit `provider_script`, every token count
-//! and stop reason in the resulting `AgentMetrics` comes straight from
-//! the script. Legacy `mock_response: { kind: "text" }` fixtures still
-//! load through [`Fixture::effective_script`], which seeds `TokenUsage`
-//! with a `chars / 4` estimate to preserve the original
-//! `max_tokens_total` semantics until those fixtures migrate.
+//! `RuntimeReplayer` exercises the full agent loop and lets
+//! `awaken-ext-observability` record real spans. For fixtures driven by
+//! an explicit `provider_script`, every token count and stop reason in
+//! the resulting `AgentMetrics` comes straight from the script. Legacy
+//! `mock_response: { kind: "text" }` fixtures still load through
+//! [`Fixture::effective_script`], which seeds `TokenUsage` with a
+//! `chars / 4` estimate to preserve the original `max_tokens_total`
+//! semantics until those fixtures migrate.
 //!
 //! ## Determinism contract
 //!
@@ -141,6 +140,14 @@ pub struct RuntimeReplayer {
     /// eval-run service) that want replay spans to land in a shared
     /// [`TraceStore`] alongside production traces.
     tee_sink: Option<Arc<dyn MetricsSink>>,
+    /// Optional base agent spec for Live mode. When `None`, the live
+    /// replayer synthesises a stub agent with `DEFAULT_SYSTEM_PROMPT`.
+    /// When set (typically by the server pulling the registered agent
+    /// for `body.agent_id`), this is used as the base before
+    /// `agent_overrides` merges on top — so the eval exercises the
+    /// agent's real `system_prompt` / tool list / sampling params, not
+    /// a synthetic stub.
+    agent_base: Option<Box<AgentSpec>>,
     /// Replay mode — Scripted (default) or Live.
     mode: ReplayMode,
 }
@@ -150,6 +157,7 @@ impl RuntimeReplayer {
         Self {
             max_rounds_floor: 4,
             tee_sink: None,
+            agent_base: None,
             mode: ReplayMode::default(),
         }
     }
@@ -222,6 +230,26 @@ impl RuntimeReplayer {
                 max_retries,
             });
         }
+        self
+    }
+
+    /// Supply the base [`AgentSpec`] for Live mode. Typically the
+    /// server pulls the registered spec for `body.agent_id` and passes
+    /// it here so the eval runs against the agent's real
+    /// `system_prompt` / tool list / sampling params. Without this
+    /// call, Live mode falls back to a synthetic stub with
+    /// [`DEFAULT_SYSTEM_PROMPT`].
+    ///
+    /// Safety: `id`, `model_id`, and `plugin_ids` are force-pinned
+    /// post-merge inside `replay_live` so the eval cannot route to a
+    /// real agent id, mismatch the live model, or trigger
+    /// side-effectful plugins (mcp_*, skills with HTTP, …) regardless
+    /// of what the registered spec carries. The base influences
+    /// `system_prompt`, `allowed_tools`, sampling, and other
+    /// pure-input behaviour only.
+    #[must_use]
+    pub fn with_agent_base(mut self, base: AgentSpec) -> Self {
+        self.agent_base = Some(Box::new(base));
         self
     }
 
@@ -458,27 +486,35 @@ impl RuntimeReplayer {
         // floor as-is. Operators wanting more rounds set the floor.
         let max_rounds = self.max_rounds_floor;
 
-        // Build the synthetic agent: default base merged with caller
-        // overrides (model_id force-pinned to LIVE_MODEL_ID).
-        let base = AgentSpec {
+        // Base agent spec: either the caller-supplied registered spec
+        // (so the eval exercises the real agent's system_prompt / tool
+        // list) or a synthetic stub.
+        let base = self.agent_base.as_deref().cloned().unwrap_or(AgentSpec {
             id: DEFAULT_AGENT_ID.into(),
             model_id: LIVE_MODEL_ID.into(),
             system_prompt: DEFAULT_SYSTEM_PROMPT.into(),
             max_rounds,
             plugin_ids: vec!["observability".into()],
             ..Default::default()
-        };
+        });
         let mut agent_spec = match agent_overrides {
             Some(patch) => merge_agent_spec(base, patch),
             None => base,
         };
-        // Force model_id back to LIVE_MODEL_ID — the override may have
-        // set its own value but the live model is what's under test,
-        // by definition.
+        // Force three fields back to safe defaults — both the registered
+        // base and the override may carry production values that don't
+        // belong in an eval:
+        //   * `model_id` — the matrix cell pins this; LIVE_MODEL_ID is
+        //     what the synthetic registry binds to the test executor.
+        //   * `id` — DEFAULT_AGENT_ID is what AgentRuntimeBuilder
+        //     registers below; mismatches drop the run.
+        //   * `plugin_ids` — observability only, so the eval cannot
+        //     trigger side-effectful plugins (mcp_*, skills with HTTP,
+        //     …) by inheriting them from the registered spec.
         agent_spec.model_id = LIVE_MODEL_ID.into();
-        // Live mode preserves the agent_id we use for routing; if the
-        // override changed it, fix that too so the RunRequest lands.
         agent_spec.id = DEFAULT_AGENT_ID.into();
+        agent_spec.plugin_ids = vec!["observability".into()];
+        agent_spec.max_rounds = max_rounds;
 
         let runtime: Arc<AgentRuntime> = Arc::new(
             AgentRuntimeBuilder::new()

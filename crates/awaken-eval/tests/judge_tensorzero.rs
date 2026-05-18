@@ -46,6 +46,9 @@ fn make_outcome(text: &str) -> ReplayOutcome {
         error_type: None,
         inference_error_count: 0,
         runtime_failure: None,
+        revision_count: 0,
+        judge_score: None,
+        judge_reasoning: None,
     }
 }
 

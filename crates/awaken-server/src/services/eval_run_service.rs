@@ -68,11 +68,20 @@ pub struct StartRunRequest {
     /// drives the LLM, suitable for CI smoke runs.
     #[serde(default)]
     pub models: Option<Vec<String>>,
-    /// Optional `AgentSpecPatch` applied to every fixture's synthetic
-    /// agent. Only takes effect in Live mode; ignored on Scripted runs
-    /// (scripted agents are fixed). Reuses `ConfigRecord`'s
+    /// Registered agent whose `system_prompt` / `allowed_tools` /
+    /// sampling params should be used as the base for Live-mode
+    /// replays. Without this, the replayer falls back to a synthetic
+    /// stub agent — the eval would *not* exercise the real agent's
+    /// behaviour. `agent_overrides` (below) merges as a patch on top.
+    /// Live mode only; ignored on Scripted runs.
+    #[serde(default)]
+    pub agent_id: Option<String>,
+    /// Optional `AgentSpecPatch` applied to every fixture's agent spec
+    /// (the registered spec from `agent_id`, or the synthetic stub when
+    /// `agent_id` is unset). Live mode only. Reuses `ConfigRecord`'s
     /// `AgentSpecPatch` machinery so operators get the same
-    /// `deny_unknown_fields` validation they get on `PATCH /v1/config/agents`.
+    /// `deny_unknown_fields` validation they get on
+    /// `PATCH /v1/config/agents`.
     #[serde(default)]
     pub agent_overrides: Option<AgentSpecPatch>,
     /// Per-cell flakiness sample count. Each (fixture, cell) is replayed
@@ -150,54 +159,6 @@ pub struct ListRunsQuery {
     #[serde(default)]
     pub until_secs: Option<u64>,
     pub limit: Option<usize>,
-}
-
-#[derive(Debug, Deserialize, Default)]
-#[serde(deny_unknown_fields)]
-pub struct TrendQuery {
-    pub dataset_id: Option<String>,
-    #[serde(default)]
-    pub since_secs: Option<u64>,
-    #[serde(default)]
-    pub until_secs: Option<u64>,
-    pub limit: Option<usize>,
-    /// "none" (default — one point per run) or "model" (one point per
-    /// (run, model)). Other shapes (`cell`, `provider`) are reserved
-    /// for forward compatibility.
-    #[serde(default)]
-    pub group_by: Option<String>,
-}
-
-#[derive(Debug, Serialize, Default, PartialEq, Eq, PartialOrd, Ord)]
-pub struct TrendKey {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub model_id: Option<String>,
-}
-
-#[derive(Debug, Serialize)]
-pub struct TrendPoint {
-    pub run_id: String,
-    pub started_at_secs: u64,
-    pub item_count: usize,
-    pub passed_count: usize,
-    pub pass_rate: f64,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub total_cost_usd: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub p50_session_duration_ms: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub p95_session_duration_ms: Option<u64>,
-}
-
-#[derive(Debug, Serialize)]
-pub struct TrendGroup {
-    pub key: TrendKey,
-    pub points: Vec<TrendPoint>,
-}
-
-#[derive(Debug, Serialize)]
-pub struct TrendResponse {
-    pub groups: Vec<TrendGroup>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -344,6 +305,10 @@ pub async fn start_eval_run(
     let trace_sink: Option<Arc<dyn MetricsSink>> = state
         .trace_store()
         .map(|store| Arc::new(TraceStoreSink::new(store)) as Arc<dyn MetricsSink>);
+    let agent_base = match &body.agent_id {
+        Some(id) => Some(crate::services::eval_common::resolve_agent_spec(&state, id).await?),
+        None => None,
+    };
     let items: Vec<EvalRunItem> = if body.models.is_some() {
         run_matrix_cells(
             &state,
@@ -352,6 +317,7 @@ pub async fn start_eval_run(
             MatrixOptions {
                 samples,
                 max_concurrent: limits.max_concurrent_matrix_cells,
+                agent_base,
                 agent_overrides: body.agent_overrides.clone(),
                 judge,
             },
@@ -408,125 +374,6 @@ pub async fn list_eval_runs(
     };
     let runs = store.list(&filter).map_err(map_eval_run_store_error)?;
     Ok(Json(ListEvalRunsResponse { runs }).into_response())
-}
-
-/// `GET /v1/eval/trend` — cross-run trend aggregation.
-///
-/// Reads matching runs in the requested time window, then for each run
-/// aggregates items (optionally grouped by `model_id`) into a single
-/// [`TrendPoint`]. Returns groups in stable key order, each group's
-/// points sorted by `started_at_secs` ascending.
-#[tracing::instrument(skip_all)]
-pub async fn get_eval_trend(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-    Query(params): Query<TrendQuery>,
-) -> Result<Response, ApiError> {
-    crate::config_routes::ensure_admin_auth(&state, &headers)?;
-    let store = eval_run_store_or_unavailable(&state)?;
-    let group_by_model = match params.group_by.as_deref() {
-        None | Some("none") => false,
-        Some("model") => true,
-        Some(other) => {
-            return Err(ApiError::BadRequest(format!(
-                "unsupported group_by={other}; use 'none' or 'model'"
-            )));
-        }
-    };
-    let filter = EvalRunFilter {
-        dataset_id: params.dataset_id,
-        since_secs: params.since_secs,
-        until_secs: params.until_secs,
-        limit: params.limit,
-    };
-    let mut runs = store.list_full(&filter).map_err(map_eval_run_store_error)?;
-    // Ascending so each group's points read as a time-series.
-    runs.sort_by_key(|r| r.started_at_secs);
-
-    // BTreeMap<TrendKey, Vec<TrendPoint>> keeps groups in stable order.
-    let mut groups: std::collections::BTreeMap<TrendKey, Vec<TrendPoint>> = Default::default();
-    for run in &runs {
-        if group_by_model {
-            // Partition this run's items by their cell.model_id.
-            let mut by_model: std::collections::BTreeMap<Option<String>, Vec<&EvalRunItem>> =
-                Default::default();
-            for item in &run.items {
-                let m = item
-                    .cell
-                    .as_ref()
-                    .and_then(|c| c.model_id.as_ref().cloned());
-                by_model.entry(m).or_default().push(item);
-            }
-            for (model_id, items) in by_model {
-                let key = TrendKey { model_id };
-                groups
-                    .entry(key)
-                    .or_default()
-                    .push(aggregate_point(run, &items));
-            }
-        } else {
-            let items: Vec<&EvalRunItem> = run.items.iter().collect();
-            groups
-                .entry(TrendKey::default())
-                .or_default()
-                .push(aggregate_point(run, &items));
-        }
-    }
-
-    let groups: Vec<TrendGroup> = groups
-        .into_iter()
-        .map(|(key, points)| TrendGroup { key, points })
-        .collect();
-    Ok(Json(TrendResponse { groups }).into_response())
-}
-
-/// Roll up a single (run, items-subset) pair into a [`TrendPoint`].
-/// `total_cost_usd` is the sum of items' `cost_usd` (None when any
-/// contributing item is unpriced — partial totals would silently
-/// under-report cost). Latency percentiles use `session_duration_ms`,
-/// the deterministic counterpart of wall-clock `elapsed_ms`.
-fn aggregate_point(run: &EvalRun, items: &[&EvalRunItem]) -> TrendPoint {
-    let item_count = items.len();
-    let passed_count = items.iter().filter(|i| i.report.passed).count();
-    let pass_rate = if item_count == 0 {
-        0.0
-    } else {
-        passed_count as f64 / item_count as f64
-    };
-    let mut total_cost_usd: Option<f64> = if items.is_empty() { None } else { Some(0.0) };
-    for item in items {
-        match (total_cost_usd, item.report.cost_usd) {
-            (Some(acc), Some(c)) => total_cost_usd = Some(acc + c),
-            (Some(_), None) => total_cost_usd = None,
-            (None, _) => {}
-        }
-    }
-    let mut durations: Vec<u64> = items.iter().map(|i| i.report.session_duration_ms).collect();
-    durations.sort_unstable();
-    let p50 = percentile(&durations, 50);
-    let p95 = percentile(&durations, 95);
-    TrendPoint {
-        run_id: run.id.clone(),
-        started_at_secs: run.started_at_secs,
-        item_count,
-        passed_count,
-        pass_rate,
-        total_cost_usd,
-        p50_session_duration_ms: p50,
-        p95_session_duration_ms: p95,
-    }
-}
-
-fn percentile(sorted: &[u64], pct: u32) -> Option<u64> {
-    if sorted.is_empty() {
-        return None;
-    }
-    // Nearest-rank percentile: ceil(N * pct/100). Pass `pct = 50` for
-    // median, `95` for tail.
-    let n = sorted.len();
-    let rank = ((n as u64 * u64::from(pct)).div_ceil(100)).max(1) as usize;
-    let idx = (rank - 1).min(n - 1);
-    Some(sorted[idx])
 }
 
 /// `GET /v1/eval/runs/:id` (with optional `?baseline=` for D7).
@@ -621,6 +468,7 @@ async fn run_scripted_fixtures(
 pub(crate) struct MatrixOptions {
     pub samples: u32,
     pub max_concurrent: usize,
+    pub agent_base: Option<awaken_contract::registry_spec::AgentSpec>,
     pub agent_overrides: Option<AgentSpecPatch>,
     pub judge: Option<JudgeContext>,
 }
@@ -639,6 +487,7 @@ async fn run_matrix_cells(
     let MatrixOptions {
         samples,
         max_concurrent,
+        agent_base,
         agent_overrides,
         judge,
     } = options;
@@ -675,17 +524,19 @@ async fn run_matrix_cells(
                 let upstream_model = upstream_model.clone();
                 let binding = binding.clone();
                 let overrides = agent_overrides.clone();
+                let base = agent_base.clone();
                 let trace_sink = trace_sink.clone();
                 let revise_for_task = revise_tuple_for(judge.as_ref(), &fixture.expect);
                 let permit = semaphore.clone().acquire_owned().await.expect("semaphore");
                 handles.push(tokio::spawn(async move {
                     let _permit = permit;
-                    let replayer = apply_cell_decorators(
-                        RuntimeReplayer::new().with_live_executor(executor, upstream_model),
-                        overrides,
-                        trace_sink,
-                        revise_for_task,
-                    );
+                    let mut builder =
+                        RuntimeReplayer::new().with_live_executor(executor, upstream_model);
+                    if let Some(b) = base {
+                        builder = builder.with_agent_base(b);
+                    }
+                    let replayer =
+                        apply_cell_decorators(builder, overrides, trace_sink, revise_for_task);
                     let outcomes = replay_all(&replayer, std::slice::from_ref(&fixture)).await;
                     let outcome = outcomes
                         .into_iter()
