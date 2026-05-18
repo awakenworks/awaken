@@ -18,8 +18,9 @@ thiserror = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread"] }
 tracing = { workspace = true }
 
-# HTTP client for the `push` / `run` / `pull` CLI subcommands (ADR-0032 D8)
-# and the optional LLM-backed grader (`llm-judge` feature).
+# HTTP client for the LLM-backed grader (`TensorZeroJudge` /
+# `LlmExecutorJudge`). The CLI no longer wraps `/v1/eval/*` so reqwest is
+# only pulled in via the judge code path.
 reqwest = { workspace = true, features = ["json"] }
 
 # ULID for globally unique, lexicographically-sortable EvalRun ids.

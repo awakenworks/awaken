@@ -149,11 +149,11 @@ impl Fixture {
     /// [`Self::mock_response`] for legacy fixtures.
     ///
     /// Legacy `MockResponse::Text` does not carry a token count, so the
-    /// shim seeds tokens via the same `chars / 4` heuristic the original
-    /// `MockReplayer` used. Preserving this preserves the meaning of
-    /// `max_tokens_total` for any fixture that hasn't been migrated to
-    /// explicit `provider_script` — otherwise legacy budget assertions
-    /// would silently pass against a 0-token usage.
+    /// shim seeds tokens via a `chars / 4` heuristic. Preserving this
+    /// preserves the meaning of `max_tokens_total` for any fixture that
+    /// hasn't been migrated to explicit `provider_script` — otherwise
+    /// legacy budget assertions would silently pass against 0-token
+    /// usage.
     pub fn effective_script(&self) -> Vec<ProviderScriptEvent> {
         if !self.provider_script.is_empty() {
             return self.provider_script.clone();
@@ -197,9 +197,9 @@ impl Fixture {
     }
 }
 
-/// Coarse `chars / 4` token estimate. Matches the heuristic the original
-/// `MockReplayer` used so legacy fixtures keep producing comparable token
-/// counts after migration to [`Fixture::effective_script`].
+/// Coarse `chars / 4` token estimate. Used by [`Fixture::effective_script`]
+/// to seed legacy `MockResponse::Text` fixtures with a non-zero token usage
+/// so budget assertions don't silently pass on missing data.
 fn approximate_tokens(text: &str) -> i32 {
     let chars = text.chars().count();
     let tokens = chars.div_ceil(4);

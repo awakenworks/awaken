@@ -1,6 +1,6 @@
 //! `/v1/eval/*` route registration. Lifted out of `routes.rs` so the
-//! eval surface (datasets, runs, online, trend, importers) lives next to
-//! its own handlers and stops dominating the central router file.
+//! eval surface (datasets, runs, online, importers) lives next to its
+//! own handlers and stops dominating the central router file.
 
 use axum::Router;
 use axum::routing::{get, post};
@@ -10,9 +10,7 @@ use crate::services::dataset_service::{
     append_fixture, create_dataset, curate_items, delete_dataset, get_dataset, import_dialogue,
     import_traces, list_datasets, put_dataset,
 };
-use crate::services::eval_run_service::{
-    get_eval_run, get_eval_trend, list_eval_runs, start_eval_run,
-};
+use crate::services::eval_run_service::{get_eval_run, list_eval_runs, start_eval_run};
 use crate::services::online_eval_service::start_online_eval;
 
 pub fn eval_routes() -> Router<AppState> {
@@ -31,6 +29,5 @@ pub fn eval_routes() -> Router<AppState> {
         )
         .route("/v1/eval/runs", get(list_eval_runs).post(start_eval_run))
         .route("/v1/eval/runs/:id", get(get_eval_run))
-        .route("/v1/eval/trend", get(get_eval_trend))
         .route("/v1/eval/online", post(start_online_eval))
 }

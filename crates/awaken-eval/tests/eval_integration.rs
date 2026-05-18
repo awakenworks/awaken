@@ -3,7 +3,7 @@
 //! These exercise the public API across module boundaries:
 //!
 //! 1. Load fixtures from disk (`fixture::load_directory`).
-//! 2. Replay them through [`MockReplayer`].
+//! 2. Replay them through [`RuntimeReplayer`].
 //! 3. Score each outcome with [`score`].
 //! 4. Write reports as NDJSON.
 //! 5. Diff a fresh report against a committed baseline.
@@ -15,7 +15,7 @@
 use std::path::PathBuf;
 
 use awaken_eval::{
-    DiffEntry, Expectation, Fixture, MockReplayer, MockResponse, ReplayReport, RuntimeReplayer,
+    DiffEntry, Expectation, Fixture, MockResponse, ReplayReport, RuntimeReplayer,
     diff_against_baseline, fixture::load_directory, read_ndjson_path, replay_all, score,
     trace_to_provider_script, write_ndjson_path,
 };
@@ -33,7 +33,7 @@ fn temp_dir() -> tempfile::TempDir {
 
 async fn replay_dir(dir: &PathBuf) -> Vec<ReplayReport> {
     let fixtures = load_directory(dir).expect("fixtures load");
-    let outcomes = replay_all(&MockReplayer::new(), &fixtures).await;
+    let outcomes = replay_all(&RuntimeReplayer::new(), &fixtures).await;
     fixtures
         .iter()
         .zip(outcomes.iter())

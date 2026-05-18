@@ -41,7 +41,7 @@ pub use expectation::{Expectation, Failure};
 pub use fixture::load_directory;
 pub use fixture::{Fixture, FixtureError, MockResponse};
 pub use outcome::{ReplayOutcome, ReplayReport};
-pub use replay::{MockReplayer, Replayer, replay_all};
+pub use replay::{Replayer, replay_all};
 pub use report::{
     DiffEntry, DiffSummary, ReportError, diff_against_baseline, diff_eval_items, read_ndjson,
     read_ndjson_path, write_ndjson, write_ndjson_path,

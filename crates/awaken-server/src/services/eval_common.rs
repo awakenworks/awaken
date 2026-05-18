@@ -10,7 +10,7 @@ use std::sync::Arc;
 use awaken_contract::contract::config_store::ConfigStore;
 use awaken_contract::contract::executor::LlmExecutor;
 use awaken_contract::contract::storage::StorageError;
-use awaken_contract::registry_spec::{ModelBindingSpec, ProviderSpec};
+use awaken_contract::registry_spec::{AgentSpec, ModelBindingSpec, ProviderSpec};
 use awaken_ext_observability::trace_store::TraceStoreError;
 
 use crate::app::AppState;
@@ -94,6 +94,33 @@ pub(crate) struct ResolvedLiveExecutor {
     pub executor: Arc<dyn LlmExecutor>,
     pub upstream_model: String,
     pub binding: ModelBindingSpec,
+}
+
+/// Resolve `agent_id` against the registry to its persisted
+/// [`AgentSpec`]. Used by the eval services so a `POST /v1/eval/runs`
+/// (or `/v1/eval/online`) with `agent_id` set replays the agent's real
+/// `system_prompt` / `allowed_tools` / sampling params — not the
+/// synthetic stub the replayer falls back to without a base.
+///
+/// `NotFound` becomes a 404 identifying the missing record so the
+/// caller can correct the id rather than seeing an opaque 500.
+pub(crate) async fn resolve_agent_spec(
+    state: &AppState,
+    agent_id: &str,
+) -> Result<AgentSpec, ApiError> {
+    let store = config_store_or_unavailable(state)?;
+    let raw = store
+        .get("agents", agent_id)
+        .await
+        .map_err(map_storage_error)?
+        .ok_or_else(|| {
+            ApiError::NotFound(format!(
+                "agent not found: agents/{agent_id} (register via /v1/config/agents)"
+            ))
+        })?;
+    let record = awaken_contract::config_record::ConfigRecord::<AgentSpec>::from_value(raw)
+        .map_err(|err| ApiError::Internal(format!("decoding agent: {err}")))?;
+    Ok(record.spec)
 }
 
 /// Translate `ConfigStore` errors into HTTP-shaped `ApiError`s.

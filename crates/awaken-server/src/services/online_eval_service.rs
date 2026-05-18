@@ -61,8 +61,18 @@ pub struct OnlineEvalRequest {
     /// Models to evaluate against. Each becomes one matrix cell; each
     /// runs in parallel up to `MAX_CONCURRENT_CELLS`. Must be non-empty.
     pub models: Vec<String>,
+    /// Registered agent whose `system_prompt` / `allowed_tools` /
+    /// sampling params should be used as the base for every cell.
+    /// Without this, every cell runs against a synthetic stub agent —
+    /// useful for "prompt sketching" but not for evaluating a real
+    /// agent's behaviour. `agent_overrides` (below) merges as a patch
+    /// on top.
+    #[serde(default)]
+    pub agent_id: Option<String>,
     /// Optional agent overrides — system prompt, allowed tools,
-    /// sampling params, etc. `model_id` inside the patch is ignored
+    /// sampling params, etc. Applied as a patch on top of the spec
+    /// pulled for `agent_id`, or on top of the synthetic stub when
+    /// `agent_id` is unset. `model_id` inside the patch is ignored
     /// (the cell's `model_id` is what's tested).
     #[serde(default)]
     pub agent_overrides: Option<AgentSpecPatch>,
@@ -164,6 +174,16 @@ pub async fn start_online_eval(
         )));
     }
 
+    // Resolve the registered agent ONCE up front (cheap config-store
+    // lookup; runs before any provider call). Without `agent_id`, every
+    // cell falls back to the synthetic stub agent (the historical
+    // behaviour — useful for "is this prompt under the right model?"
+    // probing).
+    let agent_base = match &body.agent_id {
+        Some(id) => Some(crate::services::eval_common::resolve_agent_spec(&state, id).await?),
+        None => None,
+    };
+
     // Pre-resolve every model so any 404 surfaces before we start
     // burning provider tokens. Carries the binding spec forward so we
     // can compute cost_usd post-replay.
@@ -231,6 +251,7 @@ pub async fn start_online_eval(
             let upstream_model = upstream_model.clone();
             let binding = binding.clone();
             let overrides = body.agent_overrides.clone();
+            let base = agent_base.clone();
             let max_tokens = body.max_total_tokens;
             let trace_sink = trace_sink.clone();
             let cell = cell.clone();
@@ -241,10 +262,14 @@ pub async fn start_online_eval(
             let permit = semaphore.clone().acquire_owned().await.expect("semaphore");
             handles.push(tokio::spawn(async move {
                 let _permit = permit;
+                let mut builder = RuntimeReplayer::new()
+                    .with_live_executor(executor, upstream_model)
+                    .with_max_total_tokens(max_tokens);
+                if let Some(b) = base {
+                    builder = builder.with_agent_base(b);
+                }
                 let replayer = crate::services::eval_run_service::apply_cell_decorators(
-                    RuntimeReplayer::new()
-                        .with_live_executor(executor, upstream_model)
-                        .with_max_total_tokens(max_tokens),
+                    builder,
                     overrides,
                     trace_sink,
                     revise_for_task,
