@@ -852,6 +852,37 @@ async fn start_eval_run_400s_when_samples_without_models() {
 }
 
 #[tokio::test]
+async fn start_eval_run_400s_when_models_supplied_but_empty() {
+    // `models: []` would otherwise pass `body.models.is_some()`, expand
+    // into a 1-cell default with `model_id: None`, and panic inside
+    // `run_matrix_cells` on the "matrix expansion always sets model_id"
+    // expect. Reject the empty array up front.
+    let app = build_test_app().await;
+    let fixtures = vec![sample_fixture("f1")];
+    let (status, _) = request(
+        &app.router,
+        "POST",
+        "/v1/eval/datasets",
+        Some(json!({ "id": "DS-EM", "spec": { "fixtures": fixtures } })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, body) = request(
+        &app.router,
+        "POST",
+        "/v1/eval/runs",
+        Some(json!({ "dataset_id": "DS-EM", "models": [] })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(
+        body["error"].as_str().unwrap_or("").contains("non-empty"),
+        "body: {body}"
+    );
+}
+
+#[tokio::test]
 async fn start_eval_run_400s_when_samples_blow_total_units() {
     // 25 fixtures × 2 models × 3 samples = 150 > MAX_CELLS_PER_SYNC_RUN (100).
     let app = build_test_app().await;

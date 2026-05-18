@@ -245,6 +245,17 @@ pub async fn start_eval_run(
             body.dataset_id
         )));
     }
+    // `Some([])` is rejected up front: it would otherwise pass
+    // `body.models.is_some()`, `expand_cells(&[])` would yield a single
+    // default cell with `model_id: None`, and `run_matrix_cells` would
+    // then panic on its `expect("matrix expansion always sets model_id")`.
+    if let Some(models) = &body.models
+        && models.is_empty()
+    {
+        return Err(ApiError::BadRequest(
+            "`models` must be non-empty when supplied; omit the field for scripted replay".into(),
+        ));
+    }
     // Expand the matrix (or 1-cell default for non-matrix runs).
     let limits = state.config.eval_limits.clone();
     let models = body.models.clone().unwrap_or_default();
