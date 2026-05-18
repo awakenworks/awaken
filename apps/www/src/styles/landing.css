@@ -244,8 +244,11 @@ main:has(.landing-page) > .content-panel:has(.landing-page) {
 .landing-page .phase-ribbon span:nth-child(8) { background: var(--aw-phase-events);   animation-delay: 1.4s; }
 .landing-page .phase-ribbon span:nth-child(9) { background: var(--aw-phase-finalize); animation-delay: 1.6s; }
 @keyframes phaseScan {
+  /* Sharp early-peak pulse per spec (www-landing-v2.html).
+   * Front-loaded scaleY 1→1.6 at 10% gives the ribbon a quick "heartbeat"
+   * read instead of a slow sinusoidal swell. */
   0%, 100% { opacity: 0.55; transform: scaleY(1); }
-  50%      { opacity: 1;    transform: scaleY(1.4); }
+  10%      { opacity: 1;    transform: scaleY(1.6); }
 }
 @media (prefers-reduced-motion: reduce) {
   .landing-page .phase-ribbon span {
@@ -373,7 +376,7 @@ main:has(.landing-page) > .content-panel:has(.landing-page) {
   position: relative;
   padding: 14px 16px;
   background: color-mix(in oklch, var(--c) 7%, var(--aw-bg-elevated));
-  border: 1px solid color-mix(in oklch, var(--c) 25%, var(--aw-border));
+  border: 1px solid color-mix(in oklch, var(--c) 18%, var(--aw-border));
   border-radius: var(--aw-radius-md);
   display: flex; align-items: center; gap: 10px;
   font-size: 13px;
@@ -384,7 +387,7 @@ main:has(.landing-page) > .content-panel:has(.landing-page) {
 .landing-page .phase-pill .num {
   width: 22px; height: 22px;
   border-radius: 50%;
-  background: color-mix(in oklch, var(--c) 14%, var(--aw-bg-elevated));
+  background: color-mix(in oklch, var(--c) 16%, var(--aw-bg-soft));
   color: var(--c);
   display: grid; place-items: center;
   font-size: 10px;
