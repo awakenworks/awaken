@@ -534,6 +534,48 @@ async fn dialogue_fixture_first_turn_error_short_circuits_second() {
     assert_eq!(outcome.metrics.inferences.len(), 0, "turn 1 must not fire");
 }
 
+#[tokio::test]
+async fn live_mode_replays_continued_turns_on_same_thread() {
+    // Multi-turn dialogue fixtures coming from import-dialogue (or
+    // hand-authored) must be evaluated end-to-end in Live mode too —
+    // otherwise the matrix runner silently scores only the first turn
+    // and the operator never knows the rest of the conversation was
+    // skipped. Regression guard for the live_mode dialogue truncation.
+    use awaken_contract::contract::executor::LlmExecutor;
+    use awaken_eval::fixture::DialogueTurn;
+    use awaken_eval::test_support::ScriptedExecutor;
+    use std::sync::Arc;
+    let exec: Arc<dyn LlmExecutor> =
+        ScriptedExecutor::new("dialogue-live", vec!["first answer", "second answer"]).arc();
+    let fixture = Fixture {
+        id: "dialogue-live".into(),
+        description: None,
+        user_input: "hello".into(),
+        provider_script: vec![],
+        source_run_id: None,
+        source_model_id: None,
+        allow_unused_provider_script: false,
+        mock_response: MockResponse::default(),
+        expect: Expectation::default(),
+        continued_turns: vec![DialogueTurn {
+            user_input: "follow up".into(),
+            provider_script: vec![],
+        }],
+    };
+    let replayer = RuntimeReplayer::new().with_live_executor(exec, "test-model");
+    let outcomes = replay_all(&replayer, std::slice::from_ref(&fixture)).await;
+    let outcome = &outcomes[0];
+    // Second turn's response wins (last turn's reply is the final_text).
+    assert_eq!(outcome.final_text, "second answer");
+    // Both turns landed inference spans on the same thread.
+    assert_eq!(outcome.metrics.inferences.len(), 2);
+    assert!(
+        outcome.runtime_failure.is_none(),
+        "{:?}",
+        outcome.runtime_failure
+    );
+}
+
 // ── Reprocess-on-judge-fail (Live mode revise loop) ─────────────────
 
 mod revise_mode {
