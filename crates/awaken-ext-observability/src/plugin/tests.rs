@@ -12,7 +12,7 @@ use awaken_runtime::extensions::background::{
 };
 use awaken_runtime::{PhaseContext, PhaseHook, Plugin};
 
-use crate::metrics::{TOOL_PAYLOAD_TRUNCATED_MARKER, ToolIoCapture};
+use crate::metrics::{ContentCapture, TOOL_PAYLOAD_TRUNCATED_MARKER, ToolIoCapture};
 use crate::sink::InMemorySink;
 
 use super::ObservabilityPlugin;
@@ -422,6 +422,176 @@ async fn on_after_inference_records_genai_span() {
     // Also recorded in sink
     let sink_m = sink.metrics();
     assert_eq!(sink_m.inference_count(), 1);
+}
+
+#[tokio::test]
+async fn after_inference_omits_content_when_capture_disabled() {
+    // Default policy is Disabled — capture stays off without an explicit
+    // opt-in. Existing trace storage stays metrics-only by default.
+    let sink = InMemorySink::new();
+    let plugin = ObservabilityPlugin::new(sink).with_model("m");
+
+    let ctx = PhaseContext::new(Phase::AfterInference, empty_snapshot())
+        .with_llm_response(success_response(Some(usage(1, 1, 2))));
+    run_phase(&plugin, &ctx).await;
+
+    let metrics = lock_unpoison(&plugin.inner.metrics);
+    let span = &metrics.inferences[0];
+    assert!(span.response_content.is_none());
+    assert!(span.response_tool_calls.is_none());
+}
+
+#[tokio::test]
+async fn after_inference_captures_chat_content_when_enabled() {
+    // With ContentCapture::Enabled the assistant text is serialised onto
+    // the span so ADR-0032 D5 (trace → fixture) has something to read.
+    let sink = InMemorySink::new();
+    let plugin = ObservabilityPlugin::new(sink)
+        .with_model("m")
+        .with_content_capture(ContentCapture::Enabled);
+
+    let ctx = PhaseContext::new(Phase::AfterInference, empty_snapshot())
+        .with_llm_response(success_response(Some(usage(1, 1, 2))));
+    run_phase(&plugin, &ctx).await;
+
+    let metrics = lock_unpoison(&plugin.inner.metrics);
+    let span = &metrics.inferences[0];
+    let content = span.response_content.as_ref().expect("content captured");
+    // success_response builds vec![ContentBlock::text("hello")] — a single
+    // text block. Round-tripping through serde_json preserves the type tag
+    // + text payload so the eval converter can decode it back.
+    let array = content.as_array().expect("content is an array");
+    assert_eq!(array.len(), 1);
+    assert!(array[0].to_string().contains("hello"));
+    // No tool calls in this turn — that field stays empty rather than
+    // being an empty array, so a ToolUse-only turn and a text-only turn
+    // can be distinguished from the span alone.
+    assert!(span.response_tool_calls.is_none());
+}
+
+#[tokio::test]
+async fn after_inference_captures_tool_calls_when_enabled() {
+    use awaken_contract::contract::inference::StopReason;
+    use awaken_contract::contract::message::ToolCall;
+
+    let sink = InMemorySink::new();
+    let plugin = ObservabilityPlugin::new(sink)
+        .with_model("m")
+        .with_content_capture(ContentCapture::Enabled);
+
+    let tool_use_response = LLMResponse::success(StreamResult {
+        content: vec![],
+        tool_calls: vec![ToolCall::new(
+            "call-1",
+            "weather.get",
+            serde_json::json!({"city": "Paris"}),
+        )],
+        usage: Some(usage(5, 1, 6)),
+        stop_reason: Some(StopReason::ToolUse),
+        has_incomplete_tool_calls: false,
+    });
+
+    let ctx = PhaseContext::new(Phase::AfterInference, empty_snapshot())
+        .with_llm_response(tool_use_response);
+    run_phase(&plugin, &ctx).await;
+
+    let metrics = lock_unpoison(&plugin.inner.metrics);
+    let span = &metrics.inferences[0];
+    assert!(span.response_content.is_none(), "text-only field absent");
+    let tools = span
+        .response_tool_calls
+        .as_ref()
+        .expect("tool calls captured");
+    let array = tools.as_array().expect("tool calls is an array");
+    assert_eq!(array.len(), 1);
+    assert!(array[0].to_string().contains("weather.get"));
+}
+
+#[tokio::test]
+async fn after_inference_captures_request_messages_on_first_inference_only() {
+    use awaken_contract::contract::content::ContentBlock;
+    use awaken_contract::contract::message::Message;
+
+    let sink = InMemorySink::new();
+    let plugin = ObservabilityPlugin::new(sink)
+        .with_model("m")
+        .with_content_capture(ContentCapture::Enabled);
+
+    let _ = ContentBlock::text("ping"); // silence unused-import in tests below
+    let messages: Arc<[Arc<Message>]> = Arc::from(vec![Arc::new(Message::user("ping"))]);
+
+    // First inference: step counter is 0, request_messages must capture.
+    let mut ctx = PhaseContext::new(Phase::AfterInference, empty_snapshot())
+        .with_llm_response(success_response(Some(usage(1, 1, 2))));
+    ctx.messages = messages.clone();
+    run_phase(&plugin, &ctx).await;
+
+    // Second inference on same run: step counter is 1, request_messages
+    // must stay None to avoid O(turns²) duplicated history storage.
+    let mut ctx2 = PhaseContext::new(Phase::AfterInference, empty_snapshot())
+        .with_llm_response(success_response(Some(usage(1, 1, 2))));
+    ctx2.messages = messages.clone();
+    run_phase(&plugin, &ctx2).await;
+
+    let metrics = lock_unpoison(&plugin.inner.metrics);
+    assert!(metrics.inferences[0].request_messages.is_some());
+    let captured = metrics.inferences[0]
+        .request_messages
+        .as_ref()
+        .and_then(|v| v.as_array())
+        .expect("first span captured a list");
+    assert_eq!(captured.len(), 1);
+    assert!(captured[0].to_string().contains("ping"));
+    assert!(metrics.inferences[1].request_messages.is_none());
+}
+
+#[tokio::test]
+async fn after_inference_omits_request_messages_when_capture_disabled() {
+    use awaken_contract::contract::content::ContentBlock;
+    use awaken_contract::contract::message::Message;
+
+    let sink = InMemorySink::new();
+    let plugin = ObservabilityPlugin::new(sink).with_model("m");
+
+    let _ = ContentBlock::text("ignored");
+    let messages: Arc<[Arc<Message>]> = Arc::from(vec![Arc::new(Message::user("ignored"))]);
+    let mut ctx = PhaseContext::new(Phase::AfterInference, empty_snapshot())
+        .with_llm_response(success_response(Some(usage(1, 1, 2))));
+    ctx.messages = messages;
+    run_phase(&plugin, &ctx).await;
+
+    let metrics = lock_unpoison(&plugin.inner.metrics);
+    assert!(metrics.inferences[0].request_messages.is_none());
+}
+
+#[tokio::test]
+async fn after_inference_capture_skips_error_branch() {
+    use awaken_contract::contract::inference::InferenceError;
+
+    let sink = InMemorySink::new();
+    let plugin = ObservabilityPlugin::new(sink)
+        .with_model("m")
+        .with_content_capture(ContentCapture::Enabled);
+
+    // An errored inference has no StreamResult to serialise from. The hook
+    // must leave the capture fields as None instead of inventing content.
+    let ctx = PhaseContext::new(Phase::AfterInference, empty_snapshot()).with_llm_response(
+        LLMResponse::error(InferenceError {
+            error_type: "rate_limit".into(),
+            error_class: Some("rate_limit".into()),
+            message: "429".into(),
+        }),
+    );
+    run_phase(&plugin, &ctx).await;
+
+    let metrics = lock_unpoison(&plugin.inner.metrics);
+    let span = &metrics.inferences[0];
+    assert!(span.response_content.is_none());
+    assert!(span.response_tool_calls.is_none());
+    assert!(
+        span.error_type.is_some(),
+        "error path still records error_type"
+    );
 }
 
 #[tokio::test]

@@ -18,19 +18,22 @@ thiserror = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread"] }
 tracing = { workspace = true }
 
-# Optional — only pulled in when the `llm-judge` feature is enabled.
-reqwest = { workspace = true, optional = true }
+# HTTP client for the `push` / `run` / `pull` CLI subcommands (ADR-0032 D8)
+# and the optional LLM-backed grader (`llm-judge` feature).
+reqwest = { workspace = true, features = ["json"] }
+
+# ULID for globally unique, lexicographically-sortable EvalRun ids.
+ulid = "1"
 
 [dev-dependencies]
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "time"] }
-reqwest = { workspace = true, features = ["blocking"] }
 
 [features]
 default = []
-# LLM-backed grading via TensorZero `[functions.judge]`. Adds a reqwest
-# dependency and enables the `judge` module.
-llm-judge = ["dep:reqwest"]
+# LLM-backed grading via TensorZero `[functions.judge]`. Enables the
+# `judge` module; reqwest is a base dependency, no extra feature flag.
+llm-judge = []
 
 [lints]
 workspace = true

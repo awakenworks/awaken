@@ -131,6 +131,9 @@ fn inference(agent: &str, input: i32, output: i32, duration_ms: u64, err: bool) 
         duration_ms,
         started_at_ms: 0,
         ended_at_ms: 0,
+        response_content: None,
+        response_tool_calls: None,
+        request_messages: None,
     }
 }
 

@@ -87,6 +87,9 @@ fn sample_genai_span(run_id: &str, step: u32) -> GenAISpan {
         duration_ms: 1500,
         started_at_ms: 0,
         ended_at_ms: 0,
+        response_content: None,
+        response_tool_calls: None,
+        request_messages: None,
     }
 }
 
@@ -262,6 +265,9 @@ fn build_inference_span(model: &str, run_id: &str) -> GenAISpan {
         duration_ms: 800,
         started_at_ms: 0,
         ended_at_ms: 0,
+        response_content: None,
+        response_tool_calls: None,
+        request_messages: None,
     }
 }
 
@@ -577,6 +583,9 @@ async fn phoenix_via_helpers_delegation_span_correlated_with_agent_tool() {
         duration_ms: 300,
         started_at_ms: 0,
         ended_at_ms: 0,
+        response_content: None,
+        response_tool_calls: None,
+        request_messages: None,
     };
     let delegation = DelegationSpan {
         context: tool_span.context.clone(),
@@ -856,6 +865,9 @@ async fn phoenix_via_helpers_background_subagent_run_nested_under_task() {
         duration_ms: 250,
         started_at_ms: 0,
         ended_at_ms: 0,
+        response_content: None,
+        response_tool_calls: None,
+        request_messages: None,
     };
     let (done_tx, done_rx) = tokio::sync::oneshot::channel();
 

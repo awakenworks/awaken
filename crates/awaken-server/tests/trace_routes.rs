@@ -79,6 +79,9 @@ fn sample_inference_event(run_id: &str, agent_id: &str) -> MetricsEvent {
         duration_ms: 100,
         started_at_ms: 0,
         ended_at_ms: 0,
+        response_content: None,
+        response_tool_calls: None,
+        request_messages: None,
     })
 }
 

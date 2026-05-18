@@ -9,7 +9,7 @@ use awaken_runtime::{Plugin, PluginDescriptor, PluginRegistrar};
 use serde_json::Value;
 use tokio::sync::Mutex;
 
-use crate::metrics::{AgentMetrics, SpanContext, ToolIoCapture};
+use crate::metrics::{AgentMetrics, ContentCapture, SpanContext, ToolIoCapture};
 use crate::sink::MetricsSink;
 
 use super::hooks::{
@@ -45,6 +45,7 @@ impl ObservabilityPlugin {
                 tool_io_max_payload_bytes: DEFAULT_TOOL_IO_MAX_PAYLOAD_BYTES,
                 tool_io_allowed_fields: None,
                 tool_io_redactor: Arc::new(identity_tool_io_redactor),
+                content_capture: ContentCapture::default(),
                 inference_tracing_span: Mutex::new(None),
                 tool_tracing_span: Mutex::new(HashMap::new()),
                 span_context: Mutex::new(SpanContext::default()),
@@ -152,6 +153,19 @@ impl ObservabilityPlugin {
         Arc::get_mut(&mut self.inner)
             .expect("no shared references during builder")
             .tool_io_redactor = redactor;
+        self
+    }
+
+    /// Opt the plugin into capturing assistant response content blocks and
+    /// tool calls onto every emitted [`GenAISpan`]. Default is
+    /// [`ContentCapture::Disabled`]; production deployments turn this on
+    /// for runs they want to replay later as eval fixtures
+    /// (ADR-0032 D5: trace → `provider_script`).
+    #[must_use]
+    pub fn with_content_capture(mut self, capture: ContentCapture) -> Self {
+        Arc::get_mut(&mut self.inner)
+            .expect("no shared references during builder")
+            .content_capture = capture;
         self
     }
 }

@@ -50,6 +50,9 @@ fn sample_inference() -> GenAISpan {
         duration_ms: 1,
         started_at_ms: 0,
         ended_at_ms: 0,
+        response_content: None,
+        response_tool_calls: None,
+        request_messages: None,
     }
 }
 

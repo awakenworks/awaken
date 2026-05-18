@@ -43,7 +43,7 @@ use std::time::Instant;
 use async_trait::async_trait;
 use awaken_contract::contract::message::Message;
 use awaken_contract::registry_spec::AgentSpec;
-use awaken_ext_observability::{InMemorySink, ObservabilityPlugin};
+use awaken_ext_observability::{CompositeSink, InMemorySink, MetricsSink, ObservabilityPlugin};
 use awaken_runtime::builder::AgentRuntimeBuilder;
 use awaken_runtime::engine::{LlmRetryPolicy, RetryConfigKey, ScriptedLlmExecutor};
 use awaken_runtime::registry::traits::ModelBinding;
@@ -70,12 +70,18 @@ const DEFAULT_SYSTEM_PROMPT: &str = "You are a test assistant.";
 /// `provider_script` (or the legacy `mock_response` shim).
 pub struct RuntimeReplayer {
     max_rounds_floor: usize,
+    /// Optional sink that gets a copy of every metrics event the
+    /// observability plugin records. Set by callers (e.g. the server's
+    /// eval-run service) that want replay spans to land in a shared
+    /// [`TraceStore`] alongside production traces.
+    tee_sink: Option<Arc<dyn MetricsSink>>,
 }
 
 impl RuntimeReplayer {
     pub fn new() -> Self {
         Self {
             max_rounds_floor: 4,
+            tee_sink: None,
         }
     }
 
@@ -86,6 +92,17 @@ impl RuntimeReplayer {
     #[must_use]
     pub fn with_max_rounds_floor(mut self, floor: usize) -> Self {
         self.max_rounds_floor = floor;
+        self
+    }
+
+    /// Tee every metrics event the replay records into `sink`. The
+    /// in-memory aggregation that feeds `ReplayOutcome.metrics` is
+    /// preserved — the tee is additive. Typical caller: the server's
+    /// eval-run service wires a `TraceStoreSink` so the admin UI can
+    /// pivot from an `EvalRunItem.trace_run_id` to the full trace.
+    #[must_use]
+    pub fn with_tee_sink(mut self, sink: Arc<dyn MetricsSink>) -> Self {
+        self.tee_sink = Some(sink);
         self
     }
 }
@@ -101,7 +118,20 @@ impl Replayer for RuntimeReplayer {
     async fn replay(&self, fixture: &Fixture) -> ReplayOutcome {
         let script = fixture.effective_script();
         let sink = InMemorySink::new();
-        let plugin = ObservabilityPlugin::new(sink.clone()).with_provider(SCRIPTED_PROVIDER_ID);
+        // When a tee sink is wired (typically by the server's eval-run
+        // service to forward into a TraceStore), the observability
+        // plugin gets a CompositeSink that broadcasts to both. Without
+        // a tee, the bare InMemorySink keeps the runtime cheap.
+        let plugin = match &self.tee_sink {
+            Some(tee) => {
+                let composite = CompositeSink::builder()
+                    .with_sink(Arc::new(sink.clone()))
+                    .with_sink(tee.clone())
+                    .build();
+                ObservabilityPlugin::new(composite).with_provider(SCRIPTED_PROVIDER_ID)
+            }
+            None => ObservabilityPlugin::new(sink.clone()).with_provider(SCRIPTED_PROVIDER_ID),
+        };
 
         let store = Arc::new(InMemoryStore::new());
         let max_rounds = std::cmp::max(self.max_rounds_floor, script.len().saturating_add(1));
@@ -226,12 +256,13 @@ fn decide_runtime_failure(
             extra_calls: exhausted_calls,
         });
     }
-    if let Some(message) = runtime_error_message {
-        if !has_scripted_error {
-            return Some(ReplayRuntimeFailure::RuntimeError { message });
-        }
-        // Scripted error captured — the run failed *as expected*; only
-        // unused script remains a fixture-contract concern.
+    // Scripted error path: runtime returned Err but a scripted Error
+    // event captured it — the run failed *as expected*, only unused
+    // script remains a fixture-contract concern (handled below).
+    if let Some(message) = runtime_error_message
+        && !has_scripted_error
+    {
+        return Some(ReplayRuntimeFailure::RuntimeError { message });
     }
     if remaining > 0 && !allow_unused {
         return Some(ReplayRuntimeFailure::ProviderScriptUnused { remaining });

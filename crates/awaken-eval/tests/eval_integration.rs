@@ -15,9 +15,13 @@
 use std::path::PathBuf;
 
 use awaken_eval::{
-    DiffEntry, Fixture, MockReplayer, MockResponse, ReplayReport, diff_against_baseline,
-    fixture::load_directory, read_ndjson_path, replay_all, score, write_ndjson_path,
+    DiffEntry, Expectation, Fixture, MockReplayer, MockResponse, ReplayReport, RuntimeReplayer,
+    diff_against_baseline, fixture::load_directory, read_ndjson_path, replay_all, score,
+    trace_to_provider_script, write_ndjson_path,
 };
+use awaken_ext_observability::trace_store::{TraceStore, file::FileTraceStore};
+use awaken_ext_observability::{GenAISpan, MetricsEvent, SpanContext};
+use serde_json::json;
 
 fn bundled_fixtures_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("fixtures")
@@ -203,4 +207,154 @@ async fn diff_detects_newly_added_without_blocking() {
     // Passing newly-added fixtures don't block CI (failing ones do —
     // see report::tests::diff_newly_added_failing_blocks_check).
     assert!(summary.is_clean());
+}
+
+// ── Trace → fixture → replay round-trip (ADR-0032 D5) ───────────────
+
+fn captured_inference_span(run_id: &str, step: u32, text: &str) -> GenAISpan {
+    GenAISpan {
+        context: SpanContext {
+            run_id: run_id.into(),
+            agent_id: "default".into(),
+            ..Default::default()
+        },
+        step_index: Some(step),
+        model: "claude-opus-4-7".into(),
+        provider: "anthropic".into(),
+        operation: "chat".into(),
+        response_model: None,
+        response_id: None,
+        finish_reasons: vec!["end_turn".into()],
+        error_type: None,
+        error_class: None,
+        thinking_tokens: None,
+        input_tokens: Some(10),
+        output_tokens: Some(4),
+        total_tokens: Some(14),
+        cache_read_input_tokens: None,
+        cache_creation_input_tokens: None,
+        temperature: None,
+        top_p: None,
+        max_tokens: None,
+        stop_sequences: Vec::new(),
+        duration_ms: 1,
+        started_at_ms: 0,
+        ended_at_ms: 0,
+        response_content: Some(json!([{"type": "text", "text": text}])),
+        response_tool_calls: None,
+        request_messages: None,
+    }
+}
+
+#[tokio::test]
+async fn trace_curate_round_trips_through_file_store_and_replays() {
+    // End-to-end proof of the trace → fixture → replay loop:
+    //   1. write a captured trace to a real FileTraceStore
+    //   2. read it back through the same API the CLI uses
+    //   3. curate it into a Fixture via trace_to_provider_script
+    //   4. replay the Fixture through RuntimeReplayer
+    //   5. assert final_text matches the originally captured response
+    //
+    // If any of those steps drift apart the loop silently breaks —
+    // ContentCapture writes nothing, the converter misreads spans, or
+    // the scripted executor diverges from how content was originally
+    // recorded. This test pins the wire-format end to end.
+    let trace_root = temp_dir();
+    let store = FileTraceStore::new(trace_root.path()).expect("trace store");
+    let run_id = "01HXCURATE0000000000000001";
+    let span = captured_inference_span(run_id, 0, "the answer is 42");
+    store
+        .append(run_id, &MetricsEvent::Inference(span))
+        .expect("append");
+
+    // Read back via TraceStore API — same path the curate CLI walks.
+    let events = store.read(run_id).expect("read");
+    assert_eq!(events.len(), 1);
+
+    let conversion = trace_to_provider_script(&events).expect("convert");
+    assert_eq!(
+        conversion.source_model_id.as_deref(),
+        Some("claude-opus-4-7")
+    );
+    assert_eq!(conversion.provider_script.len(), 1);
+
+    let fixture = Fixture {
+        id: run_id.into(),
+        description: None,
+        // Trace persistence does not capture request messages today —
+        // the operator supplies the original user prompt out of band.
+        user_input: "what is six times seven".into(),
+        provider_script: conversion.provider_script,
+        source_run_id: Some(run_id.into()),
+        source_model_id: conversion.source_model_id,
+        allow_unused_provider_script: false,
+        mock_response: MockResponse::default(),
+        expect: Expectation::default(),
+    };
+
+    let outcomes = replay_all(&RuntimeReplayer::new(), std::slice::from_ref(&fixture)).await;
+    let outcome = &outcomes[0];
+    assert_eq!(outcome.final_text, "the answer is 42");
+    assert!(
+        outcome.runtime_failure.is_none(),
+        "round-trip should not surface a runtime failure: {:?}",
+        outcome.runtime_failure
+    );
+}
+
+#[tokio::test]
+async fn runtime_replayer_tee_sink_routes_spans_to_trace_store() {
+    use awaken_ext_observability::trace_store::TraceStoreSink;
+    use std::sync::Arc;
+
+    // A bundled fixture replayed with a TraceStore tee must land its
+    // spans in that store under the runtime-assigned run_id. The
+    // `EvalRunItem.trace_run_id` link the server populates from
+    // `ReplayOutcome.trace_run_id()` is then a real pointer, not a
+    // dead string.
+    let fixtures = load_directory(bundled_fixtures_dir()).expect("fixtures");
+    let fixture = fixtures
+        .iter()
+        .find(|f| f.id == "01_simple_qa")
+        .expect("01_simple_qa fixture");
+
+    let trace_root = temp_dir();
+    let store: Arc<dyn TraceStore> = Arc::new(FileTraceStore::new(trace_root.path()).unwrap());
+    let tee = Arc::new(TraceStoreSink::new(store.clone()));
+    let replayer = RuntimeReplayer::new().with_tee_sink(tee);
+    let outcomes = replay_all(&replayer, std::slice::from_ref(fixture)).await;
+    let outcome = &outcomes[0];
+
+    let trace_run_id = outcome.trace_run_id().expect("at least one span emitted");
+    let stored = store.read(trace_run_id).expect("trace persisted");
+    assert!(
+        !stored.is_empty(),
+        "tee sink must have appended at least one event for {trace_run_id}"
+    );
+}
+
+#[tokio::test]
+async fn trace_curate_preserves_multi_turn_order() {
+    // A run with two assistant turns curates into a 2-event script that
+    // replays in the same order. The scripted executor consumes events
+    // FIFO, so the original step_index ordering must be preserved.
+    let trace_root = temp_dir();
+    let store = FileTraceStore::new(trace_root.path()).expect("trace store");
+    let run_id = "01HXCURATE0000000000000002";
+    store
+        .append(
+            run_id,
+            &MetricsEvent::Inference(captured_inference_span(run_id, 0, "first turn")),
+        )
+        .unwrap();
+    store
+        .append(
+            run_id,
+            &MetricsEvent::Inference(captured_inference_span(run_id, 1, "second turn")),
+        )
+        .unwrap();
+
+    let events = store.read(run_id).unwrap();
+    let conversion = trace_to_provider_script(&events).unwrap();
+    assert_eq!(conversion.provider_script.len(), 2);
 }

@@ -16,9 +16,58 @@ use crate::metrics::{
     SuspensionSpan, ToolSpan, is_tool_payload_truncated,
 };
 
-use awaken_contract::contract::inference::StopReason;
+use awaken_contract::contract::inference::{StopReason, StreamResult};
+use serde_json::Value;
+
+use crate::metrics::ContentCapture;
 
 use super::shared::{Inner, extract_cache_tokens, extract_token_counts};
+
+/// Serialise the assistant turn's content blocks and tool calls into
+/// JSON for `GenAISpan::response_content` / `response_tool_calls` when
+/// [`ContentCapture`] is enabled. Empty vecs serialise to `None` so the
+/// span stays compact for the common case of a chat-only or tool-only
+/// turn. The `StreamResult` types implement `Serialize` infallibly, so a
+/// serialisation failure here is a logic bug — fall back to `None` and
+/// keep the rest of the span intact rather than aborting the run.
+fn capture_response_payload(
+    capture: ContentCapture,
+    ok_result: Option<&StreamResult>,
+) -> (Option<Value>, Option<Value>) {
+    if !capture.is_enabled() {
+        return (None, None);
+    }
+    let Some(result) = ok_result else {
+        return (None, None);
+    };
+    let content = if result.content.is_empty() {
+        None
+    } else {
+        serde_json::to_value(&result.content).ok()
+    };
+    let tool_calls = if result.tool_calls.is_empty() {
+        None
+    } else {
+        serde_json::to_value(&result.tool_calls).ok()
+    };
+    (content, tool_calls)
+}
+
+/// Serialise the request message history into JSON for
+/// `GenAISpan::request_messages`. Only fires for the first inference of
+/// the run (step == 0) when [`ContentCapture`] is enabled — later spans
+/// would carry growing copies of the same history, so paying that
+/// `O(turns²)` storage cost has no upside for the trace→fixture flow.
+fn capture_request_messages(
+    capture: ContentCapture,
+    step: u32,
+    messages: &[std::sync::Arc<awaken_contract::contract::message::Message>],
+) -> Option<Value> {
+    if !capture.is_enabled() || step != 0 || messages.is_empty() {
+        return None;
+    }
+    serde_json::to_value(messages).ok()
+}
 
 /// Prefix used by AgentTool descriptors (`agent_run_{agent_id}`).
 const DELEGATION_TOOL_PREFIX: &str = "agent_run_";
@@ -290,6 +339,9 @@ impl PhaseHook for AfterInferenceHook {
         let step = s.step_counter.fetch_add(1, Ordering::Relaxed);
         let model = s.model.lock().await.clone();
         let provider = s.provider.lock().await.clone();
+        let (response_content, response_tool_calls) =
+            capture_response_payload(s.content_capture, ok_result);
+        let request_messages = capture_request_messages(s.content_capture, step, &ctx.messages);
         let span = GenAISpan {
             context,
             step_index: Some(step),
@@ -319,6 +371,9 @@ impl PhaseHook for AfterInferenceHook {
             duration_ms,
             started_at_ms,
             ended_at_ms,
+            response_content,
+            response_tool_calls,
+            request_messages,
         };
 
         // Record tracing span attributes.

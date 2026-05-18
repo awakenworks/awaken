@@ -9,6 +9,7 @@ use serde_json::{Value, json};
 use tokio::sync::Mutex;
 
 use crate::metrics::AgentMetrics;
+use crate::metrics::ContentCapture;
 use crate::metrics::SpanContext;
 use crate::metrics::TOOL_PAYLOAD_TRUNCATED_MARKER;
 use crate::metrics::ToolIoCapture;
@@ -167,6 +168,11 @@ pub(crate) struct Inner {
     pub(crate) tool_io_max_payload_bytes: usize,
     pub(crate) tool_io_allowed_fields: Option<Arc<HashSet<String>>>,
     pub(crate) tool_io_redactor: Arc<ToolIoRedactor>,
+    /// Opt-in capture of the assistant response payload on `GenAISpan`
+    /// (`response_content` / `response_tool_calls`). Default `Disabled`.
+    /// `RuntimeReplayer` and the `awaken-eval curate` flow flip this on
+    /// for the runs they want to replay later as eval fixtures.
+    pub(crate) content_capture: ContentCapture,
     pub(crate) inference_tracing_span: Mutex<Option<tracing::Span>>,
     pub(crate) tool_tracing_span: Mutex<HashMap<String, tracing::Span>>,
     /// Execution context captured from RunIdentity at RunStart.

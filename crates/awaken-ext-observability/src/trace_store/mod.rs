@@ -1,6 +1,9 @@
 //! Persistence layer for run-scoped trace events.  See ADR-0030 D3-D4.
 
 pub mod file;
+pub mod sink;
+
+pub use sink::TraceStoreSink;
 
 use std::collections::HashSet;
 use std::time::SystemTime;

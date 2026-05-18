@@ -17,6 +17,9 @@
 //! All layers integrate with the 0.4 [`awaken-ext-observability`] surface
 //! and never modify it; `AgentMetrics` is what the scorer consumes.
 
+pub mod curate;
+pub mod dataset;
+pub mod eval_run;
 pub mod expectation;
 pub mod fixture;
 #[cfg(feature = "llm-judge")]
@@ -27,6 +30,12 @@ pub mod report;
 pub mod runtime_replayer;
 pub mod score;
 
+pub use curate::{CurateError, TraceConversion, trace_to_provider_script};
+pub use dataset::{DATASETS_NAMESPACE, DatasetSpec};
+pub use eval_run::{
+    EvalRun, EvalRunFilter, EvalRunItem, EvalRunStore, EvalRunStoreError, EvalRunSummary,
+    FileEvalRunStore, mint_run_id,
+};
 pub use expectation::{Expectation, Failure};
 pub use fixture::load_directory;
 pub use fixture::{Fixture, FixtureError, MockResponse};

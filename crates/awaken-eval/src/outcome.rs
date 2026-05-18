@@ -95,6 +95,29 @@ impl ReplayOutcome {
     pub fn tool_sequence(&self) -> Vec<String> {
         self.metrics.tools.iter().map(|t| t.name.clone()).collect()
     }
+
+    /// The `run_id` the runtime assigned to this replay, taken from the
+    /// first recorded span. Returns `None` when no spans were emitted
+    /// (e.g. a misconfigured executor that erred before any inference).
+    /// Used by the server's eval-run service to link an `EvalRunItem`
+    /// back to the `TraceStore` entry written by the tee sink.
+    pub fn trace_run_id(&self) -> Option<&str> {
+        // Inference spans are the most common; fall back to tool spans
+        // if the run errored before any inference completed (still
+        // possible for failure-path fixtures with an immediate Error
+        // event — the runtime emits a handoff/tool span at startup).
+        if let Some(s) = self.metrics.inferences.first()
+            && !s.context.run_id.is_empty()
+        {
+            return Some(&s.context.run_id);
+        }
+        if let Some(s) = self.metrics.tools.first()
+            && !s.context.run_id.is_empty()
+        {
+            return Some(&s.context.run_id);
+        }
+        None
+    }
 }
 
 /// Compact, JSON-friendly view of a [`ReplayOutcome`] paired with its
@@ -214,6 +237,9 @@ mod tests {
             duration_ms: 1,
             started_at_ms: 0,
             ended_at_ms: 0,
+            response_content: None,
+            response_tool_calls: None,
+            request_messages: None,
         }
     }
 
@@ -339,6 +365,62 @@ mod tests {
     fn total_tokens_zero_when_no_inferences() {
         let o = outcome_with(AgentMetrics::default(), "");
         assert_eq!(o.total_tokens(), 0);
+    }
+
+    #[test]
+    fn trace_run_id_prefers_first_inference_span() {
+        // Inference and tool spans both carry run_ids; the inference one
+        // wins because it's the primary observable for an LLM call.
+        let mut inf = span(1, 1);
+        inf.context.run_id = "RUN-INF".into();
+        let mut tl = tool("a", false);
+        tl.context.run_id = "RUN-TOOL".into();
+        let metrics = AgentMetrics {
+            inferences: vec![inf],
+            tools: vec![tl],
+            ..Default::default()
+        };
+        let o = outcome_with(metrics, "");
+        assert_eq!(o.trace_run_id(), Some("RUN-INF"));
+    }
+
+    #[test]
+    fn trace_run_id_falls_back_to_tool_when_no_inferences() {
+        // Failure-path runs may emit only handoff/tool spans before
+        // erroring — surface the tool span's run_id so the admin UI
+        // can still link back to the trace.
+        let mut tl = tool("a", false);
+        tl.context.run_id = "RUN-TOOL-ONLY".into();
+        let metrics = AgentMetrics {
+            inferences: vec![],
+            tools: vec![tl],
+            ..Default::default()
+        };
+        let o = outcome_with(metrics, "");
+        assert_eq!(o.trace_run_id(), Some("RUN-TOOL-ONLY"));
+    }
+
+    #[test]
+    fn trace_run_id_none_when_no_spans_emitted() {
+        let o = outcome_with(AgentMetrics::default(), "");
+        assert!(o.trace_run_id().is_none());
+    }
+
+    #[test]
+    fn trace_run_id_skips_empty_run_id_on_inference() {
+        // A misconfigured plugin could emit a span with an empty
+        // run_id. Fall through to the next candidate rather than
+        // returning Some("") which would yield a broken trace link.
+        let inf = span(1, 1); // default SpanContext → empty run_id
+        let mut tl = tool("a", false);
+        tl.context.run_id = "RUN-T".into();
+        let metrics = AgentMetrics {
+            inferences: vec![inf],
+            tools: vec![tl],
+            ..Default::default()
+        };
+        let o = outcome_with(metrics, "");
+        assert_eq!(o.trace_run_id(), Some("RUN-T"));
     }
 
     #[test]

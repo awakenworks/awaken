@@ -59,6 +59,9 @@ metrics = { workspace = true }
 metrics-exporter-prometheus = { workspace = true }
 awaken-ext-observability = { workspace = true }
 
+# Eval (ADR-0032 D6: dataset CRUD + trace→fixture curation)
+awaken-eval = { path = "../awaken-eval" }
+
 # Optional
 awaken-ext-permission = { workspace = true, optional = true }
 
@@ -69,7 +72,6 @@ tower = { workspace = true, features = ["util"] }
 awaken-stores = { workspace = true, features = ["file", "postgres", "nats"] }
 awaken-runtime = { workspace = true }
 awaken-ext-observability = { workspace = true, features = ["otel"] }
-awaken-eval = { path = "../awaken-eval" }
 phoenix-test-helpers = { path = "../../e2e/phoenix/test-helpers" }
 async-trait = { workspace = true }
 genai = { workspace = true }
