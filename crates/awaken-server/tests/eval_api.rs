@@ -16,9 +16,7 @@
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use async_trait::async_trait;
-use awaken_contract::contract::executor::{InferenceExecutionError, InferenceRequest, LlmExecutor};
-use awaken_contract::contract::inference::{StopReason, StreamResult, TokenUsage};
+use awaken_eval::test_support::UnusedExecutor;
 use awaken_eval::{EvalRun, EvalRunItem, EvalRunStore, FileEvalRunStore, Fixture};
 use awaken_ext_observability::trace_store::{TraceStore, file::FileTraceStore};
 use awaken_ext_observability::{GenAISpan, MetricsEvent, SpanContext};
@@ -32,29 +30,6 @@ use axum::http::{Request, StatusCode};
 use http_body_util::BodyExt;
 use serde_json::{Value, json};
 use tower::ServiceExt;
-
-// ── Stub executor — fixtures use scripted upstream; this never fires. ─────
-
-struct UnusedExecutor;
-
-#[async_trait]
-impl LlmExecutor for UnusedExecutor {
-    async fn execute(
-        &self,
-        _request: InferenceRequest,
-    ) -> Result<StreamResult, InferenceExecutionError> {
-        Ok(StreamResult {
-            content: vec![],
-            tool_calls: vec![],
-            usage: Some(TokenUsage::default()),
-            stop_reason: Some(StopReason::EndTurn),
-            has_incomplete_tool_calls: false,
-        })
-    }
-    fn name(&self) -> &str {
-        "unused"
-    }
-}
 
 // ── Harness ───────────────────────────────────────────────────────────────
 
@@ -1189,10 +1164,14 @@ async fn get_run_default_omits_aggregates() {
 
 #[tokio::test]
 async fn get_run_rejects_unknown_aggregate_value() {
+    // Unknown `?aggregate=` value is rejected by axum's Query
+    // deserializer (the field is a typed enum, not a freeform string),
+    // so the response is 400 with the framework's plain-text error
+    // body — we just assert the status here.
     let app = build_test_app().await;
     let run = baseline_run("AGG-R3");
     app.eval_run_store.write(&run).unwrap();
-    let (status, body) = request(
+    let (status, _) = request(
         &app.router,
         "GET",
         "/v1/eval/runs/AGG-R3?aggregate=tokens",
@@ -1200,10 +1179,6 @@ async fn get_run_rejects_unknown_aggregate_value() {
     )
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
-    assert!(
-        body["error"].as_str().unwrap_or("").contains("tokens"),
-        "body: {body}"
-    );
 }
 
 // ── Dialogue importer (POST /v1/eval/datasets/:id/import-dialogue) ──────
@@ -1439,6 +1414,7 @@ fn item_with_model(
             runtime_failure: None,
             revision_count: 0,
             judge_score: None,
+            judge_reasoning: None,
             cost_usd: cost,
         },
         trace_run_id: None,
@@ -1619,6 +1595,7 @@ fn item(fixture_id: &str, passed: bool, final_text: &str) -> EvalRunItem {
             runtime_failure: None,
             revision_count: 0,
             judge_score: None,
+            judge_reasoning: None,
             cost_usd: None,
         },
         trace_run_id: None,

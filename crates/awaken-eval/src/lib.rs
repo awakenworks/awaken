@@ -28,6 +28,8 @@ pub mod replay;
 pub mod report;
 pub mod runtime_replayer;
 pub mod score;
+#[cfg(any(test, feature = "test-support"))]
+pub mod test_support;
 
 pub use curate::{CurateError, TraceConversion, trace_to_provider_script};
 pub use dataset::{DATASETS_NAMESPACE, DatasetSpec};

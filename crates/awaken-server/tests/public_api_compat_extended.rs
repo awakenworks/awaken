@@ -201,6 +201,7 @@ fn server_config_struct_literal_keeps_0_2_fields() {
         max_concurrent_requests: 100,
         a2a_extended_card_bearer_token: None,
         mailbox_lifecycle: MailboxLifecycleMode::Auto,
+        eval_limits: awaken_server::eval_limits::EvalLimits::default(),
     };
     assert_eq!(cfg.address, "0.0.0.0:3000");
 }

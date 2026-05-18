@@ -72,6 +72,9 @@ tower = { workspace = true, features = ["util"] }
 awaken-stores = { workspace = true, features = ["file", "postgres", "nats"] }
 awaken-runtime = { workspace = true }
 awaken-ext-observability = { workspace = true, features = ["otel"] }
+# Re-link awaken-eval with `test-support` so `eval_api.rs` can use the
+# shared stub executors / judges instead of redefining them locally.
+awaken-eval = { path = "../awaken-eval", features = ["test-support"] }
 phoenix-test-helpers = { path = "../../e2e/phoenix/test-helpers" }
 async-trait = { workspace = true }
 genai = { workspace = true }

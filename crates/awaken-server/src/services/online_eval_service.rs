@@ -23,7 +23,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use awaken_contract::agent_spec_patch::AgentSpecPatch;
 use awaken_eval::{
     EvalRun, EvalRunItem, LlmExecutorJudge, MatrixCell, ReplayReport, RuntimeReplayer,
-    expand_cells, mint_run_id, replay_all, score, score_with_judge,
+    expand_cells, mint_run_id, replay_all,
 };
 use awaken_eval::{Expectation, Fixture, MockResponse};
 use awaken_ext_observability::trace_store::TraceStoreSink;
@@ -42,19 +42,9 @@ use crate::services::eval_common::resolve_live_executor;
 /// without a separate persistence backend.
 const ADHOC_DATASET_ID: &str = "_adhoc";
 
-/// Per-cell concurrency cap on online eval. Bounds the burst that
-/// real-provider runs can put on rate-limited upstreams. Empirically
-/// chosen — 5 concurrent cells fit most Anthropic/OpenAI tiers.
-const MAX_CONCURRENT_CELLS: usize = 5;
-
-/// Soft cap on cell count for synchronous online eval (matrix size ×
-/// samples). Above this the request is rejected with a "use dataset-
-/// based run" hint — sync HTTP would otherwise exceed ingress timeouts.
-const MAX_CELLS_PER_SYNC_ONLINE: usize = 10;
-
-/// Hard cap on per-cell sample count for online eval. Same bound as
-/// the dataset-driven run path so operators see consistent limits.
-const MAX_SAMPLES_PER_CELL: u32 = 20;
+// Concurrency / cell / sample / revision caps all live on
+// `ServerConfig::eval_limits` — see `crate::app::EvalLimits`. The
+// per-handler reads sit at the top of `start_online_eval`.
 
 const DEFAULT_MAX_WALLTIME_SECS: u64 = 60;
 const DEFAULT_MAX_TOTAL_TOKENS: u32 = 10_000;
@@ -140,6 +130,7 @@ pub async fn start_online_eval(
 ) -> Result<Response, ApiError> {
     crate::config_routes::ensure_admin_auth(&state, &headers)?;
 
+    let limits = state.config.eval_limits.clone();
     if body.models.is_empty() {
         return Err(ApiError::BadRequest(
             "models must contain at least one model id".into(),
@@ -147,27 +138,29 @@ pub async fn start_online_eval(
     }
     let cells = expand_cells(&body.models);
     let samples = body.samples.unwrap_or(1).max(1);
-    if samples > MAX_SAMPLES_PER_CELL {
+    if samples > limits.max_samples_per_cell {
         return Err(ApiError::BadRequest(format!(
-            "samples={samples} exceeds cap {MAX_SAMPLES_PER_CELL}"
+            "samples={samples} exceeds cap {}",
+            limits.max_samples_per_cell
         )));
     }
     let total_units = cells.len() * samples as usize;
-    if total_units > MAX_CELLS_PER_SYNC_ONLINE {
+    if total_units > limits.max_cells_per_sync_online {
         return Err(ApiError::BadRequest(format!(
-            "{total_units} units (cells × samples) exceed sync online cap {MAX_CELLS_PER_SYNC_ONLINE}; \
+            "{total_units} units (cells × samples) exceed sync online cap {}; \
              split or persist as a dataset and use /v1/eval/runs",
+            limits.max_cells_per_sync_online,
         )));
     }
     // Validate judge.revise_max_retries cap up-front so a typo fails
     // before any registry lookup burns latency.
     if let Some(jr) = body.judge.as_ref()
         && let Some(n) = jr.revise_max_retries
-        && n > crate::services::eval_run_service::MAX_JUDGE_REVISIONS
+        && n > limits.max_judge_revisions
     {
         return Err(ApiError::BadRequest(format!(
             "revise_max_retries={n} exceeds cap {}",
-            crate::services::eval_run_service::MAX_JUDGE_REVISIONS
+            limits.max_judge_revisions
         )));
     }
 
@@ -192,20 +185,14 @@ pub async fn start_online_eval(
     // Resolve the judge executor (if configured) before any cell runs
     // so a bad judge model fails fast.
     let judge = if let Some(ref jr) = body.judge {
-        if let Some(n) = jr.revise_max_retries
-            && n > crate::services::eval_run_service::MAX_JUDGE_REVISIONS
-        {
-            return Err(ApiError::BadRequest(format!(
-                "revise_max_retries={n} exceeds cap {}",
-                crate::services::eval_run_service::MAX_JUDGE_REVISIONS
-            )));
-        }
+        // (cap already validated above; duplicate check here was
+        // defensive and now unnecessary)
         let resolved = resolve_live_executor(&state, &jr.model_id).await?;
-        Some((
-            LlmExecutorJudge::new(resolved.executor, resolved.upstream_model),
-            jr.rubric.clone(),
-            jr.revise_max_retries,
-        ))
+        Some(crate::services::eval_run_service::JudgeContext {
+            judge: LlmExecutorJudge::new(resolved.executor, resolved.upstream_model),
+            rubric: jr.rubric.clone(),
+            revise_max_retries: jr.revise_max_retries,
+        })
     } else {
         None
     };
@@ -229,7 +216,9 @@ pub async fn start_online_eval(
     let trace_sink = state.trace_store().map(|store| {
         Arc::new(TraceStoreSink::new(store)) as Arc<dyn awaken_ext_observability::MetricsSink>
     });
-    let semaphore = Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_CELLS));
+    let semaphore = Arc::new(tokio::sync::Semaphore::new(
+        limits.max_concurrent_online_cells,
+    ));
     let mut handles = Vec::with_capacity(total_units);
     // Same convention as the dataset path: only emit `sample_index`
     // when the caller actually asked for more than one sample, so
@@ -245,33 +234,21 @@ pub async fn start_online_eval(
             let max_tokens = body.max_total_tokens;
             let trace_sink = trace_sink.clone();
             let cell = cell.clone();
-            // Per-task revise config: same gating as the dataset path —
-            // judge + threshold (expect.min_judge_score) + operator-set
-            // retry budget all required.
-            let revise_for_task = match (&judge, fixture.expect.min_judge_score) {
-                (Some((j, rubric, Some(retries))), Some(threshold)) => Some((
-                    Arc::new(j.clone()) as Arc<dyn awaken_eval::judge::Judge>,
-                    rubric.clone(),
-                    threshold,
-                    *retries,
-                )),
-                _ => None,
-            };
+            let revise_for_task = crate::services::eval_run_service::revise_tuple_for(
+                judge.as_ref(),
+                &fixture.expect,
+            );
             let permit = semaphore.clone().acquire_owned().await.expect("semaphore");
             handles.push(tokio::spawn(async move {
                 let _permit = permit;
-                let mut replayer = RuntimeReplayer::new()
-                    .with_live_executor(executor, upstream_model)
-                    .with_max_total_tokens(max_tokens);
-                if let Some(p) = overrides {
-                    replayer = replayer.with_agent_overrides(p);
-                }
-                if let Some(sink) = trace_sink {
-                    replayer = replayer.with_tee_sink(sink);
-                }
-                if let Some((j, rubric, threshold, retries)) = revise_for_task {
-                    replayer = replayer.with_revise_on_judge_fail(j, rubric, threshold, retries);
-                }
+                let replayer = crate::services::eval_run_service::apply_cell_decorators(
+                    RuntimeReplayer::new()
+                        .with_live_executor(executor, upstream_model)
+                        .with_max_total_tokens(max_tokens),
+                    overrides,
+                    trace_sink,
+                    revise_for_task,
+                );
                 let outcomes = replay_all(&replayer, std::slice::from_ref(&fixture)).await;
                 (
                     cell,
@@ -291,22 +268,9 @@ pub async fn start_online_eval(
         let (cell, sample, outcome, binding) = handle
             .await
             .map_err(|err| ApiError::Internal(format!("online cell task panicked: {err}")))?;
-        let failures = if let (Some((j, rubric, _)), Some(_)) =
-            (judge.as_ref(), fixture.expect.min_judge_score)
-        {
-            let (failures, _) = score_with_judge(
-                &outcome,
-                &fixture.expect,
-                &fixture.user_input,
-                rubric.as_deref(),
-                j,
-            )
-            .await
-            .map_err(|err| ApiError::Internal(format!("judge invocation failed: {err}")))?;
-            failures
-        } else {
-            score(&outcome, &fixture.expect)
-        };
+        let failures =
+            crate::services::eval_run_service::score_outcome(&outcome, &fixture, judge.as_ref())
+                .await?;
         let mut report = ReplayReport::from_outcome(&outcome, failures);
         report.cost_usd =
             binding.compute_cost_usd(report.total_input_tokens, report.total_output_tokens);

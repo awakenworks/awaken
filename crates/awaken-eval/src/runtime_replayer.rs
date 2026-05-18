@@ -83,7 +83,9 @@ const DEFAULT_SYSTEM_PROMPT: &str = "You are a test assistant.";
 /// `Live` swaps the scripted executor for a real provider — the LLM
 /// actually runs — used for "does our agent still work against this
 /// model" regression and ad-hoc online evaluation.
+#[derive(Default)]
 pub enum ReplayMode {
+    #[default]
     Scripted,
     Live {
         /// Real provider executor, typically built from a `ProviderSpec`
@@ -98,8 +100,10 @@ pub enum ReplayMode {
         /// Optional agent-spec overrides applied via [`merge_agent_spec`].
         /// `model_id` in the patch is ignored (see above); everything
         /// else (system_prompt, allowed_tools, temperature, etc.) merges
-        /// onto the default replay agent.
-        agent_overrides: Option<AgentSpecPatch>,
+        /// onto the default replay agent. Boxed so the variant's stack
+        /// size stays small (AgentSpecPatch is large; the empty
+        /// `Scripted` variant would otherwise drag the whole enum).
+        agent_overrides: Option<Box<AgentSpecPatch>>,
         /// Post-hoc token budget. After replay completes, if
         /// `outcome.total_tokens() > max`, a
         /// [`ReplayRuntimeFailure::RuntimeError`] is recorded with a
@@ -126,12 +130,6 @@ pub struct ReviseConfig {
     pub rubric: Option<String>,
     pub threshold: f32,
     pub max_retries: u32,
-}
-
-impl Default for ReplayMode {
-    fn default() -> Self {
-        Self::Scripted
-    }
 }
 
 /// Replayer that drives a real [`AgentRuntime`] using the fixture's
@@ -237,7 +235,7 @@ impl RuntimeReplayer {
             agent_overrides, ..
         } = &mut self.mode
         {
-            *agent_overrides = Some(patch);
+            *agent_overrides = Some(Box::new(patch));
         }
         self
     }
@@ -277,11 +275,13 @@ impl Replayer for RuntimeReplayer {
                 max_total_tokens,
                 revise,
             } => {
+                // Box → owned AgentSpecPatch for the replay_live call;
+                // the field stays boxed in the enum to keep the variant small.
                 self.replay_live(
                     fixture,
                     executor.clone(),
                     upstream_model.clone(),
-                    agent_overrides.clone(),
+                    agent_overrides.as_deref().cloned(),
                     *max_total_tokens,
                     revise.clone(),
                 )
@@ -424,6 +424,7 @@ impl RuntimeReplayer {
             runtime_failure,
             revision_count: 0,
             judge_score: None,
+            judge_reasoning: None,
         }
     }
 
@@ -511,6 +512,7 @@ impl RuntimeReplayer {
 
         let mut revision_count: u32 = 0;
         let mut judge_score: Option<f32> = None;
+        let mut judge_reasoning: Option<String> = None;
 
         // Reprocess-on-judge-fail loop. Only fires on successful initial
         // runs (an Err short-circuits — judging an empty failed response
@@ -518,11 +520,11 @@ impl RuntimeReplayer {
         if let Some(cfg) = revise.as_ref()
             && last_result.is_ok()
         {
-            // Synthesise an in-memory outcome to feed the judge between
-            // turns. We deliberately don't allocate full metrics here —
-            // judges only need final_text + user_prompt to score.
+            // Feed the judge a minimal stub outcome — judges only read
+            // final_text + user_prompt + rubric. Allocating full metrics
+            // (spans, etc.) per retry would be wasted work.
             for _ in 0..=cfg.max_retries {
-                let stub = ReplayOutcome::for_judge(fixture.id.clone(), final_text.clone());
+                let stub = judge_stub_outcome(&fixture.id, &final_text);
                 match cfg
                     .judge
                     .judge(&stub, &fixture.user_input, cfg.rubric.as_deref())
@@ -530,6 +532,7 @@ impl RuntimeReplayer {
                 {
                     Ok(jr) => {
                         judge_score = Some(jr.score);
+                        judge_reasoning = jr.reasoning.clone();
                         if jr.score >= cfg.threshold {
                             break;
                         }
@@ -594,7 +597,28 @@ impl RuntimeReplayer {
             runtime_failure,
             revision_count,
             judge_score,
+            judge_reasoning,
         }
+    }
+}
+
+/// Stub outcome handed to [`crate::judge::Judge::judge`] inside the
+/// revise loop. Only the fields the judge actually reads (`fixture_id`,
+/// `final_text`) are meaningful; everything else stays at default. Kept
+/// as a free fn so callers don't accidentally pass it where a *real*
+/// outcome is expected.
+fn judge_stub_outcome(fixture_id: &str, final_text: &str) -> ReplayOutcome {
+    ReplayOutcome {
+        fixture_id: fixture_id.to_string(),
+        final_text: final_text.to_string(),
+        metrics: awaken_ext_observability::AgentMetrics::default(),
+        elapsed: std::time::Duration::ZERO,
+        error_type: None,
+        inference_error_count: 0,
+        runtime_failure: None,
+        revision_count: 0,
+        judge_score: None,
+        judge_reasoning: None,
     }
 }
 

@@ -155,14 +155,9 @@ const fn default_expose_config_routes() -> bool {
     true
 }
 
+// F20 default: trace routes are opt-in (more sensitive surface than the
+// admin metadata routes — see `expose_trace_routes` field docstring above).
 const fn default_expose_trace_routes() -> bool {
-    // F20: opt-in. The trace API surfaces prompt content, tool arguments,
-    // tool results, and agent/run/thread linkage — strictly more
-    // sensitive than the existing admin metadata routes. Operators that
-    // attach a `TraceStore` must explicitly set `expose_trace_routes =
-    // true` (or `AdminApiConfig::with_expose_trace_routes`) to publish
-    // the endpoint. A non-loopback bind without a bearer token still
-    // fails startup (see `validate_admin_surface`).
     false
 }
 
@@ -247,17 +242,18 @@ pub struct ServerConfig {
     /// Mailbox lifecycle ownership. Defaults to framework-managed auto mode.
     #[serde(default)]
     pub mailbox_lifecycle: MailboxLifecycleMode,
+    /// `/v1/eval/*` caps — see [`crate::eval_limits::EvalLimits`].
+    #[serde(default)]
+    pub eval_limits: crate::eval_limits::EvalLimits,
 }
 
-fn default_sse_buffer() -> usize {
+const fn default_sse_buffer() -> usize {
     64
 }
-
-fn default_replay_buffer_capacity() -> usize {
+const fn default_replay_buffer_capacity() -> usize {
     1024
 }
-
-fn default_max_concurrent() -> usize {
+const fn default_max_concurrent() -> usize {
     100
 }
 
@@ -391,6 +387,7 @@ impl Default for ServerConfig {
             max_concurrent_requests: default_max_concurrent(),
             a2a_extended_card_bearer_token: None,
             mailbox_lifecycle: MailboxLifecycleMode::Auto,
+            eval_limits: crate::eval_limits::EvalLimits::default(),
         }
     }
 }

@@ -71,28 +71,15 @@ pub struct ReplayOutcome {
     /// second judge call. `None` when no judge was invoked by the
     /// replayer (caller will judge externally if desired).
     pub judge_score: Option<f32>,
+    /// Final judge reasoning string, paired with [`Self::judge_score`].
+    /// Persisted so [`crate::judge::score_with_judge`] can serve a
+    /// cache hit without losing the prose explanation — otherwise the
+    /// "skip re-judging" path would silently strip reasoning callers
+    /// expect to render in the UI.
+    pub judge_reasoning: Option<String>,
 }
 
 impl ReplayOutcome {
-    /// Lightweight outcome stub used as a feed for [`crate::Judge`]
-    /// inside the runtime replayer's revise loop. Only the
-    /// `fixture_id` and `final_text` fields are populated — judges
-    /// score the assistant answer against the user prompt and don't
-    /// need full metrics. Other fields default to zero / None.
-    pub fn for_judge(fixture_id: String, final_text: String) -> Self {
-        Self {
-            fixture_id,
-            final_text,
-            metrics: awaken_ext_observability::AgentMetrics::default(),
-            elapsed: std::time::Duration::ZERO,
-            error_type: None,
-            inference_error_count: 0,
-            runtime_failure: None,
-            revision_count: 0,
-            judge_score: None,
-        }
-    }
-
     /// Total tokens consumed across all inferences. Per-span fallback:
     /// each span contributes its own `total_tokens` when set, otherwise
     /// its `input_tokens + output_tokens`. Mixing the two within one
@@ -222,6 +209,11 @@ pub struct ReplayReport {
     /// `None` when no judge ran inside the replayer.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub judge_score: Option<f32>,
+    /// Final judge reasoning string (paired with `judge_score`). Carried
+    /// through serialisation so admin UI can render "why the score is
+    /// what it is" without re-invoking the judge.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub judge_reasoning: Option<String>,
 }
 
 fn is_zero_u32(n: &u32) -> bool {
@@ -256,6 +248,7 @@ impl ReplayReport {
             cost_usd: None,
             revision_count: outcome.revision_count,
             judge_score: outcome.judge_score,
+            judge_reasoning: outcome.judge_reasoning.clone(),
         }
     }
 }
@@ -324,6 +317,7 @@ mod tests {
             runtime_failure: None,
             revision_count: 0,
             judge_score: None,
+            judge_reasoning: None,
         }
     }
 
@@ -566,6 +560,7 @@ mod tests {
             runtime_failure: None,
             revision_count: 0,
             judge_score: None,
+            judge_reasoning: None,
         };
         let r = ReplayReport::from_outcome(&o, Vec::new());
         // We just need to confirm it doesn't panic; exact value depends on
@@ -598,6 +593,7 @@ mod tests {
             runtime_failure: None,
             revision_count: 0,
             judge_score: None,
+            judge_reasoning: None,
         };
         let r = ReplayReport::from_outcome(&o, Vec::new());
         let json = serde_json::to_string(&r).unwrap();
@@ -618,6 +614,7 @@ mod tests {
             runtime_failure: None,
             revision_count: 0,
             judge_score: None,
+            judge_reasoning: None,
         };
         let r = ReplayReport::from_outcome(&o, Vec::new());
         let json = serde_json::to_string(&r).unwrap();
@@ -646,6 +643,7 @@ mod tests {
             runtime_failure: Some(ReplayRuntimeFailure::ScriptExhausted { extra_calls: 2 }),
             revision_count: 0,
             judge_score: None,
+            judge_reasoning: None,
         };
         let r = ReplayReport::from_outcome(&o, Vec::new());
         let json = serde_json::to_string(&r).unwrap();

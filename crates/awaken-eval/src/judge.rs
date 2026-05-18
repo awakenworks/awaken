@@ -364,14 +364,14 @@ pub async fn score_with_judge(
         return Ok((failures, None));
     };
     // Cache hit: the replayer's revise loop already judged this
-    // outcome and stamped `judge_score` onto it. Re-calling the judge
-    // would burn tokens for an answer we already have. The cached
-    // JudgeResult is reasoning-less because the replayer didn't keep
-    // the prose — the score is what gates the failure.
+    // outcome and stamped `judge_score` + `judge_reasoning` onto it.
+    // Re-calling the judge would burn tokens for an answer we already
+    // have. The cached `JudgeResult` carries both the score and the
+    // reasoning so the admin UI / report shape stays faithful.
     let result = match outcome.judge_score {
         Some(score) => JudgeResult {
             score,
-            reasoning: None,
+            reasoning: outcome.judge_reasoning.clone(),
             inference_id: None,
         },
         None => judge.judge(outcome, user_prompt, rubric).await?,
@@ -443,6 +443,7 @@ mod tests {
             runtime_failure: None,
             revision_count: 0,
             judge_score: None,
+            judge_reasoning: None,
         }
     }
 
@@ -594,31 +595,36 @@ mod tests {
 
     // ── score_with_judge with a stub Judge ──────────────────────────
 
-    struct StubJudge {
-        score: f32,
-    }
+    use crate::test_support::{ExplodingJudge, ScriptedExecutor, ScriptedJudge};
 
-    #[async_trait]
-    impl Judge for StubJudge {
-        async fn judge(
-            &self,
-            _outcome: &ReplayOutcome,
-            _user_prompt: &str,
-            _rubric: Option<&str>,
-        ) -> Result<JudgeResult, JudgeError> {
-            Ok(JudgeResult {
-                score: self.score,
-                reasoning: None,
-                inference_id: None,
-            })
-        }
+    /// Cache-hit path: when `outcome.judge_score` is already populated
+    /// (the revise loop has judged), `score_with_judge` must NOT call
+    /// the underlying judge — and must preserve `judge_reasoning` so
+    /// downstream consumers (UI / report) see the rubric explanation,
+    /// not the placeholder `None` the old impl returned.
+    #[tokio::test]
+    async fn score_with_judge_serves_cached_score_and_reasoning() {
+        let mut outcome = make_outcome("ok");
+        outcome.judge_score = Some(0.82);
+        outcome.judge_reasoning = Some("clear and concise".into());
+        let expect = Expectation {
+            min_judge_score: Some(0.7),
+            ..Expectation::default()
+        };
+        let (failures, result) = score_with_judge(&outcome, &expect, "p", None, &ExplodingJudge)
+            .await
+            .unwrap();
+        assert!(failures.is_empty(), "score above threshold → no failure");
+        let result = result.expect("cache hit yields JudgeResult");
+        assert!((result.score - 0.82).abs() < 1e-6);
+        assert_eq!(result.reasoning.as_deref(), Some("clear and concise"));
     }
 
     #[tokio::test]
     async fn score_with_judge_skips_judge_when_threshold_unset() {
         let outcome = make_outcome("");
         let expect = Expectation::default();
-        let judge = StubJudge { score: 0.0 };
+        let judge = ScriptedJudge::new(vec![0.0]);
         let (failures, result) = score_with_judge(&outcome, &expect, "p", None, &judge)
             .await
             .unwrap();
@@ -634,7 +640,7 @@ mod tests {
             min_judge_score: Some(0.7),
             ..Expectation::default()
         };
-        let judge = StubJudge { score: 0.85 };
+        let judge = ScriptedJudge::new(vec![0.85]);
         let (failures, result) = score_with_judge(&outcome, &expect, "p", None, &judge)
             .await
             .unwrap();
@@ -649,7 +655,7 @@ mod tests {
             min_judge_score: Some(0.7),
             ..Expectation::default()
         };
-        let judge = StubJudge { score: 0.4 };
+        let judge = ScriptedJudge::new(vec![0.4]);
         let (failures, result) = score_with_judge(&outcome, &expect, "p", None, &judge)
             .await
             .unwrap();
@@ -665,39 +671,13 @@ mod tests {
 
     // ── LlmExecutorJudge ────────────────────────────────────────────
 
-    struct StubExecutor {
-        response_body: String,
-    }
-
-    #[async_trait]
-    impl LlmExecutor for StubExecutor {
-        async fn execute(
-            &self,
-            _request: awaken_contract::contract::executor::InferenceRequest,
-        ) -> Result<
-            awaken_contract::contract::inference::StreamResult,
-            awaken_contract::contract::executor::InferenceExecutionError,
-        > {
-            use awaken_contract::contract::content::ContentBlock;
-            use awaken_contract::contract::inference::StreamResult;
-            Ok(StreamResult {
-                content: vec![ContentBlock::text(self.response_body.clone())],
-                tool_calls: Vec::new(),
-                usage: None,
-                stop_reason: None,
-                has_incomplete_tool_calls: false,
-            })
-        }
-        fn name(&self) -> &str {
-            "stub-judge-executor"
-        }
-    }
-
     #[tokio::test]
     async fn llm_executor_judge_returns_parsed_score() {
-        let stub: Arc<dyn LlmExecutor> = Arc::new(StubExecutor {
-            response_body: r#"{"score": 0.85, "reasoning": "looks fine"}"#.into(),
-        });
+        let stub: Arc<dyn LlmExecutor> = ScriptedExecutor::new(
+            "stub-judge-executor",
+            vec![r#"{"score": 0.85, "reasoning": "looks fine"}"#],
+        )
+        .arc();
         let judge = LlmExecutorJudge::new(stub, "upstream-x");
         let outcome = make_outcome("the answer is 4");
         let result = judge.judge(&outcome, "what is 2+2?", None).await.unwrap();
@@ -707,9 +687,11 @@ mod tests {
 
     #[tokio::test]
     async fn llm_executor_judge_parses_code_fenced_score() {
-        let stub: Arc<dyn LlmExecutor> = Arc::new(StubExecutor {
-            response_body: "```json\n{\"score\": 0.5}\n```".into(),
-        });
+        let stub: Arc<dyn LlmExecutor> = ScriptedExecutor::new(
+            "stub-judge-executor",
+            vec!["```json\n{\"score\": 0.5}\n```"],
+        )
+        .arc();
         let judge = LlmExecutorJudge::new(stub, "x");
         let outcome = make_outcome("");
         let result = judge.judge(&outcome, "p", None).await.unwrap();
@@ -718,9 +700,8 @@ mod tests {
 
     #[tokio::test]
     async fn llm_executor_judge_clamps_score_to_unit_interval() {
-        let stub: Arc<dyn LlmExecutor> = Arc::new(StubExecutor {
-            response_body: r#"{"score": 1.5}"#.into(),
-        });
+        let stub: Arc<dyn LlmExecutor> =
+            ScriptedExecutor::new("stub-judge-executor", vec![r#"{"score": 1.5}"#]).arc();
         let judge = LlmExecutorJudge::new(stub, "x");
         let outcome = make_outcome("");
         let result = judge.judge(&outcome, "p", None).await.unwrap();
@@ -729,9 +710,8 @@ mod tests {
 
     #[tokio::test]
     async fn llm_executor_judge_garbage_returns_parse_error() {
-        let stub: Arc<dyn LlmExecutor> = Arc::new(StubExecutor {
-            response_body: "not-json".into(),
-        });
+        let stub: Arc<dyn LlmExecutor> =
+            ScriptedExecutor::new("stub-judge-executor", vec!["not-json"]).arc();
         let judge = LlmExecutorJudge::new(stub, "x");
         let outcome = make_outcome("");
         let err = judge.judge(&outcome, "p", None).await.unwrap_err();
@@ -746,7 +726,7 @@ mod tests {
             min_judge_score: Some(0.7),
             ..Expectation::default()
         };
-        let judge = StubJudge { score: 0.4 };
+        let judge = ScriptedJudge::new(vec![0.4]);
         let (failures, _) = score_with_judge(&outcome, &expect, "p", None, &judge)
             .await
             .unwrap();

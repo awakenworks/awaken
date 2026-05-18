@@ -19,7 +19,7 @@ use thiserror::Error;
 use crate::expectation::Expectation;
 
 /// A single replayable scenario.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Fixture {
     /// Stable identifier — used as the report key.  Must be unique across a
     /// fixtures directory.

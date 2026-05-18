@@ -1,5 +1,5 @@
 //! Axum router setup — unified route registration.
-use crate::eval_routes_mod::eval_routes;
+use crate::eval_router::eval_routes;
 use crate::services::trace_service::{get_trace, list_traces, pin_trace};
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};

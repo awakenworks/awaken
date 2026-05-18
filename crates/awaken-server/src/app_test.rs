@@ -244,6 +244,7 @@ fn server_config_serde_roundtrip() {
         max_concurrent_requests: 50,
         a2a_extended_card_bearer_token: None,
         mailbox_lifecycle: MailboxLifecycleMode::Manual,
+        eval_limits: crate::eval_limits::EvalLimits::default(),
     };
     let json = serde_json::to_string(&config).unwrap();
     let parsed: ServerConfig = serde_json::from_str(&json).unwrap();

@@ -338,6 +338,7 @@ version = "0.5.1-dev"
 dependencies = [
  "async-trait",
  "awaken-contract",
+ "awaken-eval",
  "awaken-ext-observability",
  "awaken-runtime",
  "awaken-stores",

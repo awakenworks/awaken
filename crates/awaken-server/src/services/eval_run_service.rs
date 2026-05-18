@@ -29,7 +29,7 @@ use awaken_eval::{
     DATASETS_NAMESPACE, DatasetSpec, DiffSummary, EvalRun, EvalRunFilter, EvalRunItem,
     EvalRunStore, EvalRunStoreError, EvalRunSummary, Fixture, LlmExecutorJudge, MatrixCell,
     ReplayReport, RuntimeReplayer, SampleAggregate, diff_against_baseline, expand_cells,
-    mint_run_id, replay_all, score, score_with_judge,
+    mint_run_id, replay_all, score,
 };
 use awaken_ext_observability::MetricsSink;
 use awaken_ext_observability::trace_store::TraceStoreSink;
@@ -46,24 +46,9 @@ use crate::services::eval_common::{
 };
 
 // `DATASETS_NAMESPACE` re-exported from `awaken_eval::dataset`.
-
-/// Soft cap on TOTAL replay cells (fixtures × matrix size) per
-/// synchronous run. Replays are in-process and synchronous — long
-/// runs would hold the HTTP connection past nginx-default 60s. Above
-/// this count, the endpoint returns 400 with a "split the dataset or
-/// shrink the matrix" hint. Sized for typical regression suites:
-/// 50 fixtures × 2 models = 100 cells.
-const MAX_CELLS_PER_SYNC_RUN: usize = 100;
-
-/// Per-cell concurrency cap in matrix runs. Bounds the burst put on
-/// rate-limited upstream providers. Five matches the online endpoint's
-/// cap and most paid-tier rate limits.
-const MAX_CONCURRENT_MATRIX_CELLS: usize = 5;
-
-/// Hard cap on per-cell sample count (flakiness sampling). 20 is enough
-/// for a stable pass_rate / latency distribution while keeping the
-/// blast radius on rate-limited providers bounded.
-const MAX_SAMPLES_PER_CELL: u32 = 20;
+// Caps formerly defined here as `const`s now live on
+// `ServerConfig::eval_limits` (see `crate::app::EvalLimits`) so ops can
+// tune per deployment instead of forking the source.
 
 // ── Wire types ────────────────────────────────────────────────────────────
 
@@ -127,10 +112,12 @@ pub struct JudgeRequest {
     pub revise_max_retries: Option<u32>,
 }
 
-/// Hard ceiling on per-cell revise iterations to keep token spend
-/// bounded — three rewrites is usually plenty; more typically means
-/// the rubric is mis-specified.
-pub const MAX_JUDGE_REVISIONS: u32 = 3;
+// `MAX_JUDGE_REVISIONS` lives on `ServerConfig::eval_limits` so ops can
+// tune per deployment.
+
+pub(crate) use super::eval_cell::{
+    JudgeContext, apply_cell_decorators, revise_tuple_for, score_outcome,
+};
 
 #[derive(Debug, Serialize)]
 pub struct EvalRunResponse {
@@ -220,11 +207,21 @@ pub struct GetRunQuery {
     /// The baseline must exist or the request 404s (caller passed an
     /// invalid id — silent omission would mask the typo).
     pub baseline: Option<String>,
-    /// When set to `"samples"`, the response includes per-(fixture,cell)
-    /// pass@k / pass^k aggregates. Other values are rejected so a typo
-    /// surfaces immediately rather than silently producing no aggregate.
+    /// When set, the response includes per-(fixture,cell) roll-ups of
+    /// the requested shape. Unknown values are rejected by serde at
+    /// query-deserialize time so a typo surfaces immediately.
     #[serde(default)]
-    pub aggregate: Option<String>,
+    pub aggregate: Option<RunAggregateKind>,
+}
+
+/// Aggregation shape requested via `GET /v1/eval/runs/:id?aggregate=…`.
+/// Single variant today (`samples` → pass@k / pass^k); leaving room for
+/// future shapes (`cost`, `latency_percentiles`, …) without re-doing
+/// the string-matching the previous `Option<String>` form required.
+#[derive(Debug, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RunAggregateKind {
+    Samples,
 }
 
 // `map_storage_error` lives in `services::eval_common` — same impl
@@ -288,12 +285,14 @@ pub async fn start_eval_run(
         )));
     }
     // Expand the matrix (or 1-cell default for non-matrix runs).
+    let limits = state.config.eval_limits.clone();
     let models = body.models.clone().unwrap_or_default();
     let cells = expand_cells(&models);
     let samples = body.samples.unwrap_or(1).max(1);
-    if samples > MAX_SAMPLES_PER_CELL {
+    if samples > limits.max_samples_per_cell {
         return Err(ApiError::BadRequest(format!(
-            "samples={samples} exceeds cap {MAX_SAMPLES_PER_CELL}"
+            "samples={samples} exceeds cap {}",
+            limits.max_samples_per_cell
         )));
     }
     // Flakiness sampling only makes sense in Live mode — scripted
@@ -306,12 +305,12 @@ pub async fn start_eval_run(
         ));
     }
     let total_units = fixtures.len() * cells.len() * samples as usize;
-    if total_units > MAX_CELLS_PER_SYNC_RUN {
+    if total_units > limits.max_cells_per_sync_run {
         return Err(ApiError::BadRequest(format!(
             "dataset {} × matrix × samples expands to {total_units} units \
-             (max {MAX_CELLS_PER_SYNC_RUN} for synchronous run); split the dataset, \
+             (max {} for synchronous run); split the dataset, \
              shrink the matrix, or drop samples",
-            body.dataset_id,
+            body.dataset_id, limits.max_cells_per_sync_run,
         )));
     }
 
@@ -325,18 +324,19 @@ pub async fn start_eval_run(
             ));
         }
         if let Some(n) = jr.revise_max_retries
-            && n > MAX_JUDGE_REVISIONS
+            && n > limits.max_judge_revisions
         {
             return Err(ApiError::BadRequest(format!(
-                "revise_max_retries={n} exceeds cap {MAX_JUDGE_REVISIONS}"
+                "revise_max_retries={n} exceeds cap {}",
+                limits.max_judge_revisions
             )));
         }
         let resolved = resolve_live_executor(&state, &jr.model_id).await?;
-        Some((
-            LlmExecutorJudge::new(resolved.executor, resolved.upstream_model),
-            jr.rubric.clone(),
-            jr.revise_max_retries,
-        ))
+        Some(JudgeContext {
+            judge: LlmExecutorJudge::new(resolved.executor, resolved.upstream_model),
+            rubric: jr.rubric.clone(),
+            revise_max_retries: jr.revise_max_retries,
+        })
     } else {
         None
     };
@@ -349,10 +349,13 @@ pub async fn start_eval_run(
             &state,
             &fixtures,
             &cells,
-            samples,
-            body.agent_overrides.clone(),
+            MatrixOptions {
+                samples,
+                max_concurrent: limits.max_concurrent_matrix_cells,
+                agent_overrides: body.agent_overrides.clone(),
+                judge,
+            },
             trace_sink,
-            judge,
         )
         .await?
     } else {
@@ -542,15 +545,9 @@ pub async fn get_eval_run(
     } else {
         None
     };
-    let aggregates = match params.aggregate.as_deref() {
-        None => None,
-        Some("samples") => Some(run.aggregate_samples()),
-        Some(other) => {
-            return Err(ApiError::BadRequest(format!(
-                "unsupported aggregate={other}; use 'samples'"
-            )));
-        }
-    };
+    let aggregates = params
+        .aggregate
+        .map(|RunAggregateKind::Samples| run.aggregate_samples());
     Ok(Json(EvalRunResponse {
         run,
         diff,
@@ -617,6 +614,17 @@ async fn run_scripted_fixtures(
         .collect()
 }
 
+/// Per-cell tunables for [`run_matrix_cells`]. Grouped to keep the
+/// driver signature below clippy's `too_many_arguments` cap and to
+/// signal that these knobs travel together — adding another retry /
+/// concurrency parameter belongs here, not as a fresh fn-level arg.
+pub(crate) struct MatrixOptions {
+    pub samples: u32,
+    pub max_concurrent: usize,
+    pub agent_overrides: Option<AgentSpecPatch>,
+    pub judge: Option<JudgeContext>,
+}
+
 /// Matrix-mode driver — Live execution against real providers, one
 /// `(fixture, cell, sample)` combination per item. Models are
 /// pre-resolved before any provider call so a missing model fails fast
@@ -625,11 +633,15 @@ async fn run_matrix_cells(
     state: &AppState,
     fixtures: &[Fixture],
     cells: &[MatrixCell],
-    samples: u32,
-    agent_overrides: Option<AgentSpecPatch>,
+    options: MatrixOptions,
     trace_sink: Option<Arc<dyn MetricsSink>>,
-    judge: Option<(LlmExecutorJudge, Option<String>, Option<u32>)>,
 ) -> Result<Vec<EvalRunItem>, ApiError> {
+    let MatrixOptions {
+        samples,
+        max_concurrent,
+        agent_overrides,
+        judge,
+    } = options;
     use awaken_contract::contract::executor::LlmExecutor;
     use awaken_contract::registry_spec::ModelBindingSpec;
 
@@ -648,7 +660,7 @@ async fn run_matrix_cells(
         resolved.push((cell.clone(), r.executor, r.upstream_model, r.binding));
     }
 
-    let semaphore = Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_MATRIX_CELLS));
+    let semaphore = Arc::new(tokio::sync::Semaphore::new(max_concurrent));
     let mut handles = Vec::with_capacity(fixtures.len() * resolved.len() * samples as usize);
     // Emit a sample_index only when samples > 1 so single-sample runs
     // keep the same on-disk shape as before the flakiness feature
@@ -664,34 +676,16 @@ async fn run_matrix_cells(
                 let binding = binding.clone();
                 let overrides = agent_overrides.clone();
                 let trace_sink = trace_sink.clone();
-                // Per-task revise config: needs both a judge and a
-                // fixture-level threshold (expect.min_judge_score) AND
-                // the operator-supplied retry budget. Missing any piece
-                // means no revise loop for this task.
-                let revise_for_task = match (&judge, fixture.expect.min_judge_score) {
-                    (Some((j, rubric, Some(retries))), Some(threshold)) => Some((
-                        Arc::new(j.clone()) as Arc<dyn awaken_eval::judge::Judge>,
-                        rubric.clone(),
-                        threshold,
-                        *retries,
-                    )),
-                    _ => None,
-                };
+                let revise_for_task = revise_tuple_for(judge.as_ref(), &fixture.expect);
                 let permit = semaphore.clone().acquire_owned().await.expect("semaphore");
                 handles.push(tokio::spawn(async move {
                     let _permit = permit;
-                    let mut replayer =
-                        RuntimeReplayer::new().with_live_executor(executor, upstream_model);
-                    if let Some(p) = overrides {
-                        replayer = replayer.with_agent_overrides(p);
-                    }
-                    if let Some(sink) = trace_sink {
-                        replayer = replayer.with_tee_sink(sink);
-                    }
-                    if let Some((j, rubric, threshold, retries)) = revise_for_task {
-                        replayer =
-                            replayer.with_revise_on_judge_fail(j, rubric, threshold, retries);
-                    }
+                    let replayer = apply_cell_decorators(
+                        RuntimeReplayer::new().with_live_executor(executor, upstream_model),
+                        overrides,
+                        trace_sink,
+                        revise_for_task,
+                    );
                     let outcomes = replay_all(&replayer, std::slice::from_ref(&fixture)).await;
                     let outcome = outcomes
                         .into_iter()
@@ -708,22 +702,7 @@ async fn run_matrix_cells(
         let (fixture, cell, sample, outcome, binding) = handle
             .await
             .map_err(|err| ApiError::Internal(format!("matrix cell task panicked: {err}")))?;
-        let failures = if let (Some((j, rubric, _)), Some(_)) =
-            (judge.as_ref(), fixture.expect.min_judge_score)
-        {
-            let (failures, _) = score_with_judge(
-                &outcome,
-                &fixture.expect,
-                &fixture.user_input,
-                rubric.as_deref(),
-                j,
-            )
-            .await
-            .map_err(|err| ApiError::Internal(format!("judge invocation failed: {err}")))?;
-            failures
-        } else {
-            score(&outcome, &fixture.expect)
-        };
+        let failures = score_outcome(&outcome, &fixture, judge.as_ref()).await?;
         let mut report = ReplayReport::from_outcome(&outcome, failures);
         report.cost_usd =
             binding.compute_cost_usd(report.total_input_tokens, report.total_output_tokens);

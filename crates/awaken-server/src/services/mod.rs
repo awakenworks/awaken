@@ -5,6 +5,7 @@ pub mod config_envelope;
 pub mod config_runtime;
 pub mod config_service;
 pub mod dataset_service;
+pub mod eval_cell;
 pub mod eval_common;
 pub mod eval_run_service;
 pub mod online_eval_service;

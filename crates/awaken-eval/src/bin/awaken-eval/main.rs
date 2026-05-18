@@ -18,9 +18,7 @@ Server (--server <URL> / $AWAKEN_SERVER_URL, --bearer / $AWAKEN_BEARER_TOKEN):
   push | append | run | pull | online | import-traces | import-dialogue
 ";
 
-#[path = "awaken-eval_cmds/import_dialogue.rs"]
 mod import_dialogue;
-#[path = "awaken-eval_cmds/import_traces.rs"]
 mod import_traces;
 
 #[tokio::main]

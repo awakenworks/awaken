@@ -78,6 +78,7 @@ fn outcome(metrics: AgentMetrics, text: &str) -> ReplayOutcome {
         runtime_failure: None,
         revision_count: 0,
         judge_score: None,
+        judge_reasoning: None,
     }
 }
 

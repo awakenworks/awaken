@@ -28,12 +28,20 @@ ulid = "1"
 [dev-dependencies]
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "time"] }
+# Self-link enables `awaken_eval::test_support` inside this crate's
+# integration tests (which see the lib without `cfg(test)`).
+awaken-eval = { path = ".", features = ["test-support"] }
 
 [features]
 default = []
 # LLM-backed grading via TensorZero `[functions.judge]`. Enables the
 # `judge` module; reqwest is a base dependency, no extra feature flag.
 llm-judge = []
+# Exposes `awaken_eval::test_support` — shared stub executors / judges
+# used by this crate's lib + integration tests and by downstream crates
+# (e.g. awaken-server's eval_api tests). Pure additive: no production
+# code depends on it.
+test-support = []
 
 [lints]
 workspace = true

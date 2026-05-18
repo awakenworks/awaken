@@ -440,7 +440,8 @@ pub struct ImportTracesResponse {
     pub dataset_revision: u64,
 }
 
-const DEFAULT_IMPORT_MAX: usize = 50;
+// `default_import_traces_max` lives on `ServerConfig::eval_limits`
+// — see the read inside `import_traces` below.
 
 /// `POST /v1/eval/datasets/:id/import-traces` — sample prod traces and
 /// promote them to fixtures in one shot.
@@ -484,7 +485,9 @@ pub async fn import_traces(
     let since = body
         .since_secs
         .map(|s| std::time::UNIX_EPOCH + std::time::Duration::from_secs(s));
-    let max_count = body.max_count.unwrap_or(DEFAULT_IMPORT_MAX);
+    let max_count = body
+        .max_count
+        .unwrap_or(state.config.eval_limits.default_import_traces_max);
     let filter = awaken_ext_observability::trace_store::TraceFilter {
         agent_id: body.agent_id.clone(),
         since,
