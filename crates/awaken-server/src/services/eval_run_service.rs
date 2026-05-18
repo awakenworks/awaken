@@ -320,6 +320,11 @@ pub async fn start_eval_run(
         Some(id) => Some(crate::services::eval_common::resolve_agent_spec(&state, id).await?),
         None => None,
     };
+    // Capture started_at_secs BEFORE the replay/live execution so the
+    // recorded time matches when the work actually began. Setting it
+    // after-the-fact (the earlier shape) collapsed started ≈ ended for
+    // every run and broke duration / list filtering / time-series.
+    let started_at_secs = epoch_secs_now();
     let items: Vec<EvalRunItem> = if body.models.is_some() {
         run_matrix_cells(
             &state,
@@ -339,7 +344,6 @@ pub async fn start_eval_run(
         run_scripted_fixtures(&fixtures, trace_sink).await
     };
 
-    let started_at_secs = epoch_secs_now();
     let run = EvalRun {
         id: mint_run_id(),
         dataset_id: body.dataset_id.clone(),

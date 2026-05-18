@@ -232,6 +232,9 @@ pub async fn start_online_eval(
         continued_turns: vec![],
     };
 
+    // Capture started_at_secs BEFORE the per-cell execution loop so the
+    // recorded time matches when work actually began.
+    let started_at_secs = epoch_secs_now();
     // Run cells × samples in parallel with bounded concurrency.
     let trace_sink = state.trace_store().map(|store| {
         Arc::new(TraceStoreSink::new(store)) as Arc<dyn awaken_ext_observability::MetricsSink>
@@ -312,7 +315,6 @@ pub async fn start_online_eval(
         });
     }
 
-    let started_at_secs = epoch_secs_now();
     let run = EvalRun {
         id: mint_run_id(),
         dataset_id: ADHOC_DATASET_ID.into(),
