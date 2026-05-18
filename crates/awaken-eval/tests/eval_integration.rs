@@ -564,3 +564,437 @@ async fn dialogue_fixture_first_turn_error_short_circuits_second() {
     // count itself is still observable via metrics.)
     assert_eq!(outcome.metrics.inferences.len(), 0, "turn 1 must not fire");
 }
+
+// ── Reprocess-on-judge-fail (Live mode revise loop) ─────────────────
+
+mod revise_mode {
+    use super::*;
+    use async_trait::async_trait;
+    use awaken_contract::contract::content::ContentBlock;
+    use awaken_contract::contract::executor::{
+        InferenceExecutionError, InferenceRequest, LlmExecutor,
+    };
+    use awaken_contract::contract::inference::{StopReason, StreamResult, TokenUsage};
+    use awaken_eval::judge::{Judge, JudgeError, JudgeResult};
+    use awaken_eval::{LlmExecutorJudge, RuntimeReplayer};
+    use std::sync::Arc;
+    use std::sync::Mutex;
+
+    /// Stub executor that returns a different canned response on each
+    /// successive call — turn 0 = "bad answer", turn 1 = "ok answer",
+    /// turn 2 = "great answer", etc.
+    struct StepExecutor {
+        responses: Mutex<Vec<String>>,
+    }
+    impl StepExecutor {
+        fn new(responses: Vec<&str>) -> Arc<Self> {
+            Arc::new(Self {
+                responses: Mutex::new(responses.into_iter().map(String::from).collect()),
+            })
+        }
+    }
+    #[async_trait]
+    impl LlmExecutor for StepExecutor {
+        async fn execute(
+            &self,
+            _request: InferenceRequest,
+        ) -> Result<StreamResult, InferenceExecutionError> {
+            let mut guard = self.responses.lock().unwrap();
+            let text = if guard.is_empty() {
+                "final".to_string()
+            } else {
+                guard.remove(0)
+            };
+            Ok(StreamResult {
+                content: vec![ContentBlock::text(text)],
+                tool_calls: vec![],
+                usage: Some(TokenUsage {
+                    prompt_tokens: Some(1),
+                    completion_tokens: Some(1),
+                    total_tokens: Some(2),
+                    ..Default::default()
+                }),
+                stop_reason: Some(StopReason::EndTurn),
+                has_incomplete_tool_calls: false,
+            })
+        }
+        fn name(&self) -> &str {
+            "step-stub"
+        }
+    }
+
+    /// Stub judge that returns scores from a queue. Each call pops the
+    /// next score; runs past the end yield 1.0 (so we don't deadlock
+    /// the revise loop in tests).
+    struct ScriptedJudge {
+        scores: Mutex<Vec<f32>>,
+    }
+    impl ScriptedJudge {
+        fn new(scores: Vec<f32>) -> Arc<Self> {
+            Arc::new(Self {
+                scores: Mutex::new(scores),
+            })
+        }
+    }
+    #[async_trait]
+    impl Judge for ScriptedJudge {
+        async fn judge(
+            &self,
+            _outcome: &awaken_eval::ReplayOutcome,
+            _user_prompt: &str,
+            _rubric: Option<&str>,
+        ) -> Result<JudgeResult, JudgeError> {
+            let mut guard = self.scores.lock().unwrap();
+            let score = if guard.is_empty() {
+                1.0
+            } else {
+                guard.remove(0)
+            };
+            Ok(JudgeResult {
+                score,
+                reasoning: Some("scripted".into()),
+                inference_id: None,
+            })
+        }
+    }
+
+    fn ad_hoc_fixture(prompt: &str) -> Fixture {
+        Fixture {
+            id: "revise".into(),
+            description: None,
+            user_input: prompt.into(),
+            provider_script: vec![],
+            source_run_id: None,
+            source_model_id: None,
+            allow_unused_provider_script: false,
+            mock_response: MockResponse::default(),
+            expect: Expectation::default(),
+            continued_turns: vec![],
+        }
+    }
+
+    #[tokio::test]
+    async fn revise_loop_recovers_on_first_retry() {
+        // Initial answer scores 0.3 < threshold 0.7. After revise the
+        // second attempt scores 0.9 → loop exits with revision_count=1.
+        let exec: Arc<dyn LlmExecutor> = StepExecutor::new(vec!["bad answer", "great answer"]);
+        let judge = ScriptedJudge::new(vec![0.3, 0.9]) as Arc<dyn Judge>;
+        let replayer = RuntimeReplayer::new()
+            .with_live_executor(exec, "test-model")
+            .with_revise_on_judge_fail(judge, None, 0.7, 3);
+        let fixture = ad_hoc_fixture("be insightful");
+        let outcomes = replay_all(&replayer, std::slice::from_ref(&fixture)).await;
+        let outcome = &outcomes[0];
+        assert_eq!(outcome.final_text, "great answer");
+        assert_eq!(outcome.revision_count, 1);
+        assert_eq!(outcome.judge_score, Some(0.9));
+    }
+
+    #[tokio::test]
+    async fn revise_loop_skipped_when_initial_clears_threshold() {
+        // Initial scores 0.95 → no retry needed.
+        let exec: Arc<dyn LlmExecutor> = StepExecutor::new(vec!["nailed it"]);
+        let judge = ScriptedJudge::new(vec![0.95]) as Arc<dyn Judge>;
+        let replayer = RuntimeReplayer::new()
+            .with_live_executor(exec, "test-model")
+            .with_revise_on_judge_fail(judge, None, 0.7, 3);
+        let fixture = ad_hoc_fixture("be insightful");
+        let outcomes = replay_all(&replayer, std::slice::from_ref(&fixture)).await;
+        let outcome = &outcomes[0];
+        assert_eq!(outcome.final_text, "nailed it");
+        assert_eq!(outcome.revision_count, 0);
+        assert_eq!(outcome.judge_score, Some(0.95));
+    }
+
+    #[tokio::test]
+    async fn revise_loop_exhausts_retries_when_judge_keeps_failing() {
+        // Every retry still scores below threshold. After max_retries=2
+        // (so 3 total judge calls), the loop exits with revision_count=2
+        // and judge_score reflecting the last failing score.
+        let exec: Arc<dyn LlmExecutor> = StepExecutor::new(vec!["v0", "v1", "v2", "v3"]);
+        let judge = ScriptedJudge::new(vec![0.1, 0.2, 0.4]) as Arc<dyn Judge>;
+        let replayer = RuntimeReplayer::new()
+            .with_live_executor(exec, "test-model")
+            .with_revise_on_judge_fail(judge, None, 0.7, 2);
+        let fixture = ad_hoc_fixture("hard task");
+        let outcomes = replay_all(&replayer, std::slice::from_ref(&fixture)).await;
+        let outcome = &outcomes[0];
+        assert_eq!(outcome.revision_count, 2);
+        // Score is the LAST one returned by the judge (still failing).
+        assert_eq!(outcome.judge_score, Some(0.4));
+        // Final text is the 3rd answer (v2) — the last one the agent produced.
+        assert_eq!(outcome.final_text, "v2");
+    }
+
+    /// Sanity check that LlmExecutorJudge composes the same way the
+    /// scripted ScriptedJudge does — exercises the production code path.
+    #[tokio::test]
+    async fn revise_loop_works_with_executor_backed_judge() {
+        // Two distinct executors: one for the agent, one for the judge.
+        let agent_exec: Arc<dyn LlmExecutor> = StepExecutor::new(vec!["initial", "revised"]);
+        // Judge executor returns scripted score JSON strings.
+        let judge_exec: Arc<dyn LlmExecutor> = StepExecutor::new(vec![
+            r#"{"score": 0.4, "reasoning": "needs work"}"#,
+            r#"{"score": 0.85, "reasoning": "better"}"#,
+        ]);
+        let judge: Arc<dyn Judge> = Arc::new(LlmExecutorJudge::new(judge_exec, "judge-model"));
+        let replayer = RuntimeReplayer::new()
+            .with_live_executor(agent_exec, "agent-model")
+            .with_revise_on_judge_fail(judge, None, 0.7, 3);
+        let fixture = ad_hoc_fixture("evaluate me");
+        let outcomes = replay_all(&replayer, std::slice::from_ref(&fixture)).await;
+        let outcome = &outcomes[0];
+        assert_eq!(outcome.final_text, "revised");
+        assert_eq!(outcome.revision_count, 1);
+        assert!(outcome.judge_score.unwrap() >= 0.7);
+    }
+}
+// ── End-to-end metrics demo — every Anthropic-aligned indicator in one run
+
+#[tokio::test]
+async fn metrics_demo_exercises_all_indicators_together() {
+    use async_trait::async_trait;
+    use awaken_contract::contract::content::ContentBlock;
+    use awaken_contract::contract::executor::{
+        InferenceExecutionError, InferenceRequest, LlmExecutor,
+    };
+    use awaken_contract::contract::inference::{StopReason, StreamResult, TokenUsage};
+    use awaken_contract::registry_spec::ModelBindingSpec;
+    use awaken_eval::judge::{Judge, JudgeError, JudgeResult};
+    use awaken_eval::{
+        EvalRun, EvalRunItem, LlmExecutorJudge, MatrixCell, ReplayReport, RuntimeReplayer,
+    };
+    use std::sync::{Arc, Mutex};
+
+    // Stub agent executor: first attempt = bad, retry = good.
+    struct StepExec {
+        responses: Mutex<Vec<String>>,
+    }
+    #[async_trait]
+    impl LlmExecutor for StepExec {
+        async fn execute(
+            &self,
+            _req: InferenceRequest,
+        ) -> Result<StreamResult, InferenceExecutionError> {
+            let mut g = self.responses.lock().unwrap();
+            let text = if g.is_empty() {
+                "noop".into()
+            } else {
+                g.remove(0)
+            };
+            Ok(StreamResult {
+                content: vec![ContentBlock::text(text)],
+                tool_calls: vec![],
+                usage: Some(TokenUsage {
+                    prompt_tokens: Some(120),
+                    completion_tokens: Some(60),
+                    total_tokens: Some(180),
+                    ..Default::default()
+                }),
+                stop_reason: Some(StopReason::EndTurn),
+                has_incomplete_tool_calls: false,
+            })
+        }
+        fn name(&self) -> &str {
+            "step-exec"
+        }
+    }
+
+    // Scripted judge — initial score 0.3 (below 0.7 threshold), retry 0.9.
+    struct ScriptedJudge {
+        scores: Mutex<Vec<f32>>,
+    }
+    #[async_trait]
+    impl Judge for ScriptedJudge {
+        async fn judge(
+            &self,
+            _o: &awaken_eval::ReplayOutcome,
+            _u: &str,
+            _r: Option<&str>,
+        ) -> Result<JudgeResult, JudgeError> {
+            let mut g = self.scores.lock().unwrap();
+            let s = if g.is_empty() { 1.0 } else { g.remove(0) };
+            Ok(JudgeResult {
+                score: s,
+                reasoning: Some("scripted".into()),
+                inference_id: None,
+            })
+        }
+    }
+
+    // ── Run 3 samples of the same (fixture, cell). Sample 0 has revise
+    // pre-stocked to recover; samples 1 + 2 fail (judge stays low).
+    let mut run = EvalRun {
+        id: "DEMO-RUN".into(),
+        dataset_id: "metrics-demo".into(),
+        dataset_revision: 1,
+        items: Vec::new(),
+        started_at_secs: 1_700_000_000,
+        ended_at_secs: 1_700_000_010,
+    };
+
+    // Priced binding — exercises cost_usd.
+    let binding = ModelBindingSpec {
+        id: "demo".into(),
+        provider_id: "anthropic".into(),
+        upstream_model: "claude-opus-4-7".into(),
+        input_token_price_per_million_usd: Some(3.0),
+        output_token_price_per_million_usd: Some(15.0),
+    };
+
+    let cell = MatrixCell {
+        model_id: Some("claude-opus-4-7".into()),
+    };
+
+    // Sample-specific (responses, judge_scores). Sample 0 = pass after revise.
+    let sample_configs = vec![
+        // (executor responses, judge scores) — last judge call returns the value the loop exits on.
+        (vec!["bad answer", "great answer"], vec![0.3, 0.9]), // pass after 1 revision
+        (vec!["bad", "still bad", "still bad"], vec![0.2, 0.4, 0.5]), // fails — never crosses 0.7
+        (vec!["instant win"], vec![0.95]),                    // pass with revision_count=0
+    ];
+
+    for (sample_idx, (responses, scores)) in sample_configs.into_iter().enumerate() {
+        let exec: Arc<dyn LlmExecutor> = Arc::new(StepExec {
+            responses: Mutex::new(responses.into_iter().map(String::from).collect()),
+        });
+        let judge: Arc<dyn Judge> = Arc::new(ScriptedJudge {
+            scores: Mutex::new(scores),
+        });
+        let replayer = RuntimeReplayer::new()
+            .with_live_executor(exec, "claude-opus-4-7")
+            .with_revise_on_judge_fail(judge, None, 0.7, 2);
+
+        // Build a unique fixture id per sample so the in-memory thread is fresh.
+        let fixture = Fixture {
+            id: format!("demo-s{sample_idx}"),
+            description: None,
+            user_input: "be insightful".into(),
+            provider_script: vec![],
+            source_run_id: None,
+            source_model_id: None,
+            allow_unused_provider_script: false,
+            mock_response: MockResponse::default(),
+            expect: Expectation {
+                min_judge_score: Some(0.7),
+                ..Expectation::default()
+            },
+            continued_turns: vec![],
+        };
+
+        let outcomes = replay_all(&replayer, std::slice::from_ref(&fixture)).await;
+        let outcome = outcomes.into_iter().next().unwrap();
+
+        // Score using the cache-aware path: outcome.judge_score short-
+        // circuits the second judge call.
+        use awaken_eval::judge::score_with_judge;
+        struct UnusedJudge;
+        #[async_trait]
+        impl Judge for UnusedJudge {
+            async fn judge(
+                &self,
+                _o: &awaken_eval::ReplayOutcome,
+                _u: &str,
+                _r: Option<&str>,
+            ) -> Result<JudgeResult, JudgeError> {
+                panic!("cache should prevent re-judging");
+            }
+        }
+        let (failures, _) = score_with_judge(
+            &outcome,
+            &fixture.expect,
+            &fixture.user_input,
+            None,
+            &UnusedJudge,
+        )
+        .await
+        .unwrap();
+        let mut report = ReplayReport::from_outcome(&outcome, failures);
+        // Exercise cost: cost_usd = binding.compute_cost_usd(input, output)
+        report.cost_usd =
+            binding.compute_cost_usd(report.total_input_tokens, report.total_output_tokens);
+
+        run.items.push(EvalRunItem {
+            fixture_id: "demo".into(), // share fixture_id across samples for the aggregator
+            cell: Some(cell.clone()),
+            report,
+            trace_run_id: None,
+            sample_index: Some(sample_idx as u32),
+        });
+    }
+
+    // ── Print every metric the framework exposes for this run.
+    eprintln!("\n=== METRICS DEMO — per-sample items ===");
+    for item in &run.items {
+        let r = &item.report;
+        eprintln!(
+            "  sample {} | passed={} | judge_score={:?} | revision_count={} | \
+             input_tokens={} output_tokens={} total_tokens={} | cost_usd={:?}",
+            item.sample_index.unwrap(),
+            r.passed,
+            r.judge_score,
+            r.revision_count,
+            r.total_input_tokens,
+            r.total_output_tokens,
+            r.total_tokens,
+            r.cost_usd,
+        );
+    }
+
+    // ── Aggregate: pass@k / pass^k
+    let aggs = run.aggregate_samples();
+    eprintln!("\n=== METRICS DEMO — pass@k / pass^k aggregate ===");
+    for a in &aggs {
+        eprintln!(
+            "  ({}, model={:?}) samples={} passed={} pass_rate={:.2} pass_at_k={} pass_pow_k={}",
+            a.fixture_id,
+            a.cell.as_ref().and_then(|c| c.model_id.as_deref()),
+            a.samples,
+            a.passed,
+            a.pass_rate,
+            a.pass_at_k,
+            a.pass_pow_k,
+        );
+    }
+
+    // ── Hard assertions on every indicator we built.
+    assert_eq!(run.items.len(), 3);
+    // Sample 0 (revised once, score crosses 0.7 → passed)
+    let s0 = &run.items[0].report;
+    assert!(s0.passed, "sample 0 must pass after revise");
+    assert_eq!(s0.revision_count, 1);
+    assert_eq!(s0.judge_score, Some(0.9));
+    // Sample 1 (judge never crosses threshold → failed, revision_count=2)
+    let s1 = &run.items[1].report;
+    assert!(!s1.passed);
+    assert_eq!(s1.revision_count, 2);
+    // Sample 2 (initial answer passes → revision_count=0)
+    let s2 = &run.items[2].report;
+    assert!(s2.passed);
+    assert_eq!(s2.revision_count, 0);
+    assert_eq!(s2.judge_score, Some(0.95));
+    // Cost: priced binding → every report carries cost_usd Some(_).
+    for item in &run.items {
+        assert!(
+            item.report.cost_usd.is_some(),
+            "cost_usd must populate when binding has pricing"
+        );
+        assert!(item.report.cost_usd.unwrap() > 0.0);
+    }
+    // Aggregate: 2 of 3 samples passed → pass_at_k=true, pass_pow_k=false.
+    assert_eq!(aggs.len(), 1);
+    assert_eq!(aggs[0].samples, 3);
+    assert_eq!(aggs[0].passed, 2);
+    assert!(aggs[0].pass_at_k);
+    assert!(!aggs[0].pass_pow_k);
+
+    // ── Quiet sanity check: LlmExecutorJudge composes the same way.
+    // (We don't call it here — production code path does, see
+    // revise_loop_works_with_executor_backed_judge.)
+    drop(LlmExecutorJudge::new(
+        Arc::new(StepExec {
+            responses: Mutex::new(vec![]),
+        }) as Arc<dyn LlmExecutor>,
+        "x",
+    ));
+}

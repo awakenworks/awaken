@@ -1135,6 +1135,77 @@ async fn import_traces_400s_when_trace_lacks_user_and_skip_disabled() {
     assert_eq!(body["skipped_count"], 1);
 }
 
+// ── pass@k / pass^k aggregation (?aggregate=samples) ────────────────────
+
+#[tokio::test]
+async fn get_run_with_aggregate_samples_returns_pass_at_k_rollup() {
+    let app = build_test_app().await;
+    // 3 items for the same (fixture, cell) — 2 pass + 1 fail.
+    let mut run = baseline_run("AGG-R");
+    run.items.clear();
+    for (i, passed) in [(0u32, true), (1u32, false), (2u32, true)] {
+        let mut report = item("alpha", passed, "x").report;
+        report.passed = passed;
+        run.items.push(EvalRunItem {
+            fixture_id: "alpha".into(),
+            cell: Some(awaken_eval::MatrixCell {
+                model_id: Some("m1".into()),
+            }),
+            report,
+            trace_run_id: None,
+            sample_index: Some(i),
+        });
+    }
+    app.eval_run_store.write(&run).unwrap();
+    let (status, body) = request(
+        &app.router,
+        "GET",
+        "/v1/eval/runs/AGG-R?aggregate=samples",
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let aggs = body["aggregates"].as_array().unwrap();
+    assert_eq!(aggs.len(), 1);
+    let g = &aggs[0];
+    assert_eq!(g["samples"], 3);
+    assert_eq!(g["passed"], 2);
+    assert_eq!(g["pass_at_k"], true);
+    assert_eq!(g["pass_pow_k"], false);
+}
+
+#[tokio::test]
+async fn get_run_default_omits_aggregates() {
+    let app = build_test_app().await;
+    let run = baseline_run("AGG-R2");
+    app.eval_run_store.write(&run).unwrap();
+    let (status, body) = request(&app.router, "GET", "/v1/eval/runs/AGG-R2", None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        body.get("aggregates").is_none(),
+        "default GET must not include aggregates field"
+    );
+}
+
+#[tokio::test]
+async fn get_run_rejects_unknown_aggregate_value() {
+    let app = build_test_app().await;
+    let run = baseline_run("AGG-R3");
+    app.eval_run_store.write(&run).unwrap();
+    let (status, body) = request(
+        &app.router,
+        "GET",
+        "/v1/eval/runs/AGG-R3?aggregate=tokens",
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(
+        body["error"].as_str().unwrap_or("").contains("tokens"),
+        "body: {body}"
+    );
+}
+
 // ── Dialogue importer (POST /v1/eval/datasets/:id/import-dialogue) ──────
 
 #[tokio::test]
@@ -1258,6 +1329,71 @@ async fn import_dialogue_409s_on_duplicate_fixture_id() {
     );
 }
 
+// ── Judge revise loop validation (revise_max_retries cap) ───────────────
+
+#[tokio::test]
+async fn start_eval_run_400s_when_revise_max_retries_above_cap() {
+    let app = build_test_app().await;
+    let fixtures = vec![sample_fixture("f1")];
+    let (status, _) = request(
+        &app.router,
+        "POST",
+        "/v1/eval/datasets",
+        Some(json!({ "id": "DS-RV", "spec": { "fixtures": fixtures } })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let (status, body) = request(
+        &app.router,
+        "POST",
+        "/v1/eval/runs",
+        Some(json!({
+            "dataset_id": "DS-RV",
+            "models": ["m1"],
+            "judge": {
+                "model_id": "judge-model",
+                "revise_max_retries": 99,
+            },
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(
+        body["error"]
+            .as_str()
+            .unwrap_or("")
+            .contains("revise_max_retries=99"),
+        "body: {body}"
+    );
+}
+
+#[tokio::test]
+async fn online_eval_400s_when_revise_max_retries_above_cap() {
+    let app = build_test_app().await;
+    let (status, body) = request(
+        &app.router,
+        "POST",
+        "/v1/eval/online",
+        Some(json!({
+            "user_input": "hi",
+            "models": ["m"],
+            "judge": {
+                "model_id": "judge-model",
+                "revise_max_retries": 50,
+            },
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(
+        body["error"]
+            .as_str()
+            .unwrap_or("")
+            .contains("revise_max_retries=50"),
+        "body: {body}"
+    );
+}
+
 // ── Cross-run trend (GET /v1/eval/trend) ─────────────────────────────────
 
 fn seeded_run(id: &str, dataset_id: &str, started: u64, items: Vec<EvalRunItem>) -> EvalRun {
@@ -1301,6 +1437,8 @@ fn item_with_model(
             error_type: None,
             inference_error_count: 0,
             runtime_failure: None,
+            revision_count: 0,
+            judge_score: None,
             cost_usd: cost,
         },
         trace_run_id: None,
@@ -1479,6 +1617,8 @@ fn item(fixture_id: &str, passed: bool, final_text: &str) -> EvalRunItem {
             error_type: None,
             inference_error_count: 0,
             runtime_failure: None,
+            revision_count: 0,
+            judge_score: None,
             cost_usd: None,
         },
         trace_run_id: None,

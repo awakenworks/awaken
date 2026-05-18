@@ -28,8 +28,8 @@ use awaken_contract::contract::config_store::extract_meta_revision;
 use awaken_eval::{
     DATASETS_NAMESPACE, DatasetSpec, DiffSummary, EvalRun, EvalRunFilter, EvalRunItem,
     EvalRunStore, EvalRunStoreError, EvalRunSummary, Fixture, LlmExecutorJudge, MatrixCell,
-    ReplayReport, RuntimeReplayer, diff_against_baseline, expand_cells, mint_run_id, replay_all,
-    score, score_with_judge,
+    ReplayReport, RuntimeReplayer, SampleAggregate, diff_against_baseline, expand_cells,
+    mint_run_id, replay_all, score, score_with_judge,
 };
 use awaken_ext_observability::MetricsSink;
 use awaken_ext_observability::trace_store::TraceStoreSink;
@@ -116,7 +116,21 @@ pub struct JudgeRequest {
     pub model_id: String,
     #[serde(default)]
     pub rubric: Option<String>,
+    /// When set, after each replay the judge scores the outcome; if the
+    /// score is below the fixture's `expect.min_judge_score`, the
+    /// replayer appends a "revise this" user message on the same thread
+    /// and re-runs the agent — up to this many retries. Mirrors
+    /// Anthropic Outcomes' reprocess loop. Capped at
+    /// [`MAX_JUDGE_REVISIONS`] so a thrashing agent can't drive cost
+    /// unbounded.
+    #[serde(default)]
+    pub revise_max_retries: Option<u32>,
 }
+
+/// Hard ceiling on per-cell revise iterations to keep token spend
+/// bounded — three rewrites is usually plenty; more typically means
+/// the rubric is mis-specified.
+pub const MAX_JUDGE_REVISIONS: u32 = 3;
 
 #[derive(Debug, Serialize)]
 pub struct EvalRunResponse {
@@ -125,6 +139,12 @@ pub struct EvalRunResponse {
     /// `?baseline=` query param resolved to a real prior run.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub diff: Option<DiffSummary>,
+    /// Per-(fixture, cell) pass@k / pass^k roll-ups. Present only when
+    /// the GET request set `?aggregate=samples`. The shape mirrors
+    /// Anthropic Managed Agents' pass@k metric so consumers don't have
+    /// to fold sample items themselves.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub aggregates: Option<Vec<SampleAggregate>>,
 }
 
 #[derive(Debug, Serialize)]
@@ -200,6 +220,11 @@ pub struct GetRunQuery {
     /// The baseline must exist or the request 404s (caller passed an
     /// invalid id — silent omission would mask the typo).
     pub baseline: Option<String>,
+    /// When set to `"samples"`, the response includes per-(fixture,cell)
+    /// pass@k / pass^k aggregates. Other values are rejected so a typo
+    /// surfaces immediately rather than silently producing no aggregate.
+    #[serde(default)]
+    pub aggregate: Option<String>,
 }
 
 // `map_storage_error` lives in `services::eval_common` — same impl
@@ -299,10 +324,18 @@ pub async fn start_eval_run(
                 "judge requires `models` (Live mode); scripted replays don't use a judge".into(),
             ));
         }
+        if let Some(n) = jr.revise_max_retries
+            && n > MAX_JUDGE_REVISIONS
+        {
+            return Err(ApiError::BadRequest(format!(
+                "revise_max_retries={n} exceeds cap {MAX_JUDGE_REVISIONS}"
+            )));
+        }
         let resolved = resolve_live_executor(&state, &jr.model_id).await?;
         Some((
             LlmExecutorJudge::new(resolved.executor, resolved.upstream_model),
             jr.rubric.clone(),
+            jr.revise_max_retries,
         ))
     } else {
         None
@@ -347,7 +380,12 @@ pub async fn start_eval_run(
         None
     };
 
-    Ok(Json(EvalRunResponse { run, diff }).into_response())
+    Ok(Json(EvalRunResponse {
+        run,
+        diff,
+        aggregates: None,
+    })
+    .into_response())
 }
 
 /// `GET /v1/eval/runs` — list run summaries.
@@ -504,7 +542,21 @@ pub async fn get_eval_run(
     } else {
         None
     };
-    Ok(Json(EvalRunResponse { run, diff }).into_response())
+    let aggregates = match params.aggregate.as_deref() {
+        None => None,
+        Some("samples") => Some(run.aggregate_samples()),
+        Some(other) => {
+            return Err(ApiError::BadRequest(format!(
+                "unsupported aggregate={other}; use 'samples'"
+            )));
+        }
+    };
+    Ok(Json(EvalRunResponse {
+        run,
+        diff,
+        aggregates,
+    })
+    .into_response())
 }
 
 fn compute_diff(
@@ -576,7 +628,7 @@ async fn run_matrix_cells(
     samples: u32,
     agent_overrides: Option<AgentSpecPatch>,
     trace_sink: Option<Arc<dyn MetricsSink>>,
-    judge: Option<(LlmExecutorJudge, Option<String>)>,
+    judge: Option<(LlmExecutorJudge, Option<String>, Option<u32>)>,
 ) -> Result<Vec<EvalRunItem>, ApiError> {
     use awaken_contract::contract::executor::LlmExecutor;
     use awaken_contract::registry_spec::ModelBindingSpec;
@@ -612,6 +664,19 @@ async fn run_matrix_cells(
                 let binding = binding.clone();
                 let overrides = agent_overrides.clone();
                 let trace_sink = trace_sink.clone();
+                // Per-task revise config: needs both a judge and a
+                // fixture-level threshold (expect.min_judge_score) AND
+                // the operator-supplied retry budget. Missing any piece
+                // means no revise loop for this task.
+                let revise_for_task = match (&judge, fixture.expect.min_judge_score) {
+                    (Some((j, rubric, Some(retries))), Some(threshold)) => Some((
+                        Arc::new(j.clone()) as Arc<dyn awaken_eval::judge::Judge>,
+                        rubric.clone(),
+                        threshold,
+                        *retries,
+                    )),
+                    _ => None,
+                };
                 let permit = semaphore.clone().acquire_owned().await.expect("semaphore");
                 handles.push(tokio::spawn(async move {
                     let _permit = permit;
@@ -622,6 +687,10 @@ async fn run_matrix_cells(
                     }
                     if let Some(sink) = trace_sink {
                         replayer = replayer.with_tee_sink(sink);
+                    }
+                    if let Some((j, rubric, threshold, retries)) = revise_for_task {
+                        replayer =
+                            replayer.with_revise_on_judge_fail(j, rubric, threshold, retries);
                     }
                     let outcomes = replay_all(&replayer, std::slice::from_ref(&fixture)).await;
                     let outcome = outcomes
@@ -639,7 +708,7 @@ async fn run_matrix_cells(
         let (fixture, cell, sample, outcome, binding) = handle
             .await
             .map_err(|err| ApiError::Internal(format!("matrix cell task panicked: {err}")))?;
-        let failures = if let (Some((j, rubric)), Some(_)) =
+        let failures = if let (Some((j, rubric, _)), Some(_)) =
             (judge.as_ref(), fixture.expect.min_judge_score)
         {
             let (failures, _) = score_with_judge(

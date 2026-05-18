@@ -72,6 +72,7 @@ pub fn score(outcome: &ReplayOutcome, expect: &Expectation) -> Vec<Failure> {
                 expected_count: matcher.count,
                 actual_matches,
                 args_filter_set: matcher.args_subset.is_some(),
+                result_filter_set: matcher.result_subset.is_some(),
             });
         }
     }
@@ -138,10 +139,12 @@ fn is_ordered_subseq(needle: &[String], haystack: &[String]) -> bool {
     i == needle.len()
 }
 
-/// Count tool calls in `outcome` that match the matcher's name and (if set)
-/// its `args_subset`. A matcher with `args_subset = Some(_)` matches only
-/// when the recorded `call_arguments` is also `Some(_)` and structurally
-/// covers the subset.
+/// Count tool calls in `outcome` that match the matcher's name and (if
+/// set) its `args_subset` / `result_subset`. A matcher with either
+/// subset set matches only when the corresponding captured field is
+/// also `Some(_)` and structurally covers the subset — uncaptured
+/// fields never satisfy a sub-filter, so missing `ToolIoCapture` shows
+/// up as a failed assertion instead of a silent pass.
 fn count_matching_calls(matcher: &ToolCallMatcher, outcome: &ReplayOutcome) -> u32 {
     let mut n: u32 = 0;
     for span in &outcome.metrics.tools {
@@ -150,6 +153,12 @@ fn count_matching_calls(matcher: &ToolCallMatcher, outcome: &ReplayOutcome) -> u
         }
         if let Some(subset) = &matcher.args_subset {
             match &span.call_arguments {
+                Some(actual) if json_subset(subset, actual) => {}
+                _ => continue,
+            }
+        }
+        if let Some(subset) = &matcher.result_subset {
+            match &span.call_result {
                 Some(actual) if json_subset(subset, actual) => {}
                 _ => continue,
             }

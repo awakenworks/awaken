@@ -61,9 +61,38 @@ pub struct ReplayOutcome {
     /// into a [`Failure::ReplayRuntimeFailure`] so the NDJSON report
     /// stays complete.
     pub runtime_failure: Option<ReplayRuntimeFailure>,
+    /// Number of "reprocess on judge fail" iterations the replayer ran
+    /// past the initial attempt. `0` for runs without revise configured
+    /// or runs whose initial answer cleared the judge threshold.
+    /// Mirrors Anthropic Outcomes' rework count.
+    pub revision_count: u32,
+    /// Final judge score for runs that went through the revise loop —
+    /// cached so the scorer can apply `min_judge_score` without a
+    /// second judge call. `None` when no judge was invoked by the
+    /// replayer (caller will judge externally if desired).
+    pub judge_score: Option<f32>,
 }
 
 impl ReplayOutcome {
+    /// Lightweight outcome stub used as a feed for [`crate::Judge`]
+    /// inside the runtime replayer's revise loop. Only the
+    /// `fixture_id` and `final_text` fields are populated — judges
+    /// score the assistant answer against the user prompt and don't
+    /// need full metrics. Other fields default to zero / None.
+    pub fn for_judge(fixture_id: String, final_text: String) -> Self {
+        Self {
+            fixture_id,
+            final_text,
+            metrics: awaken_ext_observability::AgentMetrics::default(),
+            elapsed: std::time::Duration::ZERO,
+            error_type: None,
+            inference_error_count: 0,
+            runtime_failure: None,
+            revision_count: 0,
+            judge_score: None,
+        }
+    }
+
     /// Total tokens consumed across all inferences. Per-span fallback:
     /// each span contributes its own `total_tokens` when set, otherwise
     /// its `input_tokens + output_tokens`. Mixing the two within one
@@ -183,6 +212,20 @@ pub struct ReplayReport {
     /// surfaces in regression diffs.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cost_usd: Option<f64>,
+    /// Number of reprocess-on-judge-fail iterations the replayer ran
+    /// (0 = initial attempt cleared the threshold or revise wasn't
+    /// configured). Lets diffs surface "agent now needs 2 retries
+    /// where it used to need 0".
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub revision_count: u32,
+    /// Final judge score recorded by the replayer's revise loop.
+    /// `None` when no judge ran inside the replayer.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub judge_score: Option<f32>,
+}
+
+fn is_zero_u32(n: &u32) -> bool {
+    *n == 0
 }
 
 fn is_zero_usize(n: &usize) -> bool {
@@ -211,6 +254,8 @@ impl ReplayReport {
             inference_error_count: outcome.inference_error_count,
             runtime_failure: outcome.runtime_failure.clone(),
             cost_usd: None,
+            revision_count: outcome.revision_count,
+            judge_score: outcome.judge_score,
         }
     }
 }
@@ -277,6 +322,8 @@ mod tests {
             error_type: None,
             inference_error_count: 0,
             runtime_failure: None,
+            revision_count: 0,
+            judge_score: None,
         }
     }
 
@@ -517,6 +564,8 @@ mod tests {
             error_type: None,
             inference_error_count: 0,
             runtime_failure: None,
+            revision_count: 0,
+            judge_score: None,
         };
         let r = ReplayReport::from_outcome(&o, Vec::new());
         // We just need to confirm it doesn't panic; exact value depends on
@@ -547,6 +596,8 @@ mod tests {
             error_type: Some("rate_limit".into()),
             inference_error_count: 1,
             runtime_failure: None,
+            revision_count: 0,
+            judge_score: None,
         };
         let r = ReplayReport::from_outcome(&o, Vec::new());
         let json = serde_json::to_string(&r).unwrap();
@@ -565,6 +616,8 @@ mod tests {
             error_type: Some("rate_limit".into()),
             inference_error_count: 2,
             runtime_failure: None,
+            revision_count: 0,
+            judge_score: None,
         };
         let r = ReplayReport::from_outcome(&o, Vec::new());
         let json = serde_json::to_string(&r).unwrap();
@@ -591,6 +644,8 @@ mod tests {
             error_type: Some("rate_limit".into()),
             inference_error_count: 1,
             runtime_failure: Some(ReplayRuntimeFailure::ScriptExhausted { extra_calls: 2 }),
+            revision_count: 0,
+            judge_score: None,
         };
         let r = ReplayReport::from_outcome(&o, Vec::new());
         let json = serde_json::to_string(&r).unwrap();

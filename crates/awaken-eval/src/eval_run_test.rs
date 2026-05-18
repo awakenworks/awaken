@@ -26,6 +26,8 @@ fn sample_report(id: &str, passed: bool) -> ReplayReport {
         error_type: None,
         inference_error_count: 0,
         runtime_failure: None,
+        revision_count: 0,
+        judge_score: None,
         cost_usd: None,
     }
 }
@@ -309,4 +311,76 @@ fn file_store_list_full_filters_by_since_until() {
     let runs = store.list_full(&filter).unwrap();
     assert_eq!(runs.len(), 1);
     assert_eq!(runs[0].id, "MID");
+}
+
+#[test]
+fn aggregate_samples_single_sample_degenerates_to_pass_fail() {
+    let run = sample_run("R", "DS", 1);
+    // sample_run has 2 items: alpha=pass, beta=fail (no cell, no sample_index).
+    let aggs = run.aggregate_samples();
+    assert_eq!(aggs.len(), 2);
+    let alpha = aggs.iter().find(|a| a.fixture_id == "alpha").unwrap();
+    assert_eq!(alpha.samples, 1);
+    assert_eq!(alpha.passed, 1);
+    assert!(alpha.pass_at_k);
+    assert!(alpha.pass_pow_k);
+    let beta = aggs.iter().find(|a| a.fixture_id == "beta").unwrap();
+    assert_eq!(beta.samples, 1);
+    assert_eq!(beta.passed, 0);
+    assert!(!beta.pass_at_k);
+    assert!(!beta.pass_pow_k);
+}
+
+#[test]
+fn aggregate_samples_groups_by_fixture_and_cell() {
+    // 3 items, same fixture, same cell, mixed pass/fail → one group with
+    // pass@k=true (at least one passed) and pass^k=false (not all passed).
+    let mut run = sample_run("R", "DS", 1);
+    run.items.clear();
+    for (i, passed) in [(0u32, true), (1u32, false), (2u32, true)] {
+        let mut item = EvalRunItem {
+            fixture_id: "alpha".into(),
+            cell: Some(MatrixCell {
+                model_id: Some("m1".into()),
+            }),
+            report: sample_report("alpha", passed),
+            trace_run_id: None,
+            sample_index: Some(i),
+        };
+        item.report.passed = passed;
+        run.items.push(item);
+    }
+    let aggs = run.aggregate_samples();
+    assert_eq!(aggs.len(), 1, "all three samples fold into one group");
+    let g = &aggs[0];
+    assert_eq!(g.samples, 3);
+    assert_eq!(g.passed, 2);
+    assert!((g.pass_rate - 2.0 / 3.0).abs() < 1e-9);
+    assert!(g.pass_at_k, "≥1 passed → pass@k true");
+    assert!(!g.pass_pow_k, "not all passed → pass^k false");
+    assert_eq!(
+        g.cell.as_ref().and_then(|c| c.model_id.as_deref()),
+        Some("m1")
+    );
+}
+
+#[test]
+fn aggregate_samples_all_pass_marks_pow_k() {
+    let mut run = sample_run("R", "DS", 1);
+    run.items.clear();
+    for i in 0..3u32 {
+        let mut item = EvalRunItem {
+            fixture_id: "a".into(),
+            cell: None,
+            report: sample_report("a", true),
+            trace_run_id: None,
+            sample_index: Some(i),
+        };
+        item.report.passed = true;
+        run.items.push(item);
+    }
+    let aggs = run.aggregate_samples();
+    assert_eq!(aggs.len(), 1);
+    assert!(aggs[0].pass_pow_k);
+    assert!(aggs[0].pass_at_k);
 }

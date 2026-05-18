@@ -33,7 +33,7 @@ pub use curate::{CurateError, TraceConversion, trace_to_provider_script};
 pub use dataset::{DATASETS_NAMESPACE, DatasetSpec};
 pub use eval_run::{
     EvalRun, EvalRunFilter, EvalRunItem, EvalRunStore, EvalRunStoreError, EvalRunSummary,
-    FileEvalRunStore, MatrixCell, expand_cells, mint_run_id,
+    FileEvalRunStore, MatrixCell, SampleAggregate, expand_cells, mint_run_id,
 };
 pub use expectation::{Expectation, Failure};
 pub use fixture::load_directory;
