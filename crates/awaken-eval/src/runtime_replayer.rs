@@ -536,25 +536,55 @@ impl RuntimeReplayer {
         let thread_id = format!("eval-thread-{}", fixture.id);
         let start = Instant::now();
 
-        // Initial turn — original user input.
-        let request = RunRequest::new(thread_id.clone(), vec![Message::user(&fixture.user_input)])
-            .with_agent_id(DEFAULT_AGENT_ID);
-        let mut last_result = runtime.run_to_completion(request).await;
-        let mut final_text = last_result
-            .as_ref()
-            .map(|r| r.response.clone())
-            .unwrap_or_default();
-        let mut last_error: Option<String> = last_result.as_ref().err().map(|e| e.to_string());
+        // Iterate through the dialogue: initial user_input + every
+        // continued turn, all on the same thread (same-thread reuse —
+        // each successive run_to_completion loads the prior turn's
+        // history). Multi-turn fixtures (produced by import-dialogue or
+        // hand-authored continued_turns) get evaluated as the full
+        // conversation; without this loop Live mode would silently
+        // truncate to the first turn while scripted mode replayed them
+        // all — a confusing divergence the matrix runner would inherit.
+        let dialogue_inputs: Vec<&str> = std::iter::once(fixture.user_input.as_str())
+            .chain(
+                fixture
+                    .continued_turns
+                    .iter()
+                    .map(|t| t.user_input.as_str()),
+            )
+            .collect();
+        let mut final_text = String::new();
+        let mut last_error: Option<String> = None;
+        let mut dialogue_ok = true;
+        for input in dialogue_inputs {
+            let request = RunRequest::new(thread_id.clone(), vec![Message::user(input)])
+                .with_agent_id(DEFAULT_AGENT_ID);
+            match runtime.run_to_completion(request).await {
+                Ok(r) => {
+                    final_text = r.response;
+                    last_error = None;
+                }
+                Err(err) => {
+                    // First-error short-circuit: continuing past a turn
+                    // that already errored would just stack more failures
+                    // against an undefined thread state.
+                    final_text = String::new();
+                    last_error = Some(err.to_string());
+                    dialogue_ok = false;
+                    break;
+                }
+            }
+        }
 
         let mut revision_count: u32 = 0;
         let mut judge_score: Option<f32> = None;
         let mut judge_reasoning: Option<String> = None;
 
-        // Reprocess-on-judge-fail loop. Only fires on successful initial
-        // runs (an Err short-circuits — judging an empty failed response
-        // would feed noise back into the agent).
+        // Reprocess-on-judge-fail loop. Only fires when the full
+        // dialogue (initial turn + all continued_turns) completed
+        // successfully — an Err on any turn short-circuits, and judging
+        // an empty failed response would feed noise back into the agent.
         if let Some(cfg) = revise.as_ref()
-            && last_result.is_ok()
+            && dialogue_ok
         {
             // Feed the judge a minimal stub outcome — judges only read
             // final_text + user_prompt + rubric. Allocating full metrics
@@ -587,11 +617,10 @@ impl RuntimeReplayer {
                         let request =
                             RunRequest::new(thread_id.clone(), vec![Message::user(revise_msg)])
                                 .with_agent_id(DEFAULT_AGENT_ID);
-                        last_result = runtime.run_to_completion(request).await;
                         revision_count += 1;
-                        match last_result.as_ref() {
+                        match runtime.run_to_completion(request).await {
                             Ok(r) => {
-                                final_text = r.response.clone();
+                                final_text = r.response;
                                 last_error = None;
                             }
                             Err(err) => {
