@@ -57,6 +57,16 @@ fn tool_with_args(name: &str, args: serde_json::Value) -> ToolSpan {
     t
 }
 
+fn tool_with_args_and_result(
+    name: &str,
+    args: serde_json::Value,
+    result: serde_json::Value,
+) -> ToolSpan {
+    let mut t = tool_with_args(name, args);
+    t.call_result = Some(result);
+    t
+}
+
 fn outcome(metrics: AgentMetrics, text: &str) -> ReplayOutcome {
     ReplayOutcome {
         fixture_id: "test".into(),
@@ -66,6 +76,8 @@ fn outcome(metrics: AgentMetrics, text: &str) -> ReplayOutcome {
         error_type: None,
         inference_error_count: 0,
         runtime_failure: None,
+        revision_count: 0,
+        judge_score: None,
     }
 }
 
@@ -552,6 +564,7 @@ fn required_tool_calls_name_only_passes_when_invoked() {
         required_tool_calls: vec![ToolCallMatcher {
             name: "search".into(),
             args_subset: None,
+            result_subset: None,
             count: None,
         }],
         ..Expectation::default()
@@ -573,6 +586,7 @@ fn required_tool_calls_name_only_fails_when_not_invoked() {
         required_tool_calls: vec![ToolCallMatcher {
             name: "search".into(),
             args_subset: None,
+            result_subset: None,
             count: None,
         }],
         ..Expectation::default()
@@ -606,6 +620,7 @@ fn required_tool_calls_args_subset_matches_object() {
         required_tool_calls: vec![ToolCallMatcher {
             name: "search".into(),
             args_subset: Some(serde_json::json!({"query": "banana"})),
+            result_subset: None,
             count: None,
         }],
         ..Expectation::default()
@@ -630,6 +645,7 @@ fn required_tool_calls_args_subset_fails_when_value_differs() {
         required_tool_calls: vec![ToolCallMatcher {
             name: "search".into(),
             args_subset: Some(serde_json::json!({"query": "banana"})),
+            result_subset: None,
             count: None,
         }],
         ..Expectation::default()
@@ -661,6 +677,7 @@ fn required_tool_calls_args_subset_fails_when_call_args_not_captured() {
         required_tool_calls: vec![ToolCallMatcher {
             name: "search".into(),
             args_subset: Some(serde_json::json!({"query": "x"})),
+            result_subset: None,
             count: None,
         }],
         ..Expectation::default()
@@ -682,6 +699,7 @@ fn required_tool_calls_count_exactly_enforced() {
         required_tool_calls: vec![ToolCallMatcher {
             name: "search".into(),
             args_subset: None,
+            result_subset: None,
             count: Some(CountConstraint::Exactly(2)),
         }],
         ..Expectation::default()
@@ -712,6 +730,7 @@ fn required_tool_calls_count_at_most_zero_with_args_filter_acts_as_forbidden() {
         required_tool_calls: vec![ToolCallMatcher {
             name: "rm".into(),
             args_subset: Some(serde_json::json!({"force": true})),
+            result_subset: None,
             count: Some(CountConstraint::AtMost(0)),
         }],
         ..Expectation::default()
@@ -723,6 +742,133 @@ fn required_tool_calls_count_at_most_zero_with_args_filter_acts_as_forbidden() {
             actual_matches: 1,
             expected_count: Some(CountConstraint::AtMost(0)),
             args_filter_set: true,
+            ..
+        }]
+    ));
+}
+
+// ── required_tool_calls: result_subset (outcome-state matcher) ──
+
+#[test]
+fn required_tool_calls_result_subset_matches_object() {
+    use crate::expectation::ToolCallMatcher;
+    let o = outcome(
+        AgentMetrics {
+            tools: vec![tool_with_args_and_result(
+                "search",
+                serde_json::json!({"query": "banana"}),
+                serde_json::json!({"hits": [{"title": "Banana", "score": 0.9}], "count": 1}),
+            )],
+            ..Default::default()
+        },
+        "",
+    );
+    let expect = Expectation {
+        required_tool_calls: vec![ToolCallMatcher {
+            name: "search".into(),
+            args_subset: None,
+            result_subset: Some(serde_json::json!({"count": 1})),
+            count: None,
+        }],
+        ..Expectation::default()
+    };
+    assert!(score(&o, &expect).is_empty());
+}
+
+#[test]
+fn required_tool_calls_result_subset_fails_when_result_mismatch() {
+    use crate::expectation::ToolCallMatcher;
+    let o = outcome(
+        AgentMetrics {
+            tools: vec![tool_with_args_and_result(
+                "search",
+                serde_json::json!({"query": "banana"}),
+                serde_json::json!({"count": 0}),
+            )],
+            ..Default::default()
+        },
+        "",
+    );
+    let expect = Expectation {
+        required_tool_calls: vec![ToolCallMatcher {
+            name: "search".into(),
+            args_subset: None,
+            result_subset: Some(serde_json::json!({"count": 1})),
+            count: None,
+        }],
+        ..Expectation::default()
+    };
+    let failures = score(&o, &expect);
+    assert!(matches!(
+        failures.as_slice(),
+        [Failure::RequiredToolCallNotSatisfied {
+            actual_matches: 0,
+            result_filter_set: true,
+            args_filter_set: false,
+            ..
+        }]
+    ));
+}
+
+#[test]
+fn required_tool_calls_result_subset_fails_when_result_not_captured() {
+    // Capture policy left call_result unrecorded; matcher with
+    // result_subset can't verify and therefore counts the call as
+    // non-matching — surfaces missing ToolIoCapture as a failed
+    // assertion rather than a silent pass.
+    use crate::expectation::ToolCallMatcher;
+    let o = outcome(
+        AgentMetrics {
+            tools: vec![tool_with_args("search", serde_json::json!({"q": "x"}))], // call_result = None
+            ..Default::default()
+        },
+        "",
+    );
+    let expect = Expectation {
+        required_tool_calls: vec![ToolCallMatcher {
+            name: "search".into(),
+            args_subset: None,
+            result_subset: Some(serde_json::json!({"count": 1})),
+            count: None,
+        }],
+        ..Expectation::default()
+    };
+    assert_eq!(score(&o, &expect).len(), 1);
+}
+
+#[test]
+fn required_tool_calls_args_and_result_both_required() {
+    // Matcher with both filters: a call must satisfy BOTH args_subset
+    // AND result_subset to count. One match with right args + wrong
+    // result still fails.
+    use crate::expectation::ToolCallMatcher;
+    let o = outcome(
+        AgentMetrics {
+            tools: vec![tool_with_args_and_result(
+                "search",
+                serde_json::json!({"query": "banana"}),
+                serde_json::json!({"count": 0}),
+            )],
+            ..Default::default()
+        },
+        "",
+    );
+    let expect = Expectation {
+        required_tool_calls: vec![ToolCallMatcher {
+            name: "search".into(),
+            args_subset: Some(serde_json::json!({"query": "banana"})),
+            result_subset: Some(serde_json::json!({"count": 1})),
+            count: None,
+        }],
+        ..Expectation::default()
+    };
+    let failures = score(&o, &expect);
+    assert!(matches!(
+        failures.as_slice(),
+        [Failure::RequiredToolCallNotSatisfied {
+            actual_matches: 0,
+            args_filter_set: true,
+            result_filter_set: true,
             ..
         }]
     ));

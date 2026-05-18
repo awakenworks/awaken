@@ -20,6 +20,8 @@ fn report(id: &str, passed: bool, failures: Vec<Failure>) -> ReplayReport {
         error_type: None,
         inference_error_count: 0,
         runtime_failure: None,
+        revision_count: 0,
+        judge_score: None,
         cost_usd: None,
     }
 }

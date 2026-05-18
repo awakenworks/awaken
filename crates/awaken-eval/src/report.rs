@@ -293,6 +293,15 @@ fn diff_passing_fields(b: &ReplayReport, n: &ReplayReport) -> Vec<String> {
     if b.cost_usd != n.cost_usd {
         diffs.push("cost_usd");
     }
+    // Revise loop diagnostics: an agent that now needs more retries to
+    // clear the judge threshold is a softer regression than outright
+    // failure, but still worth surfacing in drift.
+    if b.revision_count != n.revision_count {
+        diffs.push("revision_count");
+    }
+    if b.judge_score != n.judge_score {
+        diffs.push("judge_score");
+    }
     diffs.into_iter().map(String::from).collect()
 }
 

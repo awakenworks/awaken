@@ -108,7 +108,24 @@ pub enum ReplayMode {
         /// that's a follow-up; the soft cap catches "this fixture cost
         /// $X" without aborting expensive in-flight inference.
         max_total_tokens: Option<u32>,
+        /// Optional reprocess-on-judge-fail loop. Mirrors Anthropic
+        /// Managed Agents' Outcomes feedback path: after the initial
+        /// run, judge the result; if the score is below threshold and
+        /// retries remain, append a synthesised user message ("your
+        /// answer was X, here's why it failed: …, please revise") on
+        /// the same thread and re-run the agent. Stops on the first
+        /// passing score or when retries exhaust.
+        revise: Option<ReviseConfig>,
     },
+}
+
+/// Configuration for the reprocess-on-judge-fail loop (Live mode only).
+#[derive(Clone)]
+pub struct ReviseConfig {
+    pub judge: Arc<dyn crate::judge::Judge>,
+    pub rubric: Option<String>,
+    pub threshold: f32,
+    pub max_retries: u32,
 }
 
 impl Default for ReplayMode {
@@ -178,7 +195,35 @@ impl RuntimeReplayer {
             upstream_model: upstream_model.into(),
             agent_overrides: None,
             max_total_tokens: None,
+            revise: None,
         };
+        self
+    }
+
+    /// Enable the reprocess-on-judge-fail loop. After the initial Live
+    /// replay, the judge scores the outcome; if score < `threshold` and
+    /// retries remain, a synthesised "revise this" user message is
+    /// appended to the same thread and the agent re-runs. Stops when
+    /// score ≥ threshold or `max_retries` are exhausted.
+    ///
+    /// No-op on Scripted mode (scripted scripts don't tolerate
+    /// extra inference calls; reprocessing semantically requires Live).
+    #[must_use]
+    pub fn with_revise_on_judge_fail(
+        mut self,
+        judge: Arc<dyn crate::judge::Judge>,
+        rubric: Option<String>,
+        threshold: f32,
+        max_retries: u32,
+    ) -> Self {
+        if let ReplayMode::Live { revise, .. } = &mut self.mode {
+            *revise = Some(ReviseConfig {
+                judge,
+                rubric,
+                threshold,
+                max_retries,
+            });
+        }
         self
     }
 
@@ -230,6 +275,7 @@ impl Replayer for RuntimeReplayer {
                 upstream_model,
                 agent_overrides,
                 max_total_tokens,
+                revise,
             } => {
                 self.replay_live(
                     fixture,
@@ -237,6 +283,7 @@ impl Replayer for RuntimeReplayer {
                     upstream_model.clone(),
                     agent_overrides.clone(),
                     *max_total_tokens,
+                    revise.clone(),
                 )
                 .await
             }
@@ -375,6 +422,8 @@ impl RuntimeReplayer {
             error_type,
             inference_error_count: executor.error_calls(),
             runtime_failure,
+            revision_count: 0,
+            judge_score: None,
         }
     }
 
@@ -389,6 +438,7 @@ impl RuntimeReplayer {
         upstream_model: String,
         agent_overrides: Option<AgentSpecPatch>,
         max_total_tokens: Option<u32>,
+        revise: Option<ReviseConfig>,
     ) -> ReplayOutcome {
         let sink = InMemorySink::new();
         let plugin = match &self.tee_sink {
@@ -446,38 +496,90 @@ impl RuntimeReplayer {
                 .expect("live runtime builds"),
         );
 
-        let request = RunRequest::new(
-            format!("eval-thread-{}", fixture.id),
-            vec![Message::user(&fixture.user_input)],
-        )
-        .with_agent_id(DEFAULT_AGENT_ID);
-
+        let thread_id = format!("eval-thread-{}", fixture.id);
         let start = Instant::now();
-        let outcome = runtime.run_to_completion(request).await;
-        let elapsed = start.elapsed();
 
-        let final_text = match &outcome {
-            Ok(result) => result.response.clone(),
-            Err(_) => String::new(),
-        };
-        let error_type = match &outcome {
-            // Live mode: the runtime owns the error variant. Surface its
-            // toString so the scorer's `expected_error_type` assertion
-            // still works for live-mode failure fixtures.
-            Err(err) => Some(err.to_string()),
-            Ok(_) => None,
-        };
+        // Initial turn — original user input.
+        let request = RunRequest::new(thread_id.clone(), vec![Message::user(&fixture.user_input)])
+            .with_agent_id(DEFAULT_AGENT_ID);
+        let mut last_result = runtime.run_to_completion(request).await;
+        let mut final_text = last_result
+            .as_ref()
+            .map(|r| r.response.clone())
+            .unwrap_or_default();
+        let mut last_error: Option<String> = last_result.as_ref().err().map(|e| e.to_string());
+
+        let mut revision_count: u32 = 0;
+        let mut judge_score: Option<f32> = None;
+
+        // Reprocess-on-judge-fail loop. Only fires on successful initial
+        // runs (an Err short-circuits — judging an empty failed response
+        // would feed noise back into the agent).
+        if let Some(cfg) = revise.as_ref()
+            && last_result.is_ok()
+        {
+            // Synthesise an in-memory outcome to feed the judge between
+            // turns. We deliberately don't allocate full metrics here —
+            // judges only need final_text + user_prompt to score.
+            for _ in 0..=cfg.max_retries {
+                let stub = ReplayOutcome::for_judge(fixture.id.clone(), final_text.clone());
+                match cfg
+                    .judge
+                    .judge(&stub, &fixture.user_input, cfg.rubric.as_deref())
+                    .await
+                {
+                    Ok(jr) => {
+                        judge_score = Some(jr.score);
+                        if jr.score >= cfg.threshold {
+                            break;
+                        }
+                        if revision_count >= cfg.max_retries {
+                            break;
+                        }
+                        // Compose revision prompt and re-run on same thread.
+                        let reasoning = jr.reasoning.as_deref().unwrap_or("(no reasoning given)");
+                        let revise_msg = format!(
+                            "Your prior answer was:\n\"{final_text}\"\n\nThe grader scored it \
+                             {score:.2} (threshold {threshold:.2}). Reasoning: {reasoning}\n\n\
+                             Please revise your answer to address the feedback.",
+                            score = jr.score,
+                            threshold = cfg.threshold,
+                        );
+                        let request =
+                            RunRequest::new(thread_id.clone(), vec![Message::user(revise_msg)])
+                                .with_agent_id(DEFAULT_AGENT_ID);
+                        last_result = runtime.run_to_completion(request).await;
+                        revision_count += 1;
+                        match last_result.as_ref() {
+                            Ok(r) => {
+                                final_text = r.response.clone();
+                                last_error = None;
+                            }
+                            Err(err) => {
+                                last_error = Some(err.to_string());
+                                final_text = String::new();
+                                break;
+                            }
+                        }
+                    }
+                    Err(_) => break, // judge transport failure — keep last good outcome
+                }
+            }
+        }
+
+        let elapsed = start.elapsed();
+        let error_type = last_error.clone();
 
         // Post-hoc token budget — see ReplayMode::Live::max_total_tokens
         // docstring for why this isn't real-time cancellation.
         let metrics = sink.metrics();
         let total_tokens = metrics_total_tokens(&metrics);
-        let runtime_failure = match (max_total_tokens, outcome.as_ref()) {
+        let runtime_failure = match (max_total_tokens, last_error.as_deref()) {
             (Some(max), _) if total_tokens > max => Some(ReplayRuntimeFailure::RuntimeError {
                 message: format!("token budget exceeded: {total_tokens} > max {max}"),
             }),
-            (_, Err(err)) => Some(ReplayRuntimeFailure::RuntimeError {
-                message: err.to_string(),
+            (_, Some(msg)) => Some(ReplayRuntimeFailure::RuntimeError {
+                message: msg.to_string(),
             }),
             _ => None,
         };
@@ -490,6 +592,8 @@ impl RuntimeReplayer {
             error_type,
             inference_error_count: 0,
             runtime_failure,
+            revision_count,
+            judge_score,
         }
     }
 }

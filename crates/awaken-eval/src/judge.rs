@@ -363,7 +363,19 @@ pub async fn score_with_judge(
     let Some(threshold) = expect.min_judge_score else {
         return Ok((failures, None));
     };
-    let result = judge.judge(outcome, user_prompt, rubric).await?;
+    // Cache hit: the replayer's revise loop already judged this
+    // outcome and stamped `judge_score` onto it. Re-calling the judge
+    // would burn tokens for an answer we already have. The cached
+    // JudgeResult is reasoning-less because the replayer didn't keep
+    // the prose — the score is what gates the failure.
+    let result = match outcome.judge_score {
+        Some(score) => JudgeResult {
+            score,
+            reasoning: None,
+            inference_id: None,
+        },
+        None => judge.judge(outcome, user_prompt, rubric).await?,
+    };
     if result.score < threshold {
         failures.push(Failure::JudgeBelowThreshold {
             threshold,
@@ -429,6 +441,8 @@ mod tests {
             error_type: None,
             inference_error_count: 0,
             runtime_failure: None,
+            revision_count: 0,
+            judge_score: None,
         }
     }
 

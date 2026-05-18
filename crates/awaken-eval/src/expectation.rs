@@ -65,6 +65,16 @@ pub struct ToolCallMatcher {
     pub name: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub args_subset: Option<JsonValue>,
+    /// Optional structural subset to match against
+    /// [`awaken_ext_observability::ToolSpan::call_result`]. Same semantics
+    /// as `args_subset`. Set this to assert the tool's *outcome* (what
+    /// it returned) rather than its inputs — Anthropic Managed Agents'
+    /// "grade what was produced, not the path it took" principle applied
+    /// at the tool boundary. Requires the originating run to have
+    /// `ToolIoCapture::Enabled`; matchers with `result_subset` against a
+    /// call whose result wasn't captured count as non-matching.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub result_subset: Option<JsonValue>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub count: Option<CountConstraint>,
 }
@@ -166,8 +176,8 @@ pub enum Failure {
     ForbiddenToolUsed { tool: String },
     /// A [`ToolCallMatcher`] in `required_tool_calls` did not find a
     /// satisfying invocation. `actual_matches` counts the calls that
-    /// matched both `name` and `args_subset` (if any), letting diffs see
-    /// whether the args filter or the count constraint failed.
+    /// matched `name` AND every set sub-filter (`args_subset` /
+    /// `result_subset`), letting diffs see which filter failed.
     RequiredToolCallNotSatisfied {
         name: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -175,6 +185,8 @@ pub enum Failure {
         actual_matches: u32,
         #[serde(default, skip_serializing_if = "is_false")]
         args_filter_set: bool,
+        #[serde(default, skip_serializing_if = "is_false")]
+        result_filter_set: bool,
     },
     /// The combined token count exceeded the budget.
     TokenBudgetExceeded { budget: u32, actual: u32 },
@@ -266,6 +278,7 @@ mod tests {
             required_tool_calls: vec![ToolCallMatcher {
                 name: "search".into(),
                 args_subset: Some(serde_json::json!({"query": "x"})),
+                result_subset: None,
                 count: Some(CountConstraint::AtLeast(1)),
             }],
             max_tokens_total: Some(5000),
@@ -345,6 +358,7 @@ mod tests {
             required_tool_calls: vec![ToolCallMatcher {
                 name: "x".into(),
                 args_subset: None,
+                result_subset: None,
                 count: None,
             }],
             ..Expectation::default()
@@ -416,6 +430,7 @@ mod tests {
                     expected_count: Some(CountConstraint::AtLeast(1)),
                     actual_matches: 0,
                     args_filter_set: true,
+                    result_filter_set: false,
                 },
                 "required_tool_call_not_satisfied",
             ),

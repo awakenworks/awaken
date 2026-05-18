@@ -149,6 +149,80 @@ pub struct EvalRunSummary {
     pub passed_count: usize,
 }
 
+/// Per-(fixture, cell) roll-up across flakiness samples. Mirrors the
+/// pass@k / pass^k metrics Anthropic Managed Agents reports for
+/// multi-trial agent runs: `pass_at_k = (passed >= 1)` (any sample
+/// passed), `pass_pow_k = (passed == samples)` (every sample passed).
+///
+/// Single-sample runs (default) trivially have `pass_at_k == pass_pow_k`
+/// equal to the lone sample's pass bit — the aggregate is still
+/// well-formed but adds no signal beyond the underlying [`ReplayReport`].
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SampleAggregate {
+    pub fixture_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cell: Option<MatrixCell>,
+    /// Number of [`EvalRunItem`]s contributing to this group.
+    pub samples: u32,
+    /// How many of those `samples` had `report.passed == true`.
+    pub passed: u32,
+    /// `passed / samples`; `0.0` when `samples == 0` (never emitted in
+    /// practice since `aggregate_samples` skips empty groups).
+    pub pass_rate: f64,
+    /// `passed >= 1` — at least one sample passed. The pass@k semantic
+    /// commonly used for "can the agent succeed at all".
+    pub pass_at_k: bool,
+    /// `passed == samples` — every sample passed. The pass^k semantic
+    /// used for reliability-critical agents.
+    pub pass_pow_k: bool,
+}
+
+impl EvalRun {
+    /// Group `items` by `(fixture_id, cell)` and produce one
+    /// [`SampleAggregate`] per group. Groups are sorted by
+    /// `(fixture_id, cell)` for stable output. Empty `items` produces
+    /// an empty `Vec` (no spurious zero-aggregates).
+    pub fn aggregate_samples(&self) -> Vec<SampleAggregate> {
+        let mut groups: std::collections::BTreeMap<(String, MatrixCell), (u32, u32)> =
+            Default::default();
+        for item in &self.items {
+            let key = (
+                item.fixture_id.clone(),
+                item.cell.clone().unwrap_or_default(),
+            );
+            let entry = groups.entry(key).or_insert((0, 0));
+            entry.0 = entry.0.saturating_add(1); // samples
+            if item.report.passed {
+                entry.1 = entry.1.saturating_add(1); // passed
+            }
+        }
+        groups
+            .into_iter()
+            .map(|((fixture_id, cell), (samples, passed))| {
+                let cell_opt = if cell == MatrixCell::default() {
+                    None
+                } else {
+                    Some(cell)
+                };
+                let pass_rate = if samples == 0 {
+                    0.0
+                } else {
+                    f64::from(passed) / f64::from(samples)
+                };
+                SampleAggregate {
+                    fixture_id,
+                    cell: cell_opt,
+                    samples,
+                    passed,
+                    pass_rate,
+                    pass_at_k: passed >= 1,
+                    pass_pow_k: passed == samples && samples > 0,
+                }
+            })
+            .collect()
+    }
+}
+
 impl From<&EvalRun> for EvalRunSummary {
     fn from(run: &EvalRun) -> Self {
         let passed_count = run.items.iter().filter(|i| i.report.passed).count();
