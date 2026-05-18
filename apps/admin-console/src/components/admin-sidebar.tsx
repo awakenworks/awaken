@@ -32,7 +32,7 @@ export function AdminSidebar({
       data-open={drawerOpen ? "true" : "false"}
       className={[
         // Mobile: fixed drawer that slides in from left when [data-open=true]
-        "fixed inset-y-0 left-0 z-40 flex w-72 flex-col bg-canvas text-fg shadow-overlay transition-transform duration-fast",
+        "fixed inset-y-0 left-0 z-40 flex w-[264px] flex-col bg-canvas text-fg shadow-overlay transition-transform duration-fast",
         "data-[open=false]:-translate-x-full data-[open=true]:translate-x-0",
         // Desktop: static sidebar, no drawer behavior
         "md:static md:translate-x-0 md:min-h-screen md:border-r md:border-line md:shadow-none md:data-[open=false]:translate-x-0",

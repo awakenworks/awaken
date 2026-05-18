@@ -86,7 +86,7 @@ export function ConfirmDialogProvider({ children }: { children: ReactNode }) {
             mouseDownOnBackdropRef.current = false;
           }}
         >
-          <div className="w-full max-w-md rounded-md border border-line bg-surface p-6 shadow-2xl">
+          <div className="w-full max-w-[480px] rounded-sm border border-line bg-surface p-6 shadow-2xl">
             <h2
               id="confirm-dialog-title"
               className="text-lg font-semibold text-fg-strong"
@@ -102,7 +102,7 @@ export function ConfirmDialogProvider({ children }: { children: ReactNode }) {
               <button
                 type="button"
                 onClick={() => respond(false)}
-                className="rounded-xl border border-line-strong px-4 py-2 text-sm font-medium text-fg transition hover:bg-soft"
+                className="rounded-sm border border-line-strong px-4 py-2 text-sm font-medium text-fg transition hover:bg-soft"
               >
                 {pending.cancelLabel ?? "Cancel"}
               </button>
@@ -112,8 +112,8 @@ export function ConfirmDialogProvider({ children }: { children: ReactNode }) {
                 onClick={() => respond(true)}
                 className={
                   pending.tone === "destructive"
-                    ? "rounded-xl bg-tone-error px-4 py-2 text-sm font-medium text-bg transition hover:bg-tone-error/80"
-                    : "rounded-xl bg-accent px-4 py-2 text-sm font-medium text-accent-text transition hover:opacity-90"
+                    ? "rounded-sm bg-tone-error px-4 py-2 text-sm font-medium text-bg transition hover:bg-tone-error/80"
+                    : "rounded-sm bg-accent px-4 py-2 text-sm font-medium text-accent-text transition hover:opacity-90"
                 }
               >
                 {pending.confirmLabel ?? "Confirm"}

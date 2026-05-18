@@ -45,7 +45,7 @@ export const Button = forwardRef<HTMLButtonElement, ButtonProps>(function Button
   ref,
 ) {
   const cls = [
-    "inline-flex items-center justify-center gap-1.5 rounded-md font-medium transition-colors",
+    "inline-flex items-center justify-center gap-1.5 rounded-sm font-medium transition-colors",
     "focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus",
     "disabled:cursor-not-allowed",
     SIZE[size],

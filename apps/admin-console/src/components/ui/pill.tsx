@@ -11,15 +11,27 @@ const TONE_CLASS: Record<PillTone, string> = {
   agent: "bg-agent-tint text-agent-fg border-agent-stripe/30",
 };
 
+const DOT_CLASS: Record<PillTone, string> = {
+  neutral: "bg-fg-faint",
+  info: "bg-tone-info",
+  warn: "bg-tone-warn",
+  success: "bg-tone-success",
+  error: "bg-tone-error",
+  agent: "bg-agent",
+};
+
 export function Pill({
   tone = "neutral",
   className = "",
   title,
+  dot = false,
   children,
 }: {
   tone?: PillTone;
   className?: string;
   title?: string;
+  /** Show a 6px status dot before the label. Default off for neutral; recommended on for status tones (per awaken-ui spec). */
+  dot?: boolean;
   children: ReactNode;
 }) {
   return (
@@ -27,6 +39,12 @@ export function Pill({
       title={title}
       className={`inline-flex h-[22px] items-center gap-1.5 rounded-pill border px-2 text-xs font-medium ${TONE_CLASS[tone]} ${className}`.trim()}
     >
+      {dot && (
+        <span
+          aria-hidden="true"
+          className={`size-1.5 rounded-full ${DOT_CLASS[tone]}`}
+        />
+      )}
       {children}
     </span>
   );
@@ -55,7 +73,7 @@ export function PillStack({
         </Pill>
       ))}
       {overflow > 0 && (
-        <Pill tone="neutral" className="text-fg-faint" >
+        <Pill tone="neutral" className="text-fg-faint">
           +{overflow}
         </Pill>
       )}

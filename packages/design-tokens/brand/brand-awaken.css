@@ -20,6 +20,8 @@
 
 :root,
 :root[data-theme="light"] {
+  color-scheme: light;
+
   --aw-bg:           #ffffff;
   --aw-bg-canvas:    #fafafa;
   --aw-bg-elevated:  #ffffff;
@@ -42,7 +44,14 @@
   --aw-focus:        #0a0a0a;
 }
 
+/* Dark · BOTH explicit (data-theme="dark") AND auto (prefers-color-scheme:
+ * dark, no data-theme set). Without the @media branch the base
+ * `tokens-auto-dark.css` slate ladder would win on system-dark + no
+ * data-theme, leaving brand-awaken's achromatic discipline disabled and
+ * native form controls stuck rendering light. */
 :root[data-theme="dark"] {
+  color-scheme: dark;
+
   --aw-bg:           #0a0a0a;
   --aw-bg-canvas:    #111111;
   --aw-bg-elevated:  #111111;
@@ -65,6 +74,33 @@
   --aw-focus:        #ededed;
 }
 
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme]) {
+    color-scheme: dark;
+
+    --aw-bg:           #0a0a0a;
+    --aw-bg-canvas:    #111111;
+    --aw-bg-elevated:  #111111;
+    --aw-bg-soft:      #1a1a1a;
+    --aw-bg-muted:     #161616;
+    --aw-bg-hover:     #1d1d1d;
+    --aw-bg-pressed:   #232323;
+
+    --aw-text:         #ededed;
+    --aw-text-strong:  #ffffff;
+    --aw-text-soft:    #9a9a9a;
+    --aw-text-faint:   #5e5e5e;
+
+    --aw-border:       #232323;
+    --aw-border-strong:#2f2f2f;
+
+    --aw-accent:       #ededed;
+    --aw-accent-text:  #0a0a0a;
+    --aw-accent-soft:  #232323;
+    --aw-focus:        #ededed;
+  }
+}
+
 /* Type IS the brand — mono everywhere. */
 :root {
   --aw-font-sans: var(--aw-font-mono);
@@ -74,4 +110,134 @@
   --aw-radius-lg:  6px;
   --aw-radius-xl:  8px;
   --aw-radius-2xl: 10px;
+}
+
+/* ──────────────────────────────────────────────────────────
+ * Canonical bare-name aliases.
+ *
+ * The design handoff (awaken-design/brand-awaken.css) uses bare
+ * tokens (`--bg`, `--text`, `--r-card`, etc.). Repo code uses the
+ * `--aw-*` namespace. We expose BOTH so:
+ *   1. existing `--aw-*` consumers keep working,
+ *   2. spec-conformant code (paste from awaken-ui.html /
+ *      docs-styling.html) resolves without rename,
+ *   3. one source of truth (this file) controls both names.
+ * ────────────────────────────────────────────────────────── */
+:root {
+  /* Bare-name aliases · matches awaken-design canonical brand css */
+  --bg:            var(--aw-bg);
+  --bg-1:          var(--aw-bg-elevated);
+  --bg-2:          var(--aw-bg-soft);
+  --bg-3:          var(--aw-bg-muted);
+  --bg-soft:       var(--aw-bg-soft);
+
+  --text:          var(--aw-text);
+  --text-strong:   var(--aw-text-strong);
+  --text-soft:     var(--aw-text-soft);
+  --text-faint:    var(--aw-text-faint);
+
+  --line:          var(--aw-border);
+  --line-strong:   var(--aw-border-strong);
+
+  --accent:        var(--aw-accent);
+  --accent-text:   var(--aw-accent-text);
+  --accent-soft:   var(--aw-accent-soft);
+  --accent-hover:  var(--aw-text-strong);
+  --focus:         var(--aw-focus);
+
+  --r-card: var(--aw-radius-sm);
+  --r-mark: 7px;
+  --r-sm:   var(--aw-radius-sm);
+  --r-md:   var(--aw-radius-md);
+
+  --tracking-body:  -0.005em;
+  --tracking-tight: -0.010em;
+  --lh-body: 1.6;
+
+  /* `--brand-*` aliases · matches docs-styling.html / awaken-ui.html spec
+   * markup. Same source of truth (--aw-*), expressed under the prefix the
+   * design specs use, so spec HTML pastes in zero-change. */
+  --brand-bg:          var(--aw-bg);
+  --brand-bg-elevated: var(--aw-bg-elevated);
+  --brand-bg-soft:     var(--aw-bg-soft);
+  --brand-bg-muted:    var(--aw-bg-muted);
+  --brand-bg-canvas:   var(--aw-bg-canvas);
+
+  --brand-text:        var(--aw-text);
+  --brand-text-strong: var(--aw-text-strong);
+  --brand-text-soft:   var(--aw-text-soft);
+  --brand-text-faint:  var(--aw-text-faint);
+
+  --brand-border:        var(--aw-border);
+  --brand-border-strong: var(--aw-border-strong);
+
+  --brand-accent:        var(--aw-accent);
+  --brand-accent-text:   var(--aw-accent-text);
+  --brand-accent-soft:   var(--aw-accent-soft);
+  --brand-accent-hover:  var(--aw-text-strong);
+  --brand-focus:         var(--aw-focus);
+
+  --brand-radius-card: var(--aw-radius-sm);
+  --brand-radius-mark: 7px;
+  --brand-radius-sm:   var(--aw-radius-sm);
+  --brand-radius-md:   var(--aw-radius-md);
+
+  --brand-font-body:    var(--aw-font-mono);
+  --brand-font-display: var(--aw-font-mono);
+  --brand-font-chrome:  var(--aw-font-mono);
+  --brand-font-mono:    var(--aw-font-mono);
+
+  --brand-letter-spacing-body:  -0.005em;
+  --brand-letter-spacing-tight: -0.010em;
+  --brand-line-height: 1.6;
+
+  /* State tokens · alias the canonical --aw-state-* palette so spec markup
+   * (`var(--brand-state-progress)` from states.html) resolves to the same
+   * values existing admin / www components already use. */
+  --brand-state-backlog:  var(--aw-state-backlog);
+  --brand-state-progress: var(--aw-state-progress);
+  --brand-state-review:   var(--aw-state-review);
+  --brand-state-done:     var(--aw-state-done);
+  --brand-state-blocked:  var(--aw-state-blocked);
+  --brand-state-paused:   var(--aw-state-paused);
+
+  /* 9-phase ribbon · alias the canonical --aw-phase-* set. Repo uses
+   * semantic phase names; spec uses positional (p1..p9). Same palette,
+   * two names, one source. */
+  --brand-p1: var(--aw-phase-resolve);
+  --brand-p2: var(--aw-phase-prepare);
+  --brand-p3: var(--aw-phase-prompt);
+  --brand-p4: var(--aw-phase-stream);
+  --brand-p5: var(--aw-phase-gate);
+  --brand-p6: var(--aw-phase-tool);
+  --brand-p7: var(--aw-phase-commit);
+  --brand-p8: var(--aw-phase-events);
+  --brand-p9: var(--aw-phase-finalize);
+
+  /* Agent identity · 5-piece ladder (states.html / awaken-ui.html spec)
+   * --brand-agent / -fg alias the canonical 1-tier --aw-agent set.
+   * Three numbered tints + band are NEW (spec wants a ladder, repo had
+   * only one tint level); derived via color-mix so they track --aw-agent. */
+  --brand-agent:        var(--aw-agent);
+  --brand-agent-fg:     var(--aw-agent-fg);
+  --brand-agent-tint-1: color-mix(in oklch, var(--aw-agent) 10%, transparent);
+  --brand-agent-tint-2: color-mix(in oklch, var(--aw-agent) 15%, transparent);
+  --brand-agent-tint-3: color-mix(in oklch, var(--aw-agent) 25%, transparent);
+  --brand-agent-band:   color-mix(in oklch, var(--aw-agent) 85%, transparent);
+}
+
+/* CJK locale tracking · pure-mono + Latin tracking jams glyphs;
+ * neutralise (0 or slightly positive) and loosen line-height per
+ * the i18n-cjk.html spec. Affects every consumer that reads the
+ * --brand-letter-spacing-body / --lh-body / --tracking-body tokens. */
+:root[lang="zh-CN"],
+:root[data-locale="zh-CN"],
+[lang="zh-CN"],
+[data-locale="zh-CN"] {
+  --tracking-body:  0;
+  --tracking-tight: -0.003em;
+  --lh-body: 1.7;
+  --brand-letter-spacing-body:  0;
+  --brand-letter-spacing-tight: -0.003em;
+  --brand-line-height: 1.7;
 }
