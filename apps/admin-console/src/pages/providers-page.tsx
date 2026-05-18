@@ -341,9 +341,9 @@ export function ProvidersPage() {
     <div className="mx-auto max-w-6xl p-6 md:p-8">
       <div className="mb-4 flex items-end justify-between gap-4">
         <div className="flex items-baseline gap-3">
-          <h2 className="text-2xl font-semibold tracking-title-em text-fg-strong">
+          <h1 className="text-[22px] font-bold tracking-title-em text-fg-strong">
             {t("providers.title")}
-          </h2>
+          </h1>
           <span aria-hidden className="font-mono text-sm text-fg-faint">
             {crud.items.length}
           </span>
@@ -351,14 +351,14 @@ export function ProvidersPage() {
         <button
           type="button"
           onClick={startCreate}
-          className="inline-flex h-9 items-center rounded-md bg-accent px-3 text-sm font-medium text-accent-text transition hover:opacity-90"
+          className="inline-flex h-9 items-center rounded-sm bg-accent px-3 text-sm font-medium text-accent-text transition hover:opacity-90"
         >
           {t("providers.new")}
         </button>
       </div>
 
       {crud.draft ? (
-        <section className="mb-6 rounded-md border border-line bg-surface p-5 shadow-sm">
+        <section className="mb-6 rounded-sm border border-line bg-surface p-5 shadow-sm">
           <div className="flex items-center justify-between">
             <h3 className="text-lg font-semibold text-fg-strong">
               {crud.isEditingExisting
@@ -386,7 +386,7 @@ export function ProvidersPage() {
                   crud.setDraft((current) => (current ? { ...current, id: value } : current));
                   if (errors.id) setErrors((e) => ({ ...e, id: undefined }));
                 }}
-                className="w-full rounded-xl border border-line-strong px-3 py-2 text-sm text-fg-strong outline-none transition focus:border-line-strong disabled:bg-muted disabled:text-fg-soft aria-[invalid=true]:border-tone-error"
+                className="w-full rounded-sm border border-line-strong px-3 py-2 text-sm text-fg outline-none transition focus:border-fg disabled:bg-muted disabled:text-fg-soft aria-[invalid=true]:border-tone-error"
               />
             </Field>
 
@@ -412,7 +412,7 @@ export function ProvidersPage() {
                     };
                   });
                 }}
-                className="w-full rounded-xl border border-line-strong bg-surface px-3 py-2 text-sm text-fg-strong outline-none transition focus:border-line-strong"
+                className="w-full rounded-sm border border-line-strong bg-surface px-3 py-2 text-sm text-fg outline-none transition focus:border-fg"
               >
                 {adapterOptions.map((adapter) => (
                   <option key={adapter} value={adapter}>
@@ -448,7 +448,7 @@ export function ProvidersPage() {
                     setSaJsonDraft("");
                     setApiKeyMode("replace");
                   }}
-                  className="w-full rounded-xl border border-line-strong bg-surface px-3 py-2 text-sm text-fg-strong outline-none transition focus:border-line-strong"
+                  className="w-full rounded-sm border border-line-strong bg-surface px-3 py-2 text-sm text-fg outline-none transition focus:border-fg"
                 >
                   <option value="bearer">{t("providers.credentialsKind.bearer")}</option>
                   <option value="service_account_json">
@@ -471,7 +471,7 @@ export function ProvidersPage() {
                       : current,
                   )
                 }
-                className="w-full rounded-xl border border-line-strong px-3 py-2 text-sm text-fg-strong outline-none transition focus:border-line-strong"
+                className="w-full rounded-sm border border-line-strong px-3 py-2 text-sm text-fg outline-none transition focus:border-fg"
               />
             </Field>
 
@@ -490,7 +490,7 @@ export function ProvidersPage() {
                       : current,
                   )
                 }
-                className="w-full rounded-xl border border-line-strong px-3 py-2 text-sm text-fg-strong outline-none transition focus:border-line-strong"
+                className="w-full rounded-sm border border-line-strong px-3 py-2 text-sm text-fg outline-none transition focus:border-fg"
               />
             </Field>
           </div>
@@ -566,7 +566,7 @@ export function ProvidersPage() {
                     rows={8}
                     placeholder={t("providers.fields.saJsonPh")}
                     aria-invalid={Boolean(errors.saJson)}
-                    className="w-full rounded-md border border-line-strong bg-surface px-3 py-2 font-mono text-xs text-fg-strong outline-none transition-colors focus:border-link aria-[invalid=true]:border-tone-error"
+                    className="w-full rounded-sm border border-line-strong bg-surface px-3 py-2 font-mono text-xs text-fg outline-none transition-colors focus:border-link aria-[invalid=true]:border-tone-error"
                   />
                   {errors.saJson && (
                     <span role="alert" className="mt-1 block text-xs text-tone-error">
@@ -581,7 +581,7 @@ export function ProvidersPage() {
                   value={apiKeyDraft}
                   onChange={(event) => setApiKeyDraft(event.target.value)}
                   placeholder={crud.isEditingExisting ? "sk-…" : "Optional API key"}
-                  className="w-full rounded-md border border-line-strong bg-surface px-3 py-2 font-mono text-sm text-fg-strong outline-none transition-colors focus:border-link"
+                  className="w-full rounded-sm border border-line-strong bg-surface px-3 py-2 font-mono text-sm text-fg outline-none transition-colors focus:border-link"
                 />
               )}
             </SecretField>
@@ -592,14 +592,14 @@ export function ProvidersPage() {
               type="button"
               onClick={() => void handleSave()}
               disabled={crud.saving}
-              className="rounded-xl bg-accent px-4 py-2 text-sm font-medium text-accent-text transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
+              className="rounded-sm bg-accent px-4 py-2 text-sm font-medium text-accent-text transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
             >
               {crud.saving ? "Saving..." : "Save"}
             </button>
             <button
               type="button"
               onClick={cancelEdit}
-              className="rounded-xl border border-line-strong px-4 py-2 text-sm font-medium text-fg transition hover:bg-soft"
+              className="rounded-sm border border-line-strong px-4 py-2 text-sm font-medium text-fg transition hover:bg-soft"
             >
               Cancel
             </button>
@@ -608,7 +608,7 @@ export function ProvidersPage() {
                 type="button"
                 onClick={() => void handleTestConnection()}
                 disabled={testing}
-                className="rounded-xl border border-line-strong px-4 py-2 text-sm font-medium text-fg transition hover:bg-soft disabled:cursor-not-allowed disabled:opacity-60"
+                className="rounded-sm border border-line-strong px-4 py-2 text-sm font-medium text-fg transition hover:bg-soft disabled:cursor-not-allowed disabled:opacity-60"
               >
                 {testing ? "Testing..." : "Test connection"}
               </button>
@@ -617,7 +617,7 @@ export function ProvidersPage() {
 
           {testStatus !== null ? (
             <div
-              className={`mt-3 flex items-center gap-2 rounded-xl border px-4 py-2 text-sm ${
+              className={`mt-3 flex items-center gap-2 rounded-sm border px-4 py-2 text-sm ${
                 testStatus.ok
                   ? "border-tone-success/30 bg-tone-success/10 text-tone-success"
                   : "border-tone-error/30 bg-tone-error/10 text-tone-error"
@@ -648,7 +648,7 @@ export function ProvidersPage() {
         />
       </div>
 
-      <div className="overflow-x-auto rounded-md border border-line bg-surface shadow-card">
+      <div className="overflow-x-auto rounded-sm border border-line bg-surface shadow-card">
         {!crud.loading && crud.items.length === 0 ? (
           <EmptyState
             title={t("providers.empty.title")}
@@ -657,7 +657,7 @@ export function ProvidersPage() {
               <button
                 type="button"
                 onClick={startCreate}
-                className="inline-flex h-9 items-center rounded-md bg-accent px-4 text-sm font-medium text-accent-text transition-colors hover:opacity-90"
+                className="inline-flex h-9 items-center rounded-sm bg-accent px-4 text-sm font-medium text-accent-text transition-colors hover:opacity-90"
               >
                 {t("providers.new")}
               </button>

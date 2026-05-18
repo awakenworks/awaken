@@ -81,7 +81,7 @@ export function RecentTracesDrawer({
           <button
             type="button"
             onClick={onClose}
-            className="rounded-md border border-line-strong bg-soft px-2 py-1 text-xs text-fg-soft transition hover:bg-muted"
+            className="rounded-sm border border-line-strong bg-soft px-2 py-1 text-xs text-fg-soft transition hover:bg-muted"
           >
             Close
           </button>
@@ -208,7 +208,7 @@ function RunEventViewer({ runId, onBack }: { runId: string; onBack: () => void }
         <button
           type="button"
           onClick={onBack}
-          className="rounded-md border border-line-strong bg-soft px-2 py-1 text-[11px] text-fg-soft transition hover:bg-muted"
+          className="rounded-sm border border-line-strong bg-soft px-2 py-1 text-[11px] text-fg-soft transition hover:bg-muted"
         >
           ← Back to runs
         </button>
@@ -294,7 +294,7 @@ function EventList({
             type="button"
             onClick={onLoadMore}
             disabled={loadingMore}
-            className="rounded-md border border-line-strong bg-surface px-3 py-1.5 text-xs font-medium text-fg-soft transition hover:bg-soft disabled:cursor-not-allowed disabled:opacity-60"
+            className="rounded-sm border border-line-strong bg-surface px-3 py-1.5 text-xs font-medium text-fg-soft transition hover:bg-soft disabled:cursor-not-allowed disabled:opacity-60"
           >
             {loadingMore ? "Loading…" : "Load more"}
           </button>
@@ -320,7 +320,7 @@ function EventRow({ event }: { event: TraceEvent }) {
           </span>
         ) : null}
       </summary>
-      <pre className="mt-2 max-h-48 overflow-auto rounded-md bg-code-bg px-2 py-2 font-mono text-[10px] text-code-fg">
+      <pre className="mt-2 max-h-48 overflow-auto rounded-sm bg-code-bg px-2 py-2 font-mono text-[10px] text-code-fg">
         {JSON.stringify(redacted, null, 2)}
       </pre>
     </details>

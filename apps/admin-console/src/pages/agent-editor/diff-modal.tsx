@@ -94,7 +94,7 @@ export function DiffModal({
           <button
             type="button"
             onClick={onClose}
-            className="rounded-md border border-line bg-soft px-2 py-1 text-xs text-fg-soft hover:text-fg"
+            className="rounded-sm border border-line bg-soft px-2 py-1 text-xs text-fg-soft hover:text-fg"
           >
             {t("common.close")}
           </button>
@@ -105,7 +105,7 @@ export function DiffModal({
           ) : (
             <ul className="space-y-3">
               {changes.map((change) => (
-                <li key={change.path} className="rounded-md border border-line bg-soft p-3">
+                <li key={change.path} className="rounded-sm border border-line bg-soft p-3">
                   <div className="font-mono text-xs font-medium text-fg-strong">{change.path}</div>
                   <div className="mt-2 grid gap-2 md:grid-cols-2">
                     <div>

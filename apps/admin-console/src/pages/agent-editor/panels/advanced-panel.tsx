@@ -21,10 +21,10 @@ export function AdvancedPanel({
       : t("editor.savePayload.advancedFull");
 
   return (
-    <section className="rounded-md border border-line bg-surface p-5 shadow-sm">
+    <section className="rounded-sm border border-line bg-surface p-5 shadow-sm">
       <h3 className="text-lg font-semibold text-fg-strong">{modeLabel}</h3>
       <p className="mt-2 text-sm text-fg-soft">{description}</p>
-      <pre className="mt-4 max-h-[36rem] overflow-auto rounded-xl bg-code-bg p-4 text-xs text-code-fg">
+      <pre className="mt-4 max-h-[36rem] overflow-auto rounded-sm bg-code-bg p-4 text-xs text-code-fg">
         {prettyStableStringify(savePayload)}
       </pre>
     </section>

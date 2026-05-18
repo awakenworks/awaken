@@ -168,7 +168,7 @@ function ToastViewport({
       className="pointer-events-none fixed bottom-4 right-4 z-50 flex max-w-sm flex-col gap-2"
     >
       {displaced > 0 && (
-        <div className="pointer-events-auto flex items-center justify-between rounded-xl border border-line bg-surface px-3 py-1.5 text-xs text-fg-soft shadow">
+        <div className="pointer-events-auto flex items-center justify-between rounded-sm border border-line bg-surface px-3 py-1.5 text-xs text-fg-soft shadow">
           <span>+ {displaced} earlier</span>
           <button
             type="button"
@@ -187,25 +187,19 @@ function ToastViewport({
   );
 }
 
-const TONE_STYLES: Record<
-  ToastTone,
-  { container: string; badge: string; label: string }
-> = {
-  success: {
-    container: "border-tone-success/30 bg-tone-success/10 text-tone-success",
-    badge: "bg-tone-success/20 text-tone-success",
-    label: "Success",
-  },
-  error: {
-    container: "border-tone-error/30 bg-tone-error/10 text-tone-error",
-    badge: "bg-tone-error/20 text-tone-error",
-    label: "Error",
-  },
-  info: {
-    container: "border-line bg-surface text-fg-strong",
-    badge: "bg-muted text-fg-strong",
-    label: "Info",
-  },
+/* Spec (awaken-ui.html .toast): neutral elevated surface + 6px dot LEFT
+ * coloured per tone, no UPPERCASE badge, no tinted bg. Status reads via
+ * the dot + (sr-only) label rather than a chip. */
+const TONE_DOT: Record<ToastTone, string> = {
+  success: "bg-tone-success",
+  error:   "bg-tone-error",
+  info:    "bg-tone-info",
+};
+
+const TONE_LABEL: Record<ToastTone, string> = {
+  success: "Success",
+  error:   "Error",
+  info:    "Info",
 };
 
 function ToastCard({
@@ -215,49 +209,40 @@ function ToastCard({
   toast: Toast;
   onDismiss: (id: string) => void;
 }) {
-  const styles = TONE_STYLES[toast.tone];
   return (
     <div
       role="alert"
       data-testid={`toast-${toast.tone}`}
-      className={[
-        "pointer-events-auto rounded-md border p-4 shadow-lg",
-        styles.container,
-      ].join(" ")}
+      className="pointer-events-auto flex items-start gap-2.5 rounded-sm border border-line-strong bg-surface px-3.5 py-2.5 text-fg shadow-card"
     >
-      <div className="flex items-start gap-3">
-        <span
-          className={[
-            "rounded-full px-2 py-0.5 text-[11px] font-semibold uppercase tracking-[0.18em]",
-            styles.badge,
-          ].join(" ")}
-        >
-          {styles.label}
-        </span>
-        <div className="min-w-0 flex-1">
-          <div className="text-sm font-semibold leading-5">{toast.message}</div>
-          {toast.detail ? (
-            <div className="mt-1 break-words text-xs leading-5 text-fg">
-              {toast.detail}
-            </div>
-          ) : null}
-        </div>
-        <button
-          type="button"
-          aria-label="Dismiss"
-          onClick={() => onDismiss(toast.id)}
-          onKeyDown={(e: KeyboardEvent<HTMLButtonElement>) => {
-            if (e.key === "Escape") {
-              e.preventDefault();
-              e.stopPropagation();
-              onDismiss(toast.id);
-            }
-          }}
-          className="rounded-md px-1.5 text-sm text-fg-faint transition hover:text-fg"
-        >
-          ×
-        </button>
+      <span
+        aria-hidden
+        className={`mt-1.5 inline-block size-1.5 shrink-0 rounded-full ${TONE_DOT[toast.tone]}`}
+      />
+      <span className="sr-only">{TONE_LABEL[toast.tone]}:</span>
+      <div className="min-w-0 flex-1">
+        <div className="text-sm font-medium leading-5">{toast.message}</div>
+        {toast.detail ? (
+          <div className="mt-1 break-words text-xs leading-5 text-fg-soft">
+            {toast.detail}
+          </div>
+        ) : null}
       </div>
+      <button
+        type="button"
+        aria-label="Dismiss"
+        onClick={() => onDismiss(toast.id)}
+        onKeyDown={(e: KeyboardEvent<HTMLButtonElement>) => {
+          if (e.key === "Escape") {
+            e.preventDefault();
+            e.stopPropagation();
+            onDismiss(toast.id);
+          }
+        }}
+        className="-mr-1 rounded-sm px-1.5 text-sm text-fg-faint transition hover:text-fg"
+      >
+        ×
+      </button>
     </div>
   );
 }

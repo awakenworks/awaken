@@ -125,7 +125,7 @@ export function TraceDetailPanel({
                 {(Object.entries(failuresByCategory) as [ScorerCategory, Failure[]][])
                   .filter(([, list]) => list.length > 0)
                   .map(([cat, list]) => (
-                    <li key={cat} className="rounded-md border border-line bg-soft px-3 py-2">
+                    <li key={cat} className="rounded-sm border border-line bg-soft px-3 py-2">
                       <div className="flex items-center gap-2">
                         <Pill tone={cat === "judge" ? "info" : "warn"}>
                           {scorerCategoryLabel(cat)}
@@ -151,7 +151,7 @@ export function TraceDetailPanel({
           <section className="border-t border-line px-6 py-4">
             <h3 className="text-sm font-semibold text-fg-strong">{t("trace.io.output")}</h3>
             {report.final_text ? (
-              <pre className="mt-2 max-h-64 overflow-auto rounded-md bg-code-bg px-3 py-2 font-mono text-[11px] leading-5 text-code-fg">
+              <pre className="mt-2 max-h-64 overflow-auto rounded-sm bg-code-bg px-3 py-2 font-mono text-[11px] leading-5 text-code-fg">
                 {report.final_text}
               </pre>
             ) : (
@@ -165,7 +165,7 @@ export function TraceDetailPanel({
             <p className="mt-1 text-xs text-fg-faint">
               {t("trace.spans.meta", { total: (report.session_duration_ms / 1000).toFixed(2), count: report.inference_count + report.tool_count })}
             </p>
-            <div className="mt-3 rounded-md border border-dashed border-line bg-canvas p-4 text-xs text-fg-soft">
+            <div className="mt-3 rounded-sm border border-dashed border-line bg-canvas p-4 text-xs text-fg-soft">
               Per-span trace tree requires backend trace collection (not yet wired).
               The aggregate counts above come from <code className="font-mono">ReplayReport</code>.
             </div>

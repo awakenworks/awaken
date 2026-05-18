@@ -146,7 +146,7 @@ describe("router smoke", () => {
 
     renderRoute("/skills/writer");
 
-    expect(await screen.findByRole("heading", { level: 2, name: "Writer" })).toBeDefined();
+    expect(await screen.findByRole("heading", { level: 1, name: "Writer" })).toBeDefined();
     expect(await screen.findByText("agent-a")).toBeDefined();
   });
 
@@ -212,7 +212,7 @@ describe("router smoke", () => {
     renderRoute("/agents/alpha/dashboard");
 
     expect(
-      await screen.findByRole("heading", { level: 2, name: "Dashboard · alpha" }),
+      await screen.findByRole("heading", { level: 1, name: "Dashboard · alpha" }),
     ).toBeDefined();
     expect(await screen.findByText(/Rolling-window snapshot/)).toBeDefined();
   });
@@ -226,7 +226,7 @@ describe("router smoke", () => {
     { path: "/eval-reports", header: "Eval Reports" },
   ])("renders $path without crashing", async ({ path, header }) => {
     renderRoute(path);
-    expect(await screen.findByRole("heading", { level: 2, name: header })).toBeDefined();
+    expect(await screen.findByRole("heading", { level: 1, name: header })).toBeDefined();
   });
 });
 
@@ -258,7 +258,7 @@ describe("agents-page URL state", () => {
 
     renderRoute("/agents?q=foo&sort=model_id&dir=desc&size=50&page=2");
     // Wait for the page to mount.
-    expect(await screen.findByRole("heading", { level: 2, name: "Agents" })).toBeDefined();
+    expect(await screen.findByRole("heading", { level: 1, name: "Agents" })).toBeDefined();
     // The search bar input should reflect the URL param (aria-label from sr-only span).
     const searchInput = screen.getByRole("searchbox");
     expect((searchInput as HTMLInputElement).value).toBe("foo");

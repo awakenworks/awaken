@@ -53,7 +53,7 @@ export function ReferenceGraph({
   const titleId = useId();
   if (columns.length === 0) {
     return (
-      <div className="rounded-md border border-dashed border-line bg-canvas px-6 py-12 text-center text-sm text-fg-soft">
+      <div className="rounded-sm border border-dashed border-line bg-canvas px-6 py-12 text-center text-sm text-fg-soft">
         No nodes to graph yet.
       </div>
     );
@@ -135,7 +135,7 @@ export function ReferenceGraph({
               <div
                 key={node.id}
                 className={[
-                  "absolute flex flex-col justify-center rounded-md border bg-surface px-3 py-2 shadow-card",
+                  "absolute flex flex-col justify-center rounded-sm border bg-surface px-3 py-2 shadow-card",
                   TONE_BORDER[node.tone ?? "neutral"],
                 ].join(" ")}
                 style={{ left: pos.x, top: pos.y, width: NODE_W, height: NODE_H }}

@@ -11,14 +11,14 @@ export function DelegatesPanel({
 }) {
   if (!capabilities || capabilities.agents.length === 0) {
     return (
-      <div className="rounded-md border border-dashed border-line bg-surface p-6 text-sm text-fg-soft">
+      <div className="rounded-sm border border-dashed border-line bg-surface p-6 text-sm text-fg-soft">
         No other agents are registered yet, so this agent cannot delegate.
       </div>
     );
   }
   const selected = spec.delegates ?? [];
   return (
-    <section className="rounded-md border border-line bg-surface p-5 shadow-sm">
+    <section className="rounded-sm border border-line bg-surface p-5 shadow-sm">
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
           <h3 className="text-lg font-semibold text-fg-strong">Delegates</h3>
@@ -50,7 +50,7 @@ export function DelegatesPanel({
               <label
                 key={agentId}
                 className={[
-                  "rounded-xl border px-4 py-3 text-sm transition-colors",
+                  "rounded-sm border px-4 py-3 text-sm transition-colors",
                   checked
                     ? "border-agent-stripe/40 bg-agent-tint text-agent-fg"
                     : "border-line bg-soft text-fg hover:border-line-strong",

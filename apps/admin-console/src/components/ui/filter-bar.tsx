@@ -13,7 +13,7 @@ export function FilterBar({
 }) {
   const { t } = useTranslation();
   return (
-    <div className="mb-3 flex flex-wrap items-center gap-3 rounded-md border border-line bg-soft px-3 py-2">
+    <div className="mb-3 flex flex-wrap items-center gap-3 rounded-sm border border-line bg-soft px-3 py-2">
       {filters !== undefined && (
         <div className="flex flex-wrap items-center gap-2">
           <Eyebrow>{t("common.filter")}</Eyebrow>

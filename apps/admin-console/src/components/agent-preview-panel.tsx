@@ -94,7 +94,7 @@ export function AgentPreviewPanel({
   }
 
   return (
-    <aside className="rounded-md border border-line bg-surface p-4 shadow-sm xl:sticky xl:top-6">
+    <aside className="rounded-sm border border-line bg-surface p-4 shadow-sm xl:sticky xl:top-6">
       <div className="flex items-baseline justify-between gap-3">
         <h3 className="text-sm font-semibold text-fg-strong">
           Sandbox <span className="font-normal text-fg-soft">runs against current draft</span>
@@ -126,7 +126,7 @@ export function AgentPreviewPanel({
         onClose={() => setTracesOpen(false)}
       />
 
-      <div className="mt-3 rounded-md bg-code-bg px-3 py-2 font-mono text-[11px] leading-5 text-code-fg">
+      <div className="mt-3 rounded-sm bg-code-bg px-3 py-2 font-mono text-[11px] leading-5 text-code-fg">
         <span className="text-code-fg/70">id=</span>
         {previewDraft.id} <span className="text-code-fg/70">model=</span>
         {previewDraft.model_id || "unassigned"}
@@ -135,13 +135,13 @@ export function AgentPreviewPanel({
       <PreviewStatsBar messages={messages} latencyMs={lastLatencyMs} busy={busy} />
 
       {blockedReason ? (
-        <div className="mt-4 rounded-md border border-tone-warn/35 bg-tone-warn/10 px-4 py-3 text-sm text-tone-warn">
+        <div className="mt-4 rounded-sm border border-tone-warn/35 bg-tone-warn/10 px-4 py-3 text-sm text-tone-warn">
           {blockedReason}
         </div>
       ) : null}
 
       {error ? (
-        <div className="mt-4 rounded-md border border-tone-error/30 bg-tone-error/10 px-4 py-3 text-sm text-tone-error">
+        <div className="mt-4 rounded-sm border border-tone-error/30 bg-tone-error/10 px-4 py-3 text-sm text-tone-error">
           {safeErrorMessage(error)}
         </div>
       ) : null}
@@ -163,7 +163,7 @@ export function AgentPreviewPanel({
                   <div
                     key={message.id}
                     className={[
-                      "max-w-[92%] rounded-md px-4 py-3 text-sm leading-6 shadow-sm",
+                      "max-w-[92%] rounded-sm px-4 py-3 text-sm leading-6 shadow-sm",
                       isUser ? "ml-auto bg-accent text-accent-text" : "bg-surface text-fg",
                     ].join(" ")}
                   >
@@ -180,7 +180,7 @@ export function AgentPreviewPanel({
                 );
               })}
               {busy ? (
-                <div className="max-w-[92%] rounded-md bg-surface px-4 py-3 text-sm text-fg-soft shadow-sm">
+                <div className="max-w-[92%] rounded-sm bg-surface px-4 py-3 text-sm text-fg-soft shadow-sm">
                   Agent is thinking...
                 </div>
               ) : null}
@@ -195,7 +195,7 @@ export function AgentPreviewPanel({
             rows={4}
             disabled={Boolean(blockedReason) || busy}
             placeholder="Type a message…"
-            className="w-full rounded-md border border-line-strong bg-surface px-4 py-3 text-sm text-fg-strong outline-none transition focus:border-line-strong disabled:bg-muted disabled:text-fg-soft"
+            className="w-full rounded-sm border border-line-strong bg-surface px-4 py-3 text-sm text-fg outline-none transition focus:border-fg disabled:bg-muted disabled:text-fg-soft"
           />
           <div className="mt-3 flex items-center justify-between gap-3">
             <div title={`Session ID: ${sessionId}`} className="font-mono text-[10px] text-fg-faint">
@@ -204,7 +204,7 @@ export function AgentPreviewPanel({
             <button
               type="submit"
               disabled={Boolean(blockedReason) || busy || input.trim().length === 0}
-              className="rounded-xl bg-accent px-4 py-2 text-sm font-medium text-accent-text transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
+              className="rounded-sm bg-accent px-4 py-2 text-sm font-medium text-accent-text transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
             >
               {busy ? "Running..." : "Send"}
             </button>
@@ -235,7 +235,7 @@ function PreviewStatsBar({
         : "—";
 
   return (
-    <div className="mt-3 grid grid-cols-3 gap-px overflow-hidden rounded-md border border-line bg-line text-[11px]">
+    <div className="mt-3 grid grid-cols-3 gap-px overflow-hidden rounded-sm border border-line bg-line text-[11px]">
       <StatCell label="Messages" value={String(messages.length)} />
       <StatCell label="Tool calls" value={String(toolCalls)} />
       <StatCell
@@ -281,7 +281,7 @@ export function MessageParts({ message }: { message: UIMessage }) {
       rendered.push(
         <details
           key={index}
-          className="rounded-md border border-line bg-soft px-3 py-2 text-xs text-fg-soft"
+          className="rounded-sm border border-line bg-soft px-3 py-2 text-xs text-fg-soft"
         >
           <summary className="cursor-pointer text-[10px] font-medium uppercase tracking-eyebrow text-fg-soft">
             Reasoning
@@ -307,7 +307,7 @@ export function MessageParts({ message }: { message: UIMessage }) {
       <details
         key="__unknown_parts"
         data-testid="message-unknown-parts"
-        className="rounded-md border border-dashed border-line bg-surface px-3 py-2 text-xs text-fg-soft"
+        className="rounded-sm border border-dashed border-line bg-surface px-3 py-2 text-xs text-fg-soft"
       >
         <summary className="cursor-pointer text-[10px] font-medium uppercase tracking-eyebrow text-fg-soft">
           {unknownTypes.length} unrecognized part
@@ -346,7 +346,7 @@ function ToolInvocation({ part }: { part: ToolPart }) {
   const state = part.state ?? "input-streaming";
   const tone = TOOL_STATE_TONE[state] ?? "neutral";
   return (
-    <details className="rounded-md border border-line bg-soft text-xs">
+    <details className="rounded-sm border border-line bg-soft text-xs">
       <summary className="flex cursor-pointer flex-wrap items-center gap-2 px-3 py-2">
         <span
           className={[
@@ -365,7 +365,7 @@ function ToolInvocation({ part }: { part: ToolPart }) {
       </summary>
       <div className="border-t border-line px-3 py-2">
         <div className="text-[10px] font-medium uppercase tracking-eyebrow text-fg-soft">Input</div>
-        <pre className="mt-1 max-h-48 overflow-auto rounded-md bg-code-bg p-2 font-mono text-[11px] text-code-fg">
+        <pre className="mt-1 max-h-48 overflow-auto rounded-sm bg-code-bg p-2 font-mono text-[11px] text-code-fg">
           {formatJson(part.input)}
         </pre>
         {part.errorText ? (
@@ -373,7 +373,7 @@ function ToolInvocation({ part }: { part: ToolPart }) {
             <div className="mt-2 text-[10px] font-medium uppercase tracking-eyebrow text-tone-error">
               Error
             </div>
-            <pre className="mt-1 max-h-48 overflow-auto rounded-md border border-tone-error/30 bg-tone-error/10 p-2 font-mono text-[11px] text-tone-error">
+            <pre className="mt-1 max-h-48 overflow-auto rounded-sm border border-tone-error/30 bg-tone-error/10 p-2 font-mono text-[11px] text-tone-error">
               {/* R12 #3 — tool error text often quotes the offending
                   Authorization header / api_key in plaintext. Scrub
                   before rendering. */}
@@ -385,7 +385,7 @@ function ToolInvocation({ part }: { part: ToolPart }) {
             <div className="mt-2 text-[10px] font-medium uppercase tracking-eyebrow text-fg-soft">
               Output
             </div>
-            <pre className="mt-1 max-h-48 overflow-auto rounded-md bg-code-bg p-2 font-mono text-[11px] text-code-fg">
+            <pre className="mt-1 max-h-48 overflow-auto rounded-sm bg-code-bg p-2 font-mono text-[11px] text-code-fg">
               {formatJson(part.output)}
             </pre>
           </>

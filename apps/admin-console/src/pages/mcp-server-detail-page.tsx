@@ -101,7 +101,7 @@ export function McpServerDetailPage() {
             ← {t("mcp.title")}
           </Link>
         </div>
-        <div className="rounded-md border border-line bg-surface p-6 text-sm text-fg-soft shadow-sm">
+        <div className="rounded-sm border border-line bg-surface p-6 text-sm text-fg-soft shadow-sm">
           <div className="text-fg-strong">MCP server &ldquo;{id}&rdquo; not found.</div>
           <div className="mt-1">It may have been removed, or the URL may be wrong.</div>
         </div>
@@ -116,7 +116,7 @@ export function McpServerDetailPage() {
             ← {t("mcp.title")}
           </Link>
         </div>
-        <div className="rounded-md border border-tone-error/30 bg-tone-error/10 p-4 text-sm text-tone-error">
+        <div className="rounded-sm border border-tone-error/30 bg-tone-error/10 p-4 text-sm text-tone-error">
           {error}
         </div>
       </div>
@@ -181,7 +181,7 @@ export function McpServerDetailPage() {
               type="button"
               onClick={handleRestart}
               disabled={restarting}
-              className="inline-flex h-9 items-center rounded-md border border-line-strong bg-surface px-3 text-sm font-medium text-fg transition hover:bg-soft disabled:cursor-not-allowed disabled:opacity-60"
+              className="inline-flex h-9 items-center rounded-sm border border-line-strong bg-surface px-3 text-sm font-medium text-fg transition hover:bg-soft disabled:cursor-not-allowed disabled:opacity-60"
             >
               {restarting ? "↻ Restarting…" : "↻ Restart"}
             </button>
@@ -197,7 +197,7 @@ export function McpServerDetailPage() {
       </header>
 
       {/* 4-stat live card */}
-      <section className="overflow-hidden rounded-md border border-line bg-surface shadow-card">
+      <section className="overflow-hidden rounded-sm border border-line bg-surface shadow-card">
         <div className="flex items-baseline justify-between border-b border-line px-5 py-3">
           <h3 className="text-sm font-semibold text-fg-strong">Live status</h3>
           <span className="text-xs text-fg-faint">refreshes on action</span>
@@ -279,7 +279,7 @@ export function McpServerDetailPage() {
 
       {/* Command preview */}
       {cmd && (
-        <section className="mt-4 overflow-hidden rounded-md border border-line bg-code-bg shadow-card">
+        <section className="mt-4 overflow-hidden rounded-sm border border-line bg-code-bg shadow-card">
           <div className="flex items-center justify-between gap-2 px-4 py-2">
             <code className="break-all font-mono text-xs text-code-fg">
               {isStdio && <span className="text-code-fg/60">$ </span>}
@@ -297,7 +297,7 @@ export function McpServerDetailPage() {
       )}
 
       {/* Tools exposed */}
-      <section className="mt-4 rounded-md border border-line bg-surface p-5 shadow-card">
+      <section className="mt-4 rounded-sm border border-line bg-surface p-5 shadow-card">
         <div className="flex items-baseline justify-between">
           <h3 className="text-sm font-semibold text-fg-strong">Tools exposed</h3>
           <span className="font-mono text-xs text-fg-faint">{statusTools.length}</span>
@@ -307,7 +307,7 @@ export function McpServerDetailPage() {
         ) : (
           <ul className="mt-3 space-y-2">
             {statusTools.map((tool) => (
-              <li key={tool.name} className="rounded-md border border-line bg-soft px-3 py-2">
+              <li key={tool.name} className="rounded-sm border border-line bg-soft px-3 py-2">
                 <div className="font-mono text-sm text-fg-strong">{tool.name}</div>
                 {tool.description && (
                   <div className="mt-0.5 text-xs text-fg-soft">{tool.description}</div>
@@ -319,7 +319,7 @@ export function McpServerDetailPage() {
       </section>
 
       {/* Reverse: used by */}
-      <section className="mt-4 rounded-md border border-line bg-surface p-5 shadow-card">
+      <section className="mt-4 rounded-sm border border-line bg-surface p-5 shadow-card">
         <h3 className="text-sm font-semibold text-fg-strong">Used by</h3>
         {usedByAgents.length === 0 ? (
           <p className="mt-2 text-sm text-fg-soft">No agents reference this server.</p>
@@ -328,7 +328,7 @@ export function McpServerDetailPage() {
             {usedByAgents.map((a) => (
               <li
                 key={a.id}
-                className="flex items-center justify-between gap-3 rounded-md border border-line bg-soft px-3 py-2"
+                className="flex items-center justify-between gap-3 rounded-sm border border-line bg-soft px-3 py-2"
               >
                 <Link
                   to={adminRoutes.agent(a.id)}

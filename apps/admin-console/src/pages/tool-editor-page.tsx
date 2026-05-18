@@ -149,7 +149,7 @@ export function ToolEditorPage() {
       </div>
 
       {mutationError && (
-        <div className="rounded-md border border-tone-error/30 bg-tone-error/10 px-3 py-2 text-sm text-tone-error">
+        <div className="rounded-sm border border-tone-error/30 bg-tone-error/10 px-3 py-2 text-sm text-tone-error">
           {mutationError}
         </div>
       )}
@@ -179,7 +179,7 @@ export function ToolEditorPage() {
 function ToolEditorError({ children }: { children: ReactNode }) {
   return (
     <div className="p-6">
-      <div className="rounded-md border border-tone-error/30 bg-tone-error/10 p-4 text-sm text-tone-error">
+      <div className="rounded-sm border border-tone-error/30 bg-tone-error/10 p-4 text-sm text-tone-error">
         {children}
       </div>
     </div>

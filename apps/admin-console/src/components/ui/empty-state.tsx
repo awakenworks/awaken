@@ -15,10 +15,13 @@ export function EmptyState({
 }) {
   return (
     <div
-      className={`flex flex-col items-center gap-3 rounded-lg border border-line bg-canvas px-8 py-12 text-center ${className}`.trim()}
+      className={`flex flex-col items-center gap-2.5 rounded-sm border border-dashed border-line-strong px-6 py-10 text-center ${className}`.trim()}
     >
       {icon && (
-        <div aria-hidden className="text-fg-faint">
+        <div
+          aria-hidden
+          className="flex h-9 w-9 items-center justify-center rounded-full border border-line-strong text-fg-faint"
+        >
           {icon}
         </div>
       )}

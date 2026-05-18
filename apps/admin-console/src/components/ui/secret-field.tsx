@@ -63,7 +63,7 @@ export function SecretField({
   const effectiveMode: SecretMode = currentlyHasValue ? mode : "replace";
 
   return (
-    <div className="rounded-md border border-line bg-surface p-4 shadow-card">
+    <div className="rounded-sm border border-line bg-surface p-4 shadow-card">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="min-w-0">
           <h4 className="text-sm font-semibold text-fg-strong">{labels.title}</h4>
@@ -124,7 +124,7 @@ function ModeBody({
       : "bg-tone-error/15 text-tone-error";
   return (
     <div
-      className={`flex items-start gap-3 rounded-md border px-3 py-2 text-sm ${wrapperClass}`}
+      className={`flex items-start gap-3 rounded-sm border px-3 py-2 text-sm ${wrapperClass}`}
     >
       <span
         aria-hidden

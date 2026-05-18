@@ -96,7 +96,7 @@ export function DashboardPage() {
         <HealthCard providers={providers} mcpServers={mcpServers} />
       </section>
 
-      <section className="mt-4 rounded-md border border-line bg-surface p-4 shadow-card">
+      <section className="mt-4 rounded-sm border border-line bg-surface p-4 shadow-card">
         <div className="flex items-baseline justify-between gap-4">
           <h3 className="text-sm font-semibold text-fg-strong">
             {t("dashboard.refGraph.title")}
@@ -123,7 +123,7 @@ export function DashboardPage() {
       )}
 
       <section className="mt-4 grid gap-4 lg:grid-cols-2">
-        <div className="rounded-md border border-line bg-surface p-5 shadow-card">
+        <div className="rounded-sm border border-line bg-surface p-5 shadow-card">
           <div className="flex items-center justify-between">
             <h3 className="text-lg font-semibold text-fg-strong">{t("dashboard.plugins.title")}</h3>
             <span className="text-sm text-fg-soft">
@@ -135,7 +135,7 @@ export function DashboardPage() {
           ) : (
             <ul className="mt-4 space-y-3">
               {capabilities.plugins.map((plugin) => (
-                <li key={plugin.id} className="rounded-md border border-line bg-soft px-4 py-3">
+                <li key={plugin.id} className="rounded-sm border border-line bg-soft px-4 py-3">
                   <div className="font-mono text-sm text-fg-strong">{plugin.id}</div>
                   <div className="mt-1 text-sm text-fg-soft">
                     {plugin.config_schemas.length === 0
@@ -150,7 +150,7 @@ export function DashboardPage() {
           )}
         </div>
 
-        <div className="rounded-md border border-line bg-surface p-5 shadow-card">
+        <div className="rounded-sm border border-line bg-surface p-5 shadow-card">
           <div className="flex items-center justify-between">
             <h3 className="text-lg font-semibold text-fg-strong">{t("dashboard.tools.title")}</h3>
             <span className="text-sm text-fg-soft">
@@ -162,7 +162,7 @@ export function DashboardPage() {
           ) : (
             <ul className="mt-4 max-h-[24rem] space-y-3 overflow-auto">
               {capabilities.tools.map((tool) => (
-                <li key={tool.id} className="rounded-md border border-line bg-soft px-4 py-3">
+                <li key={tool.id} className="rounded-sm border border-line bg-soft px-4 py-3">
                   <div className="font-mono text-sm text-fg-strong">{tool.id}</div>
                   <div className="mt-1 text-sm text-fg-soft">{tool.description || tool.name}</div>
                 </li>
@@ -248,7 +248,7 @@ function HealthCard({
 }) {
   const { t } = useTranslation();
   return (
-    <div className="rounded-md border border-line bg-surface p-5 shadow-card">
+    <div className="rounded-sm border border-line bg-surface p-5 shadow-card">
       <div className="flex items-center justify-between">
         <h3 className="text-lg font-semibold text-fg-strong">{t("dashboard.health.title")}</h3>
         <span className="text-sm text-fg-soft">
@@ -265,7 +265,7 @@ function HealthCard({
             {providers.map((p) => (
               <li
                 key={p.id}
-                className="flex items-center justify-between gap-3 rounded-md border border-line bg-soft px-3 py-2"
+                className="flex items-center justify-between gap-3 rounded-sm border border-line bg-soft px-3 py-2"
               >
                 <div className="min-w-0">
                   <div className="font-mono text-sm text-fg-strong">{p.id}</div>
@@ -289,7 +289,7 @@ function HealthCard({
             {mcpServers.map((s) => (
               <li
                 key={s.id}
-                className="flex items-center justify-between gap-3 rounded-md border border-line bg-soft px-3 py-2"
+                className="flex items-center justify-between gap-3 rounded-sm border border-line bg-soft px-3 py-2"
               >
                 <div className="min-w-0">
                   <div className="font-mono text-sm text-fg-strong">{s.id}</div>
@@ -314,7 +314,7 @@ function HealthCard({
 function SystemCard({ info }: { info: SystemInfo }) {
   const { t } = useTranslation();
   return (
-    <div className="rounded-md border border-line bg-surface p-5 shadow-card">
+    <div className="rounded-sm border border-line bg-surface p-5 shadow-card">
       <Eyebrow>{t("dashboard.system.title")}</Eyebrow>
       <div className="mt-3 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
         <SystemStat label={t("dashboard.system.version")} value={info.version} mono />
@@ -356,7 +356,7 @@ function SystemStat({
   tone?: "success" | "neutral";
 }) {
   return (
-    <div className="rounded-md border border-line bg-soft px-3 py-2">
+    <div className="rounded-sm border border-line bg-soft px-3 py-2">
       <div className="text-[10px] font-medium uppercase tracking-[0.18em] text-fg-faint">
         {label}
       </div>
@@ -394,7 +394,7 @@ function ActivityTimeline({
 }) {
   const { t } = useTranslation();
   return (
-    <div className="rounded-md border border-line bg-surface p-5 shadow-card">
+    <div className="rounded-sm border border-line bg-surface p-5 shadow-card">
       <div className="flex items-center justify-between">
         <h3 className="text-lg font-semibold text-fg-strong">{t("dashboard.activity.title")}</h3>
         {!disabled && (
@@ -435,7 +435,7 @@ function FeatureDisabledNotice({
   docsUrl?: string;
 }) {
   return (
-    <div className="mt-4 rounded-md border border-tone-warn/30 bg-tone-warn/10 px-3 py-3 text-sm">
+    <div className="mt-4 rounded-sm border border-tone-warn/30 bg-tone-warn/10 px-3 py-3 text-sm">
       <div className="font-medium text-fg-strong">{title}</div>
       <div className="mt-1 text-xs text-fg-soft">
         To enable, <span className="font-mono">{configHint}</span>
@@ -464,7 +464,7 @@ function ActivityRow({ event }: { event: AuditEvent }) {
   return (
     <li
       className={[
-        "flex items-start gap-3 rounded-md border-l-2 px-2 py-1",
+        "flex items-start gap-3 rounded-sm border-l-2 px-2 py-1",
         fromAgent ? "border-agent-stripe bg-agent-tint" : "border-transparent",
       ].join(" ")}
     >
@@ -541,7 +541,7 @@ function CountRibbon({ stats }: { stats: { label: string; count: number; to?: st
 function PageLoading() {
   return (
     <div className="mx-auto max-w-6xl p-6 md:p-8">
-      <div className="rounded-md border border-line bg-surface p-6 text-sm text-fg-soft shadow-card">
+      <div className="rounded-sm border border-line bg-surface p-6 text-sm text-fg-soft shadow-card">
         Loading dashboard...
       </div>
     </div>
@@ -551,7 +551,7 @@ function PageLoading() {
 function PageError({ message }: { message: string }) {
   return (
     <div className="mx-auto max-w-6xl p-6 md:p-8">
-      <div className="rounded-md border border-tone-error/30 bg-tone-error/10 p-6 text-sm text-tone-error shadow-card">
+      <div className="rounded-sm border border-tone-error/30 bg-tone-error/10 p-6 text-sm text-tone-error shadow-card">
         {message}
       </div>
     </div>

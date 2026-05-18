@@ -27,7 +27,7 @@ export function SegmentedControl<V extends string>({
     <div
       role="radiogroup"
       aria-label={ariaLabel}
-      className={`inline-flex items-center gap-1 rounded-md border border-line bg-soft p-0.5 ${className}`.trim()}
+      className={`inline-flex items-center gap-1 rounded-sm border border-line bg-soft p-0.5 ${className}`.trim()}
     >
       {options.map((opt) => {
         const active = opt.value === value;
@@ -39,7 +39,7 @@ export function SegmentedControl<V extends string>({
             aria-checked={active}
             onClick={() => onChange(opt.value)}
             className={[
-              "inline-flex h-7 items-center gap-1.5 rounded px-2.5 text-xs font-medium transition-colors",
+              "inline-flex h-7 items-center gap-1.5 rounded-sm px-2.5 text-xs font-medium transition-colors",
               active
                 ? "bg-surface text-fg-strong shadow-card"
                 : "text-fg-soft hover:text-fg",

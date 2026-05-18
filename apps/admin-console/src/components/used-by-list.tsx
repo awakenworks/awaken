@@ -23,7 +23,7 @@ export function UsedByList({ items }: UsedByListProps) {
   const grouped = groupByNamespace(items);
   return (
     <div className="space-y-3">
-      <div className="rounded-md border border-tone-warn/30 bg-tone-warn/10 px-3 py-2.5">
+      <div className="rounded-sm border border-tone-warn/30 bg-tone-warn/10 px-3 py-2.5">
         <div className="flex items-start gap-2 text-sm">
           <span
             aria-hidden
@@ -44,7 +44,7 @@ export function UsedByList({ items }: UsedByListProps) {
 
       <div className="space-y-2">
         {Array.from(grouped.entries()).map(([namespace, ids]) => (
-          <div key={namespace} className="rounded-md border border-line bg-soft px-3 py-2">
+          <div key={namespace} className="rounded-sm border border-line bg-soft px-3 py-2">
             <div className="flex items-center gap-2 text-xs">
               <span className="font-mono font-medium text-fg-strong">{namespace}</span>
               <span className="text-fg-faint">·</span>

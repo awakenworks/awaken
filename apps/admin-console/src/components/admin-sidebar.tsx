@@ -32,7 +32,7 @@ export function AdminSidebar({
       data-open={drawerOpen ? "true" : "false"}
       className={[
         // Mobile: fixed drawer that slides in from left when [data-open=true]
-        "fixed inset-y-0 left-0 z-40 flex w-[264px] flex-col bg-canvas text-fg shadow-overlay transition-transform duration-fast",
+        "fixed inset-y-0 left-0 z-40 flex w-[220px] flex-col bg-canvas text-fg shadow-overlay transition-transform duration-fast",
         "data-[open=false]:-translate-x-full data-[open=true]:translate-x-0",
         // Desktop: static sidebar, no drawer behavior
         "md:static md:translate-x-0 md:min-h-screen md:border-r md:border-line md:shadow-none md:data-[open=false]:translate-x-0",
@@ -49,7 +49,7 @@ export function AdminSidebar({
         <button
           type="button"
           onClick={openTokenModal}
-          className="mt-5 block w-full rounded-md border border-line bg-soft p-3 text-left transition-colors hover:border-line-strong"
+          className="mt-5 block w-full rounded-sm border border-line bg-soft p-3 text-left transition-colors hover:border-line-strong"
         >
           <div className="flex items-center justify-between text-[10px] font-medium uppercase tracking-[0.18em]">
             <span className="text-fg-soft">{t("app.connectedBackend")}</span>
@@ -138,7 +138,7 @@ function SidebarLink({
       onClick={onNavigate}
       className={({ isActive }) =>
         [
-          "group relative flex min-w-0 items-center gap-2 rounded-md px-3 py-2 text-sm transition-colors",
+          "group relative flex min-w-0 items-center gap-2 rounded-sm px-3 py-2 text-sm transition-colors",
           isActive
             ? "bg-soft text-fg-strong before:absolute before:left-0 before:top-1.5 before:bottom-1.5 before:w-[2px] before:rounded-pill before:bg-accent"
             : "text-fg-soft hover:bg-soft/60 hover:text-fg",

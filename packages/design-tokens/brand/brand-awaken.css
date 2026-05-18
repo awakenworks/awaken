@@ -191,6 +191,20 @@
   --brand-letter-spacing-tight: -0.010em;
   --brand-line-height: 1.6;
 
+  /* Data-grid tokens (data-grid.html spec)
+   * Universal sizing for admin tables: agents / models / providers /
+   * skills / tools / mcp-servers / audit-log. `--grid-row-h` is the
+   * default compact row; `-comfortable` is the density toggle target. */
+  --grid-row-h:             36px;
+  --grid-row-h-comfortable: 44px;
+  --grid-head-h:            36px;
+  --grid-gutter-w:          32px;
+  --grid-col-min:           96px;
+  --grid-title-cap:        200px;
+  --grid-hover-bg:    var(--brand-bg-soft);
+  --grid-selected-bg: var(--brand-accent-soft);
+  --grid-active-band: var(--brand-accent);
+
   /* State tokens · alias the canonical --aw-state-* palette so spec markup
    * (`var(--brand-state-progress)` from states.html) resolves to the same
    * values existing admin / www components already use. */

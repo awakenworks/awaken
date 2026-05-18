@@ -24,7 +24,7 @@ export function ListSearchBar({
         value={value}
         onChange={(event) => onChange(event.target.value)}
         placeholder={placeholder}
-        className="w-full rounded-xl border border-line-strong bg-surface px-3 py-2 text-sm text-fg-strong outline-none transition focus:border-line-strong"
+        className="w-full rounded-sm border border-line-strong bg-surface px-3 py-2 text-sm text-fg outline-none transition focus:border-fg"
       />
     </label>
   );
@@ -44,7 +44,7 @@ export function PageSizeSelect({
       <select
         value={value}
         onChange={(event) => onChange(Number(event.target.value) as PageSize)}
-        className="rounded-md border border-line-strong bg-surface px-2 py-1 text-xs text-fg outline-none focus:border-line-strong"
+        className="rounded-sm border border-line-strong bg-surface px-2 py-1 text-xs text-fg outline-none focus:border-fg"
       >
         {PAGE_SIZE_OPTIONS.map((size) => (
           <option key={size} value={size}>
@@ -85,7 +85,7 @@ export function Pagination({
           type="button"
           onClick={() => onPageChange(page - 1)}
           disabled={disablePrev}
-          className="rounded-md border border-line-strong bg-surface px-2 py-1 font-medium text-fg-soft transition hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
+          className="rounded-sm border border-line-strong bg-surface px-2 py-1 font-medium text-fg-soft transition hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
         >
           ‹ Prev
         </button>
@@ -96,7 +96,7 @@ export function Pagination({
           type="button"
           onClick={() => onPageChange(page + 1)}
           disabled={disableNext}
-          className="rounded-md border border-line-strong bg-surface px-2 py-1 font-medium text-fg-soft transition hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
+          className="rounded-sm border border-line-strong bg-surface px-2 py-1 font-medium text-fg-soft transition hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
         >
           Next ›
         </button>

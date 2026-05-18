@@ -61,7 +61,7 @@ export function HistoryPanel({
               <p className="mb-1 text-xs font-medium uppercase tracking-wide text-fg-soft">
                 Current
               </p>
-              <pre className="max-h-48 overflow-auto rounded-xl border border-line bg-soft p-2 text-xs text-fg">
+              <pre className="max-h-48 overflow-auto rounded-sm border border-line bg-soft p-2 text-xs text-fg">
                 {JSON.stringify(spec, null, 2)}
               </pre>
             </div>
@@ -69,7 +69,7 @@ export function HistoryPanel({
               <p className="mb-1 text-xs font-medium uppercase tracking-wide text-fg-soft">
                 This version
               </p>
-              <pre className="max-h-48 overflow-auto rounded-xl border border-line bg-soft p-2 text-xs text-fg">
+              <pre className="max-h-48 overflow-auto rounded-sm border border-line bg-soft p-2 text-xs text-fg">
                 {targetSpec != null ? JSON.stringify(targetSpec, null, 2) : "—"}
               </pre>
             </div>
@@ -100,14 +100,14 @@ export function HistoryPanel({
 
   if (isNew || !spec.id) {
     return (
-      <section className="rounded-md border border-dashed border-line bg-surface p-6 text-center text-sm text-fg-soft shadow-sm">
+      <section className="rounded-sm border border-dashed border-line bg-surface p-6 text-center text-sm text-fg-soft shadow-sm">
         Save the agent first to see its history.
       </section>
     );
   }
 
   return (
-    <section className="rounded-md border border-line bg-surface shadow-sm">
+    <section className="rounded-sm border border-line bg-surface shadow-sm">
       <div className="flex items-center justify-between border-b border-line px-5 py-4">
         <h3 className="text-lg font-semibold text-fg-strong">History</h3>
         <button
@@ -218,7 +218,7 @@ function HistoryEventPanel({ event, onClose }: { event: AuditEvent; onClose: () 
           <button
             type="button"
             onClick={onClose}
-            className="rounded-md px-2 py-1 text-sm text-fg-soft hover:bg-muted"
+            className="rounded-sm px-2 py-1 text-sm text-fg-soft hover:bg-muted"
           >
             Close
           </button>
@@ -258,13 +258,13 @@ function HistoryEventPanel({ event, onClose }: { event: AuditEvent; onClose: () 
         <div className="grid gap-4 px-6 pb-6 md:grid-cols-2">
           <div>
             <p className="mb-2 text-xs font-medium uppercase tracking-wide text-fg-soft">Before</p>
-            <pre className="overflow-auto rounded-xl border border-line bg-soft p-3 text-xs leading-relaxed text-fg">
+            <pre className="overflow-auto rounded-sm border border-line bg-soft p-3 text-xs leading-relaxed text-fg">
               {event.before != null ? JSON.stringify(event.before, null, 2) : "—"}
             </pre>
           </div>
           <div>
             <p className="mb-2 text-xs font-medium uppercase tracking-wide text-fg-soft">After</p>
-            <pre className="overflow-auto rounded-xl border border-line bg-soft p-3 text-xs leading-relaxed text-fg">
+            <pre className="overflow-auto rounded-sm border border-line bg-soft p-3 text-xs leading-relaxed text-fg">
               {event.after != null ? JSON.stringify(event.after, null, 2) : "—"}
             </pre>
           </div>

@@ -23,13 +23,13 @@ export function PluginsPanel({
 }) {
   if (!capabilities || capabilities.plugins.length === 0) {
     return (
-      <div className="rounded-md border border-dashed border-line bg-surface p-6 text-sm text-fg-soft">
+      <div className="rounded-sm border border-dashed border-line bg-surface p-6 text-sm text-fg-soft">
         No plugins are currently registered.
       </div>
     );
   }
   return (
-    <section className="rounded-md border border-line bg-surface p-5 shadow-sm">
+    <section className="rounded-sm border border-line bg-surface p-5 shadow-sm">
       <h3 className="text-lg font-semibold text-fg-strong">Plugins</h3>
       <p className="mt-2 text-sm text-fg-soft">
         Enable agent plugins here. Plugins with agent-level settings expose their configuration
@@ -39,7 +39,7 @@ export function PluginsPanel({
         {capabilities.plugins.map((plugin) => (
           <label
             key={plugin.id}
-            className="rounded-xl border border-line bg-soft px-4 py-3 text-sm text-fg"
+            className="rounded-sm border border-line bg-soft px-4 py-3 text-sm text-fg"
           >
             <div className="flex items-start gap-3">
               <input
@@ -81,7 +81,7 @@ export function PluginsPanel({
       </div>
 
       {configurablePlugins.length === 0 ? (
-        <div className="mt-4 rounded-md border border-dashed border-line px-4 py-3 text-sm text-fg-soft">
+        <div className="mt-4 rounded-sm border border-dashed border-line px-4 py-3 text-sm text-fg-soft">
           No registered plugins expose agent-level configuration.
         </div>
       ) : (

@@ -93,9 +93,9 @@ export function EvalReportsPage() {
   return (
     <div className="mx-auto max-w-6xl p-6 md:p-8">
       <header className="mb-4 flex items-baseline justify-between gap-3">
-        <h2 className="text-2xl font-semibold tracking-title-em text-fg-strong">
+        <h1 className="text-[22px] font-bold tracking-title-em text-fg-strong">
           {t("evals.title")}
-        </h2>
+        </h1>
         <span className="text-[10px] font-medium uppercase tracking-eyebrow text-fg-soft">
           {t("evals.modeOffline")}
         </span>
@@ -118,7 +118,7 @@ export function EvalReportsPage() {
       </section>
 
       {error && (
-        <div className="mt-6 rounded-md border border-tone-error/30 bg-tone-error/10 p-4 text-sm text-tone-error shadow-sm">
+        <div className="mt-6 rounded-sm border border-tone-error/30 bg-tone-error/10 p-4 text-sm text-tone-error shadow-sm">
           {error}
         </div>
       )}
@@ -154,7 +154,7 @@ export function EvalReportsPage() {
           )}
 
           {diff && (
-            <section className="mt-6 rounded-md border border-line bg-surface p-5 shadow-sm">
+            <section className="mt-6 rounded-sm border border-line bg-surface p-5 shadow-sm">
               <div className="flex items-center justify-between">
                 <h3 className="text-lg font-semibold text-fg-strong">
                   Baseline diff
@@ -195,7 +195,7 @@ export function EvalReportsPage() {
             <ParseIssuesPanel issues={baseline.issues} forBaseline />
           )}
 
-          <section className="mt-6 flex flex-wrap items-center gap-3 rounded-md border border-line bg-surface p-4 shadow-card">
+          <section className="mt-6 flex flex-wrap items-center gap-3 rounded-sm border border-line bg-surface p-4 shadow-card">
             <div role="tablist" aria-label="Fixture status filter" className="flex flex-wrap gap-1 border-b border-line">
               {STATUS_OPTIONS.map((option) => {
                 const active = fixtureFilter.status === option.value;
@@ -231,7 +231,7 @@ export function EvalReportsPage() {
                   applyFixtureFilter({ search: event.target.value })
                 }
                 placeholder="Search by fixture id…"
-                className="w-full rounded-xl border border-line-strong bg-surface px-3 py-2 text-sm text-fg-strong outline-none transition focus:border-line-strong"
+                className="w-full rounded-sm border border-line-strong bg-surface px-3 py-2 text-sm text-fg outline-none transition focus:border-fg"
               />
             </label>
             <span className="ml-auto text-xs text-fg-soft">
@@ -239,7 +239,7 @@ export function EvalReportsPage() {
             </span>
           </section>
 
-          <section className="mt-3 rounded-md border border-line bg-surface shadow-sm">
+          <section className="mt-3 rounded-sm border border-line bg-surface shadow-sm">
             <table className="min-w-full text-sm">
               <thead className="bg-soft text-left text-xs uppercase tracking-wide text-fg-soft">
                 <tr>
@@ -306,7 +306,7 @@ function FileDrop({
   required?: boolean;
 }) {
   return (
-    <label className="flex flex-col rounded-md border border-dashed border-line-strong bg-surface p-5 shadow-sm transition hover:border-line-strong">
+    <label className="flex flex-col rounded-sm border border-dashed border-line-strong bg-surface p-5 shadow-sm transition hover:border-line-strong">
       <div className="flex items-center justify-between">
         <span className="text-sm font-semibold text-fg">
           {label}
@@ -316,7 +316,7 @@ function FileDrop({
           <button
             type="button"
             onClick={onClear}
-            className="rounded-md border border-line px-2 py-1 text-xs text-fg-soft hover:bg-soft"
+            className="rounded-sm border border-line px-2 py-1 text-xs text-fg-soft hover:bg-soft"
           >
             Clear
           </button>
@@ -326,7 +326,7 @@ function FileDrop({
         type="file"
         accept=".ndjson,.json,.txt,application/json,text/plain"
         onChange={onChange}
-        className="mt-3 block w-full text-sm text-fg-soft file:mr-3 file:rounded-md file:border-0 file:bg-accent file:px-3 file:py-2 file:text-xs file:font-semibold file:uppercase file:tracking-wide file:text-accent-text hover:file:opacity-90"
+        className="mt-3 block w-full text-sm text-fg-soft file:mr-3 file:rounded-sm file:border-0 file:bg-accent file:px-3 file:py-2 file:text-xs file:font-semibold file:uppercase file:tracking-wide file:text-accent-text hover:file:opacity-90"
       />
       {slot ? (
         <div className="mt-3 text-xs text-fg-soft">
@@ -363,7 +363,7 @@ function StatCard({
         ? "text-tone-error"
         : "text-fg-strong";
   return (
-    <div className="rounded-md border border-line bg-surface p-5 shadow-sm">
+    <div className="rounded-sm border border-line bg-surface p-5 shadow-sm">
       <div className={`text-3xl font-semibold ${toneClass}`}>{value}</div>
       <div className="mt-2 text-sm text-fg-soft">{label}</div>
     </div>
@@ -372,7 +372,7 @@ function StatCard({
 
 function DiffStat({ label, value }: { label: string; value: number }) {
   return (
-    <div className="rounded-xl border border-line bg-soft px-3 py-2">
+    <div className="rounded-sm border border-line bg-soft px-3 py-2">
       <div className="font-mono text-base font-semibold text-fg-strong">
         {value}
       </div>
@@ -454,7 +454,7 @@ function FixtureRow({
 
 function PerAgentToolPanel({ rows }: { rows: AgentToolAggregate[] }) {
   return (
-    <section className="mt-6 rounded-md border border-line bg-surface p-5 shadow-sm">
+    <section className="mt-6 rounded-sm border border-line bg-surface p-5 shadow-sm">
       <div className="flex items-center justify-between">
         <h3 className="text-lg font-semibold text-fg-strong">
           Tool calls by agent
@@ -520,7 +520,7 @@ function ParseIssuesPanel({
   forBaseline?: boolean;
 }) {
   return (
-    <section className="mt-6 rounded-md border border-tone-warn/35 bg-tone-warn/10 p-5 shadow-sm">
+    <section className="mt-6 rounded-sm border border-tone-warn/35 bg-tone-warn/10 p-5 shadow-sm">
       <h3 className="text-sm font-semibold text-tone-warn">
         {forBaseline
           ? "Baseline parse issues"

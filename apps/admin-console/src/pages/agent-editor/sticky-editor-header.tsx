@@ -63,7 +63,7 @@ export function StickyEditorHeader({
               to={adminRoutes.agents}
               aria-label="Back to agents"
               title="Back to agents"
-              className="inline-flex h-7 w-7 items-center justify-center rounded-md text-fg-soft transition hover:bg-soft hover:text-fg"
+              className="inline-flex h-7 w-7 items-center justify-center rounded-sm text-fg-soft transition hover:bg-soft hover:text-fg"
             >
               <svg
                 aria-hidden
@@ -81,7 +81,7 @@ export function StickyEditorHeader({
             {!isNew && agentId && (
               <Link
                 to={adminRoutes.auditLogForResource(`agents/${agentId}`)}
-                className="rounded-md border border-line-strong bg-surface px-2.5 py-1 text-xs font-medium text-fg-soft transition hover:bg-soft hover:text-fg"
+                className="rounded-sm border border-line-strong bg-surface px-2.5 py-1 text-xs font-medium text-fg-soft transition hover:bg-soft hover:text-fg"
               >
                 {t("editor.history")}
               </Link>
@@ -117,7 +117,7 @@ export function StickyEditorHeader({
             type="button"
             onClick={onSave}
             disabled={saveDisabled}
-            className="rounded-xl bg-accent px-4 py-2 text-sm font-medium text-accent-text transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
+            className="rounded-sm bg-accent px-4 py-2 text-sm font-medium text-accent-text transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
           >
             {t("editor.save")}
           </button>

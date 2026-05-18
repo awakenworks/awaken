@@ -115,7 +115,7 @@ export function EmptyState({
   return (
     <div
       className={[
-        "rounded-md border border-dashed border-line text-sm text-fg-soft",
+        "rounded-sm border border-dashed border-line text-sm text-fg-soft",
         compact ? "px-4 py-3" : "mt-4 px-4 py-5",
       ].join(" ")}
     >
@@ -134,7 +134,7 @@ export function MetricCard({
   detail: string;
 }) {
   return (
-    <div className="rounded-md border border-line bg-surface p-4">
+    <div className="rounded-sm border border-line bg-surface p-4">
       <div className="text-xs font-semibold uppercase tracking-[0.18em] text-fg-soft">
         {label}
       </div>
@@ -193,7 +193,7 @@ export function ChoiceGrid<T extends string>({
             type="button"
             onClick={() => onChange(option.value)}
             className={[
-              "rounded-md border px-3 py-3 text-left transition",
+              "rounded-sm border px-3 py-3 text-left transition",
               selected
                 ? "border-accent bg-accent text-accent-text shadow-sm"
                 : "border-line bg-surface text-fg-strong hover:border-line-strong hover:bg-soft",

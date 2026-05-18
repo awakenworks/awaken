@@ -236,7 +236,7 @@ export function AgentsPage() {
         actions={
           <Link
             to={adminRoutes.agentNew}
-            className="inline-flex h-9 items-center rounded-md bg-accent px-3 text-sm font-medium text-accent-text transition-colors hover:opacity-90"
+            className="inline-flex h-9 items-center rounded-sm bg-accent px-3 text-sm font-medium text-accent-text transition-colors hover:opacity-90"
           >
             {t("agents.new")}
           </Link>
@@ -288,7 +288,7 @@ export function AgentsPage() {
       )}
 
       {runtimeUnavailable && (
-        <div className="mb-3 rounded-md border border-tone-warn/30 bg-tone-warn/10 px-3 py-2 text-xs text-fg-soft">
+        <div className="mb-3 rounded-sm border border-tone-warn/30 bg-tone-warn/10 px-3 py-2 text-xs text-fg-soft">
           <span className="font-medium text-fg-strong">Runtime stats disabled.</span> The
           "Inferences (24h)" column shows <span className="font-mono">n/a</span> because the server
           has no <span className="font-mono">RuntimeStatsRegistry</span> installed (install the
@@ -305,7 +305,7 @@ export function AgentsPage() {
             actions={
               <Link
                 to={adminRoutes.agentNew}
-                className="inline-flex h-9 items-center rounded-md bg-accent px-4 text-sm font-medium text-accent-text transition-colors hover:opacity-90"
+                className="inline-flex h-9 items-center rounded-sm bg-accent px-4 text-sm font-medium text-accent-text transition-colors hover:opacity-90"
               >
                 {t("agents.new")}
               </Link>

@@ -96,7 +96,7 @@ export function PermissionConfigEditor({
   return (
     <div className="space-y-5">
       <div className="grid gap-4 xl:grid-cols-[18rem,minmax(0,1fr)]">
-        <div className="rounded-md border border-line bg-soft p-4">
+        <div className="rounded-sm border border-line bg-soft p-4">
           <SectionLabel label="Policy Summary" />
           <div className="mt-3 grid gap-3 sm:grid-cols-2 xl:grid-cols-1">
             <MetricCard
@@ -112,7 +112,7 @@ export function PermissionConfigEditor({
           </div>
         </div>
 
-        <div className="rounded-md border border-line bg-surface p-4">
+        <div className="rounded-sm border border-line bg-surface p-4">
           <SectionLabel label="Default Decision" />
           <p className="mt-2 text-sm leading-6 text-fg-soft">
             This becomes the fallback policy when none of the explicit rules
@@ -155,7 +155,7 @@ export function PermissionConfigEditor({
       </div>
 
       <div className="grid gap-5 xl:grid-cols-[18rem,minmax(0,1fr)]">
-        <aside className="space-y-3 rounded-md border border-line bg-soft p-4">
+        <aside className="space-y-3 rounded-sm border border-line bg-soft p-4">
           <div className="flex items-start justify-between gap-3">
             <div>
               <SectionLabel label="Permission Rules" />
@@ -167,7 +167,7 @@ export function PermissionConfigEditor({
             <button
               type="button"
               onClick={addRule}
-              className="rounded-xl border border-line-strong bg-surface px-3 py-2 text-sm font-medium text-fg transition hover:border-line-strong hover:bg-muted"
+              className="rounded-sm border border-line-strong bg-surface px-3 py-2 text-sm font-medium text-fg transition hover:border-line-strong hover:bg-muted"
             >
               Add rule
             </button>
@@ -185,7 +185,7 @@ export function PermissionConfigEditor({
                     type="button"
                     onClick={() => setActiveRuleIndex(index)}
                     className={[
-                      "group flex w-full items-stretch gap-2 rounded-md border px-3 py-2.5 text-left transition-colors",
+                      "group flex w-full items-stretch gap-2 rounded-sm border px-3 py-2.5 text-left transition-colors",
                       isActive
                         ? "border-accent bg-accent text-accent-text shadow-card"
                         : "border-line bg-surface text-fg-strong hover:border-line-strong",
@@ -244,7 +244,7 @@ export function PermissionConfigEditor({
         </aside>
 
         {activeRule ? (
-          <div className="rounded-md border border-line bg-surface p-5 shadow-sm">
+          <div className="rounded-sm border border-line bg-surface p-5 shadow-sm">
             <div className="flex flex-wrap items-start justify-between gap-3">
               <div>
                 <h6 className="text-lg font-semibold text-fg-strong">
@@ -260,7 +260,7 @@ export function PermissionConfigEditor({
                   type="button"
                   disabled={activeRuleIndex === 0}
                   onClick={() => moveRule(activeRuleIndex!, -1)}
-                  className="rounded-xl border border-line-strong px-3 py-2 text-sm font-medium text-fg transition hover:border-line-strong hover:bg-soft disabled:cursor-not-allowed disabled:opacity-50"
+                  className="rounded-sm border border-line-strong px-3 py-2 text-sm font-medium text-fg transition hover:border-line-strong hover:bg-soft disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   Move up
                 </button>
@@ -268,14 +268,14 @@ export function PermissionConfigEditor({
                   type="button"
                   disabled={activeRuleIndex === config.rules.length - 1}
                   onClick={() => moveRule(activeRuleIndex!, 1)}
-                  className="rounded-xl border border-line-strong px-3 py-2 text-sm font-medium text-fg transition hover:border-line-strong hover:bg-soft disabled:cursor-not-allowed disabled:opacity-50"
+                  className="rounded-sm border border-line-strong px-3 py-2 text-sm font-medium text-fg transition hover:border-line-strong hover:bg-soft disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   Move down
                 </button>
                 <button
                   type="button"
                   onClick={() => removeRule(activeRuleIndex!)}
-                  className="rounded-xl border border-tone-error/30 px-3 py-2 text-sm font-medium text-tone-error transition hover:bg-tone-error/10"
+                  className="rounded-sm border border-tone-error/30 px-3 py-2 text-sm font-medium text-tone-error transition hover:bg-tone-error/10"
                 >
                   Remove
                 </button>
@@ -294,10 +294,10 @@ export function PermissionConfigEditor({
                     })
                   }
                   placeholder="Bash(npm *)"
-                  className="w-full rounded-xl border border-line-strong bg-surface px-3 py-2 text-sm text-fg-strong outline-none transition focus:border-line-strong"
+                  className="w-full rounded-sm border border-line-strong bg-surface px-3 py-2 text-sm text-fg outline-none transition focus:border-fg"
                 />
               </Field>
-              <div className="rounded-md border border-line bg-soft p-4">
+              <div className="rounded-sm border border-line bg-soft p-4">
                 <SectionLabel label="Match Preview" />
                 <div className="mt-3 text-sm text-fg">
                   {activeRule.tool.trim()

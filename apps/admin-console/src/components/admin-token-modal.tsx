@@ -74,7 +74,7 @@ export function AdminTokenModal({
     >
       <form
         onSubmit={handleSubmit}
-        className="w-full max-w-md rounded-md border border-line bg-surface p-6 shadow-2xl"
+        className="w-full max-w-md rounded-sm border border-line bg-surface p-6 shadow-2xl"
       >
         <h2
           id="admin-token-modal-title"
@@ -94,7 +94,7 @@ export function AdminTokenModal({
           value={draft}
           onChange={(event) => setDraft(event.target.value)}
           placeholder="Bearer token"
-          className="mt-4 w-full rounded-xl border border-line-strong px-3 py-2 text-sm text-fg-strong outline-none transition focus:border-line-strong"
+          className="mt-4 w-full rounded-sm border border-line-strong px-3 py-2 text-sm text-fg outline-none transition focus:border-fg"
         />
         <div className="mt-5 flex flex-wrap items-center justify-end gap-3">
           <button
@@ -108,14 +108,14 @@ export function AdminTokenModal({
           <button
             type="button"
             onClick={onCancel}
-            className="rounded-xl border border-line-strong px-4 py-2 text-sm font-medium text-fg transition hover:bg-soft"
+            className="rounded-sm border border-line-strong px-4 py-2 text-sm font-medium text-fg transition hover:bg-soft"
           >
             Cancel
           </button>
           <button
             type="submit"
             disabled={draft.trim().length === 0}
-            className="rounded-xl bg-accent px-4 py-2 text-sm font-medium text-accent-text transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
+            className="rounded-sm bg-accent px-4 py-2 text-sm font-medium text-accent-text transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
           >
             Save
           </button>

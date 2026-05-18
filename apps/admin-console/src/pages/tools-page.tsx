@@ -33,10 +33,10 @@ export function ToolsPage() {
 
   return (
     <div className="mx-auto max-w-6xl p-6 md:p-8">
-      <div className="mb-4 flex items-end justify-between gap-4">
-        <h2 className="text-2xl font-semibold tracking-title-em text-fg-strong">
+      <div className="mb-6 flex items-start justify-between gap-4">
+        <h1 className="text-[22px] font-bold tracking-title-em text-fg-strong">
           {t("tools.list.title", { defaultValue: "Tools" })}
-        </h2>
+        </h1>
         <label className="flex items-center gap-2 text-sm font-medium text-fg">
           <input
             type="checkbox"
@@ -50,7 +50,7 @@ export function ToolsPage() {
       {loading ? (
         <p className="text-fg-soft">Loading…</p>
       ) : (
-        <div className="overflow-x-auto rounded-md border border-line bg-surface shadow-card">
+        <div className="overflow-x-auto rounded-sm border border-line bg-surface shadow-card">
           <table className="min-w-full text-sm">
             <thead>
               <tr className="border-b border-line">

@@ -39,7 +39,7 @@ export function PluginConfigWorkspace({
 }: PluginConfigWorkspaceProps) {
   if (entries.length === 0) {
     return (
-      <div className="mt-4 rounded-md border border-dashed border-line px-4 py-3 text-sm text-fg-soft">
+      <div className="mt-4 rounded-sm border border-dashed border-line px-4 py-3 text-sm text-fg-soft">
         Select a configurable plugin to edit its agent-level settings.
       </div>
     );
@@ -71,7 +71,7 @@ export function PluginConfigWorkspace({
               type="button"
               onClick={() => onSelectEntry(key)}
               className={[
-                "w-full rounded-md border px-4 py-3 text-left transition",
+                "w-full rounded-sm border px-4 py-3 text-left transition",
                 isActive
                   ? "border-accent bg-accent text-accent-text shadow-sm"
                   : "border-line bg-surface text-fg-strong hover:border-line-strong hover:bg-soft",
@@ -107,7 +107,7 @@ export function PluginConfigWorkspace({
       </aside>
 
       {activeEntry ? (
-        <div className="rounded-md border border-line bg-surface p-5 shadow-sm">
+        <div className="rounded-sm border border-line bg-surface p-5 shadow-sm">
           <div className="mb-4 border-b border-line pb-4">
             <div className="flex flex-wrap items-center gap-2">
               <h5 className="text-lg font-semibold text-fg-strong">
@@ -127,7 +127,7 @@ export function PluginConfigWorkspace({
               </p>
             ) : null}
             {!activeEntry.selected ? (
-              <div className="mt-3 rounded-xl border border-tone-warn/35 bg-tone-warn/10 px-3 py-2 text-sm text-tone-warn">
+              <div className="mt-3 rounded-sm border border-tone-warn/35 bg-tone-warn/10 px-3 py-2 text-sm text-tone-warn">
                 {activeEntry.hasStoredConfig
                   ? `This section is still stored on the agent, but it only takes effect after re-enabling \`${activeEntry.plugin.id}\`.`
                   : `You can preconfigure this section now. It will only take effect after enabling \`${activeEntry.plugin.id}\`.`}
@@ -144,7 +144,7 @@ export function PluginConfigWorkspace({
           />
         </div>
       ) : (
-        <div className="rounded-md border border-dashed border-line bg-surface p-5 text-sm text-fg-soft">
+        <div className="rounded-sm border border-dashed border-line bg-surface p-5 text-sm text-fg-soft">
           Select a plugin configuration section to edit it.
         </div>
       )}

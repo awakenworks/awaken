@@ -70,7 +70,7 @@ export function EditorSaveBar({
 
   return (
     <>
-      <div className="sticky bottom-0 z-20 mx-6 mb-4 rounded-md border border-line bg-surface px-4 py-3 shadow-card-lift md:mx-8">
+      <div className="sticky bottom-0 z-20 mx-6 mb-4 rounded-sm border border-line bg-surface px-4 py-3 shadow-card-lift md:mx-8">
         <div className="flex flex-wrap items-center gap-3">
           <span aria-hidden className="inline-block h-2 w-2 rounded-pill bg-state-progress" />
           <div className="text-sm text-fg">
@@ -86,7 +86,7 @@ export function EditorSaveBar({
               <button
                 type="button"
                 onClick={() => setDiffOpen(true)}
-                className="inline-flex h-9 items-center rounded-md border border-line bg-surface px-3 text-sm font-medium text-fg-soft transition-colors hover:text-fg"
+                className="inline-flex h-9 items-center rounded-sm border border-line bg-surface px-3 text-sm font-medium text-fg-soft transition-colors hover:text-fg"
               >
                 {t("editor.diff")}
               </button>
@@ -95,7 +95,7 @@ export function EditorSaveBar({
               type="button"
               onClick={() => void handleValidate()}
               disabled={validating || saving}
-              className="inline-flex h-9 items-center rounded-md border border-line-strong bg-surface px-3 text-sm font-medium text-fg transition-colors hover:bg-soft disabled:cursor-not-allowed disabled:opacity-60"
+              className="inline-flex h-9 items-center rounded-sm border border-line-strong bg-surface px-3 text-sm font-medium text-fg transition-colors hover:bg-soft disabled:cursor-not-allowed disabled:opacity-60"
             >
               {validating ? t("editor.validating") : t("editor.validate")}
             </button>
@@ -103,7 +103,7 @@ export function EditorSaveBar({
               type="button"
               onClick={onSave}
               disabled={saveDisabled || validating}
-              className="inline-flex h-9 items-center rounded-md bg-accent px-4 text-sm font-medium text-accent-text transition-colors hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
+              className="inline-flex h-9 items-center rounded-sm bg-accent px-4 text-sm font-medium text-accent-text transition-colors hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
             >
               {saving ? t("editor.saving") : t("editor.save")}
             </button>

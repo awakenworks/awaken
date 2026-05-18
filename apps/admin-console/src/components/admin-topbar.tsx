@@ -29,13 +29,13 @@ export function AdminTopbar({
   const palette = useCommandPalette();
 
   return (
-    <header className="sticky top-0 z-20 flex h-14 items-center gap-4 border-b border-line bg-canvas/80 px-4 backdrop-blur md:px-6">
+    <header className="sticky top-0 z-20 flex h-12 items-center gap-4 border-b border-line bg-canvas/80 px-4 backdrop-blur md:px-6">
       {onOpenDrawer && (
         <button
           type="button"
           aria-label="Open menu"
           onClick={onOpenDrawer}
-          className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-md text-fg-soft transition-colors hover:bg-soft md:hidden"
+          className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-sm text-fg-soft transition-colors hover:bg-soft md:hidden"
         >
           <svg
             aria-hidden
@@ -91,7 +91,7 @@ export function AdminTopbar({
           type="button"
           aria-label="Open command palette"
           onClick={palette.open}
-          className="hidden h-9 items-center gap-2 rounded-md border border-line bg-soft px-3 text-xs text-fg-soft transition-colors hover:border-line-strong md:inline-flex"
+          className="hidden h-9 items-center gap-2 rounded-sm border border-line bg-soft px-3 text-xs text-fg-soft transition-colors hover:border-line-strong md:inline-flex"
         >
           <span>{t("topbar.palettePlaceholder")}</span>
           <span className="flex items-center gap-1 text-fg-faint">
@@ -112,7 +112,7 @@ export function AdminTopbar({
           type="button"
           aria-label="Notifications (coming soon)"
           disabled
-          className="hidden h-9 w-9 items-center justify-center rounded-md border border-line bg-soft text-fg-soft transition-colors hover:border-line-strong disabled:cursor-not-allowed disabled:opacity-60 md:inline-flex"
+          className="hidden h-9 w-9 items-center justify-center rounded-sm border border-line bg-soft text-fg-soft transition-colors hover:border-line-strong disabled:cursor-not-allowed disabled:opacity-60 md:inline-flex"
         >
           <svg
             aria-hidden
@@ -132,7 +132,7 @@ export function AdminTopbar({
           onClick={openTokenModal}
           aria-label={token ? `Set admin token (currently ${maskAdminToken(token)})` : "Set admin token"}
           title={token ? `admin · token ${maskAdminToken(token)} ✓` : "Set admin token"}
-          className="flex items-center gap-2 rounded-md border border-line-strong bg-surface px-2 py-1 text-left text-xs text-fg-soft transition-colors hover:bg-soft hover:text-fg"
+          className="flex items-center gap-2 rounded-sm border border-line-strong bg-surface px-2 py-1 text-left text-xs text-fg-soft transition-colors hover:bg-soft hover:text-fg"
         >
           <span
             aria-hidden
@@ -171,7 +171,7 @@ function LocaleToggle() {
       aria-label={`Switch language to ${next}`}
       title={`Switch language to ${next}`}
       onClick={() => setLocale(next)}
-      className="hidden h-9 items-center justify-center rounded-md border border-line-strong bg-surface px-2.5 text-xs font-medium text-fg-soft transition-colors hover:bg-soft hover:text-fg md:inline-flex"
+      className="hidden h-9 items-center justify-center rounded-sm border border-line-strong bg-surface px-2.5 text-xs font-medium text-fg-soft transition-colors hover:bg-soft hover:text-fg md:inline-flex"
     >
       {locale === "zh-CN" ? "中" : "EN"}
     </button>
@@ -187,7 +187,7 @@ function ThemeToggle() {
       aria-label={label}
       title={label}
       onClick={cycle}
-      className="hidden h-9 w-9 items-center justify-center rounded-md border border-line bg-soft text-fg-soft transition-colors hover:border-line-strong hover:text-fg md:inline-flex"
+      className="hidden h-9 w-9 items-center justify-center rounded-sm border border-line bg-soft text-fg-soft transition-colors hover:border-line-strong hover:text-fg md:inline-flex"
     >
       {choice === "light" && <SunIcon />}
       {choice === "dark" && <MoonIcon />}

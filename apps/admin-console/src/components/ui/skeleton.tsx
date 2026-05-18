@@ -10,7 +10,7 @@ export function SkeletonBlock({
   return (
     <span
       aria-hidden
-      className={`inline-block animate-pulse rounded bg-muted ${className}`.trim()}
+      className={`inline-block animate-pulse rounded-sm bg-muted ${className}`.trim()}
       style={{ width, height }}
     />
   );

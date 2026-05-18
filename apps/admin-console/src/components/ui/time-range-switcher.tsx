@@ -35,7 +35,7 @@ export function TimeRangeSwitcher({
     <div
       role="radiogroup"
       aria-label="Time range"
-      className={`inline-flex items-center rounded-md border border-line bg-surface p-0.5 text-xs ${className}`.trim()}
+      className={`inline-flex items-center rounded-sm border border-line bg-surface p-0.5 text-xs ${className}`.trim()}
     >
       {options.map((opt) => {
         const active = opt === value;

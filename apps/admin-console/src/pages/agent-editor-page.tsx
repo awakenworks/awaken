@@ -541,7 +541,7 @@ export function AgentEditorPage() {
   if (loading) {
     return (
       <div className="mx-auto max-w-6xl p-6 md:p-8">
-        <div className="rounded-md border border-line bg-surface p-6 text-sm text-fg-soft shadow-sm">
+        <div className="rounded-sm border border-line bg-surface p-6 text-sm text-fg-soft shadow-sm">
           Loading agent...
         </div>
       </div>
@@ -550,7 +550,7 @@ export function AgentEditorPage() {
   if (agentError) {
     return (
       <div className="mx-auto max-w-6xl p-6 md:p-8">
-        <div className="rounded-md border border-tone-error/30 bg-tone-error/10 p-4 text-sm text-tone-error">
+        <div className="rounded-sm border border-tone-error/30 bg-tone-error/10 p-4 text-sm text-tone-error">
           Agent unavailable: {agentError}
         </div>
       </div>
@@ -573,7 +573,7 @@ export function AgentEditorPage() {
       />
 
       {agentMetaError && (
-        <div className="mx-6 mt-4 rounded-md border border-tone-error/30 bg-tone-error/10 px-4 py-3 text-sm text-tone-error md:mx-8">
+        <div className="mx-6 mt-4 rounded-sm border border-tone-error/30 bg-tone-error/10 px-4 py-3 text-sm text-tone-error md:mx-8">
           Agent metadata unavailable: {agentMetaError}
         </div>
       )}
@@ -587,7 +587,7 @@ export function AgentEditorPage() {
         // existence to operators so the editor doesn't silently lie
         // about the agent's effective shape.
         <div
-          className="mx-6 mt-4 rounded-md border border-tone-warn/40 bg-tone-warn/10 px-4 py-3 text-sm text-fg md:mx-8"
+          className="mx-6 mt-4 rounded-sm border border-tone-warn/40 bg-tone-warn/10 px-4 py-3 text-sm text-fg md:mx-8"
           data-testid="endpoint-override-banner"
         >
           <div className="font-semibold text-tone-warn">
@@ -738,7 +738,7 @@ function EditorSaveBar({
 
   return (
     <>
-      <div className="sticky bottom-0 z-20 mx-6 mb-4 rounded-md border border-line bg-surface px-4 py-3 shadow-card-lift md:mx-8">
+      <div className="sticky bottom-0 z-20 mx-6 mb-4 rounded-sm border border-line bg-surface px-4 py-3 shadow-card-lift md:mx-8">
         <div className="flex flex-wrap items-center gap-3">
           <span aria-hidden className="inline-block h-2 w-2 rounded-pill bg-state-progress" />
           <div className="text-sm text-fg">
@@ -754,7 +754,7 @@ function EditorSaveBar({
               <button
                 type="button"
                 onClick={() => setDiffOpen(true)}
-                className="inline-flex h-9 items-center rounded-md border border-line bg-surface px-3 text-sm font-medium text-fg-soft transition-colors hover:text-fg"
+                className="inline-flex h-9 items-center rounded-sm border border-line bg-surface px-3 text-sm font-medium text-fg-soft transition-colors hover:text-fg"
               >
                 {t("editor.diff")}
               </button>
@@ -763,7 +763,7 @@ function EditorSaveBar({
               type="button"
               onClick={() => void handleValidate()}
               disabled={validating || saving}
-              className="inline-flex h-9 items-center rounded-md border border-line-strong bg-surface px-3 text-sm font-medium text-fg transition-colors hover:bg-soft disabled:cursor-not-allowed disabled:opacity-60"
+              className="inline-flex h-9 items-center rounded-sm border border-line-strong bg-surface px-3 text-sm font-medium text-fg transition-colors hover:bg-soft disabled:cursor-not-allowed disabled:opacity-60"
             >
               {validating ? t("editor.validating") : t("editor.validate")}
             </button>
@@ -771,7 +771,7 @@ function EditorSaveBar({
               type="button"
               onClick={onSave}
               disabled={saveDisabled || validating}
-              className="inline-flex h-9 items-center rounded-md bg-accent px-4 text-sm font-medium text-accent-text transition-colors hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
+              className="inline-flex h-9 items-center rounded-sm bg-accent px-4 text-sm font-medium text-accent-text transition-colors hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
             >
               {saving ? t("editor.saving") : t("editor.save")}
             </button>
@@ -823,7 +823,7 @@ export function DiffModal({
           <button
             type="button"
             onClick={onClose}
-            className="rounded-md border border-line bg-soft px-2 py-1 text-xs text-fg-soft hover:text-fg"
+            className="rounded-sm border border-line bg-soft px-2 py-1 text-xs text-fg-soft hover:text-fg"
           >
             Close
           </button>
@@ -837,7 +837,7 @@ export function DiffModal({
           ) : (
             <ul className="space-y-3">
               {changes.map((change) => (
-                <li key={change.path} className="rounded-md border border-line bg-soft p-3">
+                <li key={change.path} className="rounded-sm border border-line bg-soft p-3">
                   <div className="flex flex-wrap items-center gap-2">
                     <div className="font-mono text-xs font-medium text-fg-strong">
                       {change.path}
@@ -971,7 +971,7 @@ function StickyEditorHeader({
               to={adminRoutes.agents}
               aria-label="Back to agents"
               title="Back to agents"
-              className="inline-flex h-7 w-7 items-center justify-center rounded-md text-fg-soft transition hover:bg-soft hover:text-fg"
+              className="inline-flex h-7 w-7 items-center justify-center rounded-sm text-fg-soft transition hover:bg-soft hover:text-fg"
             >
               <svg
                 aria-hidden
@@ -989,7 +989,7 @@ function StickyEditorHeader({
             {!isNew && agentId && (
               <Link
                 to={adminRoutes.auditLogForResource(`agents/${agentId}`)}
-                className="rounded-md border border-line-strong bg-surface px-2.5 py-1 text-xs font-medium text-fg-soft transition hover:bg-soft hover:text-fg"
+                className="rounded-sm border border-line-strong bg-surface px-2.5 py-1 text-xs font-medium text-fg-soft transition hover:bg-soft hover:text-fg"
               >
                 {t("editor.history")}
               </Link>
@@ -1025,7 +1025,7 @@ function StickyEditorHeader({
             type="button"
             onClick={onSave}
             disabled={saveDisabled}
-            className="rounded-xl bg-accent px-4 py-2 text-sm font-medium text-accent-text transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
+            className="rounded-sm bg-accent px-4 py-2 text-sm font-medium text-accent-text transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
           >
             {t("editor.save")}
           </button>
@@ -1128,10 +1128,10 @@ function BasicsPanel({
   }
 
   return (
-    <section className="rounded-md border border-line bg-surface p-5 shadow-sm">
+    <section className="rounded-sm border border-line bg-surface p-5 shadow-sm">
       <h3 className="text-lg font-semibold text-fg-strong">Basics</h3>
       {isNew && cloneOptions.length > 0 && onCloneFrom ? (
-        <div className="mt-3 flex flex-wrap items-center gap-2 rounded-md border border-dashed border-line bg-soft px-3 py-2 text-xs text-fg-soft">
+        <div className="mt-3 flex flex-wrap items-center gap-2 rounded-sm border border-dashed border-line bg-soft px-3 py-2 text-xs text-fg-soft">
           <span className="font-medium uppercase tracking-eyebrow text-[10px]">Start from</span>
           <select
             defaultValue=""
@@ -1142,7 +1142,7 @@ function BasicsPanel({
                 event.target.value = "";
               }
             }}
-            className="rounded-md border border-line-strong bg-surface px-2 py-1 text-xs text-fg-strong outline-none transition focus:border-line-strong"
+            className="rounded-sm border border-line-strong bg-surface px-2 py-1 text-xs text-fg outline-none transition focus:border-fg"
           >
             <option value="">Blank agent</option>
             {cloneOptions.map((agentId) => (
@@ -1169,7 +1169,7 @@ function BasicsPanel({
             disabled={!isNew}
             aria-invalid={Boolean(errors?.id)}
             onChange={(event) => updateField("id", event.target.value)}
-            className="w-full rounded-xl border border-line-strong px-3 py-2 text-sm text-fg-strong outline-none transition focus:border-line-strong disabled:bg-muted disabled:text-fg-soft aria-[invalid=true]:border-tone-error"
+            className="w-full rounded-sm border border-line-strong px-3 py-2 text-sm text-fg outline-none transition focus:border-fg disabled:bg-muted disabled:text-fg-soft aria-[invalid=true]:border-tone-error"
           />
         </Field>
         <div>
@@ -1178,7 +1178,7 @@ function BasicsPanel({
               value={String(spec.model_id ?? "")}
               aria-invalid={Boolean(errors?.model_id)}
               onChange={(event) => updateField("model_id", event.target.value)}
-              className="w-full rounded-xl border border-line-strong bg-surface px-3 py-2 text-sm text-fg-strong outline-none transition focus:border-line-strong aria-[invalid=true]:border-tone-error"
+              className="w-full rounded-sm border border-line-strong bg-surface px-3 py-2 text-sm text-fg outline-none transition focus:border-fg aria-[invalid=true]:border-tone-error"
             >
               <option value="">Select a model</option>
               {(capabilities?.models ?? []).map((model) => (
@@ -1199,7 +1199,7 @@ function BasicsPanel({
               const next = parseIntegerInput(event.target.value, 1);
               if (next !== undefined) updateField("max_rounds", next);
             }}
-            className="w-full rounded-xl border border-line-strong px-3 py-2 text-sm text-fg-strong outline-none transition focus:border-line-strong"
+            className="w-full rounded-sm border border-line-strong px-3 py-2 text-sm text-fg outline-none transition focus:border-fg"
           />
         </Field>
         <Field label="Max continuation retries" {...fieldResetProps("max_continuation_retries")}>
@@ -1211,7 +1211,7 @@ function BasicsPanel({
               const next = parseIntegerInput(event.target.value, 0);
               if (next !== undefined) updateField("max_continuation_retries", next);
             }}
-            className="w-full rounded-xl border border-line-strong px-3 py-2 text-sm text-fg-strong outline-none transition focus:border-line-strong"
+            className="w-full rounded-sm border border-line-strong px-3 py-2 text-sm text-fg outline-none transition focus:border-fg"
           />
         </Field>
         <Field label="Reasoning effort">
@@ -1251,7 +1251,7 @@ function BasicsPanel({
                   }) as string | number | null | undefined,
                 );
               }}
-              className="rounded-xl border border-line-strong bg-surface px-3 py-2 text-sm text-fg-strong outline-none transition focus:border-line-strong"
+              className="rounded-sm border border-line-strong bg-surface px-3 py-2 text-sm text-fg outline-none transition focus:border-fg"
             >
               <option value="__default__">Provider default</option>
               {REASONING_EFFORT_PRESETS.map((preset) => (
@@ -1275,7 +1275,7 @@ function BasicsPanel({
                   )
                 }
                 placeholder="e.g. 1, 2, ultra"
-                className="w-32 rounded-xl border border-line-strong px-3 py-2 text-sm text-fg-strong outline-none transition focus:border-line-strong"
+                className="w-32 rounded-sm border border-line-strong px-3 py-2 text-sm text-fg outline-none transition focus:border-fg"
               />
             ) : null}
           </div>
@@ -1288,7 +1288,7 @@ function BasicsPanel({
             value={String(spec.system_prompt ?? "")}
             onChange={(event) => updateField("system_prompt", event.target.value)}
             rows={8}
-            className="w-full rounded-xl border border-line-strong bg-surface px-3 py-2 font-mono text-sm text-fg-strong outline-none transition focus:border-line-strong"
+            className="w-full rounded-sm border border-line-strong bg-surface px-3 py-2 font-mono text-sm text-fg outline-none transition focus:border-fg"
           />
         </Field>
         <SystemPromptStats value={String(spec.system_prompt ?? "")} />
@@ -1378,7 +1378,7 @@ function ToolsPanel({
   // Loading-only gate (empty registry must still render pattern editors).
   if (!capabilities) {
     return (
-      <div className="rounded-md border border-dashed border-line bg-surface p-6 text-sm text-fg-soft">
+      <div className="rounded-sm border border-dashed border-line bg-surface p-6 text-sm text-fg-soft">
         Loading published tool capabilities...
       </div>
     );
@@ -1486,7 +1486,7 @@ function AllowedExcludedToolsSection({
     staleTime: 30_000,
   });
   return (
-    <section className="rounded-md border border-line bg-surface p-5 shadow-sm">
+    <section className="rounded-sm border border-line bg-surface p-5 shadow-sm">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <h3 className="text-lg font-semibold text-fg-strong">
@@ -1525,12 +1525,12 @@ function AllowedExcludedToolsSection({
       </div>
 
       {visible.length === 0 ? (
-        <div className="mt-4 rounded-md border border-tone-warn/35 bg-tone-warn/10 px-4 py-3 text-sm text-tone-warn">
+        <div className="mt-4 rounded-sm border border-tone-warn/35 bg-tone-warn/10 px-4 py-3 text-sm text-tone-warn">
           The allow/exclude lists leave no tools. Combined with any permission policy this means the
           model will see an empty tool set.
         </div>
       ) : (
-        <details className="mt-4 rounded-md border border-line bg-soft">
+        <details className="mt-4 rounded-sm border border-line bg-soft">
           <summary className="cursor-pointer px-3 py-2 text-xs font-medium text-fg-soft">
             Show {visible.length} tool{visible.length === 1 ? "" : "s"}
           </summary>
@@ -1548,7 +1548,7 @@ function AllowedExcludedToolsSection({
         <>
           {previewInputsDirty ? (
             <div
-              className="mt-4 rounded-md border border-tone-warn/35 bg-tone-warn/10 px-3 py-2 text-xs text-tone-warn"
+              className="mt-4 rounded-sm border border-tone-warn/35 bg-tone-warn/10 px-3 py-2 text-xs text-tone-warn"
               data-testid="permission-preview-dirty-hint"
             >
               The tools-after-lists count above reflects your unsaved draft; the permission preview
@@ -1582,7 +1582,7 @@ function PermissionPreviewBlock({
   if (!agentSaved) {
     return (
       <div
-        className="mt-4 rounded-md border border-dashed border-line bg-soft px-3 py-2 text-xs text-fg-soft"
+        className="mt-4 rounded-sm border border-dashed border-line bg-soft px-3 py-2 text-xs text-fg-soft"
         data-testid="permission-preview-pending-save"
       >
         Permission preview will be available after the agent is saved — the server reads the
@@ -1592,21 +1592,21 @@ function PermissionPreviewBlock({
   }
   if (loading) {
     return (
-      <div className="mt-4 rounded-md border border-line bg-soft px-3 py-2 text-xs text-fg-soft">
+      <div className="mt-4 rounded-sm border border-line bg-soft px-3 py-2 text-xs text-fg-soft">
         Loading permission preview…
       </div>
     );
   }
   if (error) {
     return (
-      <div className="mt-4 rounded-md border border-tone-error/30 bg-tone-error/10 px-3 py-2 text-xs text-tone-error">
+      <div className="mt-4 rounded-sm border border-tone-error/30 bg-tone-error/10 px-3 py-2 text-xs text-tone-error">
         Failed to load permission preview: {safeErrorMessage(error)}
       </div>
     );
   }
   if (preview === null) {
     return (
-      <div className="mt-4 rounded-md border border-dashed border-line bg-soft px-3 py-2 text-xs text-fg-soft">
+      <div className="mt-4 rounded-sm border border-dashed border-line bg-soft px-3 py-2 text-xs text-fg-soft">
         Server build lacks the <span className="font-mono">permission</span> feature — preview
         unavailable.
       </div>
@@ -1617,7 +1617,7 @@ function PermissionPreviewBlock({
   return (
     <div
       data-testid="permission-preview-block"
-      className="mt-4 space-y-3 rounded-md border border-line bg-soft px-3 py-3"
+      className="mt-4 space-y-3 rounded-sm border border-line bg-soft px-3 py-3"
     >
       <div className="flex flex-wrap items-baseline justify-between gap-2 text-xs">
         <div>
@@ -1644,7 +1644,7 @@ function PermissionPreviewBlock({
       </div>
 
       {preview.unconditionally_denied.length > 0 ? (
-        <details className="rounded-md border border-tone-error/30 bg-tone-error/5">
+        <details className="rounded-sm border border-tone-error/30 bg-tone-error/5">
           <summary className="cursor-pointer px-3 py-2 text-xs font-medium text-tone-error">
             {preview.unconditionally_denied.length} tool
             {preview.unconditionally_denied.length === 1 ? "" : "s"} stripped before the model sees
@@ -1664,7 +1664,7 @@ function PermissionPreviewBlock({
         </details>
       ) : null}
 
-      <details className="rounded-md border border-line bg-surface">
+      <details className="rounded-sm border border-line bg-surface">
         <summary className="cursor-pointer px-3 py-2 text-xs font-medium text-fg-soft">
           Show {preview.effective_tools.length} effective tool
           {preview.effective_tools.length === 1 ? "" : "s"}
@@ -1683,7 +1683,7 @@ function PermissionPreviewBlock({
       </details>
 
       {preview.args_conditional_rules.length > 0 ? (
-        <details className="rounded-md border border-tone-warn/40 bg-tone-warn/5">
+        <details className="rounded-sm border border-tone-warn/40 bg-tone-warn/5">
           <summary className="cursor-pointer px-3 py-2 text-xs font-medium text-tone-warn">
             {preview.args_conditional_rules.length} rule
             {preview.args_conditional_rules.length === 1 ? "" : "s"} depend on call arguments
@@ -1729,13 +1729,13 @@ function PluginsPanel({
 }) {
   if (!capabilities || capabilities.plugins.length === 0) {
     return (
-      <div className="rounded-md border border-dashed border-line bg-surface p-6 text-sm text-fg-soft">
+      <div className="rounded-sm border border-dashed border-line bg-surface p-6 text-sm text-fg-soft">
         No plugins are currently registered.
       </div>
     );
   }
   return (
-    <section className="rounded-md border border-line bg-surface p-5 shadow-sm">
+    <section className="rounded-sm border border-line bg-surface p-5 shadow-sm">
       <h3 className="text-lg font-semibold text-fg-strong">Plugins</h3>
       <p className="mt-2 text-sm text-fg-soft">
         Enable agent plugins here. Plugins with agent-level settings expose their configuration
@@ -1745,7 +1745,7 @@ function PluginsPanel({
         {capabilities.plugins.map((plugin) => (
           <label
             key={plugin.id}
-            className="rounded-xl border border-line bg-soft px-4 py-3 text-sm text-fg"
+            className="rounded-sm border border-line bg-soft px-4 py-3 text-sm text-fg"
           >
             <div className="flex items-start gap-3">
               <input
@@ -1787,7 +1787,7 @@ function PluginsPanel({
       </div>
 
       {configurablePlugins.length === 0 ? (
-        <div className="mt-4 rounded-md border border-dashed border-line px-4 py-3 text-sm text-fg-soft">
+        <div className="mt-4 rounded-sm border border-dashed border-line px-4 py-3 text-sm text-fg-soft">
           No registered plugins expose agent-level configuration.
         </div>
       ) : (
@@ -1881,7 +1881,7 @@ function ActiveHookFilterSection({
         <fieldset aria-label="Active hook filter mode" className="flex shrink-0 gap-2">
           <label
             className={[
-              "min-w-[8rem] cursor-pointer rounded-xl border px-3 py-2 text-sm transition",
+              "min-w-[8rem] cursor-pointer rounded-sm border px-3 py-2 text-sm transition",
               !filtering
                 ? "border-accent bg-accent text-accent-text shadow-sm"
                 : "border-line bg-surface text-fg hover:border-line-strong hover:bg-soft",
@@ -1905,7 +1905,7 @@ function ActiveHookFilterSection({
           </label>
           <label
             className={[
-              "min-w-[8rem] cursor-pointer rounded-xl border px-3 py-2 text-sm transition",
+              "min-w-[8rem] cursor-pointer rounded-sm border px-3 py-2 text-sm transition",
               filtering
                 ? "border-accent bg-accent text-accent-text shadow-sm"
                 : "border-line bg-surface text-fg hover:border-line-strong hover:bg-soft",
@@ -1932,7 +1932,7 @@ function ActiveHookFilterSection({
 
       {filtering ? (
         pluginIds.length === 0 ? (
-          <div className="mt-4 rounded-md border border-dashed border-line px-4 py-3 text-sm text-fg-soft">
+          <div className="mt-4 rounded-sm border border-dashed border-line px-4 py-3 text-sm text-fg-soft">
             No plugins are enabled. Enable plugins above before filtering hooks.
           </div>
         ) : (
@@ -1946,7 +1946,7 @@ function ActiveHookFilterSection({
                 return (
                   <label
                     key={pluginId}
-                    className="flex items-center gap-2 rounded-xl border border-line bg-soft px-3 py-2 text-sm text-fg"
+                    className="flex items-center gap-2 rounded-sm border border-line bg-soft px-3 py-2 text-sm text-fg"
                     title={
                       isLastChecked
                         ? "Filter mode requires at least one plugin — switch to All plugins to disable filtering."
@@ -1979,7 +1979,7 @@ function ActiveHookFilterSection({
 
       {stale.length > 0 ? (
         <div
-          className="mt-4 rounded-md border border-tone-warn/40 bg-tone-warn/10 p-3 text-sm text-fg"
+          className="mt-4 rounded-sm border border-tone-warn/40 bg-tone-warn/10 p-3 text-sm text-fg"
           data-testid="active-hook-filter-stale-warning"
         >
           <div className="flex items-start justify-between gap-3">
@@ -2009,7 +2009,7 @@ function ActiveHookFilterSection({
             <button
               type="button"
               onClick={clearStaleEntries}
-              className="shrink-0 rounded-md border border-line-strong bg-surface px-3 py-1 text-xs font-medium text-fg-soft transition hover:bg-soft"
+              className="shrink-0 rounded-sm border border-line-strong bg-surface px-3 py-1 text-xs font-medium text-fg-soft transition hover:bg-soft"
             >
               Clear stale entries
             </button>
@@ -2031,14 +2031,14 @@ function DelegatesPanel({
 }) {
   if (!capabilities || capabilities.agents.length === 0) {
     return (
-      <div className="rounded-md border border-dashed border-line bg-surface p-6 text-sm text-fg-soft">
+      <div className="rounded-sm border border-dashed border-line bg-surface p-6 text-sm text-fg-soft">
         No other agents are registered yet, so this agent cannot delegate.
       </div>
     );
   }
   const selected = spec.delegates ?? [];
   return (
-    <section className="rounded-md border border-line bg-surface p-5 shadow-sm">
+    <section className="rounded-sm border border-line bg-surface p-5 shadow-sm">
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
           <h3 className="text-lg font-semibold text-fg-strong">Delegates</h3>
@@ -2070,7 +2070,7 @@ function DelegatesPanel({
               <label
                 key={agentId}
                 className={[
-                  "rounded-xl border px-4 py-3 text-sm transition-colors",
+                  "rounded-sm border px-4 py-3 text-sm transition-colors",
                   checked
                     ? "border-agent-stripe/40 bg-agent-tint text-agent-fg"
                     : "border-line bg-soft text-fg hover:border-line-strong",
@@ -2238,7 +2238,7 @@ function JsonEditorSection({
   }
 
   return (
-    <section className="rounded-md border border-line bg-surface p-5 shadow-sm">
+    <section className="rounded-sm border border-line bg-surface p-5 shadow-sm">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <h3 className="text-lg font-semibold text-fg-strong">Raw JSON</h3>
@@ -2286,7 +2286,7 @@ function JsonEditorSection({
             type="button"
             onClick={handleReset}
             disabled={!touched || applying}
-            className="rounded-md border border-line-strong bg-surface px-3 py-1.5 text-xs font-medium text-fg-soft transition hover:bg-soft disabled:cursor-not-allowed disabled:opacity-60"
+            className="rounded-sm border border-line-strong bg-surface px-3 py-1.5 text-xs font-medium text-fg-soft transition hover:bg-soft disabled:cursor-not-allowed disabled:opacity-60"
           >
             Reset
           </button>
@@ -2294,7 +2294,7 @@ function JsonEditorSection({
             type="button"
             onClick={() => void handleApply()}
             disabled={!touched || applying}
-            className="rounded-md bg-accent px-3 py-1.5 text-xs font-medium text-accent-text transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
+            className="rounded-sm bg-accent px-3 py-1.5 text-xs font-medium text-accent-text transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
           >
             {applying ? "Validating…" : "Apply to draft"}
           </button>
@@ -2310,11 +2310,11 @@ function JsonEditorSection({
         }}
         spellCheck={false}
         rows={20}
-        className="mt-4 w-full rounded-xl border border-line-strong bg-code-bg px-3 py-2 font-mono text-xs leading-5 text-code-fg outline-none transition focus:border-line-strong"
+        className="mt-4 w-full rounded-sm border border-line-strong bg-code-bg px-3 py-2 font-mono text-xs leading-5 text-code-fg outline-none transition focus:border-fg"
       />
 
       {error ? (
-        <div className="mt-3 rounded-md border border-tone-error/30 bg-tone-error/10 px-3 py-2 text-xs text-tone-error">
+        <div className="mt-3 rounded-sm border border-tone-error/30 bg-tone-error/10 px-3 py-2 text-xs text-tone-error">
           {error}
         </div>
       ) : null}
@@ -2358,7 +2358,7 @@ function ContextPolicySection({
   }
 
   return (
-    <section className="rounded-md border border-line bg-surface p-5 shadow-sm">
+    <section className="rounded-sm border border-line bg-surface p-5 shadow-sm">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <h3 className="text-lg font-semibold text-fg-strong">Context window policy</h3>
@@ -2390,7 +2390,7 @@ function ContextPolicySection({
                 const next = parseTokenInput(event.target.value, 1);
                 if (next !== undefined) update("max_context_tokens", next);
               }}
-              className="w-full rounded-xl border border-line-strong px-3 py-2 text-sm text-fg-strong outline-none transition focus:border-line-strong"
+              className="w-full rounded-sm border border-line-strong px-3 py-2 text-sm text-fg outline-none transition focus:border-fg"
             />
           </Field>
           <Field label="Max output tokens">
@@ -2402,7 +2402,7 @@ function ContextPolicySection({
                 const next = parseTokenInput(event.target.value, 1);
                 if (next !== undefined) update("max_output_tokens", next);
               }}
-              className="w-full rounded-xl border border-line-strong px-3 py-2 text-sm text-fg-strong outline-none transition focus:border-line-strong"
+              className="w-full rounded-sm border border-line-strong px-3 py-2 text-sm text-fg outline-none transition focus:border-fg"
             />
           </Field>
           <Field label="Min recent messages">
@@ -2411,7 +2411,7 @@ function ContextPolicySection({
               min={0}
               value={policy.min_recent_messages}
               onChange={(event) => update("min_recent_messages", Number(event.target.value) || 0)}
-              className="w-full rounded-xl border border-line-strong px-3 py-2 text-sm text-fg-strong outline-none transition focus:border-line-strong"
+              className="w-full rounded-sm border border-line-strong px-3 py-2 text-sm text-fg outline-none transition focus:border-fg"
             />
           </Field>
           <Field label="Compaction mode">
@@ -2420,7 +2420,7 @@ function ContextPolicySection({
               onChange={(event) =>
                 update("compaction_mode", event.target.value as ContextCompactionMode)
               }
-              className="w-full rounded-xl border border-line-strong bg-surface px-3 py-2 text-sm text-fg-strong outline-none transition focus:border-line-strong"
+              className="w-full rounded-sm border border-line-strong bg-surface px-3 py-2 text-sm text-fg outline-none transition focus:border-fg"
             >
               {(Object.keys(COMPACTION_MODE_LABEL) as ContextCompactionMode[]).map((mode) => (
                 <option key={mode} value={mode}>
@@ -2437,7 +2437,7 @@ function ContextPolicySection({
               onChange={(event) =>
                 update("compaction_raw_suffix_messages", Number(event.target.value) || 0)
               }
-              className="w-full rounded-xl border border-line-strong px-3 py-2 text-sm text-fg-strong outline-none transition focus:border-line-strong"
+              className="w-full rounded-sm border border-line-strong px-3 py-2 text-sm text-fg outline-none transition focus:border-fg"
             />
           </Field>
           <Field label="Autocompact threshold">
@@ -2464,7 +2464,7 @@ function ContextPolicySection({
                   const next = parseTokenInput(event.target.value, 1);
                   if (next !== undefined) update("autocompact_threshold", next);
                 }}
-                className="w-full rounded-xl border border-line-strong px-3 py-2 text-sm text-fg-strong outline-none transition focus:border-line-strong disabled:bg-muted disabled:text-fg-soft"
+                className="w-full rounded-sm border border-line-strong px-3 py-2 text-sm text-fg outline-none transition focus:border-fg disabled:bg-muted disabled:text-fg-soft"
               />
             </div>
           </Field>
@@ -2500,7 +2500,7 @@ function RemoteEndpointReadonlySection({
   // or browser dev tools.
   const redacted = redactEndpointForDisplay(endpoint);
   return (
-    <section className="rounded-md border border-line bg-surface p-5 shadow-sm">
+    <section className="rounded-sm border border-line bg-surface p-5 shadow-sm">
       <h3 className="text-lg font-semibold text-fg-strong">Remote endpoint</h3>
       <p className="mt-2 max-w-xl text-sm text-fg-soft">
         This agent is configured to run on a remote backend. Endpoint configuration is preserved
@@ -2515,7 +2515,7 @@ function RemoteEndpointReadonlySection({
         below. Manage the real credential in the remote backend record.
       </p>
       <pre
-        className="mt-3 overflow-auto rounded-xl bg-code-bg p-3 text-xs text-code-fg"
+        className="mt-3 overflow-auto rounded-sm bg-code-bg p-3 text-xs text-code-fg"
         data-testid="remote-endpoint-readonly"
       >
         {JSON.stringify(redacted, null, 2)}
@@ -2596,7 +2596,7 @@ function HistoryPanel({
               <p className="mb-1 text-xs font-medium uppercase tracking-wide text-fg-soft">
                 Current
               </p>
-              <pre className="max-h-48 overflow-auto rounded-xl border border-line bg-soft p-2 text-xs text-fg">
+              <pre className="max-h-48 overflow-auto rounded-sm border border-line bg-soft p-2 text-xs text-fg">
                 {JSON.stringify(redactedCurrent, null, 2)}
               </pre>
             </div>
@@ -2604,7 +2604,7 @@ function HistoryPanel({
               <p className="mb-1 text-xs font-medium uppercase tracking-wide text-fg-soft">
                 This version
               </p>
-              <pre className="max-h-48 overflow-auto rounded-xl border border-line bg-soft p-2 text-xs text-fg">
+              <pre className="max-h-48 overflow-auto rounded-sm border border-line bg-soft p-2 text-xs text-fg">
                 {redactedTarget != null ? JSON.stringify(redactedTarget, null, 2) : "—"}
               </pre>
             </div>
@@ -2635,14 +2635,14 @@ function HistoryPanel({
 
   if (isNew || !spec.id) {
     return (
-      <section className="rounded-md border border-dashed border-line bg-surface p-6 text-center text-sm text-fg-soft shadow-sm">
+      <section className="rounded-sm border border-dashed border-line bg-surface p-6 text-center text-sm text-fg-soft shadow-sm">
         Save the agent first to see its history.
       </section>
     );
   }
 
   return (
-    <section className="rounded-md border border-line bg-surface shadow-sm">
+    <section className="rounded-sm border border-line bg-surface shadow-sm">
       <div className="flex items-center justify-between border-b border-line px-5 py-4">
         <h3 className="text-lg font-semibold text-fg-strong">History</h3>
         <button
@@ -2753,7 +2753,7 @@ function HistoryEventPanel({ event, onClose }: { event: AuditEvent; onClose: () 
           <button
             type="button"
             onClick={onClose}
-            className="rounded-md px-2 py-1 text-sm text-fg-soft hover:bg-muted"
+            className="rounded-sm px-2 py-1 text-sm text-fg-soft hover:bg-muted"
           >
             Close
           </button>
@@ -2793,7 +2793,7 @@ function HistoryEventPanel({ event, onClose }: { event: AuditEvent; onClose: () 
         <div className="grid gap-4 px-6 pb-6 md:grid-cols-2">
           <div>
             <p className="mb-2 text-xs font-medium uppercase tracking-wide text-fg-soft">Before</p>
-            <pre className="overflow-auto rounded-xl border border-line bg-soft p-3 text-xs leading-relaxed text-fg">
+            <pre className="overflow-auto rounded-sm border border-line bg-soft p-3 text-xs leading-relaxed text-fg">
               {event.before != null
                 ? JSON.stringify(redactSecretsForDisplay(event.before), null, 2)
                 : "—"}
@@ -2801,7 +2801,7 @@ function HistoryEventPanel({ event, onClose }: { event: AuditEvent; onClose: () 
           </div>
           <div>
             <p className="mb-2 text-xs font-medium uppercase tracking-wide text-fg-soft">After</p>
-            <pre className="overflow-auto rounded-xl border border-line bg-soft p-3 text-xs leading-relaxed text-fg">
+            <pre className="overflow-auto rounded-sm border border-line bg-soft p-3 text-xs leading-relaxed text-fg">
               {event.after != null
                 ? JSON.stringify(redactSecretsForDisplay(event.after), null, 2)
                 : "—"}

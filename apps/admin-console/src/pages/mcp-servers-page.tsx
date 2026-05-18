@@ -345,9 +345,9 @@ export function McpServersPage() {
     <div className="mx-auto max-w-6xl p-6 md:p-8">
       <div className="mb-4 flex items-end justify-between gap-4">
         <div className="flex items-baseline gap-3">
-          <h2 className="text-2xl font-semibold tracking-title-em text-fg-strong">
+          <h1 className="text-[22px] font-bold tracking-title-em text-fg-strong">
             {t("mcp.title")}
-          </h2>
+          </h1>
           <span aria-hidden className="font-mono text-sm text-fg-faint">
             {crud.items.length}
           </span>
@@ -355,14 +355,14 @@ export function McpServersPage() {
         <button
           type="button"
           onClick={startCreate}
-          className="inline-flex h-9 items-center rounded-md bg-accent px-3 text-sm font-medium text-accent-text transition hover:opacity-90"
+          className="inline-flex h-9 items-center rounded-sm bg-accent px-3 text-sm font-medium text-accent-text transition hover:opacity-90"
         >
           {t("mcp.new")}
         </button>
       </div>
 
       {crud.draft ? (
-        <section className="mb-6 rounded-md border border-line bg-surface p-5 shadow-sm">
+        <section className="mb-6 rounded-sm border border-line bg-surface p-5 shadow-sm">
           <div className="flex items-center justify-between">
             <h3 className="text-lg font-semibold text-fg-strong">
               {crud.isEditingExisting ? t("mcp.formTitle.edit") : t("mcp.formTitle.create")}
@@ -388,7 +388,7 @@ export function McpServersPage() {
                   crud.setDraft((current) => (current ? { ...current, id: value } : current));
                   if (errors.id) setErrors((e) => ({ ...e, id: undefined }));
                 }}
-                className="w-full rounded-xl border border-line-strong px-3 py-2 text-sm text-fg-strong outline-none transition focus:border-line-strong disabled:bg-muted disabled:text-fg-soft aria-[invalid=true]:border-tone-error"
+                className="w-full rounded-sm border border-line-strong px-3 py-2 text-sm text-fg outline-none transition focus:border-fg disabled:bg-muted disabled:text-fg-soft aria-[invalid=true]:border-tone-error"
               />
             </Field>
 
@@ -405,7 +405,7 @@ export function McpServersPage() {
                       : current,
                   )
                 }
-                className="w-full rounded-xl border border-line-strong bg-surface px-3 py-2 text-sm text-fg-strong outline-none transition focus:border-line-strong"
+                className="w-full rounded-sm border border-line-strong bg-surface px-3 py-2 text-sm text-fg outline-none transition focus:border-fg"
               >
                 <option value="stdio">stdio</option>
                 <option value="http">http</option>
@@ -425,7 +425,7 @@ export function McpServersPage() {
                       );
                       if (errors.command) setErrors((e) => ({ ...e, command: undefined }));
                     }}
-                    className="w-full rounded-xl border border-line-strong px-3 py-2 text-sm text-fg-strong outline-none transition focus:border-line-strong aria-[invalid=true]:border-tone-error"
+                    className="w-full rounded-sm border border-line-strong px-3 py-2 text-sm text-fg outline-none transition focus:border-fg aria-[invalid=true]:border-tone-error"
                   />
                 </Field>
                 <Field label={t("mcp.fields.args")}>
@@ -433,7 +433,7 @@ export function McpServersPage() {
                     value={argsDraft}
                     onChange={(event) => setArgsDraft(event.target.value)}
                     rows={5}
-                    className="w-full rounded-xl border border-line-strong px-3 py-2 font-mono text-sm text-fg-strong outline-none transition focus:border-line-strong"
+                    className="w-full rounded-sm border border-line-strong px-3 py-2 font-mono text-sm text-fg outline-none transition focus:border-fg"
                   />
                 </Field>
               </>
@@ -447,7 +447,7 @@ export function McpServersPage() {
                     crud.setDraft((current) => (current ? { ...current, url: value } : current));
                     if (errors.url) setErrors((e) => ({ ...e, url: undefined }));
                   }}
-                  className="w-full rounded-xl border border-line-strong px-3 py-2 text-sm text-fg-strong outline-none transition focus:border-line-strong aria-[invalid=true]:border-tone-error"
+                  className="w-full rounded-sm border border-line-strong px-3 py-2 text-sm text-fg outline-none transition focus:border-fg aria-[invalid=true]:border-tone-error"
                 />
               </Field>
             )}
@@ -467,7 +467,7 @@ export function McpServersPage() {
                       : current,
                   )
                 }
-                className="w-full rounded-xl border border-line-strong px-3 py-2 text-sm text-fg-strong outline-none transition focus:border-line-strong"
+                className="w-full rounded-sm border border-line-strong px-3 py-2 text-sm text-fg outline-none transition focus:border-fg"
               />
             </Field>
           </div>
@@ -478,7 +478,7 @@ export function McpServersPage() {
                 value={configDraft}
                 onChange={(event) => setConfigDraft(event.target.value)}
                 rows={8}
-                className="w-full rounded-xl border border-line-strong px-3 py-2 font-mono text-sm text-fg-strong outline-none transition focus:border-line-strong"
+                className="w-full rounded-sm border border-line-strong px-3 py-2 font-mono text-sm text-fg outline-none transition focus:border-fg"
               />
             </Field>
 
@@ -525,12 +525,12 @@ export function McpServersPage() {
                 value={envDraft}
                 onChange={(event) => setEnvDraft(event.target.value)}
                 rows={8}
-                className="w-full rounded-md border border-line-strong bg-surface px-3 py-2 font-mono text-sm text-fg-strong outline-none transition-colors focus:border-link"
+                className="w-full rounded-sm border border-line-strong bg-surface px-3 py-2 font-mono text-sm text-fg outline-none transition-colors focus:border-link"
               />
             </SecretField>
           </div>
 
-          <section className="mt-5 rounded-xl border border-line bg-soft p-4">
+          <section className="mt-5 rounded-sm border border-line bg-soft p-4">
             <div className="flex items-center justify-between gap-4">
               <div>
                 <h4 className="text-sm font-semibold text-fg-strong">Restart Policy</h4>
@@ -589,7 +589,7 @@ export function McpServersPage() {
                         : current,
                     )
                   }
-                  className="w-full rounded-xl border border-line-strong px-3 py-2 text-sm text-fg-strong outline-none transition focus:border-line-strong"
+                  className="w-full rounded-sm border border-line-strong px-3 py-2 text-sm text-fg outline-none transition focus:border-fg"
                 />
               </Field>
               <Field label={t("mcp.fields.delayMs")}>
@@ -612,7 +612,7 @@ export function McpServersPage() {
                         : current,
                     )
                   }
-                  className="w-full rounded-xl border border-line-strong px-3 py-2 text-sm text-fg-strong outline-none transition focus:border-line-strong"
+                  className="w-full rounded-sm border border-line-strong px-3 py-2 text-sm text-fg outline-none transition focus:border-fg"
                 />
               </Field>
               <Field label={t("mcp.fields.backoff")}>
@@ -636,7 +636,7 @@ export function McpServersPage() {
                         : current,
                     )
                   }
-                  className="w-full rounded-xl border border-line-strong px-3 py-2 text-sm text-fg-strong outline-none transition focus:border-line-strong"
+                  className="w-full rounded-sm border border-line-strong px-3 py-2 text-sm text-fg outline-none transition focus:border-fg"
                 />
               </Field>
               <Field label={t("mcp.fields.maxDelayMs")}>
@@ -659,7 +659,7 @@ export function McpServersPage() {
                         : current,
                     )
                   }
-                  className="w-full rounded-xl border border-line-strong px-3 py-2 text-sm text-fg-strong outline-none transition focus:border-line-strong"
+                  className="w-full rounded-sm border border-line-strong px-3 py-2 text-sm text-fg outline-none transition focus:border-fg"
                 />
               </Field>
             </div>
@@ -682,14 +682,14 @@ export function McpServersPage() {
               type="button"
               onClick={() => void handleSave()}
               disabled={crud.saving}
-              className="rounded-xl bg-accent px-4 py-2 text-sm font-medium text-accent-text transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
+              className="rounded-sm bg-accent px-4 py-2 text-sm font-medium text-accent-text transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
             >
               {crud.saving ? "Saving..." : "Save"}
             </button>
             <button
               type="button"
               onClick={cancelEdit}
-              className="rounded-xl border border-line-strong px-4 py-2 text-sm font-medium text-fg transition hover:bg-soft"
+              className="rounded-sm border border-line-strong px-4 py-2 text-sm font-medium text-fg transition hover:bg-soft"
             >
               Cancel
             </button>
@@ -709,7 +709,7 @@ export function McpServersPage() {
         />
       </div>
 
-      <div className="overflow-x-auto rounded-md border border-line bg-surface shadow-card">
+      <div className="overflow-x-auto rounded-sm border border-line bg-surface shadow-card">
         {!crud.loading && crud.items.length === 0 ? (
           <EmptyState
             title={t("mcp.empty.title")}
@@ -718,7 +718,7 @@ export function McpServersPage() {
               <button
                 type="button"
                 onClick={startCreate}
-                className="inline-flex h-9 items-center rounded-md bg-accent px-4 text-sm font-medium text-accent-text transition-colors hover:opacity-90"
+                className="inline-flex h-9 items-center rounded-sm bg-accent px-4 text-sm font-medium text-accent-text transition-colors hover:opacity-90"
               >
                 {t("mcp.new")}
               </button>
@@ -845,7 +845,7 @@ function LiveStatusSection({
     : "manual only";
 
   return (
-    <section className="mt-5 rounded-md border border-line bg-soft p-4">
+    <section className="mt-5 rounded-sm border border-line bg-soft p-4">
       <div className="flex items-center justify-between gap-4">
         <div className="flex items-center gap-2">
           <StatusBadge status={status} error={error} />
@@ -855,7 +855,7 @@ function LiveStatusSection({
           type="button"
           disabled={restarting}
           onClick={onRestart}
-          className="rounded-md border border-line-strong px-3 py-1.5 text-xs font-medium text-fg transition-colors hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60"
+          className="rounded-sm border border-line-strong px-3 py-1.5 text-xs font-medium text-fg transition-colors hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60"
         >
           {restarting ? "Restarting…" : "Restart"}
         </button>
@@ -894,19 +894,19 @@ function LiveStatusSection({
       )}
 
       {status?.last_error && (
-        <p className="mt-3 rounded-md border border-tone-error/30 bg-tone-error/10 px-3 py-2 font-mono text-xs text-tone-error">
+        <p className="mt-3 rounded-sm border border-tone-error/30 bg-tone-error/10 px-3 py-2 font-mono text-xs text-tone-error">
           {status.last_error}
         </p>
       )}
 
       {Boolean(error) && (
-        <p className="mt-3 rounded-md border border-tone-error/30 bg-tone-error/10 px-3 py-2 font-mono text-xs text-tone-error">
+        <p className="mt-3 rounded-sm border border-tone-error/30 bg-tone-error/10 px-3 py-2 font-mono text-xs text-tone-error">
           {statusErrorMessage(error)}
         </p>
       )}
 
       {toolCount > 0 && status?.tools && (
-        <div className="mt-4 overflow-hidden rounded-md border border-line bg-surface">
+        <div className="mt-4 overflow-hidden rounded-sm border border-line bg-surface">
           <p className="border-b border-line bg-soft px-3 py-2 text-[11px] font-medium uppercase tracking-[0.18em] text-fg-faint">
             Exposed tools ({toolCount})
           </p>
@@ -951,7 +951,7 @@ function StatusStat({
     .join(" ")
     .trim();
   return (
-    <div className="rounded-md border border-line bg-surface px-3 py-2">
+    <div className="rounded-sm border border-line bg-surface px-3 py-2">
       <div className="text-[10px] font-medium uppercase tracking-[0.18em] text-fg-faint">
         {label}
       </div>

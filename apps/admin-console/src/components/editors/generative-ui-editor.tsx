@@ -28,7 +28,7 @@ export function GenerativeUiConfigEditor({
             update({ ...config, catalog_id: event.target.value })
           }
           placeholder="https://a2ui.org/specification/v0_8/standard_catalog_definition.json"
-          className="w-full rounded-xl border border-line-strong bg-surface px-3 py-2 text-sm text-fg-strong outline-none transition focus:border-line-strong"
+          className="w-full rounded-sm border border-line-strong bg-surface px-3 py-2 text-sm text-fg outline-none transition focus:border-fg"
         />
       </Field>
       <Field label="Examples">
@@ -36,7 +36,7 @@ export function GenerativeUiConfigEditor({
           value={config.examples}
           onChange={(event) => update({ ...config, examples: event.target.value })}
           rows={6}
-          className="w-full rounded-xl border border-line-strong bg-surface px-3 py-2 text-sm text-fg-strong outline-none transition focus:border-line-strong"
+          className="w-full rounded-sm border border-line-strong bg-surface px-3 py-2 text-sm text-fg outline-none transition focus:border-fg"
         />
       </Field>
       <Field label="Instruction override">
@@ -46,7 +46,7 @@ export function GenerativeUiConfigEditor({
             update({ ...config, instructions: event.target.value })
           }
           rows={8}
-          className="w-full rounded-xl border border-line-strong bg-surface px-3 py-2 text-sm text-fg-strong outline-none transition focus:border-line-strong"
+          className="w-full rounded-sm border border-line-strong bg-surface px-3 py-2 text-sm text-fg outline-none transition focus:border-fg"
         />
       </Field>
       <Hint>

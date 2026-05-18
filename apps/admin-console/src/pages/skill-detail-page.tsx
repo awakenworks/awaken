@@ -41,7 +41,7 @@ export function SkillDetailPage() {
   if (error)
     return (
       <Shell>
-        <div className="rounded-md border border-tone-error/30 bg-tone-error/10 p-4 text-sm text-tone-error">
+        <div className="rounded-sm border border-tone-error/30 bg-tone-error/10 p-4 text-sm text-tone-error">
           {error}
         </div>
       </Shell>
@@ -72,9 +72,9 @@ export function SkillDetailPage() {
             {skill.id !== skill.name && (
               <div className="font-mono text-xs text-fg-soft">{skill.id}</div>
             )}
-            <h2 className="mt-1 text-2xl font-semibold tracking-title-em text-fg-strong">
+            <h1 className="mt-1 text-[22px] font-bold tracking-title-em text-fg-strong">
               {skill.name}
-            </h2>
+            </h1>
           </div>
           <div className="flex items-center gap-2 text-xs">
             <Pill tone="info" title={`Context: ${skill.context}`}>
@@ -90,7 +90,7 @@ export function SkillDetailPage() {
       </header>
 
       {skill.when_to_use && (
-        <section className="mt-4 rounded-md border border-line bg-surface p-4 shadow-card">
+        <section className="mt-4 rounded-sm border border-line bg-surface p-4 shadow-card">
           <h3 className="text-sm font-semibold text-fg-strong">When to use</h3>
           <p className="mt-2 text-sm leading-6 text-fg-soft">{skill.when_to_use}</p>
         </section>
@@ -126,14 +126,14 @@ export function SkillDetailPage() {
         </Card>
       </section>
 
-      <section className="mt-4 rounded-md border border-line bg-surface p-4 shadow-card">
+      <section className="mt-4 rounded-sm border border-line bg-surface p-4 shadow-card">
         <h3 className="text-sm font-semibold text-fg-strong">{t("skills.arguments")}</h3>
         {skill.arguments.length === 0 ? (
           <p className="mt-2 text-sm text-fg-soft">{t("skills.noArguments")}</p>
         ) : (
           <ul className="mt-3 space-y-2">
             {skill.arguments.map((a) => (
-              <li key={a.name} className="rounded-md border border-line bg-soft px-3 py-2">
+              <li key={a.name} className="rounded-sm border border-line bg-soft px-3 py-2">
                 <div className="flex flex-wrap items-center gap-2">
                   <code className="font-mono text-sm text-fg-strong">{a.name}</code>
                   <Pill tone={a.required ? "warn" : "neutral"}>
@@ -147,7 +147,7 @@ export function SkillDetailPage() {
         )}
       </section>
 
-      <section className="mt-4 rounded-md border border-line bg-surface p-4 shadow-card">
+      <section className="mt-4 rounded-sm border border-line bg-surface p-4 shadow-card">
         <h3 className="text-sm font-semibold text-fg-strong">Used by</h3>
         {usedByAgents.length === 0 ? (
           <p className="mt-2 text-sm text-fg-soft">No agents reference this skill.</p>
@@ -156,7 +156,7 @@ export function SkillDetailPage() {
             {usedByAgents.map((a) => (
               <li
                 key={a.id}
-                className="flex items-center justify-between gap-3 rounded-md border border-line bg-soft px-3 py-2"
+                className="flex items-center justify-between gap-3 rounded-sm border border-line bg-soft px-3 py-2"
               >
                 <Link
                   to={adminRoutes.agent(a.id)}
@@ -171,9 +171,9 @@ export function SkillDetailPage() {
         )}
       </section>
 
-      <section className="mt-4 rounded-md border border-line bg-surface p-4 shadow-card">
+      <section className="mt-4 rounded-sm border border-line bg-surface p-4 shadow-card">
         <h3 className="text-sm font-semibold text-fg-strong">{t("skills.llmPreview")}</h3>
-        <pre className="mt-2 max-h-72 overflow-auto rounded-md border border-line bg-code-bg px-3 py-2 font-mono text-[11px] leading-5 text-code-fg">
+        <pre className="mt-2 max-h-72 overflow-auto rounded-sm border border-line bg-code-bg px-3 py-2 font-mono text-[11px] leading-5 text-code-fg">
           {renderInjectionPreview(skill)}
         </pre>
       </section>
@@ -187,7 +187,7 @@ function Shell({ children }: { children: React.ReactNode }) {
 
 function Card({ title, children }: { title: string; children: React.ReactNode }) {
   return (
-    <div className="rounded-md border border-line bg-surface p-4 shadow-card">
+    <div className="rounded-sm border border-line bg-surface p-4 shadow-card">
       <h3 className="text-sm font-semibold text-fg-strong">{title}</h3>
       <div className="mt-2">{children}</div>
     </div>

@@ -73,7 +73,7 @@ export function BasicsPanel({
     } as const;
   };
   return (
-    <section className="rounded-md border border-line bg-surface p-5 shadow-sm">
+    <section className="rounded-sm border border-line bg-surface p-5 shadow-sm">
       <h3 className="text-lg font-semibold text-fg-strong">{t("editor.tabs.basics")}</h3>
       <div className="mt-4 grid gap-4 md:grid-cols-2">
         <Field label={t("editor.fields.agentId")} required={isNew} error={errors?.id}>
@@ -83,7 +83,7 @@ export function BasicsPanel({
             disabled={!isNew}
             aria-invalid={Boolean(errors?.id)}
             onChange={(event) => updateField("id", event.target.value)}
-            className="w-full rounded-xl border border-line-strong px-3 py-2 text-sm text-fg-strong outline-none transition focus:border-line-strong disabled:bg-muted disabled:text-fg-soft aria-[invalid=true]:border-tone-error"
+            className="w-full rounded-sm border border-line-strong px-3 py-2 text-sm text-fg outline-none transition focus:border-fg disabled:bg-muted disabled:text-fg-soft aria-[invalid=true]:border-tone-error"
           />
         </Field>
         <Field
@@ -96,7 +96,7 @@ export function BasicsPanel({
             value={String(spec.model_id ?? "")}
             aria-invalid={Boolean(errors?.model_id)}
             onChange={(event) => updateField("model_id", event.target.value)}
-            className="w-full rounded-xl border border-line-strong bg-surface px-3 py-2 text-sm text-fg-strong outline-none transition focus:border-line-strong aria-[invalid=true]:border-tone-error"
+            className="w-full rounded-sm border border-line-strong bg-surface px-3 py-2 text-sm text-fg outline-none transition focus:border-fg aria-[invalid=true]:border-tone-error"
           >
             <option value="">{t("editor.fields.selectModel")}</option>
             {(capabilities?.models ?? []).map((model) => (
@@ -121,7 +121,7 @@ export function BasicsPanel({
                 setMaxRoundsDraft,
               )
             }
-            className="w-full rounded-xl border border-line-strong px-3 py-2 text-sm text-fg-strong outline-none transition focus:border-line-strong"
+            className="w-full rounded-sm border border-line-strong px-3 py-2 text-sm text-fg outline-none transition focus:border-fg"
           />
         </Field>
         <Field
@@ -142,7 +142,7 @@ export function BasicsPanel({
                 setMaxRetriesDraft,
               )
             }
-            className="w-full rounded-xl border border-line-strong px-3 py-2 text-sm text-fg-strong outline-none transition focus:border-line-strong"
+            className="w-full rounded-sm border border-line-strong px-3 py-2 text-sm text-fg outline-none transition focus:border-fg"
           />
         </Field>
         <Field label={t("editor.fields.reasoningEffort")}>
@@ -182,7 +182,7 @@ export function BasicsPanel({
                   }) as string | number | null | undefined,
                 );
               }}
-              className="rounded-xl border border-line-strong bg-surface px-3 py-2 text-sm text-fg-strong outline-none transition focus:border-line-strong"
+              className="rounded-sm border border-line-strong bg-surface px-3 py-2 text-sm text-fg outline-none transition focus:border-fg"
             >
               <option value="__default__">{t("editor.fields.providerDefault")}</option>
               {REASONING_EFFORT_PRESETS.map((preset) => (
@@ -206,7 +206,7 @@ export function BasicsPanel({
                   )
                 }
                 placeholder={t("editor.fields.reasoningEffortPlaceholder")}
-                className="w-32 rounded-xl border border-line-strong px-3 py-2 text-sm text-fg-strong outline-none transition focus:border-line-strong"
+                className="w-32 rounded-sm border border-line-strong px-3 py-2 text-sm text-fg outline-none transition focus:border-fg"
               />
             ) : null}
           </div>
@@ -219,7 +219,7 @@ export function BasicsPanel({
             value={String(spec.system_prompt ?? "")}
             onChange={(event) => updateField("system_prompt", event.target.value)}
             rows={8}
-            className="w-full rounded-xl border border-line-strong bg-surface px-3 py-2 font-mono text-sm text-fg-strong outline-none transition focus:border-line-strong"
+            className="w-full rounded-sm border border-line-strong bg-surface px-3 py-2 font-mono text-sm text-fg outline-none transition focus:border-fg"
           />
         </Field>
       </div>

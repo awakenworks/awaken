@@ -221,7 +221,7 @@ function PaletteOverlay({ onClose }: { onClose: () => void }) {
             onChange={(e) => setQuery(e.target.value)}
             onKeyDown={handleKeyDown}
             placeholder={t("cmdk.placeholder")}
-            className="flex-1 bg-transparent text-sm text-fg-strong outline-none placeholder:text-fg-faint"
+            className="flex-1 bg-transparent text-sm text-fg outline-none placeholder:text-fg-faint"
           />
           <kbd className="rounded border border-line bg-soft px-1.5 py-0.5 font-mono text-[10px] text-fg-faint">
             esc

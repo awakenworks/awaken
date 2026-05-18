@@ -49,7 +49,7 @@ export function AgentDashboardPage() {
   if (!result) {
     return (
       <Shell title={`Dashboard · ${id}`}>
-        <div className="rounded-md border border-line bg-surface p-6 text-sm text-fg-soft shadow-sm">
+        <div className="rounded-sm border border-line bg-surface p-6 text-sm text-fg-soft shadow-sm">
           Loading runtime stats…
         </div>
       </Shell>
@@ -117,7 +117,7 @@ export function AgentDashboardPage() {
                 { replace: true },
               );
             }}
-            className="rounded-md border border-line bg-surface px-2 py-1 text-xs text-fg shadow-sm"
+            className="rounded-sm border border-line bg-surface px-2 py-1 text-xs text-fg shadow-sm"
           >
             {WINDOW_OPTIONS.map((opt) => (
               <option key={opt.value} value={opt.value}>
@@ -129,7 +129,7 @@ export function AgentDashboardPage() {
         <button
           type="button"
           onClick={reload}
-          className="rounded-md border border-line bg-surface px-2 py-1 text-xs text-fg-soft hover:bg-soft"
+          className="rounded-sm border border-line bg-surface px-2 py-1 text-xs text-fg-soft hover:bg-soft"
         >
           {statsQuery.isFetching ? "Refreshing…" : "Refresh"}
         </button>
@@ -183,11 +183,11 @@ export function AgentDashboardPage() {
 
       <Section title="Tools">
         {snapshot.tool_calls_by_tool.length === 0 ? (
-          <div className="rounded-md border border-line bg-surface p-5 text-sm text-fg-soft shadow-sm">
+          <div className="rounded-sm border border-line bg-surface p-5 text-sm text-fg-soft shadow-sm">
             No tool invocations recorded in the current window.
           </div>
         ) : (
-          <div className="overflow-auto rounded-md border border-line bg-surface shadow-sm">
+          <div className="overflow-auto rounded-sm border border-line bg-surface shadow-sm">
             <table className="min-w-full text-sm">
               <thead className="bg-soft text-left text-xs uppercase tracking-wide text-fg-soft">
                 <tr>
@@ -248,7 +248,7 @@ export function AgentDashboardPage() {
               .map((t) => (
                 <div
                   key={t.tool}
-                  className="rounded-md border border-line bg-surface p-5 shadow-sm"
+                  className="rounded-sm border border-line bg-surface p-5 shadow-sm"
                 >
                   <h4 className="font-mono text-sm font-semibold text-fg-strong">{t.tool}</h4>
                   <p className="text-xs text-fg-soft">
@@ -275,7 +275,7 @@ function QuickActionsSection({ agentId }: { agentId: string }) {
         <li>
           <Link
             to={adminRoutes.agent(agentId)}
-            className="inline-flex items-center rounded-md border border-line bg-surface px-3 py-2 text-sm text-fg shadow-card transition-colors hover:bg-soft"
+            className="inline-flex items-center rounded-sm border border-line bg-surface px-3 py-2 text-sm text-fg shadow-card transition-colors hover:bg-soft"
           >
             Edit configuration
           </Link>
@@ -283,7 +283,7 @@ function QuickActionsSection({ agentId }: { agentId: string }) {
         <li>
           <Link
             to={`${adminRoutes.agent(agentId)}?tab=plugins`}
-            className="inline-flex items-center rounded-md border border-line bg-surface px-3 py-2 text-sm text-fg shadow-card transition-colors hover:bg-soft"
+            className="inline-flex items-center rounded-sm border border-line bg-surface px-3 py-2 text-sm text-fg shadow-card transition-colors hover:bg-soft"
           >
             Permission rules
           </Link>
@@ -291,7 +291,7 @@ function QuickActionsSection({ agentId }: { agentId: string }) {
         <li>
           <Link
             to={adminRoutes.mcpServers}
-            className="inline-flex items-center rounded-md border border-line bg-surface px-3 py-2 text-sm text-fg shadow-card transition-colors hover:bg-soft"
+            className="inline-flex items-center rounded-sm border border-line bg-surface px-3 py-2 text-sm text-fg shadow-card transition-colors hover:bg-soft"
           >
             MCP servers
           </Link>
@@ -299,7 +299,7 @@ function QuickActionsSection({ agentId }: { agentId: string }) {
         <li>
           <Link
             to={adminRoutes.evalReports}
-            className="inline-flex items-center rounded-md border border-line bg-surface px-3 py-2 text-sm text-fg shadow-card transition-colors hover:bg-soft"
+            className="inline-flex items-center rounded-sm border border-line bg-surface px-3 py-2 text-sm text-fg shadow-card transition-colors hover:bg-soft"
           >
             Eval reports
           </Link>
@@ -307,7 +307,7 @@ function QuickActionsSection({ agentId }: { agentId: string }) {
         <li>
           <Link
             to={adminRoutes.auditLogForResource(`agents/${agentId}`)}
-            className="inline-flex items-center rounded-md border border-line bg-surface px-3 py-2 text-sm text-fg shadow-card transition-colors hover:bg-soft"
+            className="inline-flex items-center rounded-sm border border-line bg-surface px-3 py-2 text-sm text-fg shadow-card transition-colors hover:bg-soft"
           >
             Audit history
           </Link>
@@ -323,7 +323,7 @@ function Shell({ title, children }: { title: string; children: React.ReactNode }
   return (
     <div className="mx-auto max-w-6xl p-6 md:p-8">
       <header className="mb-4">
-        <h2 className="text-2xl font-semibold tracking-title-em text-fg-strong">{title}</h2>
+        <h1 className="text-[22px] font-bold tracking-title-em text-fg-strong">{title}</h1>
       </header>
       {children}
     </div>
@@ -359,7 +359,7 @@ function StatCard({
         ? "text-tone-error"
         : "text-fg-strong";
   return (
-    <div className="rounded-md border border-line bg-surface p-5 shadow-sm">
+    <div className="rounded-sm border border-line bg-surface p-5 shadow-sm">
       <div className={`text-3xl font-semibold ${toneClass}`}>{value}</div>
       <div className="mt-2 text-sm text-fg-soft">{label}</div>
     </div>
@@ -368,7 +368,7 @@ function StatCard({
 
 function RegistryDisabledPanel({ onReload }: { onReload: () => void }) {
   return (
-    <div className="rounded-md border border-tone-warn/35 bg-tone-warn/10 p-6 text-sm text-tone-warn shadow-sm">
+    <div className="rounded-sm border border-tone-warn/35 bg-tone-warn/10 p-6 text-sm text-tone-warn shadow-sm">
       <h3 className="text-base font-semibold">Runtime stats not configured</h3>
       <p className="mt-2">
         The server is not running with a{" "}
@@ -384,7 +384,7 @@ function RegistryDisabledPanel({ onReload }: { onReload: () => void }) {
       <button
         type="button"
         onClick={onReload}
-        className="mt-3 rounded-md border border-tone-warn/35 bg-surface px-3 py-1.5 text-xs font-medium hover:bg-tone-warn/15"
+        className="mt-3 rounded-sm border border-tone-warn/35 bg-surface px-3 py-1.5 text-xs font-medium hover:bg-tone-warn/15"
       >
         Retry
       </button>
@@ -394,7 +394,7 @@ function RegistryDisabledPanel({ onReload }: { onReload: () => void }) {
 
 function NotYetSeenPanel({ agentId, onReload }: { agentId: string; onReload: () => void }) {
   return (
-    <div className="rounded-md border border-line bg-surface p-6 text-sm text-fg shadow-sm">
+    <div className="rounded-sm border border-line bg-surface p-6 text-sm text-fg shadow-sm">
       <h3 className="text-base font-semibold text-fg-strong">No runtime activity yet</h3>
       <p className="mt-2">
         The agent <span className="font-mono">{agentId}</span> has not produced any inference, tool,
@@ -404,7 +404,7 @@ function NotYetSeenPanel({ agentId, onReload }: { agentId: string; onReload: () 
       <button
         type="button"
         onClick={onReload}
-        className="mt-3 rounded-md border border-line bg-surface px-3 py-1.5 text-xs font-medium hover:bg-soft"
+        className="mt-3 rounded-sm border border-line bg-surface px-3 py-1.5 text-xs font-medium hover:bg-soft"
       >
         Refresh
       </button>
@@ -415,8 +415,8 @@ function NotYetSeenPanel({ agentId, onReload }: { agentId: string; onReload: () 
 function HistogramPanel({ buckets, compact }: { buckets: HistogramBucket[]; compact?: boolean }) {
   const max = maxHistogramCount(buckets);
   const containerClass = compact
-    ? "rounded-xl bg-soft p-3"
-    : "rounded-md border border-line bg-surface p-5 shadow-sm";
+    ? "rounded-sm bg-soft p-3"
+    : "rounded-sm border border-line bg-surface p-5 shadow-sm";
   return (
     <div className={containerClass}>
       <ul className="space-y-1.5">
@@ -447,7 +447,7 @@ function HistogramPanel({ buckets, compact }: { buckets: HistogramBucket[]; comp
 
 function ErrorPanel({ message }: { message: string }) {
   return (
-    <div className="rounded-md border border-tone-error/30 bg-tone-error/10 p-6 text-sm text-tone-error shadow-sm">
+    <div className="rounded-sm border border-tone-error/30 bg-tone-error/10 p-6 text-sm text-tone-error shadow-sm">
       {message}
     </div>
   );

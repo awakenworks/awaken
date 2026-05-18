@@ -68,11 +68,11 @@ export function ToolSelector({
   return (
     <section
       data-testid={`tool-selector-${label.toLowerCase()}`}
-      className="rounded-md border border-line bg-surface p-5 shadow-sm"
+      className="rounded-sm border border-line bg-surface p-5 shadow-sm"
     >
       <h3 className="text-lg font-semibold text-fg-strong">{label} tools</h3>
 
-      <fieldset className="mt-4 rounded-md border border-line bg-soft p-4">
+      <fieldset className="mt-4 rounded-sm border border-line bg-soft p-4">
         <legend className="px-2 text-sm font-semibold text-fg-strong">
           Tools (literal)
         </legend>
@@ -83,7 +83,7 @@ export function ToolSelector({
             {registered.map((id) => (
               <label
                 key={id}
-                className="flex items-center gap-2 rounded-xl border border-line bg-surface px-3 py-2 text-sm text-fg"
+                className="flex items-center gap-2 rounded-sm border border-line bg-surface px-3 py-2 text-sm text-fg"
               >
                 <input
                   type="checkbox"
@@ -99,14 +99,14 @@ export function ToolSelector({
           <button
             type="button"
             onClick={seedLiteralsFromRegistered}
-            className="rounded-md border border-line-strong bg-surface px-2 py-1 text-xs font-medium text-fg-soft hover:bg-muted"
+            className="rounded-sm border border-line-strong bg-surface px-2 py-1 text-xs font-medium text-fg-soft hover:bg-muted"
           >
             Seed literals from registry
           </button>
         </div>
       </fieldset>
 
-      <fieldset className="mt-4 rounded-md border border-line bg-soft p-4">
+      <fieldset className="mt-4 rounded-sm border border-line bg-soft p-4">
         <legend className="px-2 text-sm font-semibold text-fg-strong">
           Patterns
         </legend>
@@ -125,7 +125,7 @@ export function ToolSelector({
               return (
                 <li
                   key={p}
-                  className="flex items-center justify-between gap-3 rounded-xl border border-line bg-surface px-3 py-2 text-sm text-fg"
+                  className="flex items-center justify-between gap-3 rounded-sm border border-line bg-surface px-3 py-2 text-sm text-fg"
                 >
                   <div className="flex min-w-0 flex-1 flex-wrap items-center gap-3">
                     <code className="font-mono text-xs text-fg-strong">{p}</code>
@@ -143,7 +143,7 @@ export function ToolSelector({
                     type="button"
                     onClick={() => removePattern(p)}
                     aria-label={`Remove pattern ${p}`}
-                    className="rounded-md border border-line-strong bg-surface px-2 py-1 text-xs font-medium text-fg-soft hover:bg-muted"
+                    className="rounded-sm border border-line-strong bg-surface px-2 py-1 text-xs font-medium text-fg-soft hover:bg-muted"
                   >
                     Remove
                   </button>
@@ -166,20 +166,20 @@ export function ToolSelector({
                   addPattern();
                 }
               }}
-              className="w-full rounded-xl border border-line-strong bg-surface px-3 py-2 text-sm text-fg-strong outline-none transition focus:border-line-strong"
+              className="w-full rounded-sm border border-line-strong bg-surface px-3 py-2 text-sm text-fg outline-none transition focus:border-fg"
             />
           </label>
           <button
             type="button"
             onClick={addPattern}
-            className="rounded-md border border-line-strong bg-surface px-2 py-1 text-xs font-medium text-fg-soft hover:bg-muted"
+            className="rounded-sm border border-line-strong bg-surface px-2 py-1 text-xs font-medium text-fg-soft hover:bg-muted"
           >
             Add pattern
           </button>
           <button
             type="button"
             onClick={addUniversalPattern}
-            className="rounded-md border border-line-strong bg-surface px-2 py-1 text-xs font-medium text-fg-soft hover:bg-muted"
+            className="rounded-sm border border-line-strong bg-surface px-2 py-1 text-xs font-medium text-fg-soft hover:bg-muted"
           >
             {universalLabel}
           </button>

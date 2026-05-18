@@ -52,7 +52,7 @@ export function SkillsPage() {
     <div className="mx-auto max-w-6xl p-6 md:p-8">
       <PageHeader title={t("skills.title")} count={skills.length} />
 
-      <section className="mb-4 flex flex-wrap items-end gap-3 rounded-md border border-line bg-surface p-4 shadow-card">
+      <section className="mb-4 flex flex-wrap items-end gap-3 rounded-sm border border-line bg-surface p-4 shadow-card">
         <label className="block w-full max-w-sm">
           <span className="sr-only">Search skills</span>
           <input
@@ -60,7 +60,7 @@ export function SkillsPage() {
             value={filter.search}
             onChange={(event) => applyFilter({ search: event.target.value })}
             placeholder="Search by id, name, description, tool, path…"
-            className="w-full rounded-md border border-line-strong bg-surface px-3 py-2 text-sm text-fg-strong outline-none transition focus:border-line-strong"
+            className="w-full rounded-sm border border-line-strong bg-surface px-3 py-2 text-sm text-fg outline-none transition focus:border-fg"
           />
         </label>
         <label className="text-xs text-fg-soft">
@@ -68,7 +68,7 @@ export function SkillsPage() {
           <select
             value={filter.invocable}
             onChange={(event) => applyFilter({ invocable: event.target.value as InvocableFilter })}
-            className="rounded-md border border-line-strong bg-surface px-2 py-1 text-xs text-fg outline-none focus:border-line-strong"
+            className="rounded-sm border border-line-strong bg-surface px-2 py-1 text-xs text-fg outline-none focus:border-fg"
           >
             {INVOCABLE_OPTIONS.map((option) => (
               <option key={option.value} value={option.value}>
@@ -82,7 +82,7 @@ export function SkillsPage() {
           <select
             value={filter.context}
             onChange={(event) => applyFilter({ context: event.target.value as ContextFilter })}
-            className="rounded-md border border-line-strong bg-surface px-2 py-1 text-xs text-fg outline-none focus:border-line-strong"
+            className="rounded-sm border border-line-strong bg-surface px-2 py-1 text-xs text-fg outline-none focus:border-fg"
           >
             {CONTEXT_OPTIONS.map((option) => (
               <option key={option.value} value={option.value}>
@@ -118,7 +118,7 @@ export function SkillsPage() {
 
 function SkillCard({ skill }: { skill: SkillInfo }) {
   return (
-    <article className="rounded-md border border-line bg-surface p-5 shadow-card">
+    <article className="rounded-sm border border-line bg-surface p-5 shadow-card">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           {skill.id !== skill.name && (
@@ -199,7 +199,7 @@ function SkillCard({ skill }: { skill: SkillInfo }) {
         ) : (
           <ul className="mt-2 space-y-2">
             {skill.arguments.map((argument) => (
-              <li key={argument.name} className="rounded-md border border-line bg-soft px-3 py-2">
+              <li key={argument.name} className="rounded-sm border border-line bg-soft px-3 py-2">
                 <div className="flex flex-wrap items-center gap-2">
                   <code className="text-sm text-fg-strong">{argument.name}</code>
                   <Pill tone={argument.required ? "warn" : "neutral"}>
@@ -217,7 +217,7 @@ function SkillCard({ skill }: { skill: SkillInfo }) {
 
       <section className="mt-4">
         <SectionLabel label="What the LLM sees (prompt-injection preview)" />
-        <pre className="mt-2 max-h-48 overflow-auto rounded-md border border-line bg-code-bg px-3 py-2 font-mono text-[11px] leading-5 text-code-fg">
+        <pre className="mt-2 max-h-48 overflow-auto rounded-sm border border-line bg-code-bg px-3 py-2 font-mono text-[11px] leading-5 text-code-fg">
           {renderInjectionPreview(skill)}
         </pre>
       </section>
@@ -260,7 +260,7 @@ function SectionLabel({ label }: { label: string }) {
 
 function SkillCardSkeleton() {
   return (
-    <article className="rounded-md border border-line bg-surface p-5 shadow-card">
+    <article className="rounded-sm border border-line bg-surface p-5 shadow-card">
       <SkeletonBlock height="14px" width="38%" />
       <div className="mt-2">
         <SkeletonBlock height="22px" width="55%" />

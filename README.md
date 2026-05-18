@@ -210,12 +210,14 @@ import { CopilotKit } from "@copilotkit/react-core";
 
 Wire a `ConfigStore` into `AppState` to manage agents, models, providers, and MCP servers through `/v1/config/*`. Use the [configuration-driven tuning guide](https://awakenworks.github.io/awaken/how-to/configure-agent-behavior) to tune providers, model bindings, tools, and plugin sections. The Admin Console in [`apps/admin-console`](./apps/admin-console/) uses the same API and reads `VITE_BACKEND_URL` for the server base URL.
 
-The console is a React 19 SPA with a "Lucid Control" design language — unified
-warm-light surface across sidebar and main area, geometric state indicators,
-real data only (no fake placeholders). One-click theme toggle in the topbar
-flips the entire UI to dark mode (or follows system preference). Token system
-is a vendored Style Dictionary v4 pipeline parity-checked against the Oversight
-family.
+The console is a React 19 SPA built against the **Awaken brand**: monospace
+everywhere (JetBrains Mono in chrome AND product copy), achromatic surfaces
+(pure greyscale, no temperature tint), sharp 2px corners, dark by default with
+light as the secondary mode. One-click theme toggle in the topbar persists per-
+browser via localStorage. Tokens come from `@awaken/design-tokens` (Style
+Dictionary v4) with a single `brand-awaken.css` layer that exposes five aliased
+namespaces (`--aw-*`, bare names, `--brand-*`, state, 9-phase) so spec markup
+from `awaken-design/` pastes in zero-change.
 
 <table>
   <tr>
@@ -229,7 +231,7 @@ family.
     <td align="center"><sub><b>Agents</b><br/>Filter chips · Plugin pills · 503 friendly notice</sub></td>
   </tr>
   <tr>
-    <td colspan="3"><a href="./docs/assets/admin-console/04-dark-dashboard.png"><img src="./docs/assets/admin-console/04-dark-dashboard.png" alt="Dashboard in dark mode — same content, dark slate canvas, indigo accents adjusted for contrast" /></a></td>
+    <td colspan="3"><a href="./docs/assets/admin-console/04-dark-dashboard.png"><img src="./docs/assets/admin-console/04-dark-dashboard.png" alt="Dashboard in dark mode — same content, achromatic #0a0a0a canvas with off-white text, mono everywhere, 2px sharp corners" /></a></td>
   </tr>
   <tr>
     <td colspan="3" align="center"><sub><b>Dark mode</b> · light/dark/system toggle persists per-browser via localStorage</sub></td>
@@ -238,7 +240,7 @@ family.
 
 **⌘K command palette** — search agents, tools, navigation, and actions from anywhere:
 
-![Command palette demo](./docs/assets/admin-console/cmdk.gif)
+![Command palette](./docs/assets/admin-console/cmdk.png)
 
 📺 Full surface tour: [Admin Console reference](https://awakenworks.github.io/awaken/reference/admin-console) · operator user manual: [Use the Admin Console](https://awakenworks.github.io/awaken/how-to/use-admin-console).
 

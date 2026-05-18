@@ -24,7 +24,7 @@ export function ToolsPanel({
   // gracefully with a "No tools registered." sub-message.
   if (!capabilities) {
     return (
-      <div className="rounded-md border border-dashed border-line bg-surface p-6 text-sm text-fg-soft">
+      <div className="rounded-sm border border-dashed border-line bg-surface p-6 text-sm text-fg-soft">
         Loading published tool capabilities...
       </div>
     );
