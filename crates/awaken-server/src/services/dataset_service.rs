@@ -147,6 +147,9 @@ pub async fn create_dataset(
         .id
         .or(body.id.clone())
         .ok_or_else(|| ApiError::BadRequest("dataset id is required (in body or ?id=)".into()))?;
+    body.spec
+        .validate_unique_fixture_ids()
+        .map_err(ApiError::BadRequest)?;
     let record = ConfigRecord {
         spec: body.spec,
         meta: RecordMeta::new_user(),
@@ -209,6 +212,9 @@ pub async fn put_dataset(
     Json(body): Json<PutDatasetRequest>,
 ) -> Result<Response, ApiError> {
     crate::config_routes::ensure_admin_auth(&state, &headers)?;
+    body.spec
+        .validate_unique_fixture_ids()
+        .map_err(ApiError::BadRequest)?;
     let store = config_store_or_unavailable(&state)?;
     let mut meta = match store
         .get(DATASETS_NAMESPACE, &id)

@@ -185,6 +185,63 @@ async fn dataset_create_get_list_delete_round_trip() {
 }
 
 #[tokio::test]
+async fn dataset_create_400s_on_duplicate_fixture_id() {
+    // Duplicate fixture ids would silently overwrite each other inside
+    // the diff map (`BTreeMap` keyed by fixture_id) and produce a result
+    // whose meaning depends on Vec ordering. Reject up front.
+    let app = build_test_app().await;
+    let (status, body) = request(
+        &app.router,
+        "POST",
+        "/v1/eval/datasets",
+        Some(json!({
+            "id": "DS-DUPFX",
+            "spec": { "fixtures": [sample_fixture("twin"), sample_fixture("twin")] }
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(
+        body["error"]
+            .as_str()
+            .unwrap_or("")
+            .contains("duplicate fixture id"),
+        "body: {body}"
+    );
+}
+
+#[tokio::test]
+async fn dataset_put_400s_on_duplicate_fixture_id() {
+    let app = build_test_app().await;
+    let (status, _) = request(
+        &app.router,
+        "POST",
+        "/v1/eval/datasets",
+        Some(json!({ "id": "DS-DUPPUT", "spec": { "fixtures": [sample_fixture("a")] } })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let (status, body) = request(
+        &app.router,
+        "PUT",
+        "/v1/eval/datasets/DS-DUPPUT",
+        Some(json!({
+            "expected_revision": 0,
+            "spec": { "fixtures": [sample_fixture("twin"), sample_fixture("twin")] }
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(
+        body["error"]
+            .as_str()
+            .unwrap_or("")
+            .contains("duplicate fixture id"),
+        "body: {body}"
+    );
+}
+
+#[tokio::test]
 async fn dataset_create_conflicts_on_duplicate_id() {
     let app = build_test_app().await;
     let body = json!({

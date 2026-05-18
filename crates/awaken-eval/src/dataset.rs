@@ -37,6 +37,24 @@ pub struct DatasetSpec {
     pub fixtures: Vec<Fixture>,
 }
 
+impl DatasetSpec {
+    /// Reject duplicate `fixture.id` values. Required at every dataset
+    /// write site — `diff_against_baseline` / `diff_eval_items` key by
+    /// fixture_id, so duplicates would silently overwrite each other in
+    /// the diff map and produce a result whose meaning depends on Vec
+    /// insertion order.
+    pub fn validate_unique_fixture_ids(&self) -> Result<(), String> {
+        use std::collections::HashSet;
+        let mut seen: HashSet<&str> = HashSet::with_capacity(self.fixtures.len());
+        for f in &self.fixtures {
+            if !seen.insert(f.id.as_str()) {
+                return Err(format!("duplicate fixture id in dataset: {}", f.id));
+            }
+        }
+        Ok(())
+    }
+}
+
 impl ConfigRecordMerge for DatasetSpec {
     // Datasets are whole-spec replace. [`NoConfigPatch`] rejects any
     // non-empty `user_overrides` payload at validation time so a
