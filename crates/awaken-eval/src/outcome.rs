@@ -158,6 +158,11 @@ impl ReplayOutcome {
     }
 }
 
+// `saturating_i32_to_u32`: clamp i32 token sentinel to u32 (negative ⇒ 0).
+const fn saturating_i32_to_u32(v: i32) -> u32 {
+    if v <= 0 { 0 } else { v as u32 }
+}
+
 /// Compact, JSON-friendly view of a [`ReplayOutcome`] paired with its
 /// scoring [`Failure`]s.  Each line of the NDJSON report is one of these.
 ///
@@ -258,8 +263,8 @@ impl ReplayReport {
             inference_count: outcome.metrics.inference_count(),
             tool_count: outcome.metrics.tool_count(),
             tool_failures: outcome.metrics.tool_failures(),
-            total_input_tokens: u32::try_from(outcome.metrics.total_input_tokens()).unwrap_or(0),
-            total_output_tokens: u32::try_from(outcome.metrics.total_output_tokens()).unwrap_or(0),
+            total_input_tokens: saturating_i32_to_u32(outcome.metrics.total_input_tokens()),
+            total_output_tokens: saturating_i32_to_u32(outcome.metrics.total_output_tokens()),
             total_tokens: outcome.total_tokens(),
             session_duration_ms: outcome.metrics.session_duration_ms,
             elapsed_ms: u64::try_from(outcome.elapsed.as_millis()).unwrap_or(u64::MAX),

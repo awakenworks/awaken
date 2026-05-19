@@ -339,31 +339,33 @@ impl EvalRunStore for FileEvalRunStore {
             return Err(EvalRunStoreError::AlreadyExists(run.id.clone()));
         }
         let bytes = serde_json::to_vec_pretty(&persisted)?;
-        // Atomic via tempfile + rename so a crash mid-write never leaves
-        // a partial JSON document. Unique tmp suffix (PID + nanos)
-        // prevents two concurrent writes of *different* run ids that
-        // happen to land in the same shard from clobbering each other's
-        // tmp file. The destination file is still guarded by the
-        // pre-existence check above.
-        let tmp_suffix = format!(
-            "json.tmp.{}.{}",
-            std::process::id(),
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .map(|d| d.as_nanos())
-                .unwrap_or(0)
-        );
-        let tmp = path.with_extension(tmp_suffix);
-        fs::write(&tmp, &bytes)?;
-        // `rename` is atomic on Unix but does NOT fail if `path` exists.
-        // The pre-existence check above is the no-clobber guarantee; if
-        // a racing writer landed the same id between our check and our
-        // rename, both writers' bytes are byte-identical for an
-        // immutable run id, so the resulting on-disk state is consistent
-        // either way. A non-id collision still cannot happen because
-        // the run id is the file basename.
-        fs::rename(&tmp, &path)?;
-        Ok(())
+        // True atomic create-or-fail: open the FINAL path with O_EXCL
+        // (`create_new(true)`). If two writers race past the locate()
+        // check above, only ONE open succeeds; the loser maps to
+        // AlreadyExists. The earlier rename(tmp, path) silently
+        // clobbered on Unix — we no longer trust that.
+        //
+        // A crash between `open` and `write_all` leaves a 0-byte file
+        // which `read` will fail on (serde_json on empty input). That
+        // surfaces as a corrupt-store error rather than silent data
+        // loss, which is the right side of the trade — the alternative
+        // (tmp + rename) couldn't make AlreadyExists fail-fast.
+        use std::io::Write;
+        match fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+        {
+            Ok(mut f) => {
+                f.write_all(&bytes)?;
+                f.sync_all()?;
+                Ok(())
+            }
+            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {
+                Err(EvalRunStoreError::AlreadyExists(run.id.clone()))
+            }
+            Err(err) => Err(EvalRunStoreError::Io(err)),
+        }
     }
 
     fn read(&self, run_id: &str) -> Result<EvalRun, EvalRunStoreError> {
@@ -401,9 +403,33 @@ impl EvalRunStore for FileEvalRunStore {
                 if path.extension().and_then(|e| e.to_str()) != Some("json") {
                     continue;
                 }
-                let Ok(bytes) = fs::read(&path) else { continue };
-                let Ok(run): Result<EvalRun, _> = serde_json::from_slice(&bytes) else {
-                    continue;
+                // Corrupt / partially-written records must NOT disappear
+                // silently — eval runs are the source of truth for the
+                // diff/list API and a missing run looks identical to "no
+                // such id" from upstream. Log loud and continue; admins
+                // can grep the warning + delete the file or restore from
+                // backup.
+                let bytes = match fs::read(&path) {
+                    Ok(b) => b,
+                    Err(err) => {
+                        tracing::warn!(
+                            path = %path.display(),
+                            error = %err,
+                            "FileEvalRunStore: skipping unreadable eval-run file"
+                        );
+                        continue;
+                    }
+                };
+                let run: EvalRun = match serde_json::from_slice(&bytes) {
+                    Ok(r) => r,
+                    Err(err) => {
+                        tracing::warn!(
+                            path = %path.display(),
+                            error = %err,
+                            "FileEvalRunStore: skipping corrupt eval-run file"
+                        );
+                        continue;
+                    }
                 };
                 if let Some(ref ds) = filter.dataset_id
                     && &run.dataset_id != ds

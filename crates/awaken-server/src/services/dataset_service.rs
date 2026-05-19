@@ -502,12 +502,17 @@ pub async fn import_traces(
     };
     let summaries = trace_store.list(&filter).map_err(map_trace_store_error)?;
 
-    let existing_ids: std::collections::HashSet<String> =
+    // Mutable seen-set updated AFTER each successful push so duplicate
+    // run_ids inside `summaries` itself (e.g. from a pagination retry
+    // on a flaky trace backend) cannot produce duplicate fixtures
+    // within a single import call. Static existing_ids snapshotted from
+    // the dataset state catches duplicates against prior writes.
+    let mut seen_ids: std::collections::HashSet<String> =
         record.spec.fixtures.iter().map(|f| f.id.clone()).collect();
     let mut imported = 0usize;
     let mut skipped = 0usize;
     for summary in summaries {
-        if existing_ids.contains(&summary.run_id) {
+        if seen_ids.contains(&summary.run_id) {
             skipped += 1;
             continue;
         }
@@ -547,15 +552,24 @@ pub async fn import_traces(
             description: Some(format!("Imported from trace {}", summary.run_id)),
             user_input,
             provider_script: conversion.provider_script,
-            source_run_id: Some(summary.run_id),
+            source_run_id: Some(summary.run_id.clone()),
             source_model_id: conversion.source_model_id,
             allow_unused_provider_script: false,
             mock_response: MockResponse::default(),
             expect: Expectation::default(),
             continued_turns: vec![],
         });
+        seen_ids.insert(summary.run_id);
         imported += 1;
     }
+    // Final belt-and-braces invariant check: the loop guards above
+    // should make this impossible, but if a future refactor regresses
+    // the seen-set logic, fail loud here rather than persist a corrupt
+    // dataset that breaks the diff layer downstream.
+    record
+        .spec
+        .validate_unique_fixture_ids()
+        .map_err(ApiError::Internal)?;
 
     if imported == 0 {
         return Ok(Json(ImportTracesResponse {

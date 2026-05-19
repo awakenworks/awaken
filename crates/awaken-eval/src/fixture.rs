@@ -43,11 +43,14 @@ pub struct Fixture {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_model_id: Option<String>,
     /// When `true`, replay tolerates `provider_script` events that the
-    /// runtime never consumed (default: `false`). Use only for fixtures
-    /// where the runtime is genuinely allowed to stop early; otherwise
-    /// the assert catches dropped rounds, missed tool calls, or absent
-    /// retries that would otherwise pass silently on the legacy
-    /// "final_text only" expectation.
+    /// runtime never consumed (default: `false`). Without this opt-in,
+    /// unconsumed events surface as
+    /// [`ReplayRuntimeFailure::ProviderScriptUnused`](crate::outcome::ReplayRuntimeFailure)
+    /// in the outcome and the scorer promotes them into a
+    /// [`Failure::ReplayRuntimeFailure`](crate::Failure) on the report
+    /// — a fixture that drops a round, misses a tool call, or skips an
+    /// expected retry fails structurally instead of silently passing
+    /// the legacy "final_text only" expectation.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub allow_unused_provider_script: bool,
     /// Legacy single-response field. Superseded by [`Self::provider_script`]
