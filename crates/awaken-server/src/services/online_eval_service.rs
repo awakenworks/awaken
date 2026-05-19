@@ -300,8 +300,7 @@ pub async fn start_online_eval(
             crate::services::eval_run_service::score_outcome(&outcome, &fixture, judge.as_ref())
                 .await?;
         let mut report = ReplayReport::from_outcome(&outcome, failures);
-        report.cost_usd =
-            binding.compute_cost_usd(report.total_input_tokens, report.total_output_tokens);
+        report.cost_usd = crate::services::eval_cell::cost_usd_for(&report, &binding);
         items.push(EvalRunItem {
             fixture_id: fixture.id.clone(),
             cell: Some(cell),

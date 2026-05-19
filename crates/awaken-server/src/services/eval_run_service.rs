@@ -592,8 +592,7 @@ async fn run_matrix_cells(
             .map_err(|err| ApiError::Internal(format!("matrix cell task panicked: {err}")))?;
         let failures = score_outcome(&outcome, &fixture, judge.as_ref()).await?;
         let mut report = ReplayReport::from_outcome(&outcome, failures);
-        report.cost_usd =
-            binding.compute_cost_usd(report.total_input_tokens, report.total_output_tokens);
+        report.cost_usd = super::eval_cell::cost_usd_for(&report, &binding);
         items.push(EvalRunItem {
             fixture_id: fixture.id,
             cell: Some(cell),

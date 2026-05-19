@@ -7,8 +7,9 @@
 use std::sync::Arc;
 
 use awaken_contract::agent_spec_patch::AgentSpecPatch;
+use awaken_contract::registry_spec::ModelBindingSpec;
 use awaken_eval::{
-    Expectation, Fixture, LlmExecutorJudge, RuntimeReplayer, score, score_with_judge,
+    Expectation, Fixture, LlmExecutorJudge, ReplayReport, RuntimeReplayer, score, score_with_judge,
 };
 
 use crate::error::ApiError;
@@ -70,6 +71,19 @@ pub(crate) fn apply_cell_decorators(
         replayer = replayer.with_revise_on_judge_fail(j, rubric, threshold, retries);
     }
     replayer
+}
+
+/// Compute cell-level `cost_usd`, but only when the report carries an
+/// actual input/output token breakdown. Providers that only fill the
+/// aggregate `total_tokens` would otherwise yield `compute_cost_usd(0, 0)
+/// = Some(0.0)`, silently presenting "$0" cost for runs that genuinely
+/// burned tokens. Returning `None` makes the cost-missing case explicit
+/// to downstream consumers (admin UI, baseline diff, billing exports).
+pub(crate) fn cost_usd_for(report: &ReplayReport, binding: &ModelBindingSpec) -> Option<f64> {
+    if report.total_input_tokens == 0 && report.total_output_tokens == 0 {
+        return None;
+    }
+    binding.compute_cost_usd(report.total_input_tokens, report.total_output_tokens)
 }
 
 /// Pick the scorer based on whether a judge is wired: judge-aware when a
