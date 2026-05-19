@@ -18,6 +18,7 @@ use crate::error::ApiError;
 /// `(LlmExecutorJudge, Option<String>, Option<u32>)` tuple this code used
 /// to thread — at the call sites that tuple was opaque enough that
 /// renaming or reordering a field was a search-and-replace minefield.
+#[derive(Clone)]
 pub(crate) struct JudgeContext {
     pub judge: LlmExecutorJudge,
     pub rubric: Option<String>,
@@ -122,7 +123,7 @@ pub(crate) async fn score_outcome(
             let (failures, _) = score_with_judge(
                 outcome,
                 &fixture.expect,
-                &fixture.user_input,
+                &fixture.judge_prompt(),
                 rubric.as_deref(),
                 j,
             )

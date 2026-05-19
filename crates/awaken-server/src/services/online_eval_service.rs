@@ -279,6 +279,7 @@ pub async fn start_online_eval(
             let trace_sink = trace_sink.clone();
             let cell = cell.clone();
             let fixture_id = fixture.id.clone();
+            let judge_for_task = judge.clone();
             let revise_for_task = crate::services::eval_run_service::revise_tuple_for(
                 judge.as_ref(),
                 &fixture.expect,
@@ -298,35 +299,42 @@ pub async fn start_online_eval(
                     trace_sink,
                     revise_for_task,
                 );
-                // Cap the cell's wall-clock under tokio::time::timeout —
-                // on expiry the in-flight future is dropped and the cell
-                // surfaces a synthetic outcome with runtime_failure, so a
-                // stuck provider cannot pin an HTTP request slot
-                // indefinitely.
-                let outcome = match tokio::time::timeout(
-                    walltime,
-                    replay_all(&replayer, std::slice::from_ref(&fixture)),
-                )
-                .await
-                {
-                    Ok(outs) => outs.into_iter().next().expect("one fixture → one outcome"),
-                    Err(_) => {
-                        awaken_eval::ReplayOutcome::timeout_failure(fixture_id, walltime.as_secs())
-                    }
+                // Per-cell wall-clock cap covers replay + scoring + judge.
+                // The judge is a live provider call; if left outside the
+                // timeout a stuck judge could pin the HTTP request slot.
+                let cell_future = async {
+                    let outcomes = replay_all(&replayer, std::slice::from_ref(&fixture)).await;
+                    let outcome = outcomes
+                        .into_iter()
+                        .next()
+                        .expect("one fixture → one outcome");
+                    let failures = crate::services::eval_run_service::score_outcome(
+                        &outcome,
+                        &fixture,
+                        judge_for_task.as_ref(),
+                    )
+                    .await?;
+                    Ok::<_, ApiError>((outcome, failures))
                 };
-                (cell, sample, outcome, binding)
+                let (outcome, failures) = match tokio::time::timeout(walltime, cell_future).await {
+                    Ok(Ok(pair)) => pair,
+                    Ok(Err(err)) => return Err(err),
+                    Err(_) => (
+                        awaken_eval::ReplayOutcome::timeout_failure(fixture_id, walltime.as_secs()),
+                        Vec::new(),
+                    ),
+                };
+                Ok::<_, ApiError>((cell, sample, outcome, failures, binding))
             }));
         }
     }
 
     let mut items: Vec<EvalRunItem> = Vec::with_capacity(handles.len());
     for handle in handles {
-        let (cell, sample, outcome, binding) = handle
+        let task_result = handle
             .await
             .map_err(|err| ApiError::Internal(format!("online cell task panicked: {err}")))?;
-        let failures =
-            crate::services::eval_run_service::score_outcome(&outcome, &fixture, judge.as_ref())
-                .await?;
+        let (cell, sample, outcome, failures, binding) = task_result?;
         let mut report = ReplayReport::from_outcome(&outcome, failures);
         report.cost_usd = crate::services::eval_cell::cost_usd_for(&report, &binding);
         items.push(EvalRunItem {

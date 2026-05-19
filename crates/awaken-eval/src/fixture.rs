@@ -187,6 +187,24 @@ impl Fixture {
         }
     }
 
+    /// Full user-side prompt sequence as a single string for judge
+    /// invocation. Multi-turn fixtures otherwise judge only the initial
+    /// `user_input`, leaving the LLM judge blind to follow-up requests
+    /// that the agent's `final_text` is actually responding to.
+    pub fn judge_prompt(&self) -> String {
+        if self.continued_turns.is_empty() {
+            return self.user_input.clone();
+        }
+        let mut out = String::with_capacity(self.user_input.len() + 64);
+        out.push_str("Turn 1 (user): ");
+        out.push_str(&self.user_input);
+        for (idx, turn) in self.continued_turns.iter().enumerate() {
+            out.push_str(&format!("\n\nTurn {} (user): ", idx + 2));
+            out.push_str(&turn.user_input);
+        }
+        out
+    }
+
     /// `effective_script` (turn 0) concatenated with every
     /// [`DialogueTurn::provider_script`]. The replayer consumes this as
     /// one combined script — the [`ScriptedLlmExecutor`] pointer advances
@@ -273,6 +291,37 @@ mod tests {
         let path = dir.join(name);
         let mut f = fs::File::create(&path).unwrap();
         f.write_all(json.as_bytes()).unwrap();
+    }
+
+    #[test]
+    fn judge_prompt_returns_user_input_when_no_continued_turns() {
+        let fx = Fixture {
+            user_input: "hello".into(),
+            ..Default::default()
+        };
+        assert_eq!(fx.judge_prompt(), "hello");
+    }
+
+    #[test]
+    fn judge_prompt_includes_continued_turn_user_inputs() {
+        let fx = Fixture {
+            user_input: "first".into(),
+            continued_turns: vec![
+                DialogueTurn {
+                    user_input: "second".into(),
+                    provider_script: vec![],
+                },
+                DialogueTurn {
+                    user_input: "third".into(),
+                    provider_script: vec![],
+                },
+            ],
+            ..Default::default()
+        };
+        let prompt = fx.judge_prompt();
+        assert!(prompt.contains("Turn 1 (user): first"));
+        assert!(prompt.contains("Turn 2 (user): second"));
+        assert!(prompt.contains("Turn 3 (user): third"));
     }
 
     fn sample_json(id: &str) -> String {

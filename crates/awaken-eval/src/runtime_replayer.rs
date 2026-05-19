@@ -514,7 +514,11 @@ impl RuntimeReplayer {
         agent_spec.model_id = LIVE_MODEL_ID.into();
         agent_spec.id = DEFAULT_AGENT_ID.into();
         agent_spec.plugin_ids = vec!["observability".into()];
-        agent_spec.max_rounds = max_rounds;
+        // Floor semantics: keep the registered spec's max_rounds when it is
+        // already at or above the eval floor. Overwriting unconditionally
+        // would shrink production agents that need more rounds to complete
+        // their tool loops, surfacing as spurious eval failures.
+        agent_spec.max_rounds = agent_spec.max_rounds.max(max_rounds);
 
         let runtime: Arc<AgentRuntime> = Arc::new(
             AgentRuntimeBuilder::new()
@@ -589,11 +593,12 @@ impl RuntimeReplayer {
             // Feed the judge a minimal stub outcome — judges only read
             // final_text + user_prompt + rubric. Allocating full metrics
             // (spans, etc.) per retry would be wasted work.
+            let judge_prompt = fixture.judge_prompt();
             for _ in 0..=cfg.max_retries {
                 let stub = judge_stub_outcome(&fixture.id, &final_text);
                 match cfg
                     .judge
-                    .judge(&stub, &fixture.user_input, cfg.rubric.as_deref())
+                    .judge(&stub, &judge_prompt, cfg.rubric.as_deref())
                     .await
                 {
                     Ok(jr) => {
