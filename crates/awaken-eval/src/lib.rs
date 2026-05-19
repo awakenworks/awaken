@@ -44,7 +44,8 @@ pub use outcome::{ReplayOutcome, ReplayReport};
 pub use replay::{Replayer, replay_all};
 pub use report::{
     DiffEntry, DiffSummary, ReportError, diff_against_baseline, diff_eval_items, read_ndjson,
-    read_ndjson_path, write_ndjson, write_ndjson_path,
+    read_ndjson_path, validate_unique_item_keys, validate_unique_report_keys, write_ndjson,
+    write_ndjson_path,
 };
 pub use runtime_replayer::RuntimeReplayer;
 pub use score::score;

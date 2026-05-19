@@ -451,6 +451,19 @@ fn compute_diff(
             new_run.dataset_id, baseline.dataset_revision, new_run.dataset_revision,
         )));
     }
+    // Reject duplicate keys BEFORE the diff. `diff_against_baseline` /
+    // `diff_eval_items` collect into BTreeMap; without this guard, two
+    // items with the same fixture_id (or same (fixture, cell, sample)
+    // triple) would silently overwrite each other in the map and the
+    // returned DiffSummary would depend on Vec insertion order. The
+    // store-write paths already reject duplicates upstream — but a
+    // corrupt on-disk record or a future store impl with weaker
+    // guarantees would slip through, and "diff is wrong but plausible"
+    // is the worst possible failure mode for a regression gate.
+    awaken_eval::validate_unique_item_keys(&baseline.items)
+        .map_err(|e| ApiError::Internal(format!("baseline run {}: {e}", baseline.id)))?;
+    awaken_eval::validate_unique_item_keys(&new_run.items)
+        .map_err(|e| ApiError::Internal(format!("current run {}: {e}", new_run.id)))?;
     // Use matrix-aware pairing when either side carries a cell. Single
     // unified call site — `diff_eval_items` handles the cell-less path
     // identically to the report-based diff.
@@ -466,6 +479,8 @@ fn compute_diff(
             baseline.items.into_iter().map(|i| i.report).collect();
         let new_reports: Vec<ReplayReport> =
             new_run.items.iter().map(|i| i.report.clone()).collect();
+        awaken_eval::validate_unique_report_keys(&baseline_reports).map_err(ApiError::Internal)?;
+        awaken_eval::validate_unique_report_keys(&new_reports).map_err(ApiError::Internal)?;
         Ok(diff_against_baseline(&baseline_reports, &new_reports))
     }
 }

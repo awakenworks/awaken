@@ -352,6 +352,48 @@ impl DiffSummary {
 }
 
 /// Compare a `new` run against a committed `baseline`, producing a
+/// Reject duplicate `fixture_id` values in a [`ReplayReport`] slice.
+/// `diff_against_baseline` collects reports into a `BTreeMap` keyed by
+/// fixture_id; without this guard, duplicates would silently overwrite
+/// each other and the diff would depend on Vec insertion order. Callers
+/// (server compute_diff, CLI `check`) invoke this before the diff so a
+/// corrupt baseline or report file fails loud instead of producing a
+/// plausible-looking but order-dependent answer.
+pub fn validate_unique_report_keys(reports: &[ReplayReport]) -> Result<(), String> {
+    use std::collections::HashSet;
+    let mut seen: HashSet<&str> = HashSet::with_capacity(reports.len());
+    for r in reports {
+        if !seen.insert(r.fixture_id.as_str()) {
+            return Err(format!("duplicate report fixture_id: {}", r.fixture_id));
+        }
+    }
+    Ok(())
+}
+
+/// Reject duplicate `(fixture_id, cell, sample_index)` keys in an
+/// `EvalRunItem` slice. Counterpart to `validate_unique_report_keys`
+/// for the matrix-aware `diff_eval_items` path.
+pub fn validate_unique_item_keys(items: &[crate::eval_run::EvalRunItem]) -> Result<(), String> {
+    use std::collections::HashSet;
+    let mut seen: HashSet<(String, crate::eval_run::MatrixCell, Option<u32>)> =
+        HashSet::with_capacity(items.len());
+    for it in items {
+        let key = (
+            it.fixture_id.clone(),
+            it.cell.clone().unwrap_or_default(),
+            it.sample_index,
+        );
+        let label = format!(
+            "(fixture_id={}, cell={:?}, sample_index={:?})",
+            it.fixture_id, it.cell, it.sample_index
+        );
+        if !seen.insert(key) {
+            return Err(format!("duplicate eval-run item key: {label}"));
+        }
+    }
+    Ok(())
+}
+
 /// [`DiffSummary`] suitable for CI gating.
 ///
 /// Pairing is by `fixture_id`. The returned `entries` are sorted by id.

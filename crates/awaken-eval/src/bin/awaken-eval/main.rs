@@ -12,7 +12,7 @@ use std::process::ExitCode;
 use awaken_eval::{
     Expectation, Fixture, ReplayReport, RuntimeReplayer, diff_against_baseline,
     fixture::load_directory, read_ndjson_path, replay_all, score, trace_to_provider_script,
-    write_ndjson_path,
+    validate_unique_report_keys, write_ndjson_path,
 };
 use awaken_ext_observability::trace_store::{TraceStore, file::FileTraceStore};
 
@@ -134,6 +134,10 @@ async fn check_command(args: &[String]) -> Result<ExitCode, String> {
     let baseline =
         read_ndjson_path(&baseline_path).map_err(|err| format!("reading baseline: {err}"))?;
     let new = read_ndjson_path(&new_path).map_err(|err| format!("reading new: {err}"))?;
+    // Refuse to diff a corrupt report — duplicate fixture_ids would
+    // otherwise collapse silently in the BTreeMap pairing.
+    validate_unique_report_keys(&baseline).map_err(|err| format!("baseline: {err}"))?;
+    validate_unique_report_keys(&new).map_err(|err| format!("new: {err}"))?;
 
     let summary = diff_against_baseline(&baseline, &new);
     println!(
