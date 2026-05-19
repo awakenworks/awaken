@@ -358,6 +358,23 @@ async fn mixed_namespace_seed_routes_correctly() {
     assert!(s.get("providers", "agent-1").await.unwrap().is_none());
 }
 
+#[tokio::test]
+async fn invalid_builtin_skill_spec_is_rejected_before_write() {
+    let s = store();
+    let mut invalid = skill_spec("bad-skill");
+    invalid.allowed_tools = vec!["Bash(command: \"git status\")".to_string()];
+    let seed = seed_v1(vec![BuiltinSpec::Skill(invalid)]);
+
+    let err = apply_builtin_seed(&s, &seed)
+        .await
+        .expect_err("invalid skill seed must fail before writing");
+    assert!(matches!(err, SeedError::InvalidSkillSpec { .. }));
+    assert!(
+        s.get("skills", "bad-skill").await.unwrap().is_none(),
+        "invalid builtin skill must not be persisted"
+    );
+}
+
 // ── test 10 ──────────────────────────────────────────────────────────────
 
 #[tokio::test]

@@ -297,21 +297,21 @@ async fn activate_tool_handles_pattern_allowed_tools() {
 #[test]
 fn skill_state_key_properties_are_correct() {
     assert_eq!(SkillState::KEY, "skills");
-    assert_eq!(SkillState::MERGE, MergeStrategy::Commutative);
-    // Commutative merge is essential: parallel tool calls activating
-    // different skills must merge without conflict.
+    assert_eq!(SkillState::MERGE, MergeStrategy::Exclusive);
+    // Rendered activations use same-skill overwrite semantics, so parallel
+    // state batches must not be merged as if they were commutative.
 }
 
-/// Concurrent activations should merge via commutative union.
+/// Legacy ID-only activations still form a union when applied sequentially.
 #[test]
-fn skill_state_concurrent_activations_merge_correctly() {
+fn skill_state_legacy_activations_apply_as_union() {
     let mut state1 = SkillStateValue::default();
     SkillState::apply(&mut state1, SkillStateUpdate::Activate("skill-a".into()));
 
     let mut state2 = SkillStateValue::default();
     SkillState::apply(&mut state2, SkillStateUpdate::Activate("skill-b".into()));
 
-    // Simulate commutative merge (both orderings should produce same result)
+    // Apply state2 into state1.
     let mut merged_ab = state1.clone();
     for id in &state2.active {
         SkillState::apply(&mut merged_ab, SkillStateUpdate::Activate(id.clone()));
@@ -1014,5 +1014,79 @@ async fn activate_tool_command_promotes_deferred_tools_when_plugin_active() {
         deferral.modes.get("Edit").copied(),
         Some(ToolLoadMode::Eager),
         "Edit should be promoted to Eager"
+    );
+}
+
+/// Pattern allowed_tools should promote matching deferred concrete tools, not
+/// only grant a permission rule.
+#[tokio::test]
+async fn activate_tool_command_promotes_deferred_tools_matched_by_patterns() {
+    use awaken_contract::state::{Snapshot, StateMap};
+    use awaken_ext_deferred_tools::config::ToolLoadMode;
+    use awaken_ext_deferred_tools::state::{
+        DeferralState, DeferralStateAction, DeferralStateValue,
+    };
+    use std::sync::Arc;
+
+    let registry = make_registry_with_skills(&[EmbeddedSkillData {
+        skill_md: SKILL_WITH_PATTERN_MD,
+        references: &[],
+        assets: &[],
+    }]);
+    let tool = SkillActivateTool::new(registry);
+
+    let mut deferral = DeferralStateValue::default();
+    DeferralState::apply(
+        &mut deferral,
+        DeferralStateAction::SetBatch(vec![
+            ("mcp__db__query".into(), ToolLoadMode::Deferred),
+            ("mcp__db__schema".into(), ToolLoadMode::Deferred),
+            ("Read".into(), ToolLoadMode::Deferred),
+        ]),
+    );
+
+    let mut state_map = StateMap::default();
+    state_map.insert::<DeferralState>(deferral.clone());
+    let ctx = ToolCallContext {
+        snapshot: Snapshot::new(0, Arc::new(state_map)),
+        ..ToolCallContext::test_default()
+    };
+
+    let output = tool
+        .execute(json!({"skill": "pattern-skill"}), &ctx)
+        .await
+        .unwrap();
+
+    assert_eq!(output.result.status, ToolStatus::Success);
+    assert!(
+        output
+            .command
+            .touched_keys
+            .contains(&"deferred_tools.state".to_string()),
+        "pattern activation should promote matching deferred tools"
+    );
+
+    let mut apply_map = StateMap::default();
+    apply_map.insert::<DeferralState>(deferral);
+    let mut snapshot = Snapshot::new(0, Arc::new(apply_map));
+    for op in output.command.patch.ops {
+        op.apply(&mut snapshot);
+    }
+
+    let deferral = snapshot.get::<DeferralState>().unwrap();
+    assert_eq!(
+        deferral.modes.get("mcp__db__query").copied(),
+        Some(ToolLoadMode::Eager),
+        "matching MCP query tool should be promoted"
+    );
+    assert_eq!(
+        deferral.modes.get("mcp__db__schema").copied(),
+        Some(ToolLoadMode::Eager),
+        "matching MCP schema tool should be promoted"
+    );
+    assert_eq!(
+        deferral.modes.get("Read").copied(),
+        Some(ToolLoadMode::Deferred),
+        "non-matching deferred tool should stay deferred"
     );
 }

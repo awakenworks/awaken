@@ -160,6 +160,23 @@ impl Skill for EmbeddedSkill {
             "embedded skills do not support script execution: {script}"
         )))
     }
+
+    fn materialized_resource_paths(&self) -> Vec<(SkillResourceKind, String)> {
+        let mut paths = self
+            .references
+            .keys()
+            .cloned()
+            .map(|path| (SkillResourceKind::Reference, path))
+            .chain(
+                self.assets
+                    .keys()
+                    .cloned()
+                    .map(|path| (SkillResourceKind::Asset, path)),
+            )
+            .collect::<Vec<_>>();
+        paths.sort_by(|a, b| a.1.cmp(&b.1).then_with(|| a.0.as_str().cmp(b.0.as_str())));
+        paths
+    }
 }
 
 #[cfg(test)]

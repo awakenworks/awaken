@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use crate::error::SkillError;
@@ -152,6 +152,17 @@ pub trait Skill: Send + Sync + std::fmt::Debug {
     /// Metadata for this skill (id, name, description, allowed_tools).
     fn meta(&self) -> &SkillMeta;
 
+    /// Stable fingerprint of the content/spec used to render activation
+    /// instructions, when the implementation can provide one.
+    ///
+    /// Runtime-created config skills use this to avoid injecting stale rendered
+    /// instructions after a DB-managed skill spec changes. Filesystem and
+    /// embedded skills may return `None`; legacy active state continues to
+    /// fall back to reading their current `SKILL.md`.
+    fn activation_fingerprint(&self) -> Option<&str> {
+        None
+    }
+
     /// Read the raw SKILL.md content.
     async fn read_instructions(&self) -> Result<String, SkillError>;
 
@@ -162,22 +173,8 @@ pub trait Skill: Send + Sync + std::fmt::Debug {
     async fn activate(&self, args: Option<&Value>) -> Result<SkillActivation, SkillError> {
         let raw = self.read_instructions().await?;
         let doc = parse_skill_md(&raw).map_err(|e| SkillError::InvalidSkillMd(e.to_string()))?;
-        let mut body = doc.body;
-
-        // Substitute ${ARG_NAME} patterns from the activation arguments.
-        if let Some(obj) = args.and_then(|a| a.as_object()) {
-            for (key, val) in obj {
-                let pattern = format!("${{{key}}}");
-                let replacement = match val {
-                    Value::String(s) => s.clone(),
-                    Value::Null => String::new(),
-                    other => other.to_string(),
-                };
-                body = body.replace(&pattern, &replacement);
-            }
-        }
-
-        Ok(SkillActivation { instructions: body })
+        let instructions = render_activation_instructions(self.meta(), doc.body, args)?;
+        Ok(SkillActivation { instructions })
     }
 
     /// Load a resource (reference or asset) by relative path.
@@ -189,6 +186,117 @@ pub trait Skill: Send + Sync + std::fmt::Debug {
 
     /// Run a script by relative path with arguments.
     async fn run_script(&self, script: &str, args: &[String]) -> Result<ScriptResult, SkillError>;
+
+    /// Materialized resources that would be lost when snapshotting this skill
+    /// into a DB-managed [`SkillSpec`](awaken_contract::SkillSpec).
+    fn materialized_resource_paths(&self) -> Vec<(SkillResourceKind, String)> {
+        Vec::new()
+    }
+
+    /// Materialized scripts that would be lost when snapshotting this skill
+    /// into a DB-managed [`SkillSpec`](awaken_contract::SkillSpec).
+    fn materialized_script_paths(&self) -> Vec<String> {
+        Vec::new()
+    }
+}
+
+pub(crate) fn render_activation_instructions(
+    meta: &SkillMeta,
+    mut body: String,
+    args: Option<&Value>,
+) -> Result<String, SkillError> {
+    if meta.arguments.is_empty() {
+        if let Some(obj) = args.and_then(Value::as_object) {
+            for (key, val) in obj {
+                let pattern = format!("${{{key}}}");
+                let replacement = match val {
+                    Value::String(s) => s.clone(),
+                    Value::Null => String::new(),
+                    other => other.to_string(),
+                };
+                body = body.replace(&pattern, &replacement);
+            }
+        }
+        return Ok(body);
+    }
+
+    let declared = meta
+        .arguments
+        .iter()
+        .map(|arg| arg.name.as_str())
+        .collect::<HashSet<_>>();
+    let required = meta
+        .arguments
+        .iter()
+        .filter(|arg| arg.required)
+        .map(|arg| arg.name.as_str())
+        .collect::<Vec<_>>();
+
+    let obj = match args {
+        Some(value) => value.as_object().ok_or_else(|| {
+            SkillError::InvalidArguments(format!(
+                "skill '{}' requires named arguments as an object",
+                meta.id
+            ))
+        })?,
+        None if required.is_empty() => return Ok(body),
+        None => {
+            return Err(SkillError::InvalidArguments(format!(
+                "skill '{}' requires named arguments: {}",
+                meta.id,
+                required.join(", ")
+            )));
+        }
+    };
+
+    for key in obj.keys() {
+        if !declared.contains(key.as_str()) {
+            return Err(SkillError::InvalidArguments(format!(
+                "unknown argument '{}' for skill '{}'",
+                key, meta.id
+            )));
+        }
+    }
+
+    for name in required {
+        match obj.get(name) {
+            Some(value) if !value.is_null() => {}
+            Some(_) => {
+                return Err(SkillError::InvalidArguments(format!(
+                    "required argument '{}' for skill '{}' must not be null",
+                    name, meta.id
+                )));
+            }
+            None => {
+                return Err(SkillError::InvalidArguments(format!(
+                    "missing required argument '{}' for skill '{}'",
+                    name, meta.id
+                )));
+            }
+        }
+    }
+
+    for (key, val) in obj {
+        let replacement = match val {
+            Value::String(s) => s.clone(),
+            Value::Number(_) | Value::Bool(_) => val.to_string(),
+            Value::Null => {
+                return Err(SkillError::InvalidArguments(format!(
+                    "argument '{}' for skill '{}' must not be null",
+                    key, meta.id
+                )));
+            }
+            Value::Array(_) | Value::Object(_) => {
+                return Err(SkillError::InvalidArguments(format!(
+                    "argument '{}' for skill '{}' must be a scalar string, number, or boolean",
+                    key, meta.id
+                )));
+            }
+        };
+        body = body.replace(&format!("${{{key}}}"), &replacement);
+    }
+
+    Ok(body)
 }
 
 /// Build a stable map key for skill materials.

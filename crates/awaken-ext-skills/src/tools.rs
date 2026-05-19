@@ -2,11 +2,13 @@ use crate::error::{SkillError, SkillMaterializeError};
 use crate::registry::SkillRegistry;
 use crate::skill::{Skill, SkillResource, SkillResourceKind};
 use crate::skill_md::parse_allowed_tool_token;
+use crate::tool_match::promoted_deferred_tool_ids;
 use crate::{SKILL_ACTIVATE_TOOL_ID, SKILL_LOAD_RESOURCE_TOOL_ID, SKILL_SCRIPT_TOOL_ID};
 use awaken_contract::contract::tool::{
     Tool, ToolCallContext, ToolDescriptor, ToolError, ToolOutput, ToolResult, ToolStatus,
 };
 use awaken_contract::state::StateCommand;
+use awaken_contract::{is_skill_allowed_tool_pattern, validate_skill_allowed_tool_pattern};
 use awaken_ext_deferred_tools::state::{DeferralState, DeferralStateAction};
 use awaken_ext_permission::actions as permission_actions;
 use awaken_ext_permission::rules::ToolPermissionBehavior;
@@ -110,7 +112,7 @@ impl Tool for SkillActivateTool {
             .activate(activation_args)
             .await
             .map_err(|e| map_skill_error(SKILL_ACTIVATE_TOOL_ID, e));
-        let _activation = match activation {
+        let activation = match activation {
             Ok(v) => v,
             Err(r) => return Ok(r.into()),
         };
@@ -123,8 +125,11 @@ impl Tool for SkillActivateTool {
             match parse_allowed_tool_token(token.clone()) {
                 Ok(parsed) if parsed.scope.is_none() => {
                     if seen.insert(parsed.tool_id.clone()) {
-                        if is_pattern_like_tool_matcher(&parsed.tool_id) {
-                            applied_tool_patterns.push(parsed.tool_id);
+                        if is_skill_allowed_tool_pattern(&parsed.tool_id) {
+                            match validate_skill_allowed_tool_pattern(&parsed.tool_id) {
+                                Ok(()) => applied_tool_patterns.push(parsed.tool_id),
+                                Err(_) => skipped_tokens.push(parsed.raw),
+                            }
                         } else {
                             applied_tool_ids.push(parsed.tool_id);
                         }
@@ -160,12 +165,13 @@ impl Tool for SkillActivateTool {
         // Build side-effects: state mutation + permission elevation
         let mut cmd = StateCommand::new();
 
-        // 1. Track activation in SkillState (grow-only set, commutative merge)
-        cmd.update::<crate::state::SkillState>(crate::state::SkillStateUpdate::Activate(
-            meta.id.clone(),
-        ));
+        cmd.update::<crate::state::SkillState>(crate::state::SkillStateUpdate::ActivateRendered {
+            skill_id: meta.id.clone(),
+            instructions: activation.instructions,
+            fingerprint: skill.activation_fingerprint().map(str::to_owned),
+        });
 
-        // 2. Grant run-scoped permission overrides for declared allowed_tools
+        // Grant run-scoped permission overrides for declared allowed_tools
         for tool_id in &applied_tool_ids {
             permission_actions::grant_tool_override(&mut cmd, tool_id);
         }
@@ -181,10 +187,15 @@ impl Tool for SkillActivateTool {
         //    Skill declares allowed_tools because it intends to use them now;
         //    if any are deferred, they must become eager before next inference.
         //    Only write if DeferralState is registered (deferred-tools plugin active).
-        if !applied_tool_ids.is_empty() && ctx.state::<DeferralState>().is_some() {
-            cmd.update::<DeferralState>(DeferralStateAction::PromoteBatch(
-                applied_tool_ids.clone(),
-            ));
+        if let Some(deferral_state) = ctx.state::<DeferralState>() {
+            let promoted_tool_ids = promoted_deferred_tool_ids(
+                &applied_tool_ids,
+                &applied_tool_patterns,
+                deferral_state,
+            );
+            if !promoted_tool_ids.is_empty() {
+                cmd.update::<DeferralState>(DeferralStateAction::PromoteBatch(promoted_tool_ids));
+            }
         }
 
         let result = ToolResult {
@@ -456,13 +467,6 @@ fn required_string_arg(args: &Value, key: &str) -> ToolArgResult<String> {
 
 fn activation_args(args: &Value) -> Option<&Value> {
     args.get("arguments").or_else(|| args.get("args"))
-}
-
-fn is_pattern_like_tool_matcher(tool_id: &str) -> bool {
-    tool_id.contains('*')
-        || tool_id.contains('?')
-        || tool_id.contains('[')
-        || (tool_id.starts_with('/') && tool_id.ends_with('/') && tool_id.len() >= 2)
 }
 
 fn parse_resource_kind(kind: Option<&Value>, path: &str) -> ToolArgResult<SkillResourceKind> {
@@ -998,15 +1002,6 @@ mod tests {
     fn activation_args_returns_none_when_absent() {
         let args = json!({"skill": "s"});
         assert!(activation_args(&args).is_none());
-    }
-
-    #[test]
-    fn is_pattern_like_recognizes_wildcards() {
-        assert!(is_pattern_like_tool_matcher("mcp__*"));
-        assert!(is_pattern_like_tool_matcher("foo?"));
-        assert!(is_pattern_like_tool_matcher("[abc]"));
-        assert!(is_pattern_like_tool_matcher("/regex/"));
-        assert!(!is_pattern_like_tool_matcher("plain_tool_id"));
     }
 
     #[test]

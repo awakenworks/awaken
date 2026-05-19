@@ -25,6 +25,7 @@ pub mod model;
 pub mod periodic_refresh;
 pub mod registry_spec;
 pub mod secret;
+pub mod skill_allowed_tools;
 pub mod skill_spec;
 pub mod skill_spec_patch;
 pub mod state;
@@ -58,7 +59,13 @@ pub use registry_spec::{
 };
 
 // ── skill spec ──
-pub use skill_spec::{SkillArgumentSpec, SkillSpec, SkillSpecContext, SkillSpecSink};
+pub use skill_allowed_tools::{
+    AllowedTool, AllowedToolParseError, is_skill_allowed_tool_pattern,
+    parse_skill_allowed_tool_token, parse_skill_allowed_tools, validate_skill_allowed_tool_pattern,
+};
+pub use skill_spec::{
+    PreparedSkillSpecs, SkillArgumentSpec, SkillSpec, SkillSpecContext, SkillSpecSink,
+};
 pub use skill_spec_patch::{SkillSpecPatch, merge_skill_spec};
 
 // ── secret ──

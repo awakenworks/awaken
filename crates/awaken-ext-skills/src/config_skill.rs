@@ -1,13 +1,17 @@
 use async_trait::async_trait;
-use awaken_contract::{BuiltinSpec, SkillArgumentSpec, SkillSpec, SkillSpecContext, SkillSpecSink};
+use awaken_contract::{
+    BuiltinSpec, PreparedSkillSpecs, SkillArgumentSpec, SkillSpec, SkillSpecContext, SkillSpecSink,
+};
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
 use crate::error::SkillError;
 use crate::registry::SkillRegistry;
 use crate::skill::{
-    ScriptResult, Skill, SkillActivation, SkillContext, SkillMeta, SkillResource, SkillResourceKind,
+    ScriptResult, Skill, SkillActivation, SkillContext, SkillMeta, SkillResource,
+    SkillResourceKind, render_activation_instructions,
 };
 use crate::skill_md::{SkillFrontmatter, parse_skill_md};
 
@@ -16,15 +20,18 @@ use crate::skill_md::{SkillFrontmatter, parse_skill_md};
 pub struct ConfigSkill {
     meta: SkillMeta,
     instructions_md: String,
+    activation_fingerprint: String,
 }
 
 impl ConfigSkill {
     pub fn try_from_spec(spec: SkillSpec) -> Result<Self, SkillError> {
         validate_spec(&spec)?;
+        let activation_fingerprint = spec_fingerprint(&spec)?;
         let meta = meta_from_spec(&spec);
         Ok(Self {
             meta,
             instructions_md: spec.instructions_md,
+            activation_fingerprint,
         })
     }
 
@@ -74,24 +81,18 @@ impl Skill for ConfigSkill {
         &self.meta
     }
 
+    fn activation_fingerprint(&self) -> Option<&str> {
+        Some(&self.activation_fingerprint)
+    }
+
     async fn read_instructions(&self) -> Result<String, SkillError> {
         self.synthesize_skill_md()
     }
 
     async fn activate(&self, args: Option<&Value>) -> Result<SkillActivation, SkillError> {
-        let mut body = self.instructions_md.clone();
-        if let Some(obj) = args.and_then(|a| a.as_object()) {
-            for (key, val) in obj {
-                let pattern = format!("${{{key}}}");
-                let replacement = match val {
-                    Value::String(s) => s.clone(),
-                    Value::Null => String::new(),
-                    other => other.to_string(),
-                };
-                body = body.replace(&pattern, &replacement);
-            }
-        }
-        Ok(SkillActivation { instructions: body })
+        let instructions =
+            render_activation_instructions(&self.meta, self.instructions_md.clone(), args)?;
+        Ok(SkillActivation { instructions })
     }
 
     async fn load_resource(
@@ -142,21 +143,40 @@ impl ConfigSkillRegistry {
         &self,
         specs: impl IntoIterator<Item = SkillSpec>,
     ) -> Result<(), SkillError> {
-        let next = build_skill_map(specs)?;
-        *write_lock(&self.skills) = next;
+        self.prepare_specs(specs)?.commit();
         Ok(())
+    }
+
+    fn prepare_specs(
+        &self,
+        specs: impl IntoIterator<Item = SkillSpec>,
+    ) -> Result<Box<dyn PreparedSkillSpecs>, SkillError> {
+        let next = build_skill_map(specs)?;
+        Ok(Box::new(PreparedConfigSkillSpecs {
+            target: Arc::clone(&self.skills),
+            next,
+        }))
     }
 }
 
 impl SkillSpecSink for ConfigSkillRegistry {
-    fn validate_skill_specs(&self, specs: &[SkillSpec]) -> Result<(), String> {
-        build_skill_map(specs.iter().cloned())
-            .map(|_| ())
-            .map_err(|error| error.to_string())
+    fn prepare_skill_specs(
+        &self,
+        specs: Vec<SkillSpec>,
+    ) -> Result<Box<dyn PreparedSkillSpecs>, String> {
+        self.prepare_specs(specs).map_err(|error| error.to_string())
     }
+}
 
-    fn replace_skill_specs(&self, specs: Vec<SkillSpec>) -> Result<(), String> {
-        self.replace_specs(specs).map_err(|error| error.to_string())
+struct PreparedConfigSkillSpecs {
+    target: Arc<RwLock<HashMap<String, Arc<dyn Skill>>>>,
+    next: HashMap<String, Arc<dyn Skill>>,
+}
+
+impl PreparedSkillSpecs for PreparedConfigSkillSpecs {
+    fn commit(self: Box<Self>) {
+        let Self { target, next } = *self;
+        *write_lock(&target) = next;
     }
 }
 
@@ -187,6 +207,20 @@ pub async fn snapshot_skill_specs(
     let mut out = Vec::new();
     for skill in registry.snapshot().into_values() {
         let meta = skill.meta().clone();
+        if !meta.paths.is_empty() {
+            return Err(SkillError::Unsupported(format!(
+                "cannot snapshot skill '{}' as DB-managed skill: paths are not supported",
+                meta.id
+            )));
+        }
+        let resources = skill.materialized_resource_paths();
+        let scripts = skill.materialized_script_paths();
+        if !resources.is_empty() || !scripts.is_empty() {
+            return Err(SkillError::Unsupported(format!(
+                "cannot snapshot skill '{}' as DB-managed skill: resources/scripts are not persisted",
+                meta.id
+            )));
+        }
         let raw = skill.read_instructions().await?;
         let doc = parse_skill_md(&raw).map_err(|e| SkillError::InvalidSkillMd(e.to_string()))?;
         let spec = SkillSpec {
@@ -246,6 +280,13 @@ fn validate_spec(spec: &SkillSpec) -> Result<(), SkillError> {
     awaken_contract::validate_skill_spec(value)
         .map(|_| ())
         .map_err(|e| SkillError::InvalidArguments(e.to_string()))
+}
+
+fn spec_fingerprint(spec: &SkillSpec) -> Result<String, SkillError> {
+    let bytes =
+        serde_json::to_vec(spec).map_err(|e| SkillError::InvalidArguments(e.to_string()))?;
+    let digest = Sha256::digest(bytes);
+    Ok(format!("sha256:{digest:x}"))
 }
 
 fn meta_from_spec(spec: &SkillSpec) -> SkillMeta {
@@ -317,6 +358,85 @@ mod tests {
         assert_eq!(activation.instructions, "Hello Ada");
     }
 
+    #[test]
+    fn config_skill_activation_fingerprint_changes_when_spec_changes() {
+        let original = ConfigSkill::try_from_spec(spec("db-management")).unwrap();
+        let updated = ConfigSkill::try_from_spec(SkillSpec {
+            instructions_md: "Goodbye ${name}".into(),
+            ..spec("db-management")
+        })
+        .unwrap();
+
+        assert_ne!(
+            original.activation_fingerprint(),
+            updated.activation_fingerprint()
+        );
+    }
+
+    #[tokio::test]
+    async fn config_skill_activate_requires_declared_required_arguments() {
+        let skill = ConfigSkill::try_from_spec(SkillSpec {
+            instructions_md: "Use ${dialect}".into(),
+            arguments: vec![SkillArgumentSpec {
+                name: "dialect".into(),
+                description: None,
+                required: true,
+            }],
+            ..spec("db-management")
+        })
+        .unwrap();
+
+        let err = skill.activate(None).await.unwrap_err();
+        assert!(err.to_string().contains("requires named arguments"));
+
+        let err = skill
+            .activate(Some(&serde_json::json!({"dialect": null})))
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("must not be null"));
+
+        let activation = skill
+            .activate(Some(&serde_json::json!({"dialect": "postgres"})))
+            .await
+            .unwrap();
+        assert_eq!(activation.instructions, "Use postgres");
+    }
+
+    #[tokio::test]
+    async fn config_skill_activate_rejects_non_object_unknown_and_non_scalar_args() {
+        let skill = ConfigSkill::try_from_spec(SkillSpec {
+            instructions_md: "Use ${dialect}".into(),
+            arguments: vec![SkillArgumentSpec {
+                name: "dialect".into(),
+                description: None,
+                required: false,
+            }],
+            ..spec("db-management")
+        })
+        .unwrap();
+
+        let err = skill
+            .activate(Some(&serde_json::json!("postgres")))
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("requires named arguments as an object")
+        );
+
+        let err = skill
+            .activate(Some(&serde_json::json!({"unknown": "x"})))
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("unknown argument"));
+
+        let err = skill
+            .activate(Some(&serde_json::json!({"dialect": {"name": "postgres"}})))
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("must be a scalar"));
+    }
+
     #[tokio::test]
     async fn config_skill_read_instructions_uses_id_for_frontmatter_name() {
         let skill = ConfigSkill::try_from_spec(spec("db-management")).unwrap();
@@ -340,7 +460,6 @@ mod tests {
             model_invocable: false,
             model_override: Some("analysis-model".into()),
             context: SkillSpecContext::Fork,
-            paths: vec!["migrations/**".into(), "schema.sql".into()],
             ..spec("db-management")
         })
         .unwrap();
@@ -363,11 +482,19 @@ mod tests {
         assert_eq!(doc.frontmatter.disable_model_invocation, Some(true));
         assert_eq!(doc.frontmatter.model.as_deref(), Some("analysis-model"));
         assert_eq!(doc.frontmatter.context.as_deref(), Some("fork"));
-        assert_eq!(
-            doc.frontmatter.paths.as_deref(),
-            Some("migrations/**\nschema.sql")
-        );
+        assert!(doc.frontmatter.paths.is_none());
         assert_eq!(doc.body, "Hello ${name}");
+    }
+
+    #[test]
+    fn config_skill_rejects_paths_until_resources_are_persisted() {
+        let err = ConfigSkill::try_from_spec(SkillSpec {
+            paths: vec!["migrations/**".into()],
+            ..spec("db-management")
+        })
+        .unwrap_err();
+
+        assert!(err.to_string().contains("paths are not supported"));
     }
 
     #[test]
@@ -422,6 +549,89 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn snapshot_skill_specs_rejects_resource_bearing_embedded_skill() {
+        const SKILL_MD: &str =
+            "---\nname: rich-skill\ndescription: Has resources\n---\nUse resources.\n";
+        let skill = EmbeddedSkill::new(&EmbeddedSkillData {
+            skill_md: SKILL_MD,
+            references: &[("references/guide.md", "guide")],
+            assets: &[("assets/logo.txt", "bG9nbw==", Some("text/plain"))],
+        })
+        .unwrap();
+        let registry = crate::InMemorySkillRegistry::from_skills(vec![Arc::new(skill)]);
+
+        let err = snapshot_skill_specs(&registry).await.unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("resources/scripts are not persisted")
+        );
+    }
+
+    #[tokio::test]
+    async fn snapshot_skill_specs_rejects_paths_and_scripts() {
+        #[derive(Debug)]
+        struct MaterializedSkill {
+            meta: SkillMeta,
+            scripts: Vec<String>,
+        }
+
+        #[async_trait::async_trait]
+        impl Skill for MaterializedSkill {
+            fn meta(&self) -> &SkillMeta {
+                &self.meta
+            }
+
+            async fn read_instructions(&self) -> Result<String, SkillError> {
+                Ok(format!(
+                    "---\nname: {}\ndescription: {}\n---\nBody\n",
+                    self.meta.id, self.meta.description
+                ))
+            }
+
+            async fn load_resource(
+                &self,
+                _kind: SkillResourceKind,
+                path: &str,
+            ) -> Result<SkillResource, SkillError> {
+                Err(SkillError::Unsupported(path.to_string()))
+            }
+
+            async fn run_script(
+                &self,
+                script: &str,
+                _args: &[String],
+            ) -> Result<ScriptResult, SkillError> {
+                Err(SkillError::Unsupported(script.to_string()))
+            }
+
+            fn materialized_script_paths(&self) -> Vec<String> {
+                self.scripts.clone()
+            }
+        }
+
+        let mut path_meta = SkillMeta::new("path-skill", "Path Skill", "Has paths", vec![]);
+        path_meta.paths = vec!["src/**".into()];
+        let registry =
+            crate::InMemorySkillRegistry::from_skills(vec![Arc::new(MaterializedSkill {
+                meta: path_meta,
+                scripts: Vec::new(),
+            })]);
+        let err = snapshot_skill_specs(&registry).await.unwrap_err();
+        assert!(err.to_string().contains("paths are not supported"));
+
+        let registry =
+            crate::InMemorySkillRegistry::from_skills(vec![Arc::new(MaterializedSkill {
+                meta: SkillMeta::new("script-skill", "Script Skill", "Has scripts", vec![]),
+                scripts: vec!["scripts/run.sh".into()],
+            })]);
+        let err = snapshot_skill_specs(&registry).await.unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("resources/scripts are not persisted")
+        );
+    }
+
+    #[tokio::test]
     async fn snapshot_skill_specs_sorts_and_preserves_metadata() {
         let registry = ConfigSkillRegistry::from_specs([
             SkillSpec {
@@ -448,7 +658,7 @@ mod tests {
                 model_invocable: false,
                 model_override: Some("analysis-model".into()),
                 context: SkillSpecContext::Fork,
-                paths: vec!["migrations/**".into(), "schema.sql".into()],
+                paths: Vec::new(),
             },
         ])
         .unwrap();
@@ -471,6 +681,6 @@ mod tests {
         assert!(!alpha.model_invocable);
         assert_eq!(alpha.model_override.as_deref(), Some("analysis-model"));
         assert_eq!(alpha.context, SkillSpecContext::Fork);
-        assert_eq!(alpha.paths, vec!["migrations/**", "schema.sql"]);
+        assert!(alpha.paths.is_empty());
     }
 }
