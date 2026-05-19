@@ -271,9 +271,14 @@ fn diff_passing_fields(b: &ReplayReport, n: &ReplayReport) -> Vec<String> {
     if b.total_tokens != n.total_tokens {
         diffs.push("total_tokens");
     }
-    if b.session_duration_ms != n.session_duration_ms {
-        diffs.push("session_duration_ms");
-    }
+    // `session_duration_ms` excluded from drift: it's wall-clock-derived
+    // (RunEndHook records `start.elapsed()` at run end), so two replays
+    // of the same scripted fixture produce different microsecond values
+    // and `diff_against_baseline` would surface false-positive drift —
+    // see `diff_detects_newly_added_without_blocking` CI flake history.
+    // Behavioral drift is already covered by inference_count + tool_count
+    // + token counts; performance drift belongs in a separate metric
+    // surface (trend route or runtime_stats), not this regression gate.
     if b.error_type != n.error_type {
         diffs.push("error_type");
     }
