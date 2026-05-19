@@ -51,6 +51,48 @@ struct TestApp {
     eval_run_store: Arc<FileEvalRunStore>,
 }
 
+async fn build_test_app_without_run_store() -> axum::Router {
+    // Variant used by persist+no-store regression test: state has no
+    // EvalRunStore attached so the online handler must refuse
+    // persist=true BEFORE any provider call burns tokens.
+    let thread_store = Arc::new(InMemoryStore::new());
+    let config_store = Arc::new(InMemoryStore::new());
+    let runtime = Arc::new(
+        AgentRuntimeBuilder::new()
+            .with_provider("bootstrap", Arc::new(UnusedExecutor))
+            .with_thread_run_store(thread_store.clone())
+            .build()
+            .expect("build runtime"),
+    );
+    let resolver = runtime.resolver_arc();
+    let mailbox = Arc::new(Mailbox::new(
+        runtime.clone(),
+        Arc::new(awaken_stores::InMemoryMailboxStore::new()),
+        thread_store.clone(),
+        "eval-test".into(),
+        MailboxConfig::default(),
+    ));
+    let state = AppState::new(
+        runtime,
+        mailbox,
+        thread_store,
+        resolver,
+        ServerConfig {
+            address: "127.0.0.1:0".to_string(),
+            ..ServerConfig::default()
+        },
+    )
+    .with_config_store(
+        config_store as Arc<dyn awaken_contract::contract::config_store::ConfigStore>,
+    )
+    .with_admin_api_config(AdminApiConfig {
+        expose_config_routes: true,
+        ..AdminApiConfig::default()
+    })
+    .with_admin_api_bearer_token(BEARER);
+    build_router(&state).with_state(state)
+}
+
 async fn build_test_app() -> TestApp {
     let thread_store = Arc::new(InMemoryStore::new());
     let config_store = Arc::new(InMemoryStore::new());
@@ -521,6 +563,38 @@ async fn get_eval_run_with_baseline_surfaces_diff() {
 }
 
 #[tokio::test]
+async fn get_eval_run_baseline_500s_on_duplicate_item_keys() {
+    // Diff must refuse to silently collapse duplicate (fixture_id, cell,
+    // sample_index) keys via the BTreeMap pairing. A run that managed
+    // to land two items with the same key (e.g. a future store impl
+    // with weaker write-once guarantees) should surface a structured
+    // error from /v1/eval/runs/:id?baseline=, not produce an
+    // order-dependent diff.
+    let app = build_test_app().await;
+    let mut baseline = baseline_run("BASE-DUP");
+    let mut newer = baseline_run("NEW-DUP");
+    // Inject a duplicate item into the new run.
+    let dup = newer.items[0].clone();
+    newer.items.push(dup);
+    baseline.dataset_id = newer.dataset_id.clone();
+    baseline.dataset_revision = newer.dataset_revision;
+    app.eval_run_store.write(&baseline).unwrap();
+    app.eval_run_store.write(&newer).unwrap();
+    let (status, body) = request(
+        &app.router,
+        "GET",
+        "/v1/eval/runs/NEW-DUP?baseline=BASE-DUP",
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+    assert!(
+        body["error"].as_str().unwrap_or("").contains("duplicate"),
+        "body: {body}"
+    );
+}
+
+#[tokio::test]
 async fn get_eval_run_baseline_400s_on_dataset_id_mismatch() {
     // Baseline run is for DS-DIFF; new run is for DS-OTHER. The
     // diff is meaningless across dataset schemas, so the route must
@@ -832,6 +906,61 @@ async fn online_eval_404s_on_unknown_model() {
             .as_str()
             .unwrap_or("")
             .contains("missing-model"),
+        "body: {body}"
+    );
+}
+
+#[tokio::test]
+async fn online_eval_503s_on_persist_without_run_store() {
+    // Persist=true with no EvalRunStore wired must fail BEFORE any
+    // model resolution / provider call — otherwise we burn tokens on a
+    // request the persistence layer is known to reject.
+    let app = build_test_app_without_run_store().await;
+    let (status, body) = request(
+        &app,
+        "POST",
+        "/v1/eval/online",
+        Some(json!({
+            "user_input": "test",
+            "models": ["missing-model"],
+            "persist": true,
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+    assert!(
+        body["error"]
+            .as_str()
+            .unwrap_or("")
+            .contains("EvalRunStore is required"),
+        "body: {body}"
+    );
+}
+
+#[tokio::test]
+async fn online_eval_400s_on_zero_walltime() {
+    // max_walltime_secs=0 would time out every cell immediately — the
+    // request body accepts it but the handler must reject up front, not
+    // race the timeout against the first scheduled task.
+    let app = build_test_app().await;
+    let (status, body) = request(
+        &app.router,
+        "POST",
+        "/v1/eval/online",
+        Some(json!({
+            "user_input": "test",
+            "models": ["missing-model"],
+            "max_walltime_secs": 0,
+            "persist": false,
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(
+        body["error"]
+            .as_str()
+            .unwrap_or("")
+            .contains("max_walltime_secs"),
         "body: {body}"
     );
 }
