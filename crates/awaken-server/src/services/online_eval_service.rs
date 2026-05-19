@@ -145,10 +145,23 @@ pub async fn start_online_eval(
 ) -> Result<Response, ApiError> {
     crate::config_routes::ensure_admin_auth(&state, &headers)?;
 
+    // Fail fast on persist+no-store BEFORE any model resolution or
+    // provider call. Otherwise we'd burn tokens on a request that the
+    // persistence layer is already known to reject — bad UX, real $.
+    if body.persist && state.eval_run_store().is_none() {
+        return Err(ApiError::ServiceUnavailable(
+            "EvalRunStore is required when persist=true".into(),
+        ));
+    }
     let limits = state.config.eval_limits.clone();
     if body.models.is_empty() {
         return Err(ApiError::BadRequest(
             "models must contain at least one model id".into(),
+        ));
+    }
+    if body.max_walltime_secs == 0 {
+        return Err(ApiError::BadRequest(
+            "max_walltime_secs must be >= 1 (0 would time out every cell immediately)".into(),
         ));
     }
     let cells = expand_cells(&body.models);
