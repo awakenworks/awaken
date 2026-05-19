@@ -869,6 +869,45 @@ async fn start_eval_run_caps_total_cells() {
     );
 }
 
+#[tokio::test]
+async fn start_eval_run_400s_on_zero_walltime() {
+    // `Some(0)` is rejected explicitly (mirrors /v1/eval/online) so the
+    // operator notices the typo instead of silently inheriting the 60s
+    // default. Omitting the field still takes the default.
+    let app = build_test_app().await;
+    let (status, _) = request(
+        &app.router,
+        "POST",
+        "/v1/eval/datasets",
+        Some(json!({
+            "id": "DS-WALLTIME",
+            "spec": { "fixtures": [sample_fixture("alpha")] }
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, body) = request(
+        &app.router,
+        "POST",
+        "/v1/eval/runs",
+        Some(json!({
+            "dataset_id": "DS-WALLTIME",
+            "models": ["m1"],
+            "max_walltime_secs": 0,
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(
+        body["error"]
+            .as_str()
+            .unwrap_or("")
+            .contains("max_walltime_secs"),
+        "body: {body}"
+    );
+}
+
 // ── Online eval (POST /v1/eval/online) — validation paths ────────────────
 //
 // The happy path (cell execution against a real provider) is unit-tested

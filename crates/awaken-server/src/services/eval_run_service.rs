@@ -102,7 +102,9 @@ pub struct StartRunRequest {
     /// Per-cell wall-clock cap in Live (matrix) mode. Wraps the cell's
     /// replay in `tokio::time::timeout` so a stuck provider doesn't pin
     /// an HTTP request slot; on expiry the cell surfaces a
-    /// `ReplayRuntimeFailure::RuntimeError`. 0 means "default 60s".
+    /// `ReplayRuntimeFailure::RuntimeError`. Omitting the field defaults
+    /// to 60s; passing `0` is rejected (would time out every cell
+    /// immediately) — matches `/v1/eval/online` semantics.
     /// Ignored on Scripted runs (deterministic, no wall-clock risk).
     #[serde(default)]
     pub max_walltime_secs: Option<u64>,
@@ -267,6 +269,14 @@ pub async fn start_eval_run(
             ));
         }
         crate::services::eval_cell::validate_unique_models(models)?;
+    }
+    // Reject explicit zero walltime — would time out every cell on the
+    // first poll. Mirrors `/v1/eval/online` so the two endpoints agree.
+    // `None` still falls through to the 60s default below.
+    if body.max_walltime_secs == Some(0) {
+        return Err(ApiError::BadRequest(
+            "max_walltime_secs must be >= 1 (omit the field for the 60s default)".into(),
+        ));
     }
     // agent_id / agent_overrides only make sense in Live (matrix) mode —
     // scripted replays use the fixture's provider_script + a fixed stub
@@ -626,6 +636,7 @@ async fn run_matrix_cells(
                 let overrides = agent_overrides.clone();
                 let base = agent_base.clone();
                 let trace_sink = trace_sink.clone();
+                let judge_for_task = judge.clone();
                 let revise_for_task = revise_tuple_for(judge.as_ref(), &fixture.expect);
                 let fixture_id = fixture.id.clone();
                 let permit = semaphore.clone().acquire_owned().await.expect("semaphore");
@@ -638,22 +649,34 @@ async fn run_matrix_cells(
                     }
                     let replayer =
                         apply_cell_decorators(builder, overrides, trace_sink, revise_for_task);
-                    // Per-cell wall-clock cap (same shape as online_eval):
-                    // a stuck provider yields a synthetic timeout outcome
-                    // so the request slot frees up instead of hanging.
-                    let outcome = match tokio::time::timeout(
-                        walltime,
-                        replay_all(&replayer, std::slice::from_ref(&fixture)),
-                    )
-                    .await
-                    {
-                        Ok(outs) => outs.into_iter().next().expect("one fixture → one outcome"),
-                        Err(_) => awaken_eval::ReplayOutcome::timeout_failure(
-                            fixture_id,
-                            walltime.as_secs(),
-                        ),
+                    // Per-cell wall-clock cap covers the FULL eval cell:
+                    // replay + scoring + judge (live judge invocation
+                    // is its own provider call and was previously
+                    // outside this timeout — a stuck judge could pin
+                    // the request).
+                    let cell_future = async {
+                        let outcomes = replay_all(&replayer, std::slice::from_ref(&fixture)).await;
+                        let outcome = outcomes
+                            .into_iter()
+                            .next()
+                            .expect("one fixture → one outcome");
+                        let failures =
+                            score_outcome(&outcome, &fixture, judge_for_task.as_ref()).await?;
+                        Ok::<_, ApiError>((outcome, failures))
                     };
-                    (fixture, cell, sample, outcome, binding)
+                    let (outcome, failures) =
+                        match tokio::time::timeout(walltime, cell_future).await {
+                            Ok(Ok(pair)) => pair,
+                            Ok(Err(err)) => return Err(err),
+                            Err(_) => (
+                                awaken_eval::ReplayOutcome::timeout_failure(
+                                    fixture_id,
+                                    walltime.as_secs(),
+                                ),
+                                Vec::new(),
+                            ),
+                        };
+                    Ok::<_, ApiError>((fixture, cell, sample, outcome, failures, binding))
                 }));
             }
         }
@@ -661,10 +684,10 @@ async fn run_matrix_cells(
 
     let mut items: Vec<EvalRunItem> = Vec::with_capacity(handles.len());
     for handle in handles {
-        let (fixture, cell, sample, outcome, binding) = handle
+        let task_result = handle
             .await
             .map_err(|err| ApiError::Internal(format!("matrix cell task panicked: {err}")))?;
-        let failures = score_outcome(&outcome, &fixture, judge.as_ref()).await?;
+        let (fixture, cell, sample, outcome, failures, binding) = task_result?;
         let mut report = ReplayReport::from_outcome(&outcome, failures);
         report.cost_usd = super::eval_cell::cost_usd_for(&report, &binding);
         items.push(EvalRunItem {
