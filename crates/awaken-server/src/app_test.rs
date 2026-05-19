@@ -45,6 +45,22 @@ fn state_for_admin_surface_test(address: &str, admin_api_config: AdminApiConfig)
 }
 
 #[test]
+fn admin_surface_has_sensitive_state_includes_eval_run_store() {
+    // Regression: eval_run_store carries persisted prompts + tool args
+    // /results and must count as sensitive state — otherwise
+    // validate_admin_surface short-circuits past the bearer-token
+    // requirement on a deployment that exposes /v1/eval/* with only an
+    // eval store attached.
+    use awaken_eval::FileEvalRunStore;
+    let tmp = tempfile::tempdir().unwrap();
+    let mut state = state_for_admin_surface_test("0.0.0.0:3000", AdminApiConfig::default());
+    state = state
+        .with_eval_run_store(Arc::new(FileEvalRunStore::new(tmp.path()).unwrap())
+            as Arc<dyn awaken_eval::EvalRunStore>);
+    assert!(super::admin_surface_has_sensitive_state(&state));
+}
+
+#[test]
 fn admin_api_config_default_exposes_config_routes() {
     let config = AdminApiConfig::default();
     assert!(

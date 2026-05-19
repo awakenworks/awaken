@@ -149,9 +149,8 @@ pub struct AuditLogConfig {
 const fn default_expose_config_routes() -> bool {
     true
 }
-// F20: trace routes opt-in (more sensitive than admin metadata).
 const fn default_expose_trace_routes() -> bool {
-    false
+    false // F20: opt-in (traces expose prompts/tool args)
 }
 const fn default_expose_eval_routes() -> bool {
     true
@@ -886,6 +885,7 @@ fn admin_surface_has_sensitive_state(state: &AppState) -> bool {
         || state.runtime_stats().is_some()
         || state.skill_catalog_provider.is_some()
         || state.trace_store().is_some()
+        || state.eval_run_store().is_some() // EvalRun bodies carry prompt + tool data
 }
 
 pub fn admin_cors_layer(state: &AppState) -> std::io::Result<tower_http::cors::CorsLayer> {
