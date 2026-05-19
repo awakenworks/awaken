@@ -117,16 +117,20 @@ fn validate_admin_surface_rejects_trace_routes_without_token_on_non_loopback() {
 
 #[test]
 fn validate_admin_surface_short_circuits_when_routes_disabled() {
+    // Disabling every sensitive route surface (config + trace + eval)
+    // waives the bearer-token requirement on non-loopback binds.
     let state = state_for_admin_surface_test(
         "0.0.0.0:3000",
         AdminApiConfig {
             expose_config_routes: false,
+            expose_trace_routes: false,
+            expose_eval_routes: false,
             ..AdminApiConfig::default()
         },
     );
 
     validate_admin_surface(&state)
-        .expect("disabling config routes must waive the bearer-token requirement");
+        .expect("disabling all sensitive routes must waive the bearer-token requirement");
 }
 
 #[test]
@@ -211,10 +215,15 @@ fn build_service_router_allows_non_loopback_admin_surface_with_token() {
 
 #[test]
 fn build_service_router_allows_non_loopback_when_admin_surface_disabled() {
+    // Eval routes are now treated as sensitive in their own right (live
+    // provider calls), so disabling config alone no longer waives the
+    // requirement — the test must disable every sensitive surface.
     let state = state_for_admin_surface_test(
         "0.0.0.0:3000",
         AdminApiConfig {
             expose_config_routes: false,
+            expose_trace_routes: false,
+            expose_eval_routes: false,
             ..AdminApiConfig::default()
         },
     );
