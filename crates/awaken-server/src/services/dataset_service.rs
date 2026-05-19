@@ -658,8 +658,36 @@ pub async fn import_dialogue(
     let mut turn_inputs: Vec<(String, Vec<awaken_runtime::engine::ProviderScriptEvent>)> =
         Vec::with_capacity(body.run_ids.len());
     let mut source_model_id: Option<String> = None;
+    let mut conversation_thread_id: Option<String> = None;
     for run_id in &body.run_ids {
         let events = trace_store.read(run_id).map_err(map_trace_store_error)?;
+        // Stitching assumes a single conversation thread per dialogue:
+        // pin thread_id from the first run, refuse to stitch any later
+        // run whose first span carries a different one. Otherwise the
+        // "dialogue" would actually be unrelated traces concatenated.
+        let run_thread_id = events
+            .iter()
+            .find_map(|e| match e {
+                awaken_ext_observability::MetricsEvent::Inference(s) => {
+                    Some(s.context.thread_id.clone())
+                }
+                _ => None,
+            })
+            .ok_or_else(|| {
+                ApiError::BadRequest(format!(
+                    "trace {run_id} has no inference span; cannot determine conversation thread"
+                ))
+            })?;
+        match &conversation_thread_id {
+            None => conversation_thread_id = Some(run_thread_id),
+            Some(first) if first != &run_thread_id => {
+                return Err(ApiError::BadRequest(format!(
+                    "run {run_id} thread_id={run_thread_id} differs from \
+                     dialogue thread_id={first}; runs must come from one conversation"
+                )));
+            }
+            _ => {}
+        }
         let conversion = trace_to_provider_script(&events)
             .map_err(|err| ApiError::BadRequest(format!("curating trace {run_id}: {err}")))?;
         let user_input = conversion.user_input.ok_or_else(|| {
@@ -668,11 +696,19 @@ pub async fn import_dialogue(
                  enable ContentCapture::Enabled on the originating run"
             ))
         })?;
-        // Pin the source model from the first run; later runs of the
-        // same dialogue should share it (the agent isn't usually
-        // swapped mid-conversation).
-        if source_model_id.is_none() {
-            source_model_id = conversion.source_model_id;
+        // Pin source model from the first run; refuse to stitch later
+        // runs whose model differs — the agent isn't usually swapped
+        // mid-conversation and the resulting fixture's pin would be
+        // misleading.
+        match (&source_model_id, &conversion.source_model_id) {
+            (None, m) => source_model_id = m.clone(),
+            (Some(first), Some(later)) if first != later => {
+                return Err(ApiError::BadRequest(format!(
+                    "run {run_id} source_model_id={later} differs from dialogue \
+                     source_model_id={first}; model changed mid-conversation"
+                )));
+            }
+            _ => {}
         }
         turn_inputs.push((user_input, conversion.provider_script));
     }

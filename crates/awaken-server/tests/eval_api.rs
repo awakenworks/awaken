@@ -1446,6 +1446,51 @@ async fn import_dialogue_stitches_runs_into_multiturn_fixture() {
 }
 
 #[tokio::test]
+async fn import_dialogue_400s_on_thread_id_mismatch() {
+    // Two runs from different conversations would otherwise stitch into
+    // a "dialogue" whose continuation is unrelated to the prior turn —
+    // the resulting fixture would silently misrepresent the eval task.
+    let app = build_test_app().await;
+    for (id, thread) in [
+        ("01HXDLG0000000000000000010", "thread-A"),
+        ("01HXDLG0000000000000000011", "thread-B"),
+    ] {
+        let mut span = captured_inference_span(id, "answer", true);
+        span.context.thread_id = thread.into();
+        app.trace_store
+            .append(id, &MetricsEvent::Inference(span))
+            .unwrap();
+    }
+    let (_, body) = request(
+        &app.router,
+        "POST",
+        "/v1/eval/datasets",
+        Some(json!({ "id": "DS-DLG-MIX", "spec": {} })),
+    )
+    .await;
+    let rev = body["meta"]["revision"].as_u64().unwrap();
+    let (status, body) = request(
+        &app.router,
+        "POST",
+        "/v1/eval/datasets/DS-DLG-MIX/import-dialogue",
+        Some(json!({
+            "expected_revision": rev,
+            "run_ids": [
+                "01HXDLG0000000000000000010",
+                "01HXDLG0000000000000000011",
+            ],
+            "fixture_id": "mixed-threads",
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(
+        body["error"].as_str().unwrap_or("").contains("thread_id="),
+        "body: {body}"
+    );
+}
+
+#[tokio::test]
 async fn import_dialogue_400s_on_empty_run_ids() {
     let app = build_test_app().await;
     let (_, body) = request(
