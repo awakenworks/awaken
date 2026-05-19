@@ -870,6 +870,19 @@ async fn skills_config_namespace_crud_and_schema() {
     assert_eq!(status, StatusCode::OK);
     assert!(schema.get("$defs").is_some() || schema.get("type").is_some());
 
+    let (status, capabilities) =
+        request_json(&app.router, Method::GET, "/v1/capabilities", None).await;
+    assert_eq!(status, StatusCode::OK);
+    let namespaces = capabilities["namespaces"]
+        .as_array()
+        .expect("namespaces array");
+    assert!(
+        namespaces
+            .iter()
+            .any(|namespace| namespace["namespace"] == "skills"),
+        "capabilities must advertise the skills config namespace: {capabilities}"
+    );
+
     let body = json!({
         "id": "db-management",
         "name": "Database Management",
@@ -902,6 +915,37 @@ async fn skills_config_namespace_crud_and_schema() {
         "db-management"
     ));
 
+    let (status, updated) = request_json(
+        &app.router,
+        Method::PUT,
+        "/v1/config/skills/db-management",
+        Some(json!({
+            "id": "db-management",
+            "name": "Database Management",
+            "description": "Updated database operations",
+            "instructions_md": "Use transactions for writes.",
+            "allowed_tools": ["db_query", "db_write"],
+            "when_to_use": "When the user asks about a database",
+            "arguments": [{
+                "name": "dialect",
+                "description": "SQL dialect",
+                "required": true
+            }],
+            "argument_hint": "dialect=postgres",
+            "user_invocable": false,
+            "model_invocable": false,
+            "model_override": "analysis-model",
+            "context": "fork",
+            "paths": ["migrations/**", "schema.sql"]
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "body={updated}");
+    assert_eq!(updated["description"], "Updated database operations");
+    assert_eq!(updated["allowed_tools"], json!(["db_query", "db_write"]));
+    assert_eq!(updated["arguments"][0]["name"], "dialect");
+    assert_eq!(updated["context"], "fork");
+
     let (status, invalid) = request_json(
         &app.router,
         Method::POST,
@@ -916,6 +960,24 @@ async fn skills_config_namespace_crud_and_schema() {
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert!(invalid["error"].as_str().unwrap().contains("lowercase"));
+
+    let (status, deleted) = request_json(
+        &app.router,
+        Method::DELETE,
+        "/v1/config/skills/db-management",
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT, "body={deleted}");
+
+    let (status, _) = request_json(
+        &app.router,
+        Method::GET,
+        "/v1/config/skills/db-management",
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
 }
 
 #[tokio::test]

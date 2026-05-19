@@ -6,7 +6,10 @@ use async_trait::async_trait;
 use awaken_contract::contract::config_store::ConfigStore;
 use awaken_contract::contract::executor::{InferenceExecutionError, InferenceRequest, LlmExecutor};
 use awaken_contract::contract::inference::{StopReason, StreamResult, TokenUsage};
-use awaken_contract::{AgentSpec, BuiltinSeedSet, BuiltinSpec, ModelBindingSpec, ProviderSpec};
+use awaken_contract::{
+    AgentSpec, BuiltinSeedSet, BuiltinSpec, ConfigRecord, ModelBindingSpec, ProviderSpec,
+    RecordMeta, SkillSpec,
+};
 use awaken_runtime::builder::AgentRuntimeBuilder;
 use awaken_runtime::registry::traits::ModelBinding;
 use serde_json::{Value, json};
@@ -1181,6 +1184,54 @@ fn namespace_all_matches_builtin_spec_namespace() {
             "BuiltinSpec::namespace() drifted from ConfigNamespace::as_str() for {ns:?}"
         );
     }
+}
+
+#[tokio::test]
+async fn get_skills_merges_user_overrides_into_effective_spec() {
+    let raw_store = Arc::new(awaken_stores::InMemoryStore::new());
+    let config_store = raw_store.clone() as Arc<dyn ConfigStore>;
+    let (state, _manager) = build_state(config_store.clone()).await;
+
+    let mut record = ConfigRecord {
+        spec: SkillSpec {
+            id: "db-management".into(),
+            name: "Database Management".into(),
+            description: "Built-in description".into(),
+            instructions_md: "Built-in instructions.".into(),
+            when_to_use: Some("built-in hint".into()),
+            model_override: Some("built-in-model".into()),
+            ..Default::default()
+        },
+        meta: RecordMeta::new_builtin("test"),
+    };
+    record.meta.user_overrides = Some(json!({
+        "description": "Patched description",
+        "instructions_md": "Patched instructions.",
+        "when_to_use": null,
+        "model_invocable": false,
+        "model_override": null
+    }));
+    config_store
+        .put(
+            ConfigNamespace::Skills.as_str(),
+            "db-management",
+            &record.to_value().expect("serialize skill record"),
+        )
+        .await
+        .expect("write skill record");
+
+    let service = ConfigService::new(&state).expect("config service");
+    let value = service
+        .get(ConfigNamespace::Skills, "db-management")
+        .await
+        .expect("get skill")
+        .expect("skill exists");
+
+    assert_eq!(value["description"], "Patched description");
+    assert_eq!(value["instructions_md"], "Patched instructions.");
+    assert!(value.get("when_to_use").is_none() || value["when_to_use"].is_null());
+    assert_eq!(value["model_invocable"], false);
+    assert!(value.get("model_override").is_none() || value["model_override"].is_null());
 }
 
 // ── audit integration tests ────────────────────────────────────────────

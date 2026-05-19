@@ -326,6 +326,50 @@ mod tests {
         assert_eq!(skill.meta().name, "Database Management");
     }
 
+    #[tokio::test]
+    async fn config_skill_read_instructions_preserves_rich_frontmatter() {
+        let skill = ConfigSkill::try_from_spec(SkillSpec {
+            when_to_use: Some("When schema context is needed".into()),
+            arguments: vec![SkillArgumentSpec {
+                name: "dialect".into(),
+                description: Some("SQL dialect".into()),
+                required: true,
+            }],
+            argument_hint: Some("dialect=postgres".into()),
+            user_invocable: false,
+            model_invocable: false,
+            model_override: Some("analysis-model".into()),
+            context: SkillSpecContext::Fork,
+            paths: vec!["migrations/**".into(), "schema.sql".into()],
+            ..spec("db-management")
+        })
+        .unwrap();
+
+        let raw = skill.read_instructions().await.unwrap();
+        let doc = parse_skill_md(&raw).unwrap();
+
+        assert_eq!(doc.frontmatter.name, "db-management");
+        assert_eq!(doc.frontmatter.allowed_tools.as_deref(), Some("db_query"));
+        assert_eq!(
+            doc.frontmatter.when_to_use.as_deref(),
+            Some("When schema context is needed")
+        );
+        assert_eq!(doc.frontmatter.arguments.unwrap()[0].name, "dialect");
+        assert_eq!(
+            doc.frontmatter.argument_hint.as_deref(),
+            Some("dialect=postgres")
+        );
+        assert_eq!(doc.frontmatter.user_invocable, Some(false));
+        assert_eq!(doc.frontmatter.disable_model_invocation, Some(true));
+        assert_eq!(doc.frontmatter.model.as_deref(), Some("analysis-model"));
+        assert_eq!(doc.frontmatter.context.as_deref(), Some("fork"));
+        assert_eq!(
+            doc.frontmatter.paths.as_deref(),
+            Some("migrations/**\nschema.sql")
+        );
+        assert_eq!(doc.body, "Hello ${name}");
+    }
+
     #[test]
     fn registry_replace_specs_swaps_snapshot() {
         let registry = ConfigSkillRegistry::new();
@@ -345,6 +389,22 @@ mod tests {
         assert!(matches!(err, SkillError::DuplicateSkillId(ref id) if id == "db-a"));
     }
 
+    #[test]
+    fn registry_rejects_invalid_replacement_without_losing_existing_snapshot() {
+        let registry = ConfigSkillRegistry::new();
+        registry.replace_specs([spec("db-a")]).unwrap();
+
+        let err = registry
+            .replace_specs([SkillSpec {
+                id: "INVALID".into(),
+                ..spec("db-b")
+            }])
+            .unwrap_err();
+
+        assert!(matches!(err, SkillError::InvalidArguments(_)));
+        assert_eq!(registry.ids(), vec!["db-a".to_string()]);
+    }
+
     #[tokio::test]
     async fn snapshot_skill_specs_round_trips_embedded_skill() {
         const SKILL_MD: &str = "---\nname: db-management\ndescription: Helps with database operations\nallowed-tools: db_query\n---\nInspect schema first.\n";
@@ -359,5 +419,58 @@ mod tests {
         assert_eq!(specs.len(), 1);
         assert_eq!(specs[0].namespace(), "skills");
         assert_eq!(specs[0].id(), "db-management");
+    }
+
+    #[tokio::test]
+    async fn snapshot_skill_specs_sorts_and_preserves_metadata() {
+        let registry = ConfigSkillRegistry::from_specs([
+            SkillSpec {
+                id: "zeta".into(),
+                name: "Zeta".into(),
+                description: "Zeta skill".into(),
+                instructions_md: "Zeta body.".into(),
+                ..Default::default()
+            },
+            SkillSpec {
+                id: "alpha".into(),
+                name: "Alpha".into(),
+                description: "Alpha skill".into(),
+                instructions_md: "Alpha body.".into(),
+                allowed_tools: vec!["db_query".into()],
+                when_to_use: Some("When alpha is needed".into()),
+                arguments: vec![SkillArgumentSpec {
+                    name: "dialect".into(),
+                    description: Some("SQL dialect".into()),
+                    required: true,
+                }],
+                argument_hint: Some("dialect=postgres".into()),
+                user_invocable: false,
+                model_invocable: false,
+                model_override: Some("analysis-model".into()),
+                context: SkillSpecContext::Fork,
+                paths: vec!["migrations/**".into(), "schema.sql".into()],
+            },
+        ])
+        .unwrap();
+
+        let specs = snapshot_skill_specs(&registry).await.unwrap();
+
+        assert_eq!(
+            specs.iter().map(BuiltinSpec::id).collect::<Vec<_>>(),
+            vec!["alpha", "zeta"]
+        );
+        let BuiltinSpec::Skill(alpha) = &specs[0] else {
+            panic!("expected skill spec");
+        };
+        assert_eq!(alpha.instructions_md, "Alpha body.");
+        assert_eq!(alpha.allowed_tools, vec!["db_query"]);
+        assert_eq!(alpha.when_to_use.as_deref(), Some("When alpha is needed"));
+        assert_eq!(alpha.arguments[0].name, "dialect");
+        assert_eq!(alpha.argument_hint.as_deref(), Some("dialect=postgres"));
+        assert!(!alpha.user_invocable);
+        assert!(!alpha.model_invocable);
+        assert_eq!(alpha.model_override.as_deref(), Some("analysis-model"));
+        assert_eq!(alpha.context, SkillSpecContext::Fork);
+        assert_eq!(alpha.paths, vec!["migrations/**", "schema.sql"]);
     }
 }
