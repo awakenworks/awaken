@@ -149,6 +149,8 @@ async fn build_dialog_harness(responses: Vec<StreamResult>) -> DialogHarness {
                     id: "dialog-model".into(),
                     provider_id: "scripted".into(),
                     upstream_model: "dialog-model".into(),
+                    input_token_price_per_million_usd: None,
+                    output_token_price_per_million_usd: None,
                 }),
                 BuiltinSpec::agent(AgentSpec {
                     id: "assistant".into(),
