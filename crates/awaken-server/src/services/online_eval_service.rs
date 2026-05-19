@@ -40,7 +40,7 @@ use crate::services::eval_common::resolve_live_executor;
 /// Sentinel dataset id for ad-hoc online eval runs. Lets `/v1/eval/runs`
 /// list filters distinguish "regression-suite vs my-exploration"
 /// without a separate persistence backend.
-const ADHOC_DATASET_ID: &str = "_adhoc";
+pub(crate) const ADHOC_DATASET_ID: &str = "_adhoc";
 
 // Concurrency / cell / sample / revision caps all live on
 // `ServerConfig::eval_limits` — see `crate::app::EvalLimits`. The
@@ -159,6 +159,7 @@ pub async fn start_online_eval(
             "models must contain at least one model id".into(),
         ));
     }
+    crate::services::eval_cell::validate_unique_models(&body.models)?;
     if body.max_walltime_secs == 0 {
         return Err(ApiError::BadRequest(
             "max_walltime_secs must be >= 1 (0 would time out every cell immediately)".into(),

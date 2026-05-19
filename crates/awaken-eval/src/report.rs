@@ -394,6 +394,32 @@ pub fn validate_unique_item_keys(items: &[crate::eval_run::EvalRunItem]) -> Resu
     Ok(())
 }
 
+/// Fallible variant of [`diff_against_baseline`] — validates that both
+/// slices have unique `fixture_id`s BEFORE collecting into the
+/// `BTreeMap` that powers the diff. New call sites should prefer this;
+/// the infallible version is kept for back-compat with consumers that
+/// have already validated their inputs.
+pub fn diff_against_baseline_checked(
+    baseline: &[ReplayReport],
+    new: &[ReplayReport],
+) -> Result<DiffSummary, String> {
+    validate_unique_report_keys(baseline).map_err(|e| format!("baseline: {e}"))?;
+    validate_unique_report_keys(new).map_err(|e| format!("new: {e}"))?;
+    Ok(diff_against_baseline(baseline, new))
+}
+
+/// Fallible variant of [`diff_eval_items`] — same guard as
+/// [`diff_against_baseline_checked`] but for the matrix-aware
+/// `(fixture_id, cell, sample_index)` key.
+pub fn diff_eval_items_checked(
+    baseline: &[crate::eval_run::EvalRunItem],
+    new: &[crate::eval_run::EvalRunItem],
+) -> Result<DiffSummary, String> {
+    validate_unique_item_keys(baseline).map_err(|e| format!("baseline: {e}"))?;
+    validate_unique_item_keys(new).map_err(|e| format!("new: {e}"))?;
+    Ok(diff_eval_items(baseline, new))
+}
+
 /// [`DiffSummary`] suitable for CI gating.
 ///
 /// Pairing is by `fixture_id`. The returned `entries` are sorted by id.

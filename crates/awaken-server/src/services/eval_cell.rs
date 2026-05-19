@@ -73,6 +73,24 @@ pub(crate) fn apply_cell_decorators(
     replayer
 }
 
+/// Reject duplicate model ids in the request `models` axis. Both eval
+/// services would otherwise spawn the same cell twice, producing
+/// duplicate `(fixture_id, cell, sample_index)` keys that `diff_eval_items`
+/// would later collapse silently — caught by the diff guard but too
+/// late: the duplicate already persisted to the EvalRun store.
+pub(crate) fn validate_unique_models(models: &[String]) -> Result<(), ApiError> {
+    use std::collections::HashSet;
+    let mut seen: HashSet<&str> = HashSet::with_capacity(models.len());
+    for m in models {
+        if !seen.insert(m.as_str()) {
+            return Err(ApiError::BadRequest(format!(
+                "duplicate model id in models axis: {m}"
+            )));
+        }
+    }
+    Ok(())
+}
+
 /// Compute cell-level `cost_usd`, but only when the report carries an
 /// actual input/output token breakdown. Providers that only fill the
 /// aggregate `total_tokens` would otherwise yield `compute_cost_usd(0, 0)

@@ -563,6 +563,34 @@ async fn get_eval_run_with_baseline_surfaces_diff() {
 }
 
 #[tokio::test]
+async fn get_eval_run_baseline_400s_on_adhoc_run() {
+    // Ad-hoc online runs all carry dataset_id="_adhoc" + revision 0.
+    // Without an explicit guard, two unrelated _adhoc runs would pass
+    // the dataset-revision schema check and produce a meaningless diff.
+    let app = build_test_app().await;
+    let mut adhoc_a = baseline_run("ADHOC-A");
+    let mut adhoc_b = baseline_run("ADHOC-B");
+    adhoc_a.dataset_id = "_adhoc".into();
+    adhoc_a.dataset_revision = 0;
+    adhoc_b.dataset_id = "_adhoc".into();
+    adhoc_b.dataset_revision = 0;
+    app.eval_run_store.write(&adhoc_a).unwrap();
+    app.eval_run_store.write(&adhoc_b).unwrap();
+    let (status, body) = request(
+        &app.router,
+        "GET",
+        "/v1/eval/runs/ADHOC-B?baseline=ADHOC-A",
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(
+        body["error"].as_str().unwrap_or("").contains("ad-hoc"),
+        "body: {body}"
+    );
+}
+
+#[tokio::test]
 async fn get_eval_run_baseline_500s_on_duplicate_item_keys() {
     // Diff must refuse to silently collapse duplicate (fixture_id, cell,
     // sample_index) keys via the BTreeMap pairing. A run that managed
@@ -1091,6 +1119,101 @@ async fn start_eval_run_400s_when_samples_without_models() {
             .as_str()
             .unwrap_or("")
             .contains("deterministic"),
+        "body: {body}"
+    );
+}
+
+#[tokio::test]
+async fn start_eval_run_400s_on_duplicate_models() {
+    // Duplicate model ids would spawn the same matrix cell twice and
+    // generate duplicate (fixture_id, cell, sample_index) keys that
+    // diff_eval_items would silently collapse. Reject at the entry point.
+    let app = build_test_app().await;
+    let fixtures = vec![sample_fixture("f1")];
+    let (status, _) = request(
+        &app.router,
+        "POST",
+        "/v1/eval/datasets",
+        Some(json!({ "id": "DS-DUPM", "spec": { "fixtures": fixtures } })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let (status, body) = request(
+        &app.router,
+        "POST",
+        "/v1/eval/runs",
+        Some(json!({
+            "dataset_id": "DS-DUPM",
+            "models": ["m1", "m1"],
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(
+        body["error"]
+            .as_str()
+            .unwrap_or("")
+            .contains("duplicate model"),
+        "body: {body}"
+    );
+}
+
+#[tokio::test]
+async fn online_eval_400s_on_duplicate_models() {
+    let app = build_test_app().await;
+    let (status, body) = request(
+        &app.router,
+        "POST",
+        "/v1/eval/online",
+        Some(json!({
+            "user_input": "p",
+            "models": ["m1", "m1"],
+            "persist": false,
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(
+        body["error"]
+            .as_str()
+            .unwrap_or("")
+            .contains("duplicate model"),
+        "body: {body}"
+    );
+}
+
+#[tokio::test]
+async fn start_eval_run_400s_when_scripted_with_agent_id() {
+    // agent_id only makes sense in Live (matrix) mode — scripted runs
+    // use the fixture's provider_script + a fixed stub agent. Rather
+    // than silently ignore agent_id on a scripted request, reject it
+    // so the operator isn't misled.
+    let app = build_test_app().await;
+    let fixtures = vec![sample_fixture("f1")];
+    let (status, _) = request(
+        &app.router,
+        "POST",
+        "/v1/eval/datasets",
+        Some(json!({ "id": "DS-SAID", "spec": { "fixtures": fixtures } })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let (status, body) = request(
+        &app.router,
+        "POST",
+        "/v1/eval/runs",
+        Some(json!({
+            "dataset_id": "DS-SAID",
+            "agent_id": "some-agent",
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(
+        body["error"]
+            .as_str()
+            .unwrap_or("")
+            .contains("agent_id requires `models`"),
         "body: {body}"
     );
 }

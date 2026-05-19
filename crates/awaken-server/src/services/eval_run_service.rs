@@ -13,11 +13,11 @@
 //! ## Notes
 //!
 //! - `RuntimeReplayer` builds a self-contained runtime with an
-//!   `InMemoryStore` — replays do not touch the server's thread store.
-//!   That keeps eval runs from polluting production data.
-//! - Replay does NOT yet wire spans into the server's `TraceStore`;
-//!   `EvalRunItem.trace_run_id` is therefore `None` for now. Tracking
-//!   the trace-run wiring as a follow-up so this layer stays focused.
+//!   `InMemoryStore` — replays do not touch the server's thread store,
+//!   so eval runs can't pollute production data.
+//! - Replay spans tee into the server's `TraceStore` via `TraceStoreSink`
+//!   when one is wired; `EvalRunItem.trace_run_id` then links each item
+//!   back to its observability trace.
 
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -99,6 +99,13 @@ pub struct StartRunRequest {
     /// `Failure::JudgeBelowThreshold` to the report.
     #[serde(default)]
     pub judge: Option<JudgeRequest>,
+    /// Per-cell wall-clock cap in Live (matrix) mode. Wraps the cell's
+    /// replay in `tokio::time::timeout` so a stuck provider doesn't pin
+    /// an HTTP request slot; on expiry the cell surfaces a
+    /// `ReplayRuntimeFailure::RuntimeError`. 0 means "default 60s".
+    /// Ignored on Scripted runs (deterministic, no wall-clock risk).
+    #[serde(default)]
+    pub max_walltime_secs: Option<u64>,
 }
 
 /// Per-run judge configuration. `model_id` must resolve via the registry
@@ -252,11 +259,28 @@ pub async fn start_eval_run(
     // `body.models.is_some()`, `expand_cells(&[])` would yield a single
     // default cell with `model_id: None`, and `run_matrix_cells` would
     // then panic on its `expect("matrix expansion always sets model_id")`.
-    if let Some(models) = &body.models
-        && models.is_empty()
-    {
+    if let Some(models) = &body.models {
+        if models.is_empty() {
+            return Err(ApiError::BadRequest(
+                "`models` must be non-empty when supplied; omit the field for scripted replay"
+                    .into(),
+            ));
+        }
+        crate::services::eval_cell::validate_unique_models(models)?;
+    }
+    // agent_id / agent_overrides only make sense in Live (matrix) mode —
+    // scripted replays use the fixture's provider_script + a fixed stub
+    // agent and have no per-cell agent context. Reject explicitly rather
+    // than silently ignore so the operator isn't misled about which
+    // fields took effect.
+    if body.models.is_none() && body.agent_id.is_some() {
         return Err(ApiError::BadRequest(
-            "`models` must be non-empty when supplied; omit the field for scripted replay".into(),
+            "agent_id requires `models` (Live mode); scripted replay ignores it".into(),
+        ));
+    }
+    if body.models.is_none() && body.agent_overrides.is_some() {
+        return Err(ApiError::BadRequest(
+            "agent_overrides requires `models` (Live mode); scripted replay ignores it".into(),
         ));
     }
     // Expand the matrix (or 1-cell default for non-matrix runs).
@@ -329,6 +353,10 @@ pub async fn start_eval_run(
     // every run and broke duration / list filtering / time-series.
     let started_at_secs = epoch_secs_now();
     let items: Vec<EvalRunItem> = if body.models.is_some() {
+        let walltime = match body.max_walltime_secs.unwrap_or(0) {
+            0 => 60,
+            n => n,
+        };
         run_matrix_cells(
             &state,
             &fixtures,
@@ -336,6 +364,7 @@ pub async fn start_eval_run(
             MatrixOptions {
                 samples,
                 max_concurrent: limits.max_concurrent_matrix_cells,
+                max_walltime_secs: walltime,
                 agent_base,
                 agent_overrides: body.agent_overrides.clone(),
                 judge,
@@ -432,6 +461,19 @@ fn compute_diff(
         }
         other => map_eval_run_store_error(other),
     })?;
+    // Refuse to diff ad-hoc online runs. They all persist with the
+    // sentinel `_adhoc` dataset_id + revision 0, so the dataset-revision
+    // schema check below would let two unrelated `_adhoc` runs (different
+    // prompt, different expectations, different models) compare against
+    // each other and produce a plausible-looking but meaningless diff.
+    // Operators wanting to compare online prompts should snapshot the
+    // request to a dataset first.
+    let adhoc = crate::services::online_eval_service::ADHOC_DATASET_ID;
+    if baseline.dataset_id == adhoc || new_run.dataset_id == adhoc {
+        return Err(ApiError::BadRequest(
+            "cannot diff ad-hoc online runs (dataset_id=_adhoc); persist as a dataset first".into(),
+        ));
+    }
     // Refuse to diff across different datasets or different revisions
     // of the same dataset. The fixture set behind a (dataset_id,
     // revision) pair is the schema both runs were scored against;
@@ -520,6 +562,10 @@ async fn run_scripted_fixtures(
 pub(crate) struct MatrixOptions {
     pub samples: u32,
     pub max_concurrent: usize,
+    /// Per-cell wall-clock cap. Mirrors the online-eval timeout — Live
+    /// matrix runs hit real providers too, and a stuck cell shouldn't
+    /// pin the HTTP request slot indefinitely.
+    pub max_walltime_secs: u64,
     pub agent_base: Option<awaken_contract::registry_spec::AgentSpec>,
     pub agent_overrides: Option<AgentSpecPatch>,
     pub judge: Option<JudgeContext>,
@@ -539,10 +585,12 @@ async fn run_matrix_cells(
     let MatrixOptions {
         samples,
         max_concurrent,
+        max_walltime_secs,
         agent_base,
         agent_overrides,
         judge,
     } = options;
+    let walltime = std::time::Duration::from_secs(max_walltime_secs);
     use awaken_contract::contract::executor::LlmExecutor;
     use awaken_contract::registry_spec::ModelBindingSpec;
 
@@ -579,6 +627,7 @@ async fn run_matrix_cells(
                 let base = agent_base.clone();
                 let trace_sink = trace_sink.clone();
                 let revise_for_task = revise_tuple_for(judge.as_ref(), &fixture.expect);
+                let fixture_id = fixture.id.clone();
                 let permit = semaphore.clone().acquire_owned().await.expect("semaphore");
                 handles.push(tokio::spawn(async move {
                     let _permit = permit;
@@ -589,11 +638,21 @@ async fn run_matrix_cells(
                     }
                     let replayer =
                         apply_cell_decorators(builder, overrides, trace_sink, revise_for_task);
-                    let outcomes = replay_all(&replayer, std::slice::from_ref(&fixture)).await;
-                    let outcome = outcomes
-                        .into_iter()
-                        .next()
-                        .expect("one fixture → one outcome");
+                    // Per-cell wall-clock cap (same shape as online_eval):
+                    // a stuck provider yields a synthetic timeout outcome
+                    // so the request slot frees up instead of hanging.
+                    let outcome = match tokio::time::timeout(
+                        walltime,
+                        replay_all(&replayer, std::slice::from_ref(&fixture)),
+                    )
+                    .await
+                    {
+                        Ok(outs) => outs.into_iter().next().expect("one fixture → one outcome"),
+                        Err(_) => awaken_eval::ReplayOutcome::timeout_failure(
+                            fixture_id,
+                            walltime.as_secs(),
+                        ),
+                    };
                     (fixture, cell, sample, outcome, binding)
                 }));
             }
