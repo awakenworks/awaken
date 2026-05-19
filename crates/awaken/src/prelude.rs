@@ -11,11 +11,14 @@
 // ── Building agents ──
 pub use crate::registry::traits::ModelBinding;
 pub use crate::{AgentRuntime, AgentRuntimeBuilder, BuildError, RunRequest, RuntimeError};
-pub use crate::{AgentSpec, AgentSpecPatch, ConfigRecord, PluginConfigKey};
+pub use crate::{
+    AgentSpec, AgentSpecPatch, ConfigRecord, PluginConfigKey, SkillArgumentSpec, SkillSpec,
+    SkillSpecContext, SkillSpecPatch, SkillSpecSink,
+};
 pub use crate::{
     decode_config_record, effective_config_record, validate_agent_spec, validate_agent_spec_patch,
     validate_config_record, validate_config_record_overrides, validate_model_binding_spec,
-    validate_provider_spec,
+    validate_provider_spec, validate_skill_spec,
 };
 pub use awaken_runtime::engine::MockProviderProfile;
 
@@ -87,7 +90,9 @@ pub use awaken_ext_observability::ObservabilityPlugin;
 pub use awaken_ext_mcp::{McpPlugin, McpServerConnectionConfig, McpToolRegistryManager};
 
 #[cfg(feature = "skills")]
-pub use awaken_ext_skills::{SkillDiscoveryPlugin, SkillRegistry};
+pub use awaken_ext_skills::{
+    ConfigSkill, ConfigSkillRegistry, SkillDiscoveryPlugin, SkillRegistry,
+};
 
 #[cfg(feature = "reminder")]
 pub use awaken_ext_reminder::{

@@ -252,7 +252,9 @@ impl<'a> ConfigService<'a> {
                 }
                 Ok(Value::Object(object))
             }
-            ConfigNamespace::Agents | ConfigNamespace::Models => Ok(value),
+            ConfigNamespace::Agents | ConfigNamespace::Models | ConfigNamespace::Skills => {
+                Ok(value)
+            }
         }
     }
 }

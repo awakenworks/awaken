@@ -3,6 +3,7 @@ mod generative_ui_config;
 pub mod generative_ui_tools;
 pub mod phase_logger;
 pub mod scripted_executor;
+mod skills;
 pub mod state;
 pub mod tools;
 
@@ -37,10 +38,7 @@ use awaken_ext_permission::{
     ToolPermissionBehavior,
 };
 use awaken_ext_reminder::ReminderPlugin;
-use awaken_ext_skills::{
-    CompositeSkillRegistry, EmbeddedSkill, EmbeddedSkillData, FsSkillRegistryManager,
-    InMemorySkillRegistry, SkillDiscoveryPlugin, SkillRegistry,
-};
+use awaken_ext_skills::SkillRegistry;
 use awaken_runtime::builder::AgentRuntimeBuilder;
 use awaken_runtime::plugins::Plugin;
 use awaken_runtime::policies::{
@@ -528,7 +526,11 @@ Deterministic compatibility directives:\n\
             model_id: "default".into(),
             system_prompt: base_prompt.clone(),
             max_rounds: args.max_rounds,
-            plugin_ids: vec!["skills-discovery".into(), "frontend_tools".into()],
+            plugin_ids: vec![
+                "skills-discovery".into(),
+                "skills-active-instructions".into(),
+                "frontend_tools".into(),
+            ],
             ..Default::default()
         },
         &prompt_overrides,
@@ -1033,52 +1035,8 @@ Deterministic compatibility directives:\n\
         .with_provider("default");
     builder = builder.with_plugin("observability", Arc::new(observability) as Arc<dyn Plugin>);
 
-    // Skills: embedded skill + optional filesystem discovery via CompositeSkillRegistry
-    let skill_registry: Arc<dyn SkillRegistry> = {
-        static GREETING_SKILL_MD: &str = "---
-name: greeting
-description: Adds friendly greeting behavior
----
-Always greet the user warmly and ask how you can help today.
-";
-        let embedded_data = EmbeddedSkillData {
-            skill_md: GREETING_SKILL_MD,
-            references: &[],
-            assets: &[],
-        };
-        let embedded_skill =
-            EmbeddedSkill::new(&embedded_data).expect("invalid embedded greeting skill");
-        let embedded_registry: Arc<dyn SkillRegistry> = Arc::new(
-            InMemorySkillRegistry::from_skills(vec![Arc::new(embedded_skill)]),
-        );
-
-        let registry: Arc<dyn SkillRegistry> = if has_skills_dir {
-            match FsSkillRegistryManager::discover_roots(vec![PathBuf::from("./skills")]) {
-                Ok(fs_manager) => {
-                    let fs_registry: Arc<dyn SkillRegistry> = Arc::new(fs_manager);
-                    match CompositeSkillRegistry::try_new([embedded_registry, fs_registry]) {
-                        Ok(composite) => Arc::new(composite),
-                        Err(e) => {
-                            tracing::warn!(error = %e, "Skills: composite merge conflict, using embedded only");
-                            Arc::new(InMemorySkillRegistry::from_skills(vec![]))
-                        }
-                    }
-                }
-                Err(e) => {
-                    tracing::warn!(error = %e, "Skills: failed to discover from ./skills/");
-                    embedded_registry
-                }
-            }
-        } else {
-            embedded_registry
-        };
-
-        builder = builder.with_plugin(
-            "skills-discovery",
-            Arc::new(SkillDiscoveryPlugin::new(registry.clone())) as Arc<dyn Plugin>,
-        );
-        registry
-    };
+    let (next_builder, starter_skills) = skills::install_plugins(builder, has_skills_dir);
+    builder = next_builder;
 
     // -- Build runtime --
 
@@ -1094,6 +1052,7 @@ Always greet the user warmly and ask how you can help today.
         ConfigRuntimeManager::new(runtime.clone(), config_store.clone())
             .expect("failed to initialize config runtime manager")
             .with_provider_factory(provider_factory)
+            .with_skill_spec_sink(starter_skills.spec_sink())
             .with_mcp_refresh_interval(Duration::from_secs(5))
             .with_audit_log(audit_logger.clone()),
     );
@@ -1114,6 +1073,12 @@ Always greet the user warmly and ask how you can help today.
         for tool_spec in config_runtime_manager.snapshot_tool_specs() {
             specs.push(tool_spec);
         }
+        specs.extend(
+            starter_skills
+                .seed_specs()
+                .await
+                .expect("failed to snapshot starter skills"),
+        );
         BuiltinSeedSet {
             binary_version: env!("CARGO_PKG_VERSION").to_string(),
             specs,
@@ -1183,10 +1148,9 @@ Always greet the user warmly and ask how you can help today.
     .with_runtime_stats(runtime_stats)
     .with_audit_log(audit_logger)
     .with_audit_log_from_config()
-    .with_skill_catalog_provider(
-        Arc::new(RegistryBackedSkillCatalogProvider::new(skill_registry))
-            as Arc<dyn SkillCatalogProvider>,
-    );
+    .with_skill_catalog_provider(Arc::new(RegistryBackedSkillCatalogProvider::new(
+        starter_skills.live_registry(),
+    )) as Arc<dyn SkillCatalogProvider>);
 
     let shutdown_timeout = Duration::from_secs(state.config.shutdown.timeout_secs);
     let mut app = build_service_router(state).expect("failed to build server router");

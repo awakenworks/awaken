@@ -25,6 +25,8 @@ pub mod model;
 pub mod periodic_refresh;
 pub mod registry_spec;
 pub mod secret;
+pub mod skill_spec;
+pub mod skill_spec_patch;
 pub mod state;
 pub mod thread;
 pub mod time;
@@ -54,6 +56,10 @@ pub use registry_spec::{
     AgentSpec, McpRestartPolicy, McpServerSpec, McpTransportKind, ModelBindingSpec,
     PluginConfigKey, ProviderSpec,
 };
+
+// ── skill spec ──
+pub use skill_spec::{SkillArgumentSpec, SkillSpec, SkillSpecContext, SkillSpecSink};
+pub use skill_spec_patch::{SkillSpecPatch, merge_skill_spec};
 
 // ── secret ──
 pub use secret::RedactedString;
@@ -113,8 +119,9 @@ pub use config_record::{
 pub use config_validation::{
     AGENT_SPEC_PATCH_UNKNOWN_FIELD_POLICY, AGENT_SPEC_UNKNOWN_FIELD_POLICY, ConfigValidationError,
     MODEL_BINDING_SPEC_UNKNOWN_FIELD_POLICY, PROVIDER_SPEC_UNKNOWN_FIELD_POLICY,
-    UnknownFieldPolicy, validate_agent_spec, validate_agent_spec_patch, validate_config_record,
-    validate_model_binding_spec, validate_provider_spec,
+    SKILL_SPEC_UNKNOWN_FIELD_POLICY, UnknownFieldPolicy, validate_agent_spec,
+    validate_agent_spec_patch, validate_config_record, validate_model_binding_spec,
+    validate_provider_spec, validate_skill_spec,
 };
 
 // ── builtin seed ──

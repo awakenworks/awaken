@@ -10,7 +10,7 @@ use awaken_contract::contract::executor::LlmExecutor;
 use awaken_contract::contract::storage::StorageError;
 use awaken_contract::{
     AgentSpec, ConfigRecord, McpRestartPolicy, McpServerSpec, McpTransportKind, ModelBindingSpec,
-    PeriodicRefresher, ProviderSpec,
+    PeriodicRefresher, ProviderSpec, SkillSpecSink,
 };
 use awaken_ext_mcp::{
     DefaultSamplingHandler, McpServerConnectionConfig, McpServerStatusSnapshot, McpToolRegistry,
@@ -39,6 +39,12 @@ use tokio::task::JoinHandle;
 
 use crate::services::agent_catalog::check_catalog_errors;
 
+mod managed_config;
+#[cfg(test)]
+mod skill_tests;
+
+use managed_config::ManagedConfigSnapshot;
+
 const CONFIG_LOAD_PAGE_SIZE: usize = 1024;
 
 const NS_AGENTS: &str = "agents";
@@ -46,6 +52,7 @@ const NS_MODELS: &str = "models";
 const NS_PROVIDERS: &str = "providers";
 const NS_MCP_SERVERS: &str = "mcp-servers";
 const NS_TOOLS: &str = "tools";
+const NS_SKILLS: &str = "skills";
 
 /// Per-provider executor cache entry: the spec used to build the cached
 /// executor and the executor itself.
@@ -505,15 +512,6 @@ impl PreparedMcpRegistry {
     }
 }
 
-struct ManagedConfigSnapshot {
-    providers: Vec<ProviderSpec>,
-    models: Vec<ModelBindingSpec>,
-    agents: Vec<AgentSpec>,
-    mcp_servers: Vec<McpServerSpec>,
-    tools: Vec<awaken_contract::ToolSpec>,
-    fingerprint: u64,
-}
-
 struct ChangeListenerRuntime {
     stop_tx: Option<oneshot::Sender<()>>,
     join: JoinHandle<()>,
@@ -525,6 +523,7 @@ pub struct ConfigRuntimeManager {
     tools: Arc<dyn ToolRegistry>,
     plugins: Arc<dyn PluginSource>,
     backends: Arc<dyn BackendRegistry>,
+    skill_spec_sink: Option<Arc<dyn SkillSpecSink>>,
     /// Runtime A2A-discovery layer; merged on top of ConfigStore agents
     /// at every `apply()`. None when no remote agents were registered
     /// at builder time.
@@ -580,6 +579,7 @@ impl ConfigRuntimeManager {
             tools: registries.tools,
             plugins: registries.plugins,
             backends: registries.backends,
+            skill_spec_sink: None,
             discovered_agents,
             provider_factory: Arc::new(GenaiProviderExecutorFactory),
             change_notifier: None,
@@ -614,6 +614,12 @@ impl ConfigRuntimeManager {
     #[must_use]
     pub fn with_mcp_registry_factory(mut self, factory: Arc<dyn McpRegistryFactory>) -> Self {
         self.mcp_registry_factory = factory;
+        self
+    }
+
+    #[must_use]
+    pub fn with_skill_spec_sink(mut self, sink: Arc<dyn SkillSpecSink>) -> Self {
+        self.skill_spec_sink = Some(sink);
         self
     }
 
@@ -883,6 +889,11 @@ impl ConfigRuntimeManager {
     }
 
     async fn publish(&self, managed: ManagedConfigSnapshot) -> Result<u64, ConfigRuntimeError> {
+        if let Some(sink) = &self.skill_spec_sink {
+            sink.validate_skill_specs(&managed.skills)
+                .map_err(ConfigRuntimeError::InvalidConfig)?;
+        }
+
         let prepared_mcp = self.prepare_mcp_registry(&managed.mcp_servers).await?;
         let (candidate, next_provider_cache) = match self.compile_registry_set(
             &managed.providers,
@@ -910,6 +921,11 @@ impl ConfigRuntimeManager {
                 return Err(ConfigRuntimeError::RuntimeNotConfigurable);
             }
         };
+
+        if let Some(sink) = &self.skill_spec_sink {
+            sink.replace_skill_specs(managed.skills.clone())
+                .map_err(ConfigRuntimeError::InvalidConfig)?;
+        }
 
         *self.provider_executor_cache.lock() = next_provider_cache;
 
@@ -1146,31 +1162,6 @@ impl ConfigRuntimeManager {
         }
         let _ = runtime.join.await;
         true
-    }
-
-    async fn load_managed_config(&self) -> Result<ManagedConfigSnapshot, ConfigRuntimeError> {
-        let provider_values = self.load_namespace_entries(NS_PROVIDERS).await?;
-        let model_values = self.load_namespace_entries(NS_MODELS).await?;
-        let agent_values = self.load_namespace_entries(NS_AGENTS).await?;
-        let mcp_values = self.load_namespace_entries(NS_MCP_SERVERS).await?;
-        let tool_values = self.load_namespace_entries(NS_TOOLS).await?;
-
-        let fingerprint = fingerprint_config(&[
-            (NS_PROVIDERS, &provider_values),
-            (NS_MODELS, &model_values),
-            (NS_AGENTS, &agent_values),
-            (NS_MCP_SERVERS, &mcp_values),
-            (NS_TOOLS, &tool_values),
-        ])?;
-
-        Ok(ManagedConfigSnapshot {
-            providers: deserialize_namespace(&provider_values)?,
-            models: deserialize_namespace(&model_values)?,
-            agents: deserialize_namespace(&agent_values)?,
-            mcp_servers: deserialize_namespace(&mcp_values)?,
-            tools: deserialize_namespace(&tool_values)?,
-            fingerprint,
-        })
     }
 
     async fn load_namespace_entries(
@@ -2720,7 +2711,7 @@ mod tests {
 
     /// Build a minimal ConfigRuntimeManager backed by an InMemoryStore.
     /// Mirrors the pattern used by `bootstrap_writes_builtin_envelope`.
-    async fn make_manager_with_store() -> (
+    pub(super) async fn make_manager_with_store() -> (
         ConfigRuntimeManager,
         Arc<dyn awaken_contract::contract::config_store::ConfigStore>,
     ) {
@@ -2855,6 +2846,7 @@ mod tests {
                     ..McpServerSpec::default()
                 }],
                 tools: Vec::new(),
+                skills: Vec::new(),
                 fingerprint: 1,
             })
             .await

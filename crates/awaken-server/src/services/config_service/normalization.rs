@@ -1,4 +1,4 @@
-use awaken_contract::{AgentSpec, ConfigRecord, McpServerSpec, ToolSpec};
+use awaken_contract::{AgentSpec, ConfigRecord, McpServerSpec, SkillSpec, ToolSpec};
 use serde_json::{Map, Value, json};
 
 use crate::services::config_envelope::{apply_overrides, unwrap_spec};
@@ -41,7 +41,7 @@ impl<'a> ConfigService<'a> {
                 self.normalize_mcp_server_payload(path_id, &mut object)
                     .await?;
             }
-            ConfigNamespace::Agents | ConfigNamespace::Models => {}
+            ConfigNamespace::Agents | ConfigNamespace::Models | ConfigNamespace::Skills => {}
         }
 
         object.remove("created_at");
@@ -120,15 +120,19 @@ impl<'a> ConfigService<'a> {
                     }
                 }
             }
+            ConfigNamespace::Skills => {
+                awaken_contract::validate_skill_spec(body.clone())
+                    .map_err(|e| ConfigServiceError::InvalidPayload(e.to_string()))?;
+            }
         }
         Ok(())
     }
 }
 
 /// Return the effective spec Value for a stored entry, applying `user_overrides`
-/// when the namespace supports it (currently Agents and tools).
+/// when the namespace supports it.
 ///
-/// For non-Agent namespaces this is equivalent to `unwrap_spec`.
+/// For namespaces without field-level overrides this is equivalent to `unwrap_spec`.
 pub(super) fn effective_spec(
     namespace: ConfigNamespace,
     value: Value,
@@ -136,6 +140,14 @@ pub(super) fn effective_spec(
     match namespace {
         ConfigNamespace::Agents => {
             let record = ConfigRecord::<AgentSpec>::from_value(value)
+                .map_err(|e| ConfigServiceError::InvalidPayload(e.to_string()))?;
+            let effective = apply_overrides(record.spec, record.meta.user_overrides.as_ref())
+                .map_err(|e| ConfigServiceError::InvalidPayload(e.to_string()))?;
+            serde_json::to_value(&effective)
+                .map_err(|e| ConfigServiceError::Serialization(e.to_string()))
+        }
+        ConfigNamespace::Skills => {
+            let record = ConfigRecord::<SkillSpec>::from_value(value)
                 .map_err(|e| ConfigServiceError::InvalidPayload(e.to_string()))?;
             let effective = apply_overrides(record.spec, record.meta.user_overrides.as_ref())
                 .map_err(|e| ConfigServiceError::InvalidPayload(e.to_string()))?;

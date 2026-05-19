@@ -1130,7 +1130,7 @@ async fn delete_rollback_re_emits_envelope() {
 #[test]
 fn namespace_all_lists_every_variant() {
     let all = ConfigNamespace::all();
-    assert_eq!(all.len(), 4, "exactly four 0.4-compatible namespaces");
+    assert_eq!(all.len(), 5, "all writable config namespaces");
 
     // Each variant must appear exactly once.
     let has = |v: ConfigNamespace| all.iter().filter(|&&x| x == v).count();
@@ -1138,11 +1138,12 @@ fn namespace_all_lists_every_variant() {
     assert_eq!(has(ConfigNamespace::Providers), 1);
     assert_eq!(has(ConfigNamespace::Models), 1);
     assert_eq!(has(ConfigNamespace::McpServers), 1);
+    assert_eq!(has(ConfigNamespace::Skills), 1);
 }
 
 #[test]
 fn namespace_all_matches_builtin_spec_namespace() {
-    use awaken_contract::{BuiltinSpec, McpServerSpec};
+    use awaken_contract::{BuiltinSpec, McpServerSpec, SkillSpec};
 
     for &ns in ConfigNamespace::all() {
         let spec = match ns {
@@ -1164,6 +1165,13 @@ fn namespace_all_matches_builtin_spec_namespace() {
             }),
             ConfigNamespace::McpServers => BuiltinSpec::McpServer(McpServerSpec {
                 id: "x".into(),
+                ..Default::default()
+            }),
+            ConfigNamespace::Skills => BuiltinSpec::Skill(SkillSpec {
+                id: "x".into(),
+                name: "x".into(),
+                description: "x".into(),
+                instructions_md: "x".into(),
                 ..Default::default()
             }),
         };
@@ -1583,7 +1591,7 @@ fn config_namespace_rejects_tools_to_keep_public_enum_compatible() {
 
 #[test]
 fn config_namespace_all_excludes_tools_to_keep_public_enum_compatible() {
-    assert_eq!(ConfigNamespace::ALL.len(), 4);
+    assert_eq!(ConfigNamespace::ALL.len(), 5);
 }
 
 #[test]

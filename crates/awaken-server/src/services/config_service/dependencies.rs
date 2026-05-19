@@ -8,7 +8,7 @@ impl<'a> ConfigService<'a> {
     ///
     /// - Providers: scans models for `provider_id == id`
     /// - Models: scans agents for `model_id == id`
-    /// - Agents / McpServers: leaf nodes, no dependents
+    /// - Agents / McpServers / Skills: leaf nodes, no dependents
     pub(crate) async fn find_dependents(
         &self,
         namespace: ConfigNamespace,
@@ -47,7 +47,9 @@ impl<'a> ConfigService<'a> {
                 }
                 Ok(refs)
             }
-            ConfigNamespace::Agents | ConfigNamespace::McpServers => Ok(vec![]),
+            ConfigNamespace::Agents | ConfigNamespace::McpServers | ConfigNamespace::Skills => {
+                Ok(vec![])
+            }
         }
     }
 }

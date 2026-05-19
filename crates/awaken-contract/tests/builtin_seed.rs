@@ -1,5 +1,5 @@
 use awaken_contract::registry_spec::{AgentSpec, McpServerSpec, ModelBindingSpec, ProviderSpec};
-use awaken_contract::{BuiltinSeedSet, BuiltinSpec};
+use awaken_contract::{BuiltinSeedSet, BuiltinSpec, SkillSpec};
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
@@ -38,6 +38,16 @@ fn mcp_server_spec() -> McpServerSpec {
     }
 }
 
+fn skill_spec() -> SkillSpec {
+    SkillSpec {
+        id: "db-management".into(),
+        name: "Database Management".into(),
+        description: "Helps manage database work".into(),
+        instructions_md: "Inspect schema before running SQL.".into(),
+        ..Default::default()
+    }
+}
+
 // ── namespace() ──────────────────────────────────────────────────────────────
 
 #[test]
@@ -58,6 +68,7 @@ fn namespace_returns_expected_string_for_each_variant() {
         BuiltinSpec::McpServer(mcp_server_spec()).namespace(),
         "mcp-servers"
     );
+    assert_eq!(BuiltinSpec::Skill(skill_spec()).namespace(), "skills");
 }
 
 // ── id() ─────────────────────────────────────────────────────────────────────
@@ -71,6 +82,7 @@ fn id_delegates_to_inner_spec_for_each_variant() {
     assert_eq!(BuiltinSpec::Provider(provider_spec()).id(), "openai");
     assert_eq!(BuiltinSpec::Model(model_binding_spec()).id(), "gpt-4o");
     assert_eq!(BuiltinSpec::McpServer(mcp_server_spec()).id(), "test-mcp");
+    assert_eq!(BuiltinSpec::Skill(skill_spec()).id(), "db-management");
 }
 
 // ── serde round-trip ─────────────────────────────────────────────────────────
@@ -123,6 +135,18 @@ fn serde_roundtrip_mcp_server() {
     );
 }
 
+#[test]
+fn serde_roundtrip_skill() {
+    let original = BuiltinSpec::Skill(skill_spec());
+    let value = serde_json::to_value(&original).unwrap();
+    let decoded: BuiltinSpec = serde_json::from_value(value.clone()).unwrap();
+    assert_eq!(
+        value,
+        serde_json::to_value(&decoded).unwrap(),
+        "Skill round-trip mismatch"
+    );
+}
+
 // ── tag discriminator ────────────────────────────────────────────────────────
 
 #[test]
@@ -154,6 +178,13 @@ fn tag_discriminator_is_kind_with_snake_case_names() {
         Some("model"),
         "Model kind tag mismatch"
     );
+
+    let skill_value = serde_json::to_value(BuiltinSpec::Skill(skill_spec())).unwrap();
+    assert_eq!(
+        skill_value["kind"].as_str(),
+        Some("skill"),
+        "Skill kind tag mismatch"
+    );
 }
 
 // ── mixed-variant Vec ────────────────────────────────────────────────────────
@@ -165,6 +196,7 @@ fn mixed_variant_vec_round_trips() {
         BuiltinSpec::Provider(provider_spec()),
         BuiltinSpec::Model(model_binding_spec()),
         BuiltinSpec::McpServer(mcp_server_spec()),
+        BuiltinSpec::Skill(skill_spec()),
     ];
     let original_value = serde_json::to_value(&specs).unwrap();
     let decoded: Vec<BuiltinSpec> = serde_json::from_value(original_value.clone()).unwrap();

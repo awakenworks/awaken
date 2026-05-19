@@ -4,7 +4,7 @@ use awaken_contract::AuditAction;
 use awaken_contract::contract::config_store::ConfigStore;
 use awaken_contract::contract::storage::StorageError;
 use awaken_contract::{
-    AgentSpec, ConfigRecord, McpServerSpec, ModelBindingSpec, ProviderSpec, ToolSpec,
+    AgentSpec, ConfigRecord, McpServerSpec, ModelBindingSpec, ProviderSpec, SkillSpec, ToolSpec,
 };
 use axum::http::HeaderMap;
 use serde_json::{Value, json};
@@ -30,6 +30,7 @@ use normalization::{
 };
 
 pub(super) const TOOLS_NAMESPACE: &str = "tools";
+pub(super) const SKILLS_NAMESPACE: &str = "skills";
 const OVERRIDES_NOT_SUPPORTED_FOR_USER_RECORD: &str =
     "overrides are not supported for user-source records; use PUT to update";
 
@@ -39,15 +40,17 @@ pub enum ConfigNamespace {
     Models,
     Providers,
     McpServers,
+    Skills,
 }
 
 impl ConfigNamespace {
-    /// All 0.4-compatible public managed namespaces in a fixed order.
-    pub const ALL: [Self; 4] = [
+    /// All writable public managed namespaces in a fixed order.
+    pub const ALL: [Self; 5] = [
         Self::Agents,
         Self::Providers,
         Self::Models,
         Self::McpServers,
+        Self::Skills,
     ];
 
     /// Slice over all public namespace variants.
@@ -66,6 +69,7 @@ impl ConfigNamespace {
             "models" => Ok(Self::Models),
             "providers" => Ok(Self::Providers),
             "mcp-servers" => Ok(Self::McpServers),
+            SKILLS_NAMESPACE => Ok(Self::Skills),
             _ => Err(ConfigServiceError::UnknownNamespace(value.to_string())),
         }
     }
@@ -76,6 +80,7 @@ impl ConfigNamespace {
             Self::Models => "models",
             Self::Providers => "providers",
             Self::McpServers => "mcp-servers",
+            Self::Skills => SKILLS_NAMESPACE,
         }
     }
 
@@ -85,6 +90,7 @@ impl ConfigNamespace {
             Self::Models => schemars::schema_for!(ModelBindingSpec),
             Self::Providers => schemars::schema_for!(ProviderSpec),
             Self::McpServers => schemars::schema_for!(McpServerSpec),
+            Self::Skills => schemars::schema_for!(SkillSpec),
         };
         serde_json::to_value(schema)
             .map_err(|error| ConfigServiceError::Serialization(error.to_string()))
@@ -284,6 +290,7 @@ impl<'a> ConfigService<'a> {
                 { "namespace": "models", "schema": ConfigNamespace::Models.schema_json()? },
                 { "namespace": "providers", "schema": ConfigNamespace::Providers.schema_json()? },
                 { "namespace": "mcp-servers", "schema": ConfigNamespace::McpServers.schema_json()? },
+                { "namespace": SKILLS_NAMESPACE, "schema": ConfigNamespace::Skills.schema_json()? },
                 { "namespace": TOOLS_NAMESPACE, "schema": tool_schema_json()? }
             ],
         }))
@@ -345,7 +352,7 @@ impl<'a> ConfigService<'a> {
         let Some(value) = value else {
             return Ok(None);
         };
-        // For non-Agent namespaces the envelope may not have been written yet
+        // For legacy records the envelope may not have been written yet
         // (legacy bare-spec). ConfigRecord::from_value handles both shapes.
         let meta = awaken_contract::ConfigRecord::<Value>::from_value(value)
             .map_err(|e| ConfigServiceError::Serialization(e.to_string()))?

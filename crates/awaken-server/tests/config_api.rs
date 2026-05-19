@@ -862,6 +862,63 @@ async fn provider_secret_is_redacted_and_preserved_on_update() {
 }
 
 #[tokio::test]
+async fn skills_config_namespace_crud_and_schema() {
+    let app = make_app().await;
+
+    let (status, schema) =
+        request_json(&app.router, Method::GET, "/v1/config/skills/$schema", None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(schema.get("$defs").is_some() || schema.get("type").is_some());
+
+    let body = json!({
+        "id": "db-management",
+        "name": "Database Management",
+        "description": "Helps with database operations",
+        "instructions_md": "Inspect schema before running SQL.",
+        "allowed_tools": ["db_query"]
+    });
+    let (status, created) =
+        request_json(&app.router, Method::POST, "/v1/config/skills", Some(body)).await;
+    assert_eq!(status, StatusCode::CREATED, "body={created}");
+    assert_eq!(created["id"], "db-management");
+
+    let (status, fetched) = request_json(
+        &app.router,
+        Method::GET,
+        "/v1/config/skills/db-management",
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        fetched["instructions_md"],
+        "Inspect schema before running SQL."
+    );
+
+    let (status, list) = request_json(&app.router, Method::GET, "/v1/config/skills", None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(contains_id(
+        list["items"].as_array().unwrap(),
+        "db-management"
+    ));
+
+    let (status, invalid) = request_json(
+        &app.router,
+        Method::POST,
+        "/v1/config/skills",
+        Some(json!({
+            "id": "DB",
+            "name": "Database Management",
+            "description": "Helps with database operations",
+            "instructions_md": "Inspect schema before running SQL."
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(invalid["error"].as_str().unwrap().contains("lowercase"));
+}
+
+#[tokio::test]
 async fn provider_service_account_shaped_secret_is_never_returned_by_admin_api() {
     let app = make_app().await;
     let service_account_json = r#"{

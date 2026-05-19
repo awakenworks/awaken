@@ -9,6 +9,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::registry_spec::{AgentSpec, McpServerSpec, ModelBindingSpec, ProviderSpec};
+use crate::skill_spec::SkillSpec;
 use crate::tool_spec::ToolSpec;
 
 /// A single spec the binary wants to seed into ConfigStore.
@@ -25,6 +26,7 @@ pub enum BuiltinSpec {
     Model(ModelBindingSpec),
     McpServer(McpServerSpec),
     Tool(ToolSpec),
+    Skill(SkillSpec),
 }
 
 impl BuiltinSpec {
@@ -53,6 +55,11 @@ impl BuiltinSpec {
         Self::Tool(spec)
     }
 
+    /// Wrap a `SkillSpec`.
+    pub fn skill(spec: SkillSpec) -> Self {
+        Self::Skill(spec)
+    }
+
     /// ConfigStore namespace this spec belongs to.
     ///
     /// Must match the namespace strings used by `ConfigService` /
@@ -64,6 +71,7 @@ impl BuiltinSpec {
             Self::Model(_) => "models",
             Self::McpServer(_) => "mcp-servers",
             Self::Tool(_) => "tools",
+            Self::Skill(_) => "skills",
         }
     }
 
@@ -75,6 +83,7 @@ impl BuiltinSpec {
             Self::Model(s) => &s.id,
             Self::McpServer(s) => &s.id,
             Self::Tool(s) => &s.id,
+            Self::Skill(s) => &s.id,
         }
     }
 }
@@ -176,5 +185,19 @@ mod tests {
         let bi = BuiltinSpec::tool(spec);
         assert_eq!(bi.namespace(), "tools");
         assert_eq!(bi.id(), "t1");
+    }
+
+    #[test]
+    fn constructor_skill_wraps() {
+        let spec = crate::skill_spec::SkillSpec {
+            id: "s1".into(),
+            name: "Skill 1".into(),
+            description: "x".into(),
+            instructions_md: "Use the skill.".into(),
+            ..Default::default()
+        };
+        let bi = BuiltinSpec::skill(spec);
+        assert_eq!(bi.namespace(), "skills");
+        assert_eq!(bi.id(), "s1");
     }
 }

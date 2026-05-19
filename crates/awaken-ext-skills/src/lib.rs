@@ -7,6 +7,7 @@
 //! - Tools: activate skill, load reference, run script
 //! - `SkillDiscoveryPlugin`: inject skills catalog before inference
 
+mod config_skill;
 mod embedded;
 pub mod error;
 mod materialize;
@@ -32,6 +33,7 @@ pub const SKILL_ACTIVATE_TOOL_ID: &str = "skill";
 pub const SKILL_LOAD_RESOURCE_TOOL_ID: &str = "load_skill_resource";
 pub const SKILL_SCRIPT_TOOL_ID: &str = "skill_script";
 
+pub use config_skill::{ConfigSkill, ConfigSkillRegistry, snapshot_skill_specs};
 pub use embedded::{EmbeddedSkill, EmbeddedSkillData};
 pub use error::{
     SkillError, SkillMaterializeError, SkillRegistryError, SkillRegistryManagerError, SkillWarning,

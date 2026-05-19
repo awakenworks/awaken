@@ -10,8 +10,14 @@ use awaken_contract::{
 };
 
 const SEED_LIST_PAGE_SIZE: usize = 256;
-const BUILTIN_SEED_NAMESPACES: [&str; 5] =
-    ["agents", "providers", "models", "mcp-servers", "tools"];
+const BUILTIN_SEED_NAMESPACES: [&str; 6] = [
+    "agents",
+    "providers",
+    "models",
+    "mcp-servers",
+    "tools",
+    "skills",
+];
 
 // ── public types ─────────────────────────────────────────────────────────────
 
@@ -70,8 +76,8 @@ pub enum SeedError {
 /// - Existing Builtin, different binary_version → replace spec + version, clear hidden, refresh updated_at. (updated)
 /// - Existing User → leave entirely untouched. (preserved_user)
 ///
-/// After processing seed entries, scans all five spec namespaces
-/// (`agents`, `providers`, `models`, `mcp-servers`, `tools`) and processes
+/// After processing seed entries, scans all built-in spec namespaces
+/// (`agents`, `providers`, `models`, `mcp-servers`, `tools`, `skills`) and processes
 /// each Builtin record whose ID is not in this seed:
 ///
 /// - If it carries a `user_overrides` payload → marks it `hidden=true` instead
@@ -268,6 +274,7 @@ fn builtin_spec_to_value(spec: &BuiltinSpec) -> Result<serde_json::Value, serde_
         BuiltinSpec::Model(s) => serde_json::to_value(s),
         BuiltinSpec::McpServer(s) => serde_json::to_value(s),
         BuiltinSpec::Tool(s) => serde_json::to_value(s),
+        BuiltinSpec::Skill(s) => serde_json::to_value(s),
     }
 }
 

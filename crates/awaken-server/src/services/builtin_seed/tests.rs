@@ -3,7 +3,7 @@
 
 use super::*;
 use awaken_contract::config_record::ConfigRecord;
-use awaken_contract::{AgentSpec, McpServerSpec, ModelBindingSpec, ProviderSpec};
+use awaken_contract::{AgentSpec, McpServerSpec, ModelBindingSpec, ProviderSpec, SkillSpec};
 use awaken_stores::memory::InMemoryStore;
 
 // ── spec constructors ────────────────────────────────────────────────────
@@ -36,6 +36,16 @@ fn model_spec(id: &str) -> ModelBindingSpec {
 fn mcp_spec(id: &str) -> McpServerSpec {
     McpServerSpec {
         id: id.to_owned(),
+        ..Default::default()
+    }
+}
+
+fn skill_spec(id: &str) -> SkillSpec {
+    SkillSpec {
+        id: id.to_owned(),
+        name: id.to_owned(),
+        description: "seeded skill".to_owned(),
+        instructions_md: "Use the seeded skill.".to_owned(),
         ..Default::default()
     }
 }
@@ -331,16 +341,18 @@ async fn mixed_namespace_seed_routes_correctly() {
         BuiltinSpec::Provider(provider_spec("prov-1")),
         BuiltinSpec::Model(model_spec("model-1")),
         BuiltinSpec::McpServer(mcp_spec("mcp-1")),
+        BuiltinSpec::Skill(skill_spec("skill-1")),
     ]);
 
     let report = apply_builtin_seed(&s, &seed).await.unwrap();
-    assert_eq!(report.created.len(), 4);
+    assert_eq!(report.created.len(), 5);
 
     // Each spec lands in the correct namespace.
     assert!(s.get("agents", "agent-1").await.unwrap().is_some());
     assert!(s.get("providers", "prov-1").await.unwrap().is_some());
     assert!(s.get("models", "model-1").await.unwrap().is_some());
     assert!(s.get("mcp-servers", "mcp-1").await.unwrap().is_some());
+    assert!(s.get("skills", "skill-1").await.unwrap().is_some());
 
     // Wrong namespace: not there.
     assert!(s.get("providers", "agent-1").await.unwrap().is_none());
@@ -483,6 +495,7 @@ async fn orphan_cleanup_uses_config_namespace_iter() {
         ("models", "orphan-model"),
         ("mcp-servers", "orphan-mcp"),
         ("tools", "orphan-tool"),
+        ("skills", "orphan-skill"),
     ];
 
     for (ns, id) in namespaces_and_ids {
