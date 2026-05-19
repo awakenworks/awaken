@@ -80,6 +80,28 @@ pub struct ReplayOutcome {
 }
 
 impl ReplayOutcome {
+    /// Synthetic outcome for a cell whose wall-clock budget expired.
+    /// Used by callers that wrap replay in `tokio::time::timeout` so a
+    /// stuck provider doesn't pin a request slot: the cell yields a
+    /// real `EvalRunItem` carrying `runtime_failure`, which scoring
+    /// promotes to `Failure::ReplayRuntimeFailure` in the report.
+    pub fn timeout_failure(fixture_id: String, walltime_secs: u64) -> Self {
+        Self {
+            fixture_id,
+            final_text: String::new(),
+            metrics: AgentMetrics::default(),
+            elapsed: Duration::from_secs(walltime_secs),
+            error_type: None,
+            inference_error_count: 0,
+            runtime_failure: Some(ReplayRuntimeFailure::RuntimeError {
+                message: format!("cell walltime exceeded: max {walltime_secs}s"),
+            }),
+            revision_count: 0,
+            judge_score: None,
+            judge_reasoning: None,
+        }
+    }
+
     /// Total tokens consumed across all inferences. Per-span fallback:
     /// each span contributes its own `total_tokens` when set, otherwise
     /// its `input_tokens + output_tokens`. Mixing the two within one

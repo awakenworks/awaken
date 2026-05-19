@@ -84,8 +84,13 @@ pub struct OnlineEvalRequest {
     /// Default true — exploration is retroactively interesting.
     #[serde(default = "default_persist")]
     pub persist: bool,
-    /// Per-cell walltime cap (informational; not yet enforced — see
-    /// follow-up on cancellation token plumbing).
+    /// Per-cell walltime cap. Enforced via `tokio::time::timeout` around
+    /// the per-cell future: when a cell's replay (initial inference +
+    /// any dialogue continuation + revise loop) exceeds this many
+    /// seconds, the in-flight provider call is dropped and the cell's
+    /// `EvalRunItem` carries a `ReplayRuntimeFailure::RuntimeError` with
+    /// a "cell walltime exceeded" message. Prevents a stuck provider
+    /// from holding the HTTP connection open past ingress timeouts.
     #[serde(default = "default_walltime")]
     pub max_walltime_secs: u64,
     /// Per-cell token budget (post-hoc enforced — see
@@ -256,8 +261,10 @@ pub async fn start_online_eval(
             let overrides = body.agent_overrides.clone();
             let base = agent_base.clone();
             let max_tokens = body.max_total_tokens;
+            let walltime = std::time::Duration::from_secs(body.max_walltime_secs);
             let trace_sink = trace_sink.clone();
             let cell = cell.clone();
+            let fixture_id = fixture.id.clone();
             let revise_for_task = crate::services::eval_run_service::revise_tuple_for(
                 judge.as_ref(),
                 &fixture.expect,
@@ -277,16 +284,23 @@ pub async fn start_online_eval(
                     trace_sink,
                     revise_for_task,
                 );
-                let outcomes = replay_all(&replayer, std::slice::from_ref(&fixture)).await;
-                (
-                    cell,
-                    sample,
-                    outcomes
-                        .into_iter()
-                        .next()
-                        .expect("one fixture → one outcome"),
-                    binding,
+                // Cap the cell's wall-clock under tokio::time::timeout —
+                // on expiry the in-flight future is dropped and the cell
+                // surfaces a synthetic outcome with runtime_failure, so a
+                // stuck provider cannot pin an HTTP request slot
+                // indefinitely.
+                let outcome = match tokio::time::timeout(
+                    walltime,
+                    replay_all(&replayer, std::slice::from_ref(&fixture)),
                 )
+                .await
+                {
+                    Ok(outs) => outs.into_iter().next().expect("one fixture → one outcome"),
+                    Err(_) => {
+                        awaken_eval::ReplayOutcome::timeout_failure(fixture_id, walltime.as_secs())
+                    }
+                };
+                (cell, sample, outcome, binding)
             }));
         }
     }
