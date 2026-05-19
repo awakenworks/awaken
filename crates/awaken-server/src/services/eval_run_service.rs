@@ -195,6 +195,9 @@ fn map_eval_run_store_error(err: EvalRunStoreError) -> ApiError {
         EvalRunStoreError::InvalidRunId(id) => {
             ApiError::BadRequest(format!("invalid eval run id: {id}"))
         }
+        EvalRunStoreError::AlreadyExists(id) => {
+            ApiError::Conflict(format!("eval run already exists: {id}"))
+        }
         err => ApiError::Internal(err.to_string()),
     }
 }

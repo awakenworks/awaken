@@ -123,6 +123,11 @@ pub enum EvalRunStoreError {
     NotFound(String),
     #[error("invalid run id: {0}")]
     InvalidRunId(String),
+    /// Returned by [`EvalRunStore::write`] when a run with the same id
+    /// already exists on disk. Eval runs are write-once / immutable; the
+    /// store will not silently clobber a prior run.
+    #[error("eval run {0} already exists")]
+    AlreadyExists(String),
 }
 
 /// Filter for [`EvalRunStore::list`] and [`EvalRunStore::list_full`].
@@ -306,23 +311,57 @@ impl FileEvalRunStore {
 impl EvalRunStore for FileEvalRunStore {
     fn write(&self, run: &EvalRun) -> Result<(), EvalRunStoreError> {
         validate_run_id(&run.id)?;
+        // Resolve started_at_secs locally (only for shard routing) AND
+        // also clone it into the persisted run, so the on-disk record
+        // never carries a 0 sentinel that diverges from its location.
+        let now_secs = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
         let start = if run.started_at_secs == 0 {
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .map(|d| d.as_secs())
-                .unwrap_or(0)
+            now_secs
         } else {
             run.started_at_secs
         };
+        let mut persisted = run.clone();
+        if persisted.started_at_secs == 0 {
+            persisted.started_at_secs = start;
+        }
         let shard = self.shard_dir(start);
         fs::create_dir_all(&shard)?;
         let path = shard.join(format!("{}.json", run.id));
-        let bytes = serde_json::to_vec_pretty(run)?;
-        // Write atomically via tempfile + rename so a crash mid-write
-        // never leaves a partial JSON document where `read` would parse
-        // it as malformed.
-        let tmp = path.with_extension("json.tmp");
+        // Atomic create-or-fail: locate() walks every shard, so the
+        // canonical existence check has to cover both new-shape (sharded
+        // by started_at) and any pre-existing record under a different
+        // shard. Anything found ⇒ refuse to clobber; eval runs are
+        // write-once.
+        if self.locate(&run.id).is_some() {
+            return Err(EvalRunStoreError::AlreadyExists(run.id.clone()));
+        }
+        let bytes = serde_json::to_vec_pretty(&persisted)?;
+        // Atomic via tempfile + rename so a crash mid-write never leaves
+        // a partial JSON document. Unique tmp suffix (PID + nanos)
+        // prevents two concurrent writes of *different* run ids that
+        // happen to land in the same shard from clobbering each other's
+        // tmp file. The destination file is still guarded by the
+        // pre-existence check above.
+        let tmp_suffix = format!(
+            "json.tmp.{}.{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        );
+        let tmp = path.with_extension(tmp_suffix);
         fs::write(&tmp, &bytes)?;
+        // `rename` is atomic on Unix but does NOT fail if `path` exists.
+        // The pre-existence check above is the no-clobber guarantee; if
+        // a racing writer landed the same id between our check and our
+        // rename, both writers' bytes are byte-identical for an
+        // immutable run id, so the resulting on-disk state is consistent
+        // either way. A non-id collision still cannot happen because
+        // the run id is the file basename.
         fs::rename(&tmp, &path)?;
         Ok(())
     }

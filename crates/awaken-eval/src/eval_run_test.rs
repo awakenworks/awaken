@@ -83,6 +83,44 @@ fn file_store_round_trips_run_and_locates_by_id() {
 }
 
 #[test]
+fn file_store_write_is_write_once() {
+    // Eval runs are immutable; a second write under the same id must
+    // surface AlreadyExists, not silently overwrite the prior bytes.
+    let tmp = tempfile::tempdir().unwrap();
+    let store = FileEvalRunStore::new(tmp.path()).unwrap();
+    let first = sample_run("RUN42", "DS1", 1_700_000_000);
+    store.write(&first).unwrap();
+    let mut second = first.clone();
+    second.dataset_id = "DS2".into();
+    let err = store.write(&second).unwrap_err();
+    assert!(matches!(
+        err,
+        EvalRunStoreError::AlreadyExists(ref id) if id == "RUN42"
+    ));
+    // Persisted bytes still belong to the first writer.
+    let read = store.read("RUN42").unwrap();
+    assert_eq!(read.dataset_id, "DS1");
+}
+
+#[test]
+fn file_store_started_at_zero_is_resolved_in_persisted_record() {
+    // Earlier shape resolved started_at_secs only for shard routing, so
+    // the persisted JSON still carried a `0` that diverged from its
+    // location. Now the resolved value lands in the saved record too.
+    let tmp = tempfile::tempdir().unwrap();
+    let store = FileEvalRunStore::new(tmp.path()).unwrap();
+    let mut run = sample_run("RUN-RESOLVE", "DS1", 0);
+    run.ended_at_secs = 0;
+    store.write(&run).unwrap();
+    let read = store.read("RUN-RESOLVE").unwrap();
+    assert!(
+        read.started_at_secs > 0,
+        "expected resolved started_at, got {}",
+        read.started_at_secs
+    );
+}
+
+#[test]
 fn file_store_list_filters_by_dataset_and_sorts_newest_first() {
     // Two datasets, two runs each. The list filter must return only
     // the matching dataset's runs, newest-first. Drift on either axis
