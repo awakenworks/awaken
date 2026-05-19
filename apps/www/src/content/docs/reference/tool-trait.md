@@ -291,10 +291,10 @@ New -> Running -> Succeeded
 
 Terminal states (`Succeeded`, `Failed`, `Cancelled`) cannot transition further.
 
-See [Plugin Internals](/explanation/plugin-internals/) for intercept
+See [Plugin Internals](/awaken/explanation/plugin-internals/) for intercept
 priority details and the full phase convergence loop.
 
 ## Related
 
-- [First Tool Tutorial](/tutorials/first-tool/)
-- [Add a Tool](/how-to/add-a-tool/)
+- [First Tool Tutorial](/awaken/tutorials/first-tool/)
+- [Add a Tool](/awaken/how-to/add-a-tool/)

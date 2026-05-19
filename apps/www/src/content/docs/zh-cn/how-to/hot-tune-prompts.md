@@ -11,9 +11,9 @@ Awaken runtime 把工具(Rust)与 prompt、reminder、permission、skill 目录(
 
 ## 前置
 
-- Awaken 服务已经把 `ConfigStore` 接入 `AppState`(见[暴露 HTTP SSE](/zh-cn/how-to/expose-http-sse/))。
-- 配置里至少有一个 agent、一个 model、一个 provider(见[通过配置调优 Agent 行为](/zh-cn/how-to/configure-agent-behavior/))。
-- 你希望 agent 调用的工具已经在 Rust 注册(`AgentRuntimeBuilder::with_tool`,见[添加 Tool](/zh-cn/how-to/add-a-tool/))。
+- Awaken 服务已经把 `ConfigStore` 接入 `AppState`(见[暴露 HTTP SSE](/awaken/zh-cn/how-to/expose-http-sse/))。
+- 配置里至少有一个 agent、一个 model、一个 provider(见[通过配置调优 Agent 行为](/awaken/zh-cn/how-to/configure-agent-behavior/))。
+- 你希望 agent 调用的工具已经在 Rust 注册(`AgentRuntimeBuilder::with_tool`,见[添加 Tool](/awaken/zh-cn/how-to/add-a-tool/))。
 
 ## 循环
 
@@ -123,9 +123,9 @@ Runtime 保证:**已经开始的 run 直到终止都用启动时的 snapshot。*
 
 ## 相关
 
-- [通过配置调优 Agent 行为](/zh-cn/how-to/configure-agent-behavior/) —— 完整配置面参考
-- [添加 Tool](/zh-cn/how-to/add-a-tool/) —— 什么留在代码
-- [启用工具权限 HITL](/zh-cn/how-to/enable-tool-permission-hitl/) —— `permission` section 深入
-- [使用 Reminder 插件](/zh-cn/how-to/use-reminder-plugin/) —— `reminder` section 深入
-- [使用 Skills 子系统](/zh-cn/how-to/use-skills-subsystem/) —— 启用 `start_periodic_refresh`
-- [设计哲学](/zh-cn/explanation/philosophy/) —— 为什么这样分层
+- [通过配置调优 Agent 行为](/awaken/zh-cn/how-to/configure-agent-behavior/) —— 完整配置面参考
+- [添加 Tool](/awaken/zh-cn/how-to/add-a-tool/) —— 什么留在代码
+- [启用工具权限 HITL](/awaken/zh-cn/how-to/enable-tool-permission-hitl/) —— `permission` section 深入
+- [使用 Reminder 插件](/awaken/zh-cn/how-to/use-reminder-plugin/) —— `reminder` section 深入
+- [使用 Skills 子系统](/awaken/zh-cn/how-to/use-skills-subsystem/) —— 启用 `start_periodic_refresh`
+- [设计哲学](/awaken/zh-cn/explanation/philosophy/) —— 为什么这样分层

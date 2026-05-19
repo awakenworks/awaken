@@ -11,9 +11,9 @@ Change an agent's behaviour mid-flight and verify the change on the very next ru
 
 ## Prerequisites
 
-- The Awaken server is running with a `ConfigStore` wired into `AppState` (see [Expose HTTP SSE](/how-to/expose-http-sse/)).
-- At least one agent, model, and provider exist in config (see [Configure Agent Behavior](/how-to/configure-agent-behavior/)).
-- Tools you want the agent to call are registered in Rust (`AgentRuntimeBuilder::with_tool`, see [Add a Tool](/how-to/add-a-tool/)).
+- The Awaken server is running with a `ConfigStore` wired into `AppState` (see [Expose HTTP SSE](/awaken/how-to/expose-http-sse/)).
+- At least one agent, model, and provider exist in config (see [Configure Agent Behavior](/awaken/how-to/configure-agent-behavior/)).
+- Tools you want the agent to call are registered in Rust (`AgentRuntimeBuilder::with_tool`, see [Add a Tool](/awaken/how-to/add-a-tool/)).
 
 ## The loop
 
@@ -123,9 +123,9 @@ If the tune you need crosses one of these lines, you're not on the hot-tune path
 
 ## Related
 
-- [Configure Agent Behavior](/how-to/configure-agent-behavior/) — full config surface reference
-- [Add a Tool](/how-to/add-a-tool/) — what stays in code
-- [Enable Tool Permission HITL](/how-to/enable-tool-permission-hitl/) — `permission` section deep dive
-- [Use Reminder Plugin](/how-to/use-reminder-plugin/) — `reminder` section deep dive
-- [Use Skills Subsystem](/how-to/use-skills-subsystem/) — turning on `start_periodic_refresh`
-- [Design Philosophy](/explanation/philosophy/) — why this split exists
+- [Configure Agent Behavior](/awaken/how-to/configure-agent-behavior/) — full config surface reference
+- [Add a Tool](/awaken/how-to/add-a-tool/) — what stays in code
+- [Enable Tool Permission HITL](/awaken/how-to/enable-tool-permission-hitl/) — `permission` section deep dive
+- [Use Reminder Plugin](/awaken/how-to/use-reminder-plugin/) — `reminder` section deep dive
+- [Use Skills Subsystem](/awaken/how-to/use-skills-subsystem/) — turning on `start_periodic_refresh`
+- [Design Philosophy](/awaken/explanation/philosophy/) — why this split exists

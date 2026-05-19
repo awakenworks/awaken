@@ -216,6 +216,6 @@ let agent_spec = agent_spec.with_section("generative-ui", serde_json::json!({
 
 ## 相关
 
-- [集成 CopilotKit (AG-UI)](/zh-cn/how-to/integrate-copilotkit-ag-ui/)
-- [集成 AI SDK 前端](/zh-cn/how-to/integrate-ai-sdk-frontend/)
-- [添加 Plugin](/zh-cn/how-to/add-a-plugin/)
+- [集成 CopilotKit (AG-UI)](/awaken/zh-cn/how-to/integrate-copilotkit-ag-ui/)
+- [集成 AI SDK 前端](/awaken/zh-cn/how-to/integrate-ai-sdk-frontend/)
+- [添加 Plugin](/awaken/zh-cn/how-to/add-a-plugin/)

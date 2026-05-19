@@ -7,7 +7,7 @@ Use this when you need to control which tools an agent can invoke, with human-in
 
 ## Prerequisites
 
-- A working awaken agent runtime (see [First Agent](/tutorials/first-agent/))
+- A working awaken agent runtime (see [First Agent](/awaken/tutorials/first-agent/))
 - Feature `permission` enabled on the `awaken` crate (enabled by default)
 
 ```toml
@@ -193,6 +193,6 @@ The pattern syntax supports:
 
 ## Related
 
-- [Add a Plugin](/how-to/add-a-plugin/)
-- [HITL and Mailbox](/explanation/hitl-and-mailbox/)
-- [Tool Trait Reference](/reference/tool-trait/)
+- [Add a Plugin](/awaken/how-to/add-a-plugin/)
+- [HITL and Mailbox](/awaken/explanation/hitl-and-mailbox/)
+- [Tool Trait Reference](/awaken/reference/tool-trait/)

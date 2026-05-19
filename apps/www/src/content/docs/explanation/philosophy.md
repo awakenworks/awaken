@@ -99,8 +99,8 @@ The common alternative is "tool returns JSON, frontend writes React per shape." 
 
 ## See also
 
-- [Architecture](/explanation/architecture/) — three-layer runtime structure
-- [Run Lifecycle and Phases](/explanation/run-lifecycle-and-phases/) — the nine phases
-- [State and Snapshot Model](/explanation/state-and-snapshot-model/) — merge strategies in depth
-- [HITL and Mailbox](/explanation/hitl-and-mailbox/) — suspend/resume semantics
-- [Design Tradeoffs](/explanation/design-tradeoffs/) — alternatives considered
+- [Architecture](/awaken/explanation/architecture/) — three-layer runtime structure
+- [Run Lifecycle and Phases](/awaken/explanation/run-lifecycle-and-phases/) — the nine phases
+- [State and Snapshot Model](/awaken/explanation/state-and-snapshot-model/) — merge strategies in depth
+- [HITL and Mailbox](/awaken/explanation/hitl-and-mailbox/) — suspend/resume semantics
+- [Design Tradeoffs](/awaken/explanation/design-tradeoffs/) — alternatives considered

@@ -43,15 +43,15 @@ Check `RunStatus` in state (`__runtime.run_lifecycle` key). If `Waiting`, look a
 
 ## How do I test without a real LLM?
 
-Implement `LlmExecutor` with canned responses. See [Testing Strategy](/how-to/testing-strategy/) for patterns.
+Implement `LlmExecutor` with canned responses. See [Testing Strategy](/awaken/how-to/testing-strategy/) for patterns.
 
 ## What happens when parallel tools write to the same state key?
 
-If you merge parallel state batches yourself, `MergeStrategy::Exclusive` conflicts when two batches write the same key, while `MergeStrategy::Commutative` allows deterministic merging for keys designed for concurrent writes. The default loop commits tool results in result order; custom parallel integrations should use the parallel merge helpers. See [State and Snapshot Model](/explanation/state-and-snapshot-model/).
+If you merge parallel state batches yourself, `MergeStrategy::Exclusive` conflicts when two batches write the same key, while `MergeStrategy::Commutative` allows deterministic merging for keys designed for concurrent writes. The default loop commits tool results in result order; custom parallel integrations should use the parallel merge helpers. See [State and Snapshot Model](/awaken/explanation/state-and-snapshot-model/).
 
 ## How do request transforms work?
 
-Plugins register `InferenceRequestTransform` via the registrar. Transforms modify the inference request (system prompt, tools, parameters) before it reaches the LLM. Only active plugins' transforms apply. See [Plugin Internals](/explanation/plugin-internals/).
+Plugins register `InferenceRequestTransform` via the registrar. Transforms modify the inference request (system prompt, tools, parameters) before it reaches the LLM. Only active plugins' transforms apply. See [Plugin Internals](/awaken/explanation/plugin-internals/).
 
 ## Can I write a custom storage backend?
 
@@ -59,7 +59,7 @@ Yes. Implement `ThreadRunStore` for state persistence, `ConfigStore` for runtime
 
 ## How does context compaction work?
 
-When `autocompact_threshold: Option<usize>` is set in `ContextWindowPolicy`, the `CompactionPlugin` monitors token usage. When the context exceeds that threshold, it finds a safe compaction boundary (where all tool call/result pairs are complete), summarizes older messages via LLM, and replaces them with a `<conversation-summary>` message. See [Optimize Context Window](/how-to/optimize-context-window/).
+When `autocompact_threshold: Option<usize>` is set in `ContextWindowPolicy`, the `CompactionPlugin` monitors token usage. When the context exceeds that threshold, it finds a safe compaction boundary (where all tool call/result pairs are complete), summarizes older messages via LLM, and replaces them with a `<conversation-summary>` message. See [Optimize Context Window](/awaken/how-to/optimize-context-window/).
 
 ## How do I choose between AI SDK v6, AG-UI, A2A, and MCP protocols?
 

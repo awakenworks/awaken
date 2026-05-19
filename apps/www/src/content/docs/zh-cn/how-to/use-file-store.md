@@ -90,5 +90,5 @@ let store = Arc::new(FileStore::new(data_dir));
 
 ## 相关
 
-- [构建 Agent](/zh-cn/how-to/build-an-agent/)
-- [使用 Postgres 存储](/zh-cn/how-to/use-postgres-store/)
+- [构建 Agent](/awaken/zh-cn/how-to/build-an-agent/)
+- [使用 Postgres 存储](/awaken/zh-cn/how-to/use-postgres-store/)

@@ -131,6 +131,6 @@ OTel span 遵循 GenAI 语义约定：根 agent span 使用 `gen_ai.operation.na
 
 ## 相关
 
-- [添加 Plugin](/zh-cn/how-to/add-a-plugin/)
-- [事件](/zh-cn/reference/events/)
-- [架构](/zh-cn/explanation/architecture/)
+- [添加 Plugin](/awaken/zh-cn/how-to/add-a-plugin/)
+- [事件](/awaken/zh-cn/reference/events/)
+- [架构](/awaken/zh-cn/explanation/architecture/)

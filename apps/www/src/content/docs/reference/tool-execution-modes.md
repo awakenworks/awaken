@@ -148,6 +148,6 @@ pub enum DecisionReplayPolicy {
 
 ## Related
 
-- [Tool Trait](/reference/tool-trait/)
-- [HITL and Mailbox](/explanation/hitl-and-mailbox/)
-- [Events](/reference/events/)
+- [Tool Trait](/awaken/reference/tool-trait/)
+- [HITL and Mailbox](/awaken/explanation/hitl-and-mailbox/)
+- [Events](/awaken/reference/events/)

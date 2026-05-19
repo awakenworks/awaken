@@ -84,5 +84,5 @@ Reasoning messages follow the same pattern with `REASONING_MESSAGE_*` events.
 
 ## Related
 
-- [Events](/reference/events/) -- full `AgentEvent` enum
-- [Integrate CopilotKit (AG-UI)](/how-to/integrate-copilotkit-ag-ui/) -- frontend integration guide
+- [Events](/awaken/reference/events/) -- full `AgentEvent` enum
+- [Integrate CopilotKit (AG-UI)](/awaken/how-to/integrate-copilotkit-ag-ui/) -- frontend integration guide

@@ -106,7 +106,7 @@ Both appear identically to the LLM. The distinction is purely about ownership an
 
 ## See Also
 
-- [Tool Trait Reference](/reference/tool-trait/)
-- [Add a Tool](/how-to/add-a-tool/)
-- [Add a Plugin](/how-to/add-a-plugin/)
-- [Run Lifecycle and Phases](/explanation/run-lifecycle-and-phases/)
+- [Tool Trait Reference](/awaken/reference/tool-trait/)
+- [Add a Tool](/awaken/how-to/add-a-tool/)
+- [Add a Plugin](/awaken/how-to/add-a-plugin/)
+- [Run Lifecycle and Phases](/awaken/explanation/run-lifecycle-and-phases/)

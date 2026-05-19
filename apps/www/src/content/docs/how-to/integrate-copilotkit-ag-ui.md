@@ -7,7 +7,7 @@ Use this when you have a CopilotKit React frontend and need to connect it to an 
 
 ## Prerequisites
 
-- A working awaken agent runtime (see [First Agent](/tutorials/first-agent/))
+- A working awaken agent runtime (see [First Agent](/awaken/tutorials/first-agent/))
 - Feature `server` enabled on the `awaken` crate
 - Node.js project with `@copilotkit/react-core` and `@copilotkit/react-ui` installed
 
@@ -171,6 +171,6 @@ npm run dev
 
 ## Related
 
-- [Expose HTTP SSE](/how-to/expose-http-sse/)
-- [AG-UI Protocol Reference](/reference/protocols/ag-ui/)
-- [Integrate AI SDK Frontend](/how-to/integrate-ai-sdk-frontend/)
+- [Expose HTTP SSE](/awaken/how-to/expose-http-sse/)
+- [AG-UI Protocol Reference](/awaken/reference/protocols/ag-ui/)
+- [Integrate AI SDK Frontend](/awaken/how-to/integrate-ai-sdk-frontend/)

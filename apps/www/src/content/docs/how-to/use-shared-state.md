@@ -7,7 +7,7 @@ Use this when agents need to share persistent state across thread boundaries, ag
 
 ## Prerequisites
 
-- A working awaken agent runtime (see [First Agent](/tutorials/first-agent/))
+- A working awaken agent runtime (see [First Agent](/awaken/tutorials/first-agent/))
 - A `ProfileStore` backend configured on the runtime (e.g. file store or Postgres)
 
 ## Concepts
@@ -168,6 +168,6 @@ Use `ProfileKey` with a `StateScope` key when state must survive across runs **a
 
 ## Related
 
-- [State and Snapshot Model](/explanation/state-and-snapshot-model/)
-- [State Keys](/reference/state-keys/)
-- [Add a Plugin](/how-to/add-a-plugin/)
+- [State and Snapshot Model](/awaken/explanation/state-and-snapshot-model/)
+- [State Keys](/awaken/reference/state-keys/)
+- [Add a Plugin](/awaken/how-to/add-a-plugin/)

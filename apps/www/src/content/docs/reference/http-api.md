@@ -320,5 +320,5 @@ MCP routes return JSON-RPC error objects instead of the generic shape above.
 
 ## Related
 
-- [Expose HTTP with SSE](/how-to/expose-http-sse/)
-- [Config](/reference/config/)
+- [Expose HTTP with SSE](/awaken/how-to/expose-http-sse/)
+- [Config](/awaken/reference/config/)

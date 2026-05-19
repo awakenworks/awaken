@@ -3,7 +3,7 @@ title: "Effects"
 description: "Effect 是类型化的、fire-and-forget 的副作用事件。和会在 phase 收敛循环内部执行、还能继续级联的 scheduled actions 不同，effect 在 commit 之后才分发，而且 handler 不能再返回新的 StateCommand。"
 ---
 
-Effect 是类型化的、fire-and-forget 的副作用事件。和会在 phase 收敛循环内部执行、还能继续级联的 [scheduled actions](/zh-cn/reference/scheduled-actions/) 不同，effect 在 commit 之后才分发，而且 handler 不能再返回新的 `StateCommand`。
+Effect 是类型化的、fire-and-forget 的副作用事件。和会在 phase 收敛循环内部执行、还能继续级联的 [scheduled actions](/awaken/zh-cn/reference/scheduled-actions/) 不同，effect 在 commit 之后才分发，而且 handler 不能再返回新的 `StateCommand`。
 
 常见用途：审计日志、外部 webhook、指标上报、通知投递。
 
@@ -180,5 +180,5 @@ impl TypedEffectHandler<AuditEffect> for AuditEffectHandler {
 
 ## 另见
 
-- [插件系统内部机制](/zh-cn/explanation/plugin-internals/)
-- [Scheduled Actions](/zh-cn/reference/scheduled-actions/)
+- [插件系统内部机制](/awaken/zh-cn/explanation/plugin-internals/)
+- [Scheduled Actions](/awaken/zh-cn/reference/scheduled-actions/)

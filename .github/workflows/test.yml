@@ -32,23 +32,27 @@ jobs:
     name: MCP Reference E2E
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@1.93.0
       - uses: Swatinem/rust-cache@v2
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
           node-version: 22
       - run: cargo test --locked -p awaken-ext-mcp --test e2e_server_everything -- --ignored --test-threads=1
 
   book-doctests:
-    name: Book Doctests
+    name: Doctest Examples
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@1.93.0
       - uses: Swatinem/rust-cache@v2
       - run: cargo test --locked -p awaken-doctest
-      - run: cargo build --locked -p awaken-doctest --examples
+      # examples/ are smoke tests with main fns — `--examples` both
+      # compiles AND executes each (constructs types, returns 0). Pure
+      # smoke; no live LLM, no network. README + lib.rs both reference
+      # this exact command — keep in sync.
+      - run: cargo test --locked -p awaken-doctest --examples
 
   ai-sdk-starter-build:
     # Build the frontend example to catch TypeScript errors
@@ -89,6 +93,33 @@ jobs:
           cache: 'pnpm'
       - run: pnpm install --frozen-lockfile
       - run: pnpm --filter awaken-admin-console run ci
+
+  visual-regression:
+    name: Visual Regression
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@1.93.0
+      - uses: Swatinem/rust-cache@v2
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: 'pnpm'
+      # CJK font for zh-cn landing snapshot stability — Ubuntu runners
+      # ship no Chinese font by default, so without this the zh-cn pages
+      # render with the wrong fallback and the committed baselines (taken
+      # on a host with Noto Sans CJK) fail with ~4% pixel diff.
+      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends fonts-noto-cjk && fc-cache -f
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter awaken-e2e exec playwright install --with-deps chromium
+      - run: pnpm --filter awaken-e2e run test:visual
+      - if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: visual-regression-diff
+          path: e2e/test-results/
+          retention-days: 7
 
   design-tokens-test:
     name: Design Tokens

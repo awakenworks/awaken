@@ -125,10 +125,10 @@ after the turn commits.
 
 ## Related
 
-- [Errors](/reference/errors/) for the full `InferenceExecutionError`
+- [Errors](/awaken/reference/errors/) for the full `InferenceExecutionError`
   taxonomy and accessors.
-- [Events](/reference/events/) for `ToolCallCancel` / `StreamReset`
+- [Events](/awaken/reference/events/) for `ToolCallCancel` / `StreamReset`
   semantics.
-- [Optimize the Context Window](/how-to/optimize-context-window/) for the
+- [Optimize the Context Window](/awaken/how-to/optimize-context-window/) for the
   separate truncation-recovery path used when the model itself stops with
   `MaxTokens`.

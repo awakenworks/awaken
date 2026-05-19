@@ -197,7 +197,7 @@ curl -sS -X PUT http://localhost:3000/v1/config/agents/assistant \
 
 `allowed_tools` whitelists; `excluded_tools` blacklists. Both apply on the next run — no rebuild, no restart. Add a tool in code once; gate it per agent via config.
 
-For finer per-call control (allow/deny/ask on argument shape, not just tool name), use the [Permission plugin](/how-to/enable-tool-permission-hitl/).
+For finer per-call control (allow/deny/ask on argument shape, not just tool name), use the [Permission plugin](/awaken/how-to/enable-tool-permission-hitl/).
 
 ## Verify
 
@@ -222,5 +222,5 @@ Send a message that should trigger the tool. Inspect the run result to confirm t
 
 ## Related
 
-- [Build an Agent](/how-to/build-an-agent/)
-- [Add a Plugin](/how-to/add-a-plugin/)
+- [Build an Agent](/awaken/how-to/build-an-agent/)
+- [Add a Plugin](/awaken/how-to/add-a-plugin/)

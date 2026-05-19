@@ -201,7 +201,7 @@ The config API treats `api_key` as write-only:
 - `PUT` with `api_key: null` or `api_key: ""` clears it.
 
 The in-memory representation is `RedactedString` (see
-[config reference — secret handling](/reference/config/#secret-handling)).
+[config reference — secret handling](/awaken/reference/config/#secret-handling)).
 
 ## Runtime snapshot behavior
 
@@ -283,6 +283,6 @@ For collected execution, retry and fallback apply to the full inference call. Fo
 
 ## Related
 
-- [Configure Agent Behavior](/how-to/configure-agent-behavior/)
-- [Config](/reference/config/)
-- [Agent Resolution](/explanation/agent-resolution/)
+- [Configure Agent Behavior](/awaken/how-to/configure-agent-behavior/)
+- [Config](/awaken/reference/config/)
+- [Agent Resolution](/awaken/explanation/agent-resolution/)

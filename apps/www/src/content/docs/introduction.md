@@ -59,8 +59,8 @@ The above three rules combine to give four properties most agent frameworks lack
 
 ## Reading path
 
-1. [Get Started](/get-started/) → [First Agent](/tutorials/first-agent/).
-2. [Build Agents](/build-agents/) — tools, MCP, skills, reminders, HITL, UI.
-3. [Serve & Integrate](/serve-and-integrate/) — AI SDK / CopilotKit / A2A / MCP frontends.
-4. [State & Storage](/state-and-storage/), [Operate](/operate/) — production hardening.
-5. [Design Philosophy](/explanation/philosophy/) — the "why" behind the three rules.
+1. [Get Started](/awaken/get-started/) → [First Agent](/awaken/tutorials/first-agent/).
+2. [Build Agents](/awaken/build-agents/) — tools, MCP, skills, reminders, HITL, UI.
+3. [Serve & Integrate](/awaken/serve-and-integrate/) — AI SDK / CopilotKit / A2A / MCP frontends.
+4. [State & Storage](/awaken/state-and-storage/), [Operate](/awaken/operate/) — production hardening.
+5. [Design Philosophy](/awaken/explanation/philosophy/) — the "why" behind the three rules.

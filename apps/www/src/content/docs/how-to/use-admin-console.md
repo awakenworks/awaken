@@ -7,7 +7,7 @@ The admin console is the operator UI for an Awaken runtime. This guide walks
 through the workflows that operators most often run from the browser.
 
 For the technical inventory of every screen and widget, see
-[Admin Console reference](/reference/admin-console/).
+[Admin Console reference](/awaken/reference/admin-console/).
 
 ## Prerequisites
 
@@ -212,7 +212,7 @@ Without this:
   column.
 - Per-agent dashboard cannot render its latency histogram.
 
-See [Enable Observability](/how-to/enable-observability/) for the full
+See [Enable Observability](/awaken/how-to/enable-observability/) for the full
 recipe.
 
 ## Switch to dark mode
@@ -236,6 +236,6 @@ system colour scheme (`tokens-auto-dark.css` honours
 
 ## Related
 
-- [Admin Console reference](/reference/admin-console/)
-- [HTTP API](/reference/http-api/)
-- [Enable Observability](/how-to/enable-observability/)
+- [Admin Console reference](/awaken/reference/admin-console/)
+- [HTTP API](/awaken/reference/http-api/)
+- [Enable Observability](/awaken/how-to/enable-observability/)

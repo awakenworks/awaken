@@ -45,4 +45,6 @@ docs/book/mermaid-init.js
 *.png
 # ...except checked-in documentation assets.
 !docs/assets/**/*.png
+# ...and Playwright visual-regression baselines (one per surface × theme × locale).
+!e2e/tests/**/*-snapshots/**/*.png
 coverage_err.log

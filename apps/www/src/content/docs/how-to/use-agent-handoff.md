@@ -166,5 +166,5 @@ Use handoff when you want the agent to change behavior while retaining conversat
 
 ## Related
 
-- [Add a Plugin](/how-to/add-a-plugin/)
-- [Build an Agent](/how-to/build-an-agent/)
+- [Add a Plugin](/awaken/how-to/add-a-plugin/)
+- [Build an Agent](/awaken/how-to/build-an-agent/)

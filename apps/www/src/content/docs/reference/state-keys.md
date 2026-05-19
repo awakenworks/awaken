@@ -252,5 +252,5 @@ impl PluginRegistrar {
 
 ## Related
 
-- [State and Snapshot Model](/explanation/state-and-snapshot-model/)
-- [Use Shared State](/how-to/use-shared-state/)
+- [State and Snapshot Model](/awaken/explanation/state-and-snapshot-model/)
+- [Use Shared State](/awaken/how-to/use-shared-state/)

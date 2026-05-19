@@ -7,7 +7,7 @@ Use this when you need to trace LLM inference calls and tool executions with Ope
 
 ## Prerequisites
 
-- A working awaken agent runtime (see [First Agent](/tutorials/first-agent/))
+- A working awaken agent runtime (see [First Agent](/awaken/tutorials/first-agent/))
 - Feature `observability` enabled on the `awaken` crate (enabled by default)
 - For OTel export: feature `otel` enabled on `awaken-ext-observability`, plus a configured OTel collector
 
@@ -185,6 +185,6 @@ OTel spans follow GenAI semantic conventions: the root agent span uses `gen_ai.o
 
 ## Related
 
-- [Add a Plugin](/how-to/add-a-plugin/)
-- [Events](/reference/events/)
-- [Architecture](/explanation/architecture/)
+- [Add a Plugin](/awaken/how-to/add-a-plugin/)
+- [Events](/awaken/reference/events/)
+- [Architecture](/awaken/explanation/architecture/)

@@ -5,7 +5,7 @@ description: "This page covers the internal mechanics of the plugin system: how 
 
 This page covers the internal mechanics of the plugin system: how plugins are registered and activated, how hooks execute and resolve conflicts, how the phase convergence loop works, and how request transforms, effects, inference overrides, and tool intercepts behave at runtime.
 
-For the high-level boundary between tools and plugins, see [Tool and Plugin Boundary](/explanation/tool-and-plugin-boundary/). For the phase lifecycle, see [Run Lifecycle and Phases](/explanation/run-lifecycle-and-phases/).
+For the high-level boundary between tools and plugins, see [Tool and Plugin Boundary](/awaken/explanation/tool-and-plugin-boundary/). For the phase lifecycle, see [Run Lifecycle and Phases](/awaken/explanation/run-lifecycle-and-phases/).
 
 ## Plugin Registration vs Activation
 
@@ -92,7 +92,7 @@ flowchart TD
 
 Because hooks are pure functions (frozen snapshot in, `StateCommand` out, no side effects), re-execution on conflict is always safe. The deferred hooks see the updated state from the batch commit, so they produce correct results even when the original parallel execution would have conflicted.
 
-See [State and Snapshot Model](/explanation/state-and-snapshot-model/) for details on `MergeStrategy` and snapshot isolation.
+See [State and Snapshot Model](/awaken/explanation/state-and-snapshot-model/) for details on `MergeStrategy` and snapshot isolation.
 
 ## Phase Convergence Loop
 
@@ -179,7 +179,7 @@ pub struct InferenceOverride {
 
 `upstream_model` and `fallback_upstream_models` are upstream model names for the already
 resolved provider; they do not switch provider executors. See
-[Provider and Model Configuration](/reference/provider-model-config/).
+[Provider and Model Configuration](/awaken/reference/provider-model-config/).
 
 When two overrides are merged, each field independently takes the last non-`None` value:
 
@@ -233,8 +233,8 @@ flowchart TD
 
 ## See Also
 
-- [Tool and Plugin Boundary](/explanation/tool-and-plugin-boundary/) -- when to use a tool vs a plugin
-- [Run Lifecycle and Phases](/explanation/run-lifecycle-and-phases/) -- phase ordering and termination
-- [State and Snapshot Model](/explanation/state-and-snapshot-model/) -- merge strategies, scoping, snapshot isolation
-- [Scheduled Actions Reference](/reference/scheduled-actions/) -- action handler registration
-- [HITL and Mailbox](/explanation/hitl-and-mailbox/) -- suspension and resume flow
+- [Tool and Plugin Boundary](/awaken/explanation/tool-and-plugin-boundary/) -- when to use a tool vs a plugin
+- [Run Lifecycle and Phases](/awaken/explanation/run-lifecycle-and-phases/) -- phase ordering and termination
+- [State and Snapshot Model](/awaken/explanation/state-and-snapshot-model/) -- merge strategies, scoping, snapshot isolation
+- [Scheduled Actions Reference](/awaken/reference/scheduled-actions/) -- action handler registration
+- [HITL and Mailbox](/awaken/explanation/hitl-and-mailbox/) -- suspension and resume flow

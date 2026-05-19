@@ -126,4 +126,4 @@ pub struct PersistedState {
 
 ## 相关
 
-- [状态与快照模型](/zh-cn/explanation/state-and-snapshot-model/)
+- [状态与快照模型](/awaken/zh-cn/explanation/state-and-snapshot-model/)

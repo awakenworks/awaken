@@ -293,6 +293,6 @@ whether the agent succeeded, read `RunRecord.status`, `RunRecord.waiting`, and
 
 ## Related
 
-- [Use File Store](/how-to/use-file-store/)
-- [Use Postgres Store](/how-to/use-postgres-store/)
+- [Use File Store](/awaken/how-to/use-file-store/)
+- [Use Postgres Store](/awaken/how-to/use-postgres-store/)
 - ADR-0022: Run Dispatch Data Model

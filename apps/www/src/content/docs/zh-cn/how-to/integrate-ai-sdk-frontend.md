@@ -183,6 +183,6 @@ export default function Chat() {
 
 ## 相关
 
-- [通过 SSE 暴露 HTTP](/zh-cn/how-to/expose-http-sse/)
-- [AI SDK v6 协议](/zh-cn/reference/protocols/ai-sdk-v6/)
-- [集成 CopilotKit (AG-UI)](/zh-cn/how-to/integrate-copilotkit-ag-ui/)
+- [通过 SSE 暴露 HTTP](/awaken/zh-cn/how-to/expose-http-sse/)
+- [AI SDK v6 协议](/awaken/zh-cn/reference/protocols/ai-sdk-v6/)
+- [集成 CopilotKit (AG-UI)](/awaken/zh-cn/how-to/integrate-copilotkit-ag-ui/)

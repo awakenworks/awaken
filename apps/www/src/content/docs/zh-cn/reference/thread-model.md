@@ -255,6 +255,6 @@ Queued -> Claimed -> Acked | Cancelled | Superseded | DeadLetter
 
 ## 相关
 
-- [使用文件存储](/zh-cn/how-to/use-file-store/)
-- [使用 Postgres 存储](/zh-cn/how-to/use-postgres-store/)
+- [使用文件存储](/awaken/zh-cn/how-to/use-file-store/)
+- [使用 Postgres 存储](/awaken/zh-cn/how-to/use-postgres-store/)
 - ADR-0022: Run Dispatch Data Model

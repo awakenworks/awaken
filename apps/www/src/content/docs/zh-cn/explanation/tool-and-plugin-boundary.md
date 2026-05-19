@@ -101,7 +101,7 @@ pub trait Plugin: Send + Sync + 'static {
 
 ## 另见
 
-- [Tool Trait](/zh-cn/reference/tool-trait/)
-- [添加 Tool](/zh-cn/how-to/add-a-tool/)
-- [添加 Plugin](/zh-cn/how-to/add-a-plugin/)
-- [Run 生命周期与 Phases](/zh-cn/explanation/run-lifecycle-and-phases/)
+- [Tool Trait](/awaken/zh-cn/reference/tool-trait/)
+- [添加 Tool](/awaken/zh-cn/how-to/add-a-tool/)
+- [添加 Plugin](/awaken/zh-cn/how-to/add-a-plugin/)
+- [Run 生命周期与 Phases](/awaken/zh-cn/explanation/run-lifecycle-and-phases/)

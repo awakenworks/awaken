@@ -149,5 +149,5 @@ hook、tool 和 request transform。
 
 ## 相关
 
-- [构建 Agent](/zh-cn/how-to/build-an-agent/)
-- [添加 Tool](/zh-cn/how-to/add-a-tool/)
+- [构建 Agent](/awaken/zh-cn/how-to/build-an-agent/)
+- [添加 Tool](/awaken/zh-cn/how-to/add-a-tool/)

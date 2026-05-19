@@ -151,7 +151,7 @@ Choose shared state when you need **dynamic scoping** or **cross-boundary access
 
 ## See Also
 
-- [State Keys](/reference/state-keys/)
-- [Run Lifecycle and Phases](/explanation/run-lifecycle-and-phases/)
-- [Architecture](/explanation/architecture/)
-- [Use Shared State](/how-to/use-shared-state/)
+- [State Keys](/awaken/reference/state-keys/)
+- [Run Lifecycle and Phases](/awaken/explanation/run-lifecycle-and-phases/)
+- [Architecture](/awaken/explanation/architecture/)
+- [Use Shared State](/awaken/how-to/use-shared-state/)

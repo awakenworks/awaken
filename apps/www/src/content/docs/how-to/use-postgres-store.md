@@ -107,5 +107,5 @@ You should see rows corresponding to the threads and runs created during executi
 
 ## Related
 
-- [Build an Agent](/how-to/build-an-agent/)
-- [Use File Store](/how-to/use-file-store/)
+- [Build an Agent](/awaken/how-to/build-an-agent/)
+- [Use File Store](/awaken/how-to/use-file-store/)

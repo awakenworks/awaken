@@ -253,11 +253,11 @@ curl -sS -X POST http://localhost:3000/v1/runs \
 
 ## 相关
 
-- [Provider 与 Model 配置](/zh-cn/reference/provider-model-config/)
-- [配置](/zh-cn/reference/config/)
-- [HTTP API](/zh-cn/reference/http-api/)
-- [在线调优 Prompt](/zh-cn/how-to/hot-tune-prompts/)
-- [启用工具权限 HITL](/zh-cn/how-to/enable-tool-permission-hitl/)
-- [使用 Reminder 插件](/zh-cn/how-to/use-reminder-plugin/)
-- [使用延迟加载工具](/zh-cn/how-to/use-deferred-tools/)
-- [优化上下文窗口](/zh-cn/how-to/optimize-context-window/)
+- [Provider 与 Model 配置](/awaken/zh-cn/reference/provider-model-config/)
+- [配置](/awaken/zh-cn/reference/config/)
+- [HTTP API](/awaken/zh-cn/reference/http-api/)
+- [在线调优 Prompt](/awaken/zh-cn/how-to/hot-tune-prompts/)
+- [启用工具权限 HITL](/awaken/zh-cn/how-to/enable-tool-permission-hitl/)
+- [使用 Reminder 插件](/awaken/zh-cn/how-to/use-reminder-plugin/)
+- [使用延迟加载工具](/awaken/zh-cn/how-to/use-deferred-tools/)
+- [优化上下文窗口](/awaken/zh-cn/how-to/optimize-context-window/)

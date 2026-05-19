@@ -209,7 +209,7 @@ Call the `/health` endpoint (if using the server feature) or inspect the returne
 
 ## Related
 
-- [Add a Tool](/how-to/add-a-tool/)
-- [Add a Plugin](/how-to/add-a-plugin/)
-- [Use File Store](/how-to/use-file-store/)
-- [Expose HTTP with SSE](/how-to/expose-http-sse/)
+- [Add a Tool](/awaken/how-to/add-a-tool/)
+- [Add a Plugin](/awaken/how-to/add-a-plugin/)
+- [Use File Store](/awaken/how-to/use-file-store/)
+- [Expose HTTP with SSE](/awaken/how-to/expose-http-sse/)

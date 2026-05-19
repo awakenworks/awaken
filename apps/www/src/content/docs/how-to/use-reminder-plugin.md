@@ -7,7 +7,7 @@ Use this when you want the agent to receive automatic context messages after too
 
 ## Prerequisites
 
-- A working awaken agent runtime (see [Build an Agent](/how-to/build-an-agent/))
+- A working awaken agent runtime (see [Build an Agent](/awaken/how-to/build-an-agent/))
 - Feature `reminder` enabled on the `awaken` crate
 
 ```toml
@@ -260,6 +260,6 @@ hooks after the plugin has been loaded.
 
 ## Related
 
-- [Enable Tool Permission HITL](/how-to/enable-tool-permission-hitl/) -- uses the same tool pattern DSL
-- [Add a Plugin](/how-to/add-a-plugin/)
-- [Build an Agent](/how-to/build-an-agent/)
+- [Enable Tool Permission HITL](/awaken/how-to/enable-tool-permission-hitl/) -- uses the same tool pattern DSL
+- [Add a Plugin](/awaken/how-to/add-a-plugin/)
+- [Build an Agent](/awaken/how-to/build-an-agent/)

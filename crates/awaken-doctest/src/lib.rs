@@ -3,10 +3,12 @@
 //! ## How this works
 //!
 //! Each `examples/*.rs` file under this crate is a self-contained smoke test
-//! for one public API surface that user docs reference. CI runs
-//! `cargo build --examples -p awaken-doctest` to catch API drift — if a
-//! rename or signature change in the runtime breaks an example, the build
-//! fails before the docs go stale.
+//! for one public API surface that user docs reference. CI runs both
+//! `cargo build --examples -p awaken-doctest` AND
+//! `cargo test --locked -p awaken-doctest --examples` — the test invocation
+//! both compiles and runs each `main` fn (constructs the spec types and
+//! exits zero). Either a rename / signature change OR a runtime panic in
+//! the constructed shape fails CI before the docs go stale.
 //!
 //! Adding coverage: drop a new `examples/<surface>.rs`. Keep it minimal
 //! (no live LLM calls, no network) and exercise only the trait / struct

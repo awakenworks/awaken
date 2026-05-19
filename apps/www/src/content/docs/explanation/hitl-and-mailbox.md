@@ -281,6 +281,6 @@ new request takes priority.
 
 ## See Also
 
-- [Run Lifecycle and Phases](/explanation/run-lifecycle-and-phases/) -- how suspension bridges run and tool-call layers
-- [Enable Tool Permission HITL](/how-to/enable-tool-permission-hitl/) -- practical setup guide
+- [Run Lifecycle and Phases](/awaken/explanation/run-lifecycle-and-phases/) -- how suspension bridges run and tool-call layers
+- [Enable Tool Permission HITL](/awaken/how-to/enable-tool-permission-hitl/) -- practical setup guide
 - ADR-0022: Run Dispatch Data Model -- durable run/dispatch model

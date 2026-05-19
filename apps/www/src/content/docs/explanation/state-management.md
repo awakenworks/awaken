@@ -173,6 +173,6 @@ Use **Shared State** when you need cross-boundary sharing or dynamic scoping.
 
 ## See Also
 
-- [State and Snapshot Model](/explanation/state-and-snapshot-model/) -- internal architecture
-- [State Keys](/reference/state-keys/) -- API reference
-- [Use Shared State](/how-to/use-shared-state/) -- practical how-to
+- [State and Snapshot Model](/awaken/explanation/state-and-snapshot-model/) -- internal architecture
+- [State Keys](/awaken/reference/state-keys/) -- API reference
+- [Use Shared State](/awaken/how-to/use-shared-state/) -- practical how-to

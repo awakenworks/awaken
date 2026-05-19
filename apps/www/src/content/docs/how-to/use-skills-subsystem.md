@@ -7,7 +7,7 @@ Use this when you want agents to discover and activate skill packages at runtime
 
 ## Prerequisites
 
-- A working awaken agent runtime (see [First Agent](/tutorials/first-agent/))
+- A working awaken agent runtime (see [First Agent](/awaken/tutorials/first-agent/))
 - Feature `skills` enabled on the `awaken` crate
 
 ```toml
@@ -173,6 +173,6 @@ The `SkillDiscoveryPlugin` injects a skills catalog into the LLM context before 
 
 ## Related
 
-- [Add a Tool](/how-to/add-a-tool/)
-- [Add a Plugin](/how-to/add-a-plugin/)
-- [Use MCP Tools](/how-to/use-mcp-tools/)
+- [Add a Tool](/awaken/how-to/add-a-tool/)
+- [Add a Plugin](/awaken/how-to/add-a-plugin/)
+- [Use MCP Tools](/awaken/how-to/use-mcp-tools/)

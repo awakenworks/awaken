@@ -9,7 +9,7 @@ with the runtime so operators can inspect and edit the live config without
 restarting the server.
 
 This page is a **surface inventory**. For walkthroughs, see
-[Use the Admin Console](/how-to/use-admin-console/).
+[Use the Admin Console](/awaken/how-to/use-admin-console/).
 
 ## Architecture
 
@@ -24,7 +24,7 @@ This page is a **surface inventory**. For walkthroughs, see
 ## Backend dependencies
 
 Every screen consumes one or more endpoints from
-[HTTP API](/reference/http-api/). The console is built so that **no UI element
+[HTTP API](/awaken/reference/http-api/). The console is built so that **no UI element
 fabricates data** — when an endpoint returns `503` or `null`, the
 corresponding widget collapses to a placeholder or a "feature disabled"
 notice. This is enforced by code review, not by runtime check.
@@ -183,7 +183,7 @@ the console can show real data:
 
 ## Related
 
-- [Use the Admin Console](/how-to/use-admin-console/) — operator user manual
-- [HTTP API](/reference/http-api/) — endpoint reference
-- [Enable Observability](/how-to/enable-observability/) — turn on
+- [Use the Admin Console](/awaken/how-to/use-admin-console/) — operator user manual
+- [HTTP API](/awaken/reference/http-api/) — endpoint reference
+- [Enable Observability](/awaken/how-to/enable-observability/) — turn on
   runtime stats so the agents-list "Inferences" column starts working

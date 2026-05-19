@@ -188,5 +188,5 @@ MCP 接口返回 JSON-RPC 错误对象，而不是上面的通用形状。
 
 ## 相关
 
-- [通过 SSE 暴露 HTTP](/zh-cn/how-to/expose-http-sse/)
-- [配置](/zh-cn/reference/config/)
+- [通过 SSE 暴露 HTTP](/awaken/zh-cn/how-to/expose-http-sse/)
+- [配置](/awaken/zh-cn/reference/config/)

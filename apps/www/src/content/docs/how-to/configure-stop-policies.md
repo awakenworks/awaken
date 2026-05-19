@@ -212,5 +212,5 @@ A policy with `max` or `max_total` set to `0` is treated as disabled and always 
 
 ## Related
 
-- [Add a Plugin](/how-to/add-a-plugin/)
-- [Build an Agent](/how-to/build-an-agent/)
+- [Add a Plugin](/awaken/how-to/add-a-plugin/)
+- [Build an Agent](/awaken/how-to/build-an-agent/)

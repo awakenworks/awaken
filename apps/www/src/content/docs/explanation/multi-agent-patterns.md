@@ -143,6 +143,6 @@ This trait is the extension point for custom local or remote execution backends 
 
 ## See Also
 
-- [A2A Protocol Reference](/reference/protocols/a2a/) -- wire protocol details
-- [Architecture](/explanation/architecture/) -- runtime and resolver layers
-- [Tool and Plugin Boundary](/explanation/tool-and-plugin-boundary/) -- where delegation tools fit
+- [A2A Protocol Reference](/awaken/reference/protocols/a2a/) -- wire protocol details
+- [Architecture](/awaken/explanation/architecture/) -- runtime and resolver layers
+- [Tool and Plugin Boundary](/awaken/explanation/tool-and-plugin-boundary/) -- where delegation tools fit

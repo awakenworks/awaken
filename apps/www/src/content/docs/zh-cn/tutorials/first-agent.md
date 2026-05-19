@@ -155,7 +155,7 @@ let runtime = AgentRuntimeBuilder::new()
     .build()?;  // agent "assistant" 从配置 snapshot 解析
 ```
 
-然后[暴露 HTTP/SSE](/zh-cn/how-to/expose-http-sse/),把 agent spec PUT 一次:
+然后[暴露 HTTP/SSE](/awaken/zh-cn/how-to/expose-http-sse/),把 agent spec PUT 一次:
 
 ```bash
 curl -sS -X PUT http://localhost:3000/v1/config/agents/assistant \
@@ -168,15 +168,15 @@ curl -sS -X PUT http://localhost:3000/v1/config/agents/assistant \
   }'
 ```
 
-之后想改 prompt,用同一个 id PUT 新的 `system_prompt`。下一次 `POST /v1/runs` 读到的就是新 snapshot —— 不重新构建、不重启。完整循环见[在线调优 Prompt](/zh-cn/how-to/hot-tune-prompts/)。
+之后想改 prompt,用同一个 id PUT 新的 `system_prompt`。下一次 `POST /v1/runs` 读到的就是新 snapshot —— 不重新构建、不重启。完整循环见[在线调优 Prompt](/awaken/zh-cn/how-to/hot-tune-prompts/)。
 
 ## 下一步阅读
 
 根据你的需求选择下一页：
 
-- 添加类型化状态和有状态工具：[第一个 Tool](/zh-cn/../tutorials/first-tool/)
-- 了解事件如何映射到智能体循环：[事件参考](/zh-cn/../reference/events/)
-- 通过 HTTP 暴露智能体：[暴露 HTTP SSE](/zh-cn/../how-to/expose-http-sse/)
+- 添加类型化状态和有状态工具：[第一个 Tool](/awaken/zh-cn/../tutorials/first-tool/)
+- 了解事件如何映射到智能体循环：[事件参考](/awaken/zh-cn/../reference/events/)
+- 通过 HTTP 暴露智能体：[暴露 HTTP SSE](/awaken/zh-cn/../how-to/expose-http-sse/)
 
 ## 常见错误
 
@@ -187,6 +187,6 @@ curl -sS -X PUT http://localhost:3000/v1/config/agents/assistant \
 
 ## 下一步
 
-- [第一个 Tool](/zh-cn/../tutorials/first-tool/)
-- [事件参考](/zh-cn/../reference/events/)
-- [暴露 HTTP SSE](/zh-cn/../how-to/expose-http-sse/)
+- [第一个 Tool](/awaken/zh-cn/../tutorials/first-tool/)
+- [事件参考](/awaken/zh-cn/../reference/events/)
+- [暴露 HTTP SSE](/awaken/zh-cn/../how-to/expose-http-sse/)

@@ -7,7 +7,7 @@ Use this when you want to connect to external Model Context Protocol (MCP) serve
 
 ## Prerequisites
 
-- A working awaken agent runtime (see [First Agent](/tutorials/first-agent/))
+- A working awaken agent runtime (see [First Agent](/awaken/tutorials/first-agent/))
 - Feature `mcp` enabled on the `awaken` crate
 - An MCP server to connect to (stdio or HTTP transport)
 
@@ -138,6 +138,6 @@ and see the latest snapshot; in-flight runs keep the tool set they resolved with
 
 ## Related
 
-- [Add a Tool](/how-to/add-a-tool/)
-- [Add a Plugin](/how-to/add-a-plugin/)
-- [Use Skills Subsystem](/how-to/use-skills-subsystem/)
+- [Add a Tool](/awaken/how-to/add-a-tool/)
+- [Add a Plugin](/awaken/how-to/add-a-plugin/)
+- [Use Skills Subsystem](/awaken/how-to/use-skills-subsystem/)

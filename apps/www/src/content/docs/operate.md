@@ -7,16 +7,16 @@ This path is for hardening an agent service once the happy path already works.
 
 ## Recommended order
 
-1. [Enable Observability](/how-to/enable-observability/) to make runs, tools, and providers visible.
-2. [Enable Tool Permission HITL](/how-to/enable-tool-permission-hitl/) to add approval control over tool execution.
-3. [Configure Stop Policies](/how-to/configure-stop-policies/) to keep agent loops bounded and predictable.
-4. [Report Tool Progress](/how-to/report-tool-progress/) and [Testing Strategy](/how-to/testing-strategy/) to improve operator visibility and confidence.
-5. [Recover Streaming LLMs](/how-to/recover-streaming-llms/) when transient provider failures must not surface as run errors.
+1. [Enable Observability](/awaken/how-to/enable-observability/) to make runs, tools, and providers visible.
+2. [Enable Tool Permission HITL](/awaken/how-to/enable-tool-permission-hitl/) to add approval control over tool execution.
+3. [Configure Stop Policies](/awaken/how-to/configure-stop-policies/) to keep agent loops bounded and predictable.
+4. [Report Tool Progress](/awaken/how-to/report-tool-progress/) and [Testing Strategy](/awaken/how-to/testing-strategy/) to improve operator visibility and confidence.
+5. [Recover Streaming LLMs](/awaken/how-to/recover-streaming-llms/) when transient provider failures must not surface as run errors.
 
 ## Harden the admin and config plane
 
 Two orthogonal levers, both detailed in the
-[config reference](/reference/config/):
+[config reference](/awaken/reference/config/):
 
 - `AdminApiConfig.bearer_token` (or `AWAKEN_ADMIN_API_BEARER_TOKEN`) protects
   `/v1/capabilities`, `/v1/config/*`, `/v1/agents*`, `/v1/system/info`,
@@ -31,7 +31,7 @@ unchanged specs.
 
 ## Keep nearby
 
-- [Errors](/reference/errors/)
-- [Cancellation](/reference/cancellation/)
-- [HITL and Mailbox](/explanation/hitl-and-mailbox/)
-- [Config](/reference/config/)
+- [Errors](/awaken/reference/errors/)
+- [Cancellation](/awaken/reference/cancellation/)
+- [HITL and Mailbox](/awaken/explanation/hitl-and-mailbox/)
+- [Config](/awaken/reference/config/)

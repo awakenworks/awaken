@@ -137,6 +137,6 @@ curl http://localhost:3000/health
 
 ## 相关
 
-- [构建 Agent](/zh-cn/how-to/build-an-agent/)
-- [使用文件存储](/zh-cn/how-to/use-file-store/)
-- [使用 Postgres 存储](/zh-cn/how-to/use-postgres-store/)
+- [构建 Agent](/awaken/zh-cn/how-to/build-an-agent/)
+- [使用文件存储](/awaken/zh-cn/how-to/use-file-store/)
+- [使用 Postgres 存储](/awaken/zh-cn/how-to/use-postgres-store/)

@@ -155,7 +155,7 @@ let runtime = AgentRuntimeBuilder::new()
     .build()?;  // agent "assistant" will be resolved from the config snapshot
 ```
 
-Then [expose HTTP/SSE](/how-to/expose-http-sse/) and PUT the agent spec once:
+Then [expose HTTP/SSE](/awaken/how-to/expose-http-sse/) and PUT the agent spec once:
 
 ```bash
 curl -sS -X PUT http://localhost:3000/v1/config/agents/assistant \
@@ -168,15 +168,15 @@ curl -sS -X PUT http://localhost:3000/v1/config/agents/assistant \
   }'
 ```
 
-To tweak the prompt later, just PUT the same id with a new `system_prompt`. The next `POST /v1/runs` reads the new snapshot — no rebuild, no restart. See [Hot-Tune Prompts](/how-to/hot-tune-prompts/) for the full loop.
+To tweak the prompt later, just PUT the same id with a new `system_prompt`. The next `POST /v1/runs` reads the new snapshot — no rebuild, no restart. See [Hot-Tune Prompts](/awaken/how-to/hot-tune-prompts/) for the full loop.
 
 ## Which Doc To Read Next
 
 Use the next page based on what you want:
 
-- add typed state and stateful tools: [First Tool](/tutorials/first-tool/)
-- learn how events map to the agent loop: [Events](/reference/events/)
-- expose the agent over HTTP: [Expose HTTP SSE](/how-to/expose-http-sse/)
+- add typed state and stateful tools: [First Tool](/awaken/tutorials/first-tool/)
+- learn how events map to the agent loop: [Events](/awaken/reference/events/)
+- expose the agent over HTTP: [Expose HTTP SSE](/awaken/how-to/expose-http-sse/)
 
 ## Common Errors
 
@@ -187,6 +187,6 @@ Use the next page based on what you want:
 
 ## Next
 
-- [First Tool](/tutorials/first-tool/)
-- [Events](/reference/events/)
-- [Expose HTTP SSE](/how-to/expose-http-sse/)
+- [First Tool](/awaken/tutorials/first-tool/)
+- [Events](/awaken/reference/events/)
+- [Expose HTTP SSE](/awaken/how-to/expose-http-sse/)

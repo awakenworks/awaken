@@ -80,5 +80,5 @@ reasoning 消息采用同样模式。
 
 ## 相关
 
-- [事件](/zh-cn/reference/events/)
-- [集成 CopilotKit (AG-UI)](/zh-cn/how-to/integrate-copilotkit-ag-ui/)
+- [事件](/awaken/zh-cn/reference/events/)
+- [集成 CopilotKit (AG-UI)](/awaken/zh-cn/how-to/integrate-copilotkit-ag-ui/)

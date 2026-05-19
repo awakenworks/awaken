@@ -170,6 +170,6 @@ agent_spec.set_config::<PermissionConfigKey>(PermissionRulesConfig {
 
 ## 相关
 
-- [添加 Plugin](/zh-cn/how-to/add-a-plugin/)
-- [HITL 与 Mailbox](/zh-cn/explanation/hitl-and-mailbox/)
-- [Tool Trait](/zh-cn/reference/tool-trait/)
+- [添加 Plugin](/awaken/zh-cn/how-to/add-a-plugin/)
+- [HITL 与 Mailbox](/awaken/zh-cn/explanation/hitl-and-mailbox/)
+- [Tool Trait](/awaken/zh-cn/reference/tool-trait/)

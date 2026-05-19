@@ -11,11 +11,10 @@ fn main() {
         ..Default::default()
     };
 
-    let _binding = ModelBindingSpec {
-        id: "gpt-4o-mini".into(),
-        provider_id: "openai".into(),
-        upstream_model: "gpt-4o-mini".into(),
-    };
+    /* Use the constructor instead of a struct literal so future fields
+     * (pricing, etc.) don't force every example to recompile. The
+     * constructor sets all optional fields to their canonical defaults. */
+    let _binding = ModelBindingSpec::new("gpt-4o-mini", "openai", "gpt-4o-mini");
 
     let _agent = AgentSpec {
         id: "assistant".into(),

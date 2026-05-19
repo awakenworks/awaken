@@ -78,6 +78,6 @@ deferred tool loading.
 
 ## Related
 
-- [Introduction](/introduction/)
-- [Scheduled Actions](/reference/scheduled-actions/)
-- [Effects](/reference/effects/)
+- [Introduction](/awaken/introduction/)
+- [Scheduled Actions](/awaken/reference/scheduled-actions/)
+- [Effects](/awaken/reference/effects/)

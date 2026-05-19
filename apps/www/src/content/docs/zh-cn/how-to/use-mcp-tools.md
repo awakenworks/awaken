@@ -132,6 +132,6 @@ manager.start_periodic_refresh(Duration::from_secs(60));
 
 ## 相关
 
-- [添加 Tool](/zh-cn/how-to/add-a-tool/)
-- [添加 Plugin](/zh-cn/how-to/add-a-plugin/)
-- [使用 Skills 子系统](/zh-cn/how-to/use-skills-subsystem/)
+- [添加 Tool](/awaken/zh-cn/how-to/add-a-tool/)
+- [添加 Plugin](/awaken/zh-cn/how-to/add-a-plugin/)
+- [使用 Skills 子系统](/awaken/zh-cn/how-to/use-skills-subsystem/)

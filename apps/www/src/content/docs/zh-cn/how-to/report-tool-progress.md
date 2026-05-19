@@ -115,6 +115,6 @@ pub struct ToolCallProgressState {
 
 ## 相关
 
-- [Tool Trait](/zh-cn/reference/tool-trait/)
-- [事件](/zh-cn/reference/events/)
-- [添加 Tool](/zh-cn/how-to/add-a-tool/)
+- [Tool Trait](/awaken/zh-cn/reference/tool-trait/)
+- [事件](/awaken/zh-cn/reference/events/)
+- [添加 Tool](/awaken/zh-cn/how-to/add-a-tool/)

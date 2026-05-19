@@ -163,6 +163,6 @@ export default function App() {
 
 ## 相关
 
-- [通过 SSE 暴露 HTTP](/zh-cn/how-to/expose-http-sse/)
-- [AG-UI 协议](/zh-cn/reference/protocols/ag-ui/)
-- [集成 AI SDK 前端](/zh-cn/how-to/integrate-ai-sdk-frontend/)
+- [通过 SSE 暴露 HTTP](/awaken/zh-cn/how-to/expose-http-sse/)
+- [AG-UI 协议](/awaken/zh-cn/reference/protocols/ag-ui/)
+- [集成 AI SDK 前端](/awaken/zh-cn/how-to/integrate-ai-sdk-frontend/)

@@ -10,8 +10,8 @@ Implement one tool that reads typed state from `ToolCallContext` during executio
 
 ## Prerequisites
 
-- Complete [First Agent](/tutorials/first-agent/) first.
-- Reuse the runtime dependencies from [First Agent](/tutorials/first-agent/).
+- Complete [First Agent](/awaken/tutorials/first-agent/) first.
+- Reuse the runtime dependencies from [First Agent](/awaken/tutorials/first-agent/).
 
 ```toml
 [dependencies]
@@ -284,9 +284,9 @@ The `StateKey` trait gives you type-safe, scoped state without raw JSON manipula
 
 ## Which Doc To Read Next
 
-- understand the full tool lifecycle: [Tool Trait](/reference/tool-trait/)
-- add plugins that manage state across runs: [Add a Plugin](/how-to/add-a-plugin/)
-- learn about state scoping rules: [State Keys](/reference/state-keys/)
+- understand the full tool lifecycle: [Tool Trait](/awaken/reference/tool-trait/)
+- add plugins that manage state across runs: [Add a Plugin](/awaken/how-to/add-a-plugin/)
+- learn about state scoping rules: [State Keys](/awaken/reference/state-keys/)
 
 ## Common Errors
 

@@ -127,7 +127,7 @@ pub enum InferenceExecutionError {
 `GoAway`、`Provider5xxMidStream(u16)`）以及 `InterruptSnapshot`，里面记录了
 中断时的 partial 文本、已完成的 tool call，以及参数尚未完成的 in-flight tool。
 loop runner 据此选择四种恢复方案之一，详见
-[流式 LLM 错误恢复](/zh-cn/how-to/recover-streaming-llms/)。
+[流式 LLM 错误恢复](/awaken/zh-cn/how-to/recover-streaming-llms/)。
 
 ### 便捷访问器
 
@@ -195,4 +195,4 @@ pub enum UnknownKeyPolicy {
 
 ## 相关
 
-- [Tool Trait](/zh-cn/reference/tool-trait/)
+- [Tool Trait](/awaken/zh-cn/reference/tool-trait/)

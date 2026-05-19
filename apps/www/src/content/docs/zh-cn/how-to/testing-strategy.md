@@ -484,6 +484,6 @@ LLM_BASE_URL=https://open.bigmodel.cn/api/paas/v4/ \
 
 ## 相关文档
 
-- [添加工具](/zh-cn/how-to/add-a-tool/)
-- [添加插件](/zh-cn/how-to/add-a-plugin/)
-- [构建代理](/zh-cn/how-to/build-an-agent/)
+- [添加工具](/awaken/zh-cn/how-to/add-a-tool/)
+- [添加插件](/awaken/zh-cn/how-to/add-a-plugin/)
+- [构建代理](/awaken/zh-cn/how-to/build-an-agent/)

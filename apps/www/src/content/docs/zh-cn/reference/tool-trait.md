@@ -258,5 +258,5 @@ New -> Running -> Succeeded
 
 ## 相关
 
-- [第一个 Tool](/zh-cn/tutorials/first-tool/)
-- [添加 Tool](/zh-cn/how-to/add-a-tool/)
+- [第一个 Tool](/awaken/zh-cn/tutorials/first-tool/)
+- [添加 Tool](/awaken/zh-cn/how-to/add-a-tool/)

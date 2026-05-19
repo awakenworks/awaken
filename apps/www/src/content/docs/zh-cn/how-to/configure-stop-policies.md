@@ -192,5 +192,5 @@ pub enum StopDecision {
 
 ## 相关
 
-- [添加 Plugin](/zh-cn/how-to/add-a-plugin/)
-- [构建 Agent](/zh-cn/how-to/build-an-agent/)
+- [添加 Plugin](/awaken/zh-cn/how-to/add-a-plugin/)
+- [构建 Agent](/awaken/zh-cn/how-to/build-an-agent/)

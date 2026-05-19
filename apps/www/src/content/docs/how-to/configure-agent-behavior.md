@@ -298,11 +298,11 @@ Active runs always finish on their starting snapshot — this is the contract. T
 
 ## Related
 
-- [Provider and Model Configuration](/reference/provider-model-config/)
-- [Config](/reference/config/)
-- [HTTP API](/reference/http-api/)
-- [Hot-Tune Prompts](/how-to/hot-tune-prompts/)
-- [Enable Tool Permission HITL](/how-to/enable-tool-permission-hitl/)
-- [Use Reminder Plugin](/how-to/use-reminder-plugin/)
-- [Use Deferred Tools](/how-to/use-deferred-tools/)
-- [Optimize Context Window](/how-to/optimize-context-window/)
+- [Provider and Model Configuration](/awaken/reference/provider-model-config/)
+- [Config](/awaken/reference/config/)
+- [HTTP API](/awaken/reference/http-api/)
+- [Hot-Tune Prompts](/awaken/how-to/hot-tune-prompts/)
+- [Enable Tool Permission HITL](/awaken/how-to/enable-tool-permission-hitl/)
+- [Use Reminder Plugin](/awaken/how-to/use-reminder-plugin/)
+- [Use Deferred Tools](/awaken/how-to/use-deferred-tools/)
+- [Optimize Context Window](/awaken/how-to/optimize-context-window/)

@@ -314,5 +314,5 @@ let failed = store.read::<FailedScheduledActions>().unwrap_or_default();
 assert!(failed.is_empty(), "expected no failed actions");
 ```
 
-See [Plugin Internals](/explanation/plugin-internals/) for the full
+See [Plugin Internals](/awaken/explanation/plugin-internals/) for the full
 convergence loop description and phase execution model.

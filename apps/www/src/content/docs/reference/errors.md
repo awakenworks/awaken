@@ -158,7 +158,7 @@ falling back to exponential backoff.
 an `InterruptSnapshot` capturing the partial assistant text, completed tool
 calls, and the open tool whose arguments had not finished arriving. The loop
 runner consumes the snapshot to choose one of four recovery plans; see
-[Recover Streaming LLMs](/how-to/recover-streaming-llms/).
+[Recover Streaming LLMs](/awaken/how-to/recover-streaming-llms/).
 
 ### Convenience accessors
 
@@ -237,4 +237,4 @@ pub enum UnknownKeyPolicy {
 
 ## Related
 
-- [Tool Trait Reference](/reference/tool-trait/)
+- [Tool Trait Reference](/awaken/reference/tool-trait/)

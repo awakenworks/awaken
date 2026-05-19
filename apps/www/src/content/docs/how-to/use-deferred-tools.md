@@ -7,7 +7,7 @@ Use this when your agent has many tools and you want to reduce context window us
 
 ## Prerequisites
 
-- A working awaken agent runtime (see [First Agent](/tutorials/first-agent/))
+- A working awaken agent runtime (see [First Agent](/awaken/tutorials/first-agent/))
 - The `awaken-ext-deferred-tools` crate
 
 ```toml
@@ -295,6 +295,6 @@ for (tool_id, mode) in &state.modes {
 
 ## Related
 
-- [Add a Plugin](/how-to/add-a-plugin/)
-- [Add a Tool](/how-to/add-a-tool/)
-- [Optimize Context Window](/how-to/optimize-context-window/)
+- [Add a Plugin](/awaken/how-to/add-a-plugin/)
+- [Add a Tool](/awaken/how-to/add-a-tool/)
+- [Optimize Context Window](/awaken/how-to/optimize-context-window/)

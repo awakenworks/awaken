@@ -105,7 +105,7 @@ cmd.schedule_action::<AddContextMessage>(
 | `BeforeToolExecuteAction::Suspend` | `ToolGateHook` returning `ToolInterceptPayload::Suspend` | Interception moved to `ToolGate` |
 | `AfterToolExecuteAction::AddMessage` | `AddContextMessage` | Generalized |
 
-See [Scheduled Actions](/reference/scheduled-actions/) for the full list.
+See [Scheduled Actions](/awaken/reference/scheduled-actions/) for the full list.
 
 ## Plugin Trait
 

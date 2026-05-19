@@ -117,7 +117,7 @@ pub enum AgentEvent {
 mid-stream recovery. Consumers discard partial deltas for the named tool call
 (or for the whole turn) and keep reading; the recovered deltas follow on the
 normal `TextDelta` / `ToolCallDelta` channels. See
-[Recover Streaming LLMs](/how-to/recover-streaming-llms/) for the four
+[Recover Streaming LLMs](/awaken/how-to/recover-streaming-llms/) for the four
 recovery plans and `StreamCheckpointStore` wiring.
 
 ### Helper
@@ -226,4 +226,4 @@ all `None` values.
 
 ## Related
 
-- [Run Lifecycle and Phases](/explanation/run-lifecycle-and-phases/)
+- [Run Lifecycle and Phases](/awaken/explanation/run-lifecycle-and-phases/)

@@ -6,6 +6,7 @@
     "test:api-surface": "playwright test -c playwright.api-surface.config.ts",
     "test:interop": "playwright test -c playwright.interop.config.ts",
     "test:admin": "env -u NO_COLOR -u FORCE_COLOR playwright test -c playwright.admin.config.ts",
+    "test:visual": "env -u NO_COLOR -u FORCE_COLOR playwright test -c playwright.visual.config.ts",
     "test:headed": "playwright test --headed"
   },
   "devDependencies": {

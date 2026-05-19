@@ -5,7 +5,7 @@ description: "本文介绍插件系统的内部运作机制：插件如何注册
 
 本文介绍插件系统的内部运作机制：插件如何注册和激活、钩子如何执行和解决冲突、阶段收敛循环的工作原理，以及请求变换、效果、推理覆盖和工具拦截在运行时的行为。
 
-关于工具与插件的高层边界，参见 [Tool and Plugin Boundary](/zh-cn/explanation/tool-and-plugin-boundary/)。关于阶段生命周期，参见 [Run Lifecycle and Phases](/zh-cn/explanation/run-lifecycle-and-phases/)。
+关于工具与插件的高层边界，参见 [Tool and Plugin Boundary](/awaken/zh-cn/explanation/tool-and-plugin-boundary/)。关于阶段生命周期，参见 [Run Lifecycle and Phases](/awaken/zh-cn/explanation/run-lifecycle-and-phases/)。
 
 ## 插件注册与激活
 
@@ -92,7 +92,7 @@ flowchart TD
 
 由于钩子是纯函数（冻结快照输入，`StateCommand` 输出，无副作用），冲突时的重新执行始终是安全的。延迟的钩子能看到批次提交后的更新状态，因此即使原始并行执行会产生冲突，它们也能产生正确的结果。
 
-关于 `MergeStrategy` 和快照隔离的详细信息，参见 [State and Snapshot Model](/zh-cn/explanation/state-and-snapshot-model/)。
+关于 `MergeStrategy` 和快照隔离的详细信息，参见 [State and Snapshot Model](/awaken/zh-cn/explanation/state-and-snapshot-model/)。
 
 ## 阶段收敛循环
 
@@ -178,7 +178,7 @@ pub struct InferenceOverride {
 ```
 
 `upstream_model` 和 `fallback_upstream_models` 是当前已解析 provider 的上游模型名；
-它们不会切换 provider executor。详见 [Provider 与 Model 配置](/zh-cn/reference/provider-model-config/)。
+它们不会切换 provider executor。详见 [Provider 与 Model 配置](/awaken/zh-cn/reference/provider-model-config/)。
 
 当两个覆盖被合并时，每个字段独立取最后一个非 `None` 的值：
 
@@ -232,8 +232,8 @@ flowchart TD
 
 ## 另见
 
-- [Tool and Plugin Boundary](/zh-cn/explanation/tool-and-plugin-boundary/) —— 何时使用工具 vs 插件
-- [Run Lifecycle and Phases](/zh-cn/explanation/run-lifecycle-and-phases/) —— 阶段排序与终止
-- [State and Snapshot Model](/zh-cn/explanation/state-and-snapshot-model/) —— 合并策略、作用域、快照隔离
-- [Scheduled Actions Reference](/zh-cn/reference/scheduled-actions/) —— 动作处理器注册
-- [HITL and Mailbox](/zh-cn/explanation/hitl-and-mailbox/) —— 暂停与恢复流程
+- [Tool and Plugin Boundary](/awaken/zh-cn/explanation/tool-and-plugin-boundary/) —— 何时使用工具 vs 插件
+- [Run Lifecycle and Phases](/awaken/zh-cn/explanation/run-lifecycle-and-phases/) —— 阶段排序与终止
+- [State and Snapshot Model](/awaken/zh-cn/explanation/state-and-snapshot-model/) —— 合并策略、作用域、快照隔离
+- [Scheduled Actions Reference](/awaken/zh-cn/reference/scheduled-actions/) —— 动作处理器注册
+- [HITL and Mailbox](/awaken/zh-cn/explanation/hitl-and-mailbox/) —— 暂停与恢复流程

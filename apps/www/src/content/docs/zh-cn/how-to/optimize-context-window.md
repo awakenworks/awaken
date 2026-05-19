@@ -147,6 +147,6 @@ let config = CompactionConfig {
 
 ## 相关
 
-- [构建 Agent](/zh-cn/how-to/build-an-agent/)
-- [添加 Plugin](/zh-cn/how-to/add-a-plugin/)
-- [状态键](/zh-cn/reference/state-keys/)
+- [构建 Agent](/awaken/zh-cn/how-to/build-an-agent/)
+- [添加 Plugin](/awaken/zh-cn/how-to/add-a-plugin/)
+- [状态键](/awaken/zh-cn/reference/state-keys/)

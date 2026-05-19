@@ -7,7 +7,7 @@ Use this when you have a Vercel AI SDK (v6) React frontend and need to connect i
 
 ## Prerequisites
 
-- A working awaken agent runtime (see [First Agent](/tutorials/first-agent/))
+- A working awaken agent runtime (see [First Agent](/awaken/tutorials/first-agent/))
 - Feature `server` enabled on the `awaken` crate
 - Node.js project with `@ai-sdk/react` installed
 
@@ -197,6 +197,6 @@ npm run dev
 
 ## Related
 
-- [Expose HTTP SSE](/how-to/expose-http-sse/)
-- [AI SDK v6 Protocol Reference](/reference/protocols/ai-sdk-v6/)
-- [Integrate CopilotKit (AG-UI)](/how-to/integrate-copilotkit-ag-ui/)
+- [Expose HTTP SSE](/awaken/how-to/expose-http-sse/)
+- [AI SDK v6 Protocol Reference](/awaken/reference/protocols/ai-sdk-v6/)
+- [Integrate CopilotKit (AG-UI)](/awaken/how-to/integrate-copilotkit-ag-ui/)

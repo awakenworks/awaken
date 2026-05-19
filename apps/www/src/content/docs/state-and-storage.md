@@ -36,9 +36,9 @@ producing-run filters.
 
 ## Recommended order
 
-1. [Use File Store](/how-to/use-file-store/) or [Use Postgres Store](/how-to/use-postgres-store/) to choose a persistence backend.
-2. [State Keys](/reference/state-keys/) and [Thread Model](/reference/thread-model/) to understand state layout and lifecycle.
-3. [Optimize Context Window](/how-to/optimize-context-window/) when context size starts to matter.
+1. [Use File Store](/awaken/how-to/use-file-store/) or [Use Postgres Store](/awaken/how-to/use-postgres-store/) to choose a persistence backend.
+2. [State Keys](/awaken/reference/state-keys/) and [Thread Model](/awaken/reference/thread-model/) to understand state layout and lifecycle.
+3. [Optimize Context Window](/awaken/how-to/optimize-context-window/) when context size starts to matter.
 
 Current built-in stores cover memory, file, and PostgreSQL for thread/run data;
 memory, file, and PostgreSQL for config; memory and file for profile/shared
@@ -58,10 +58,10 @@ PostgreSQL thread storage with a NATS mailbox.
 | `SqliteMailboxStore` | A single-node server needs durable mailbox jobs without running NATS. | Durable on local storage, but not the horizontally-scaled mailbox backend. |
 | `NatsMailboxStore` | Multiple server instances need shared dispatch ownership, wakeups, and lease recovery. | Requires JetStream and KV; all instances must share the same stream, buckets, and durable consumer. |
 
-See [Use NATS Stores](/how-to/use-nats-stores/) for distributed mailbox
+See [Use NATS Stores](/awaken/how-to/use-nats-stores/) for distributed mailbox
 configuration and operations.
 
 ## Related internals
 
-- [State and Snapshot Model](/explanation/state-and-snapshot-model/)
-- [Run Lifecycle and Phases](/explanation/run-lifecycle-and-phases/)
+- [State and Snapshot Model](/awaken/explanation/state-and-snapshot-model/)
+- [Run Lifecycle and Phases](/awaken/explanation/run-lifecycle-and-phases/)

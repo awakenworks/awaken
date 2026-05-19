@@ -109,8 +109,8 @@ trait。每次 `put` 都应该按 `run_id` 幂等地 upsert checkpoint；`delete
 
 ## 相关
 
-- [错误](/zh-cn/reference/errors/)：完整的 `InferenceExecutionError` 分类与访问
+- [错误](/awaken/zh-cn/reference/errors/)：完整的 `InferenceExecutionError` 分类与访问
   器。
-- [事件](/zh-cn/reference/events/)：`ToolCallCancel` / `StreamReset` 语义。
-- [优化上下文窗口](/zh-cn/how-to/optimize-context-window/)：另一个独立的截断恢复路径，
+- [事件](/awaken/zh-cn/reference/events/)：`ToolCallCancel` / `StreamReset` 语义。
+- [优化上下文窗口](/awaken/zh-cn/how-to/optimize-context-window/)：另一个独立的截断恢复路径，
   适用于模型自己以 `MaxTokens` 停止的场景。

@@ -118,7 +118,7 @@ curl -sS -X PUT http://localhost:3000/v1/config/agents/assistant \
 
 `allowed_tools` 是白名单,`excluded_tools` 是黑名单。两者都在下一个 run 生效 —— 不重新构建、不重启。工具在代码里加一次,通过配置按 agent 开关。
 
-需要更细的按调用控制(基于参数形状的 allow/deny/ask,不只是工具名),用 [Permission 插件](/zh-cn/how-to/enable-tool-permission-hitl/)。
+需要更细的按调用控制(基于参数形状的 allow/deny/ask,不只是工具名),用 [Permission 插件](/awaken/zh-cn/how-to/enable-tool-permission-hitl/)。
 
 ## 验证
 
@@ -143,5 +143,5 @@ curl -sS -X PUT http://localhost:3000/v1/config/agents/assistant \
 
 ## 相关
 
-- [构建 Agent](/zh-cn/how-to/build-an-agent/)
-- [添加 Plugin](/zh-cn/how-to/add-a-plugin/)
+- [构建 Agent](/awaken/zh-cn/how-to/build-an-agent/)
+- [添加 Plugin](/awaken/zh-cn/how-to/add-a-plugin/)
