@@ -850,12 +850,12 @@ pub fn build_service_router(state: AppState) -> std::io::Result<axum::Router> {
 pub fn validate_admin_surface(state: &AppState) -> std::io::Result<()> {
     crate::eval_limits::validate_eval_limits(&state.config.eval_limits)?;
     let admin = admin_api_config(state);
-    // Any admin surface exposing sensitive data (config OR trace routes —
-    // trace reveals prompts/tool args/results) needs a bearer token when
-    // bound to a non-loopback address.
+    // Sensitive surfaces (need bearer on non-loopback bind): config
+    // routes; trace routes when a trace store is wired; eval routes
+    // always (online eval triggers live provider calls even at persist=false).
     let any_sensitive_route_exposed = admin.expose_config_routes
         || (admin.expose_trace_routes && state.trace_store().is_some())
-        || (admin.expose_eval_routes && state.eval_run_store().is_some());
+        || admin.expose_eval_routes;
     if !any_sensitive_route_exposed {
         return Ok(());
     }
@@ -865,7 +865,6 @@ pub fn validate_admin_surface(state: &AppState) -> std::io::Result<()> {
     if !admin_surface_has_sensitive_state(state) {
         return Ok(());
     }
-
     let Ok(addr) = state.config.address.parse::<std::net::SocketAddr>() else {
         return Ok(());
     };
