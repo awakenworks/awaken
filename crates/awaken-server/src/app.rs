@@ -114,22 +114,17 @@ pub struct AdminApiConfig {
     /// Origins allowed to call browser admin APIs.
     #[serde(default = "default_admin_cors_allowed_origins")]
     pub cors_allowed_origins: Vec<String>,
-    /// Whether the server mounts the `/v1/config/*` and `/v1/agents` admin
-    /// CRUD routes. Defaults to `true` for back-compat. Embedders that drive
-    /// configuration through their own RBAC / audit pipeline can set this to
-    /// `false` to keep the HTTP surface free of those endpoints entirely.
+    /// Mount `/v1/config/*` and `/v1/agents` admin CRUD (default true).
     #[serde(default = "default_expose_config_routes")]
     pub expose_config_routes: bool,
-    /// Whether the server mounts the `/v1/traces` query routes.
-    /// Defaults to `false` (opt-in): the trace surface exposes prompt
-    /// content, tool arguments, and tool results — strictly more
-    /// sensitive than the existing admin metadata routes, so a fresh
-    /// deployment must take an explicit step to publish it. Set to
-    /// `true` (or use `AdminApiConfig::with_expose_trace_routes`) to
-    /// mount the endpoint; a non-loopback bind without a bearer token
-    /// still fails startup through `validate_admin_surface`.
+    /// Mount `/v1/traces` (default false — exposes prompts/tool args).
     #[serde(default = "default_expose_trace_routes")]
     pub expose_trace_routes: bool,
+    /// Mount `/v1/eval/*` (default true). Separate gate because eval
+    /// drives live model calls + persistent run storage, different
+    /// blast radius from config CRUD.
+    #[serde(default = "default_expose_eval_routes")]
+    pub expose_eval_routes: bool,
 }
 
 /// Audit-log retention settings attached to [`AppState`] via
@@ -154,11 +149,12 @@ pub struct AuditLogConfig {
 const fn default_expose_config_routes() -> bool {
     true
 }
-
-// F20 default: trace routes are opt-in (more sensitive surface than the
-// admin metadata routes — see `expose_trace_routes` field docstring above).
+// F20: trace routes opt-in (more sensitive than admin metadata).
 const fn default_expose_trace_routes() -> bool {
     false
+}
+const fn default_expose_eval_routes() -> bool {
+    true
 }
 
 const fn default_audit_log_enabled() -> bool {
@@ -211,6 +207,7 @@ impl Default for AdminApiConfig {
             cors_allowed_origins: default_admin_cors_allowed_origins(),
             expose_config_routes: default_expose_config_routes(),
             expose_trace_routes: default_expose_trace_routes(),
+            expose_eval_routes: default_expose_eval_routes(),
         }
     }
 }
@@ -856,8 +853,9 @@ pub fn validate_admin_surface(state: &AppState) -> std::io::Result<()> {
     // Any admin surface exposing sensitive data (config OR trace routes —
     // trace reveals prompts/tool args/results) needs a bearer token when
     // bound to a non-loopback address.
-    let any_sensitive_route_exposed =
-        admin.expose_config_routes || (admin.expose_trace_routes && state.trace_store().is_some());
+    let any_sensitive_route_exposed = admin.expose_config_routes
+        || (admin.expose_trace_routes && state.trace_store().is_some())
+        || (admin.expose_eval_routes && state.eval_run_store().is_some());
     if !any_sensitive_route_exposed {
         return Ok(());
     }

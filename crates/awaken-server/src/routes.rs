@@ -84,12 +84,12 @@ pub fn build_router(state: &AppState) -> Router<AppState> {
         .merge(ag_ui_routes())
         .merge(a2a_routes())
         .merge(mcp_routes());
-
     if admin_config.expose_config_routes {
         router = router.merge(admin_routes());
+    }
+    if admin_config.expose_eval_routes {
         router = router.merge(eval_routes());
     }
-
     if admin_config.expose_trace_routes {
         router = router.merge(trace_routes());
     }
