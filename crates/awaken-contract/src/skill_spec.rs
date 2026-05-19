@@ -61,6 +61,9 @@ pub struct SkillSpec {
     pub model_override: Option<String>,
     #[serde(default)]
     pub context: SkillSpecContext,
+    /// Reserved for future resource/conditional-activation support. Config
+    /// write validation currently requires this to be empty so DB-managed
+    /// skills do not advertise resource/path semantics they cannot serve.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub paths: Vec<String>,
 }
@@ -89,14 +92,24 @@ impl Default for SkillSpec {
     }
 }
 
+/// Prepared, validated skill registry replacement.
+///
+/// All fallible work must happen before this object is returned. `commit` is
+/// intentionally infallible so config runtime publish can prepare skills before
+/// replacing the core runtime registries and then finish the live skill swap
+/// without introducing a second fallible publish phase.
+pub trait PreparedSkillSpecs: Send {
+    fn commit(self: Box<Self>);
+}
+
 /// Sink used by runtime/config managers that publish DB-managed skill specs to
 /// a live skill registry without depending on the concrete skills extension.
 pub trait SkillSpecSink: Send + Sync {
-    /// Validate a candidate spec set without changing the live registry.
-    fn validate_skill_specs(&self, specs: &[SkillSpec]) -> Result<(), String>;
-
-    /// Replace the live registry with the provided specs.
-    fn replace_skill_specs(&self, specs: Vec<SkillSpec>) -> Result<(), String>;
+    /// Prepare a candidate replacement without changing the live registry.
+    fn prepare_skill_specs(
+        &self,
+        specs: Vec<SkillSpec>,
+    ) -> Result<Box<dyn PreparedSkillSpecs>, String>;
 }
 
 #[cfg(test)]

@@ -406,8 +406,7 @@ fn skill_state_serde_roundtrip() {
 }
 
 #[test]
-fn skill_state_concurrent_merge_is_union() {
-    // Simulating two parallel activations merging via commutative strategy
+fn skill_state_sequential_legacy_activations_are_union() {
     let mut state1 = SkillStateValue::default();
     SkillState::apply(&mut state1, SkillStateUpdate::Activate("skill-a".into()));
 

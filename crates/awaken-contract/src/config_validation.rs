@@ -1,9 +1,13 @@
 use serde::de::DeserializeOwned;
 use serde_json::Value;
+use std::collections::HashSet;
 
 use crate::agent_spec_patch::AgentSpecPatch;
 use crate::config_record::{ConfigRecord, ConfigRecordError, ConfigRecordMerge};
 use crate::registry_spec::{AgentSpec, ModelBindingSpec, ProviderSpec};
+use crate::skill_allowed_tools::{
+    is_skill_allowed_tool_pattern, parse_skill_allowed_tools, validate_skill_allowed_tool_pattern,
+};
 use crate::skill_spec::SkillSpec;
 
 /// Unknown-field behavior for a serializable config surface.
@@ -142,8 +146,25 @@ pub fn validate_skill_spec(value: Value) -> Result<SkillSpec, ConfigValidationEr
     if let Some(value) = &spec.model_override {
         reject_empty("skill spec", "model_override", value)?;
     }
+    let mut argument_names = HashSet::new();
     for argument in &spec.arguments {
         reject_empty("skill spec", "arguments.name", &argument.name)?;
+        let argument_name = argument.name.trim();
+        if argument_name != argument.name {
+            return Err(ConfigValidationError::Invalid {
+                surface: "skill spec",
+                message: format!(
+                    "argument name '{}' must not contain surrounding whitespace",
+                    argument.name
+                ),
+            });
+        }
+        if !argument_names.insert(argument_name.to_string()) {
+            return Err(ConfigValidationError::Invalid {
+                surface: "skill spec",
+                message: format!("duplicate argument name '{}'", argument.name),
+            });
+        }
         if let Some(description) = &argument.description {
             reject_empty("skill spec", "arguments.description", description)?;
         }
@@ -151,8 +172,12 @@ pub fn validate_skill_spec(value: Value) -> Result<SkillSpec, ConfigValidationEr
     for tool in &spec.allowed_tools {
         validate_allowed_tool_token(tool)?;
     }
-    for path in &spec.paths {
-        reject_empty("skill spec", "paths", path)?;
+    if !spec.paths.is_empty() {
+        return Err(ConfigValidationError::Invalid {
+            surface: "skill spec",
+            message: "paths are not supported for DB-managed skills until resources are persisted"
+                .into(),
+        });
     }
     Ok(spec)
 }
@@ -242,7 +267,7 @@ fn validate_skill_id(surface: &'static str, value: &str) -> Result<(), ConfigVal
             message: "field 'id' must not start/end with '-' or contain consecutive '-'".into(),
         });
     }
-    if !id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
+    if !id.chars().all(|c| c.is_alphanumeric() || c == '-') {
         return Err(ConfigValidationError::Invalid {
             surface,
             message: "field 'id' contains invalid characters".into(),
@@ -267,19 +292,32 @@ fn validate_allowed_tool_token(value: &str) -> Result<(), ConfigValidationError>
             ),
         });
     }
-    if token.chars().any(char::is_whitespace) {
+    let parsed =
+        parse_skill_allowed_tools(token).map_err(|error| ConfigValidationError::Invalid {
+            surface: "skill spec",
+            message: format!("invalid allowed_tools entry '{token}': {error}"),
+        })?;
+    if parsed.len() != 1 || parsed[0].raw != token {
         return Err(ConfigValidationError::Invalid {
             surface: "skill spec",
-            message: format!("allowed_tools entry '{token}' must not contain whitespace"),
+            message: format!("allowed_tools entry '{token}' must contain exactly one token"),
         });
     }
-    let opens = token.chars().filter(|c| *c == '(').count();
-    let closes = token.chars().filter(|c| *c == ')').count();
-    if opens != closes {
+    if parsed[0].scope.is_some() {
         return Err(ConfigValidationError::Invalid {
             surface: "skill spec",
-            message: format!("allowed_tools entry '{token}' has unbalanced parentheses"),
+            message: format!(
+                "scoped allowed_tools entry '{token}' is not supported for DB-managed skills"
+            ),
         });
+    }
+    if is_skill_allowed_tool_pattern(&parsed[0].tool_id) {
+        validate_skill_allowed_tool_pattern(&parsed[0].tool_id).map_err(|error| {
+            ConfigValidationError::Invalid {
+                surface: "skill spec",
+                message: error.to_string(),
+            }
+        })?;
     }
     Ok(())
 }
@@ -400,6 +438,18 @@ mod tests {
     }
 
     #[test]
+    fn validate_skill_spec_accepts_unicode_id_aligned_with_skill_md() {
+        let spec = validate_skill_spec(json!({
+            "id": "数据库",
+            "name": "数据库",
+            "description": "Helps with database operations",
+            "instructions_md": "Inspect schema before running SQL."
+        }))
+        .expect("unicode skill names accepted by SKILL.md should import");
+        assert_eq!(spec.id, "数据库");
+    }
+
+    #[test]
     fn validate_skill_spec_rejects_invalid_id_and_tools() {
         let err = validate_skill_spec(json!({
             "id": "DB",
@@ -418,6 +468,79 @@ mod tests {
             "allowed_tools": ["bad token"]
         }))
         .expect_err("whitespace in tool token must fail");
-        assert!(err.to_string().contains("must not contain whitespace"));
+        assert!(err.to_string().contains("exactly one token"));
+
+        let err = validate_skill_spec(json!({
+            "id": "db-management",
+            "name": "Database Management",
+            "description": "Helps with database operations",
+            "instructions_md": "Inspect schema before running SQL.",
+            "allowed_tools": ["()"]
+        }))
+        .expect_err("empty scoped tool id must fail");
+        assert!(err.to_string().contains("invalid allowed-tools token"));
+
+        let err = validate_skill_spec(json!({
+            "id": "db-management",
+            "name": "Database Management",
+            "description": "Helps with database operations",
+            "instructions_md": "Inspect schema before running SQL.",
+            "allowed_tools": ["Bash(command: \"git status\")"]
+        }))
+        .expect_err("DB-managed scoped tool grants are not supported yet");
+        assert!(err.to_string().contains("scoped allowed_tools entry"));
+
+        let err = validate_skill_spec(json!({
+            "id": "db-management",
+            "name": "Database Management",
+            "description": "Helps with database operations",
+            "instructions_md": "Inspect schema before running SQL.",
+            "allowed_tools": ["/[invalid/"]
+        }))
+        .expect_err("invalid regex matcher must fail");
+        assert!(err.to_string().contains("invalid allowed-tools pattern"));
+
+        let err = validate_skill_spec(json!({
+            "id": "db-management",
+            "name": "Database Management",
+            "description": "Helps with database operations",
+            "instructions_md": "Inspect schema before running SQL.",
+            "allowed_tools": [r"mcp__db__*\"]
+        }))
+        .expect_err("invalid glob matcher must fail");
+        assert!(err.to_string().contains("dangling escape"));
+    }
+
+    #[test]
+    fn validate_skill_spec_rejects_paths_and_duplicate_arguments() {
+        let err = validate_skill_spec(json!({
+            "id": "db-management",
+            "name": "Database Management",
+            "description": "Helps with database operations",
+            "instructions_md": "Inspect schema before running SQL.",
+            "paths": ["migrations/**"]
+        }))
+        .expect_err("paths are not supported yet");
+        assert!(err.to_string().contains("paths are not supported"));
+
+        let err = validate_skill_spec(json!({
+            "id": "db-management",
+            "name": "Database Management",
+            "description": "Helps with database operations",
+            "instructions_md": "Inspect schema before running SQL.",
+            "arguments": [{"name": "dialect"}, {"name": "dialect"}]
+        }))
+        .expect_err("duplicate arguments must fail");
+        assert!(err.to_string().contains("duplicate argument name"));
+
+        let err = validate_skill_spec(json!({
+            "id": "db-management",
+            "name": "Database Management",
+            "description": "Helps with database operations",
+            "instructions_md": "Inspect schema before running SQL.",
+            "arguments": [{"name": " dialect "}]
+        }))
+        .expect_err("argument names must be trim-stable");
+        assert!(err.to_string().contains("surrounding whitespace"));
     }
 }

@@ -16,7 +16,8 @@ use awaken_contract::contract::tool::{
     Tool, ToolCallContext, ToolDescriptor, ToolError, ToolOutput, ToolResult,
 };
 use awaken_contract::{
-    AgentSpec, BuiltinSeedSet, BuiltinSpec, McpServerSpec, ModelBindingSpec, ProviderSpec,
+    AgentSpec, BuiltinSeedSet, BuiltinSpec, McpServerSpec, ModelBindingSpec, PreparedSkillSpecs,
+    ProviderSpec, SkillSpec, SkillSpecSink,
 };
 #[cfg(feature = "permission")]
 use awaken_ext_permission::{PermissionConfigKey, PermissionPlugin, ToolPermissionBehavior};
@@ -414,6 +415,23 @@ impl ConfigChangeNotifier for TestConfigChangeNotifier {
     }
 }
 
+struct PreparedTestSkillSpecs;
+
+impl PreparedSkillSpecs for PreparedTestSkillSpecs {
+    fn commit(self: Box<Self>) {}
+}
+
+struct TestSkillSpecSink;
+
+impl SkillSpecSink for TestSkillSpecSink {
+    fn prepare_skill_specs(
+        &self,
+        _specs: Vec<SkillSpec>,
+    ) -> Result<Box<dyn PreparedSkillSpecs>, String> {
+        Ok(Box::new(PreparedTestSkillSpecs))
+    }
+}
+
 struct FailingSubscribeNotifier {
     inner: Arc<TestConfigChangeNotifier>,
     remaining_failures: AtomicUsize,
@@ -554,6 +572,7 @@ async fn make_runtime_manager_with_options(
         mcp_refresh_interval,
         Arc::new(TestProviderFactory),
         false,
+        true,
     )
     .await
 }
@@ -564,6 +583,7 @@ async fn make_runtime_manager_custom(
     mcp_refresh_interval: Option<Duration>,
     provider_factory: Arc<dyn ProviderExecutorFactory>,
     register_permission_plugin: bool,
+    attach_skill_sink: bool,
 ) -> (
     Arc<AgentRuntime>,
     Arc<InMemoryStore>,
@@ -590,6 +610,9 @@ async fn make_runtime_manager_custom(
         .expect("config runtime manager")
         .with_provider_factory(provider_factory)
         .with_mcp_registry_factory(mcp_registry_factory);
+    if attach_skill_sink {
+        manager = manager.with_skill_spec_sink(Arc::new(TestSkillSpecSink));
+    }
     if let Some(notifier) = change_notifier {
         manager = manager.with_change_notifier(notifier);
     }
@@ -621,6 +644,44 @@ async fn make_runtime_manager_custom(
 
 async fn make_app() -> TestApp {
     make_app_with_skill_catalog(None).await
+}
+
+async fn make_app_without_skill_sink() -> TestApp {
+    let notifier = Arc::new(TestConfigChangeNotifier::new());
+    let (runtime, store, manager) = make_runtime_manager_custom(
+        Some(notifier.clone() as Arc<dyn ConfigChangeNotifier>),
+        Arc::new(TestMcpRegistryFactory),
+        None,
+        Arc::new(TestProviderFactory),
+        false,
+        false,
+    )
+    .await;
+    let config_store = store.clone() as Arc<dyn ConfigStore>;
+    let mailbox = Arc::new(Mailbox::new(
+        runtime.clone(),
+        Arc::new(awaken_stores::InMemoryMailboxStore::new()),
+        store.clone(),
+        "config-api-test".into(),
+        MailboxConfig::default(),
+    ));
+    let state = AppState::new(
+        runtime.clone(),
+        mailbox,
+        store.clone(),
+        runtime.resolver_arc(),
+        ServerConfig::default(),
+    )
+    .with_config_store(config_store)
+    .with_config_runtime_manager(manager.clone());
+
+    TestApp {
+        router: build_router(&state).with_state(state),
+        runtime,
+        store,
+        manager,
+        notifier,
+    }
 }
 
 async fn make_app_with_skill_catalog(
@@ -887,8 +948,7 @@ async fn skills_config_namespace_crud_and_schema() {
         "id": "db-management",
         "name": "Database Management",
         "description": "Helps with database operations",
-        "instructions_md": "Inspect schema before running SQL.",
-        "allowed_tools": ["db_query"]
+        "instructions_md": "Inspect schema before running SQL."
     });
     let (status, created) =
         request_json(&app.router, Method::POST, "/v1/config/skills", Some(body)).await;
@@ -924,7 +984,6 @@ async fn skills_config_namespace_crud_and_schema() {
             "name": "Database Management",
             "description": "Updated database operations",
             "instructions_md": "Use transactions for writes.",
-            "allowed_tools": ["db_query", "db_write"],
             "when_to_use": "When the user asks about a database",
             "arguments": [{
                 "name": "dialect",
@@ -935,14 +994,14 @@ async fn skills_config_namespace_crud_and_schema() {
             "user_invocable": false,
             "model_invocable": false,
             "model_override": "analysis-model",
-            "context": "fork",
-            "paths": ["migrations/**", "schema.sql"]
+            "context": "fork"
         })),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "body={updated}");
     assert_eq!(updated["description"], "Updated database operations");
-    assert_eq!(updated["allowed_tools"], json!(["db_query", "db_write"]));
+    assert!(updated.get("allowed_tools").is_none());
+    assert!(updated.get("paths").is_none());
     assert_eq!(updated["arguments"][0]["name"], "dialect");
     assert_eq!(updated["context"], "fork");
 
@@ -961,6 +1020,140 @@ async fn skills_config_namespace_crud_and_schema() {
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert!(invalid["error"].as_str().unwrap().contains("lowercase"));
 
+    let (status, invalid) = request_json(
+        &app.router,
+        Method::POST,
+        "/v1/config/skills",
+        Some(json!({
+            "id": "path-skill",
+            "name": "Path Skill",
+            "description": "Should not expose unsupported resources",
+            "instructions_md": "Inspect schema before running SQL.",
+            "paths": ["migrations/**"]
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(
+        invalid["error"]
+            .as_str()
+            .unwrap()
+            .contains("paths are not supported")
+    );
+
+    let (status, invalid) = request_json(
+        &app.router,
+        Method::POST,
+        "/v1/config/skills",
+        Some(json!({
+            "id": "scoped-tool-skill",
+            "name": "Scoped Tool Skill",
+            "description": "Should not accept scoped tool grants yet",
+            "instructions_md": "Use a scoped tool.",
+            "allowed_tools": ["Bash(command: \"git status\")"]
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(
+        invalid["error"]
+            .as_str()
+            .unwrap()
+            .contains("scoped allowed_tools entry")
+    );
+
+    let (status, invalid) = request_json(
+        &app.router,
+        Method::POST,
+        "/v1/config/skills",
+        Some(json!({
+            "id": "invalid-regex-skill",
+            "name": "Invalid Regex Skill",
+            "description": "Should reject invalid regex matchers",
+            "instructions_md": "Use a matcher.",
+            "allowed_tools": ["/[invalid/"]
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(
+        invalid["error"]
+            .as_str()
+            .unwrap()
+            .contains("invalid allowed-tools pattern")
+    );
+
+    let (status, invalid) = request_json(
+        &app.router,
+        Method::POST,
+        "/v1/config/skills",
+        Some(json!({
+            "id": "invalid-glob-skill",
+            "name": "Invalid Glob Skill",
+            "description": "Should reject invalid glob matchers",
+            "instructions_md": "Use a matcher.",
+            "allowed_tools": [r"mcp__db__*\"]
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(
+        invalid["error"]
+            .as_str()
+            .unwrap()
+            .contains("dangling escape")
+    );
+
+    let (status, invalid) = request_json(
+        &app.router,
+        Method::POST,
+        "/v1/config/skills",
+        Some(json!({
+            "id": "spaced-argument-skill",
+            "name": "Spaced Argument Skill",
+            "description": "Should reject ambiguous argument names",
+            "instructions_md": "Use ${dialect}.",
+            "arguments": [{"name": " dialect "}]
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(
+        invalid["error"]
+            .as_str()
+            .unwrap()
+            .contains("surrounding whitespace")
+    );
+
+    let (status, invalid) = request_json(
+        &app.router,
+        Method::POST,
+        "/v1/config/skills",
+        Some(json!({
+            "id": "ghost-tool-skill",
+            "name": "Ghost Tool Skill",
+            "description": "References an unknown tool",
+            "instructions_md": "Use a tool.",
+            "allowed_tools": ["ghost_tool"]
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(
+        invalid["error"]
+            .as_str()
+            .unwrap()
+            .contains("unknown tool 'ghost_tool'")
+    );
+    let (status, _) = request_json(
+        &app.router,
+        Method::GET,
+        "/v1/config/skills/ghost-tool-skill",
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+
     let (status, deleted) = request_json(
         &app.router,
         Method::DELETE,
@@ -969,6 +1162,38 @@ async fn skills_config_namespace_crud_and_schema() {
     )
     .await;
     assert_eq!(status, StatusCode::NO_CONTENT, "body={deleted}");
+
+    let (status, _) = request_json(
+        &app.router,
+        Method::GET,
+        "/v1/config/skills/db-management",
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn skills_config_create_fails_without_skill_sink_and_rolls_back() {
+    let app = make_app_without_skill_sink().await;
+
+    let (status, body) = request_json(
+        &app.router,
+        Method::POST,
+        "/v1/config/skills",
+        Some(json!({
+            "id": "db-management",
+            "name": "Database Management",
+            "description": "Helps with database operations",
+            "instructions_md": "Inspect schema before running SQL."
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(
+        body["error"].as_str().unwrap().contains("skill_spec_sink"),
+        "unexpected body: {body}"
+    );
 
     let (status, _) = request_json(
         &app.router,
@@ -1116,6 +1341,104 @@ async fn mcp_servers_are_redacted_and_publish_live_tools() {
 }
 
 #[tokio::test]
+async fn delete_mcp_server_is_blocked_when_skill_references_its_tool() {
+    let app = make_app().await;
+
+    let (status, _) = request_json(
+        &app.router,
+        Method::POST,
+        "/v1/config/mcp-servers",
+        Some(json!({
+            "id": "demo",
+            "transport": "stdio",
+            "command": "demo-mcp"
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, created_skill) = request_json(
+        &app.router,
+        Method::POST,
+        "/v1/config/skills",
+        Some(json!({
+            "id": "mcp-skill",
+            "name": "MCP Skill",
+            "description": "Uses an MCP tool",
+            "instructions_md": "Call the MCP tool.",
+            "allowed_tools": ["mcp__demo__ping"]
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "body={created_skill}");
+
+    let (status, body) = request_json(
+        &app.router,
+        Method::DELETE,
+        "/v1/config/mcp-servers/demo",
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    let used_by = body["used_by"].as_array().expect("used_by array");
+    assert!(
+        used_by
+            .iter()
+            .any(|record| record["namespace"] == "skills" && record["id"] == "mcp-skill"),
+        "should report skill dependency: {body}"
+    );
+}
+
+#[tokio::test]
+async fn delete_mcp_server_is_blocked_when_skill_pattern_matches_current_tool() {
+    let app = make_app().await;
+
+    let (status, _) = request_json(
+        &app.router,
+        Method::POST,
+        "/v1/config/mcp-servers",
+        Some(json!({
+            "id": "demo",
+            "transport": "stdio",
+            "command": "demo-mcp"
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, created_skill) = request_json(
+        &app.router,
+        Method::POST,
+        "/v1/config/skills",
+        Some(json!({
+            "id": "mcp-pattern-skill",
+            "name": "MCP Pattern Skill",
+            "description": "Uses matching MCP tools",
+            "instructions_md": "Call the MCP tool.",
+            "allowed_tools": ["mcp__*__ping"]
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "body={created_skill}");
+
+    let (status, body) = request_json(
+        &app.router,
+        Method::DELETE,
+        "/v1/config/mcp-servers/demo",
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    let used_by = body["used_by"].as_array().expect("used_by array");
+    assert!(
+        used_by
+            .iter()
+            .any(|record| record["namespace"] == "skills" && record["id"] == "mcp-pattern-skill"),
+        "should report skill pattern dependency: {body}"
+    );
+}
+
+#[tokio::test]
 async fn published_config_updates_live_capabilities_and_resolver() {
     let app = make_app().await;
 
@@ -1200,6 +1523,7 @@ async fn documented_config_driven_agent_tuning_publishes_sections_and_retry() {
             attempts: attempts.clone(),
             retryable_model: "doc-primary".into(),
         }),
+        true,
         true,
     )
     .await;
@@ -2032,6 +2356,7 @@ async fn apply_reuses_executor_for_unchanged_provider() {
         None,
         factory.clone() as Arc<dyn ProviderExecutorFactory>,
         false,
+        true,
     )
     .await;
 
@@ -2141,6 +2466,7 @@ async fn apply_rebuilds_executor_when_provider_spec_changes() {
         None,
         factory.clone() as Arc<dyn ProviderExecutorFactory>,
         false,
+        true,
     )
     .await;
 

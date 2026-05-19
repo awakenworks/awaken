@@ -1,31 +1,49 @@
 use std::sync::Arc;
 
-use awaken_contract::{BuiltinSeedSet, BuiltinSpec, SkillSpec, SkillSpecSink};
+use awaken_contract::{BuiltinSeedSet, BuiltinSpec, PreparedSkillSpecs, SkillSpec, SkillSpecSink};
 use parking_lot::Mutex;
 
 use super::tests::make_manager_with_store;
 
 #[derive(Default)]
 struct RecordingSkillSpecSink {
-    specs: Mutex<Vec<SkillSpec>>,
-    replace_calls: Mutex<usize>,
+    specs: Arc<Mutex<Vec<SkillSpec>>>,
+    replace_calls: Arc<Mutex<usize>>,
+    fail_prepare: Arc<Mutex<Option<String>>>,
 }
 
 impl SkillSpecSink for RecordingSkillSpecSink {
-    fn validate_skill_specs(&self, specs: &[SkillSpec]) -> Result<(), String> {
+    fn prepare_skill_specs(
+        &self,
+        specs: Vec<SkillSpec>,
+    ) -> Result<Box<dyn PreparedSkillSpecs>, String> {
+        if let Some(error) = self.fail_prepare.lock().clone() {
+            return Err(error);
+        }
         let mut ids = std::collections::HashSet::new();
-        for spec in specs {
+        for spec in &specs {
             if !ids.insert(spec.id.clone()) {
                 return Err(format!("duplicate skill id: {}", spec.id));
             }
         }
-        Ok(())
+        Ok(Box::new(RecordingPreparedSkillSpecs {
+            specs_target: Arc::clone(&self.specs),
+            replace_calls: Arc::clone(&self.replace_calls),
+            specs,
+        }))
     }
+}
 
-    fn replace_skill_specs(&self, specs: Vec<SkillSpec>) -> Result<(), String> {
-        *self.specs.lock() = specs;
+struct RecordingPreparedSkillSpecs {
+    specs_target: Arc<Mutex<Vec<SkillSpec>>>,
+    replace_calls: Arc<Mutex<usize>>,
+    specs: Vec<SkillSpec>,
+}
+
+impl PreparedSkillSpecs for RecordingPreparedSkillSpecs {
+    fn commit(self: Box<Self>) {
+        *self.specs_target.lock() = self.specs;
         *self.replace_calls.lock() += 1;
-        Ok(())
     }
 }
 
@@ -138,4 +156,126 @@ async fn apply_rejects_duplicate_skill_ids_before_replacing_sink() {
         1,
         "validation failure must happen before replacing live specs"
     );
+}
+
+#[tokio::test]
+async fn apply_rejects_config_managed_skills_without_sink() {
+    let (manager, _store) = make_manager_with_store().await;
+    let before_version = manager.runtime.registry_version();
+
+    manager
+        .apply_seed(&BuiltinSeedSet {
+            binary_version: "test".into(),
+            specs: vec![BuiltinSpec::skill(skill_spec("db-management"))],
+        })
+        .await
+        .expect("apply seed");
+
+    let error = manager
+        .apply()
+        .await
+        .expect_err("skills require a live skill sink");
+    assert!(
+        error.to_string().contains("skill_spec_sink"),
+        "unexpected error: {error}"
+    );
+    assert_eq!(
+        manager.runtime.registry_version(),
+        before_version,
+        "failed skill publish must not replace the core runtime registry"
+    );
+}
+
+#[tokio::test]
+async fn skill_prepare_failure_happens_before_runtime_registry_replace() {
+    let (manager, store) = make_manager_with_store().await;
+    let sink = Arc::new(RecordingSkillSpecSink::default());
+    *sink.fail_prepare.lock() = Some("prepared skill map failed".into());
+    let manager = manager.with_skill_spec_sink(sink.clone());
+    let before_version = manager.runtime.registry_version();
+
+    store
+        .put(
+            "skills",
+            "db-management",
+            &serde_json::to_value(skill_spec("db-management")).expect("serialize skill"),
+        )
+        .await
+        .expect("write skill");
+
+    let error = manager
+        .apply()
+        .await
+        .expect_err("prepare failure must fail publish");
+    assert!(
+        error.to_string().contains("prepared skill map failed"),
+        "unexpected error: {error}"
+    );
+    assert_eq!(
+        manager.runtime.registry_version(),
+        before_version,
+        "prepare failure must be atomic with respect to runtime registry replacement"
+    );
+    assert_eq!(*sink.replace_calls.lock(), 0);
+}
+
+#[tokio::test]
+async fn apply_rejects_invalid_skill_allowed_tool_pattern_before_replace() {
+    let (manager, store) = make_manager_with_store().await;
+    let sink = Arc::new(RecordingSkillSpecSink::default());
+    let manager = manager.with_skill_spec_sink(sink.clone());
+    let before_version = manager.runtime.registry_version();
+
+    let mut invalid_regex = skill_spec("invalid-regex-skill");
+    invalid_regex.allowed_tools = vec!["/[invalid/".into()];
+    store
+        .put(
+            "skills",
+            "invalid-regex-skill",
+            &serde_json::to_value(invalid_regex).expect("serialize skill"),
+        )
+        .await
+        .expect("write invalid skill");
+
+    let error = manager
+        .apply()
+        .await
+        .expect_err("invalid skill matcher must fail publish");
+    assert!(
+        error.to_string().contains("invalid allowed-tools pattern"),
+        "unexpected error: {error}"
+    );
+    assert_eq!(
+        manager.runtime.registry_version(),
+        before_version,
+        "invalid skill matcher must not replace the core runtime registry"
+    );
+    assert_eq!(*sink.replace_calls.lock(), 0);
+
+    store
+        .delete("skills", "invalid-regex-skill")
+        .await
+        .expect("delete invalid regex skill");
+
+    let mut invalid_glob = skill_spec("invalid-glob-skill");
+    invalid_glob.allowed_tools = vec![r"mcp__db__*\".into()];
+    store
+        .put(
+            "skills",
+            "invalid-glob-skill",
+            &serde_json::to_value(invalid_glob).expect("serialize skill"),
+        )
+        .await
+        .expect("write invalid skill");
+
+    let error = manager
+        .apply()
+        .await
+        .expect_err("invalid skill glob must fail publish");
+    assert!(
+        error.to_string().contains("dangling escape"),
+        "unexpected error: {error}"
+    );
+    assert_eq!(manager.runtime.registry_version(), before_version);
+    assert_eq!(*sink.replace_calls.lock(), 0);
 }

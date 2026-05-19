@@ -13,6 +13,7 @@ categories = ["artificial-intelligence", "development-tools"]
 [dependencies]
 awaken-contract = { workspace = true }
 awaken-runtime = { workspace = true }
+awaken-tool-pattern = { workspace = true }
 awaken-ext-mcp = { workspace = true, optional = true }
 awaken-ext-deferred-tools = { workspace = true }
 awaken-ext-permission = { workspace = true }

@@ -15,7 +15,10 @@ use awaken::ext_skills::{
     ActiveSkillInstructionsPlugin, ConfigSkillRegistry, SkillDiscoveryPlugin, SkillRegistry,
 };
 use awaken::server::services::config_runtime::{ConfigRuntimeError, ConfigRuntimeManager};
-use awaken::{AgentRuntime, AgentRuntimeBuilder, Plugin, RunRequest, SkillSpec, SkillSpecSink};
+use awaken::{
+    AgentRuntime, AgentRuntimeBuilder, Plugin, RunRequest, SkillArgumentSpec, SkillSpec,
+    SkillSpecSink,
+};
 use awaken_contract::{
     AgentSpec, BuiltinSeedSet, BuiltinSpec, ConfigRecord, ModelBindingSpec, ProviderSpec,
     RecordMeta,
@@ -178,8 +181,9 @@ async fn upsert_db_skill(
     instructions: &str,
     when_to_use: &str,
 ) {
-    let skill_record = ConfigRecord {
-        spec: SkillSpec {
+    upsert_db_skill_spec(
+        harness,
+        SkillSpec {
             id: "db-management".into(),
             name: "Database Management".into(),
             description: description.into(),
@@ -187,6 +191,13 @@ async fn upsert_db_skill(
             when_to_use: Some(when_to_use.into()),
             ..Default::default()
         },
+    )
+    .await;
+}
+
+async fn upsert_db_skill_spec(harness: &DialogHarness, spec: SkillSpec) {
+    let skill_record = ConfigRecord {
+        spec,
         meta: RecordMeta::new_user(),
     };
     harness
@@ -305,6 +316,135 @@ async fn config_managed_skill_created_in_config_store_is_used_in_dialog() {
 }
 
 #[tokio::test]
+async fn config_managed_skill_activation_arguments_are_rendered_in_next_turn() {
+    let harness = build_dialog_harness(vec![
+        tool_step(vec![ToolCall::new(
+            "activate-db",
+            "skill",
+            json!({
+                "skill": "db-management",
+                "arguments": {"dialect": "postgres"}
+            }),
+        )]),
+        text_step("done with rendered database skill"),
+    ])
+    .await;
+
+    upsert_db_skill_spec(
+        &harness,
+        SkillSpec {
+            id: "db-management".into(),
+            name: "Database Management".into(),
+            description: "Helps with database operations".into(),
+            instructions_md: "Use ${dialect} syntax.".into(),
+            when_to_use: Some("When dialect-specific SQL help is needed".into()),
+            arguments: vec![SkillArgumentSpec {
+                name: "dialect".into(),
+                description: Some("SQL dialect".into()),
+                required: true,
+            }],
+            ..Default::default()
+        },
+    )
+    .await;
+
+    let result = run_dialog(
+        &harness,
+        "thread-config-skill-rendered-args",
+        "Use postgres SQL",
+    )
+    .await;
+
+    assert_eq!(result.termination, TerminationReason::NaturalEnd);
+    assert_eq!(result.response, "done with rendered database skill");
+
+    let requests = harness.scripted_llm.captured_requests();
+    assert_eq!(requests.len(), 2);
+    let second = &requests[1];
+    assert!(
+        request_messages_contain(second, "Use postgres syntax."),
+        "active instructions must include rendered activation arguments: {:?}",
+        second.messages
+    );
+    assert!(
+        !request_messages_contain(second, "${dialect}"),
+        "active instructions must not inject the unrendered template: {:?}",
+        second.messages
+    );
+}
+
+#[tokio::test]
+async fn config_managed_skill_reactivation_replaces_rendered_arguments_in_same_dialog() {
+    let harness = build_dialog_harness(vec![
+        tool_step(vec![ToolCall::new(
+            "activate-db-postgres",
+            "skill",
+            json!({
+                "skill": "db-management",
+                "arguments": {"dialect": "postgres"}
+            }),
+        )]),
+        tool_step(vec![ToolCall::new(
+            "activate-db-mysql",
+            "skill",
+            json!({
+                "skill": "db-management",
+                "arguments": {"dialect": "mysql"}
+            }),
+        )]),
+        text_step("done with latest rendered database skill"),
+    ])
+    .await;
+
+    upsert_db_skill_spec(
+        &harness,
+        SkillSpec {
+            id: "db-management".into(),
+            name: "Database Management".into(),
+            description: "Helps with database operations".into(),
+            instructions_md: "Use ${dialect} syntax.".into(),
+            when_to_use: Some("When dialect-specific SQL help is needed".into()),
+            arguments: vec![SkillArgumentSpec {
+                name: "dialect".into(),
+                description: Some("SQL dialect".into()),
+                required: true,
+            }],
+            ..Default::default()
+        },
+    )
+    .await;
+
+    let result = run_dialog(
+        &harness,
+        "thread-config-skill-rendered-args-replace",
+        "Use postgres then mysql SQL",
+    )
+    .await;
+
+    assert_eq!(result.termination, TerminationReason::NaturalEnd);
+    assert_eq!(result.response, "done with latest rendered database skill");
+
+    let requests = harness.scripted_llm.captured_requests();
+    assert_eq!(requests.len(), 3);
+    assert!(
+        request_messages_contain(&requests[1], "Use postgres syntax."),
+        "second inference should include first rendered activation: {:?}",
+        requests[1].messages
+    );
+    assert!(
+        request_messages_contain(&requests[2], "Use mysql syntax."),
+        "third inference should include latest rendered activation: {:?}",
+        requests[2].messages
+    );
+    assert!(
+        !request_messages_contain(&requests[2], "Use postgres syntax.")
+            && !request_messages_contain(&requests[2], "${dialect}"),
+        "reactivating the same skill must replace stale rendered instructions: {:?}",
+        requests[2].messages
+    );
+}
+
+#[tokio::test]
 async fn config_managed_skill_update_is_used_by_next_dialog() {
     let harness = build_dialog_harness(vec![
         tool_step(vec![ToolCall::new(
@@ -375,6 +515,66 @@ async fn config_managed_skill_update_is_used_by_next_dialog() {
     assert!(
         !request_messages_contain(&requests[3], "Use version one database guidance."),
         "active instructions must come from the latest DB-managed skill spec"
+    );
+}
+
+#[tokio::test]
+async fn config_managed_skill_update_drops_stale_rendered_activation_on_same_thread() {
+    let harness = build_dialog_harness(vec![
+        tool_step(vec![ToolCall::new(
+            "activate-db-v1",
+            "skill",
+            json!({"skill": "db-management"}),
+        )]),
+        text_step("v1 done"),
+        text_step("v2 done"),
+    ])
+    .await;
+
+    upsert_db_skill(
+        &harness,
+        "Original database helper",
+        "Use version one database guidance.",
+        "When v1 database help is needed",
+    )
+    .await;
+    let v1 = run_dialog(
+        &harness,
+        "thread-config-skill-update-same-thread",
+        "Use v1 skill",
+    )
+    .await;
+    assert_eq!(v1.response, "v1 done");
+
+    upsert_db_skill(
+        &harness,
+        "Updated database specialist",
+        "Use version two database guidance.",
+        "When v2 database help is needed",
+    )
+    .await;
+    let v2 = run_dialog(
+        &harness,
+        "thread-config-skill-update-same-thread",
+        "Continue after updating the skill",
+    )
+    .await;
+    assert_eq!(v2.response, "v2 done");
+
+    let requests = harness.scripted_llm.captured_requests();
+    assert_eq!(requests.len(), 3);
+    assert!(request_messages_contain(
+        &requests[1],
+        "Use version one database guidance."
+    ));
+    assert!(request_messages_contain(
+        &requests[2],
+        "Updated database specialist"
+    ));
+    assert!(
+        !request_messages_contain(&requests[2], "Use version one database guidance."),
+        "same-thread run after a DB skill update must not inject stale rendered activation: {:?}",
+        requests[2].messages
     );
 }
 

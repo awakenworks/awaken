@@ -1,11 +1,6 @@
-use crate::error::SkillMaterializeError;
 use crate::error::{SkillError, SkillRegistryError, SkillRegistryManagerError, SkillWarning};
-use crate::materialize::{load_asset_material, load_reference_material, run_script_material};
-use crate::skill::{
-    ScriptResult, Skill, SkillContext, SkillMeta, SkillResource, SkillResourceKind,
-};
+use crate::skill::{Skill, SkillContext, SkillMeta};
 use crate::skill_md::{SkillFrontmatter, parse_allowed_tools, parse_skill_md};
-use async_trait::async_trait;
 use awaken_contract::PeriodicRefresher;
 use std::collections::HashMap;
 use std::fs;
@@ -14,6 +9,8 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 use unicode_normalization::UnicodeNormalization;
+
+mod fs_skill_impl;
 
 /// A filesystem-backed skill.
 #[derive(Debug, Clone)]
@@ -476,52 +473,6 @@ impl FsSkill {
     }
 }
 
-#[async_trait]
-impl Skill for FsSkill {
-    fn meta(&self) -> &SkillMeta {
-        &self.meta
-    }
-
-    async fn read_instructions(&self) -> Result<String, SkillError> {
-        fs::read_to_string(&self.skill_md_path).map_err(|e| {
-            SkillError::Io(format!(
-                "failed to read SKILL.md for skill '{}': {e}",
-                self.meta.id
-            ))
-        })
-    }
-
-    async fn load_resource(
-        &self,
-        kind: SkillResourceKind,
-        path: &str,
-    ) -> Result<SkillResource, SkillError> {
-        let root = self.root_dir.clone();
-        let skill_id = self.meta.id.clone();
-        let path = path.to_string();
-
-        let materialized: Result<SkillResource, SkillMaterializeError> =
-            tokio::task::spawn_blocking(move || match kind {
-                SkillResourceKind::Reference => {
-                    load_reference_material(&skill_id, &root, &path).map(SkillResource::Reference)
-                }
-                SkillResourceKind::Asset => {
-                    load_asset_material(&skill_id, &root, &path).map(SkillResource::Asset)
-                }
-            })
-            .await
-            .map_err(|e| SkillError::Io(e.to_string()))?;
-
-        materialized.map_err(SkillError::from)
-    }
-
-    async fn run_script(&self, script: &str, args: &[String]) -> Result<ScriptResult, SkillError> {
-        let result: Result<ScriptResult, SkillMaterializeError> =
-            run_script_material(&self.meta.id, &self.root_dir, script, args).await;
-        result.map_err(SkillError::from)
-    }
-}
-
 fn discover_under_root(root: &Path) -> Result<(Vec<FsSkill>, Vec<SkillWarning>), SkillError> {
     let mut skills: Vec<FsSkill> = Vec::new();
     let mut warnings: Vec<SkillWarning> = Vec::new();
@@ -708,6 +659,8 @@ fn validate_dir_name(dir_name: &str) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::skill::{ScriptResult, SkillResource, SkillResourceKind};
+    use async_trait::async_trait;
     use std::collections::HashMap;
     use std::sync::{Arc, RwLock};
     use tempfile::TempDir;

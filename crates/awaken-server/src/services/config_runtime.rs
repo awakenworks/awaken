@@ -16,17 +16,15 @@ use awaken_ext_mcp::{
     DefaultSamplingHandler, McpServerConnectionConfig, McpServerStatusSnapshot, McpToolRegistry,
     McpToolRegistryManager, SamplingHandler, SamplingHandlerFactory,
 };
+use awaken_runtime::AgentRuntime;
 use awaken_runtime::engine::GenaiExecutor;
 use awaken_runtime::registry::BackendRegistry;
 use awaken_runtime::registry::memory::{
     MapAgentSpecRegistry, MapModelRegistry, MapProviderRegistry,
 };
-use awaken_runtime::registry::resolve::RegistrySetResolver;
 use awaken_runtime::registry::{
-    AgentSpecRegistry, ModelBinding, PluginSource, RegistryDiagnostic, RegistrySet,
-    RegistryValidationError, ToolRegistry, diagnose_agent_spec,
+    AgentSpecRegistry, ModelBinding, PluginSource, RegistrySet, ToolRegistry,
 };
-use awaken_runtime::{AgentResolver, AgentRuntime};
 use genai::adapter::AdapterKind;
 use genai::resolver::{AuthData, Endpoint};
 use genai::{Client, ModelIden, ServiceTarget, WebConfig};
@@ -37,9 +35,8 @@ use tokio::runtime::Handle;
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 
-use crate::services::agent_catalog::check_catalog_errors;
-
 mod managed_config;
+mod skill_publish;
 #[cfg(test)]
 mod skill_tests;
 
@@ -889,10 +886,7 @@ impl ConfigRuntimeManager {
     }
 
     async fn publish(&self, managed: ManagedConfigSnapshot) -> Result<u64, ConfigRuntimeError> {
-        if let Some(sink) = &self.skill_spec_sink {
-            sink.validate_skill_specs(&managed.skills)
-                .map_err(ConfigRuntimeError::InvalidConfig)?;
-        }
+        let prepared_skills = self.prepare_skill_specs(&managed.skills)?;
 
         let prepared_mcp = self.prepare_mcp_registry(&managed.mcp_servers).await?;
         let (candidate, next_provider_cache) = match self.compile_registry_set(
@@ -909,7 +903,7 @@ impl ConfigRuntimeManager {
             }
         };
 
-        if let Err(error) = self.validate_candidate(&candidate, &managed.agents) {
+        if let Err(error) = self.validate_candidate(&candidate, &managed.agents, &managed.skills) {
             prepared_mcp.cleanup().await;
             return Err(error);
         }
@@ -922,9 +916,8 @@ impl ConfigRuntimeManager {
             }
         };
 
-        if let Some(sink) = &self.skill_spec_sink {
-            sink.replace_skill_specs(managed.skills.clone())
-                .map_err(ConfigRuntimeError::InvalidConfig)?;
+        if let Some(prepared_skills) = prepared_skills {
+            prepared_skills.commit();
         }
 
         *self.provider_executor_cache.lock() = next_provider_cache;
@@ -1297,46 +1290,6 @@ impl ConfigRuntimeManager {
         }
 
         Ok(Arc::new(OverlayToolRegistry::new(base, dynamic_tools)) as Arc<dyn ToolRegistry>)
-    }
-
-    fn validate_candidate(
-        &self,
-        candidate: &RegistrySet,
-        local_agents: &[AgentSpec],
-    ) -> Result<(), ConfigRuntimeError> {
-        // Catalog validation mirrors the write-path guard.
-        check_catalog_errors(local_agents).map_err(ConfigRuntimeError::InvalidConfig)?;
-        let mut diagnostics = Vec::new();
-        for model_id in candidate.models.model_ids() {
-            let Some(binding) = candidate.models.get_model(&model_id) else {
-                continue;
-            };
-            let provider_id = binding.provider_id;
-            if candidate.providers.get_provider(&provider_id).is_none() {
-                diagnostics.push(RegistryDiagnostic::ModelMissingProvider {
-                    model_id,
-                    provider_id,
-                });
-            }
-        }
-        for agent in local_agents {
-            diagnostics.extend(diagnose_agent_spec(candidate, agent));
-        }
-        if !diagnostics.is_empty() {
-            let err = RegistryValidationError::from_diagnostics(diagnostics).to_string();
-            return Err(ConfigRuntimeError::InvalidConfig(err));
-        }
-
-        let resolver = RegistrySetResolver::new(candidate.clone());
-        for agent in local_agents {
-            if agent.endpoint.is_some() {
-                continue;
-            }
-            resolver.resolve(&agent.id).map_err(|error| {
-                ConfigRuntimeError::InvalidConfig(format!("{}: {error}", agent.id))
-            })?;
-        }
-        Ok(())
     }
 }
 
@@ -1747,7 +1700,7 @@ fn map_seed_error(error: crate::services::builtin_seed::SeedError) -> ConfigRunt
     match error {
         E::Storage(e) => Storage(e),
         e @ E::Serde(_) => Storage(StorageError::Serialization(e.to_string())),
-        e @ E::InvalidAgentCatalog { .. } => InvalidConfig(e.to_string()),
+        e => InvalidConfig(e.to_string()),
     }
 }
 

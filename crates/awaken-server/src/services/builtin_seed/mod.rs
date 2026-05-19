@@ -6,7 +6,7 @@ use std::collections::{HashMap, HashSet};
 
 use awaken_contract::contract::storage::StorageError;
 use awaken_contract::{
-    BuiltinSeedSet, BuiltinSpec, ConfigRecord, ConfigStore, RecordMeta, RecordSource,
+    BuiltinSeedSet, BuiltinSpec, ConfigRecord, ConfigStore, RecordMeta, RecordSource, SkillSpec,
 };
 
 const SEED_LIST_PAGE_SIZE: usize = 256;
@@ -63,6 +63,9 @@ pub enum SeedError {
     /// the write-path guard in `ConfigService::validate_payload`.
     #[error("agent spec '{id}' has invalid tool catalog: {errors}")]
     InvalidAgentCatalog { id: String, errors: String },
+    /// Built-in skill spec failed the config write-path validation.
+    #[error("skill spec '{id}' is invalid: {errors}")]
+    InvalidSkillSpec { id: String, errors: String },
 }
 
 // ── apply_builtin_seed ────────────────────────────────────────────────────────
@@ -97,8 +100,10 @@ pub async fn apply_builtin_seed(
     // bad syntax can't enter the store via the seed path and only surface
     // later as a resolve-time "no tools matched" warning.
     for spec in &seed.specs {
-        if let BuiltinSpec::Agent(agent) = spec {
-            validate_agent_spec_catalog(agent)?;
+        match spec {
+            BuiltinSpec::Agent(agent) => validate_agent_spec_catalog(agent)?,
+            BuiltinSpec::Skill(skill) => validate_builtin_skill_spec(skill)?,
+            _ => {}
         }
     }
 
@@ -290,6 +295,16 @@ fn validate_agent_spec_catalog(spec: &awaken_contract::AgentSpec) -> Result<(), 
             errors: errors.join("; "),
         })
     }
+}
+
+/// Enforce `SkillSpec` write-path validation on builtin skills.
+fn validate_builtin_skill_spec(spec: &SkillSpec) -> Result<(), SeedError> {
+    let value = serde_json::to_value(spec)?;
+    awaken_contract::validate_skill_spec(value).map_err(|error| SeedError::InvalidSkillSpec {
+        id: spec.id.clone(),
+        errors: error.to_string(),
+    })?;
+    Ok(())
 }
 
 // ── tests ─────────────────────────────────────────────────────────────────────

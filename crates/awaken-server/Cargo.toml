@@ -18,6 +18,7 @@ categories = [
 [dependencies]
 awaken-contract = { workspace = true }
 awaken-protocol-a2a = { workspace = true }
+awaken-tool-pattern = { workspace = true }
 awaken-runtime = { workspace = true }
 awaken-ext-mcp = { workspace = true }
 serde = { workspace = true }

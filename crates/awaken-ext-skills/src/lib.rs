@@ -18,6 +18,7 @@ pub mod registry;
 pub mod skill;
 pub mod skill_md;
 pub mod state;
+mod tool_match;
 pub mod tools;
 pub mod visibility;
 
@@ -49,7 +50,7 @@ pub use skill::{
     SkillResourceKind, collect_skills, material_key,
 };
 pub use skill_md::SkillArgumentDef;
-pub use state::{SkillState, SkillStateUpdate, SkillStateValue};
+pub use state::{SkillRenderedActivation, SkillState, SkillStateUpdate, SkillStateValue};
 pub use tools::{LoadSkillResourceTool, SkillActivateTool, SkillScriptTool};
 pub use visibility::{
     DefaultSkillVisibilityPolicy, SkillVisibility, SkillVisibilityAction, SkillVisibilityPolicy,

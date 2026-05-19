@@ -1,3 +1,4 @@
+use awaken_contract::{AllowedTool, parse_skill_allowed_tool_token, parse_skill_allowed_tools};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use unicode_normalization::UnicodeNormalization;
@@ -71,17 +72,6 @@ pub struct SkillDoc {
     pub body: String,
 }
 
-/// Parsed allowed-tools token from frontmatter.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct AllowedTool {
-    /// Raw token as declared in frontmatter.
-    pub raw: String,
-    /// Base tool id (the part before optional scope `(...)`).
-    pub tool_id: String,
-    /// Optional scope/selector payload inside `(...)`.
-    pub scope: Option<String>,
-}
-
 #[derive(Debug, thiserror::Error, Clone, PartialEq, Eq)]
 pub enum SkillParseError {
     #[error("missing YAML frontmatter (expected leading '---' fence)")]
@@ -133,124 +123,13 @@ pub fn parse_skill_md(input: &str) -> Result<SkillDoc, SkillParseError> {
 
 /// Parse the `allowed-tools` frontmatter field into ordered tokens.
 pub fn parse_allowed_tools(value: &str) -> Result<Vec<AllowedTool>, SkillParseError> {
-    let mut tokens: Vec<String> = Vec::new();
-    let mut current = String::new();
-    let mut paren_depth = 0usize;
-    let mut in_quote: Option<char> = None;
-    let mut escaped = false;
-
-    for ch in value.chars() {
-        if escaped {
-            current.push(ch);
-            escaped = false;
-            continue;
-        }
-
-        if let Some(q) = in_quote {
-            current.push(ch);
-            if ch == '\\' {
-                escaped = true;
-                continue;
-            }
-            if ch == q {
-                in_quote = None;
-            }
-            continue;
-        }
-
-        match ch {
-            '"' | '\'' => {
-                in_quote = Some(ch);
-                current.push(ch);
-            }
-            '(' => {
-                paren_depth += 1;
-                current.push(ch);
-            }
-            ')' => {
-                if paren_depth == 0 {
-                    return Err(SkillParseError::InvalidFrontmatter(
-                        "allowed-tools contains unmatched ')'".to_string(),
-                    ));
-                }
-                paren_depth -= 1;
-                current.push(ch);
-            }
-            c if c.is_whitespace() && paren_depth == 0 => {
-                let t = current.trim();
-                if !t.is_empty() {
-                    tokens.push(t.to_string());
-                }
-                current.clear();
-            }
-            _ => current.push(ch),
-        }
-    }
-
-    if in_quote.is_some() {
-        return Err(SkillParseError::InvalidFrontmatter(
-            "allowed-tools contains unterminated quote".to_string(),
-        ));
-    }
-    if paren_depth != 0 {
-        return Err(SkillParseError::InvalidFrontmatter(
-            "allowed-tools contains unbalanced parentheses".to_string(),
-        ));
-    }
-
-    let t = current.trim();
-    if !t.is_empty() {
-        tokens.push(t.to_string());
-    }
-
-    tokens
-        .into_iter()
-        .map(parse_allowed_tool_token)
-        .collect::<Result<Vec<_>, _>>()
+    parse_skill_allowed_tools(value).map_err(|e| SkillParseError::InvalidFrontmatter(e.to_string()))
 }
 
 /// Parse one allowed-tools token.
 pub fn parse_allowed_tool_token(token: String) -> Result<AllowedTool, SkillParseError> {
-    let raw = token.trim().to_string();
-    if raw.is_empty() {
-        return Err(SkillParseError::InvalidFrontmatter(
-            "allowed-tools contains an empty token".to_string(),
-        ));
-    }
-
-    let (tool_id, scope) = if let Some(open_idx) = raw.find('(') {
-        if !raw.ends_with(')') {
-            return Err(SkillParseError::InvalidFrontmatter(format!(
-                "invalid allowed-tools token '{raw}'"
-            )));
-        }
-        let base = raw[..open_idx].trim();
-        let inner = raw[open_idx + 1..raw.len() - 1].to_string();
-        (base.to_string(), Some(inner))
-    } else {
-        (raw.clone(), None)
-    };
-
-    if tool_id.is_empty() {
-        return Err(SkillParseError::InvalidFrontmatter(format!(
-            "invalid allowed-tools token '{raw}'"
-        )));
-    }
-
-    if tool_id
-        .chars()
-        .any(|c| c.is_whitespace() || c == '(' || c == ')')
-    {
-        return Err(SkillParseError::InvalidFrontmatter(format!(
-            "invalid tool id in allowed-tools token '{raw}'"
-        )));
-    }
-
-    Ok(AllowedTool {
-        raw,
-        tool_id,
-        scope,
-    })
+    parse_skill_allowed_tool_token(token)
+        .map_err(|e| SkillParseError::InvalidFrontmatter(e.to_string()))
 }
 
 fn normalize_skill_name(name: &str) -> String {
