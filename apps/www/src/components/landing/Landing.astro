@@ -113,42 +113,38 @@ const docsBase = locale === "zh-CN" ? `${baseUrl}/zh-cn` : baseUrl;
     </div>
   </section>
 
-  <!-- ============ THREE RULES ============ -->
+  <!-- ============ TWO LAYERS ============ -->
   <section class="band canvas">
     <div class="wrap">
       <div class="section-head">
         <div>
-          <span class="eyebrow">{t("Design rules", "设计准则")}</span>
-          <h2>{t("Three rules, one runtime", "三条准则,一个运行时")}</h2>
+          <span class="eyebrow">{t("Mental model", "心智模型")}</span>
+          <h2>{t("Two layers, one runtime", "两层模型,一个运行时")}</h2>
+          <p set:html={t(
+            "<b>Code</b> compiles once. <b>Config</b> tunes at runtime. Edits to model, agent, or skill spec take effect on the <b>next</b> <code>/v1/runs</code> — no restart, no redeploy.",
+            "<b>代码</b>编译一次。<b>配置</b>运行时调优。Model、Agent、Skill spec 的改动在<b>下一次</b> <code>/v1/runs</code> 生效 —— 无需重启、无需重新部署。",
+          )} />
         </div>
         <div class="right">
-          <a href={`${docsBase}/explanation/philosophy/`}>{t("Design philosophy →", "设计哲学 →")}</a>
+          <a href={`${docsBase}/how-to/configure-agent-behavior/`}>{t("Tuning guide →", "调优指南 →")}</a>
         </div>
       </div>
       <div class="decisions-grid">
         <div class="callout">
-          <div class="eb">{t("01 · Tools / prompts split", "01 · 工具 / 提示词分层")}</div>
-          <h3>{t("Code for tools, config for prompts", "代码管工具,配置管提示词")}</h3>
+          <div class="eb">{t("Code (Rust)", "代码层（Rust）")}</div>
+          <h3>{t("Tools · State · Plugins", "Tools · State · Plugins")}</h3>
           <p set:html={t(
-            "Tools are Rust artefacts. Prompts, descriptions, reminders, permissions, skills live in spec. Edits take effect on the <b>next run</b> — no restart, no redeploy.",
-            "工具是 Rust 产物。提示词、描述、Reminder、权限、Skill 全部落在 spec。改动在<b>下一次 run</b> 生效 —— 无需重启,无需重新部署。",
+            "<b>Tools</b> as <code>Tool</code> / <code>TypedTool</code> impls with `schemars`-derived JSON Schema. <b>State</b> is typed: `StateKey` declares merge strategy + scope; commits are atomic per phase. <b>Plugins</b> hook the 9-phase loop by name.",
+            "<b>Tools</b> 实现 <code>Tool</code> / <code>TypedTool</code>，用 `schemars` 自动生成 JSON Schema。<b>State</b> 是类型化的：`StateKey` 声明合并策略与作用域，每个 phase 末原子提交。<b>Plugins</b> 按名挂载到 9 阶段循环。",
           )} />
         </div>
         <div class="callout">
-          <div class="eb">{t("02 · Single config plane", "02 · 单一配置面")}</div>
-          <h3>{t("One API, one console", "一个 API,一个控制台")}</h3>
+          <div class="eb">{t("Config (declarative)", "配置层（声明式）")}</div>
+          <h3>{t("Providers · Models · Agents · Skills", "Providers · Models · Agents · Skills")}</h3>
           <p set:html={t(
-            "<code>/v1/config/*</code> is the only mutation surface. Admin console is one consumer, your CI is another. Runtime reads what the console writes.",
-            "<code>/v1/config/*</code> 是唯一的变更入口。控制台是一个消费者,你的 CI 是另一个。Runtime 读的就是控制台写的。",
+            "Mutate through <code>/v1/config/*</code> (REST) or the admin console (UI) — they're the same API. Runtime publishes a new registry snapshot per change; existing runs keep their resolved spec, new ones pick up the edit. Audit log keeps every version.",
+            "通过 <code>/v1/config/*</code>（REST）或控制台（UI）变更，二者是同一套 API。每次写入都会发布新的 registry snapshot；进行中的 run 保留已解析 spec，下一次 run 拿到新版。Audit log 保留每个版本。",
           )} />
-        </div>
-        <div class="callout">
-          <div class="eb">{t("03 · Runtime is the platform", "03 · Runtime 就是平台")}</div>
-          <h3>{t("Tracing, eval, HITL built in", "追踪、Eval、HITL 内置")}</h3>
-          <p>{t(
-            "Booting the server enables OpenTelemetry GenAI traces, a queryable trace store, fixture-replay eval, and permission-gated HITL. No optional libraries to compose.",
-            "启动服务即开启 OpenTelemetry GenAI traces、可查询 trace store、fixture 回放的 Eval、Permission gate HITL。没有需要拼装的可选库。",
-          )}</p>
         </div>
       </div>
     </div>
@@ -215,66 +211,16 @@ const docsBase = locale === "zh-CN" ? `${baseUrl}/zh-cn` : baseUrl;
     </div>
   </section>
 
-  <!-- ============ 9-PHASE LOOP ============ -->
+  <!-- ============ ADMIN CONSOLE PREVIEW (moved up — concrete proof first) ============ -->
   <section class="band canvas">
-    <div class="wrap">
-      <div class="section-head">
-        <div>
-          <span class="eyebrow">{t("Architecture", "架构")}</span>
-          <h2>{t("A 9-phase loop, not a DAG", "9 阶段循环,而非 DAG")}</h2>
-          <p>{t(
-            "Every run flows through nine typed phases. Plugins hook in by name. State commits atomically at the end of each round.",
-            "每次运行都流经 9 个类型化阶段。插件按名称挂载,状态在每轮结束时原子提交。",
-          )}</p>
-        </div>
-        <div class="right">
-          <a href={`${docsBase}/explanation/run-lifecycle-and-phases/`}>{t("Phase reference →", "阶段参考 →")}</a>
-        </div>
-      </div>
-      <div class="phase-loop">
-        <div class="phase-list">
-          <div class="phase-pill" style="--c: var(--aw-phase-resolve)"><span class="num">1</span> <span class="lbl">resolve</span></div>
-          <div class="phase-pill" style="--c: var(--aw-phase-prepare)"><span class="num">2</span> <span class="lbl">prepare</span></div>
-          <div class="phase-pill" style="--c: var(--aw-phase-prompt)"><span class="num">3</span> <span class="lbl">prompt</span></div>
-          <div class="phase-pill" style="--c: var(--aw-phase-stream)"><span class="num">4</span> <span class="lbl">stream</span></div>
-          <div class="phase-pill" style="--c: var(--aw-phase-gate)"><span class="num">5</span> <span class="lbl">gate</span></div>
-          <div class="phase-pill" style="--c: var(--aw-phase-tool)"><span class="num">6</span> <span class="lbl">tool</span></div>
-          <div class="phase-pill" style="--c: var(--aw-phase-commit)"><span class="num">7</span> <span class="lbl">commit</span></div>
-          <div class="phase-pill" style="--c: var(--aw-phase-events)"><span class="num">8</span> <span class="lbl">events</span></div>
-          <div class="phase-pill" style="--c: var(--aw-phase-finalize)"><span class="num">9</span> <span class="lbl">finalize</span></div>
-        </div>
-        <div class="phase-explain">
-          <h3>{t("Snapshot in, batch out.", "快照进,批次出。")}</h3>
-          <p set:html={t(
-            "Every phase reads an immutable state snapshot and returns a typed mutation batch. <code>commit</code> applies the batch atomically — no partial writes, no surprise interleaving when tools run in parallel.",
-            "每个阶段读取不可变的状态快照,返回类型化变更批次。<code>commit</code> 阶段原子应用,工具并行执行也不会出现部分写入或交叉污染。",
-          )} />
-          <p set:html={t(
-            "The pure <code>gate</code> phase decides which tool calls to authorise before <code>tool</code> executes — permission, reminder, and HITL plugins all hook in here.",
-            "纯函数的 <code>gate</code> 阶段在 <code>tool</code> 执行前裁决工具调用 —— 权限、提醒与 HITL 插件都挂载在此。",
-          )} />
-          <div class="phase-callout">
-            <b>{t("Stream recovery built in.", "内建流式恢复。")}</b>
-            <span set:html={t(
-              " Idle stalls and mid-stream errors are caught with four explicit plans: continue text, replay completed tools, restart with a cancelled-tool hint, or whole restart. <code>Retry-After</code> is honoured; checkpoints persist across process restarts.",
-              " 空闲超时与流中断由四个显式恢复计划处理:续写文本、回放已完成工具、提示工具取消重启、整轮重启。<code>Retry-After</code> 被遵守;检查点跨进程重启持久化。",
-            )} />
-          </div>
-        </div>
-      </div>
-    </div>
-  </section>
-
-  <!-- ============ ADMIN CONSOLE PREVIEW ============ -->
-  <section class="band">
     <div class="wrap">
       <div class="section-head">
         <div>
           <span class="eyebrow">{t("Admin Console", "管理控制台")}</span>
           <h2>{t("Operate it like a product, not a script", "把它当产品运营,而不是脚本")}</h2>
           <p set:html={t(
-            "A React 19 SPA wired to the same <code>/v1/config/*</code> API. Manage agents, models, providers, plugins, MCP — with full audit trails.",
-            "一个 React 19 SPA,通过相同的 <code>/v1/config/*</code> API 管理智能体、模型、Provider、插件与 MCP —— 全程可审计。",
+            "A React 19 SPA wired to the same <code>/v1/config/*</code> API. Manage agents, models, providers, skills, MCP — every change audited and snapshot-applied to the next run.",
+            "一个 React 19 SPA，与 <code>/v1/config/*</code> 共享 API。管理 agents、models、providers、skills、MCP —— 每次变更都进入 audit log，下一次 run 立即生效。",
           )} />
         </div>
         <div class="right">
@@ -348,92 +294,75 @@ const docsBase = locale === "zh-CN" ? `${baseUrl}/zh-cn` : baseUrl;
             )} />
           </div>
           <div class="callout">
-            <div class="eb">{t("Observability", "可观测性")}</div>
-            <h3>{t("Phase-by-phase traces", "阶段级追踪")}</h3>
-            <p>{t(
-              "OpenTelemetry GenAI semantic conventions. Persistent trace store. Judge sampling. Click any phase for full inputs / outputs.",
-              "符合 OpenTelemetry GenAI 语义约定。持久化追踪存储,Judge 采样。任意阶段可下钻完整输入输出。",
-            )}</p>
-            <div class="stat">875 <small>{t("tests · 100% type-safe", "测试用例 · 100% 类型安全")}</small></div>
+            <div class="eb">{t("Tested end-to-end", "端到端测试")}</div>
+            <h3>{t("875 tests · 20 doctest examples", "875 个测试 · 20 个 doctest 示例")}</h3>
+            <p set:html={t(
+              "Workspace under <code>unsafe_code = \"forbid\"</code>. The coverage-map tracks 20 doc-cited API shapes; each example's <code>main()</code> runs in CI to catch silent rename / serde drift.",
+              "整个 workspace <code>unsafe_code = \"forbid\"</code>。Coverage map 跟踪 20 个文档引用的 API 形状，每个示例的 <code>main()</code> 在 CI 真实执行，捕捉静默 rename 或 serde 漂移。",
+            )} />
           </div>
         </div>
       </div>
     </div>
   </section>
 
-  <!-- ============ FITS / DOESN'T ============ -->
-  <section class="band canvas">
+  <!-- ============ 9-PHASE LOOP (moved down — explains how the above works) ============ -->
+  <section class="band">
     <div class="wrap">
       <div class="section-head">
         <div>
-          <span class="eyebrow">{t("Honest scoping", "诚实的边界")}</span>
-          <h2>{t("When Awaken fits — and when it doesn't", "Awaken 适合 —— 与不适合 —— 的场景")}</h2>
+          <span class="eyebrow">{t("Inside the runtime", "运行时内部")}</span>
+          <h2>{t("A 9-phase loop, not a DAG", "9 阶段循环,而非 DAG")}</h2>
+          <p>{t(
+            "Every run flows through nine typed phases. Plugins hook in by name. State commits atomically at the end of each round.",
+            "每次运行都流经 9 个类型化阶段。插件按名称挂载,状态在每轮结束时原子提交。",
+          )}</p>
+        </div>
+        <div class="right">
+          <a href={`${docsBase}/explanation/run-lifecycle-and-phases/`}>{t("Phase reference →", "阶段参考 →")}</a>
         </div>
       </div>
-      <div class="fit-grid">
-        <div class="fit-card yes">
-          <h3>
-            <span>{t("Fits well", "适合")}</span>
-            <span class="tag">{t("use it", "选它")}</span>
-          </h3>
-          <ul class="fit-list">
-            <li set:html={t(
-              "You want a <b>Rust backend</b> for agents with compile-time guarantees.",
-              "你想要一个有编译期保障的 <b>Rust 后端</b> 跑智能体。",
-            )} />
-            <li set:html={t(
-              "You need <b>AI SDK + CopilotKit + A2A + MCP</b> from one process.",
-              "你需要单一进程同时承接 <b>AI SDK + CopilotKit + A2A + MCP</b>。",
-            )} />
-            <li set:html={t(
-              "Tools must <b>share state safely</b> under parallel execution.",
-              "工具并行执行下需要 <b>安全共享状态</b>。",
-            )} />
-            <li set:html={t(
-              "Runs need <b>auditable history</b>, checkpoints, and replay.",
-              "运行需要 <b>可审计的历史</b>、检查点与重放。",
-            )} />
-          </ul>
+      <div class="phase-loop">
+        <div class="phase-list">
+          <div class="phase-pill" style="--c: var(--aw-phase-resolve)"><span class="num">1</span> <span class="lbl">resolve</span></div>
+          <div class="phase-pill" style="--c: var(--aw-phase-prepare)"><span class="num">2</span> <span class="lbl">prepare</span></div>
+          <div class="phase-pill" style="--c: var(--aw-phase-prompt)"><span class="num">3</span> <span class="lbl">prompt</span></div>
+          <div class="phase-pill" style="--c: var(--aw-phase-stream)"><span class="num">4</span> <span class="lbl">stream</span></div>
+          <div class="phase-pill" style="--c: var(--aw-phase-gate)"><span class="num">5</span> <span class="lbl">gate</span></div>
+          <div class="phase-pill" style="--c: var(--aw-phase-tool)"><span class="num">6</span> <span class="lbl">tool</span></div>
+          <div class="phase-pill" style="--c: var(--aw-phase-commit)"><span class="num">7</span> <span class="lbl">commit</span></div>
+          <div class="phase-pill" style="--c: var(--aw-phase-events)"><span class="num">8</span> <span class="lbl">events</span></div>
+          <div class="phase-pill" style="--c: var(--aw-phase-finalize)"><span class="num">9</span> <span class="lbl">finalize</span></div>
         </div>
-        <div class="fit-card no">
-          <h3>
-            <span>{t("Not the right fit", "不适合")}</span>
-            <span class="tag">{t("look elsewhere", "另寻方案")}</span>
-          </h3>
-          <ul class="fit-list">
-            <li set:html={t(
-              "You need <b>built-in file/shell/web tools</b> — try OpenAI Agents SDK, Dify.",
-              "你需要 <b>内置的 file/shell/web 工具</b> —— 看看 OpenAI Agents SDK、Dify。",
+        <div class="phase-explain">
+          <h3>{t("Snapshot in, batch out.", "快照进,批次出。")}</h3>
+          <p set:html={t(
+            "Each phase reads an immutable state snapshot and returns a typed mutation batch. <code>commit</code> applies the batch atomically — no partial writes, no surprise interleaving when tools run in parallel. The pure <code>gate</code> phase decides which tool calls to authorise before <code>tool</code> executes; permission, reminder, and HITL plugins all hook here.",
+            "每个阶段读取不可变状态快照，返回类型化变更批次。<code>commit</code> 阶段原子应用，工具并行执行也不会出现部分写入或交叉污染。纯函数的 <code>gate</code> 阶段在 <code>tool</code> 执行前裁决工具调用 —— 权限、提醒与 HITL 插件都挂载在此。",
+          )} />
+          <div class="phase-callout">
+            <b>{t("Stream recovery built in.", "内建流式恢复。")}</b>
+            <span set:html={t(
+              " Idle stalls and mid-stream errors are caught with four explicit plans: continue text, replay completed tools, restart with a cancelled-tool hint, or whole restart. <code>Retry-After</code> is honoured; checkpoints persist across process restarts.",
+              " 空闲超时与流中断由四个显式恢复计划处理：续写文本、回放已完成工具、提示工具取消重启、整轮重启。<code>Retry-After</code> 被遵守；检查点跨进程重启持久化。",
             )} />
-            <li set:html={t(
-              "You want a <b>visual workflow builder</b> — try Dify, LangGraph Studio.",
-              "你想要 <b>可视化工作流编辑器</b> —— 看看 Dify、LangGraph Studio。",
-            )} />
-            <li set:html={t(
-              "You're <b>prototyping in Python</b> — try LangGraph, AG2, PydanticAI.",
-              "你在 <b>用 Python 做原型</b> —— 看看 LangGraph、AG2、PydanticAI。",
-            )} />
-            <li set:html={t(
-              "You need <b>LLM-managed memory</b> as a subsystem — try Letta.",
-              "你需要 <b>由 LLM 管理的记忆子系统</b> —— 看看 Letta。",
-            )} />
-          </ul>
+          </div>
         </div>
       </div>
     </div>
   </section>
 
   <!-- ============ BUILT-IN PLUGINS ============ -->
-  <section class="band">
+  <section class="band canvas">
     <div class="wrap">
       <div class="section-head">
         <div>
           <span class="eyebrow">{t("Plugins", "插件")}</span>
           <h2>{t("Batteries that opt in", "按需开启的电池组")}</h2>
-          <p>{t(
-            "Seven typed extension surfaces. Enable per feature flag — or write your own against the same hooks.",
-            "七个类型化扩展点。按 feature flag 开启 —— 也可基于同样的 hook 自己写。",
-          )}</p>
+          <p set:html={t(
+            "Seven typed extension surfaces, each gated by a cargo feature flag. Same <code>trait Plugin</code> + hooks the built-ins use — write your own with no special API.",
+            "七个类型化扩展点，每个由 cargo feature flag 控制。<code>trait Plugin</code> + 各 hook 与内置插件完全一致 —— 自己写不需要任何特殊 API。",
+          )} />
         </div>
         <div class="right">
           <a href={`${docsBase}/reference/overview/`}>{t("Plugin reference →", "插件参考 →")}</a>
@@ -443,50 +372,50 @@ const docsBase = locale === "zh-CN" ? `${baseUrl}/zh-cn` : baseUrl;
         <div class="plugin-card">
           <div class="pname"><h4>Permission</h4><span class="flag">permission</span></div>
           <p>{t(
-            "Allow / Deny / Ask rules on tool name + args. Deny > Allow > Ask. Ask suspends the run via the mailbox for HITL.",
-            "工具名 + 参数上的 Allow / Deny / Ask 规则。优先级 Deny > Allow > Ask。Ask 通过 mailbox 挂起等待 HITL。",
+            "Allow / Deny / Ask rules on tool name + args. Ask suspends the run for HITL via the mailbox.",
+            "工具名 + 参数上的 Allow / Deny / Ask 规则。Ask 通过 mailbox 挂起等待 HITL。",
           )}</p>
         </div>
         <div class="plugin-card">
           <div class="pname"><h4>Reminder</h4><span class="flag">reminder</span></div>
           <p>{t(
-            "Inject system or conversation-level messages when a tool call matches a configured pattern.",
-            "当工具调用匹配预设规则时,注入系统级或会话级消息。",
+            "Inject system or conversation-level messages when a tool call matches a pattern.",
+            "工具调用匹配规则时，注入系统级或会话级消息。",
           )}</p>
         </div>
         <div class="plugin-card">
           <div class="pname"><h4>Observability</h4><span class="flag">observability</span></div>
           <p>{t(
-            "OpenTelemetry traces & metrics aligned with the GenAI semantic conventions. OTLP, file, in-memory.",
-            "符合 GenAI 语义约定的 OpenTelemetry traces 与 metrics。支持 OTLP、文件、内存后端。",
+            "OpenTelemetry traces + metrics in GenAI semantic conventions. OTLP / file / in-memory.",
+            "符合 GenAI 语义约定的 OpenTelemetry traces + metrics。OTLP / 文件 / 内存。",
           )}</p>
         </div>
         <div class="plugin-card">
           <div class="pname"><h4>MCP</h4><span class="flag">mcp</span></div>
           <p>{t(
-            "Speak Model Context Protocol with any compatible server — their tools register as native Awaken tools.",
-            "与任意 MCP 兼容服务对话 —— 它们的工具注册为原生 Awaken 工具。",
+            "Connect to any MCP server — its tools register as native Awaken tools.",
+            "连接任意 MCP 服务，其工具注册为原生 Awaken 工具。",
           )}</p>
         </div>
         <div class="plugin-card">
           <div class="pname"><h4>Skills</h4><span class="flag">skills</span></div>
           <p>{t(
-            "Skill packages discovered and injected as a catalog — the LLM activates them on demand.",
-            "技能包被自动发现并注入为目录 —— LLM 按需激活。",
+            "Skill packages discovered and injected as a catalog — the LLM activates on demand.",
+            "技能包自动发现并注入为目录 —— LLM 按需激活。",
           )}</p>
         </div>
         <div class="plugin-card">
           <div class="pname"><h4>Generative UI</h4><span class="flag">generative-ui</span></div>
           <p>{t(
-            "Stream declarative UI via A2UI, JSON Render, and OpenUI Lang integrations.",
-            "通过 A2UI、JSON Render、OpenUI Lang 集成,流式输出声明式 UI。",
+            "Stream declarative UI via A2UI, JSON Render, and OpenUI Lang.",
+            "通过 A2UI、JSON Render、OpenUI Lang 流式输出声明式 UI。",
           )}</p>
         </div>
         <div class="plugin-card">
           <div class="pname"><h4>Deferred Tools</h4><span class="flag">deferred-tools</span></div>
           <p set:html={t(
-            "Hides large tool schemas behind a <code>ToolSearch</code> step; idle tools re-defer with a Beta usage model.",
-            "把大体量工具 schema 藏在 <code>ToolSearch</code> 步骤后;空闲工具按 Beta 使用模型重新延后加载。",
+            "Hide large tool schemas behind a <code>ToolSearch</code> step; idle tools re-defer via a Beta usage model.",
+            "大体量工具 schema 藏在 <code>ToolSearch</code> 后；空闲工具按 Beta 模型重新延后。",
           )} />
         </div>
         <div class="plugin-card featured">
@@ -495,8 +424,8 @@ const docsBase = locale === "zh-CN" ? `${baseUrl}/zh-cn` : baseUrl;
             <span class="flag">trait Plugin</span>
           </div>
           <p set:html={t(
-            "Same typed hooks the built-ins use: <code>ToolGateHook</code>, <code>BeforeToolExecute</code>, <code>PluginConfigKey</code>.",
-            "与内置插件共用的类型化 hook:<code>ToolGateHook</code>、<code>BeforeToolExecute</code>、<code>PluginConfigKey</code>。",
+            "Same hooks: <code>ToolGateHook</code>, <code>BeforeToolExecute</code>, <code>PluginConfigKey</code>.",
+            "共用的 hook：<code>ToolGateHook</code>、<code>BeforeToolExecute</code>、<code>PluginConfigKey</code>。",
           )} />
         </div>
       </div>

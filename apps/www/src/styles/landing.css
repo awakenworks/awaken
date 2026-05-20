@@ -66,6 +66,20 @@ main:has(.landing-page) > .content-panel:has(.landing-page) {
   gap: 64px;
   align-items: center;
 }
+/* `min-width: 0` on every direct grid child so a track can shrink below
+ * its content's min-content (Shiki's Rust code has long unbreakable tokens
+ * that otherwise force the .hero-grid wider than the viewport on mobile).
+ * Applied to every grid on the landing (hero / console / phase / proto
+ * / plugins / decisions) for the same reason. With this in place,
+ * overflow-x:auto on inner <pre> finally engages on narrow viewports. */
+.landing-page .hero-grid > *,
+.landing-page .console-grid > *,
+.landing-page .phase-loop > *,
+.landing-page .proto-grid > *,
+.landing-page .plugins-grid > *,
+.landing-page .decisions-grid > * {
+  min-width: 0;
+}
 .landing-page .hero-eyebrow {
   display: inline-flex; align-items: center; gap: 8px;
   font-size: 11px; font-weight: 600;
@@ -630,72 +644,11 @@ main:has(.landing-page) > .content-panel:has(.landing-page) {
   margin-left: 6px;
 }
 
-/* ============ fits / doesn't fit ============ */
-.landing-page .fit-grid {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 24px;
-}
-.landing-page .fit-card {
-  border: 1px solid var(--aw-border);
-  border-radius: var(--aw-radius-lg);
-  padding: 28px;
-  background: var(--aw-bg-elevated);
-}
-.landing-page .fit-card.yes {
-  border-color: color-mix(in oklch, var(--aw-tone-success) 35%, var(--aw-border));
-}
-.landing-page .fit-card.no {
-  border-color: color-mix(in oklch, var(--aw-text-faint) 25%, var(--aw-border));
-}
-.landing-page .fit-card h3 {
-  margin: 0 0 16px;
-  font-size: 18px; font-weight: 600;
-  display: flex; align-items: center; gap: 10px;
-  color: var(--aw-text-strong);
-  letter-spacing: var(--aw-tracking-heading-em);
-}
-.landing-page .fit-card.yes h3 .tag {
-  background: color-mix(in oklch, var(--aw-tone-success) 18%, transparent);
-  color: var(--aw-tone-success);
-}
-.landing-page .fit-card.no h3 .tag {
-  background: var(--aw-bg-muted);
-  color: var(--aw-text-soft);
-}
-.landing-page .fit-card h3 .tag {
-  font-size: 10px;
-  font-family: var(--aw-font-mono);
-  padding: 2px 8px;
-  border-radius: var(--aw-radius-pill);
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-}
-.landing-page .fit-list {
-  list-style: none; padding: 0; margin: 0;
-  display: flex; flex-direction: column; gap: 10px;
-}
-.landing-page .fit-list li {
-  display: flex; gap: 10px;
-  font-size: 14px;
-  color: var(--aw-text);
-  line-height: 1.5;
-}
-.landing-page .fit-list li::before {
-  content: "";
-  flex: none; margin-top: 7px;
-  width: 6px; height: 6px; border-radius: 50%;
-  background: var(--aw-tone-success);
-}
-.landing-page .fit-card.no .fit-list li::before {
-  background: var(--aw-text-faint);
-}
-.landing-page .fit-list li b {
-  font-weight: 600;
-  color: var(--aw-text-strong);
-}
+/* The previous "Fits / doesn't" section was removed from Landing.astro in
+ * favour of letting the README + how-to docs do the qualification.
+ * `.fit-grid` / `.fit-card` / `.fit-list` styles deleted with it. */
 
-/* ============ decisions (Three Rules) grid ============ */
+/* ============ decisions (two-layer model) grid ============ */
 .landing-page .decisions-grid {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
@@ -755,8 +708,7 @@ main:has(.landing-page) > .content-panel:has(.landing-page) {
 :root[lang="zh-CN"] .landing-page h1.hero-title,
 :root[lang="zh-CN"] .landing-page .section-head h2,
 :root[lang="zh-CN"] .landing-page .phase-explain h3,
-:root[lang="zh-CN"] .landing-page .callout h3,
-:root[lang="zh-CN"] .landing-page .fit-card h3 {
+:root[lang="zh-CN"] .landing-page .callout h3 {
   letter-spacing: 0;
 }
 
@@ -765,14 +717,76 @@ main:has(.landing-page) > .content-panel:has(.landing-page) {
   .landing-page .hero-grid,
   .landing-page .phase-loop,
   .landing-page .console-grid,
-  .landing-page .fit-grid,
   .landing-page .decisions-grid { grid-template-columns: 1fr; }
   .landing-page .proto-grid,
   .landing-page .plugins-grid { grid-template-columns: 1fr 1fr; }
+  /* Narrow the gutters once columns collapse. */
+  .landing-page .hero-grid { gap: 40px; }
+  .landing-page .hero { padding: 72px 0 56px; }
 }
+
 @media (max-width: 640px) {
   .landing-page .proto-grid,
   .landing-page .plugins-grid,
   .landing-page .console-cards { grid-template-columns: 1fr; }
   .landing-page .phase-list { grid-template-columns: 1fr 1fr; }
+
+  /* Tighter gutter so the hero/terminal don't overflow viewport. */
+  .landing-page .wrap { padding: 0 20px; }
+
+  /* Hero shrinks: smaller padding + smaller min font + balanced wrap. */
+  .landing-page .hero { padding: 48px 0 40px; }
+  .landing-page h1.hero-title { font-size: clamp(28px, 8vw, 40px); }
+  .landing-page .hero-sub { font-size: 16px; }
+
+  /* Eyebrow pill: it's `inline-flex` and was overflowing on long content
+   * like "v0.5 · type-safe state · 9-phase loop". Let the inner label wrap;
+   * also drop letter-spacing so the text takes less width. */
+  .landing-page .hero-eyebrow {
+    max-width: 100%;
+    flex-wrap: wrap;
+    letter-spacing: 0.04em;
+    font-size: 10.5px;
+    padding: 5px 10px;
+  }
+  .landing-page .hero-eyebrow > span:last-child { min-width: 0; }
+
+  /* CTA buttons stretch to full width — easier tap targets. */
+  .landing-page .hero-actions { flex-direction: column; align-items: stretch; gap: 10px; }
+  .landing-page .btn { width: 100%; justify-content: center; }
+
+  /* Hero-meta items: tighter wrap; install chip can overflow if it tries
+   * to stay inline with siblings. */
+  .landing-page .hero-meta {
+    gap: 12px 18px;
+    margin-top: 24px;
+  }
+
+  /* Terminal: prevent the chrome bar and code padding from pushing the
+   * container wider than viewport. The Shiki <pre> already scrolls inside;
+   * trim its horizontal padding so more code is visible. */
+  .landing-page .terminal { font-size: 11.5px; }
+  .landing-page .terminal pre.astro-code { padding: 14px 12px; font-size: 11.5px; }
+  .landing-page .terminal-bar { padding: 8px 10px; gap: 6px; }
+  .landing-page .terminal-bar .file,
+  .landing-page .terminal-bar .tag {
+    /* Bar items can crowd at 360px; reduce visual weight. */
+    font-size: 10px;
+  }
+
+  /* Section heads: stack the right-side link below the title instead of
+   * floating in a cramped corner. */
+  .landing-page .section-head { flex-direction: column; align-items: flex-start; gap: 12px; }
+  .landing-page .section-head .right { align-self: flex-start; }
+
+  /* Console preview shrinks; the sim should not overflow its parent. */
+  .landing-page .console-shot { font-size: 10px; }
+  .landing-page .console-body { grid-template-columns: 90px 1fr; }
+
+  /* Phase pills already 2-col but typography can still overflow. */
+  .landing-page .phase-pill .lbl { font-size: 11px; }
+
+  /* Bands' vertical padding shrinks. Match the same specificity as the
+   * default rule (`section.band`) so the override actually wins. */
+  .landing-page section.band { padding: 56px 0; }
 }
