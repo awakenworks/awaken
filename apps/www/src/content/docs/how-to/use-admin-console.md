@@ -215,6 +215,25 @@ Without this:
 See [Enable Observability](/awaken/how-to/enable-observability/) for the full
 recipe.
 
+## What the console does NOT cover (use REST instead)
+
+The console focuses on **configuration**: agents, models, providers, MCP
+servers, tools, skills (read-only), audit log, and runtime stats. Live
+**execution** surfaces are intentionally REST-only today:
+
+- **Threads & runs** — list, create, cancel, inspect messages.
+- **HITL decisions** — submit resume/cancel for suspended tool calls.
+- **Mailbox** — peek/push inter-agent dispatches.
+- **Skill CRUD** — the console lists skills but does not yet edit them.
+- **Config diagnostics** — `GET /v1/config/diagnostics` returns a
+  registry-wide validation report that no screen renders yet.
+
+Drive these from `curl` or your own scripts with the same admin bearer
+token. See the
+[REST-only features matrix](/awaken/reference/admin-console/#rest-only-features-no-console-ui-yet)
+for the exact endpoint list, and the
+[HTTP API reference](/awaken/reference/http-api/) for request shapes.
+
 ## Switch to dark mode
 
 Add `data-theme="dark"` to `<html>` (or any subtree) and the

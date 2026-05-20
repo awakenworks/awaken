@@ -141,6 +141,32 @@ The `SkillDiscoveryPlugin` injects a skills catalog into the LLM context before 
 | `load_skill_resource` | Load a skill resource or reference |
 | `skill_script` | Run a skill script |
 
+## Constrain a skill to a tool subset
+
+A skill is more than instructions — it can also scope **which tools the agent
+sees** while the skill is active. Declare `allowed_tools` in the `SKILL.md`
+frontmatter (or `SkillSpec.allowed_tools` when you build the spec
+programmatically):
+
+```yaml
+---
+name: refund-flow
+description: Process customer refunds against the billing system
+allowed-tools: billing_lookup issue_refund send_receipt
+---
+```
+
+Note that `allowed-tools` (hyphenated) is a **space-delimited string** in the
+SKILL.md frontmatter — not a YAML list — matching the Claude Code skills
+convention. The runtime parses it into `SkillSpec.allowed_tools: Vec<String>`.
+
+While `refund-flow` is active, the agent's tool catalog is intersected with this
+list, even if its `AgentSpec.tool_loading_policy` would normally include more.
+This lets one agent host many task-shaped skills without leaking unrelated
+tools (e.g. shell access) into a sensitive flow. Tuning `allowed_tools` from
+the admin-console skill editor (or `/v1/config/skills/:id`) is the recommended
+way to harden a workflow without recompiling the runtime.
+
 ## Verify
 
 1. Run the agent and ask it to list available skills.

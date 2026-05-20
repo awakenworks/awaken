@@ -28,10 +28,21 @@ Docs: [Awaken docs](https://awakenworks.github.io/awaken) · [中文文档](http
 
 ## Mental model
 
-1. **Tools** — implement `Tool` directly, or `TypedTool` with `schemars`-generated JSON Schema.
-2. **Agents** — system prompt, model binding, allowed tools. The LLM orchestrates through natural language; there is no DAG.
-3. **State** — typed run/thread state plus persistent profile and shared state for cross-thread or cross-agent coordination.
-4. **Plugins** — lifecycle hooks for permission, observability, context management, skills, MCP, generative UI.
+Awaken separates **code you write once** from **config you tune continuously**.
+
+**Code (Rust):**
+
+1. **Tools** — implement `Tool` directly, or `TypedTool` with `schemars`-generated JSON Schema. This is the only part of an agent that you compile.
+2. **State** — typed run/thread state plus persistent profile and shared state for cross-thread or cross-agent coordination.
+3. **Plugins** — lifecycle hooks for permission, observability, context management, skills, MCP, generative UI.
+
+**Config (declarative, hot-swappable):**
+
+4. **Providers + Models** — credentials, adapters, and the bindings agents reference.
+5. **Agents** — system prompt, model binding, allowed/excluded tools. The LLM orchestrates through natural language; there is no DAG.
+6. **Skills** — discoverable packages that scope what tools and instructions an agent activates for a given task (`SkillSpec.allowed_tools`).
+
+Tools are written once and stay stable. Models, agents, and skills are tuned **at runtime** through `/v1/config/*` or the [Admin Console](https://awakenworks.github.io/awaken/reference/admin-console/) — Validate → Save → preview-chat → adjust. That feedback loop *is* the optimization workflow.
 
 The runtime drives 9 typed phases per round, including a pure `ToolGate` before tool execution. State mutations are batched and committed atomically.
 

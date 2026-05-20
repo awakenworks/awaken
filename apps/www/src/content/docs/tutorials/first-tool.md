@@ -6,12 +6,17 @@ title: "First Tool"
 
 Implement one tool that reads typed state from `ToolCallContext` during execution.
 
-> **State is optional.** Many tools (API calls, search, shell commands) don't need state -- just implement `execute` and return a `ToolResult`.
+Tools are the foundational, **code-only** layer of an Awaken agent — everything
+else (model, agent, skill) is config that wires tools into runtime behavior.
+[First Agent](/awaken/tutorials/first-agent/) already shows a stateless tool
+defined inline; this tutorial extends that pattern with typed `StateKey`s so
+the tool can persist values across calls within a run.
+
+> **State is optional.** Many tools (API calls, search, shell commands) don't need state -- just implement `execute` and return a `ToolResult`. Reach for `StateKey` when the same tool needs to read what an earlier tool call wrote.
 
 ## Prerequisites
 
-- Complete [First Agent](/awaken/tutorials/first-agent/) first.
-- Reuse the runtime dependencies from [First Agent](/awaken/tutorials/first-agent/).
+- Familiarity with [First Agent](/awaken/tutorials/first-agent/) (it introduces the runtime + a stateless tool — this tutorial builds on the same scaffold).
 
 ```toml
 [dependencies]

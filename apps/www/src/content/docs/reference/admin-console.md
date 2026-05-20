@@ -163,17 +163,38 @@ Three optional subsystems can be off without breaking the console:
 | Runtime stats | `/v1/agents/runtime-stats` returns `503` | Banner above agents list + `n/a` in Inferences column |
 | Config store | `/v1/system/info` returns `config_store_enabled: false` | System card shows `none` (neutral tone) |
 
-## Known gaps
+## REST-only features (no console UI yet)
 
-These are tracked in the source review and require backend work before
-the console can show real data:
+The following runtime surfaces are fully implemented on the server but
+have **no admin-console screen** today. Drive them over HTTP with the
+admin bearer token (`Authorization: Bearer <token>`).
+
+| Area | Endpoints | Why no UI yet |
+|---|---|---|
+| Threads | `GET/POST /v1/threads`, `GET/PATCH/DELETE /v1/threads/:id`, `GET/POST /v1/threads/:id/messages` | The console is configuration-focused; thread browsing belongs to a planned "Runs" surface |
+| Runs | `GET/POST /v1/runs`, `GET /v1/runs/:id`, `GET /v1/threads/:id/runs`, `GET /v1/threads/:id/runs/{latest,active}` | Same as above — see gap B1 |
+| Run control | `POST /v1/runs/:id/cancel`, `POST /v1/runs/:id/inputs`, `POST /v1/threads/:id/{cancel,interrupt}` | Decision/interrupt UI is gated on B1 (active-runs endpoint shape) |
+| HITL decisions | `POST /v1/runs/:id/decision`, `POST /v1/threads/:id/decision` | Tool-call resume/cancel needs an active-runs feed first |
+| Mailbox | `GET/POST /v1/threads/:id/mailbox` | Inter-agent dispatch is invisible in the browser today |
+| Skill CRUD | `POST/PUT/DELETE /v1/config/skills/:id` | Console renders skills read-only; full editor depends on B3 (version history) |
+| Config diagnostics | `GET /v1/config/diagnostics` | Registry-wide validation report is fetched on dashboard load but not yet surfaced |
+| Permission preview | `GET /v1/agents/:id/permission-preview` | Wired in the agent editor's Tools tab as a side-effect but has no dedicated screen |
+
+See [HTTP API](/awaken/reference/http-api/) for request/response shapes.
+These are the gaps to close when extending the console; do **not**
+duplicate them by hand-rolling a separate operator tool.
+
+## Known gaps (backend work required)
+
+These need backend changes before the console can show real data:
 
 - **B1** — no `/v1/agents/:id/active-runs` endpoint, so the per-agent
-  dashboard cannot show "currently running / paused / blocked" panels.
+  dashboard cannot show "currently running / paused / blocked" panels,
+  and the Runs/Decisions surfaces above can't be built honestly.
 - **B2** — eval reports have no server persistence; everything is
   per-tab session memory.
 - **B3** — skill version history, file tree, and activation log are not
-  exposed.
+  exposed; blocks the full skills editor.
 - **B4** — no notification center endpoint, so the topbar bell is a stub.
 - **B6 partial** — MCP `/status` does not track per-tool latency or a
   rolling 24h error count. The console derives "freshness" from

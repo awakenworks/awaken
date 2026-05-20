@@ -285,53 +285,53 @@ const docsBase = locale === "zh-CN" ? `${baseUrl}/zh-cn` : baseUrl;
         <div class="console-shot" aria-label={t("Admin Console preview", "管理控制台预览")}>
           <div class="titlebar">
             <span class="d"></span><span class="d"></span><span class="d"></span>
-            <span class="url">localhost:5173/agents</span>
+            <span class="url">localhost:3002/agents</span>
           </div>
           <div class="console-body">
             <aside class="console-side">
               <div class="eb">{t("Agents", "智能体")}</div>
               <div class="item act">Agents <span class="dot"></span></div>
+              <div class="eb" style="margin-top: 8px">{t("Resources", "资源")}</div>
               <div class="item">Models <span class="dot"></span></div>
-              <div class="item">Providers <span class="dot w"></span></div>
+              <div class="item">MCP Servers <span class="dot w"></span></div>
+              <div class="item">Skills</div>
               <div class="item">Tools</div>
               <div class="eb" style="margin-top: 8px">{t("Observe", "观测")}</div>
-              <div class="item">Traces</div>
-              <div class="item">Runs</div>
-              <div class="eb" style="margin-top: 8px">{t("Config", "配置")}</div>
-              <div class="item">Plugins</div>
-              <div class="item">MCP</div>
+              <div class="item">Dashboard</div>
+              <div class="item">Audit Log</div>
+              <div class="item">Eval Reports</div>
             </aside>
             <main class="console-main">
-              <div class="crumbs">Agents&nbsp;/&nbsp;<b>assistant</b></div>
+              <div class="crumbs">Agents</div>
               <div class="console-cards">
                 <div class="cc">
-                  <div class="lbl">{t("Active runs", "活跃运行")}</div>
-                  <div class="num">14</div>
-                  <div class="delta">▲ 3 {t("last hour", "近一小时")}</div>
+                  <div class="lbl">{t("Agents", "智能体")}</div>
+                  <div class="num">12</div>
+                  <div class="delta">{t("registered", "已注册")}</div>
                 </div>
                 <div class="cc">
-                  <div class="lbl">p50 latency</div>
-                  <div class="num">420<span style="font-size: 11px; color: var(--aw-text-soft)">ms</span></div>
-                  <div class="delta" style="color: var(--aw-tone-success)">−6%</div>
+                  <div class="lbl">{t("Tools", "工具")}</div>
+                  <div class="num">47</div>
+                  <div class="delta">{t("built-in + plugin + MCP", "内置 + 插件 + MCP")}</div>
                 </div>
               </div>
               <div class="console-table">
                 <div class="row head">
-                  <span>{t("Agent", "智能体")}</span><span>{t("Status", "状态")}</span><span>{t("Calls", "调用")}</span>
+                  <span>{t("Agent", "智能体")}</span><span>Model</span><span>{t("Inferences (24h)", "推理 (24h)")}</span>
                 </div>
                 <div class="row">
                   <span class="name">assistant</span>
-                  <span class="pill live">live</span>
+                  <span class="pill live">gpt-4o-mini</span>
                   <span style="text-align: right; font-family: var(--aw-font-mono); font-size: 10.5px; color: var(--aw-text-soft)">2.1k</span>
                 </div>
                 <div class="row">
                   <span class="name">researcher</span>
-                  <span class="pill agent">agent</span>
+                  <span class="pill agent">claude-3.7</span>
                   <span style="text-align: right; font-family: var(--aw-font-mono); font-size: 10.5px; color: var(--aw-text-soft)">847</span>
                 </div>
                 <div class="row">
                   <span class="name">summariser</span>
-                  <span class="pill">idle</span>
+                  <span class="pill">deepseek-v3</span>
                   <span style="text-align: right; font-family: var(--aw-font-mono); font-size: 10.5px; color: var(--aw-text-soft)">112</span>
                 </div>
               </div>

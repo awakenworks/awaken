@@ -141,6 +141,16 @@ with `config management API not enabled`.
 | `DELETE` | `/v1/config/:namespace/:id` | Delete a config entry. `?force=true` bypasses the dependency check (and audits the override). Returns `409` with `{"error":"...","used_by":[...]}` when other records depend on this one |
 | `POST` | `/v1/config/:namespace/:id/restore` | Restore a previous version. Body: `{"version": "<event-id>"}` — the audit-event id of the version to roll back to. Emits a fresh audit event of type `restore` with `restored_from = <event-id>` |
 | `GET` | `/v1/config/:namespace/$schema` | Return the JSON Schema for a namespace |
+| `GET` | `/v1/config/:namespace/meta` | List metadata (created_at / updated_at / version / actor) for every entry without returning the full bodies |
+| `GET` | `/v1/config/:namespace/:id/meta` | Single-entry metadata variant of the above |
+| `GET` | `/v1/config/diagnostics` | Registry-wide validation report — surfaces dangling model/provider refs and other cross-entity inconsistencies that per-entity validate would miss |
+| `PATCH` | `/v1/config/agents/:id/overrides` | Patch a single field of an agent spec (system prompt, max rounds, etc.) without sending the whole body. Audited as `update` with `overrides` payload |
+| `DELETE` | `/v1/config/agents/:id/overrides` | Drop all agent overrides; reverts to the base spec |
+| `DELETE` | `/v1/config/agents/:id/overrides/:field` | Drop one overridden field |
+| `PATCH` | `/v1/config/tools/:id/overrides` | Patch a built-in tool's `description`. Tools themselves are not deletable; only the description override is mutable |
+| `DELETE` | `/v1/config/tools/:id/overrides` | Drop the tool description override |
+| `DELETE` | `/v1/config/tools/:id/overrides/:field` | Drop one overridden field of a tool |
+| `GET` | `/v1/agents/:id/permission-preview` | Resolve an agent's effective tool permissions (built-in + plugin + MCP, after include/exclude). Used by the editor's Tools tab to show "what the LLM will actually see" |
 | `GET` | `/v1/agents` | Convenience alias for `/v1/config/agents` |
 | `GET` | `/v1/agents/:id` | Convenience alias for `/v1/config/agents/:id` |
 | `POST` | `/v1/providers/:id/test` | Probe an existing provider. Returns `{"ok": bool, "latency_ms": number, "error"?: string}`. The admin console wires this both into the editor and as a per-row "Test" button on the providers list |

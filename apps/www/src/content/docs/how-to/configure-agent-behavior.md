@@ -3,10 +3,24 @@ title: "Configure Agent Behavior"
 description: "Use managed configuration when the same server binary should host multiple agent profiles, switch model bindings, or tune plugin behavior without changing Rust code. Keep new tools, new plugins, and…"
 ---
 
-Use managed configuration when the same server binary should host multiple agent
-profiles, switch model bindings, or tune plugin behavior without changing Rust
-code. Keep new tools, new plugins, and custom provider factories in code; keep
-provider, model, agent, MCP server, and typed section values in config.
+Awaken is built around a **two-layer split**:
+
+- **Code (Rust, compiled once)** — tools, plugins, custom provider factories,
+  storage backends.
+- **Config (declarative, hot-swappable)** — providers, model bindings, agents,
+  MCP servers, skills, and typed `AgentSpec.sections`.
+
+This guide is the canonical "tune at runtime" reference. Once your tools are
+written and the runtime is up, *almost every behavioural change you make to
+an agent is a config edit* — system prompt wording, model choice, allowed
+tools, reasoning effort, context policy, reminder cadence. The same server
+binary hosts many agent profiles; switching profiles is a `PUT /v1/config/agents/:id`
+(or a Save in the [Admin Console](/awaken/reference/admin-console/)), not a
+redeploy.
+
+**Treat configuration as the optimization surface.** The loop is: edit spec →
+Validate → Save → run a preview chat → measure → adjust. The runtime
+swaps to the new spec on the next request without restarting the process.
 
 This guide assumes the server has a `ConfigStore` wired into `AppState` and that
 the referenced plugins have been registered in the runtime plugin registry.
