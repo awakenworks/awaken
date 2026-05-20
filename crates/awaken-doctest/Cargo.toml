@@ -42,12 +42,113 @@ path = "examples/effect_spec.rs"
 test = true
 harness = false
 
+[[example]]
+name = "skill_spec"
+path = "examples/skill_spec.rs"
+test = true
+harness = false
+
+[[example]]
+name = "state_key"
+path = "examples/state_key.rs"
+test = true
+harness = false
+
+[[example]]
+name = "cancellation"
+path = "examples/cancellation.rs"
+test = true
+harness = false
+
+[[example]]
+name = "error_variants"
+path = "examples/error_variants.rs"
+test = true
+harness = false
+
+[[example]]
+name = "run_lifecycle"
+path = "examples/run_lifecycle.rs"
+test = true
+harness = false
+
+[[example]]
+name = "tool_resume"
+path = "examples/tool_resume.rs"
+test = true
+harness = false
+
+[[example]]
+name = "event_sink"
+path = "examples/event_sink.rs"
+test = true
+harness = false
+
+[[example]]
+name = "remote_endpoint"
+path = "examples/remote_endpoint.rs"
+test = true
+harness = false
+
+[[example]]
+name = "scheduled_action"
+path = "examples/scheduled_action.rs"
+test = true
+harness = false
+
+[[example]]
+name = "state_command"
+path = "examples/state_command.rs"
+test = true
+harness = false
+
+[[example]]
+name = "plugin_registrar"
+path = "examples/plugin_registrar.rs"
+test = true
+harness = false
+
+[[example]]
+name = "thread_store_trait"
+path = "examples/thread_store_trait.rs"
+test = true
+harness = false
+
+[[example]]
+name = "mcp_server_spec"
+path = "examples/mcp_server_spec.rs"
+test = true
+harness = false
+
+[[example]]
+name = "deferred_tool"
+path = "examples/deferred_tool.rs"
+test = true
+harness = false
+
+[[example]]
+name = "ai_sdk_payloads"
+path = "examples/ai_sdk_payloads.rs"
+test = true
+harness = false
+
+[[example]]
+name = "http_app_builder"
+path = "examples/http_app_builder.rs"
+test = true
+harness = false
+
 [dev-dependencies]
 awaken = { package = "awaken", version = "0.5.1-dev", path = "../awaken", features = ["full"] }
+awaken-contract = { path = "../awaken-contract" }
+awaken-runtime = { path = "../awaken-runtime" }
+awaken-server = { path = "../awaken-server" }
+awaken-ext-deferred-tools = { path = "../awaken-ext-deferred-tools" }
 async-trait = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 schemars = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt"] }
 
 [lints]
 workspace = true

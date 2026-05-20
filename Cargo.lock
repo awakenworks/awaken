@@ -323,9 +323,14 @@ version = "0.5.1-dev"
 dependencies = [
  "async-trait",
  "awaken",
+ "awaken-contract",
+ "awaken-ext-deferred-tools",
+ "awaken-runtime",
+ "awaken-server",
  "schemars 1.2.1",
  "serde",
  "serde_json",
+ "tokio",
 ]
 
 [[package]]
