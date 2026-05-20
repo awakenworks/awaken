@@ -22,31 +22,39 @@ file keeps the gap visible.
 | `typed_tool.rs`         | `awaken::contract::tool::TypedTool` + schemars-derived `Args`                                                            | `reference/tool-trait.md`, `how-to/add-a-tool.md`                             |
 | `agent_spec.rs`         | `awaken::registry_spec::{AgentSpec, ProviderSpec, ModelBindingSpec}`                                                     | `reference/config.md`, `reference/provider-model-config.md`                   |
 | `effect_spec.rs`        | `awaken::model::{EffectSpec, TypedEffect::from_spec, TypedEffect::decode}`                                               | `reference/effects.md`                                                        |
+| `scheduled_action.rs`   | `awaken::{ScheduledActionSpec, Phase, TypedScheduledActionHandler, PhaseContext}` — spec + handler impl + payload round-trip | `reference/scheduled-actions.md`                                              |
+| `state_key.rs`          | `awaken::{StateKey, MergeStrategy, KeyScope}` apply/encode                                                               | `reference/state-keys.md`                                                     |
+| `cancellation.rs`       | `awaken::CancellationToken` + `CancellationHandle` pair                                                                  | `reference/cancellation.md`                                                   |
+| `error_variants.rs`     | `ToolError`, `StorageError`, `ResolveError` message-format contracts                                                     | `reference/errors.md`                                                         |
+| `event_sink.rs`         | `EventSink` / `VecEventSink` / `NullEventSink` + representative `AgentEvent` families (lifecycle, text, reasoning, tool-call start/ready/done, cancel) | `reference/events.md`                                                         |
+| `http_app_builder.rs`   | `AgentRuntimeBuilder` → `Mailbox` → `AppState::new` wiring (with `InMemoryStore` + `InMemoryMailboxStore` + `ServerConfig`) | `reference/http-api.md`                                                       |
+| `remote_endpoint.rs`    | `awaken::registry_spec::{RemoteAuth, RemoteEndpoint}` + bearer helper                                                    | `reference/protocols/a2a.md`                                                  |
+| `ai_sdk_payloads.rs`    | `UIStreamEvent` cross-section: `MessageStart`, `TextDelta`, `ToolInputStart`/`Available`, `ToolOutputAvailable`, `StartStep`, `Finish` | `reference/protocols/ai-sdk-v6.md`                                            |
+| `thread_store_trait.rs` | `awaken::contract::storage::ThreadStore` save/load via `InMemoryStore` + `Message::user`                                 | `reference/thread-model.md`                                                   |
+| `tool_resume.rs`        | `awaken::contract::suspension::{ToolCallResume, ResumeDecisionAction}` decision payload                                  | `reference/tool-execution-modes.md`                                           |
+| `plugin_registrar.rs`   | `awaken::{Plugin, PluginDescriptor, PluginRegistrar, AgentSpec}` trait shape                                             | `how-to/add-a-plugin.md`                                                      |
+| `mcp_server_spec.rs`    | `awaken::registry_spec::{McpServerSpec, McpTransportKind}` stdio + http variants                                         | `how-to/use-mcp-tools.md`                                                     |
+| `skill_spec.rs`         | `awaken::{SkillSpec, SkillArgumentSpec}` + `allowed_tools`                                                               | `how-to/use-skills-subsystem.md`                                              |
+| `deferred_tool.rs`      | `awaken_ext_deferred_tools::{DeferredToolsConfig, DeferredToolsConfigKey, DeferralRule, ToolLoadMode}`                   | `how-to/use-deferred-tools.md`                                                |
+| `state_command.rs`      | `awaken::state::StateCommand` + `schedule_action` / `emit` / `extend`                                                    | `explanation/state-management.md`                                             |
+| `run_lifecycle.rs`      | `awaken::contract::identity::{RunIdentity, RunOrigin}` + `RunStatus` + `Phase::ALL`                                      | `explanation/run-lifecycle-and-phases.md`                                     |
 
-## Uncovered surfaces — TODO
+### Scope of "covered"
 
-The list below tracks docs surfaces that cite Rust APIs but currently have
-no `examples/*.rs` smoke test. Add one when you change the cited API or
-when a doc fix lands.
+These are **smoke tests**, not behavioural tests. Each example pins:
 
-| Documentation page                                | Cited surface                                          | Suggested example name              |
-|---------------------------------------------------|--------------------------------------------------------|-------------------------------------|
-| `reference/scheduled-actions.md`                  | `ScheduledActionSpec`, `TypedScheduledActionHandler`   | `scheduled_action.rs`               |
-| `reference/state-keys.md`                         | `TypedStateKey`, `StateScope`, register macros         | `state_key.rs`                      |
-| `reference/cancellation.md`                       | `CancellationToken`, `ToolCallResume`                  | `cancellation.rs`                   |
-| `reference/errors.md`                             | `ToolError`, `StorageError`, `ResolveError` variants   | `error_variants.rs`                 |
-| `reference/events.md`                             | `EventSink`, agent / tool / phase event payloads       | `event_sink.rs`                     |
-| `reference/http-api.md`                           | `AppState`, `AppBuilder`, route registration           | `http_app_builder.rs`               |
-| `reference/protocols/a2a.md`                      | `RemoteAuth`, `RemoteEndpoint` parsing                 | `remote_endpoint.rs`                |
-| `reference/protocols/ai-sdk-v6.md`                | `/v1/ai-sdk/*` request/response shapes                 | `ai_sdk_payloads.rs`                |
-| `reference/thread-model.md`                       | `ThreadStore` trait, `Thread`, `Message` shapes        | `thread_store_trait.rs`             |
-| `reference/tool-execution-modes.md`               | `ToolCallContext` resume fields, suspension flow       | `tool_resume.rs`                    |
-| `how-to/add-a-plugin.md`                          | `PluginRegistrar`, `Plugin` trait, hook signatures     | `plugin_registrar.rs`               |
-| `how-to/use-mcp-tools.md`                         | `McpServerSpec`, `McpToolRegistryManager`              | `mcp_server_spec.rs`                |
-| `how-to/use-skills-subsystem.md`                  | `SkillSpec`, skill discovery                           | `skill_spec.rs`                     |
-| `how-to/use-deferred-tools.md`                    | `awaken_ext_deferred_tools` surface                    | `deferred_tool.rs`                  |
-| `explanation/state-management.md`                 | `Snapshot`, `StateCommand`, `MutationOp`               | `state_command.rs`                  |
-| `explanation/run-lifecycle-and-phases.md`         | `RunIdentity`, `Phase`, `RunStatus`                    | `run_lifecycle.rs`                  |
+- the trait / struct **shape** (field names, generic params, method signatures),
+- a **representative** subset of variants where the enum is wide
+  (`AgentEvent`, `UIStreamEvent`), and
+- one or two trivial round-trips / `assert_eq!`s that fail if a rename or
+  silent serde drift breaks the wire format.
+
+Behavioural correctness (state-store concurrency, MCP tool registry
+lifecycle, real run loops, etc.) is covered by the unit/integration
+tests in the owning crates, not here. The 16 previously-listed TODO
+surfaces now each have a paired example; when docs cite a new public
+type, add another smoke test (and the `[[example]] harness = false`
+block in `Cargo.toml`).
 
 ## Adding coverage
 
