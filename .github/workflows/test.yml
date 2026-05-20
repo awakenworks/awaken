@@ -48,10 +48,13 @@ jobs:
       - uses: dtolnay/rust-toolchain@1.93.0
       - uses: Swatinem/rust-cache@v2
       - run: cargo test --locked -p awaken-doctest
-      # examples/ are smoke tests with main fns — `--examples` both
-      # compiles AND executes each (constructs types, returns 0). Pure
-      # smoke; no live LLM, no network. README + lib.rs both reference
-      # this exact command — keep in sync.
+      # examples/ are smoke tests with main fns — each `[[example]]` in
+      # awaken-doctest/Cargo.toml sets `harness = false`, so `--examples`
+      # builds each as its own binary and executes the example's `main()`
+      # as the test entry point. Runtime panics (e.g. failed `assert_eq!`
+      # in `effect_spec` round-trip) fail CI. Without `harness = false`
+      # libtest would replace `main` and only type-check the body.
+      # README + lib.rs reference this exact command — keep in sync.
       - run: cargo test --locked -p awaken-doctest --examples
 
   ai-sdk-starter-build:

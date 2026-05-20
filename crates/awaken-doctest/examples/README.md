@@ -2,9 +2,11 @@
 
 Each `examples/*.rs` here is a smoke test that fixes one public API surface
 the documentation cites. CI runs `cargo build --examples -p awaken-doctest`
-and `cargo test --locked -p awaken-doctest --examples`; any rename or
-signature change in the runtime fails compilation here before the docs go
-stale.
+and `cargo test --locked -p awaken-doctest --examples`; the latter actually
+**executes** each example's `main()` (each example is registered with
+`harness = false` in `Cargo.toml`), so runtime asserts inside `main()`
+fail CI alongside compilation errors. Any rename, signature change, or
+runtime panic in the constructed shape fails CI before the docs go stale.
 
 This map exists because we retired the old `book_doctests!()` macro (which
 compiled every `rust` fence in `docs/book/src/**/*.md`) when the Starlight
@@ -54,7 +56,13 @@ when a doc fix lands.
    format.
 3. Cross off the row above; add the new row to the "Covered" table with
    the docs pages it stabilises.
-4. Run `cargo build --examples -p awaken-doctest` to confirm it links.
+4. **Add a matching `[[example]]` entry with `harness = false`** to
+   `crates/awaken-doctest/Cargo.toml`. Without it `cargo test --examples`
+   would skip the runtime path and only compile-check the example.
+5. Run `cargo test --locked -p awaken-doctest --example <name>` to confirm
+   it links AND its `main()` returns zero.
 
-The bar is intentionally low: a successful compile is enough. The point
-is to catch _renamed types_ and _changed signatures_, not to run scenarios.
+The bar is intentionally low: shape construction + a trivial `assert_eq!`
+on round-tripped types is enough. The point is to catch _renamed types_,
+_changed signatures_, **and silent shape-drift** (e.g. an `EffectSpec`
+decode that compiles but no longer round-trips), not to run scenarios.

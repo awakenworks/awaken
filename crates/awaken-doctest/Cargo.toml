@@ -11,6 +11,37 @@ publish = false
 # `cargo test --examples` catch API drift without coupling test status to
 # Markdown formatting (the prior `book_doctests!()` macro was retired by
 # the Starlight migration — see lib.rs for history).
+
+# `harness = false` is load-bearing: without it `cargo test --examples`
+# silently replaces each example's `fn main()` with the libtest harness, so
+# runtime asserts in main() (e.g. `effect_spec`'s decode round-trip) are
+# only type-checked, never executed. With harness disabled, the example's
+# `main()` *is* the test entry point — a runtime panic fails CI.
+# Mirror this list when adding a new example under `examples/`.
+[[example]]
+name = "tool_basic"
+path = "examples/tool_basic.rs"
+test = true
+harness = false
+
+[[example]]
+name = "typed_tool"
+path = "examples/typed_tool.rs"
+test = true
+harness = false
+
+[[example]]
+name = "agent_spec"
+path = "examples/agent_spec.rs"
+test = true
+harness = false
+
+[[example]]
+name = "effect_spec"
+path = "examples/effect_spec.rs"
+test = true
+harness = false
+
 [dev-dependencies]
 awaken = { package = "awaken", version = "0.5.1-dev", path = "../awaken", features = ["full"] }
 async-trait = { workspace = true }
