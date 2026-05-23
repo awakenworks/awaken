@@ -11,6 +11,7 @@ pub mod agent;
 pub mod backend;
 pub mod builder;
 pub(crate) mod cancellation;
+pub mod child_agent;
 pub mod context;
 pub mod credentials;
 pub mod engine;
@@ -46,6 +47,7 @@ pub use backend::{
     ExecutionBackendFactory, ExecutionBackendFactoryError, LocalBackend,
 };
 pub use builder::{AgentRuntimeBuilder, BuildError};
+pub use child_agent::{ChildAgentParams, run_child_agent};
 pub use phase::{
     DEFAULT_MAX_PHASE_ROUNDS, ExecutionEnv, PhaseContext, PhaseHook, PhaseRuntime, ToolGateHook,
     ToolPolicyHook, TypedEffectHandler, TypedScheduledActionHandler,
