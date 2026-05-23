@@ -16,15 +16,15 @@ use awaken_contract::contract::profile_store::ProfileStore;
 use awaken_contract::contract::storage::{RunRequestOrigin, ThreadRunStore};
 use awaken_contract::contract::tool_intercept::{AdapterKind, RunMode};
 use awaken_runtime::backend::{
-    BackendCapabilities, BackendControl, BackendLocalRootContext, BackendRootRunRequest,
-    ExecutionBackend, ExecutionBackendError, LocalBackend,
+    BackendControl, BackendLocalRootContext, BackendRootRunRequest, ExecutionBackend,
+    ExecutionBackendError, LocalBackend,
 };
-use awaken_runtime::loop_runner::{AgentLoopError, AgentRunResult};
+use awaken_runtime::loop_runner::{AgentLoopError, AgentRunResult, CommitWiring};
 use awaken_runtime::registry::{
-    AgentResolver, ExecutionResolver, RegistryHandle, RegistrySet, RegistrySnapshot, ResolvedAgent,
-    ResolvedExecution,
+    AgentResolver, RegistryHandle, RegistrySet, RegistrySnapshot, ResolvedAgent,
 };
-use awaken_runtime::{AgentRuntime, RunRequest, RuntimeError};
+use awaken_runtime::resolution::{BackendProfile, ExecutionPlan};
+use awaken_runtime::{AgentRuntime, RunActivation, RuntimeError};
 
 struct NopResolver;
 
@@ -32,10 +32,8 @@ impl AgentResolver for NopResolver {
     fn resolve(&self, _agent_id: &str) -> Result<ResolvedAgent, RuntimeError> {
         unreachable!("compat test does not execute")
     }
-}
 
-impl ExecutionResolver for NopResolver {
-    fn resolve_execution(&self, _agent_id: &str) -> Result<ResolvedExecution, RuntimeError> {
+    fn resolve_execution(&self, _agent_id: &str) -> Result<ExecutionPlan, RuntimeError> {
         unreachable!("compat test does not execute")
     }
 }
@@ -45,7 +43,7 @@ impl ExecutionResolver for NopResolver {
 #[test]
 fn agent_runtime_0_2_methods_resolve_at_expected_signatures() {
     let _new: fn(Arc<dyn AgentResolver>) -> AgentRuntime = AgentRuntime::new;
-    let _new_exec: fn(Arc<dyn ExecutionResolver>) -> AgentRuntime =
+    let _new_exec: fn(Arc<dyn AgentResolver>) -> AgentRuntime =
         AgentRuntime::new_with_execution_resolver;
     let _with_reg: fn(AgentRuntime, RegistryHandle) -> AgentRuntime =
         AgentRuntime::with_registry_handle;
@@ -53,9 +51,8 @@ fn agent_runtime_0_2_methods_resolve_at_expected_signatures() {
         AgentRuntime::with_thread_run_store;
     let _resolver: fn(&AgentRuntime) -> &dyn AgentResolver = AgentRuntime::resolver;
     let _resolver_arc: fn(&AgentRuntime) -> Arc<dyn AgentResolver> = AgentRuntime::resolver_arc;
-    let _exec_resolver: fn(&AgentRuntime) -> &dyn ExecutionResolver =
-        AgentRuntime::execution_resolver;
-    let _exec_resolver_arc: fn(&AgentRuntime) -> Arc<dyn ExecutionResolver> =
+    let _exec_resolver: fn(&AgentRuntime) -> &dyn AgentResolver = AgentRuntime::execution_resolver;
+    let _exec_resolver_arc: fn(&AgentRuntime) -> Arc<dyn AgentResolver> =
         AgentRuntime::execution_resolver_arc;
     let _reg_handle: fn(&AgentRuntime) -> Option<RegistryHandle> = AgentRuntime::registry_handle;
     let _reg_snap: fn(&AgentRuntime) -> Option<RegistrySnapshot> = AgentRuntime::registry_snapshot;
@@ -68,21 +65,21 @@ fn agent_runtime_0_2_methods_resolve_at_expected_signatures() {
 }
 
 #[test]
-fn local_backend_0_2_surface_intact() {
+fn local_backend_profile_surface() {
     let backend: Arc<dyn ExecutionBackend> = Arc::new(LocalBackend::new());
-    let caps: BackendCapabilities = backend.capabilities();
-    // 0.2 provided `BackendCapabilities::full`.
-    let _full = BackendCapabilities::full();
-    // Compile-only: confirm the eight public fields are still accessible.
+    let profile: BackendProfile = backend.capabilities();
+    // ADR-0040 D5: typed BackendProfile replaces BackendCapabilities. Confirm
+    // the nine public dimensions are still accessible.
     let _ = (
-        caps.cancellation,
-        caps.decisions,
-        caps.overrides,
-        caps.frontend_tools,
-        caps.continuation,
-        caps.waits,
-        caps.transcript,
-        caps.output,
+        profile.cancellation,
+        profile.continuation,
+        profile.decisions,
+        profile.overrides,
+        profile.frontend_tools,
+        profile.persistence,
+        profile.waits,
+        profile.transcript,
+        profile.output,
     );
 }
 
@@ -194,6 +191,7 @@ fn backend_root_run_request_accepts_0_2_literal_without_thread_ctx() {
         local: Option::<BackendLocalRootContext<'_>>::None,
         inbox: None,
         is_continuation: false,
+        commit: CommitWiring::default(),
     };
 }
 
@@ -202,7 +200,7 @@ fn backend_root_run_request_accepts_0_2_literal_without_thread_ctx() {
 fn agent_runtime_run_cancel_signatures_intact() {
     let _run: for<'a> fn(
         &'a AgentRuntime,
-        RunRequest,
+        RunActivation,
         Arc<dyn EventSink>,
     ) -> std::pin::Pin<
         Box<dyn std::future::Future<Output = Result<AgentRunResult, AgentLoopError>> + Send + 'a>,

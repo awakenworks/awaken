@@ -39,6 +39,7 @@ use crate::agent::state::{RunLifecycle, ToolCallStates};
 
 // Re-export submodule items used by external callers
 pub use actions::LoopActionHandlersPlugin;
+pub use checkpoint::CommitWiring;
 pub use resume::prepare_resume;
 
 /// Plugin that registers the core state keys required by the loop runner.
@@ -166,6 +167,8 @@ pub struct AgentLoopParams<'a> {
     pub sink: Arc<dyn EventSink>,
     /// Optional persistent storage for checkpointing.
     pub checkpoint_store: Option<&'a dyn ThreadRunStore>,
+    /// Optional commit-coordinator + canonical-draft buffer (ADR-0036).
+    pub commit: checkpoint::CommitWiring<'a>,
     /// Messages to seed the conversation (history + new user input).
     pub messages: Vec<Message>,
     /// Run identity (thread, run, agent IDs).

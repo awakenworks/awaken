@@ -19,7 +19,7 @@ use awaken_contract::contract::lifecycle::TerminationReason;
 use awaken_contract::contract::message::{Message, ToolCall};
 use awaken_contract::contract::storage::ThreadRunStore;
 use awaken_contract::contract::suspension::{SuspendTicket, ToolCallOutcome, ToolCallStatus};
-use awaken_contract::contract::tool::ToolCallContext;
+use awaken_contract::contract::tool::{ToolCallContext, ToolResult};
 use awaken_contract::contract::tool_intercept::ToolInterceptPayload;
 use awaken_contract::model::Phase;
 
@@ -27,8 +27,7 @@ use super::actions::{
     apply_context_messages, apply_tool_filter_payloads, merge_override_payloads,
     resolve_intercept_payloads, take_context_messages,
 };
-use super::checkpoint::{StepCompletion, check_termination, complete_step};
-#[cfg(feature = "background")]
+use super::checkpoint::{CommitWiring, StepCompletion, check_termination, complete_step};
 use super::compaction::maybe_spawn_compaction;
 use super::inference::{CheckpointHandle, execute_streaming};
 use super::{AgentLoopError, commit_update, now_ms, tool_result_to_content};
@@ -50,7 +49,6 @@ fn format_tool_cancel_hint(hint: &awaken_contract::contract::executor::InFlightT
         hint.name,
     )
 }
-
 /// Note injected when one or more tool calls were dropped because their
 /// argument JSON was malformed and no further recovery path applied.
 ///
@@ -81,7 +79,6 @@ pub(super) enum StepOutcome {
     /// A lifecycle hook signalled termination.
     Terminated(TerminationReason),
 }
-
 /// Context passed into each step of the agent loop.
 pub(super) struct StepContext<'a> {
     pub agent: &'a mut ResolvedAgent,
@@ -89,6 +86,7 @@ pub(super) struct StepContext<'a> {
     pub runtime: &'a PhaseRuntime,
     pub sink: Arc<dyn EventSink>,
     pub checkpoint_store: Option<&'a dyn ThreadRunStore>,
+    pub commit: CommitWiring<'a>,
     pub run_identity: &'a RunIdentity,
     pub input_message_count: usize,
     pub cancellation_token: Option<&'a CancellationToken>,
@@ -471,15 +469,16 @@ async fn run_inference_phase(
 ) -> Result<InferencePhaseOutput, AgentLoopError> {
     let store = ctx.runtime.store();
 
-    #[cfg(feature = "background")]
+    // Auto-compaction: if the token estimate has crossed the configured
+    // threshold and no background pass is already running, queue one. The
+    // current inference proceeds against the un-compacted message list;
+    // the swap lands via the inbox before the next inference round.
+    if let Some(policy) = ctx.agent.context_policy().cloned()
+        && let Some(threshold) = policy.autocompact_threshold
     {
-        if let Some(policy) = ctx.agent.context_policy().cloned()
-            && let Some(threshold) = policy.autocompact_threshold
-        {
-            let token_est = awaken_contract::contract::transform::estimate_tokens(ctx.messages);
-            if token_est >= threshold {
-                maybe_spawn_compaction(ctx, &policy).await;
-            }
+        let token_est = awaken_contract::contract::transform::estimate_tokens(ctx.messages);
+        if token_est >= threshold {
+            maybe_spawn_compaction(ctx, &policy).await;
         }
     }
 
@@ -657,7 +656,7 @@ async fn apply_intercept_payload(
 ) -> Result<AppliedIntercept, AgentLoopError> {
     match payload {
         ToolInterceptPayload::Block { reason } => {
-            let result = awaken_contract::contract::tool::ToolResult::error(&call.name, &reason);
+            let result = ToolResult::error(&call.name, &reason).with_metadata("rejected", true);
             let cmd = build_tool_state_command(
                 ctx,
                 transcript,
@@ -1313,6 +1312,7 @@ pub(super) async fn execute_step(ctx: &mut StepContext<'_>) -> Result<StepOutcom
             env: &ctx.agent.env,
             sink: ctx.sink.as_ref(),
             checkpoint_store: ctx.checkpoint_store,
+            commit: ctx.commit,
             messages: ctx.messages,
             input_message_count: ctx.input_message_count,
             run_identity: ctx.run_identity,
@@ -1388,57 +1388,5 @@ pub(super) async fn execute_step(ctx: &mut StepContext<'_>) -> Result<StepOutcom
 }
 
 #[cfg(test)]
-mod make_ctx_tests {
-    use super::*;
-    use crate::registry::resolver::ResolvedAgent;
-    use crate::state::StateStore;
-    use async_trait::async_trait;
-    use awaken_contract::contract::executor::{
-        InferenceExecutionError, InferenceRequest, LlmExecutor,
-    };
-    use awaken_contract::contract::identity::RunIdentity;
-    use awaken_contract::contract::inference::StreamResult;
-
-    struct DummyExecutor;
-
-    #[async_trait]
-    impl LlmExecutor for DummyExecutor {
-        async fn execute(
-            &self,
-            _req: InferenceRequest,
-        ) -> Result<StreamResult, InferenceExecutionError> {
-            unimplemented!("test fixture; never invoked")
-        }
-        fn name(&self) -> &str {
-            "dummy"
-        }
-    }
-
-    #[test]
-    fn make_ctx_populates_agent_spec_in_production() {
-        // Regression for F1: prior `make_ctx` left `agent_spec` as the
-        // `Arc::new(AgentSpec::default())` default, with an empty
-        // `system_prompt`. Observability hooks then silently emitted
-        // None for prompt_id. This test pins the contract that
-        // make_ctx now stamps the resolved agent's spec onto the
-        // PhaseContext, which is the load-bearing field the prompt_id
-        // path reads.
-        let store = StateStore::new();
-        let agent = ResolvedAgent::new(
-            "weather",
-            "test-model",
-            "You are a forecaster.",
-            Arc::new(DummyExecutor),
-        );
-        let ctx = make_ctx(
-            Phase::RunStart,
-            &[],
-            &RunIdentity::default(),
-            &store,
-            None,
-            &agent,
-        );
-        assert_eq!(ctx.agent_spec.id, "weather");
-        assert_eq!(ctx.agent_spec.system_prompt, "You are a forecaster.");
-    }
-}
+#[path = "step_tests.rs"]
+mod make_ctx_tests;

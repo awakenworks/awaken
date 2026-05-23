@@ -29,7 +29,7 @@ use awaken_runtime::loop_runner::build_agent_env;
 use awaken_runtime::phase::ToolGateHook;
 use awaken_runtime::plugins::{Plugin, PluginDescriptor, PluginRegistrar};
 use awaken_runtime::registry::{AgentResolver, ResolvedAgent};
-use awaken_runtime::runtime::{AgentRuntime, RunRequest};
+use awaken_runtime::runtime::{AgentRuntime, RunActivation};
 use awaken_runtime::{PhaseContext, StateCommand};
 
 struct ScriptedLlm {
@@ -272,7 +272,7 @@ async fn simple_text_response_event_sequence() {
 
     runtime
         .run(
-            RunRequest::new("thread-1", vec![Message::user("hello")]).with_agent_id("test"),
+            RunActivation::new("thread-1", vec![Message::user("hello")]).with_agent_id("test"),
             sink.clone() as Arc<dyn EventSink>,
         )
         .await
@@ -342,7 +342,7 @@ async fn suspended_tool_cancel_emits_resumed_event_and_finishes() {
         tokio::spawn(async move {
             runtime
                 .run(
-                    RunRequest::new("thread-deny", vec![Message::user("go")])
+                    RunActivation::new("thread-deny", vec![Message::user("go")])
                         .with_agent_id("agent"),
                     sink as Arc<dyn EventSink>,
                 )
@@ -406,7 +406,7 @@ async fn max_rounds_termination_emits_step_end() {
 
     runtime
         .run(
-            RunRequest::new("thread-max", vec![Message::user("hi")]).with_agent_id("test"),
+            RunActivation::new("thread-max", vec![Message::user("hi")]).with_agent_id("test"),
             sink.clone() as Arc<dyn EventSink>,
         )
         .await
@@ -516,7 +516,7 @@ async fn tool_call_flow_complete_lifecycle() {
 
     runtime
         .run(
-            RunRequest::new(
+            RunActivation::new(
                 "thread-tool",
                 vec![Message::user("What's the weather in Tokyo?")],
             )
@@ -621,7 +621,7 @@ async fn prior_tool_state_allows_later_guarded_tool_in_same_step() {
 
     let result = runtime
         .run(
-            RunRequest::new("thread-unlock", vec![Message::user("go")]).with_agent_id("test"),
+            RunActivation::new("thread-unlock", vec![Message::user("go")]).with_agent_id("test"),
             sink.clone() as Arc<dyn EventSink>,
         )
         .await
@@ -685,7 +685,7 @@ async fn guarded_tool_before_unlock_still_blocks_same_step() {
 
     let result = runtime
         .run(
-            RunRequest::new("thread-blocked-order", vec![Message::user("go")])
+            RunActivation::new("thread-blocked-order", vec![Message::user("go")])
                 .with_agent_id("test"),
             sink.clone() as Arc<dyn EventSink>,
         )
@@ -754,7 +754,7 @@ async fn error_event_emitted_on_inference_failure() {
 
     let result = runtime
         .run(
-            RunRequest::new("thread-err", vec![Message::user("hello")]).with_agent_id("test"),
+            RunActivation::new("thread-err", vec![Message::user("hello")]).with_agent_id("test"),
             sink.clone() as Arc<dyn EventSink>,
         )
         .await;
@@ -865,7 +865,7 @@ async fn activity_snapshot_emitted_during_tool_execution() {
 
     runtime
         .run(
-            RunRequest::new("thread-activity", vec![Message::user("do task")])
+            RunActivation::new("thread-activity", vec![Message::user("do task")])
                 .with_agent_id("test"),
             sink.clone() as Arc<dyn EventSink>,
         )
@@ -935,7 +935,7 @@ async fn state_snapshot_emitted_after_step() {
 
     runtime
         .run(
-            RunRequest::new("thread-state", vec![Message::user("hi")]).with_agent_id("test"),
+            RunActivation::new("thread-state", vec![Message::user("hi")]).with_agent_id("test"),
             sink.clone() as Arc<dyn EventSink>,
         )
         .await
@@ -1005,7 +1005,7 @@ async fn event_ordering_invariants_hold_across_scenarios() {
 
         runtime
             .run(
-                RunRequest::new("thread-inv-a", vec![Message::user("hi")]).with_agent_id("test"),
+                RunActivation::new("thread-inv-a", vec![Message::user("hi")]).with_agent_id("test"),
                 sink.clone() as Arc<dyn EventSink>,
             )
             .await
@@ -1028,7 +1028,7 @@ async fn event_ordering_invariants_hold_across_scenarios() {
 
         runtime
             .run(
-                RunRequest::new("thread-inv-b", vec![Message::user("weather?")])
+                RunActivation::new("thread-inv-b", vec![Message::user("weather?")])
                     .with_agent_id("test"),
                 sink.clone() as Arc<dyn EventSink>,
             )
@@ -1054,7 +1054,7 @@ async fn event_ordering_invariants_hold_across_scenarios() {
 
         runtime
             .run(
-                RunRequest::new("thread-inv-c", vec![Message::user("weather?")])
+                RunActivation::new("thread-inv-c", vec![Message::user("weather?")])
                     .with_agent_id("test"),
                 sink.clone() as Arc<dyn EventSink>,
             )

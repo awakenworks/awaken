@@ -189,6 +189,7 @@ pub(super) async fn detect_and_replay_resume(
             runtime,
             sink: sink.clone(),
             checkpoint_store: None,
+            commit: super::checkpoint::CommitWiring::default(),
             run_identity,
             input_message_count,
             cancellation_token: None,
