@@ -1,17 +1,24 @@
 //! Plumbing for invoking a sub-agent run from inside a tool.
 //!
-//! `run_child_agent` is the single canonical entry point for spawning a child
-//! agent run. Routes transparently to local or remote (A2A) backends via
-//! [`ExecutionBackend`](crate::backend::ExecutionBackend), supports parent →
-//! child state seeding, and returns the full [`BackendRunResult`] so the
-//! calling tool can decode child output, propagate suspensions, or read the
-//! child's final persisted state.
+//! [`run_child_agent`] is the single canonical entry point for spawning a
+//! child agent run. Routes transparently to local or remote (A2A) backends
+//! via [`ExecutionBackend`](crate::backend::ExecutionBackend), supports
+//! parent → child state seeding, and returns the full [`BackendRunResult`]
+//! so the calling tool can decode child output, propagate suspensions, or
+//! read the child's final persisted state.
 //!
 //! State exchange between parent and child is the caller's responsibility:
-//! - **Inbound**: build a [`PersistedState`] from parent state + tool args and
-//!   pass via `initial_state_seed`.
+//! - **Inbound**: build a [`PersistedState`] from parent state + tool args
+//!   and pass via `initial_state_seed`.
 //! - **Outbound**: read `BackendRunResult.state` after the call, then publish
 //!   to parent state via `ToolOutput.command`.
+//!
+//! For tools that want to stream the child's tokens into their own output,
+//! wrap the activity sink with [`StreamingPassthroughSink`].
+
+pub mod sink;
+
+pub use sink::StreamingPassthroughSink;
 
 use std::sync::Arc;
 
