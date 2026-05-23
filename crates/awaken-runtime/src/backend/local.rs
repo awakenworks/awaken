@@ -177,6 +177,9 @@ impl LocalBackend {
         store
             .install_plugin(crate::loop_runner::LoopStatePlugin)
             .map_err(|error| ExecutionBackendError::ExecutionFailed(error.to_string()))?;
+        store
+            .install_plugin(crate::loop_runner::LoopActionHandlersPlugin)
+            .map_err(|error| ExecutionBackendError::ExecutionFailed(error.to_string()))?;
 
         let phase_runtime = crate::phase::PhaseRuntime::new(store.clone())
             .map_err(|error| ExecutionBackendError::ExecutionFailed(error.to_string()))?;
