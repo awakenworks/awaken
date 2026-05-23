@@ -1,3 +1,4 @@
+#![allow(deprecated)] // ADR-0038 D7: integration tests exercise the legacy checkpoint API directly
 //! Integration tests for PostgresStore.
 //!
 //! Requires Docker with PostgreSQL. Tests are marked `#[ignore]` since they

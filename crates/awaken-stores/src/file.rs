@@ -7,7 +7,6 @@
 //!   messages/<thread_id>.json        — Vec<Message>
 //!   runs/<run_id>.json               — RunRecord
 //! ```
-
 use std::collections::HashMap;
 use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, OnceLock, Weak};
@@ -312,8 +311,7 @@ fn normalize_path_components(mut base: PathBuf, suffix: &Path) -> PathBuf {
 }
 
 // ── Filesystem helpers ──────────────────────────────────────────────
-
-fn validate_id(id: &str, label: &str) -> Result<(), StorageError> {
+pub(crate) fn validate_id(id: &str, label: &str) -> Result<(), StorageError> {
     if id.trim().is_empty() {
         return Err(StorageError::Io(format!("{label} cannot be empty")));
     }
@@ -329,21 +327,22 @@ fn validate_id(id: &str, label: &str) -> Result<(), StorageError> {
     }
     Ok(())
 }
-
-async fn atomic_write(dir: &Path, filename: &str, content: &str) -> Result<(), StorageError> {
+pub(crate) async fn atomic_write(
+    dir: &Path,
+    filename: &str,
+    content: &str,
+) -> Result<(), StorageError> {
     if !dir.exists() {
         tokio::fs::create_dir_all(dir)
             .await
             .map_err(|e| StorageError::Io(e.to_string()))?;
     }
-
     let target = dir.join(filename);
     let tmp_path = dir.join(format!(
         ".{}.{}.tmp",
         filename.trim_end_matches(".json"),
         uuid::Uuid::now_v7().simple()
     ));
-
     let write_result = async {
         let mut file = tokio::fs::File::create(&tmp_path)
             .await
@@ -373,7 +372,6 @@ async fn atomic_write(dir: &Path, filename: &str, content: &str) -> Result<(), S
     }
     Ok(())
 }
-
 /// Like [`atomic_write`] but fails with [`StorageError::AlreadyExists`] if the
 /// target file already exists, using `O_CREAT | O_EXCL` to avoid TOCTOU races.
 async fn atomic_write_exclusive(
@@ -770,8 +768,9 @@ async fn cleanup_staged_file_ops(ops: &[StagedFileOp]) {
         }
     }
 }
-
-async fn read_json<T: serde::de::DeserializeOwned>(path: &Path) -> Result<Option<T>, StorageError> {
+pub(crate) async fn read_json<T: serde::de::DeserializeOwned>(
+    path: &Path,
+) -> Result<Option<T>, StorageError> {
     if !path.exists() {
         return Ok(None);
     }
@@ -1292,7 +1291,6 @@ impl ThreadRunStore for FileStore {
         self.checkpoint_locked(thread_id, messages, run).await
     }
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1312,10 +1310,29 @@ mod tests {
             run_id: run_id.to_string(),
             thread_id: thread_id.to_string(),
             agent_id: "agent".to_string(),
+            parent_run_id: None,
+            registry_manifest: None,
+            activation: None,
+            request: None,
+            input: None,
+            output: None,
             status: RunStatus::Running,
+            termination_reason: None,
+            final_output: None,
+            error_payload: None,
+            dispatch_id: None,
+            session_id: None,
+            transport_request_id: None,
+            waiting: None,
+            outcome: None,
             created_at: 100,
+            started_at: None,
+            finished_at: None,
             updated_at: 100,
-            ..Default::default()
+            steps: 0,
+            input_tokens: 0,
+            output_tokens: 0,
+            state: None,
         }
     }
 

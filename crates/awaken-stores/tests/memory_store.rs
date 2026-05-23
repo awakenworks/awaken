@@ -1,3 +1,4 @@
+#![allow(deprecated)] // ADR-0038 D7: integration tests exercise the legacy checkpoint API directly
 //! Integration tests for InMemoryStore.
 
 use std::sync::Arc;
@@ -5,9 +6,9 @@ use std::sync::Arc;
 use awaken_contract::contract::lifecycle::{RunStatus, TerminationReason};
 use awaken_contract::contract::message::Message;
 use awaken_contract::contract::storage::{
-    MessageOrder, MessageQuery, MessageSeqRange, MessageVisibilityFilter, RunMessageInput,
-    RunMessageOutput, RunQuery, RunStore, StorageError, ThreadParentFilter, ThreadQuery,
-    ThreadRunStore, ThreadStore,
+    MessageOrder, MessageQuery, MessageSeqRange, MessageVisibilityFilter, PinnedRegistryEntry,
+    PinnedRegistryManifest, RunMessageInput, RunMessageOutput, RunQuery, RunStore, StorageError,
+    ThreadParentFilter, ThreadQuery, ThreadRunStore, ThreadStore,
 };
 use awaken_contract::thread::Thread;
 use awaken_stores::InMemoryStore;
@@ -212,6 +213,30 @@ async fn create_and_load_run() {
     let loaded = RunStore::load_run(&store, "run-1").await.unwrap().unwrap();
     assert_eq!(loaded.thread_id, "t-1");
     assert_eq!(loaded.updated_at, 100);
+}
+
+#[tokio::test]
+async fn run_registry_manifest_roundtrips() {
+    let store = InMemoryStore::new();
+    let mut run = make_run("r-manifest", "t-1", 100);
+    run.registry_manifest = Some(PinnedRegistryManifest {
+        publication_id: Some("pub-1".to_string()),
+        registry_snapshot_version: Some(11),
+        entries: vec![PinnedRegistryEntry {
+            kind: "agent".to_string(),
+            id: "agent-1".to_string(),
+            version: 4,
+            content_hash: "sha256:agent-1-v4".to_string(),
+        }],
+    });
+
+    store.create_run(&run).await.unwrap();
+
+    let loaded = RunStore::load_run(&store, "r-manifest")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(loaded.registry_manifest, run.registry_manifest);
 }
 
 #[tokio::test]

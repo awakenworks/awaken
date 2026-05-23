@@ -1,3 +1,4 @@
+#![allow(deprecated)] // ADR-0038 D7: integration tests exercise the legacy checkpoint API directly
 //! Adversarial/stress tests for `NatsBufferedThreadStore`.
 //!
 //! These exercise failure modes and concurrency that the happy-path conformance

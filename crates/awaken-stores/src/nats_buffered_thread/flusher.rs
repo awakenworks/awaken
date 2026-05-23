@@ -13,7 +13,6 @@
 //! - Run records: one per unique `run_id` (latest version by `thread_seq`).
 //!   This preserves all distinct run records even when multiple runs complete
 //!   within a single flush window.
-
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -1098,7 +1097,6 @@ async fn flush_batch<T: ThreadRunStore + Send + Sync + 'static>(
 }
 
 use super::recovery::now_millis;
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1111,10 +1109,29 @@ mod tests {
             run_id: run_id.into(),
             thread_id: thread_id.into(),
             agent_id: "a".into(),
+            parent_run_id: None,
+            registry_manifest: None,
+            activation: None,
+            request: None,
+            input: None,
+            output: None,
             status: RunStatus::Created,
+            termination_reason: None,
+            final_output: None,
+            error_payload: None,
+            dispatch_id: None,
+            session_id: None,
+            transport_request_id: None,
+            waiting: None,
+            outcome: None,
             created_at: 1,
+            started_at: None,
+            finished_at: None,
             updated_at: 1,
-            ..Default::default()
+            steps: 0,
+            input_tokens: 0,
+            output_tokens: 0,
+            state: None,
         }
     }
 
