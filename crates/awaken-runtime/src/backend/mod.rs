@@ -258,6 +258,9 @@ pub struct BackendDelegateRunRequest<'a> {
     pub parent: BackendParentContext,
     pub control: BackendControl,
     pub policy: BackendDelegatePolicy,
+    /// Initial state to seed the child run with before the first step.
+    /// Persistent-keyed values that fail decoding cause the run to fail.
+    pub state_seed: Option<PersistedState>,
 }
 
 /// Best-effort abort request for an in-flight backend execution.
@@ -979,47 +982,5 @@ fn run_status_label(status: RunStatus) -> &'static str {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn backend_status_timeout_is_first_class_at_runtime_boundary() {
-        let status = BackendRunStatus::Timeout;
-
-        assert_eq!(
-            status.durable_run_status(&TerminationReason::Error("polling timeout exceeded".into())),
-            RunStatus::Done
-        );
-        assert_eq!(
-            status
-                .durable_status_reason(&TerminationReason::Error("polling timeout exceeded".into()))
-                .as_deref(),
-            Some("timeout")
-        );
-        assert_eq!(
-            status
-                .result_status_label(&TerminationReason::Error("polling timeout exceeded".into())),
-            "timeout"
-        );
-    }
-
-    #[test]
-    fn backend_status_waiting_is_first_class_at_runtime_boundary() {
-        let status = BackendRunStatus::WaitingInput(Some("need details".into()));
-
-        assert_eq!(
-            status.durable_run_status(&TerminationReason::Error("should not win".into())),
-            RunStatus::Waiting
-        );
-        assert_eq!(
-            status
-                .durable_status_reason(&TerminationReason::Error("should not win".into()))
-                .as_deref(),
-            Some("input_required")
-        );
-        assert_eq!(
-            status.result_status_label(&TerminationReason::Error("should not win".into())),
-            "waiting_input"
-        );
-    }
-}
+#[path = "mod_tests.rs"]
+mod tests;

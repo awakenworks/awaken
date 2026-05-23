@@ -182,6 +182,7 @@ impl Tool for AgentTool {
             },
             control: BackendControl::default(),
             policy: BackendDelegatePolicy::default(),
+            state_seed: None,
         };
 
         let execution = execute_resolved_delegate_execution(&resolved, request).await;

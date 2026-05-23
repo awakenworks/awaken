@@ -186,6 +186,12 @@ pub struct AgentLoopParams<'a> {
     /// When `true`, the run is a continuation of a previous awaiting_tasks run.
     /// The orchestrator emits `SetRunning` instead of `Start`.
     pub is_continuation: bool,
+    /// Initial state to apply to the store before the first step.
+    ///
+    /// Used by child-run helpers to seed a fresh store with parent-derived
+    /// state. Restored with `UnknownKeyPolicy::Error` — every key in the
+    /// seed must be registered in the agent's plugin set.
+    pub initial_state_seed: Option<awaken_contract::state::PersistedState>,
 }
 
 /// Build an execution environment for the agent loop.

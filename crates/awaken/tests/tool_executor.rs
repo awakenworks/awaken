@@ -229,6 +229,7 @@ async fn sequential_partial_failure_both_produce_results() {
         frontend_tools: Vec::new(),
         inbox: None,
         is_continuation: false,
+        initial_state_seed: None,
     })
     .await
     .unwrap();
@@ -276,6 +277,7 @@ async fn sequential_stops_after_first_suspension_in_loop() {
         frontend_tools: Vec::new(),
         inbox: None,
         is_continuation: false,
+        initial_state_seed: None,
     })
     .await
     .unwrap();
@@ -338,6 +340,7 @@ async fn parallel_both_tools_execute() {
         frontend_tools: Vec::new(),
         inbox: None,
         is_continuation: false,
+        initial_state_seed: None,
     })
     .await
     .unwrap();
@@ -381,6 +384,7 @@ async fn parallel_partial_failure() {
         frontend_tools: Vec::new(),
         inbox: None,
         is_continuation: false,
+        initial_state_seed: None,
     })
     .await
     .unwrap();
@@ -430,6 +434,7 @@ async fn parallel_does_not_stop_on_suspension() {
         frontend_tools: Vec::new(),
         inbox: None,
         is_continuation: false,
+        initial_state_seed: None,
     })
     .await
     .unwrap();
@@ -479,6 +484,7 @@ async fn suspension_sets_run_to_waiting() {
         frontend_tools: Vec::new(),
         inbox: None,
         is_continuation: false,
+        initial_state_seed: None,
     })
     .await
     .unwrap();
@@ -513,6 +519,7 @@ async fn suspension_tool_call_state_is_suspended() {
         frontend_tools: Vec::new(),
         inbox: None,
         is_continuation: false,
+        initial_state_seed: None,
     })
     .await
     .unwrap();
@@ -613,6 +620,7 @@ async fn hook_state_mutation_is_not_visible_to_sibling_hook() {
         frontend_tools: Vec::new(),
         inbox: None,
         is_continuation: false,
+        initial_state_seed: None,
     })
     .await
     .unwrap();
@@ -658,6 +666,7 @@ async fn max_rounds_precise_count() {
         frontend_tools: Vec::new(),
         inbox: None,
         is_continuation: false,
+        initial_state_seed: None,
     })
     .await
     .unwrap();
@@ -724,6 +733,7 @@ async fn terminate_via_state_in_after_inference_hook() {
         frontend_tools: Vec::new(),
         inbox: None,
         is_continuation: false,
+        initial_state_seed: None,
     })
     .await
     .unwrap();
@@ -788,6 +798,7 @@ async fn phase_sequence_with_tool_call() {
         frontend_tools: Vec::new(),
         inbox: None,
         is_continuation: false,
+        initial_state_seed: None,
     })
     .await
     .unwrap();
@@ -858,6 +869,7 @@ async fn phase_sequence_on_suspension() {
         frontend_tools: Vec::new(),
         inbox: None,
         is_continuation: false,
+        initial_state_seed: None,
     })
     .await
     .unwrap();
@@ -963,6 +975,7 @@ async fn empty_tool_calls_treated_as_natural_end() {
         frontend_tools: Vec::new(),
         inbox: None,
         is_continuation: false,
+        initial_state_seed: None,
     })
     .await
     .unwrap();
@@ -1004,6 +1017,7 @@ async fn multiple_steps_accumulate_messages() {
         frontend_tools: Vec::new(),
         inbox: None,
         is_continuation: false,
+        initial_state_seed: None,
     })
     .await
     .unwrap();
@@ -1043,6 +1057,7 @@ async fn run_lifecycle_run_id_matches_identity() {
         frontend_tools: Vec::new(),
         inbox: None,
         is_continuation: false,
+        initial_state_seed: None,
     })
     .await
     .unwrap();
@@ -1083,6 +1098,7 @@ async fn batch_approval_both_tools_execute_in_loop() {
         frontend_tools: Vec::new(),
         inbox: None,
         is_continuation: false,
+        initial_state_seed: None,
     })
     .await
     .unwrap();
@@ -1126,6 +1142,7 @@ async fn batch_approval_suspension_still_executes_all() {
         frontend_tools: Vec::new(),
         inbox: None,
         is_continuation: false,
+        initial_state_seed: None,
     })
     .await
     .unwrap();
@@ -1172,6 +1189,7 @@ async fn streaming_partial_failure_in_loop() {
         frontend_tools: Vec::new(),
         inbox: None,
         is_continuation: false,
+        initial_state_seed: None,
     })
     .await
     .unwrap();
@@ -1278,6 +1296,7 @@ async fn before_inference_hook_override_reaches_request() {
         frontend_tools: Vec::new(),
         inbox: None,
         is_continuation: false,
+        initial_state_seed: None,
     })
     .await
     .unwrap();
@@ -1397,6 +1416,7 @@ async fn multiple_hooks_merge_inference_overrides_last_wins() {
         frontend_tools: Vec::new(),
         inbox: None,
         is_continuation: false,
+        initial_state_seed: None,
     })
     .await
     .unwrap();
@@ -1465,6 +1485,7 @@ async fn no_override_hook_leaves_overrides_none() {
         frontend_tools: Vec::new(),
         inbox: None,
         is_continuation: false,
+        initial_state_seed: None,
     })
     .await
     .unwrap();
@@ -1578,6 +1599,7 @@ async fn override_consumed_each_step_not_leaked() {
         frontend_tools: Vec::new(),
         inbox: None,
         is_continuation: false,
+        initial_state_seed: None,
     })
     .await
     .unwrap();
@@ -1681,6 +1703,7 @@ async fn context_message_injected_into_request() {
         frontend_tools: Vec::new(),
         inbox: None,
         is_continuation: false,
+        initial_state_seed: None,
     })
     .await
     .unwrap();
@@ -1819,6 +1842,7 @@ async fn context_messages_not_leaked_to_next_step() {
         frontend_tools: Vec::new(),
         inbox: None,
         is_continuation: false,
+        initial_state_seed: None,
     })
     .await
     .unwrap();

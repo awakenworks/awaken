@@ -196,6 +196,7 @@ async fn observability_captures_single_inference_e2e() {
         frontend_tools: Vec::new(),
         inbox: None,
         is_continuation: false,
+        initial_state_seed: None,
     })
     .await
     .unwrap();
@@ -289,6 +290,7 @@ async fn observability_captures_tool_execution_e2e() {
         frontend_tools: Vec::new(),
         inbox: None,
         is_continuation: false,
+        initial_state_seed: None,
     })
     .await
     .unwrap();
@@ -349,6 +351,7 @@ async fn observability_captures_inference_error_e2e() {
         frontend_tools: Vec::new(),
         inbox: None,
         is_continuation: false,
+        initial_state_seed: None,
     })
     .await;
 
@@ -458,6 +461,7 @@ async fn observability_stats_aggregation_e2e() {
         frontend_tools: Vec::new(),
         inbox: None,
         is_continuation: false,
+        initial_state_seed: None,
     })
     .await
     .unwrap();

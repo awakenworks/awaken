@@ -303,6 +303,7 @@ async fn main() {
         frontend_tools: Vec::new(),
         inbox: None,
         is_continuation: false,
+        initial_state_seed: None,
     })
     .await
     .expect("agent loop failed");

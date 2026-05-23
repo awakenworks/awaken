@@ -213,6 +213,7 @@ fn local_delegate_request<'a>(
         },
         control: BackendControl::default(),
         policy: BackendDelegatePolicy::default(),
+        state_seed: None,
     }
 }
 
@@ -286,6 +287,7 @@ async fn agent_with_running_task_enters_awaiting_tasks() {
         frontend_tools: Vec::new(),
         inbox: None,
         is_continuation: false,
+        initial_state_seed: None,
     })
     .await
     .unwrap();
@@ -338,6 +340,7 @@ async fn agent_without_tasks_completes_normally() {
         frontend_tools: Vec::new(),
         inbox: None,
         is_continuation: false,
+        initial_state_seed: None,
     })
     .await
     .unwrap();
@@ -401,6 +404,7 @@ async fn task_event_injected_into_conversation() {
         frontend_tools: Vec::new(),
         inbox: Some(inbox_rx),
         is_continuation: false,
+        initial_state_seed: None,
     })
     .await
     .unwrap();
@@ -976,6 +980,7 @@ async fn sub_agent_waits_for_bg_task_completion_before_returning() {
         frontend_tools: Vec::new(),
         inbox: Some(inbox_receiver),
         is_continuation: false,
+        initial_state_seed: None,
     })
     .await
     .unwrap();
@@ -1144,6 +1149,7 @@ async fn run_finish_signals_awaiting_tasks_in_result() {
         frontend_tools: Vec::new(),
         inbox: None,
         is_continuation: false,
+        initial_state_seed: None,
     })
     .await
     .unwrap();
@@ -1197,6 +1203,7 @@ async fn run_finish_normal_end_no_awaiting_flag() {
         frontend_tools: Vec::new(),
         inbox: None,
         is_continuation: false,
+        initial_state_seed: None,
     })
     .await
     .unwrap();
@@ -1339,6 +1346,7 @@ async fn run_finish_cancelled_has_done_status() {
         frontend_tools: Vec::new(),
         inbox: None,
         is_continuation: false,
+        initial_state_seed: None,
     })
     .await
     .unwrap();
@@ -1415,6 +1423,7 @@ async fn run_finish_suspended_has_waiting_status() {
         frontend_tools: Vec::new(),
         inbox: None,
         is_continuation: false,
+        initial_state_seed: None,
     })
     .await
     .unwrap();

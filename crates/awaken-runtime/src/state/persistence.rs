@@ -100,6 +100,47 @@ impl StateStore {
         Ok(())
     }
 
+    /// Seed the store with values from a `PersistedState`, merging into
+    /// existing state instead of replacing it.
+    ///
+    /// Unlike [`Self::restore_persisted`], this preserves keys not present in
+    /// `persisted` (typically values committed by plugin activation hooks).
+    /// Used by child-run helpers to seed a freshly-prepared store with
+    /// parent-derived state.
+    ///
+    /// The seed's `revision` field is ignored — the store keeps its current
+    /// revision and does not bump it for the seed application (no commit
+    /// hooks are fired).
+    pub fn apply_seed(
+        &self,
+        persisted: PersistedState,
+        unknown_policy: UnknownKeyPolicy,
+    ) -> Result<(), StateError> {
+        let registry = self.registry.lock();
+        let mut state = self.inner.write();
+        let mut next_ext = state.ext.as_ref().clone();
+
+        for (key, json) in persisted.extensions {
+            let Some(reg) = registry.keys_by_name.get(&key) else {
+                match unknown_policy {
+                    UnknownKeyPolicy::Error => return Err(StateError::UnknownKey { key }),
+                    UnknownKeyPolicy::Skip => continue,
+                }
+            };
+
+            (reg.import)(&mut next_ext, json).map_err(|err| match err {
+                StateError::KeyDecode { key, message } => StateError::KeyDecode { key, message },
+                other => StateError::KeyDecode {
+                    key: reg.key.clone(),
+                    message: other.to_string(),
+                },
+            })?;
+        }
+
+        state.ext = Arc::new(next_ext);
+        Ok(())
+    }
+
     /// Clear all `Run`-scoped keys, preserving `Thread`-scoped keys.
     pub fn clear_run_scoped(&self) {
         let registry = self.registry.lock();
@@ -212,6 +253,136 @@ mod tests {
         assert!(
             !exported.extensions.contains_key(TransientFlag::KEY),
             "non-persistent key should NOT be exported"
+        );
+    }
+
+    #[test]
+    fn apply_seed_merges_without_clobbering_existing_keys() {
+        let store = StateStore::new();
+        store.install_plugin(PersistenceTestPlugin).unwrap();
+
+        // Pre-existing key value not in the seed should be preserved.
+        let mut batch = store.begin_mutation();
+        batch.update::<TransientFlag>(true);
+        store.commit(batch).unwrap();
+
+        let mut extensions = std::collections::HashMap::new();
+        extensions.insert(PersistentCounter::KEY.to_string(), serde_json::json!(99i64));
+        let seed = PersistedState {
+            revision: 0,
+            extensions,
+        };
+
+        store.apply_seed(seed, UnknownKeyPolicy::Error).unwrap();
+
+        assert_eq!(
+            store.read::<PersistentCounter>(),
+            Some(99),
+            "seed should set the listed key"
+        );
+        assert_eq!(
+            store.read::<TransientFlag>(),
+            Some(true),
+            "seed must preserve keys it did not list"
+        );
+    }
+
+    #[test]
+    fn apply_seed_rejects_unknown_keys_under_error_policy() {
+        let store = StateStore::new();
+        store.install_plugin(PersistenceTestPlugin).unwrap();
+
+        let mut batch = store.begin_mutation();
+        batch.update::<PersistentCounter>(10);
+        batch.update::<TransientFlag>(true);
+        store.commit(batch).unwrap();
+
+        let mut extensions = std::collections::HashMap::new();
+        extensions.insert(PersistentCounter::KEY.to_string(), serde_json::json!(99i64));
+        extensions.insert("unregistered.key".to_string(), serde_json::json!("x"));
+        let seed = PersistedState {
+            revision: 0,
+            extensions,
+        };
+
+        let err = store.apply_seed(seed, UnknownKeyPolicy::Error).unwrap_err();
+        assert!(matches!(
+            err,
+            awaken_contract::StateError::UnknownKey { .. }
+        ));
+        assert_eq!(
+            store.read::<PersistentCounter>(),
+            Some(10),
+            "failed seeds must not leave partial mutations behind"
+        );
+        assert_eq!(
+            store.read::<TransientFlag>(),
+            Some(true),
+            "unlisted keys must remain intact after failed seed application"
+        );
+    }
+
+    #[test]
+    fn apply_seed_decode_error_is_atomic() {
+        let store = StateStore::new();
+        store.install_plugin(PersistenceTestPlugin).unwrap();
+
+        let mut batch = store.begin_mutation();
+        batch.update::<PersistentCounter>(10);
+        batch.update::<TransientFlag>(true);
+        store.commit(batch).unwrap();
+
+        let mut extensions = std::collections::HashMap::new();
+        extensions.insert(
+            PersistentCounter::KEY.to_string(),
+            serde_json::json!("not an integer"),
+        );
+        let seed = PersistedState {
+            revision: 0,
+            extensions,
+        };
+
+        let err = store.apply_seed(seed, UnknownKeyPolicy::Error).unwrap_err();
+        assert!(matches!(err, awaken_contract::StateError::KeyDecode { .. }));
+        assert_eq!(
+            store.read::<PersistentCounter>(),
+            Some(10),
+            "decode failures must preserve the original value"
+        );
+        assert_eq!(
+            store.read::<TransientFlag>(),
+            Some(true),
+            "unlisted keys must remain intact after decode failure"
+        );
+    }
+
+    #[test]
+    fn apply_seed_skip_policy_ignores_unknown_and_merges_known_keys() {
+        let store = StateStore::new();
+        store.install_plugin(PersistenceTestPlugin).unwrap();
+
+        let mut batch = store.begin_mutation();
+        batch.update::<TransientFlag>(true);
+        store.commit(batch).unwrap();
+
+        let mut extensions = std::collections::HashMap::new();
+        extensions.insert("unknown.key".to_string(), serde_json::json!("some_value"));
+        extensions.insert(PersistentCounter::KEY.to_string(), serde_json::json!(44i64));
+        let seed = PersistedState {
+            revision: 0,
+            extensions,
+        };
+
+        store.apply_seed(seed, UnknownKeyPolicy::Skip).unwrap();
+        assert_eq!(
+            store.read::<PersistentCounter>(),
+            Some(44),
+            "known keys should merge under skip policy"
+        );
+        assert_eq!(
+            store.read::<TransientFlag>(),
+            Some(true),
+            "skip policy must still preserve unlisted state"
         );
     }
 

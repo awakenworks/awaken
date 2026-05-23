@@ -344,6 +344,7 @@ async fn skill_activation_elevates_permission_for_dangerous_tool() {
         frontend_tools: Vec::new(),
         inbox: None,
         is_continuation: false,
+        initial_state_seed: None,
     })
     .await
     .unwrap();
@@ -448,6 +449,7 @@ async fn dangerous_tool_blocked_without_skill_activation() {
         frontend_tools: Vec::new(),
         inbox: None,
         is_continuation: false,
+        initial_state_seed: None,
     })
     .await
     .unwrap();
@@ -541,6 +543,7 @@ async fn permission_elevation_persists_across_steps_within_run() {
         frontend_tools: Vec::new(),
         inbox: None,
         is_continuation: false,
+        initial_state_seed: None,
     })
     .await
     .unwrap();
@@ -649,6 +652,7 @@ async fn same_step_skill_activation_unlocks_guarded_tool() {
         frontend_tools: Vec::new(),
         inbox: None,
         is_continuation: false,
+        initial_state_seed: None,
     })
     .await
     .unwrap();
@@ -727,6 +731,7 @@ async fn same_step_skill_activation_unlocks_guarded_tool_with_sequential_executo
         frontend_tools: Vec::new(),
         inbox: None,
         is_continuation: false,
+        initial_state_seed: None,
     })
     .await
     .unwrap();
@@ -793,6 +798,7 @@ async fn same_step_skill_activation_preserves_other_parallel_tools() {
         frontend_tools: Vec::new(),
         inbox: None,
         is_continuation: false,
+        initial_state_seed: None,
     })
     .await
     .unwrap();
@@ -874,6 +880,7 @@ async fn same_step_skill_activation_allows_multiple_guarded_tools() {
         frontend_tools: Vec::new(),
         inbox: None,
         is_continuation: false,
+        initial_state_seed: None,
     })
     .await
     .unwrap();
@@ -954,6 +961,7 @@ async fn same_step_skill_activation_preserves_allowed_tool_before_skill() {
         frontend_tools: Vec::new(),
         inbox: None,
         is_continuation: false,
+        initial_state_seed: None,
     })
     .await
     .unwrap();
@@ -1031,6 +1039,7 @@ async fn guarded_tool_before_skill_blocks_same_step_activation_attempt() {
         frontend_tools: Vec::new(),
         inbox: None,
         is_continuation: false,
+        initial_state_seed: None,
     })
     .await
     .unwrap();
@@ -1114,6 +1123,7 @@ async fn allowed_prefix_commits_before_later_guarded_tool_blocks() {
         frontend_tools: Vec::new(),
         inbox: None,
         is_continuation: false,
+        initial_state_seed: None,
     })
     .await
     .unwrap();
@@ -1200,6 +1210,7 @@ async fn standalone_skill_activation_advances_to_next_step() {
         frontend_tools: Vec::new(),
         inbox: None,
         is_continuation: false,
+        initial_state_seed: None,
     })
     .await
     .unwrap();
@@ -1272,6 +1283,7 @@ async fn standalone_skill_activation_injects_active_instructions_on_next_inferen
         frontend_tools: Vec::new(),
         inbox: None,
         is_continuation: false,
+        initial_state_seed: None,
     })
     .await
     .unwrap();
