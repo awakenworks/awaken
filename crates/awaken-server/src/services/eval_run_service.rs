@@ -20,11 +20,9 @@ use axum::http::HeaderMap;
 use axum::response::{IntoResponse, Response};
 use serde::{Deserialize, Serialize};
 
-use crate::app::AppState;
+use crate::app::EvalRoutesState;
 use crate::error::ApiError;
-use crate::services::eval_common::{
-    config_store_or_unavailable, map_storage_error, resolve_live_executor,
-};
+use crate::services::eval_common::{eval_config_store, map_storage_error, resolve_live_executor};
 
 // ── Wire types ────────────────────────────────────────────────────────────
 
@@ -237,10 +235,8 @@ pub(crate) fn map_eval_run_store_error(err: EvalRunStoreError) -> ApiError {
     }
 }
 
-fn eval_run_store_or_unavailable(state: &AppState) -> Result<Arc<dyn EvalRunStore>, ApiError> {
-    state
-        .eval_run_store()
-        .ok_or_else(|| ApiError::ServiceUnavailable("eval run store not configured".into()))
+fn eval_run_store(state: &EvalRoutesState) -> Arc<dyn EvalRunStore> {
+    state.eval.eval_run_store.clone()
 }
 
 fn epoch_secs_now() -> u64 {
@@ -260,15 +256,15 @@ fn epoch_secs_now() -> u64 {
 /// background execution with `GET /v1/eval/runs/:id` polling.
 #[tracing::instrument(skip_all, fields(dataset_id = %body.dataset_id))]
 pub async fn start_eval_run(
-    State(state): State<AppState>,
+    State(state): State<EvalRoutesState>,
     headers: HeaderMap,
     Json(body): Json<StartRunRequest>,
 ) -> Result<Response, ApiError> {
-    crate::config_routes::ensure_admin_auth(&state, &headers)?;
-    let config_store = config_store_or_unavailable(&state)?;
-    let run_store = eval_run_store_or_unavailable(&state)?;
+    crate::config_routes::ensure_admin_auth(&state.admin, &headers)?;
+    let config_store = eval_config_store(&state);
+    let run_store = eval_run_store(&state);
     let execution_mode = execution_mode_from_request(&body);
-    let limits = state.config.eval_limits.clone();
+    let limits = state.limits.clone();
 
     // ── Request-shape validation (no I/O) ─────────────────────────────
     //
@@ -465,7 +461,7 @@ pub async fn start_eval_run(
         None
     };
 
-    let trace_store = state.trace_store();
+    let trace_store = state.trace.as_ref().map(|trace| trace.trace_store.clone());
     let trace_sink: Option<Arc<dyn MetricsSink>> = trace_store
         .as_ref()
         .map(|store| Arc::new(TraceStoreSink::new(store.clone())) as Arc<dyn MetricsSink>);
@@ -477,7 +473,25 @@ pub async fn start_eval_run(
     // recorded time matches when the work actually began. Setting it
     // after-the-fact (the earlier shape) collapsed started ≈ ended for
     // every run and broke duration / list filtering / time-series.
+    let eval_run_id = mint_run_id();
     let started_at_secs = epoch_secs_now();
+    let eval_mode = if is_live_mode(execution_mode) {
+        "dataset_live_matrix"
+    } else {
+        "dataset_scripted"
+    };
+    crate::services::eval_events::record_eval_run_started(
+        &state,
+        crate::services::eval_events::EvalRunStartedEvent {
+            eval_run_id: eval_run_id.clone(),
+            dataset_id: body.dataset_id.clone(),
+            dataset_revision,
+            mode: eval_mode,
+            planned_item_count: total_units,
+            started_at_secs,
+        },
+    )
+    .await;
     let items: Vec<EvalRunItem> = if is_live_mode(execution_mode) {
         let walltime = body.max_walltime_secs.unwrap_or(60);
         let max_total_tokens = body.max_total_tokens.unwrap_or(DEFAULT_MAX_TOTAL_TOKENS);
@@ -503,7 +517,7 @@ pub async fn start_eval_run(
     };
 
     let run = EvalRun {
-        id: mint_run_id(),
+        id: eval_run_id,
         dataset_id: body.dataset_id.clone(),
         dataset_revision,
         execution_mode,
@@ -512,6 +526,7 @@ pub async fn start_eval_run(
         ended_at_secs: epoch_secs_now(),
     };
     run_store.write(&run).map_err(map_eval_run_store_error)?;
+    crate::services::eval_events::record_eval_run_completed(&state, &run, eval_mode, true).await;
 
     // Baseline was preflight-validated above; just use the already-loaded
     // copy. `baseline_run_id` is transient — not persisted onto the
@@ -532,12 +547,12 @@ pub async fn start_eval_run(
 /// `GET /v1/eval/runs` — list run summaries.
 #[tracing::instrument(skip_all)]
 pub async fn list_eval_runs(
-    State(state): State<AppState>,
+    State(state): State<EvalRoutesState>,
     headers: HeaderMap,
     Query(params): Query<ListRunsQuery>,
 ) -> Result<Response, ApiError> {
-    crate::config_routes::ensure_admin_auth(&state, &headers)?;
-    let store = eval_run_store_or_unavailable(&state)?;
+    crate::config_routes::ensure_admin_auth(&state.admin, &headers)?;
+    let store = eval_run_store(&state);
     let filter = EvalRunFilter {
         dataset_id: params.dataset_id,
         since_secs: params.since_secs,
@@ -551,13 +566,13 @@ pub async fn list_eval_runs(
 /// `GET /v1/eval/runs/:id` (with optional `?baseline=` for D7).
 #[tracing::instrument(skip_all, fields(id = %id))]
 pub async fn get_eval_run(
-    State(state): State<AppState>,
+    State(state): State<EvalRoutesState>,
     headers: HeaderMap,
     Path(id): Path<String>,
     Query(params): Query<GetRunQuery>,
 ) -> Result<Response, ApiError> {
-    crate::config_routes::ensure_admin_auth(&state, &headers)?;
-    let store = eval_run_store_or_unavailable(&state)?;
+    crate::config_routes::ensure_admin_auth(&state.admin, &headers)?;
+    let store = eval_run_store(&state);
     let wants_diff = params.baseline.is_some();
     let run = store.read(&id).map_err(|err| match err {
         EvalRunStoreError::DuplicateItemKeys(_, msg) if wants_diff => {
@@ -721,7 +736,7 @@ pub(crate) struct MatrixOptions {
 /// pre-resolved before any provider call so a missing model fails fast
 /// (404) instead of burning tokens on the cells that did resolve.
 async fn run_matrix_cells(
-    state: &AppState,
+    state: &EvalRoutesState,
     fixtures: &[Fixture],
     cells: &[MatrixCell],
     options: MatrixOptions,

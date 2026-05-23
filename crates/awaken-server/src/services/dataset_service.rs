@@ -24,7 +24,7 @@ use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 
-use crate::app::AppState;
+use crate::app::EvalRoutesState;
 use crate::error::ApiError;
 use crate::services::dataset_wire::{
     AppendFixtureRequest, CreateDatasetRequest, CurateItemsRequest, DatasetSummaryWire,
@@ -32,9 +32,7 @@ use crate::services::dataset_wire::{
     ImportTracesRequest, ImportTracesResponse, ListDatasetsResponse, ListParams,
     ProviderScriptMode, PutDatasetRequest,
 };
-use crate::services::eval_common::{
-    config_store_or_unavailable, map_storage_error, map_trace_store_error,
-};
+use crate::services::eval_common::{eval_config_store, map_storage_error, map_trace_store_error};
 
 // `DATASETS_NAMESPACE` re-exported from `awaken_eval::dataset` is the
 // single source of truth — see the const's docstring there.
@@ -111,12 +109,12 @@ fn curate_trace_payload(
 /// `GET /v1/eval/datasets` — list dataset summaries.
 #[tracing::instrument(skip_all)]
 pub async fn list_datasets(
-    State(state): State<AppState>,
+    State(state): State<EvalRoutesState>,
     headers: HeaderMap,
     Query(params): Query<ListParams>,
 ) -> Result<Response, ApiError> {
-    crate::config_routes::ensure_admin_auth(&state, &headers)?;
-    let store = config_store_or_unavailable(&state)?;
+    crate::config_routes::ensure_admin_auth(&state.admin, &headers)?;
+    let store = eval_config_store(&state);
     let raw = store
         .list(DATASETS_NAMESPACE, params.offset, params.limit)
         .await
@@ -144,13 +142,13 @@ pub async fn list_datasets(
 /// with the rest of the config CRUD surface.
 #[tracing::instrument(skip_all, fields(id = ?id_param.id))]
 pub async fn create_dataset(
-    State(state): State<AppState>,
+    State(state): State<EvalRoutesState>,
     headers: HeaderMap,
     Query(id_param): Query<IdParam>,
     Json(body): Json<CreateDatasetRequest>,
 ) -> Result<Response, ApiError> {
-    crate::config_routes::ensure_admin_auth(&state, &headers)?;
-    let store = config_store_or_unavailable(&state)?;
+    crate::config_routes::ensure_admin_auth(&state.admin, &headers)?;
+    let store = eval_config_store(&state);
     let id = id_param
         .id
         .or(body.id.clone())
@@ -177,12 +175,12 @@ pub async fn create_dataset(
 /// `GET /v1/eval/datasets/:id` — fetch one dataset record.
 #[tracing::instrument(skip_all, fields(id = %id))]
 pub async fn get_dataset(
-    State(state): State<AppState>,
+    State(state): State<EvalRoutesState>,
     headers: HeaderMap,
     Path(id): Path<String>,
 ) -> Result<Response, ApiError> {
-    crate::config_routes::ensure_admin_auth(&state, &headers)?;
-    let store = config_store_or_unavailable(&state)?;
+    crate::config_routes::ensure_admin_auth(&state.admin, &headers)?;
+    let store = eval_config_store(&state);
     let value = store
         .get(DATASETS_NAMESPACE, &id)
         .await
@@ -198,16 +196,16 @@ pub async fn get_dataset(
 /// as `409 Conflict` instead of last-write-wins.
 #[tracing::instrument(skip_all, fields(id = %id))]
 pub async fn put_dataset(
-    State(state): State<AppState>,
+    State(state): State<EvalRoutesState>,
     headers: HeaderMap,
     Path(id): Path<String>,
     Json(body): Json<PutDatasetRequest>,
 ) -> Result<Response, ApiError> {
-    crate::config_routes::ensure_admin_auth(&state, &headers)?;
+    crate::config_routes::ensure_admin_auth(&state.admin, &headers)?;
     body.spec
         .validate_for_write()
         .map_err(ApiError::BadRequest)?;
-    let store = config_store_or_unavailable(&state)?;
+    let store = eval_config_store(&state);
     let mut meta = match store
         .get(DATASETS_NAMESPACE, &id)
         .await
@@ -258,18 +256,18 @@ pub async fn put_dataset(
 /// fixture id already exists in the dataset (use PUT to mutate).
 #[tracing::instrument(skip_all, fields(id = %id, fixture_id = %body.fixture.id))]
 pub async fn append_fixture(
-    State(state): State<AppState>,
+    State(state): State<EvalRoutesState>,
     headers: HeaderMap,
     Path(id): Path<String>,
     Json(body): Json<AppendFixtureRequest>,
 ) -> Result<Response, ApiError> {
-    crate::config_routes::ensure_admin_auth(&state, &headers)?;
+    crate::config_routes::ensure_admin_auth(&state.admin, &headers)?;
     validate_min_judge_score(
         &body.fixture.expect,
         &format!("fixture {}", body.fixture.id),
     )
     .map_err(ApiError::BadRequest)?;
-    let store = config_store_or_unavailable(&state)?;
+    let store = eval_config_store(&state);
     let existing_value = store
         .get(DATASETS_NAMESPACE, &id)
         .await
@@ -319,13 +317,13 @@ pub async fn append_fixture(
 /// instead of destroying their work.
 #[tracing::instrument(skip_all, fields(id = %id))]
 pub async fn delete_dataset(
-    State(state): State<AppState>,
+    State(state): State<EvalRoutesState>,
     headers: HeaderMap,
     Path(id): Path<String>,
     Query(params): Query<DeleteDatasetParams>,
 ) -> Result<Response, ApiError> {
-    crate::config_routes::ensure_admin_auth(&state, &headers)?;
-    let store = config_store_or_unavailable(&state)?;
+    crate::config_routes::ensure_admin_auth(&state.admin, &headers)?;
+    let store = eval_config_store(&state);
     match params.expected_revision {
         Some(expected) => store
             .delete_if_revision(DATASETS_NAMESPACE, &id, expected)
@@ -346,15 +344,17 @@ pub async fn delete_dataset(
 /// edit between `get` and `put_if_revision` surfaces as `409 Conflict`.
 #[tracing::instrument(skip_all, fields(id = %id, run_id = %body.from_run_id))]
 pub async fn curate_items(
-    State(state): State<AppState>,
+    State(state): State<EvalRoutesState>,
     headers: HeaderMap,
     Path(id): Path<String>,
     Json(body): Json<CurateItemsRequest>,
 ) -> Result<Response, ApiError> {
-    crate::config_routes::ensure_admin_auth(&state, &headers)?;
-    let store = config_store_or_unavailable(&state)?;
+    crate::config_routes::ensure_admin_auth(&state.admin, &headers)?;
+    let store = eval_config_store(&state);
     let trace_store = state
-        .trace_store()
+        .trace
+        .as_ref()
+        .map(|trace| trace.trace_store.clone())
         .ok_or_else(|| ApiError::ServiceUnavailable("trace store not configured".into()))?;
     require_non_empty_expected(&body.expect)?;
 
@@ -442,15 +442,17 @@ pub async fn curate_items(
 /// appended under CAS; existing fixture ids are skipped (no clobber).
 #[tracing::instrument(skip_all, fields(id = %id, agent_id = ?body.agent_id))]
 pub async fn import_traces(
-    State(state): State<AppState>,
+    State(state): State<EvalRoutesState>,
     headers: HeaderMap,
     Path(id): Path<String>,
     Json(body): Json<ImportTracesRequest>,
 ) -> Result<Response, ApiError> {
-    crate::config_routes::ensure_admin_auth(&state, &headers)?;
-    let store = config_store_or_unavailable(&state)?;
+    crate::config_routes::ensure_admin_auth(&state.admin, &headers)?;
+    let store = eval_config_store(&state);
     let trace_store = state
-        .trace_store()
+        .trace
+        .as_ref()
+        .map(|trace| trace.trace_store.clone())
         .ok_or_else(|| ApiError::ServiceUnavailable("trace store not configured".into()))?;
     require_non_empty_expected(&body.expect)?;
 
@@ -477,7 +479,7 @@ pub async fn import_traces(
         .map(|s| std::time::UNIX_EPOCH + std::time::Duration::from_secs(s));
     let max_count = body
         .max_count
-        .unwrap_or(state.config.eval_limits.default_import_traces_max);
+        .unwrap_or(state.limits.default_import_traces_max);
     let filter = awaken_ext_observability::trace_store::TraceFilter {
         agent_id: body.agent_id.clone(),
         since,
@@ -596,19 +598,21 @@ pub async fn import_traces(
 /// captured on its first inference) — partial traces 400 out.
 #[tracing::instrument(skip_all, fields(id = %id, run_count = body.run_ids.len()))]
 pub async fn import_dialogue(
-    State(state): State<AppState>,
+    State(state): State<EvalRoutesState>,
     headers: HeaderMap,
     Path(id): Path<String>,
     Json(body): Json<ImportDialogueRequest>,
 ) -> Result<Response, ApiError> {
-    crate::config_routes::ensure_admin_auth(&state, &headers)?;
+    crate::config_routes::ensure_admin_auth(&state.admin, &headers)?;
     if body.run_ids.is_empty() {
         return Err(ApiError::BadRequest("run_ids must be non-empty".into()));
     }
     require_non_empty_expected(&body.expect)?;
-    let store = config_store_or_unavailable(&state)?;
+    let store = eval_config_store(&state);
     let trace_store = state
-        .trace_store()
+        .trace
+        .as_ref()
+        .map(|trace| trace.trace_store.clone())
         .ok_or_else(|| ApiError::ServiceUnavailable("trace store not configured".into()))?;
 
     let existing_value = store

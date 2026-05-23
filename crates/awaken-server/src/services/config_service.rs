@@ -9,7 +9,7 @@ use awaken_contract::{
 use axum::http::HeaderMap;
 use serde_json::{Value, json};
 
-use crate::app::AppState;
+use crate::app::{ConfigRoutesState, ServerState};
 use crate::services::audit_log::AuditLogger;
 use crate::services::config_envelope::unwrap_spec;
 
@@ -179,28 +179,47 @@ pub struct ProviderTestResult {
     pub error: Option<String>,
 }
 
-pub struct ConfigService<'a> {
-    state: &'a AppState,
+pub trait ConfigServiceStateProvider {
+    fn config_service_state(&self) -> Result<ConfigRoutesState, ConfigServiceError>;
+}
+
+impl ConfigServiceStateProvider for ConfigRoutesState {
+    fn config_service_state(&self) -> Result<ConfigRoutesState, ConfigServiceError> {
+        Ok(self.clone())
+    }
+}
+
+impl ConfigServiceStateProvider for ServerState {
+    fn config_service_state(&self) -> Result<ConfigRoutesState, ConfigServiceError> {
+        self.config_routes_state()
+            .ok_or(ConfigServiceError::NotEnabled)
+    }
+}
+
+pub struct ConfigService {
+    state: ConfigRoutesState,
     store: Arc<dyn ConfigStore>,
     audit: Option<Arc<AuditLogger>>,
 }
 
-impl<'a> ConfigService<'a> {
-    pub fn new(state: &'a AppState) -> Result<Self, ConfigServiceError> {
-        let store = state
-            .config_store
-            .clone()
-            .ok_or(ConfigServiceError::NotEnabled)?;
+impl ConfigService {
+    pub fn new<S: ConfigServiceStateProvider + ?Sized>(
+        state: &S,
+    ) -> Result<Self, ConfigServiceError> {
+        let state = state.config_service_state()?;
+        let store = state.config.config_store.clone();
+        let audit = state.config.audit_log.clone();
         Ok(Self {
             state,
             store,
-            audit: state.audit_log(),
+            audit,
         })
     }
 
     pub async fn capabilities(&self) -> Result<Value, ConfigServiceError> {
         let registries = self
             .state
+            .run
             .runtime
             .registry_set()
             .ok_or(ConfigServiceError::Apply(
@@ -272,13 +291,14 @@ impl<'a> ConfigService<'a> {
 
         let skills = self
             .state
+            .config
             .skill_catalog_provider
             .as_ref()
             .map(|provider| provider.list_skills())
             .unwrap_or_default();
 
         Ok(json!({
-            "agents": self.state.resolver.agent_ids(),
+            "agents": self.state.run.resolver.agent_ids(),
             "tools": tools,
             "plugins": plugins,
             "skills": skills,
@@ -675,7 +695,8 @@ pub(super) fn map_runtime_error(error: ConfigRuntimeError) -> ConfigServiceError
         ConfigRuntimeError::RuntimeNotConfigurable
         | ConfigRuntimeError::PartialBootstrap
         | ConfigRuntimeError::PeriodicRefresh(_)
-        | ConfigRuntimeError::ChangeListener(_) => ConfigServiceError::Apply(error.to_string()),
+        | ConfigRuntimeError::ChangeListener(_)
+        | ConfigRuntimeError::VersionedRegistry(_) => ConfigServiceError::Apply(error.to_string()),
         ConfigRuntimeError::Storage(error) => ConfigServiceError::Storage(error),
     }
 }

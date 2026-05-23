@@ -5,7 +5,7 @@ use crate::services::config_envelope::unwrap_spec;
 
 use super::{ConfigNamespace, ConfigService, ConfigServiceError, RestoreError};
 
-impl<'a> ConfigService<'a> {
+impl ConfigService {
     /// Restore a resource to a previous version identified by the audit event ULID `version`.
     ///
     /// Per ADR-0028 D2-D4:
@@ -13,8 +13,9 @@ impl<'a> ConfigService<'a> {
     /// - Validates that the event resource matches `<namespace>/<id>` (cross-resource rejected).
     /// - Selects the spec payload: `after` for Create/Update/Publish/Restore; `before` for Delete.
     /// - Returns `RestoreError::NotRestorable` for Restart events (no spec payload).
-    /// - Calls `persist_and_apply_locked` directly (both create and update paths) to avoid
-    ///   emitting a spurious Update audit event; only a single Restore event is written.
+    /// - Calls `persist_only_locked` (both create and update paths). Per ADR-0035 D11
+    ///   restore is an editing-store operation: it does NOT trigger the runtime
+    ///   hot-swap. Operators must run `publish` to promote the restored payload.
     /// - Emits a Restore audit event with `restored_from` set to the source ULID.
     pub async fn restore(
         &self,
@@ -83,16 +84,11 @@ impl<'a> ConfigService<'a> {
                     format!("restored payload id '{body_id}' does not match URL id '{id}'"),
                 )));
             }
-            self.persist_and_apply_locked(
-                manager.as_ref(),
-                namespace,
-                id,
-                before.clone(),
-                prepared,
-                headers,
-            )
-            .await
-            .map_err(RestoreError::Service)?
+            // ADR-0035 D11: restore writes ConfigStore only; runtime
+            // hot-swap is reserved for an explicit publish step.
+            self.persist_only_locked(namespace, id, before.clone(), prepared)
+                .await
+                .map_err(RestoreError::Service)?
         } else {
             // Resource does not exist — restore from a deleted state.
             let (body_id, prepared) = self
@@ -116,16 +112,10 @@ impl<'a> ConfigService<'a> {
                 )));
             }
 
-            self.persist_and_apply_locked(
-                manager.as_ref(),
-                namespace,
-                &body_id,
-                None,
-                prepared.clone(),
-                headers,
-            )
-            .await
-            .map_err(RestoreError::Service)?
+            // ADR-0035 D11: restore-from-deleted is editing-store only.
+            self.persist_only_locked(namespace, &body_id, None, prepared.clone())
+                .await
+                .map_err(RestoreError::Service)?
         };
 
         // Emit restore audit event.

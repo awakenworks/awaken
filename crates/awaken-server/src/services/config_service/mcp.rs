@@ -4,7 +4,7 @@ use crate::services::config_envelope::unwrap_spec;
 
 use super::{ConfigNamespace, ConfigService, ConfigServiceError};
 
-impl<'a> ConfigService<'a> {
+impl ConfigService {
     pub(super) async fn normalize_mcp_server_payload(
         &self,
         path_id: Option<&str>,

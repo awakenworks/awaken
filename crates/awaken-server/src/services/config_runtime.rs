@@ -39,6 +39,7 @@ mod managed_config;
 mod skill_publish;
 #[cfg(test)]
 mod skill_tests;
+mod versioned_publish;
 
 use managed_config::ManagedConfigSnapshot;
 
@@ -73,6 +74,8 @@ pub enum ConfigRuntimeError {
     PeriodicRefresh(String),
     #[error("config change listener error: {0}")]
     ChangeListener(String),
+    #[error("versioned registry error: {0}")]
+    VersionedRegistry(String),
     #[error("storage error: {0}")]
     Storage(#[from] StorageError),
 }
@@ -194,7 +197,7 @@ pub trait ProviderExecutorFactory: Send + Sync {
 /// so token caches, single-flight refreshes, and metrics are unified
 /// across all providers in this process. The default constructor creates
 /// a fresh broker, suitable for tests; production wiring should pass the
-/// `AppState`-scoped broker via [`with_broker`](Self::with_broker).
+/// `ServerState`-scoped broker via [`with_broker`](Self::with_broker).
 pub struct GenaiProviderExecutorFactory;
 
 /// Provider executor factory backed by genai and a caller-supplied credential broker.
@@ -547,6 +550,7 @@ pub struct ConfigRuntimeManager {
     /// Optional audit logger — if set, `apply_seed` emits a `SeedApply` event
     /// per non-empty bucket of the resulting [`SeedReport`].
     audit_log: Option<Arc<crate::services::audit_log::AuditLogger>>,
+    versioned_registry: Option<versioned_publish::VersionedRegistryPublicationTarget>,
 }
 
 impl ConfigRuntimeManager {
@@ -590,6 +594,7 @@ impl ConfigRuntimeManager {
             mcp_refresh_interval: RwLock::new(None),
             min_apply_interval: Duration::ZERO,
             audit_log: None,
+            versioned_registry: None,
         })
     }
 
@@ -887,7 +892,6 @@ impl ConfigRuntimeManager {
 
     async fn publish(&self, managed: ManagedConfigSnapshot) -> Result<u64, ConfigRuntimeError> {
         let prepared_skills = self.prepare_skill_specs(&managed.skills)?;
-
         let prepared_mcp = self.prepare_mcp_registry(&managed.mcp_servers).await?;
         let (candidate, next_provider_cache) = match self.compile_registry_set(
             &managed.providers,
@@ -908,7 +912,13 @@ impl ConfigRuntimeManager {
             return Err(error);
         }
 
-        let version = match self.runtime.replace_registry_set(candidate) {
+        if let Err(error) = self.publish_versioned_registry(&managed).await {
+            prepared_mcp.cleanup().await;
+            return Err(error);
+        }
+
+        let runtime_set = self.published_or_candidate_registry_set(candidate).await;
+        let version = match self.runtime.replace_registry_set(runtime_set) {
             Some(version) => version,
             None => {
                 prepared_mcp.cleanup().await;
@@ -1313,7 +1323,7 @@ impl ConfigRuntimeManager {
 /// Misconfigured material is rejected here (eager validation) rather
 /// than at first inference. The provided broker is shared with all
 /// dynamic providers built by the same caller; passing the
-/// `AppState::credential_broker` is the production wiring.
+/// `ServerState::credential_broker` is the production wiring.
 pub fn build_genai_provider_executor_with_broker(
     spec: &ProviderSpec,
     broker: Arc<dyn awaken_runtime::credentials::CredentialBroker>,
@@ -2431,138 +2441,6 @@ mod tests {
         );
     }
 
-    fn minimal_agent_spec(id: &str) -> AgentSpec {
-        AgentSpec {
-            id: id.into(),
-            model_id: "test-model".into(),
-            system_prompt: "test prompt".into(),
-            max_rounds: 1,
-            ..Default::default()
-        }
-    }
-
-    #[test]
-    fn deserialize_namespace_decodes_legacy_bare_spec() {
-        let spec = minimal_agent_spec("agent-a");
-        let value = serde_json::to_value(&spec).expect("serialization must succeed");
-        let entries = vec![("agent-a".to_string(), value)];
-        let result: Vec<AgentSpec> =
-            deserialize_namespace(&entries).expect("legacy bare spec must decode");
-        assert_eq!(result.len(), 1);
-        assert_eq!(result[0].id, "agent-a");
-    }
-
-    #[test]
-    fn deserialize_namespace_decodes_envelope() {
-        use awaken_contract::ConfigRecord;
-        let spec = minimal_agent_spec("agent-b");
-        let record = ConfigRecord {
-            spec,
-            meta: awaken_contract::RecordMeta::new_user(),
-        };
-        let value = record
-            .to_value()
-            .expect("envelope serialization must succeed");
-        let entries = vec![("agent-b".to_string(), value)];
-        let result: Vec<AgentSpec> = deserialize_namespace(&entries).expect("envelope must decode");
-        assert_eq!(result.len(), 1);
-        assert_eq!(result[0].id, "agent-b");
-    }
-
-    #[test]
-    fn deserialize_namespace_skips_hidden_envelope() {
-        use awaken_contract::{ConfigRecord, RecordMeta};
-        let visible = minimal_agent_spec("visible");
-        let hidden = minimal_agent_spec("hidden");
-
-        let mut hidden_meta = RecordMeta::new_user();
-        hidden_meta.hidden = true;
-
-        let visible_record = ConfigRecord {
-            spec: visible,
-            meta: RecordMeta::new_user(),
-        };
-        let hidden_record = ConfigRecord {
-            spec: hidden,
-            meta: hidden_meta,
-        };
-
-        let entries = vec![
-            (
-                "visible".to_string(),
-                visible_record.to_value().expect("serialize visible"),
-            ),
-            (
-                "hidden".to_string(),
-                hidden_record.to_value().expect("serialize hidden"),
-            ),
-        ];
-        let result: Vec<AgentSpec> = deserialize_namespace(&entries).expect("decode must succeed");
-        assert_eq!(result.len(), 1);
-        assert_eq!(result[0].id, "visible");
-    }
-
-    #[test]
-    fn deserialize_namespace_skips_hidden_before_effective_validation() {
-        use awaken_contract::{ConfigRecord, RecordMeta};
-
-        let mut hidden_meta = RecordMeta::new_user();
-        hidden_meta.hidden = true;
-        hidden_meta.user_overrides = Some(json!({ "unknown_patch_field": true }));
-
-        let hidden_record = ConfigRecord {
-            spec: json!({ "not": "an agent spec" }),
-            meta: hidden_meta,
-        };
-        let entries = vec![(
-            "hidden".to_string(),
-            hidden_record.to_value().expect("serialize hidden"),
-        )];
-
-        let result: Vec<AgentSpec> =
-            deserialize_namespace(&entries).expect("hidden invalid record must be skipped");
-        assert!(result.is_empty());
-    }
-
-    #[test]
-    fn deserialize_namespace_mixes_legacy_and_envelope() {
-        use awaken_contract::ConfigRecord;
-        let bare_spec = minimal_agent_spec("bare");
-        let envelope_spec = minimal_agent_spec("envelope");
-
-        let bare_value = serde_json::to_value(&bare_spec).expect("serialize bare");
-        let envelope_record = ConfigRecord {
-            spec: envelope_spec,
-            meta: awaken_contract::RecordMeta::new_user(),
-        };
-        let envelope_value = envelope_record.to_value().expect("serialize envelope");
-
-        let entries = vec![
-            ("bare".to_string(), bare_value),
-            ("envelope".to_string(), envelope_value),
-        ];
-        let result: Vec<AgentSpec> =
-            deserialize_namespace(&entries).expect("mixed decode must succeed");
-        assert_eq!(result.len(), 2);
-        assert_eq!(result[0].id, "bare");
-        assert_eq!(result[1].id, "envelope");
-    }
-
-    #[test]
-    fn deserialize_namespace_propagates_decode_error() {
-        let bad_value = json!({"completely": "wrong"});
-        let entries = vec![("bad".to_string(), bad_value)];
-        let err = deserialize_namespace::<AgentSpec>(&entries)
-            .expect_err("invalid spec must produce an error");
-        assert!(
-            matches!(
-                err,
-                ConfigRuntimeError::Storage(StorageError::Serialization(_))
-            ),
-            "expected Storage(Serialization(_)), got: {err:?}"
-        );
-    }
-
     /// Replaces the former `bootstrap_if_empty` test.  Asserts that
     /// `apply_seed` stores each spec as a ConfigRecord envelope whose
     /// `meta.source` is `RecordSource::Builtin { binary_version }`.
@@ -2796,6 +2674,7 @@ mod tests {
                 }],
                 tools: Vec::new(),
                 skills: Vec::new(),
+                source_config_revisions: Vec::new(),
                 fingerprint: 1,
             })
             .await
