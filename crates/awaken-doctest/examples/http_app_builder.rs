@@ -35,8 +35,10 @@ fn main() {
 
     // 4. `ServerConfig` is the only cluster of overridable knobs; default
     //    binds 0.0.0.0:3000. Override per embedder.
-    let mut config = ServerConfig::default();
-    config.address = "127.0.0.1:0".into();
+    let config = ServerConfig {
+        address: "127.0.0.1:0".into(),
+        ..ServerConfig::default()
+    };
 
     // 5. Assemble — `AppState::new` is the canonical entry point that
     //    every route handler reads from. `runtime.resolver_arc()` returns
