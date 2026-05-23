@@ -1,4 +1,4 @@
-//! Wire together `AgentRuntime` → `Mailbox` → `AppState` end-to-end —
+//! Wire together `AgentRuntime` → `Mailbox` → `ServerState` end-to-end —
 //! pins the construction sequence `reference/http-api.md` cites. This
 //! mirrors what an embedder does before calling `serve(state).await?`.
 //! Route registration is what `serve()` does internally; we exit before
@@ -40,10 +40,10 @@ fn main() {
         ..ServerConfig::default()
     };
 
-    // 5. Assemble — `AppState::new` is the canonical entry point that
+    // 5. Assemble — `ServerState::new` is the canonical entry point that
     //    every route handler reads from. `runtime.resolver_arc()` returns
     //    the same `Arc<dyn AgentResolver>` the runtime already owns.
-    let state = AppState::new(
+    let state = ServerState::new(
         runtime.clone(),
         mailbox,
         store,

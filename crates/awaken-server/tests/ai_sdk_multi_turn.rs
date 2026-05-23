@@ -11,7 +11,7 @@ use awaken_contract::contract::inference::{StopReason, StreamResult, TokenUsage}
 use awaken_contract::registry_spec::AgentSpec;
 use awaken_runtime::builder::AgentRuntimeBuilder;
 use awaken_runtime::registry::traits::ModelBinding;
-use awaken_server::app::{AppState, ServerConfig};
+use awaken_server::app::{ServerConfig, ServerState};
 use awaken_server::routes::build_router;
 use awaken_stores::memory::InMemoryStore;
 use axum::body::to_bytes;
@@ -78,14 +78,14 @@ fn make_app() -> axum::Router {
         "test".into(),
         awaken_server::mailbox::MailboxConfig::default(),
     ));
-    let state = AppState::new(
+    let state = ServerState::new(
         runtime.clone(),
         mailbox,
         store.clone(),
         runtime.resolver_arc(),
         ServerConfig::default(),
     );
-    build_router(&state).with_state(state)
+    build_router(&state)
 }
 
 /// Turn 3 of a multi-turn conversation where turns 1-2 included tool calls.

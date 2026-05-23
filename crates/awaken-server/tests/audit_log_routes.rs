@@ -7,7 +7,7 @@ use awaken_contract::contract::executor::{InferenceExecutionError, InferenceRequ
 use awaken_contract::contract::inference::{StopReason, StreamResult, TokenUsage};
 use awaken_contract::{AgentSpec, BuiltinSeedSet, BuiltinSpec, ModelBindingSpec, ProviderSpec};
 use awaken_runtime::builder::AgentRuntimeBuilder;
-use awaken_server::app::{AppState, ServerConfig};
+use awaken_server::app::{ServerConfig, ServerState};
 use awaken_server::mailbox::{Mailbox, MailboxConfig};
 use awaken_server::routes::build_router;
 use awaken_server::services::audit_log::AuditLogger;
@@ -112,7 +112,7 @@ async fn build_test_app_with_audit(token: Option<&str>) -> axum::Router {
         "audit-test".into(),
         MailboxConfig::default(),
     ));
-    let mut state = AppState::new(
+    let mut state = ServerState::new(
         runtime,
         mailbox,
         thread_store,
@@ -127,7 +127,7 @@ async fn build_test_app_with_audit(token: Option<&str>) -> axum::Router {
         state = state.with_admin_api_bearer_token(tok);
     }
 
-    build_router(&state).with_state(state)
+    build_router(&state)
 }
 
 async fn build_test_app_without_audit() -> axum::Router {
@@ -174,7 +174,7 @@ async fn build_test_app_without_audit() -> axum::Router {
         "audit-test-no-log".into(),
         MailboxConfig::default(),
     ));
-    let state = AppState::new(
+    let state = ServerState::new(
         runtime,
         mailbox,
         thread_store,
@@ -184,7 +184,7 @@ async fn build_test_app_without_audit() -> axum::Router {
     .with_config_store(config_store)
     .with_config_runtime_manager(manager);
     // No audit_log attached.
-    build_router(&state).with_state(state)
+    build_router(&state)
 }
 
 async fn get_audit_log(app: &axum::Router, qs: &str) -> (StatusCode, Value) {
@@ -435,7 +435,7 @@ async fn seed_apply_event_visible_via_http_query() {
         "seed-audit-test".into(),
         MailboxConfig::default(),
     ));
-    let state = AppState::new(
+    let state = ServerState::new(
         runtime,
         mailbox,
         thread_store,
@@ -446,7 +446,7 @@ async fn seed_apply_event_visible_via_http_query() {
     .with_config_runtime_manager(manager)
     .with_audit_log(audit_logger);
 
-    let app = build_router(&state).with_state(state);
+    let app = build_router(&state);
 
     let (status, body) = get_audit_log(&app, "action=seed_apply").await;
     assert_eq!(status, StatusCode::OK, "body: {body}");

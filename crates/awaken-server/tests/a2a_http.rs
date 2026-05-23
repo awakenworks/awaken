@@ -1,3 +1,4 @@
+#![allow(deprecated)] // ADR-0038 D7: integration tests exercise the legacy checkpoint API directly
 //! A2A HTTP integration tests for the current A2A v1.0 surface.
 
 use async_trait::async_trait;
@@ -20,7 +21,7 @@ use awaken_runtime::extensions::background::{
     TaskResult as BackgroundTaskResult, TaskStatus,
 };
 use awaken_runtime::registry::traits::ModelBinding;
-use awaken_server::app::{AppState, ServerConfig};
+use awaken_server::app::{ServerConfig, ServerState};
 use awaken_server::routes::build_router;
 use awaken_stores::memory::InMemoryStore;
 use axum::body::to_bytes;
@@ -203,14 +204,14 @@ where
         "test".to_string(),
         awaken_server::mailbox::MailboxConfig::default(),
     ));
-    let state = AppState::new(
+    let state = ServerState::new(
         runtime.clone(),
         mailbox,
         store.clone(),
         runtime.resolver_arc(),
         config,
     );
-    (build_router(&state).with_state(state), store)
+    (build_router(&state), store)
 }
 
 fn build_test_app<E>(agent_ids: &[&str], executor: Arc<E>, config: ServerConfig) -> axum::Router
@@ -283,14 +284,14 @@ fn build_background_cancel_fixture()
         "test".to_string(),
         awaken_server::mailbox::MailboxConfig::default(),
     ));
-    let state = AppState::new(
+    let state = ServerState::new(
         runtime.clone(),
         mailbox,
         store.clone(),
         runtime.resolver_arc(),
         ServerConfig::default(),
     );
-    (build_router(&state).with_state(state), store, manager)
+    (build_router(&state), store, manager)
 }
 
 async fn request_json(

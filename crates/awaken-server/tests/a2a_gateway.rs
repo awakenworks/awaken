@@ -1,3 +1,4 @@
+#![allow(deprecated)] // ADR-0038 D7: integration tests exercise the legacy checkpoint API directly
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -23,8 +24,8 @@ use awaken_protocol_a2a::{
 use awaken_runtime::builder::AgentRuntimeBuilder;
 use awaken_runtime::extensions::a2a::A2aBackendFactory;
 use awaken_runtime::registry::traits::ModelBinding;
-use awaken_runtime::{AgentRuntime, BackendAbortRequest, ExecutionBackendFactory, RunRequest};
-use awaken_server::app::{AppState, ServerConfig};
+use awaken_runtime::{AgentRuntime, BackendAbortRequest, ExecutionBackendFactory, RunActivation};
+use awaken_server::app::{ServerConfig, ServerState};
 use awaken_server::routes::build_router;
 use awaken_stores::memory::InMemoryStore;
 use axum::body::to_bytes;
@@ -401,7 +402,7 @@ fn make_gateway_app_with_options(
         "gateway-test".to_string(),
         awaken_server::mailbox::MailboxConfig::default(),
     ));
-    let state = AppState::new(
+    let state = ServerState::new(
         runtime.clone(),
         mailbox,
         store.clone(),
@@ -410,7 +411,7 @@ fn make_gateway_app_with_options(
     );
 
     TestApp {
-        router: build_router(&state).with_state(state),
+        router: build_router(&state),
         store,
         runtime,
     }
@@ -468,7 +469,7 @@ fn make_delegate_gateway_app(mock_base_url: &str) -> TestApp {
         "gateway-test".to_string(),
         awaken_server::mailbox::MailboxConfig::default(),
     ));
-    let state = AppState::new(
+    let state = ServerState::new(
         runtime.clone(),
         mailbox,
         store.clone(),
@@ -477,7 +478,7 @@ fn make_delegate_gateway_app(mock_base_url: &str) -> TestApp {
     );
 
     TestApp {
-        router: build_router(&state).with_state(state),
+        router: build_router(&state),
         store,
         runtime,
     }
@@ -1095,7 +1096,7 @@ async fn gateway_continuation_uses_requested_run_remote_state_not_latest_run() {
 
     test.runtime
         .run(
-            RunRequest::new(
+            RunActivation::new(
                 "gateway-explicit-continue",
                 vec![Message::user("resume the older waiting run")],
             )

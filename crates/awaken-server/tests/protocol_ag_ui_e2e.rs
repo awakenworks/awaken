@@ -14,7 +14,7 @@ use awaken_contract::contract::tool::{
 use awaken_contract::registry_spec::AgentSpec;
 use awaken_runtime::builder::AgentRuntimeBuilder;
 use awaken_runtime::registry::traits::ModelBinding;
-use awaken_server::app::{AppState, ServerConfig};
+use awaken_server::app::{ServerConfig, ServerState};
 use awaken_server::routes::build_router;
 use awaken_stores::memory::InMemoryStore;
 use axum::body::to_bytes;
@@ -208,7 +208,7 @@ fn make_ag_ui_app(llm: Arc<dyn LlmExecutor>, tools: Vec<(String, Arc<dyn Tool>)>
         "test".to_string(),
         awaken_server::mailbox::MailboxConfig::default(),
     ));
-    let state = AppState::new(
+    let state = ServerState::new(
         runtime.clone(),
         mailbox,
         store.clone(),
@@ -216,7 +216,7 @@ fn make_ag_ui_app(llm: Arc<dyn LlmExecutor>, tools: Vec<(String, Arc<dyn Tool>)>
         ServerConfig::default(),
     );
     TestApp {
-        router: build_router(&state).with_state(state),
+        router: build_router(&state),
         store,
     }
 }
@@ -1008,14 +1008,14 @@ async fn multiple_sequential_runs_on_same_thread() {
         "test".to_string(),
         awaken_server::mailbox::MailboxConfig::default(),
     ));
-    let state = AppState::new(
+    let state = ServerState::new(
         runtime.clone(),
         mailbox,
         store.clone(),
         runtime.resolver_arc(),
         ServerConfig::default(),
     );
-    let router = build_router(&state).with_state(state);
+    let router = build_router(&state);
 
     // First run
     let (status1, body1) = post_ag_ui_run(

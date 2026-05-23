@@ -13,7 +13,7 @@ use awaken_ext_observability::{
 };
 use awaken_runtime::builder::AgentRuntimeBuilder;
 use awaken_runtime::registry::traits::ModelBinding;
-use awaken_server::app::{AppState, ServerConfig};
+use awaken_server::app::{ServerConfig, ServerState};
 use awaken_server::routes::build_router;
 use awaken_stores::memory::InMemoryStore;
 use axum::body::to_bytes;
@@ -77,7 +77,7 @@ fn build_app(runtime_stats: Option<Arc<RuntimeStatsRegistry>>) -> axum::Router {
         "test".into(),
         awaken_server::mailbox::MailboxConfig::default(),
     ));
-    let mut state = AppState::new(
+    let mut state = ServerState::new(
         runtime.clone(),
         mailbox,
         store.clone(),
@@ -87,7 +87,7 @@ fn build_app(runtime_stats: Option<Arc<RuntimeStatsRegistry>>) -> axum::Router {
     if let Some(reg) = runtime_stats {
         state = state.with_runtime_stats(reg);
     }
-    build_router(&state).with_state(state)
+    build_router(&state)
 }
 
 fn ctx(agent: &str) -> SpanContext {
