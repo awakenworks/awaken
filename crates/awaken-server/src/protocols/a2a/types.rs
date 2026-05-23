@@ -4,7 +4,7 @@ use std::time::Duration;
 use awaken_contract::contract::mailbox::RunDispatch;
 use awaken_contract::contract::storage::RunRecord;
 use awaken_protocol_a2a::{PushNotificationConfig, Task, TaskState};
-use awaken_runtime::RunRequest;
+use awaken_runtime::RunActivation;
 use serde::{Deserialize, Serialize};
 
 pub(super) const A2A_VERSION: &str = "1.0";
@@ -93,5 +93,5 @@ pub(super) struct PreparedRequest {
     pub(super) return_immediately: bool,
     pub(super) push_notification_config: Option<PushNotificationConfig>,
     pub(super) new_task_start_message_id: Option<String>,
-    pub(super) request: RunRequest,
+    pub(super) request: RunActivation,
 }

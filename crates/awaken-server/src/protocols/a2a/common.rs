@@ -4,7 +4,7 @@ use axum::extract::Query;
 use axum::http::{HeaderMap, Uri};
 use serde::de::DeserializeOwned;
 
-use crate::app::AppState;
+use crate::app::ProtocolRoutesState;
 
 use super::error::{A2aError, map_a2a_storage_error};
 use super::types::A2A_VERSION;
@@ -148,70 +148,36 @@ pub(super) fn ensure_supported_version(headers: &HeaderMap) -> Result<(), A2aErr
     Ok(())
 }
 
-pub(super) fn public_agent_id(st: &AppState) -> Result<String, A2aError> {
-    if st.resolver.resolve("default").is_ok() {
+pub(super) fn public_agent_id(st: &ProtocolRoutesState) -> Result<String, A2aError> {
+    if st.run.resolver.resolve("default").is_ok() {
         return Ok("default".to_string());
     }
 
-    let mut ids = st.resolver.agent_ids();
+    let mut ids = st.run.resolver.agent_ids();
     ids.sort();
     ids.into_iter()
-        .find(|id| st.resolver.resolve(id).is_ok())
+        .find(|id| st.run.resolver.resolve(id).is_ok())
         .ok_or_else(|| A2aError::NotFound("no runnable local agents registered".to_string()))
 }
 
-pub(super) fn ensure_runnable_agent(st: &AppState, agent_id: &str) -> Result<(), A2aError> {
-    st.resolver
+pub(super) fn ensure_runnable_agent(
+    st: &ProtocolRoutesState,
+    agent_id: &str,
+) -> Result<(), A2aError> {
+    st.run
+        .resolver
         .resolve(agent_id)
         .map(|_| ())
         .map_err(|_| A2aError::NotFound(format!("agent not found: {agent_id}")))
 }
 
-pub(super) async fn thread_has_context(st: &AppState, thread_id: &str) -> Result<bool, A2aError> {
-    if st
-        .store
-        .load_thread(thread_id)
-        .await
-        .map_err(|e| A2aError::Internal(e.to_string()))?
-        .is_some()
-    {
-        return Ok(true);
-    }
-
-    if st
-        .store
-        .load_messages(thread_id)
-        .await
-        .map_err(|e| A2aError::Internal(e.to_string()))?
-        .is_some()
-    {
-        return Ok(true);
-    }
-
-    if st
-        .store
-        .latest_run(thread_id)
-        .await
-        .map_err(|e| A2aError::Internal(e.to_string()))?
-        .is_some()
-    {
-        return Ok(true);
-    }
-
-    Ok(!st
-        .mailbox
-        .list_dispatches(thread_id, None, 1, 0)
-        .await
-        .map_err(|e| A2aError::Internal(e.to_string()))?
-        .is_empty())
-}
-
 pub(super) async fn load_thread_metadata_projection(
-    st: &AppState,
+    st: &ProtocolRoutesState,
     thread_id: &str,
 ) -> Result<(bool, Thread), A2aError> {
     let existing = st
-        .store
+        .run
+        .store()
         .load_thread(thread_id)
         .await
         .map_err(|e| A2aError::Internal(e.to_string()))?;
@@ -234,18 +200,20 @@ pub(super) fn materialize_thread_metadata_projection(
 }
 
 pub(super) async fn persist_thread_metadata(
-    st: &AppState,
+    st: &ProtocolRoutesState,
     thread_id: &str,
     exists: bool,
     thread: Thread,
 ) -> Result<(), A2aError> {
     if exists {
-        st.store
+        st.run
+            .store()
             .update_thread_metadata(thread_id, thread.metadata)
             .await
             .map_err(map_a2a_storage_error)?;
     } else {
-        st.store
+        st.run
+            .store()
             .save_thread_validated(&thread)
             .await
             .map_err(map_a2a_storage_error)?;

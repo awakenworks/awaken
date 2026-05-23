@@ -9,7 +9,7 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use uuid::Uuid;
 
-use crate::app::AppState;
+use crate::app::ProtocolRoutesState;
 
 use super::common::{
     ensure_supported_version, load_thread_metadata_projection, parse_page_token,
@@ -25,7 +25,7 @@ use super::types::{
 };
 
 pub(super) async fn a2a_create_push_config_default(
-    State(st): State<AppState>,
+    State(st): State<ProtocolRoutesState>,
     Path(task_id): Path<String>,
     headers: HeaderMap,
     Json(payload): Json<PushNotificationConfig>,
@@ -36,7 +36,7 @@ pub(super) async fn a2a_create_push_config_default(
 }
 
 pub(super) async fn a2a_create_push_config_tenant(
-    State(st): State<AppState>,
+    State(st): State<ProtocolRoutesState>,
     Path((tenant, task_id)): Path<(String, String)>,
     headers: HeaderMap,
     Json(payload): Json<PushNotificationConfig>,
@@ -47,7 +47,7 @@ pub(super) async fn a2a_create_push_config_tenant(
 }
 
 pub(super) async fn a2a_list_push_configs_default(
-    State(st): State<AppState>,
+    State(st): State<ProtocolRoutesState>,
     Path(task_id): Path<String>,
     headers: HeaderMap,
     Query(query): Query<ListPushConfigsQuery>,
@@ -56,7 +56,7 @@ pub(super) async fn a2a_list_push_configs_default(
 }
 
 pub(super) async fn a2a_list_push_configs_tenant(
-    State(st): State<AppState>,
+    State(st): State<ProtocolRoutesState>,
     Path((tenant, task_id)): Path<(String, String)>,
     headers: HeaderMap,
     Query(query): Query<ListPushConfigsQuery>,
@@ -65,7 +65,7 @@ pub(super) async fn a2a_list_push_configs_tenant(
 }
 
 pub(super) async fn a2a_get_push_config_default(
-    State(st): State<AppState>,
+    State(st): State<ProtocolRoutesState>,
     Path((task_id, config_id)): Path<(String, String)>,
     headers: HeaderMap,
 ) -> Result<Response, A2aError> {
@@ -75,7 +75,7 @@ pub(super) async fn a2a_get_push_config_default(
 }
 
 pub(super) async fn a2a_get_push_config_tenant(
-    State(st): State<AppState>,
+    State(st): State<ProtocolRoutesState>,
     Path((tenant, task_id, config_id)): Path<(String, String, String)>,
     headers: HeaderMap,
 ) -> Result<Response, A2aError> {
@@ -85,7 +85,7 @@ pub(super) async fn a2a_get_push_config_tenant(
 }
 
 pub(super) async fn a2a_delete_push_config_default(
-    State(st): State<AppState>,
+    State(st): State<ProtocolRoutesState>,
     Path((task_id, config_id)): Path<(String, String)>,
     headers: HeaderMap,
 ) -> Result<Response, A2aError> {
@@ -93,7 +93,7 @@ pub(super) async fn a2a_delete_push_config_default(
 }
 
 pub(super) async fn a2a_delete_push_config_tenant(
-    State(st): State<AppState>,
+    State(st): State<ProtocolRoutesState>,
     Path((tenant, task_id, config_id)): Path<(String, String, String)>,
     headers: HeaderMap,
 ) -> Result<Response, A2aError> {
@@ -101,7 +101,7 @@ pub(super) async fn a2a_delete_push_config_tenant(
 }
 
 async fn create_push_config(
-    st: AppState,
+    st: ProtocolRoutesState,
     headers: HeaderMap,
     tenant: Option<String>,
     task_id: String,
@@ -116,7 +116,7 @@ async fn create_push_config(
 }
 
 async fn list_push_configs(
-    st: AppState,
+    st: ProtocolRoutesState,
     headers: HeaderMap,
     tenant: Option<String>,
     task_id: String,
@@ -150,7 +150,7 @@ async fn list_push_configs(
 }
 
 async fn get_push_config(
-    st: AppState,
+    st: ProtocolRoutesState,
     headers: HeaderMap,
     tenant: Option<String>,
     task_id: String,
@@ -165,7 +165,7 @@ async fn get_push_config(
 }
 
 async fn delete_push_config(
-    st: AppState,
+    st: ProtocolRoutesState,
     headers: HeaderMap,
     tenant: Option<String>,
     task_id: String,
@@ -230,7 +230,7 @@ pub(super) fn normalize_push_config(
 }
 
 pub(super) async fn load_push_notification_configs(
-    st: &AppState,
+    st: &ProtocolRoutesState,
     task_id: &str,
     tenant: Option<&str>,
 ) -> Result<Vec<PushNotificationConfig>, A2aError> {
@@ -238,7 +238,8 @@ pub(super) async fn load_push_notification_configs(
         return Ok(Vec::new());
     };
     let Some(thread) = st
-        .store
+        .run
+        .store()
         .load_thread(&task.thread_id)
         .await
         .map_err(|e| A2aError::Internal(e.to_string()))?
@@ -255,7 +256,7 @@ pub(super) async fn load_push_notification_configs(
 }
 
 async fn find_push_notification_config(
-    st: &AppState,
+    st: &ProtocolRoutesState,
     task_id: &str,
     tenant: Option<&str>,
     config_id: &str,
@@ -267,7 +268,7 @@ async fn find_push_notification_config(
 }
 
 async fn save_push_notification_configs(
-    st: &AppState,
+    st: &ProtocolRoutesState,
     task_id: &str,
     configs: Vec<PushNotificationConfig>,
 ) -> Result<(), A2aError> {
@@ -280,7 +281,7 @@ async fn save_push_notification_configs(
 }
 
 async fn upsert_push_notification_config(
-    st: &AppState,
+    st: &ProtocolRoutesState,
     task_id: &str,
     tenant: Option<&str>,
     config: PushNotificationConfig,
@@ -295,7 +296,7 @@ async fn upsert_push_notification_config(
 }
 
 pub(super) async fn upsert_push_notification_config_for_thread(
-    st: &AppState,
+    st: &ProtocolRoutesState,
     thread_id: &str,
     task_id: &str,
     tenant: Option<&str>,
@@ -330,7 +331,7 @@ fn load_thread_push_notification_configs(
 }
 
 async fn save_thread_push_notification_configs(
-    st: &AppState,
+    st: &ProtocolRoutesState,
     thread_id: &str,
     exists: bool,
     mut thread: Thread,
@@ -362,7 +363,7 @@ async fn save_thread_push_notification_configs(
 }
 
 pub(super) fn spawn_push_notification_driver(
-    st: AppState,
+    st: ProtocolRoutesState,
     task_id: String,
     tenant: Option<String>,
     config: PushNotificationConfig,
@@ -374,8 +375,10 @@ pub(super) fn spawn_push_notification_driver(
     });
 }
 
+// TODO(ADR-0034 #26): replace direct reqwest delivery with OutboxStore enqueue
+// (lane=protocol_replay, target=webhook) and an OutboxRelay webhook consumer.
 async fn drive_push_notification(
-    st: AppState,
+    st: ProtocolRoutesState,
     task_id: String,
     tenant: Option<String>,
     config: PushNotificationConfig,

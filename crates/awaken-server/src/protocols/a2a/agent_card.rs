@@ -8,7 +8,7 @@ use axum::http::HeaderMap;
 use axum::response::{IntoResponse, Response};
 use serde_json::json;
 
-use crate::app::AppState;
+use crate::app::ProtocolRoutesState;
 
 use super::common::{
     ensure_runnable_agent, ensure_supported_version, forwarded_header, public_agent_id,
@@ -19,7 +19,7 @@ use super::types::{
 };
 
 pub(super) async fn a2a_agent_card(
-    st: AppState,
+    st: ProtocolRoutesState,
     headers: HeaderMap,
     uri: axum::http::Uri,
 ) -> Result<Json<AgentCard>, A2aError> {
@@ -31,7 +31,7 @@ pub(super) async fn a2a_agent_card(
 }
 
 pub(super) async fn a2a_extended_agent_card_default(
-    st: AppState,
+    st: ProtocolRoutesState,
     headers: HeaderMap,
 ) -> Result<Response, A2aError> {
     ensure_supported_version(&headers)?;
@@ -46,7 +46,7 @@ pub(super) async fn a2a_extended_agent_card_default(
 }
 
 pub(super) async fn a2a_extended_agent_card_tenant(
-    st: AppState,
+    st: ProtocolRoutesState,
     tenant: String,
     headers: HeaderMap,
 ) -> Result<Response, A2aError> {
@@ -69,7 +69,7 @@ pub(super) async fn a2a_extended_agent_card_tenant(
 }
 
 fn build_agent_card(
-    st: &AppState,
+    st: &ProtocolRoutesState,
     headers: &HeaderMap,
     agent_id: &str,
     tenant: Option<&str>,
@@ -136,12 +136,15 @@ fn build_agent_card(
     }
 }
 
-pub(super) fn supports_extended_agent_card(st: &AppState) -> bool {
-    st.config.a2a_extended_card_bearer_token.is_some()
+pub(super) fn supports_extended_agent_card(st: &ProtocolRoutesState) -> bool {
+    st.a2a_extended_card_bearer_token.is_some()
 }
 
-fn ensure_extended_card_auth(st: &AppState, headers: &HeaderMap) -> Result<(), A2aError> {
-    let Some(expected) = st.config.a2a_extended_card_bearer_token.as_ref() else {
+fn ensure_extended_card_auth(
+    st: &ProtocolRoutesState,
+    headers: &HeaderMap,
+) -> Result<(), A2aError> {
+    let Some(expected) = st.a2a_extended_card_bearer_token.as_ref() else {
         return Err(A2aError::unsupported_operation(
             "extendedAgentCard is not configured for this agent",
         ));

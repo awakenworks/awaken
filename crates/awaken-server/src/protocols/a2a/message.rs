@@ -3,7 +3,7 @@ use awaken_protocol_a2a::{
     Artifact, MessageRole, SendMessageRequest, SendMessageResponse, StreamResponse,
     TaskArtifactUpdateEvent, TaskStatus, TaskStatusUpdateEvent,
 };
-use awaken_runtime::RunRequest;
+use awaken_runtime::RunActivation;
 use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::{HeaderMap, Uri};
@@ -12,12 +12,11 @@ use bytes::Bytes;
 use tokio::sync::mpsc;
 use uuid::Uuid;
 
-use crate::app::AppState;
+use crate::app::ProtocolRoutesState;
 use crate::http_sse::{format_sse_data, sse_body_stream, sse_response};
 
 use super::common::{
-    ensure_runnable_agent, ensure_supported_version, public_agent_id, thread_has_context,
-    trim_to_option,
+    ensure_runnable_agent, ensure_supported_version, public_agent_id, trim_to_option,
 };
 use super::conversion::a2a_part_to_content_block;
 use super::error::{A2aError, FieldViolation};
@@ -32,7 +31,7 @@ use super::task::{
 use super::types::{BLOCKING_POLL_INTERVAL, PreparedRequest, SUPPORTED_OUTPUT_MODE, TaskSnapshot};
 
 pub(super) async fn a2a_message_send_default(
-    State(st): State<AppState>,
+    State(st): State<ProtocolRoutesState>,
     headers: HeaderMap,
     Json(payload): Json<SendMessageRequest>,
 ) -> Result<Json<SendMessageResponse>, A2aError> {
@@ -40,7 +39,7 @@ pub(super) async fn a2a_message_send_default(
 }
 
 pub(super) async fn a2a_message_send_tenant(
-    State(st): State<AppState>,
+    State(st): State<ProtocolRoutesState>,
     Path(tenant): Path<String>,
     headers: HeaderMap,
     Json(payload): Json<SendMessageRequest>,
@@ -49,7 +48,7 @@ pub(super) async fn a2a_message_send_tenant(
 }
 
 pub(super) async fn a2a_message_stream_default(
-    State(st): State<AppState>,
+    State(st): State<ProtocolRoutesState>,
     headers: HeaderMap,
     uri: Uri,
     Json(payload): Json<SendMessageRequest>,
@@ -58,7 +57,7 @@ pub(super) async fn a2a_message_stream_default(
 }
 
 pub(super) async fn a2a_message_stream_tenant(
-    State(st): State<AppState>,
+    State(st): State<ProtocolRoutesState>,
     Path(tenant): Path<String>,
     headers: HeaderMap,
     uri: Uri,
@@ -68,7 +67,7 @@ pub(super) async fn a2a_message_stream_tenant(
 }
 
 pub(super) async fn subscribe_task(
-    st: AppState,
+    st: ProtocolRoutesState,
     headers: HeaderMap,
     tenant: Option<String>,
     task_id: String,
@@ -97,7 +96,7 @@ pub(super) async fn subscribe_task(
 }
 
 async fn send_message(
-    st: AppState,
+    st: ProtocolRoutesState,
     headers: HeaderMap,
     path_tenant: Option<String>,
     payload: SendMessageRequest,
@@ -129,7 +128,8 @@ async fn send_message(
         record_task_binding(&st, &thread_id, &task_id, start_message_id).await?;
     }
 
-    st.mailbox
+    st.run
+        .mailbox
         .submit_background(request)
         .await
         .map_err(|e| A2aError::Internal(e.to_string()))?;
@@ -163,7 +163,7 @@ async fn send_message(
 }
 
 async fn stream_message(
-    st: AppState,
+    st: ProtocolRoutesState,
     headers: HeaderMap,
     _uri: Option<&Uri>,
     path_tenant: Option<String>,
@@ -196,7 +196,8 @@ async fn stream_message(
         record_task_binding(&st, &thread_id, &task_id, start_message_id).await?;
     }
 
-    st.mailbox
+    st.run
+        .mailbox
         .submit_background(request)
         .await
         .map_err(|e| A2aError::Internal(e.to_string()))?;
@@ -219,13 +220,14 @@ async fn stream_message(
     ))
 }
 
+// TODO(ADR-0034 #25): replace store-snapshot polling with a projector that writes ProtocolReplayLog rows.
 fn stream_task_response(
-    st: AppState,
+    st: ProtocolRoutesState,
     task_id: String,
     tenant: Option<String>,
     history_length: usize,
 ) -> Response {
-    let (tx, rx) = mpsc::channel::<Bytes>(st.config.sse_buffer_size);
+    let (tx, rx) = mpsc::channel::<Bytes>(st.sse_buffer_size);
 
     tokio::spawn(async move {
         let mut sent_initial = false;
@@ -347,7 +349,7 @@ async fn send_stream_response(
 }
 
 async fn prepare_send_request(
-    st: &AppState,
+    st: &ProtocolRoutesState,
     path_tenant: Option<String>,
     payload: SendMessageRequest,
 ) -> Result<PreparedRequest, A2aError> {
@@ -449,15 +451,15 @@ async fn prepare_send_request(
 
     let message_id = payload.message.message_id.clone();
     let awaken_message = AwakenMessage::user_with_content(content).with_id(message_id.clone());
-    let mut request = RunRequest::new(thread_id.clone(), vec![awaken_message])
+    let mut request = RunActivation::new(thread_id.clone(), vec![awaken_message])
         .with_origin(awaken_contract::contract::storage::RunRequestOrigin::A2A)
         .with_adapter(awaken_contract::contract::tool_intercept::AdapterKind::A2a);
     let mut new_task_start_message_id = None;
 
     if let Some(ref tenant) = effective_tenant {
         request = request.with_agent_id(tenant.clone());
-    } else if thread_has_context(st, &thread_id).await? {
-        // Keep agent inference on existing threads.
+    } else if let Some(agent_id) = latest_context_agent_id(st, &thread_id).await? {
+        request = request.with_agent_id(agent_id);
     } else {
         request = request.with_agent_id(public_agent_id(st)?);
     }
@@ -514,4 +516,20 @@ async fn prepare_send_request(
         new_task_start_message_id,
         request,
     })
+}
+
+async fn latest_context_agent_id(
+    st: &ProtocolRoutesState,
+    thread_id: &str,
+) -> Result<Option<String>, A2aError> {
+    Ok(st
+        .run
+        .store()
+        .latest_run(thread_id)
+        .await
+        .map_err(|e| A2aError::Internal(e.to_string()))?
+        .and_then(|run| {
+            let agent_id = run.agent_id.trim();
+            (!agent_id.is_empty()).then(|| agent_id.to_string())
+        }))
 }
