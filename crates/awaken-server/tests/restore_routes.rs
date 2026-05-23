@@ -7,7 +7,7 @@ use awaken_contract::contract::executor::{InferenceExecutionError, InferenceRequ
 use awaken_contract::contract::inference::{StopReason, StreamResult, TokenUsage};
 use awaken_contract::{AgentSpec, BuiltinSeedSet, BuiltinSpec, ModelBindingSpec, ProviderSpec};
 use awaken_runtime::builder::AgentRuntimeBuilder;
-use awaken_server::app::{AppState, ServerConfig};
+use awaken_server::app::{ServerConfig, ServerState};
 use awaken_server::mailbox::{Mailbox, MailboxConfig};
 use awaken_server::routes::build_router;
 use awaken_server::services::audit_log::AuditLogger;
@@ -112,7 +112,7 @@ async fn build_test_app() -> axum::Router {
         "restore-test".into(),
         MailboxConfig::default(),
     ));
-    let state = AppState::new(
+    let state = ServerState::new(
         runtime,
         mailbox,
         thread_store,
@@ -123,7 +123,7 @@ async fn build_test_app() -> axum::Router {
     .with_config_runtime_manager(manager)
     .with_audit_log(audit_logger);
 
-    build_router(&state).with_state(state)
+    build_router(&state)
 }
 
 // ── helpers ───────────────────────────────────────────────────────────────
@@ -405,7 +405,7 @@ async fn restore_restart_event_returns_422() {
         "restart-restore-test".into(),
         MailboxConfig::default(),
     ));
-    let state = AppState::new(
+    let state = ServerState::new(
         runtime,
         mailbox,
         thread_store,
@@ -415,7 +415,7 @@ async fn restore_restart_event_returns_422() {
     .with_config_store(config_store)
     .with_config_runtime_manager(manager)
     .with_audit_log(audit_logger);
-    let app = build_router(&state).with_state(state);
+    let app = build_router(&state);
 
     let (status, body) = post_json(
         &app,
@@ -488,9 +488,14 @@ async fn unknown_version_returns_404_unknown() {
     assert_eq!(body["reason"], "unknown");
 }
 
-/// Restore failure when the referenced model no longer exists returns 422.
+/// ADR-0035 D11: restore is an editing-store operation and does NOT
+/// trigger the runtime hot-swap. It succeeds even when the restored
+/// payload references resources that were deleted from the published
+/// graph; cross-resource validation happens at the next explicit
+/// publish, not at restore time. A separate test should assert the
+/// publish-time failure.
 #[tokio::test]
-async fn restore_fails_when_referenced_model_is_gone() {
+async fn restore_does_not_validate_references_at_edit_time() {
     let app = build_test_app().await;
 
     // Create provider + model + agent referencing the model.
@@ -558,18 +563,19 @@ async fn restore_fails_when_referenced_model_is_gone() {
         .expect("create event")
         .to_string();
 
-    // Restore to original version — should fail because model is gone.
+    // Restore to original version — succeeds at the editing layer per
+    // ADR-0035 D11; the runtime continues to observe the previously
+    // published config until an explicit publish promotes the restored
+    // record (and that publish is where missing-reference validation
+    // would surface).
     let (status, body) = post_json(
         &app,
         "/v1/config/agents/agent-orphan/restore",
         &json!({ "version": create_event_id }),
     )
     .await;
-    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "body: {body}");
-    assert!(
-        body["error"].is_string(),
-        "body must contain error message: {body}"
-    );
+    assert_eq!(status, StatusCode::OK, "body: {body}");
+    assert_eq!(body["model_id"], "model-restore-test");
 }
 
 /// The restore audit event has `restored_from` populated.
@@ -714,7 +720,7 @@ async fn restore_rejects_seed_apply_event() {
         "seed-restore-test".into(),
         MailboxConfig::default(),
     ));
-    let state = AppState::new(
+    let state = ServerState::new(
         runtime,
         mailbox,
         thread_store,
@@ -724,7 +730,7 @@ async fn restore_rejects_seed_apply_event() {
     .with_config_store(config_store)
     .with_config_runtime_manager(manager)
     .with_audit_log(audit_logger);
-    let app = build_router(&state).with_state(state);
+    let app = build_router(&state);
 
     // POST restore with the SeedApply event ULID.
     // The agent id in the URL doesn't matter — the event type check fires first.

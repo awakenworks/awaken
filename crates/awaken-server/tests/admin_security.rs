@@ -9,7 +9,7 @@ use awaken_contract::registry_spec::{AgentSpec, ModelBindingSpec, ProviderSpec};
 use awaken_contract::{BuiltinSeedSet, BuiltinSpec};
 use awaken_ext_observability::RuntimeStatsRegistry;
 use awaken_runtime::builder::AgentRuntimeBuilder;
-use awaken_server::app::{AdminApiConfig, AppState, ServerConfig};
+use awaken_server::app::{AdminApiConfig, ServerConfig, ServerState};
 use awaken_server::mailbox::{Mailbox, MailboxConfig};
 use awaken_server::routes::build_router;
 use awaken_server::services::audit_log::AuditLogger;
@@ -116,7 +116,7 @@ async fn build_secure_admin_router() -> axum::Router {
         "admin-security-test".into(),
         MailboxConfig::default(),
     ));
-    let state = AppState::new(
+    let state = ServerState::new(
         runtime,
         mailbox,
         thread_store,
@@ -132,7 +132,7 @@ async fn build_secure_admin_router() -> axum::Router {
         ..Default::default()
     });
 
-    build_router(&state).with_state(state)
+    build_router(&state)
 }
 
 async fn request(

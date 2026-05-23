@@ -12,11 +12,12 @@ use awaken_contract::contract::transport::Transcoder;
 use awaken_contract::registry_spec::AgentSpec;
 use awaken_runtime::builder::AgentRuntimeBuilder;
 use awaken_runtime::registry::traits::ModelBinding;
-use awaken_server::app::{AppState, ServerConfig};
+use awaken_server::app::{ServerConfig, ServerState};
 use awaken_server::protocols::{
     acp::encoder::AcpEncoder, ag_ui::encoder::AgUiEncoder, ai_sdk_v6::encoder::AiSdkEncoder,
 };
 use awaken_server::routes::build_router;
+use awaken_stores::MemoryCommitCoordinator;
 use awaken_stores::memory::InMemoryStore;
 use axum::body::to_bytes;
 use axum::http::{Request, StatusCode};
@@ -51,6 +52,12 @@ impl awaken_contract::contract::executor::LlmExecutor for ImmediateExecutor {
 // ── Helpers ──
 
 fn make_app() -> axum::Router {
+    // ADR-0038 D7: the mailbox checkpoint requires a CommitCoordinator
+    // whose `thread_run_store()` Arc-points at the same store as the
+    // mailbox's `run_store`. Build the coordinator first and share its
+    // wrapped store everywhere downstream.
+    let store = Arc::new(InMemoryStore::new());
+    let coordinator = MemoryCommitCoordinator::wrap(Arc::clone(&store));
     let runtime = {
         let builder = AgentRuntimeBuilder::new()
             .with_model_binding(
@@ -61,6 +68,13 @@ fn make_app() -> axum::Router {
                 },
             )
             .with_provider("mock", Arc::new(ImmediateExecutor))
+            .with_thread_run_store(
+                Arc::clone(&store) as Arc<dyn awaken_contract::contract::storage::ThreadRunStore>
+            )
+            .with_commit_coordinator(
+                coordinator
+                    as Arc<dyn awaken_contract::contract::commit_coordinator::CommitCoordinator>,
+            )
             .with_agent_spec(AgentSpec {
                 id: "test".into(),
                 model_id: "test-model".into(),
@@ -70,23 +84,22 @@ fn make_app() -> axum::Router {
             });
         Arc::new(builder.build().expect("build runtime"))
     };
-    let store = Arc::new(InMemoryStore::new());
     let mailbox_store = std::sync::Arc::new(awaken_stores::InMemoryMailboxStore::new());
     let mailbox = std::sync::Arc::new(awaken_server::mailbox::Mailbox::new(
         runtime.clone(),
         mailbox_store,
-        store.clone(),
+        Arc::clone(&store) as Arc<dyn awaken_contract::contract::storage::ThreadRunStore>,
         "test".to_string(),
         awaken_server::mailbox::MailboxConfig::default(),
     ));
-    let state = AppState::new(
+    let state = ServerState::new(
         runtime.clone(),
         mailbox,
-        store.clone(),
+        Arc::clone(&store) as Arc<dyn awaken_contract::contract::storage::ThreadRunStore>,
         runtime.resolver_arc(),
         ServerConfig::default(),
     );
-    build_router(&state).with_state(state)
+    build_router(&state)
 }
 
 async fn post_sse(app: axum::Router, uri: &str, payload: Value) -> (StatusCode, String) {

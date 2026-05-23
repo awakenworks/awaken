@@ -21,7 +21,7 @@ use awaken_contract::contract::lifecycle::{RunStatus, TerminationReason};
 use awaken_contract::contract::mailbox::{MailboxInterrupt, MailboxStore};
 use awaken_contract::contract::storage::{RunWaitingState, ThreadRunStore};
 use awaken_contract::contract::suspension::ToolCallResume;
-use awaken_runtime::RunRequest;
+use awaken_runtime::RunActivation;
 use awaken_runtime::loop_runner::{AgentLoopError, AgentRunResult};
 use awaken_server::app::{MailboxLifecycleMode, ServerConfig, ShutdownConfig};
 use awaken_server::mailbox::{
@@ -42,7 +42,7 @@ struct OldExec;
 impl RunDispatchExecutor for OldExec {
     async fn run(
         &self,
-        _: RunRequest,
+        _: RunActivation,
         _: Arc<dyn EventSink>,
     ) -> Result<AgentRunResult, AgentLoopError> {
         unreachable!()
@@ -62,7 +62,7 @@ impl RunDispatchExecutor for OldExec {
 fn mailbox_submit_signature_intact() {
     let _submit: for<'a> fn(
         &'a Arc<Mailbox>,
-        RunRequest,
+        RunActivation,
     ) -> std::pin::Pin<
         Box<
             dyn std::future::Future<
@@ -77,7 +77,7 @@ fn mailbox_submit_signature_intact() {
 
     let _submit_bg: for<'a> fn(
         &'a Arc<Mailbox>,
-        RunRequest,
+        RunActivation,
     ) -> std::pin::Pin<
         Box<
             dyn std::future::Future<Output = Result<MailboxSubmitResult, MailboxError>> + Send + 'a,
@@ -116,21 +116,30 @@ fn mailbox_interrupt_struct_literal_keeps_0_2_fields() {
 
 #[test]
 fn mailbox_new_signature_intact() {
-    let _new: fn(
-        Arc<OldExec>,
-        Arc<dyn MailboxStore>,
-        Arc<dyn ThreadRunStore>,
-        String,
-        MailboxConfig,
-    ) -> Mailbox = Mailbox::new::<OldExec>;
+    // 0.6.0 collapses the previous `Mailbox::new` / `Mailbox::new_with_executor`
+    // pair into a single constructor that accepts any `IntoDispatchExecutor`
+    // (both `Arc<Concrete>` and `Arc<dyn RunDispatchExecutor>`). The two
+    // smoke calls below cover the two prior input shapes through the new
+    // unified signature.
+    let mailbox_store: Arc<dyn MailboxStore> = Arc::new(awaken_stores::InMemoryMailboxStore::new());
+    let run_store: Arc<dyn ThreadRunStore> = Arc::new(awaken_stores::InMemoryStore::new());
+    let concrete: Arc<OldExec> = Arc::new(OldExec);
+    let erased: Arc<dyn RunDispatchExecutor> = concrete.clone();
 
-    let _new_with: fn(
-        Arc<dyn RunDispatchExecutor>,
-        Arc<dyn MailboxStore>,
-        Arc<dyn ThreadRunStore>,
-        String,
-        MailboxConfig,
-    ) -> Mailbox = Mailbox::new_with_executor;
+    let _ = Mailbox::new(
+        concrete,
+        Arc::clone(&mailbox_store),
+        Arc::clone(&run_store),
+        "compat".to_string(),
+        MailboxConfig::default(),
+    );
+    let _ = Mailbox::new(
+        erased,
+        mailbox_store,
+        run_store,
+        "compat".to_string(),
+        MailboxConfig::default(),
+    );
 }
 
 #[test]

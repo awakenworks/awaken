@@ -33,7 +33,7 @@ use awaken_contract::registry_spec::{AgentSpec, ProviderSpec};
 use awaken_runtime::builder::AgentRuntimeBuilder;
 use awaken_runtime::credentials::{AwakenCredentialBroker, CredentialBroker};
 use awaken_runtime::registry::traits::ModelBinding;
-use awaken_server::app::{AppState, ServerConfig};
+use awaken_server::app::{ServerConfig, ServerState};
 use awaken_server::routes::build_router;
 use awaken_server::services::config_runtime::build_genai_provider_executor_with_broker;
 use std::sync::Arc as StdArc;
@@ -514,7 +514,7 @@ async fn tz_router_provider_compiles_smoke() {
         awaken_server::mailbox::MailboxConfig::default(),
     ));
 
-    let state = AppState::new(
+    let state = ServerState::new(
         runtime.clone(),
         mailbox,
         store.clone(),
@@ -524,7 +524,7 @@ async fn tz_router_provider_compiles_smoke() {
 
     // Building the router should not fail. We do not drive a request: that
     // path requires an upstream key and is covered by REST-level tests above.
-    let _router: axum::Router = build_router(&state).with_state(state);
+    let _router: axum::Router = build_router(&state);
 }
 
 // ---------------------------------------------------------------------------

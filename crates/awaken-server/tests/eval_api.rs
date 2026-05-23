@@ -6,7 +6,7 @@
 //!   /v1/eval/runs              — list / start
 //!   /v1/eval/runs/:id          — fetch (+ optional ?baseline= diff)
 //!
-//! Each test stands up a minimal `AppState` with in-memory
+//! Each test stands up a minimal `ServerState` with in-memory
 //! ConfigStore + file-backed TraceStore + file-backed EvalRunStore, then
 //! drives the router via `tower::ServiceExt::oneshot`. The harness is
 //! deliberately leaner than `config_api.rs`: eval CRUD doesn't touch the
@@ -18,6 +18,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use awaken_contract::config_record::{ConfigRecord, RecordMeta};
 use awaken_contract::contract::config_store::ConfigStore;
+use awaken_contract::contract::event_store::{EventReader, EventScope, EventVisibility};
 use awaken_contract::contract::storage::StorageError;
 use awaken_eval::test_support::UnusedExecutor;
 use awaken_eval::{
@@ -27,10 +28,11 @@ use awaken_eval::{
 use awaken_ext_observability::trace_store::{TraceStore, file::FileTraceStore};
 use awaken_ext_observability::{DelegationSpan, GenAISpan, MetricsEvent, SpanContext};
 use awaken_runtime::builder::AgentRuntimeBuilder;
-use awaken_server::app::{AdminApiConfig, AppState, ServerConfig};
+use awaken_server::app::{AdminApiConfig, ServerConfig, ServerState};
 use awaken_server::mailbox::{Mailbox, MailboxConfig};
 use awaken_server::routes::build_router;
-use awaken_stores::InMemoryStore;
+use awaken_server::services::config_runtime::ConfigRuntimeManager;
+use awaken_stores::{InMemoryEventStore, InMemoryStore};
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use http_body_util::BodyExt;
@@ -61,6 +63,7 @@ struct TestApp {
     /// store's `write()` would normally reject) write the JSON file
     /// straight to `{root}/eval_runs/{yyyy-mm}/{run_id}.json`.
     eval_run_root: std::path::PathBuf,
+    event_store: Arc<InMemoryEventStore>,
 }
 
 async fn build_test_app_without_run_store() -> axum::Router {
@@ -68,7 +71,8 @@ async fn build_test_app_without_run_store() -> axum::Router {
     // EvalRunStore attached so the online handler must refuse
     // persist=true BEFORE any provider call burns tokens.
     let thread_store = Arc::new(InMemoryStore::new());
-    let config_store = Arc::new(InMemoryStore::new());
+    let config_store: Arc<dyn awaken_contract::contract::config_store::ConfigStore> =
+        Arc::new(InMemoryStore::new());
     let runtime = Arc::new(
         AgentRuntimeBuilder::new()
             .with_provider("bootstrap", Arc::new(UnusedExecutor))
@@ -84,7 +88,12 @@ async fn build_test_app_without_run_store() -> axum::Router {
         "eval-test".into(),
         MailboxConfig::default(),
     ));
-    let state = AppState::new(
+    let config_runtime_manager = Arc::new(
+        ConfigRuntimeManager::new(runtime.clone(), config_store.clone())
+            .expect("config runtime manager"),
+    );
+
+    let state = ServerState::new(
         runtime,
         mailbox,
         thread_store,
@@ -94,15 +103,14 @@ async fn build_test_app_without_run_store() -> axum::Router {
             ..ServerConfig::default()
         },
     )
-    .with_config_store(
-        config_store as Arc<dyn awaken_contract::contract::config_store::ConfigStore>,
-    )
+    .with_config_store(config_store)
+    .with_config_runtime_manager(config_runtime_manager)
     .with_admin_api_config(AdminApiConfig {
         expose_config_routes: true,
         ..AdminApiConfig::default()
     })
     .with_admin_api_bearer_token(BEARER);
-    build_router(&state).with_state(state)
+    build_router(&state)
 }
 
 async fn build_test_app() -> TestApp {
@@ -114,6 +122,7 @@ async fn build_test_app_with_config_store(config_store: Arc<dyn ConfigStore>) ->
     let trace_store = Arc::new(FileTraceStore::new(temp_dir("eval-trace")).unwrap());
     let eval_run_root = temp_dir("eval-runs");
     let eval_run_store = Arc::new(FileEvalRunStore::new(eval_run_root.clone()).unwrap());
+    let event_store = Arc::new(InMemoryEventStore::new());
 
     let runtime = Arc::new(
         AgentRuntimeBuilder::new()
@@ -131,7 +140,12 @@ async fn build_test_app_with_config_store(config_store: Arc<dyn ConfigStore>) ->
         MailboxConfig::default(),
     ));
 
-    let state = AppState::new(
+    let config_runtime_manager = Arc::new(
+        ConfigRuntimeManager::new(runtime.clone(), config_store.clone())
+            .expect("config runtime manager"),
+    );
+
+    let state = ServerState::new(
         runtime,
         mailbox,
         thread_store,
@@ -142,8 +156,10 @@ async fn build_test_app_with_config_store(config_store: Arc<dyn ConfigStore>) ->
         },
     )
     .with_config_store(config_store.clone())
+    .with_config_runtime_manager(config_runtime_manager)
     .with_trace_store(trace_store.clone() as Arc<dyn TraceStore>)
     .with_eval_run_store(eval_run_store.clone() as Arc<dyn EvalRunStore>)
+    .with_event_store(event_store.clone())
     .with_admin_api_config(AdminApiConfig {
         expose_config_routes: true,
         expose_trace_routes: true,
@@ -152,11 +168,12 @@ async fn build_test_app_with_config_store(config_store: Arc<dyn ConfigStore>) ->
     .with_admin_api_bearer_token(BEARER);
 
     TestApp {
-        router: build_router(&state).with_state(state),
+        router: build_router(&state),
         config_store,
         trace_store,
         eval_run_store,
         eval_run_root,
+        event_store,
     }
 }
 
@@ -1065,6 +1082,22 @@ async fn start_eval_run_drives_dataset_and_persists() {
     }
     // No baseline requested → no diff.
     assert!(body["diff"].is_null());
+
+    let run_id = run["id"].as_str().unwrap();
+    let page = app
+        .event_store
+        .list(EventScope::run(run_id), None, 10)
+        .await
+        .unwrap();
+    assert_eq!(page.events.len(), 2);
+    assert_eq!(page.events[0].event_kind.as_str(), "EvalRunStarted");
+    assert_eq!(page.events[0].payload["dataset_id"], "DS-RUN");
+    assert_eq!(page.events[0].payload["planned_item_count"], 2);
+    assert_eq!(page.events[1].event_kind.as_str(), "EvalRunCompleted");
+    assert_eq!(page.events[1].payload["item_count"], 2);
+    assert_eq!(page.events[1].payload["passed_count"], 2);
+    assert_eq!(page.events[1].payload["persisted"], true);
+    assert_eq!(page.events[1].visibility, EventVisibility::Internal);
 }
 
 #[tokio::test]
@@ -2258,10 +2291,10 @@ async fn online_eval_404s_on_unknown_model() {
 }
 
 #[tokio::test]
-async fn online_eval_503s_on_persist_without_run_store() {
-    // Persist=true with no EvalRunStore wired must fail BEFORE any
-    // model resolution / provider call — otherwise we burn tokens on a
-    // request the persistence layer is known to reject.
+async fn online_eval_route_absent_without_eval_run_store() {
+    // Eval routes are mounted only when the eval module is wired. This keeps
+    // absent optional modules as 404 route absence instead of handler-local
+    // service-unavailable fallbacks.
     let app = build_test_app_without_run_store().await;
     let (status, body) = request(
         &app,
@@ -2274,14 +2307,7 @@ async fn online_eval_503s_on_persist_without_run_store() {
         })),
     )
     .await;
-    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
-    assert!(
-        body["error"]
-            .as_str()
-            .unwrap_or("")
-            .contains("EvalRunStore is required"),
-        "body: {body}"
-    );
+    assert_eq!(status, StatusCode::NOT_FOUND, "body: {body}");
 }
 
 #[tokio::test]
