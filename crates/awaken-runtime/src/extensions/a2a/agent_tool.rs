@@ -6,9 +6,9 @@ use async_trait::async_trait;
 use serde_json::{Value, json};
 
 use crate::backend::{
-    BackendControl, BackendDelegatePolicy, BackendDelegateRunRequest, BackendParentContext,
-    ExecutionBackend, execute_resolved_delegate_execution,
+    BackendControl, BackendDelegatePolicy, BackendParentContext, ExecutionBackend,
 };
+use crate::child_agent::{ChildAgentParams, run_child_agent};
 use crate::registry::{
     AgentResolver, ExecutionResolver, LocalExecutionResolver, ResolvedBackendAgent,
     ResolvedExecution,
@@ -164,28 +164,21 @@ impl Tool for AgentTool {
             None => Arc::new(NullEventSink),
         };
 
-        let resolved = self
-            .resolver
-            .resolve_execution(&self.agent_id)
-            .map_err(|error| ToolError::ExecutionFailed(error.to_string()))?;
-
-        let request = BackendDelegateRunRequest {
-            agent_id: &self.agent_id,
-            new_messages: messages.clone(),
-            messages,
-            sink,
+        let execution = run_child_agent(ChildAgentParams {
             resolver: self.resolver.as_ref(),
+            agent_id: &self.agent_id,
+            messages,
             parent: BackendParentContext {
                 parent_run_id: Some(ctx.run_identity.run_id.clone()),
                 parent_thread_id: Some(ctx.run_identity.thread_id.clone()),
                 parent_tool_call_id: Some(ctx.call_id.clone()),
             },
+            initial_state_seed: None,
+            sink,
             control: BackendControl::default(),
             policy: BackendDelegatePolicy::default(),
-            state_seed: None,
-        };
-
-        let execution = execute_resolved_delegate_execution(&resolved, request).await;
+        })
+        .await;
 
         match execution {
             Ok(result) => {

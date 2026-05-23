@@ -179,11 +179,19 @@ async fn agent_tool_execute_fails_for_missing_agent() {
     let tool = AgentTool::local("missing", "desc", resolver);
     let ctx = ToolCallContext::test_default();
 
-    let err = tool
+    // Resolution failures route through the same error path as backend
+    // failures: a `ToolOutput` with `Error` status carrying the diagnostic
+    // message, not an outer `Err`.
+    let output = tool
         .execute(json!({"prompt": "do work"}), &ctx)
         .await
-        .expect_err("missing local agent should fail before backend execution");
-    assert!(err.to_string().contains("agent not found: missing"));
+        .expect("execute returns Ok(output) even when the child agent is missing");
+    assert!(!output.result.is_success());
+    let message = output.result.message.as_deref().unwrap_or_default();
+    assert!(
+        message.contains("agent not found") || message.contains("missing"),
+        "expected error message to mention the missing agent, got: {message}"
+    );
 }
 
 #[tokio::test]
