@@ -32,6 +32,7 @@ jsonschema = { workspace = true }
 parking_lot = { workspace = true }
 metrics = { workspace = true }
 jsonwebtoken = { version = "10", default-features = false, features = ["use_pem", "rust_crypto"], optional = true }
+awaken-stores = { workspace = true }
 
 [features]
 default = ["a2a", "handoff", "background", "credentials-google"]
@@ -47,7 +48,6 @@ credentials-google = ["dep:jsonwebtoken"]
 
 [dev-dependencies]
 awaken-runtime = { path = ".", features = ["test-utils"] }
-awaken-stores = { workspace = true }
 tokio = { workspace = true }
 proptest = { workspace = true }
 metrics-util = "0.20"
