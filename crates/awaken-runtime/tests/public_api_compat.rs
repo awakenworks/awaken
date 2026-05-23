@@ -5,12 +5,12 @@ use awaken_contract::contract::identity::{RunIdentity, RunOrigin};
 use awaken_contract::contract::message::Message;
 use awaken_contract::contract::storage::RunRequestOrigin;
 use awaken_contract::contract::tool_intercept::{AdapterKind, RunMode};
-use awaken_runtime::RunRequest;
+use awaken_runtime::RunActivation;
 use awaken_runtime::RuntimeError;
 use awaken_runtime::backend::{BackendControl, BackendRootRunRequest};
-use awaken_runtime::registry::{
-    AgentResolver, ExecutionResolver, ResolvedAgent, ResolvedExecution,
-};
+use awaken_runtime::loop_runner::CommitWiring;
+use awaken_runtime::registry::{AgentResolver, ResolvedAgent};
+use awaken_runtime::resolution::ExecutionPlan;
 
 struct CompatResolver;
 
@@ -18,40 +18,20 @@ impl AgentResolver for CompatResolver {
     fn resolve(&self, _agent_id: &str) -> Result<ResolvedAgent, RuntimeError> {
         unreachable!("compat test only checks struct construction")
     }
-}
 
-impl ExecutionResolver for CompatResolver {
-    fn resolve_execution(&self, _agent_id: &str) -> Result<ResolvedExecution, RuntimeError> {
+    fn resolve_execution(&self, _agent_id: &str) -> Result<ExecutionPlan, RuntimeError> {
         unreachable!("compat test only checks struct construction")
     }
 }
 
 #[test]
-fn run_request_struct_literal_keeps_0_2_fields() {
-    let request = RunRequest {
-        messages: vec![Message::user("hello")],
-        messages_already_persisted: false,
-        thread_id: "thread-compat".to_string(),
-        agent_id: None,
-        overrides: None,
-        decisions: Vec::new(),
-        frontend_tools: Vec::new(),
-        origin: RunRequestOrigin::User,
-        run_mode: RunMode::Foreground,
-        adapter: AdapterKind::Internal,
-        parent_run_id: None,
-        parent_thread_id: None,
-        continue_run_id: None,
-        run_id_hint: None,
-        dispatch_id_hint: None,
-        dispatch_id: None,
-        session_id: None,
-        transport_request_id: None,
-        run_inbox: None,
-    };
-
-    assert_eq!(request.thread_id, "thread-compat");
-    assert_eq!(request.messages.len(), 1);
+fn run_activation_constructor_sets_input_and_trace() {
+    let request = RunActivation::new("thread-compat", vec![Message::user("hello")])
+        .with_origin(RunRequestOrigin::User)
+        .with_run_mode(RunMode::Foreground)
+        .with_adapter(AdapterKind::Internal);
+    assert_eq!(request.thread_id(), "thread-compat");
+    assert_eq!(request.messages().len(), 1);
 }
 
 #[test]
@@ -79,6 +59,7 @@ fn backend_root_run_request_struct_literal_keeps_0_2_fields() {
         local: None,
         inbox: None,
         is_continuation: false,
+        commit: CommitWiring::default(),
     };
 
     assert_eq!(request.agent_id, "agent");

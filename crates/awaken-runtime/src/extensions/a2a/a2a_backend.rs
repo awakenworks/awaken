@@ -1,28 +1,21 @@
 //! Remote A2A agent delegation backend -- HTTP client for A2A v1.0 HTTP+JSON.
-mod cancellation;
-mod completion;
-use std::collections::{BTreeMap, HashMap};
-use std::sync::Arc;
-use std::time::Duration;
-
 use crate::backend::{
-    BackendAbortRequest, BackendCancellationCapability, BackendCapabilities,
-    BackendContinuationCapability, BackendDelegateRunRequest, BackendOutputArtifact,
-    BackendOutputCapability, BackendRootRunRequest, BackendRunOutput, BackendRunResult,
-    BackendRunStatus, BackendTranscriptCapability, BackendWaitCapability, ExecutionBackend,
-    ExecutionBackendError, ExecutionBackendFactory, ExecutionBackendFactoryError,
+    BackendAbortRequest, BackendCancellationCapability, BackendContinuationCapability,
+    BackendDelegateRunRequest, BackendOutputArtifact, BackendOutputCapability,
+    BackendRootRunRequest, BackendRunOutput, BackendRunResult, BackendRunStatus,
+    BackendTranscriptCapability, BackendWaitCapability, ExecutionBackend, ExecutionBackendError,
+    ExecutionBackendFactory, ExecutionBackendFactoryError,
 };
+use crate::resolution::{BackendProfile, PersistenceCapability};
 use async_trait::async_trait;
-use awaken_contract::CancellationToken;
 use awaken_contract::contract::content::{
     AudioSource, ContentBlock, DocumentSource, ImageSource, VideoSource,
 };
 use awaken_contract::contract::event::AgentEvent;
 use awaken_contract::contract::event_sink::EventSink;
 use awaken_contract::contract::identity::RunIdentity;
-use awaken_contract::contract::lifecycle::{RunStatus, TerminationReason};
+use awaken_contract::contract::lifecycle::TerminationReason;
 use awaken_contract::contract::message::{Message, Role, Visibility};
-use awaken_contract::contract::storage::RunRecord;
 use awaken_contract::now_ms;
 use awaken_contract::registry_spec::RemoteEndpoint;
 use awaken_contract::state::PersistedState;
@@ -35,9 +28,11 @@ use futures::StreamExt;
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use std::collections::{BTreeMap, HashMap};
+use std::{sync::Arc, time::Duration};
 
-use cancellation::observe_to_completion_or_cancel;
-use completion::{PollCompletion, map_completion_result};
+mod checkpoint;
+use checkpoint::persist_accepted_checkpoint;
 
 const A2A_VERSION: &str = "1.0";
 const A2A_BACKEND: &str = "a2a";
@@ -69,7 +64,6 @@ pub struct A2aConfig {
     /// Whether sendMessage should return immediately with an in-progress task.
     pub return_immediately: bool,
 }
-
 impl A2aConfig {
     /// Create a new A2A config with defaults for poll interval and timeout.
     pub fn new(base_url: impl Into<String>) -> Self {
@@ -278,7 +272,7 @@ fn remote_state_schema_version() -> u32 {
 
 enum A2aExecutionRequest<'a> {
     Root(Box<BackendRootRunRequest<'a>>),
-    Delegate(Box<BackendDelegateRunRequest<'a>>),
+    Delegate(BackendDelegateRunRequest<'a>),
 }
 
 impl<'a> A2aExecutionRequest<'a> {
@@ -309,13 +303,6 @@ impl<'a> A2aExecutionRequest<'a> {
         match self {
             Self::Root(request) => request.sink.clone(),
             Self::Delegate(request) => request.sink.clone(),
-        }
-    }
-
-    fn cancellation_token(&self) -> Option<&CancellationToken> {
-        match self {
-            Self::Root(request) => request.control.cancellation_token.as_ref(),
-            Self::Delegate(request) => request.control.cancellation_token.as_ref(),
         }
     }
 
@@ -674,20 +661,15 @@ impl A2aBackend {
 
 #[async_trait]
 impl ExecutionBackend for A2aBackend {
-    fn capabilities(&self) -> BackendCapabilities {
-        BackendCapabilities {
+    fn capabilities(&self) -> BackendProfile {
+        BackendProfile {
             cancellation: BackendCancellationCapability::RemoteAbort,
-            decisions: false,
-            overrides: false,
-            frontend_tools: false,
             continuation: BackendContinuationCapability::RemoteState,
+            persistence: PersistenceCapability::CrossSession,
             waits: BackendWaitCapability::InputAndAuth,
             transcript: BackendTranscriptCapability::IncrementalUserMessagesWithRemoteState,
             output: BackendOutputCapability::TextAndArtifacts,
-            // A2A wire format has no agreed-upon channel for parent → child
-            // state seeding. Reject requests that carry a seed up front
-            // rather than silently dropping it on the remote side.
-            delegate_state_seed: false,
+            ..BackendProfile::remote_stateless_text()
         }
     }
 
@@ -721,8 +703,7 @@ impl ExecutionBackend for A2aBackend {
         &self,
         request: BackendDelegateRunRequest<'_>,
     ) -> Result<BackendRunResult, ExecutionBackendError> {
-        crate::backend::reject_unsupported_delegate(&self.capabilities(), &request)?;
-        self.execute_turn(A2aExecutionRequest::Delegate(Box::new(request)))
+        self.execute_turn(A2aExecutionRequest::Delegate(request))
             .await
     }
 }
@@ -737,19 +718,7 @@ impl A2aBackend {
         let sink = request.sink();
         let submitted_task_id = turn_message.task_id.clone();
         let submitted_context_id = turn_message.context_id.clone();
-        // Delegate runs have no caller-supplied `RunIdentity`; synthesize a
-        // local-only id so child tools, suspension tickets, and trace
-        // correlation can hang off the same key. This is not the remote A2A
-        // task id and is generated after `build_turn_message`, so it is not
-        // injected into the outbound task/context id fields.
-        let delegate_synthesized_run_id = match &request {
-            A2aExecutionRequest::Delegate(_) => Some(uuid::Uuid::now_v7().to_string()),
-            _ => None,
-        };
-        let run_id = request
-            .run_identity()
-            .map(|run| run.run_id.clone())
-            .or_else(|| delegate_synthesized_run_id.clone());
+        let run_id = request.run_identity().map(|run| run.run_id.clone());
         if let (Some(run_id), Some(task_id)) = (&run_id, turn_message.task_id.as_ref()) {
             self.in_flight_tasks
                 .lock()
@@ -776,7 +745,7 @@ impl A2aBackend {
                     response: output_text,
                     output: snapshot.output.clone(),
                     steps: 1,
-                    run_id: delegate_synthesized_run_id.clone(),
+                    run_id: None,
                     inbox: None,
                     state: update_persisted_state_from_direct(
                         persisted_state,
@@ -799,13 +768,7 @@ impl A2aBackend {
                 );
                 persist_accepted_checkpoint(&request, accepted_state.clone()).await?;
                 emit_task_progress(&sink, &submitted_snapshot).await;
-                let completion = observe_to_completion_or_cancel(
-                    self,
-                    submitted_snapshot,
-                    &sink,
-                    request.cancellation_token(),
-                )
-                .await;
+                let completion = self.observe_to_completion(submitted_snapshot, &sink).await;
 
                 if let Some(run_id) = &run_id {
                     self.in_flight_tasks.lock().remove(run_id);
@@ -822,7 +785,7 @@ impl A2aBackend {
                     response: snapshot.output_text.clone(),
                     output: snapshot.output.clone(),
                     steps: 1,
-                    run_id: delegate_synthesized_run_id.clone(),
+                    run_id: None,
                     inbox: None,
                     state: update_persisted_state(
                         accepted_state,
@@ -833,6 +796,115 @@ impl A2aBackend {
             }
         }
     }
+}
+
+enum PollCompletion {
+    Finished(TaskSnapshot),
+    TimedOut(TaskSnapshot),
+}
+
+struct CompletionResult {
+    snapshot: TaskSnapshot,
+    status: BackendRunStatus,
+    termination: TerminationReason,
+    status_reason: Option<String>,
+}
+
+fn map_completion_result(completion: PollCompletion, root_run: bool) -> CompletionResult {
+    match completion {
+        PollCompletion::TimedOut(snapshot) => CompletionResult {
+            snapshot,
+            status: BackendRunStatus::Timeout,
+            termination: TerminationReason::stopped(WAIT_REASON_TIMEOUT),
+            status_reason: Some(WAIT_REASON_TIMEOUT.to_string()),
+        },
+        PollCompletion::Finished(snapshot) => {
+            let (status, termination, status_reason) = match snapshot.state {
+                TaskState::Completed => (
+                    BackendRunStatus::Completed,
+                    TerminationReason::NaturalEnd,
+                    None,
+                ),
+                TaskState::Canceled => (
+                    BackendRunStatus::Cancelled,
+                    TerminationReason::Cancelled,
+                    None,
+                ),
+                TaskState::Failed => {
+                    let message = snapshot
+                        .failure_message
+                        .clone()
+                        .unwrap_or_else(|| "remote agent run failed".into());
+                    (
+                        BackendRunStatus::Failed(message.clone()),
+                        TerminationReason::Error(message),
+                        None,
+                    )
+                }
+                TaskState::Rejected => {
+                    let message = snapshot
+                        .failure_message
+                        .clone()
+                        .unwrap_or_else(|| "remote agent rejected the task".into());
+                    (
+                        BackendRunStatus::Failed(message.clone()),
+                        TerminationReason::Error(message),
+                        None,
+                    )
+                }
+                TaskState::InputRequired => {
+                    interrupted_completion(snapshot.failure_message.clone(), root_run, false)
+                }
+                TaskState::AuthRequired => {
+                    interrupted_completion(snapshot.failure_message.clone(), root_run, true)
+                }
+                TaskState::Submitted | TaskState::Working => (
+                    BackendRunStatus::Failed("remote agent did not reach a terminal state".into()),
+                    TerminationReason::Error("remote agent did not reach a terminal state".into()),
+                    None,
+                ),
+            };
+            CompletionResult {
+                snapshot,
+                status,
+                termination,
+                status_reason,
+            }
+        }
+    }
+}
+
+fn interrupted_completion(
+    failure_message: Option<String>,
+    root_run: bool,
+    auth_required: bool,
+) -> (BackendRunStatus, TerminationReason, Option<String>) {
+    let (default_message, wait_reason) = if auth_required {
+        (
+            "remote agent requires authentication",
+            WAIT_REASON_AUTH_REQUIRED,
+        )
+    } else {
+        (
+            "remote agent requires additional input",
+            WAIT_REASON_INPUT_REQUIRED,
+        )
+    };
+
+    let message = if root_run {
+        failure_message
+    } else {
+        Some(failure_message.unwrap_or_else(|| default_message.into()))
+    };
+    (
+        if auth_required {
+            BackendRunStatus::WaitingAuth(message)
+        } else {
+            BackendRunStatus::WaitingInput(message)
+        },
+        TerminationReason::Suspended,
+        Some(wait_reason.to_string()),
+    )
 }
 
 impl SubmissionOutcome {
@@ -1107,78 +1179,6 @@ fn task_progress_content(snapshot: &TaskSnapshot) -> Value {
         "failure_message": snapshot.failure_message.clone(),
     })
 }
-
-async fn persist_accepted_checkpoint(
-    request: &A2aExecutionRequest<'_>,
-    state: Option<PersistedState>,
-) -> Result<(), ExecutionBackendError> {
-    let (root, storage, state) = match request {
-        A2aExecutionRequest::Root(root) => {
-            let Some(storage) = root.checkpoint_store else {
-                return Ok(());
-            };
-            let Some(state) = state else {
-                return Ok(());
-            };
-            (root, storage, state)
-        }
-        A2aExecutionRequest::Delegate(_) => return Ok(()),
-    };
-    let now = now_ms() / 1000;
-    let previous = storage
-        .load_run(&root.run_identity.run_id)
-        .await
-        .map_err(|error| {
-            ExecutionBackendError::ExecutionFailed(format!(
-                "failed to load run '{}' before A2A checkpoint: {error}",
-                root.run_identity.run_id
-            ))
-        })?;
-    let record = RunRecord {
-        run_id: root.run_identity.run_id.clone(),
-        thread_id: root.run_identity.thread_id.clone(),
-        agent_id: root.agent_id.to_string(),
-        parent_run_id: root.run_identity.parent_run_id.clone(),
-        registry_manifest: None,
-        activation: None,
-        request: previous.as_ref().and_then(|record| record.request.clone()),
-        input: previous.as_ref().and_then(|record| record.input.clone()),
-        output: previous.as_ref().and_then(|record| record.output.clone()),
-        status: RunStatus::Running,
-        termination_reason: None,
-        final_output: None,
-        error_payload: None,
-        dispatch_id: root.run_identity.trace.dispatch_id.clone(),
-        session_id: root.run_identity.trace.session_id.clone(),
-        transport_request_id: root.run_identity.trace.transport_request_id.clone(),
-        waiting: None,
-        outcome: None,
-        created_at: previous
-            .as_ref()
-            .map(|record| record.created_at)
-            .unwrap_or(now),
-        started_at: previous
-            .as_ref()
-            .and_then(|record| record.started_at)
-            .or(Some(now)),
-        finished_at: None,
-        updated_at: now,
-        steps: 0,
-        input_tokens: 0,
-        output_tokens: 0,
-        state: Some(state),
-    };
-    storage
-        .checkpoint(&root.run_identity.thread_id, &root.messages, &record)
-        .await
-        .map_err(|error| {
-            ExecutionBackendError::ExecutionFailed(format!(
-                "failed to persist accepted A2A task handle for run '{}': {error}",
-                root.run_identity.run_id
-            ))
-        })
-}
-
 fn update_persisted_state(
     state: Option<PersistedState>,
     target_key: &str,
@@ -1193,7 +1193,6 @@ fn update_persisted_state(
         .remove(REMOTE_STATE_KEY)
         .and_then(|value| serde_json::from_value::<PersistedRemoteBackendState>(value).ok())
         .unwrap_or_default();
-
     remote_state.version = REMOTE_STATE_SCHEMA_VERSION;
     remote_state.targets.insert(
         target_key.to_string(),
@@ -1205,7 +1204,6 @@ fn update_persisted_state(
             updated_at_ms: Some(now_ms()),
         },
     );
-
     persisted.extensions.insert(
         REMOTE_STATE_KEY.to_string(),
         serde_json::to_value(remote_state).ok()?,
@@ -1497,5 +1495,836 @@ fn task_state_name(state: TaskState) -> &'static str {
 }
 
 #[cfg(test)]
-#[path = "a2a_backend_test.rs"]
-mod tests;
+#[allow(deprecated)] // Tests seed legacy checkpoint fixtures directly.
+mod tests {
+    use super::*;
+    use std::collections::BTreeMap;
+    use std::sync::Arc;
+
+    use awaken_contract::contract::event_sink::NullEventSink;
+    use awaken_contract::contract::identity::{RunIdentity, RunOrigin};
+    use awaken_contract::contract::lifecycle::RunStatus;
+    use awaken_contract::contract::storage::{RunRecord, ThreadRunStore};
+    use awaken_stores::memory::InMemoryStore;
+    use serde_json::json;
+
+    struct NoopResolver;
+
+    impl crate::registry::AgentResolver for NoopResolver {
+        fn resolve(
+            &self,
+            agent_id: &str,
+        ) -> Result<crate::registry::ResolvedAgent, crate::RuntimeError> {
+            Err(crate::RuntimeError::AgentNotFound {
+                agent_id: agent_id.to_string(),
+            })
+        }
+    }
+
+    fn make_task(state: TaskState) -> Task {
+        Task {
+            id: "task-1".into(),
+            context_id: "ctx-1".into(),
+            status: awaken_protocol_a2a::TaskStatus {
+                state,
+                message: None,
+                timestamp: None,
+            },
+            artifacts: vec![],
+            history: vec![],
+            metadata: None,
+        }
+    }
+
+    #[test]
+    fn extract_output_prefers_artifacts() {
+        let task = Task {
+            artifacts: vec![awaken_protocol_a2a::Artifact {
+                artifact_id: "response".into(),
+                name: None,
+                description: None,
+                parts: vec![Part::text("hello"), Part::text(" world")],
+                metadata: None,
+            }],
+            ..make_task(TaskState::Completed)
+        };
+        assert_eq!(
+            extract_output_text(&task).as_deref(),
+            Some("hello\n\n world")
+        );
+        let snapshot = TaskSnapshot::from_task(task);
+        assert_eq!(snapshot.output.text.as_deref(), Some("hello\n\n world"));
+        assert_eq!(snapshot.output.artifacts.len(), 1);
+        assert_eq!(snapshot.output.artifacts[0].id.as_deref(), Some("response"));
+    }
+
+    #[test]
+    fn extract_output_falls_back_to_status_message_then_history() {
+        let status_message = A2aMessage {
+            task_id: Some("task-1".into()),
+            context_id: Some("ctx-1".into()),
+            message_id: "msg-1".into(),
+            role: MessageRole::Agent,
+            parts: vec![Part::text("status output")],
+            metadata: None,
+        };
+        let task = Task {
+            status: awaken_protocol_a2a::TaskStatus {
+                state: TaskState::Completed,
+                message: Some(status_message.clone()),
+                timestamp: None,
+            },
+            history: vec![A2aMessage {
+                task_id: Some("task-1".into()),
+                context_id: Some("ctx-1".into()),
+                message_id: "msg-2".into(),
+                role: MessageRole::Agent,
+                parts: vec![Part::text("history output")],
+                metadata: None,
+            }],
+            ..make_task(TaskState::Completed)
+        };
+        assert_eq!(extract_output_text(&task).as_deref(), Some("status output"));
+    }
+
+    #[test]
+    fn task_snapshot_maps_failure_states() {
+        let task = Task {
+            status: awaken_protocol_a2a::TaskStatus {
+                state: TaskState::Rejected,
+                message: Some(A2aMessage {
+                    task_id: Some("task-1".into()),
+                    context_id: Some("ctx-1".into()),
+                    message_id: "msg-1".into(),
+                    role: MessageRole::Agent,
+                    parts: vec![Part::text("policy rejected")],
+                    metadata: None,
+                }),
+                timestamp: None,
+            },
+            ..make_task(TaskState::Rejected)
+        };
+        let snapshot = TaskSnapshot::from_task(task);
+        assert_eq!(snapshot.state, TaskState::Rejected);
+        assert_eq!(snapshot.failure_message.as_deref(), Some("policy rejected"));
+    }
+
+    #[test]
+    fn submitted_task_requires_follow_up_polling() {
+        let snapshot = TaskSnapshot::from_task(make_task(TaskState::Submitted));
+        assert!(!snapshot.is_done());
+    }
+
+    #[test]
+    fn send_message_response_requires_task_or_message() {
+        let err = SubmissionOutcome::from_response(SendMessageResponse::default()).unwrap_err();
+        assert!(err.to_string().contains("task or message"));
+    }
+
+    #[test]
+    fn send_message_response_preserves_direct_message_path() {
+        let outcome = SubmissionOutcome::from_response(SendMessageResponse {
+            message: Some(A2aMessage {
+                task_id: None,
+                context_id: None,
+                message_id: "msg-1".into(),
+                role: MessageRole::Agent,
+                parts: vec![Part::text("hello")],
+                metadata: None,
+            }),
+            ..Default::default()
+        })
+        .unwrap();
+
+        let SubmissionOutcome::DirectMessage(snapshot) = outcome else {
+            panic!("expected direct message outcome");
+        };
+        assert_eq!(snapshot.output.text.as_deref(), Some("hello"));
+    }
+
+    #[test]
+    fn a2a_config_builder() {
+        let config = A2aConfig::new("https://api.example.com/v1/a2a")
+            .with_bearer_token("tok_123")
+            .with_target_agent_id("worker")
+            .with_poll_interval(Duration::from_millis(5000))
+            .with_timeout(Duration::from_secs(60))
+            .with_history_length(4)
+            .with_return_immediately(false);
+
+        assert_eq!(config.base_url, "https://api.example.com/v1/a2a");
+        assert_eq!(config.bearer_token.as_deref(), Some("tok_123"));
+        assert_eq!(config.target_agent_id.as_deref(), Some("worker"));
+        assert_eq!(config.poll_interval, Duration::from_millis(5000));
+        assert_eq!(config.timeout, Duration::from_secs(60));
+        assert_eq!(config.history_length, Some(4));
+        assert!(!config.return_immediately);
+    }
+
+    #[test]
+    fn a2a_config_try_from_remote_endpoint_reads_canonical_fields() {
+        let mut options = BTreeMap::new();
+        options.insert(POLL_INTERVAL_OPTION_KEY.into(), json!(1500));
+        options.insert(HISTORY_LENGTH_OPTION_KEY.into(), json!(3));
+        options.insert(RETURN_IMMEDIATELY_OPTION_KEY.into(), json!(false));
+        let endpoint = RemoteEndpoint {
+            backend: "a2a".into(),
+            base_url: "https://api.example.com/v1/a2a".into(),
+            auth: Some(awaken_contract::registry_spec::RemoteAuth::bearer(
+                "tok_123",
+            )),
+            target: Some("worker".into()),
+            timeout_ms: 60_000,
+            options,
+        };
+
+        let config = A2aConfig::try_from_remote_endpoint(&endpoint).unwrap();
+        assert_eq!(config.base_url, "https://api.example.com/v1/a2a");
+        assert_eq!(config.bearer_token.as_deref(), Some("tok_123"));
+        assert_eq!(config.target_agent_id.as_deref(), Some("worker"));
+        assert_eq!(config.poll_interval, Duration::from_millis(1500));
+        assert_eq!(config.timeout, Duration::from_secs(60));
+        assert_eq!(config.history_length, Some(3));
+        assert!(!config.return_immediately);
+    }
+
+    #[test]
+    fn a2a_config_try_from_remote_endpoint_rejects_non_bearer_auth() {
+        let endpoint = RemoteEndpoint {
+            backend: "a2a".into(),
+            base_url: "https://api.example.com/v1/a2a".into(),
+            auth: Some(awaken_contract::registry_spec::RemoteAuth {
+                auth_type: "basic".into(),
+                params: BTreeMap::new(),
+            }),
+            ..Default::default()
+        };
+
+        let err = A2aConfig::try_from_remote_endpoint(&endpoint).unwrap_err();
+        assert!(err.to_string().contains("only supports bearer auth"));
+    }
+
+    #[test]
+    fn a2a_backend_factory_builds_backend_for_a2a_endpoint() {
+        let backend = A2aBackendFactory
+            .build(&RemoteEndpoint {
+                backend: "a2a".into(),
+                base_url: "https://api.example.com/v1/a2a".into(),
+                ..Default::default()
+            })
+            .unwrap();
+
+        let _backend: Arc<dyn crate::backend::ExecutionBackend> = backend;
+    }
+
+    #[test]
+    fn a2a_backend_factory_validates_endpoint_config_without_building() {
+        A2aBackendFactory
+            .validate(&RemoteEndpoint {
+                backend: "a2a".into(),
+                base_url: "https://api.example.com/v1/a2a".into(),
+                ..Default::default()
+            })
+            .unwrap();
+
+        let err = A2aBackendFactory
+            .validate(&RemoteEndpoint {
+                backend: "a2a".into(),
+                base_url: "https://api.example.com/v1/a2a".into(),
+                auth: Some(awaken_contract::registry_spec::RemoteAuth {
+                    auth_type: "basic".into(),
+                    params: BTreeMap::new(),
+                }),
+                ..Default::default()
+            })
+            .unwrap_err();
+        assert!(err.to_string().contains("only supports bearer auth"));
+    }
+
+    #[test]
+    fn timed_out_poll_completion_maps_to_timeout_status() {
+        let timed_out_snapshot = TaskSnapshot {
+            task_id: "task-1".into(),
+            context_id: Some("ctx-1".into()),
+            state: TaskState::Working,
+            output_text: Some("partial output".into()),
+            output: BackendRunOutput::from_text(Some("partial output".into())),
+            failure_message: Some("polling timeout exceeded".into()),
+        };
+
+        let result =
+            map_completion_result(PollCompletion::TimedOut(timed_out_snapshot.clone()), true);
+
+        assert!(matches!(result.status, BackendRunStatus::Timeout));
+        assert_eq!(result.snapshot.output_text, timed_out_snapshot.output_text);
+        assert!(matches!(
+            result.termination,
+            TerminationReason::Stopped(ref reason) if reason.code == WAIT_REASON_TIMEOUT
+        ));
+        assert_eq!(result.status_reason.as_deref(), Some(WAIT_REASON_TIMEOUT));
+    }
+
+    #[test]
+    fn interrupted_root_poll_completion_maps_to_suspended_waiting_reason() {
+        let input_required = TaskSnapshot {
+            task_id: "task-1".into(),
+            context_id: Some("ctx-1".into()),
+            state: TaskState::InputRequired,
+            output_text: Some("Need more details".into()),
+            output: BackendRunOutput::from_text(Some("Need more details".into())),
+            failure_message: Some("Need more details".into()),
+        };
+        let auth_required = TaskSnapshot {
+            task_id: "task-2".into(),
+            context_id: Some("ctx-2".into()),
+            state: TaskState::AuthRequired,
+            output_text: Some("Sign in first".into()),
+            output: BackendRunOutput::from_text(Some("Sign in first".into())),
+            failure_message: Some("Sign in first".into()),
+        };
+
+        let input_result = map_completion_result(PollCompletion::Finished(input_required), true);
+        assert!(matches!(
+            input_result.status,
+            BackendRunStatus::WaitingInput(Some(ref message)) if message == "Need more details"
+        ));
+        assert_eq!(input_result.termination, TerminationReason::Suspended);
+        assert_eq!(
+            input_result.status_reason.as_deref(),
+            Some(WAIT_REASON_INPUT_REQUIRED)
+        );
+
+        let auth_result = map_completion_result(PollCompletion::Finished(auth_required), true);
+        assert!(matches!(
+            auth_result.status,
+            BackendRunStatus::WaitingAuth(Some(ref message)) if message == "Sign in first"
+        ));
+        assert_eq!(auth_result.termination, TerminationReason::Suspended);
+        assert_eq!(
+            auth_result.status_reason.as_deref(),
+            Some(WAIT_REASON_AUTH_REQUIRED)
+        );
+    }
+
+    #[test]
+    fn interrupted_delegate_poll_completion_maps_to_suspended_waiting_reason() {
+        let snapshot = TaskSnapshot {
+            task_id: "task-1".into(),
+            context_id: Some("ctx-1".into()),
+            state: TaskState::InputRequired,
+            output_text: None,
+            output: BackendRunOutput::default(),
+            failure_message: Some("Need more details".into()),
+        };
+
+        let result = map_completion_result(PollCompletion::Finished(snapshot), false);
+        assert!(matches!(
+            result.status,
+            BackendRunStatus::WaitingInput(Some(ref message)) if message == "Need more details"
+        ));
+        assert_eq!(result.termination, TerminationReason::Suspended);
+        assert_eq!(
+            result.status_reason.as_deref(),
+            Some(WAIT_REASON_INPUT_REQUIRED)
+        );
+    }
+
+    #[test]
+    fn direct_message_snapshot_preserves_artifacts() {
+        let snapshot = DirectMessageSnapshot::from_message(A2aMessage {
+            task_id: Some("task-direct".into()),
+            context_id: Some("ctx-direct".into()),
+            message_id: "msg-direct".into(),
+            role: MessageRole::Agent,
+            parts: vec![
+                Part::text("summary"),
+                Part {
+                    text: None,
+                    raw: None,
+                    url: None,
+                    data: Some(json!({"answer": 42})),
+                    media_type: Some("application/json".into()),
+                    filename: Some("answer.json".into()),
+                    metadata: None,
+                },
+            ],
+            metadata: None,
+        });
+
+        assert_eq!(
+            snapshot.output.text.as_deref(),
+            Some("summary\n\n{\"answer\":42}")
+        );
+        assert_eq!(snapshot.output.artifacts.len(), 1);
+        assert_eq!(
+            snapshot.output.artifacts[0].id.as_deref(),
+            Some("msg-direct:1")
+        );
+        assert_eq!(
+            snapshot.output.artifacts[0].media_type.as_deref(),
+            Some("application/json")
+        );
+        assert_eq!(
+            snapshot.output.artifacts[0].content["data"],
+            json!({"answer": 42})
+        );
+    }
+
+    #[test]
+    fn extract_text_from_parts_supports_structured_data() {
+        let parts = vec![Part {
+            text: None,
+            raw: None,
+            url: None,
+            data: Some(json!({"ok": true})),
+            media_type: Some("application/json".into()),
+            filename: None,
+            metadata: None,
+        }];
+        assert_eq!(
+            extract_text_from_parts(&parts).as_deref(),
+            Some("{\"ok\":true}")
+        );
+    }
+
+    #[test]
+    fn update_persisted_state_roundtrips_remote_task_binding() {
+        let persisted = update_persisted_state(
+            None,
+            "a2a:https://gateway.example.com/v1/a2a/worker",
+            &TaskSnapshot {
+                task_id: "task-1".into(),
+                context_id: Some("ctx-1".into()),
+                state: TaskState::Completed,
+                output_text: Some("done".into()),
+                output: BackendRunOutput::from_text(Some("done".into())),
+                failure_message: None,
+            },
+        )
+        .expect("state should serialize");
+
+        let remote =
+            read_remote_state_entry(&persisted, "a2a:https://gateway.example.com/v1/a2a/worker")
+                .expect("remote state entry");
+        assert_eq!(remote.task_id.as_deref(), Some("task-1"));
+        assert_eq!(remote.context_id.as_deref(), Some("ctx-1"));
+        assert_eq!(remote.last_state.as_deref(), Some("TASK_STATE_COMPLETED"));
+        assert_eq!(remote.version, REMOTE_STATE_SCHEMA_VERSION);
+        assert!(remote.updated_at_ms.is_some());
+    }
+
+    #[test]
+    fn completed_remote_task_is_not_reused_for_next_turn() {
+        let state = PersistedA2aThreadState {
+            task_id: Some("completed-task".into()),
+            context_id: Some("ctx-1".into()),
+            last_state: Some("TASK_STATE_COMPLETED".into()),
+            ..Default::default()
+        };
+
+        assert_eq!(reusable_prior_task_id(&state), None);
+    }
+
+    #[test]
+    fn interrupted_remote_task_is_reused_for_resume_turn() {
+        let state = PersistedA2aThreadState {
+            task_id: Some("waiting-task".into()),
+            context_id: Some("ctx-1".into()),
+            last_state: Some("TASK_STATE_INPUT_REQUIRED".into()),
+            ..Default::default()
+        };
+
+        assert_eq!(
+            reusable_prior_task_id(&state).as_deref(),
+            Some("waiting-task")
+        );
+    }
+
+    #[test]
+    fn state_without_last_state_never_reuses_task() {
+        let state = PersistedA2aThreadState {
+            task_id: Some("unknown-task".into()),
+            context_id: Some("ctx-1".into()),
+            last_state: None,
+            ..Default::default()
+        };
+
+        assert_eq!(reusable_prior_task_id(&state), None);
+    }
+
+    #[test]
+    fn abort_task_id_falls_back_to_persisted_interrupted_state() {
+        let target_key = "a2a:https://gateway.example.com/v1/a2a/worker";
+        let persisted = update_persisted_state(
+            None,
+            target_key,
+            &TaskSnapshot {
+                task_id: "waiting-task".into(),
+                context_id: Some("ctx-1".into()),
+                state: TaskState::InputRequired,
+                output_text: None,
+                output: BackendRunOutput::default(),
+                failure_message: None,
+            },
+        )
+        .expect("persisted remote state");
+        let run_identity = RunIdentity::new(
+            "thread-1".into(),
+            None,
+            "run-1".into(),
+            None,
+            "remote-agent".into(),
+            RunOrigin::User,
+        );
+        let request = BackendAbortRequest {
+            agent_id: "remote-agent",
+            run_identity: &run_identity,
+            parent: None,
+            persisted_state: Some(&persisted),
+            is_continuation: false,
+        };
+
+        assert_eq!(
+            persisted_abort_task_id(&request, target_key).as_deref(),
+            Some("waiting-task")
+        );
+    }
+
+    #[test]
+    fn abort_task_id_does_not_reuse_completed_prior_state() {
+        let target_key = "a2a:https://gateway.example.com/v1/a2a/worker";
+        let persisted = update_persisted_state(
+            None,
+            target_key,
+            &TaskSnapshot {
+                task_id: "completed-task".into(),
+                context_id: Some("ctx-1".into()),
+                state: TaskState::Completed,
+                output_text: None,
+                output: BackendRunOutput::default(),
+                failure_message: None,
+            },
+        )
+        .expect("persisted remote state");
+        let run_identity = RunIdentity::new(
+            "thread-1".into(),
+            None,
+            "run-1".into(),
+            None,
+            "remote-agent".into(),
+            RunOrigin::User,
+        );
+        let request = BackendAbortRequest {
+            agent_id: "remote-agent",
+            run_identity: &run_identity,
+            parent: None,
+            persisted_state: Some(&persisted),
+            is_continuation: false,
+        };
+
+        assert_eq!(persisted_abort_task_id(&request, target_key), None);
+    }
+
+    #[test]
+    fn update_persisted_state_from_direct_message_records_remote_ids() {
+        let persisted = update_persisted_state_from_direct(
+            None,
+            "a2a:https://gateway.example.com/v1/a2a/worker",
+            &DirectMessageSnapshot {
+                task_id: Some("task-direct".into()),
+                context_id: Some("ctx-direct".into()),
+                output: BackendRunOutput::from_text(Some("done".into())),
+            },
+        )
+        .expect("direct message state should serialize");
+
+        let remote =
+            read_remote_state_entry(&persisted, "a2a:https://gateway.example.com/v1/a2a/worker")
+                .expect("remote state entry");
+        assert_eq!(remote.task_id.as_deref(), Some("task-direct"));
+        assert_eq!(remote.context_id.as_deref(), Some("ctx-direct"));
+        assert_eq!(remote.last_state.as_deref(), Some("DIRECT_MESSAGE"));
+    }
+
+    #[test]
+    fn update_persisted_state_from_direct_message_without_ids_keeps_state() {
+        let original = PersistedState {
+            revision: 7,
+            extensions: HashMap::new(),
+        };
+
+        let persisted = update_persisted_state_from_direct(
+            Some(original.clone()),
+            "a2a:https://gateway.example.com/v1/a2a/worker",
+            &DirectMessageSnapshot {
+                task_id: None,
+                context_id: None,
+                output: BackendRunOutput::from_text(Some("done".into())),
+            },
+        )
+        .expect("state should pass through");
+
+        assert_eq!(persisted, original);
+    }
+
+    #[tokio::test]
+    async fn continuation_loads_state_from_continue_run_id_not_latest_thread_run() {
+        let backend = A2aBackend::new(
+            A2aConfig::new("https://gateway.example.com/v1/a2a").with_target_agent_id("worker"),
+        );
+        let target_key = backend.remote_target_key();
+        let continued_state = update_persisted_state(
+            None,
+            &target_key,
+            &TaskSnapshot {
+                task_id: "continued-task".into(),
+                context_id: Some("continued-context".into()),
+                state: TaskState::InputRequired,
+                output_text: None,
+                output: BackendRunOutput::default(),
+                failure_message: None,
+            },
+        )
+        .expect("continued state");
+        let newer_state = update_persisted_state(
+            None,
+            &target_key,
+            &TaskSnapshot {
+                task_id: "newer-task".into(),
+                context_id: Some("newer-context".into()),
+                state: TaskState::Completed,
+                output_text: None,
+                output: BackendRunOutput::default(),
+                failure_message: None,
+            },
+        )
+        .expect("newer state");
+
+        let store = InMemoryStore::new();
+        store
+            .checkpoint(
+                "thread-1",
+                &[Message::user("old turn")],
+                &RunRecord {
+                    run_id: "continued-run".into(),
+                    thread_id: "thread-1".into(),
+                    agent_id: "remote-agent".into(),
+                    parent_run_id: None,
+                    registry_manifest: None,
+                    activation: None,
+                    request: None,
+                    input: None,
+                    output: None,
+                    status: RunStatus::Waiting,
+                    termination_reason: None,
+                    final_output: None,
+                    error_payload: None,
+                    dispatch_id: None,
+                    session_id: None,
+                    transport_request_id: None,
+                    waiting: None,
+                    outcome: None,
+                    created_at: 1,
+                    started_at: None,
+                    finished_at: None,
+                    updated_at: 1,
+                    steps: 1,
+                    input_tokens: 0,
+                    output_tokens: 0,
+                    state: Some(continued_state),
+                },
+            )
+            .await
+            .expect("checkpoint continued run");
+        store
+            .checkpoint(
+                "thread-1",
+                &[Message::user("newer turn")],
+                &RunRecord {
+                    run_id: "newer-run".into(),
+                    thread_id: "thread-1".into(),
+                    agent_id: "remote-agent".into(),
+                    parent_run_id: None,
+                    registry_manifest: None,
+                    activation: None,
+                    request: None,
+                    input: None,
+                    output: None,
+                    status: RunStatus::Done,
+                    termination_reason: None,
+                    final_output: None,
+                    error_payload: None,
+                    dispatch_id: None,
+                    session_id: None,
+                    transport_request_id: None,
+                    waiting: None,
+                    outcome: None,
+                    created_at: 2,
+                    started_at: None,
+                    finished_at: None,
+                    updated_at: 2,
+                    steps: 1,
+                    input_tokens: 0,
+                    output_tokens: 0,
+                    state: Some(newer_state),
+                },
+            )
+            .await
+            .expect("checkpoint newer run");
+
+        let resolver = NoopResolver;
+        let request = BackendRootRunRequest {
+            agent_id: "remote-agent",
+            messages: vec![Message::user("resume")],
+            new_messages: vec![Message::user("resume")],
+            sink: Arc::new(NullEventSink),
+            resolver: &resolver,
+            run_identity: RunIdentity::new(
+                "thread-1".into(),
+                None,
+                "continued-run".into(),
+                None,
+                "remote-agent".into(),
+                RunOrigin::User,
+            ),
+            checkpoint_store: Some(&store),
+            commit: crate::loop_runner::CommitWiring::default(),
+            control: crate::backend::BackendControl::default(),
+            decisions: Vec::new(),
+            overrides: None,
+            frontend_tools: Vec::new(),
+            local: None,
+            inbox: None,
+            is_continuation: true,
+        };
+
+        let state = backend
+            .load_persisted_state(&A2aExecutionRequest::Root(Box::new(request)))
+            .await
+            .expect("load state")
+            .expect("state");
+        let remote = read_remote_state_entry(&state, &target_key).expect("remote state");
+        assert_eq!(remote.task_id.as_deref(), Some("continued-task"));
+        assert_eq!(remote.context_id.as_deref(), Some("continued-context"));
+    }
+
+    #[test]
+    fn sse_decoder_collects_json_payloads() {
+        let mut decoder = SseDataDecoder::default();
+        let events = decoder.push(
+            "data: {\"task\":{\"id\":\"task-1\"}}\n\
+             \n\
+             data: {\"statusUpdate\":{\"taskId\":\"task-1\"}}\n\
+             \n",
+        );
+        assert_eq!(
+            events,
+            vec![
+                "{\"task\":{\"id\":\"task-1\"}}".to_string(),
+                "{\"statusUpdate\":{\"taskId\":\"task-1\"}}".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn stream_status_update_preserves_terminal_message() {
+        let mut snapshot = TaskSnapshot::from_task(make_task(TaskState::Working));
+        snapshot.apply_stream_response(StreamResponse {
+            status_update: Some(TaskStatusUpdateEvent {
+                task_id: "task-1".into(),
+                context_id: "ctx-1".into(),
+                status: awaken_protocol_a2a::TaskStatus {
+                    state: TaskState::InputRequired,
+                    message: Some(A2aMessage {
+                        task_id: Some("task-1".into()),
+                        context_id: Some("ctx-1".into()),
+                        message_id: "msg-1".into(),
+                        role: MessageRole::Agent,
+                        parts: vec![Part::text("Need more details")],
+                        metadata: None,
+                    }),
+                    timestamp: None,
+                },
+                metadata: None,
+            }),
+            ..Default::default()
+        });
+
+        assert_eq!(snapshot.state, TaskState::InputRequired);
+        assert_eq!(
+            snapshot.failure_message.as_deref(),
+            Some("Need more details")
+        );
+    }
+
+    #[test]
+    fn stream_artifact_append_accumulates_output_text() {
+        let mut snapshot = TaskSnapshot::from_task(make_task(TaskState::Working));
+        snapshot.apply_stream_response(StreamResponse {
+            artifact_update: Some(TaskArtifactUpdateEvent {
+                task_id: "task-1".into(),
+                context_id: "ctx-1".into(),
+                artifact: awaken_protocol_a2a::Artifact {
+                    artifact_id: "response".into(),
+                    name: None,
+                    description: None,
+                    parts: vec![Part::text("hello")],
+                    metadata: None,
+                },
+                append: Some(false),
+                last_chunk: Some(false),
+                metadata: None,
+            }),
+            ..Default::default()
+        });
+        snapshot.apply_stream_response(StreamResponse {
+            artifact_update: Some(TaskArtifactUpdateEvent {
+                task_id: "task-1".into(),
+                context_id: "ctx-1".into(),
+                artifact: awaken_protocol_a2a::Artifact {
+                    artifact_id: "response".into(),
+                    name: None,
+                    description: None,
+                    parts: vec![Part::text("world")],
+                    metadata: None,
+                },
+                append: Some(true),
+                last_chunk: Some(true),
+                metadata: None,
+            }),
+            ..Default::default()
+        });
+
+        assert_eq!(snapshot.output_text.as_deref(), Some("hello\n\nworld"));
+    }
+
+    #[test]
+    fn task_progress_content_preserves_state_text_and_artifacts() {
+        let mut snapshot = TaskSnapshot::from_task(make_task(TaskState::Working));
+        snapshot.apply_stream_response(StreamResponse {
+            artifact_update: Some(TaskArtifactUpdateEvent {
+                task_id: "task-1".into(),
+                context_id: "ctx-1".into(),
+                artifact: awaken_protocol_a2a::Artifact {
+                    artifact_id: "response".into(),
+                    name: Some("answer".into()),
+                    description: None,
+                    parts: vec![Part::text("hello")],
+                    metadata: None,
+                },
+                append: Some(false),
+                last_chunk: Some(true),
+                metadata: None,
+            }),
+            ..Default::default()
+        });
+
+        let content = task_progress_content(&snapshot);
+        assert_eq!(content["schema"], "a2a-task-progress.v1");
+        assert_eq!(content["task_id"], "task-1");
+        assert_eq!(content["context_id"], "ctx-1");
+        assert_eq!(content["state"], "TASK_STATE_WORKING");
+        assert_eq!(content["text"], "hello");
+        assert_eq!(content["artifacts"].as_array().map(Vec::len), Some(1));
+    }
+}

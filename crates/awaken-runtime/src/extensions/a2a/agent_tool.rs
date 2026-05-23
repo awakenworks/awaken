@@ -5,12 +5,12 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use serde_json::{Value, json};
 
-use crate::backend::{BackendParentContext, ExecutionBackend};
-use crate::child_agent::{ChildAgentParams, run_child_agent};
-use crate::registry::{
-    AgentResolver, ExecutionResolver, LocalExecutionResolver, ResolvedBackendAgent,
-    ResolvedExecution,
+use crate::backend::{
+    BackendControl, BackendDelegatePolicy, BackendDelegateRunRequest, BackendParentContext,
+    ExecutionBackend, execute_resolved_delegate_execution,
 };
+use crate::registry::{AgentResolver, ResolvedBackendAgent};
+use crate::resolution::ExecutionPlan;
 use awaken_contract::contract::event_sink::{EventSink, NullEventSink};
 use awaken_contract::contract::progress::ProgressStatus;
 use awaken_contract::contract::suspension::{
@@ -33,7 +33,7 @@ pub struct AgentTool {
     /// Human-readable description for the LLM.
     description: String,
     /// Execution resolver used to build the canonical execution plan at call time.
-    resolver: Arc<dyn ExecutionResolver>,
+    resolver: Arc<dyn AgentResolver>,
 }
 
 impl AgentTool {
@@ -43,11 +43,7 @@ impl AgentTool {
         description: impl Into<String>,
         resolver: Arc<dyn AgentResolver>,
     ) -> Self {
-        Self::with_execution_resolver(
-            agent_id,
-            description,
-            Arc::new(LocalExecutionResolver::new(resolver)),
-        )
+        Self::with_execution_resolver(agent_id, description, resolver)
     }
 
     /// Create a tool that delegates to a remote agent via A2A protocol.
@@ -61,7 +57,7 @@ impl AgentTool {
         Self::with_execution_resolver(
             agent_id.clone(),
             description.clone(),
-            Arc::new(FixedExecutionResolver::non_local(
+            Arc::new(FixedAgentResolver::non_local(
                 &agent_id,
                 &description,
                 Arc::new(A2aBackend::new(config)),
@@ -80,7 +76,7 @@ impl AgentTool {
         Self {
             agent_id: agent_id.clone(),
             description: description.clone(),
-            resolver: Arc::new(FixedExecutionResolver::non_local(
+            resolver: Arc::new(FixedAgentResolver::non_local(
                 &agent_id,
                 &description,
                 backend,
@@ -91,7 +87,7 @@ impl AgentTool {
     pub fn with_execution_resolver(
         agent_id: impl Into<String>,
         description: impl Into<String>,
-        resolver: Arc<dyn ExecutionResolver>,
+        resolver: Arc<dyn AgentResolver>,
     ) -> Self {
         Self {
             agent_id: agent_id.into(),
@@ -162,21 +158,27 @@ impl Tool for AgentTool {
             None => Arc::new(NullEventSink),
         };
 
-        let execution = run_child_agent(
-            ChildAgentParams::new(
-                self.resolver.as_ref(),
-                &self.agent_id,
-                messages,
-                BackendParentContext {
-                    parent_run_id: Some(ctx.run_identity.run_id.clone()),
-                    parent_thread_id: Some(ctx.run_identity.thread_id.clone()),
-                    parent_tool_call_id: Some(ctx.call_id.clone()),
-                },
-                sink,
-            )
-            .with_cancellation_token(ctx.cancellation_token.clone()),
-        )
-        .await;
+        let resolved = self
+            .resolver
+            .resolve_execution(&self.agent_id)
+            .map_err(|error| ToolError::ExecutionFailed(error.to_string()))?;
+
+        let request = BackendDelegateRunRequest {
+            agent_id: &self.agent_id,
+            new_messages: messages.clone(),
+            messages,
+            sink,
+            resolver: self.resolver.as_ref(),
+            parent: BackendParentContext {
+                parent_run_id: Some(ctx.run_identity.run_id.clone()),
+                parent_thread_id: Some(ctx.run_identity.thread_id.clone()),
+                parent_tool_call_id: Some(ctx.call_id.clone()),
+            },
+            control: BackendControl::default(),
+            policy: BackendDelegatePolicy::default(),
+        };
+
+        let execution = execute_resolved_delegate_execution(&resolved, request).await;
 
         match execution {
             Ok(result) => {
@@ -350,11 +352,11 @@ fn status_message(status: &crate::backend::BackendRunStatus) -> Option<&str> {
     }
 }
 
-struct FixedExecutionResolver {
-    execution: ResolvedExecution,
+struct FixedAgentResolver {
+    execution: ExecutionPlan,
 }
 
-impl FixedExecutionResolver {
+impl FixedAgentResolver {
     fn non_local(agent_id: &str, description: &str, backend: Arc<dyn ExecutionBackend>) -> Self {
         let spec = Arc::new(awaken_contract::registry_spec::AgentSpec {
             id: agent_id.to_string(),
@@ -363,14 +365,12 @@ impl FixedExecutionResolver {
             ..Default::default()
         });
         Self {
-            execution: ResolvedExecution::NonLocal(ResolvedBackendAgent::with_backend(
-                spec, backend,
-            )),
+            execution: ExecutionPlan::Remote(ResolvedBackendAgent::with_backend(spec, backend)),
         }
     }
 }
 
-impl AgentResolver for FixedExecutionResolver {
+impl AgentResolver for FixedAgentResolver {
     fn resolve(
         &self,
         agent_id: &str,
@@ -380,13 +380,7 @@ impl AgentResolver for FixedExecutionResolver {
         })
     }
 
-    fn agent_ids(&self) -> Vec<String> {
-        vec![self.execution.spec().id.clone()]
-    }
-}
-
-impl ExecutionResolver for FixedExecutionResolver {
-    fn resolve_execution(&self, agent_id: &str) -> Result<ResolvedExecution, crate::RuntimeError> {
+    fn resolve_execution(&self, agent_id: &str) -> Result<ExecutionPlan, crate::RuntimeError> {
         if self.execution.spec().id == agent_id {
             Ok(self.execution.clone())
         } else {
@@ -394,5 +388,9 @@ impl ExecutionResolver for FixedExecutionResolver {
                 message: format!("agent not found: {agent_id}"),
             })
         }
+    }
+
+    fn agent_ids(&self) -> Vec<String> {
+        vec![self.execution.spec().id.clone()]
     }
 }

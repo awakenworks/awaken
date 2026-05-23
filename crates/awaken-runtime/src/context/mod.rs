@@ -9,13 +9,14 @@ pub mod truncation;
 pub use compaction::{
     AppliedCompaction, COMPACTION_COMPLETED_EVENT, COMPACTION_FAILED_EVENT, CompactionPlan,
     apply_summary, clear_compaction_in_flight, find_compaction_boundary, plan_compaction,
-    record_compaction_boundary, record_compaction_in_flight, trim_to_compaction_boundary,
-    try_consume_compaction_event,
+    record_compaction_boundary, record_compaction_failure, record_compaction_in_flight,
+    trim_to_compaction_boundary, try_consume_compaction_event,
 };
 pub use plugin::{
     CONTEXT_COMPACTION_PLUGIN_ID, CONTEXT_TRANSFORM_PLUGIN_ID, CompactionAction,
-    CompactionBoundary, CompactionConfig, CompactionConfigKey, CompactionInFlight,
-    CompactionPlugin, CompactionState, CompactionStateKey, ContextTransformPlugin,
+    CompactionBoundary, CompactionConfig, CompactionConfigKey, CompactionFailure,
+    CompactionInFlight, CompactionPlugin, CompactionState, CompactionStateKey,
+    ContextTransformPlugin,
 };
 pub use summarizer::{
     ContextSummarizer, DefaultSummarizer, MIN_COMPACTION_GAIN_TOKENS, SummarizationError,

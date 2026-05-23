@@ -2,8 +2,10 @@
 
 use std::sync::Arc;
 
+use crate::EventBuffer;
 use crate::hooks::PhaseContext;
 use crate::phase::{ExecutionEnv, PhaseRuntime};
+use awaken_contract::contract::commit_coordinator::{CheckpointCommitPlan, CommitCoordinator};
 use awaken_contract::contract::event::AgentEvent;
 use awaken_contract::contract::event_sink::EventSink;
 use awaken_contract::contract::identity::RunIdentity;
@@ -20,12 +22,38 @@ use serde_json::Value;
 use super::{AgentLoopError, commit_update, now_ms};
 use crate::agent::state::{RunLifecycle, RunLifecycleUpdate, ToolCallStates};
 
+/// Optional coordinator + buffer references threaded through the
+/// loop-runner call chain so individual sites carry one field, not two
+/// (ADR-0036).
+#[derive(Default, Clone, Copy)]
+pub struct CommitWiring<'a> {
+    pub commit_coordinator: Option<&'a dyn CommitCoordinator>,
+    pub event_buffer: Option<&'a EventBuffer>,
+}
+
+impl<'a> CommitWiring<'a> {
+    /// Wire a coordinator and an optional per-run staging buffer. The
+    /// buffer is the same handle the sink-wrap layer was given, so the
+    /// checkpoint commit drains exactly the drafts staged for this run.
+    #[must_use]
+    pub fn new(
+        coordinator: Option<&'a dyn CommitCoordinator>,
+        buffer: Option<&'a EventBuffer>,
+    ) -> Self {
+        Self {
+            commit_coordinator: coordinator,
+            event_buffer: buffer,
+        }
+    }
+}
+
 pub(super) struct StepCompletion<'a> {
     pub(super) store: &'a crate::state::StateStore,
     pub(super) runtime: &'a PhaseRuntime,
     pub(super) env: &'a ExecutionEnv,
     pub(super) sink: &'a dyn EventSink,
     pub(super) checkpoint_store: Option<&'a dyn ThreadRunStore>,
+    pub(super) commit: CommitWiring<'a>,
     pub(super) messages: &'a [Arc<Message>],
     pub(super) input_message_count: usize,
     pub(super) run_identity: &'a RunIdentity,
@@ -38,6 +66,7 @@ pub(super) struct StepCompletion<'a> {
 pub(super) struct CheckpointPersist<'a> {
     pub(super) store: &'a crate::state::StateStore,
     pub(super) checkpoint_store: Option<&'a dyn ThreadRunStore>,
+    pub(super) commit: CommitWiring<'a>,
     pub(super) messages: &'a [Arc<Message>],
     pub(super) input_message_count: usize,
     pub(super) run_identity: &'a RunIdentity,
@@ -57,6 +86,7 @@ pub(super) async fn complete_step(params: StepCompletion<'_>) -> Result<(), Agen
         env,
         sink,
         checkpoint_store,
+        commit,
         messages,
         input_message_count,
         run_identity,
@@ -80,6 +110,7 @@ pub(super) async fn complete_step(params: StepCompletion<'_>) -> Result<(), Agen
     persist_checkpoint(CheckpointPersist {
         store,
         checkpoint_store,
+        commit,
         messages,
         input_message_count,
         run_identity,
@@ -105,6 +136,7 @@ pub(super) async fn persist_checkpoint(
     let CheckpointPersist {
         store,
         checkpoint_store,
+        commit,
         messages,
         input_message_count,
         run_identity,
@@ -116,8 +148,13 @@ pub(super) async fn persist_checkpoint(
         error_payload,
         thread_ctx,
     } = params;
-    let Some(storage) = checkpoint_store else {
+    if checkpoint_store.is_none() && commit.commit_coordinator.is_none() {
         return Ok(());
+    }
+    let Some(storage) = checkpoint_store else {
+        return Err(AgentLoopError::StorageError(
+            "CommitCoordinator requires checkpoint_store for reads".to_string(),
+        ));
     };
 
     let lifecycle = store.read::<RunLifecycle>().unwrap_or_default();
@@ -176,8 +213,13 @@ pub(super) async fn persist_checkpoint(
         thread_id: run_identity.thread_id.clone(),
         agent_id: run_identity.agent_id.clone(),
         parent_run_id: run_identity.parent_run_id.clone(),
-        registry_manifest: None,
-        activation: None,
+        registry_manifest: previous
+            .as_ref()
+            .and_then(|record| record.registry_manifest.clone())
+            .or_else(|| thread_ctx.and_then(|ctx| ctx.registry_manifest_seed.clone())),
+        activation: previous
+            .as_ref()
+            .and_then(|record| record.activation.clone()),
         request: previous.as_ref().and_then(|record| record.request.clone()),
         input,
         output,
@@ -203,10 +245,29 @@ pub(super) async fn persist_checkpoint(
         output_tokens: total_output_tokens,
         state: Some(state),
     };
-    storage
-        .checkpoint(&run_identity.thread_id, &msgs, &record)
+    // ADR-0036 D8: no non-atomic fallback. When `checkpoint_store` is set,
+    // a `CommitCoordinator` MUST also be wired — the builder enforces this
+    // pairing at `build()` time via `BuildError::CommitCoordinatorRequired`.
+    let coordinator = commit.commit_coordinator.ok_or_else(|| {
+        AgentLoopError::StorageError(
+            "ADR-0036 D8 invariant: checkpoint_store present but no CommitCoordinator wired"
+                .to_string(),
+        )
+    })?;
+    let canonical_drafts = commit
+        .event_buffer
+        .map(|buf| buf.drain())
+        .unwrap_or_default();
+    let plan = CheckpointCommitPlan::checkpoint_only(run_identity.thread_id.clone(), msgs, record)
+        .with_canonical_drafts(canonical_drafts);
+    coordinator
+        .commit_checkpoint(plan)
         .await
-        .map_err(|e| AgentLoopError::StorageError(e.to_string()))
+        .map_err(|e| AgentLoopError::StorageError(e.to_string()))?;
+    // `storage` is read at function start for `load_run`; the checkpoint
+    // write itself goes through the coordinator above.
+    let _ = storage;
+    Ok(())
 }
 
 fn materialize_message_log(
@@ -435,164 +496,5 @@ pub(super) fn check_termination(store: &crate::state::StateStore) -> Option<Term
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::agent::state::{ToolCallState, ToolCallStatesUpdate};
-    use awaken_contract::contract::suspension::ToolCallResumeMode;
-    use serde_json::json;
-
-    fn store_with_loop_state() -> crate::state::StateStore {
-        let store = crate::state::StateStore::new();
-        store
-            .install_plugin(crate::loop_runner::LoopStatePlugin)
-            .expect("loop state plugin installs");
-        store
-    }
-
-    #[test]
-    fn waiting_state_persists_suspended_tool_tickets() {
-        let store = store_with_loop_state();
-        commit_update::<ToolCallStates>(
-            &store,
-            ToolCallStatesUpdate::put(
-                ToolCallState::new(
-                    "call-1",
-                    "dangerous",
-                    json!({"path": "/tmp/x"}),
-                    ToolCallStatus::Suspended,
-                    123,
-                )
-                .with_resume_mode(ToolCallResumeMode::UseDecisionAsToolResult)
-                .with_suspension(Some("ticket-1".into()), Some("approval".into())),
-            ),
-        )
-        .expect("tool state committed");
-
-        let waiting = waiting_state_from_lifecycle(
-            RunStatus::Waiting,
-            Some("suspended"),
-            Some("dispatch-1".into()),
-            waiting_tickets_from_store(&store),
-        )
-        .expect("waiting state");
-
-        assert_eq!(waiting.reason, WaitingReason::ToolPermission);
-        assert_eq!(waiting.ticket_ids, vec!["ticket-1"]);
-        assert_eq!(waiting.tickets.len(), 1);
-        assert_eq!(waiting.tickets[0].tool_call_id, "call-1");
-        assert_eq!(waiting.tickets[0].tool_name, "dangerous");
-        assert_eq!(waiting.tickets[0].arguments, json!({"path": "/tmp/x"}));
-        assert_eq!(
-            waiting.tickets[0].resume_mode,
-            ToolCallResumeMode::UseDecisionAsToolResult
-        );
-        assert_eq!(waiting.tickets[0].reason.as_deref(), Some("approval"));
-        assert_eq!(waiting.tickets[0].updated_at, 123);
-        assert_eq!(waiting.since_dispatch_id.as_deref(), Some("dispatch-1"));
-    }
-
-    #[test]
-    fn waiting_ticket_falls_back_to_tool_call_id_without_suspension_id() {
-        let store = store_with_loop_state();
-        commit_update::<ToolCallStates>(
-            &store,
-            ToolCallStatesUpdate::put(ToolCallState::new(
-                "call-without-ticket",
-                "plain_suspend",
-                json!({"x": 1}),
-                ToolCallStatus::Suspended,
-                456,
-            )),
-        )
-        .expect("tool state committed");
-
-        let waiting = waiting_state_from_lifecycle(
-            RunStatus::Waiting,
-            Some("suspended"),
-            None,
-            waiting_tickets_from_store(&store),
-        )
-        .expect("waiting state");
-
-        assert_eq!(waiting.ticket_ids, vec!["call-without-ticket"]);
-        assert_eq!(waiting.tickets[0].ticket_id, "call-without-ticket");
-        assert_eq!(waiting.tickets[0].tool_call_id, "call-without-ticket");
-    }
-
-    #[test]
-    fn materialize_message_log_preserves_output_across_same_run_resume() {
-        let mut old_output = Message::assistant("before wait");
-        old_output.id = Some("m-old-output".into());
-        old_output.metadata = Some(awaken_contract::contract::message::MessageMetadata {
-            run_id: Some("run-1".into()),
-            step_index: Some(0),
-        });
-        let mut new_output = Message::assistant("after resume");
-        new_output.id = Some("m-new-output".into());
-
-        let messages = vec![
-            Arc::new(Message::user("first input")),
-            Arc::new(old_output),
-            Arc::new(Message::user("resume input")),
-            Arc::new(new_output),
-        ];
-        let previous = RunRecord {
-            run_id: "run-1".into(),
-            thread_id: "thread-1".into(),
-            agent_id: "agent".into(),
-            parent_run_id: None,
-            registry_manifest: None,
-            activation: None,
-            request: None,
-            input: Some(RunMessageInput {
-                thread_id: "thread-1".into(),
-                range: MessageSeqRange::new(1, 3),
-                trigger_message_ids: vec!["resume input".into()],
-                selected_message_ids: Vec::new(),
-                context_policy: None,
-                compacted_snapshot_id: None,
-            }),
-            output: Some(RunMessageOutput {
-                thread_id: "thread-1".into(),
-                range: MessageSeqRange::new(2, 2),
-                message_ids: vec!["m-old-output".into()],
-            }),
-            status: RunStatus::Waiting,
-            termination_reason: None,
-            final_output: None,
-            error_payload: None,
-            dispatch_id: None,
-            session_id: None,
-            transport_request_id: None,
-            waiting: None,
-            outcome: None,
-            created_at: 1,
-            started_at: None,
-            finished_at: None,
-            updated_at: 1,
-            steps: 1,
-            input_tokens: 0,
-            output_tokens: 0,
-            state: None,
-        };
-        let identity = RunIdentity::new(
-            "thread-1".into(),
-            None,
-            "run-1".into(),
-            None,
-            "agent".into(),
-            awaken_contract::contract::identity::RunOrigin::User,
-        );
-
-        let (msgs, _, output) =
-            materialize_message_log(&messages, Some(&previous), &identity, 2, 0);
-
-        let output = output.expect("output should be preserved and extended");
-        assert_eq!(
-            output.message_ids,
-            vec!["m-old-output".to_string(), "m-new-output".to_string()]
-        );
-        assert_eq!(output.range, MessageSeqRange::new(2, 4));
-        assert_eq!(msgs[3].produced_by_run_id(), Some("run-1"));
-    }
-}
+#[path = "checkpoint_tests.rs"]
+mod tests;

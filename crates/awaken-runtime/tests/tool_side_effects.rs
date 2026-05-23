@@ -25,7 +25,7 @@ use awaken_contract::state::{MergeStrategy, StateKey, StateKeyOptions};
 use awaken_runtime::RuntimeError;
 use awaken_runtime::agent::state::{AddContextMessage, ContextMessageStore};
 use awaken_runtime::execution::ParallelToolExecutor;
-use awaken_runtime::loop_runner::{AgentLoopParams, build_agent_env, run_agent_loop};
+use awaken_runtime::loop_runner::{AgentLoopParams, CommitWiring, build_agent_env, run_agent_loop};
 use awaken_runtime::phase::PhaseRuntime;
 use awaken_runtime::plugins::{Plugin, PluginDescriptor, PluginRegistrar};
 use awaken_runtime::registry::{AgentResolver, ResolvedAgent};
@@ -293,7 +293,7 @@ async fn tool_state_mutation_applied_after_execution() {
         frontend_tools: Vec::new(),
         inbox: None,
         is_continuation: false,
-        initial_state_seed: None,
+        commit: CommitWiring::default(),
     })
     .await
     .unwrap();
@@ -342,7 +342,7 @@ async fn tool_scheduled_action_executed() {
         frontend_tools: Vec::new(),
         inbox: None,
         is_continuation: false,
-        initial_state_seed: None,
+        commit: CommitWiring::default(),
     })
     .await
     .unwrap();
@@ -429,7 +429,7 @@ async fn tool_empty_command_has_no_side_effects() {
         frontend_tools: Vec::new(),
         inbox: None,
         is_continuation: false,
-        initial_state_seed: None,
+        commit: CommitWiring::default(),
     })
     .await
     .unwrap();
@@ -488,7 +488,7 @@ async fn parallel_tool_commands_merge() {
         frontend_tools: Vec::new(),
         inbox: None,
         is_continuation: false,
-        initial_state_seed: None,
+        commit: CommitWiring::default(),
     })
     .await
     .unwrap();
