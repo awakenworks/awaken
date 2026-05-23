@@ -223,6 +223,7 @@ async fn single_step_natural_end() {
         inbox: None,
         is_continuation: false,
         commit: CommitWiring::default(),
+        initial_state_seed: None,
     })
     .await
     .unwrap();
@@ -293,6 +294,7 @@ async fn run_level_model_override_selects_upstream_model() {
         inbox: None,
         is_continuation: false,
         commit: CommitWiring::default(),
+        initial_state_seed: None,
     })
     .await
     .unwrap();
@@ -343,6 +345,7 @@ async fn tool_call_then_response() {
         inbox: None,
         is_continuation: false,
         commit: CommitWiring::default(),
+        initial_state_seed: None,
     })
     .await
     .unwrap();
@@ -392,6 +395,7 @@ async fn tool_call_state_machine_transitions() {
         inbox: None,
         is_continuation: false,
         commit: CommitWiring::default(),
+        initial_state_seed: None,
     })
     .await
     .unwrap();
@@ -446,6 +450,7 @@ async fn multiple_tool_calls_in_one_step() {
         inbox: None,
         is_continuation: false,
         commit: CommitWiring::default(),
+        initial_state_seed: None,
     })
     .await
     .unwrap();
@@ -498,6 +503,7 @@ async fn max_rounds_exceeded() {
         inbox: None,
         is_continuation: false,
         commit: CommitWiring::default(),
+        initial_state_seed: None,
     })
     .await
     .unwrap();
@@ -556,6 +562,7 @@ async fn unknown_tool_returns_error_result_not_crash() {
         inbox: None,
         is_continuation: false,
         commit: CommitWiring::default(),
+        initial_state_seed: None,
     })
     .await
     .unwrap(); // Should NOT error — unknown tool produces ToolResult::error
@@ -615,6 +622,7 @@ async fn failing_tool_produces_error_result_continues_loop() {
         inbox: None,
         is_continuation: false,
         commit: CommitWiring::default(),
+        initial_state_seed: None,
     })
     .await
     .unwrap();
@@ -652,6 +660,7 @@ async fn events_have_correct_sequence_for_single_step() {
         inbox: None,
         is_continuation: false,
         commit: CommitWiring::default(),
+        initial_state_seed: None,
     })
     .await
     .unwrap();
@@ -728,6 +737,7 @@ async fn events_have_correct_sequence_with_tool_call() {
         inbox: None,
         is_continuation: false,
         commit: CommitWiring::default(),
+        initial_state_seed: None,
     })
     .await
     .unwrap();
@@ -805,6 +815,7 @@ async fn lifecycle_state_reflects_custom_run_id() {
         inbox: None,
         is_continuation: false,
         commit: CommitWiring::default(),
+        initial_state_seed: None,
     })
     .await
     .unwrap();
@@ -871,6 +882,7 @@ async fn phase_hooks_fire_during_loop() {
         inbox: None,
         is_continuation: false,
         commit: CommitWiring::default(),
+        initial_state_seed: None,
     })
     .await
     .unwrap();
@@ -976,6 +988,7 @@ async fn tool_suspension_transitions_run_to_waiting() {
         inbox: None,
         is_continuation: false,
         commit: CommitWiring::default(),
+        initial_state_seed: None,
     })
     .await
     .unwrap();
@@ -1019,6 +1032,7 @@ async fn resume_with_use_decision_as_tool_result() {
         inbox: None,
         is_continuation: false,
         commit: CommitWiring::default(),
+        initial_state_seed: None,
     })
     .await
     .unwrap();
@@ -1070,6 +1084,7 @@ async fn resume_with_use_decision_as_tool_result() {
         inbox: None,
         is_continuation: false,
         commit: CommitWiring::default(),
+        initial_state_seed: None,
     })
     .await
     .unwrap();
@@ -1113,6 +1128,7 @@ async fn resume_with_cancel_marks_tool_cancelled() {
         inbox: None,
         is_continuation: false,
         commit: CommitWiring::default(),
+        initial_state_seed: None,
     })
     .await
     .unwrap();
@@ -1163,6 +1179,7 @@ async fn resume_with_cancel_marks_tool_cancelled() {
         inbox: None,
         is_continuation: false,
         commit: CommitWiring::default(),
+        initial_state_seed: None,
     })
     .await
     .unwrap();
@@ -1204,6 +1221,7 @@ async fn resume_with_replay_tool_call() {
         inbox: None,
         is_continuation: false,
         commit: CommitWiring::default(),
+        initial_state_seed: None,
     })
     .await
     .unwrap();
@@ -1273,6 +1291,7 @@ async fn resume_with_replay_tool_call() {
         inbox: None,
         is_continuation: false,
         commit: CommitWiring::default(),
+        initial_state_seed: None,
     })
     .await
     .unwrap();
@@ -1313,6 +1332,7 @@ async fn resume_with_pass_decision_to_tool() {
         inbox: None,
         is_continuation: false,
         commit: CommitWiring::default(),
+        initial_state_seed: None,
     })
     .await;
     // This might not work because tool_call name is "passthrough" but we only have "dangerous".
@@ -1343,6 +1363,7 @@ async fn resume_with_pass_decision_to_tool() {
         inbox: None,
         is_continuation: false,
         commit: CommitWiring::default(),
+        initial_state_seed: None,
     })
     .await
     .unwrap();
@@ -1413,6 +1434,7 @@ async fn resume_with_pass_decision_to_tool() {
         inbox: None,
         is_continuation: false,
         commit: CommitWiring::default(),
+        initial_state_seed: None,
     })
     .await
     .unwrap();
@@ -1443,6 +1465,7 @@ async fn resume_rejects_non_waiting_run() {
         inbox: None,
         is_continuation: false,
         commit: CommitWiring::default(),
+        initial_state_seed: None,
     })
     .await
     .unwrap();
@@ -1495,6 +1518,7 @@ async fn resume_rejects_unknown_call_id() {
         inbox: None,
         is_continuation: false,
         commit: CommitWiring::default(),
+        initial_state_seed: None,
     })
     .await
     .unwrap();
@@ -1628,6 +1652,7 @@ async fn cancel_during_streaming_terminates_run() {
         inbox: None,
         is_continuation: false,
         commit: CommitWiring::default(),
+        initial_state_seed: None,
     })
     .await
     .unwrap();
@@ -1667,6 +1692,7 @@ async fn cancel_before_inference_terminates_immediately() {
         inbox: None,
         is_continuation: false,
         commit: CommitWiring::default(),
+        initial_state_seed: None,
     })
     .await
     .unwrap();
@@ -1722,6 +1748,7 @@ async fn state_snapshot_emitted_after_phase() {
         inbox: None,
         is_continuation: false,
         commit: CommitWiring::default(),
+        initial_state_seed: None,
     })
     .await
     .unwrap();
@@ -1938,6 +1965,7 @@ async fn frontend_tool_intercept_suspend_and_resume() {
         inbox: None,
         is_continuation: false,
         commit: CommitWiring::default(),
+        initial_state_seed: None,
     })
     .await
     .unwrap();
@@ -2015,6 +2043,7 @@ async fn frontend_tool_intercept_suspend_and_resume() {
         inbox: None,
         is_continuation: false,
         commit: CommitWiring::default(),
+        initial_state_seed: None,
     })
     .await
     .unwrap();
@@ -2059,6 +2088,7 @@ async fn injected_frontend_tool_uses_suspension_id_resume_chain() {
         inbox: None,
         is_continuation: false,
         commit: CommitWiring::default(),
+        initial_state_seed: None,
     })
     .await
     .unwrap();
@@ -2114,6 +2144,7 @@ async fn injected_frontend_tool_uses_suspension_id_resume_chain() {
         inbox: None,
         is_continuation: false,
         commit: CommitWiring::default(),
+        initial_state_seed: None,
     })
     .await
     .unwrap();
@@ -2208,6 +2239,7 @@ async fn tool_intercept_block_terminates_run() {
         inbox: None,
         is_continuation: false,
         commit: CommitWiring::default(),
+        initial_state_seed: None,
     })
     .await
     .unwrap();
@@ -2339,6 +2371,7 @@ async fn tool_intercept_set_result_skips_execution() {
         inbox: None,
         is_continuation: false,
         commit: CommitWiring::default(),
+        initial_state_seed: None,
     })
     .await
     .unwrap();
@@ -2386,6 +2419,7 @@ async fn suspended_tool_preserves_state_across_resume() {
         inbox: None,
         is_continuation: false,
         commit: CommitWiring::default(),
+        initial_state_seed: None,
     })
     .await
     .unwrap();
@@ -2448,6 +2482,7 @@ async fn suspended_tool_preserves_state_across_resume() {
         inbox: None,
         is_continuation: false,
         commit: CommitWiring::default(),
+        initial_state_seed: None,
     })
     .await
     .unwrap();
@@ -2520,6 +2555,7 @@ async fn decision_channel_resume_resolves_suspended_call() {
         inbox: None,
         is_continuation: false,
         commit: CommitWiring::default(),
+        initial_state_seed: None,
     })
     .await
     .unwrap();
@@ -2580,6 +2616,7 @@ async fn cancel_decision_marks_tool_cancelled() {
         inbox: None,
         is_continuation: false,
         commit: CommitWiring::default(),
+        initial_state_seed: None,
     })
     .await
     .unwrap();
@@ -2625,6 +2662,7 @@ async fn permission_hook_blocks_denied_tool() {
         inbox: None,
         is_continuation: false,
         commit: CommitWiring::default(),
+        initial_state_seed: None,
     })
     .await
     .unwrap();
@@ -2716,6 +2754,7 @@ async fn intercept_suspend_preserves_ticket_resume_mode() {
         inbox: None,
         is_continuation: false,
         commit: CommitWiring::default(),
+        initial_state_seed: None,
     })
     .await
     .unwrap();
@@ -2788,6 +2827,7 @@ async fn intercept_suspend_preserves_ticket_resume_mode() {
         inbox: None,
         is_continuation: false,
         commit: CommitWiring::default(),
+        initial_state_seed: None,
     })
     .await
     .unwrap();
@@ -2843,6 +2883,7 @@ async fn multiple_tool_calls_partial_intercept() {
         inbox: None,
         is_continuation: false,
         commit: CommitWiring::default(),
+        initial_state_seed: None,
     })
     .await
     .unwrap();
@@ -2914,6 +2955,7 @@ async fn intercept_set_result_emits_tool_call_done_event() {
         inbox: None,
         is_continuation: false,
         commit: CommitWiring::default(),
+        initial_state_seed: None,
     })
     .await
     .unwrap();
@@ -2983,6 +3025,7 @@ async fn prepare_resume_preserves_arguments_and_records_decision_payload() {
         inbox: None,
         is_continuation: false,
         commit: CommitWiring::default(),
+        initial_state_seed: None,
     })
     .await
     .unwrap();
@@ -3044,6 +3087,7 @@ async fn prepare_resume_preserves_arguments_and_records_decision_payload() {
         inbox: None,
         is_continuation: false,
         commit: CommitWiring::default(),
+        initial_state_seed: None,
     })
     .await
     .unwrap();
@@ -3202,6 +3246,7 @@ async fn concurrent_suspend_and_resume_via_channel() {
         inbox: None,
         is_continuation: false,
         commit: CommitWiring::default(),
+        initial_state_seed: None,
     })
     .await
     .unwrap();
@@ -3355,6 +3400,7 @@ async fn single_tool_call_can_suspend_multiple_times_via_decision_channel() {
         inbox: None,
         is_continuation: false,
         commit: CommitWiring::default(),
+        initial_state_seed: None,
     });
 
     let (result, ()) = tokio::join!(run, sender);
@@ -3434,6 +3480,7 @@ async fn tool_call_lifecycle_complete_transitions_in_loop() {
         inbox: None,
         is_continuation: false,
         commit: CommitWiring::default(),
+        initial_state_seed: None,
     })
     .await
     .unwrap();
@@ -3506,6 +3553,7 @@ async fn tool_call_lifecycle_complete_transitions_in_loop() {
         inbox: None,
         is_continuation: false,
         commit: CommitWiring::default(),
+        initial_state_seed: None,
     })
     .await
     .unwrap();
@@ -3567,6 +3615,7 @@ async fn parallel_tools_one_fails_other_succeeds() {
         inbox: None,
         is_continuation: false,
         commit: CommitWiring::default(),
+        initial_state_seed: None,
     })
     .await
     .unwrap();
@@ -3631,6 +3680,7 @@ async fn sequential_tools_stop_after_first_suspension() {
         inbox: None,
         is_continuation: false,
         commit: CommitWiring::default(),
+        initial_state_seed: None,
     })
     .await
     .unwrap();
@@ -3697,6 +3747,7 @@ async fn stop_policy_max_rounds_terminates() {
         inbox: None,
         is_continuation: false,
         commit: CommitWiring::default(),
+        initial_state_seed: None,
     })
     .await
     .unwrap();
@@ -3769,6 +3820,7 @@ async fn cancel_during_tool_execution() {
         inbox: None,
         is_continuation: false,
         commit: CommitWiring::default(),
+        initial_state_seed: None,
     })
     .await
     .unwrap();
@@ -3814,6 +3866,7 @@ async fn empty_tool_calls_natural_end() {
         inbox: None,
         is_continuation: false,
         commit: CommitWiring::default(),
+        initial_state_seed: None,
     })
     .await
     .unwrap();
@@ -3924,6 +3977,7 @@ async fn context_message_injected_before_inference() {
         inbox: None,
         is_continuation: false,
         commit: CommitWiring::default(),
+        initial_state_seed: None,
     })
     .await
     .unwrap();
@@ -4012,6 +4066,7 @@ async fn tool_execution_preserves_arguments() {
         inbox: None,
         is_continuation: false,
         commit: CommitWiring::default(),
+        initial_state_seed: None,
     })
     .await
     .unwrap();
@@ -4166,6 +4221,7 @@ async fn retry_startup_error_propagates() {
         inbox: None,
         is_continuation: false,
         commit: CommitWiring::default(),
+        initial_state_seed: None,
     })
     .await;
 
@@ -4210,6 +4266,7 @@ async fn inference_request_uses_configured_upstream_model() {
         inbox: None,
         is_continuation: false,
         commit: CommitWiring::default(),
+        initial_state_seed: None,
     })
     .await
     .unwrap();
@@ -4269,6 +4326,7 @@ async fn truncation_with_tool_calls_no_retry() {
         inbox: None,
         is_continuation: false,
         commit: CommitWiring::default(),
+        initial_state_seed: None,
     })
     .await
     .unwrap();
@@ -4375,6 +4433,7 @@ async fn truncation_recovery_exhausts_retries() {
         inbox: None,
         is_continuation: false,
         commit: CommitWiring::default(),
+        initial_state_seed: None,
     })
     .await
     .unwrap();
@@ -4504,6 +4563,7 @@ async fn truncation_recovery_preserves_truncated_text() {
         inbox: None,
         is_continuation: false,
         commit: CommitWiring::default(),
+        initial_state_seed: None,
     })
     .await
     .unwrap();
@@ -4581,6 +4641,7 @@ async fn run_finish_has_matching_thread_id() {
         inbox: None,
         is_continuation: false,
         commit: CommitWiring::default(),
+        initial_state_seed: None,
     })
     .await
     .unwrap();
@@ -4697,6 +4758,7 @@ async fn all_tools_suspended_pauses_run() {
         inbox: None,
         is_continuation: false,
         commit: CommitWiring::default(),
+        initial_state_seed: None,
     })
     .await
     .unwrap();
@@ -4758,6 +4820,7 @@ async fn completed_tool_round_clears_state_at_next_step() {
         inbox: None,
         is_continuation: false,
         commit: CommitWiring::default(),
+        initial_state_seed: None,
     })
     .await
     .unwrap();
@@ -4838,6 +4901,7 @@ async fn after_inference_stop_prevents_tool_execution() {
         inbox: None,
         is_continuation: false,
         commit: CommitWiring::default(),
+        initial_state_seed: None,
     })
     .await
     .unwrap();
@@ -4887,6 +4951,7 @@ async fn natural_end_no_tools_completes_immediately() {
         inbox: None,
         is_continuation: false,
         commit: CommitWiring::default(),
+        initial_state_seed: None,
     })
     .await
     .unwrap();
@@ -4971,6 +5036,7 @@ async fn unknown_tool_in_multi_call_doesnt_crash() {
         inbox: None,
         is_continuation: false,
         commit: CommitWiring::default(),
+        initial_state_seed: None,
     })
     .await
     .unwrap();
@@ -5074,6 +5140,7 @@ async fn permission_denied_does_not_replay_tool() {
         inbox: None,
         is_continuation: false,
         commit: CommitWiring::default(),
+        initial_state_seed: None,
     })
     .await
     .unwrap();
@@ -5119,6 +5186,7 @@ async fn decision_for_unknown_call_id_returns_error() {
         inbox: None,
         is_continuation: false,
         commit: CommitWiring::default(),
+        initial_state_seed: None,
     })
     .await
     .unwrap();
@@ -5198,6 +5266,7 @@ async fn decision_channel_rejects_illegal_transition() {
         inbox: None,
         is_continuation: false,
         commit: CommitWiring::default(),
+        initial_state_seed: None,
     })
     .await
     .unwrap();
@@ -5264,6 +5333,7 @@ async fn mixed_suspended_and_completed_tools() {
         inbox: None,
         is_continuation: false,
         commit: CommitWiring::default(),
+        initial_state_seed: None,
     })
     .await
     .unwrap();
@@ -5465,6 +5535,7 @@ async fn parallel_tools_all_succeed() {
         inbox: None,
         is_continuation: false,
         commit: CommitWiring::default(),
+        initial_state_seed: None,
     })
     .await
     .unwrap();
@@ -5537,6 +5608,7 @@ async fn parallel_tools_mixed_outcomes_preserve_results() {
         inbox: None,
         is_continuation: false,
         commit: CommitWiring::default(),
+        initial_state_seed: None,
     })
     .await
     .unwrap();
@@ -5647,6 +5719,7 @@ async fn system_prompt_included_in_inference_request() {
         inbox: None,
         is_continuation: false,
         commit: CommitWiring::default(),
+        initial_state_seed: None,
     })
     .await
     .unwrap();
@@ -5725,6 +5798,7 @@ async fn message_ordering_preserved_in_inference_request() {
         inbox: None,
         is_continuation: false,
         commit: CommitWiring::default(),
+        initial_state_seed: None,
     })
     .await
     .unwrap();
@@ -5799,6 +5873,7 @@ async fn tool_descriptors_sent_to_llm() {
         inbox: None,
         is_continuation: false,
         commit: CommitWiring::default(),
+        initial_state_seed: None,
     })
     .await
     .unwrap();
@@ -5858,6 +5933,7 @@ async fn run_identity_fields_propagate_to_lifecycle() {
         inbox: None,
         is_continuation: false,
         commit: CommitWiring::default(),
+        initial_state_seed: None,
     })
     .await
     .unwrap();
@@ -5958,6 +6034,7 @@ async fn context_message_suffix_system_injected() {
         inbox: None,
         is_continuation: false,
         commit: CommitWiring::default(),
+        initial_state_seed: None,
     })
     .await
     .unwrap();
@@ -6070,6 +6147,7 @@ async fn multiple_context_messages_injected() {
         inbox: None,
         is_continuation: false,
         commit: CommitWiring::default(),
+        initial_state_seed: None,
     })
     .await
     .unwrap();
@@ -6161,6 +6239,7 @@ async fn phase_hooks_fire_with_tool_call_phases() {
         inbox: None,
         is_continuation: false,
         commit: CommitWiring::default(),
+        initial_state_seed: None,
     })
     .await
     .unwrap();
@@ -6232,6 +6311,7 @@ async fn step_count_increments_with_tool_calls() {
         inbox: None,
         is_continuation: false,
         commit: CommitWiring::default(),
+        initial_state_seed: None,
     })
     .await
     .unwrap();
@@ -6281,6 +6361,7 @@ async fn token_usage_reported_in_inference_events() {
         inbox: None,
         is_continuation: false,
         commit: CommitWiring::default(),
+        initial_state_seed: None,
     })
     .await
     .unwrap();
@@ -6344,6 +6425,7 @@ async fn blocking_plugin_allows_non_targeted_tool() {
         inbox: None,
         is_continuation: false,
         commit: CommitWiring::default(),
+        initial_state_seed: None,
     })
     .await
     .unwrap();
@@ -6448,6 +6530,7 @@ async fn set_result_intercept_on_specific_tool_only() {
         inbox: None,
         is_continuation: false,
         commit: CommitWiring::default(),
+        initial_state_seed: None,
     })
     .await
     .unwrap();
@@ -6565,6 +6648,7 @@ async fn phase_hook_receives_tool_context() {
         inbox: None,
         is_continuation: false,
         commit: CommitWiring::default(),
+        initial_state_seed: None,
     })
     .await
     .unwrap();
@@ -6638,6 +6722,7 @@ async fn llm_error_on_second_step_propagates() {
         inbox: None,
         is_continuation: false,
         commit: CommitWiring::default(),
+        initial_state_seed: None,
     })
     .await;
 
@@ -6727,6 +6812,7 @@ async fn after_inference_hook_sees_llm_response() {
         inbox: None,
         is_continuation: false,
         commit: CommitWiring::default(),
+        initial_state_seed: None,
     })
     .await
     .unwrap();
@@ -6824,6 +6910,7 @@ async fn after_tool_execute_hook_sees_tool_result() {
         inbox: None,
         is_continuation: false,
         commit: CommitWiring::default(),
+        initial_state_seed: None,
     })
     .await
     .unwrap();
@@ -6876,6 +6963,7 @@ async fn max_rounds_two_stops_after_two_tool_steps() {
         inbox: None,
         is_continuation: false,
         commit: CommitWiring::default(),
+        initial_state_seed: None,
     })
     .await
     .unwrap();
@@ -6932,6 +7020,7 @@ async fn step_start_events_contain_step_number() {
         inbox: None,
         is_continuation: false,
         commit: CommitWiring::default(),
+        initial_state_seed: None,
     })
     .await
     .unwrap();
@@ -6979,6 +7068,7 @@ async fn suspension_preserves_original_arguments() {
         inbox: None,
         is_continuation: false,
         commit: CommitWiring::default(),
+        initial_state_seed: None,
     })
     .await
     .unwrap();
@@ -7048,6 +7138,7 @@ async fn second_tool_not_executed_after_first_suspends() {
         inbox: None,
         is_continuation: false,
         commit: CommitWiring::default(),
+        initial_state_seed: None,
     })
     .await
     .unwrap();
@@ -7094,6 +7185,7 @@ async fn run_start_event_emitted_first() {
         inbox: None,
         is_continuation: false,
         commit: CommitWiring::default(),
+        initial_state_seed: None,
     })
     .await
     .unwrap();
@@ -7140,6 +7232,7 @@ async fn run_finish_event_emitted_last() {
         inbox: None,
         is_continuation: false,
         commit: CommitWiring::default(),
+        initial_state_seed: None,
     })
     .await
     .unwrap();
@@ -7199,6 +7292,7 @@ async fn tool_call_events_contain_correct_metadata() {
         inbox: None,
         is_continuation: false,
         commit: CommitWiring::default(),
+        initial_state_seed: None,
     })
     .await
     .unwrap();
@@ -7281,6 +7375,7 @@ async fn three_step_loop_tool_tool_response() {
         inbox: None,
         is_continuation: false,
         commit: CommitWiring::default(),
+        initial_state_seed: None,
     })
     .await
     .unwrap();
@@ -7336,6 +7431,7 @@ async fn lifecycle_transitions_running_to_done() {
         inbox: None,
         is_continuation: false,
         commit: CommitWiring::default(),
+        initial_state_seed: None,
     })
     .await
     .unwrap();
@@ -7376,6 +7472,7 @@ async fn lifecycle_transitions_running_to_waiting() {
         inbox: None,
         is_continuation: false,
         commit: CommitWiring::default(),
+        initial_state_seed: None,
     })
     .await
     .unwrap();
@@ -7416,6 +7513,7 @@ async fn lifecycle_transitions_running_to_done_on_cancel() {
         inbox: None,
         is_continuation: false,
         commit: CommitWiring::default(),
+        initial_state_seed: None,
     })
     .await
     .unwrap();
@@ -7465,6 +7563,7 @@ async fn text_delta_events_emitted_for_text_response() {
         inbox: None,
         is_continuation: false,
         commit: CommitWiring::default(),
+        initial_state_seed: None,
     })
     .await
     .unwrap();
@@ -7528,6 +7627,7 @@ async fn parallel_tools_have_independent_state_entries() {
         inbox: None,
         is_continuation: false,
         commit: CommitWiring::default(),
+        initial_state_seed: None,
     })
     .await
     .unwrap();
@@ -7583,6 +7683,7 @@ async fn parallel_tools_succeed_and_suspend_independent_states() {
         inbox: None,
         is_continuation: false,
         commit: CommitWiring::default(),
+        initial_state_seed: None,
     })
     .await
     .unwrap();
@@ -7636,6 +7737,7 @@ async fn parallel_tools_both_fail_independently() {
         inbox: None,
         is_continuation: false,
         commit: CommitWiring::default(),
+        initial_state_seed: None,
     })
     .await
     .unwrap();
@@ -7698,6 +7800,7 @@ async fn parallel_same_tool_distinct_results() {
         inbox: None,
         is_continuation: false,
         commit: CommitWiring::default(),
+        initial_state_seed: None,
     })
     .await
     .unwrap();
@@ -7765,6 +7868,7 @@ async fn sequential_steps_see_fresh_tool_state() {
         inbox: None,
         is_continuation: false,
         commit: CommitWiring::default(),
+        initial_state_seed: None,
     })
     .await
     .unwrap();
@@ -7820,6 +7924,7 @@ async fn state_snapshot_revision_increases_across_steps() {
         inbox: None,
         is_continuation: false,
         commit: CommitWiring::default(),
+        initial_state_seed: None,
     })
     .await
     .unwrap();
@@ -7879,6 +7984,7 @@ async fn state_snapshot_contains_extensions_with_lifecycle() {
         inbox: None,
         is_continuation: false,
         commit: CommitWiring::default(),
+        initial_state_seed: None,
     })
     .await
     .unwrap();
@@ -7945,6 +8051,7 @@ async fn state_snapshot_count_matches_steps_plus_finish() {
         inbox: None,
         is_continuation: false,
         commit: CommitWiring::default(),
+        initial_state_seed: None,
     })
     .await
     .unwrap();
@@ -7994,6 +8101,7 @@ async fn state_snapshot_at_suspension_includes_waiting_status() {
         inbox: None,
         is_continuation: false,
         commit: CommitWiring::default(),
+        initial_state_seed: None,
     })
     .await
     .unwrap();
@@ -8049,6 +8157,7 @@ async fn export_persisted_after_run_has_positive_revision() {
         inbox: None,
         is_continuation: false,
         commit: CommitWiring::default(),
+        initial_state_seed: None,
     })
     .await
     .unwrap();
@@ -8081,6 +8190,7 @@ async fn checkpoint_store_receives_data() {
     let runtime = make_runtime();
     let resolver = FixedResolver::new(agent);
     let checkpoint = Arc::new(InMemoryStore::new());
+    let __coord = awaken_stores::MemoryCommitCoordinator::wrap(checkpoint.clone());
     let sink: Arc<dyn awaken::contract::event_sink::EventSink> = Arc::new(NullEventSink);
     run_agent_loop(AgentLoopParams {
         resolver: &resolver,
@@ -8096,7 +8206,8 @@ async fn checkpoint_store_receives_data() {
         frontend_tools: Vec::new(),
         inbox: None,
         is_continuation: false,
-        commit: CommitWiring::default(),
+        commit: awaken_runtime::loop_runner::CommitWiring::new(Some(&*__coord), None),
+        initial_state_seed: None,
     })
     .await
     .unwrap();
@@ -8138,6 +8249,7 @@ async fn checkpoint_includes_correct_step_count() {
     let runtime = make_runtime();
     let resolver = FixedResolver::new(agent);
     let checkpoint = Arc::new(InMemoryStore::new());
+    let __coord = awaken_stores::MemoryCommitCoordinator::wrap(checkpoint.clone());
     let sink: Arc<dyn awaken::contract::event_sink::EventSink> = Arc::new(NullEventSink);
     run_agent_loop(AgentLoopParams {
         resolver: &resolver,
@@ -8153,7 +8265,8 @@ async fn checkpoint_includes_correct_step_count() {
         frontend_tools: Vec::new(),
         inbox: None,
         is_continuation: false,
-        commit: CommitWiring::default(),
+        commit: awaken_runtime::loop_runner::CommitWiring::new(Some(&*__coord), None),
+        initial_state_seed: None,
     })
     .await
     .unwrap();
@@ -8180,6 +8293,7 @@ async fn checkpoint_contains_state_blob() {
     let runtime = make_runtime();
     let resolver = FixedResolver::new(agent);
     let checkpoint = Arc::new(InMemoryStore::new());
+    let __coord = awaken_stores::MemoryCommitCoordinator::wrap(checkpoint.clone());
     let sink: Arc<dyn awaken::contract::event_sink::EventSink> = Arc::new(NullEventSink);
     run_agent_loop(AgentLoopParams {
         resolver: &resolver,
@@ -8195,7 +8309,8 @@ async fn checkpoint_contains_state_blob() {
         frontend_tools: Vec::new(),
         inbox: None,
         is_continuation: false,
-        commit: CommitWiring::default(),
+        commit: awaken_runtime::loop_runner::CommitWiring::new(Some(&*__coord), None),
+        initial_state_seed: None,
     })
     .await
     .unwrap();
@@ -8225,6 +8340,7 @@ async fn checkpoint_stores_thread_messages() {
     let runtime = make_runtime();
     let resolver = FixedResolver::new(agent);
     let checkpoint = Arc::new(InMemoryStore::new());
+    let __coord = awaken_stores::MemoryCommitCoordinator::wrap(checkpoint.clone());
     let sink: Arc<dyn awaken::contract::event_sink::EventSink> = Arc::new(NullEventSink);
     run_agent_loop(AgentLoopParams {
         resolver: &resolver,
@@ -8240,7 +8356,8 @@ async fn checkpoint_stores_thread_messages() {
         frontend_tools: Vec::new(),
         inbox: None,
         is_continuation: false,
-        commit: CommitWiring::default(),
+        commit: awaken_runtime::loop_runner::CommitWiring::new(Some(&*__coord), None),
+        initial_state_seed: None,
     })
     .await
     .unwrap();
@@ -8310,6 +8427,7 @@ async fn checkpoint_output_supports_child_result_lookup_after_tool_messages() {
     let runtime = make_runtime();
     let resolver = FixedResolver::new(agent);
     let checkpoint = Arc::new(InMemoryStore::new());
+    let __coord = awaken_stores::MemoryCommitCoordinator::wrap(checkpoint.clone());
     let sink: Arc<dyn awaken::contract::event_sink::EventSink> = Arc::new(NullEventSink);
     let result = run_agent_loop(AgentLoopParams {
         resolver: &resolver,
@@ -8325,7 +8443,8 @@ async fn checkpoint_output_supports_child_result_lookup_after_tool_messages() {
         frontend_tools: Vec::new(),
         inbox: None,
         is_continuation: false,
-        commit: CommitWiring::default(),
+        commit: awaken_runtime::loop_runner::CommitWiring::new(Some(&*__coord), None),
+        initial_state_seed: None,
     })
     .await
     .unwrap();
@@ -8404,6 +8523,7 @@ async fn checkpoint_stores_blocked_tool_batch_consistently() {
     );
 
     let checkpoint = Arc::new(InMemoryStore::new());
+    let __coord = awaken_stores::MemoryCommitCoordinator::wrap(checkpoint.clone());
     let sink: Arc<dyn awaken::contract::event_sink::EventSink> = Arc::new(NullEventSink);
     let result = run_agent_loop(AgentLoopParams {
         resolver: &resolver,
@@ -8419,7 +8539,8 @@ async fn checkpoint_stores_blocked_tool_batch_consistently() {
         frontend_tools: Vec::new(),
         inbox: None,
         is_continuation: false,
-        commit: CommitWiring::default(),
+        commit: awaken_runtime::loop_runner::CommitWiring::new(Some(&*__coord), None),
+        initial_state_seed: None,
     })
     .await
     .unwrap();
@@ -8472,6 +8593,7 @@ async fn checkpoint_stores_suspended_tool_batch_consistently() {
     let runtime = make_runtime();
     let resolver = FixedResolver::new(agent);
     let checkpoint = Arc::new(InMemoryStore::new());
+    let __coord = awaken_stores::MemoryCommitCoordinator::wrap(checkpoint.clone());
     let sink: Arc<dyn awaken::contract::event_sink::EventSink> = Arc::new(NullEventSink);
     let result = run_agent_loop(AgentLoopParams {
         resolver: &resolver,
@@ -8487,7 +8609,8 @@ async fn checkpoint_stores_suspended_tool_batch_consistently() {
         frontend_tools: Vec::new(),
         inbox: None,
         is_continuation: false,
-        commit: CommitWiring::default(),
+        commit: awaken_runtime::loop_runner::CommitWiring::new(Some(&*__coord), None),
+        initial_state_seed: None,
     })
     .await
     .unwrap();
@@ -8533,6 +8656,7 @@ async fn checkpoint_records_agent_id() {
     let runtime = make_runtime();
     let resolver = FixedResolver::new(agent);
     let checkpoint = Arc::new(InMemoryStore::new());
+    let __coord = awaken_stores::MemoryCommitCoordinator::wrap(checkpoint.clone());
     let identity = RunIdentity::new(
         "t-1".into(),
         None,
@@ -8557,7 +8681,8 @@ async fn checkpoint_records_agent_id() {
         frontend_tools: Vec::new(),
         inbox: None,
         is_continuation: false,
-        commit: CommitWiring::default(),
+        commit: awaken_runtime::loop_runner::CommitWiring::new(Some(&*__coord), None),
+        initial_state_seed: None,
     })
     .await
     .unwrap();
@@ -8626,6 +8751,7 @@ async fn llm_receives_all_user_messages() {
         inbox: None,
         is_continuation: false,
         commit: CommitWiring::default(),
+        initial_state_seed: None,
     })
     .await
     .unwrap();
@@ -8704,6 +8830,7 @@ async fn tool_results_visible_in_next_step_messages() {
         inbox: None,
         is_continuation: false,
         commit: CommitWiring::default(),
+        initial_state_seed: None,
     })
     .await
     .unwrap();
@@ -8808,6 +8935,7 @@ async fn context_injection_additive_not_destructive() {
         inbox: None,
         is_continuation: false,
         commit: CommitWiring::default(),
+        initial_state_seed: None,
     })
     .await
     .unwrap();
@@ -8873,6 +9001,7 @@ async fn token_usage_accumulates_across_steps() {
         inbox: None,
         is_continuation: false,
         commit: CommitWiring::default(),
+        initial_state_seed: None,
     })
     .await
     .unwrap();
@@ -8942,6 +9071,7 @@ async fn tool_descriptors_present_even_when_unused() {
         inbox: None,
         is_continuation: false,
         commit: CommitWiring::default(),
+        initial_state_seed: None,
     })
     .await
     .unwrap();
@@ -9046,6 +9176,7 @@ async fn run_start_and_run_end_hooks_fire_exactly_once() {
         inbox: None,
         is_continuation: false,
         commit: CommitWiring::default(),
+        initial_state_seed: None,
     })
     .await
     .unwrap();
@@ -9125,7 +9256,6 @@ async fn step_start_fires_per_step() {
     let agent = ResolvedAgent::new("test", "m", "sys", llm).with_tool(Arc::new(EchoTool));
     let runtime = make_runtime();
     let resolver = FixedResolver::with_plugins(agent, vec![Arc::new(StepCounterPlugin(counter))]);
-
     let sink: Arc<dyn awaken::contract::event_sink::EventSink> = Arc::new(NullEventSink);
     let result = run_agent_loop(AgentLoopParams {
         resolver: &resolver,
@@ -9142,6 +9272,7 @@ async fn step_start_fires_per_step() {
         inbox: None,
         is_continuation: false,
         commit: CommitWiring::default(),
+        initial_state_seed: None,
     })
     .await
     .unwrap();
@@ -9158,7 +9289,6 @@ async fn step_start_fires_per_step() {
 #[tokio::test]
 async fn before_inference_hook_sees_step_count() {
     let step_counts_at_inference = Arc::new(Mutex::new(Vec::<u32>::new()));
-
     struct StepCountObserver(Arc<Mutex<Vec<u32>>>);
     impl Clone for StepCountObserver {
         fn clone(&self) -> Self {
@@ -9197,7 +9327,6 @@ async fn before_inference_hook_sees_step_count() {
     }
 
     let observer = StepCountObserver(Arc::clone(&step_counts_at_inference));
-
     let llm = Arc::new(ScriptedLlm::new(vec![
         StreamResult {
             content: vec![],
@@ -9236,6 +9365,7 @@ async fn before_inference_hook_sees_step_count() {
         inbox: None,
         is_continuation: false,
         commit: CommitWiring::default(),
+        initial_state_seed: None,
     })
     .await
     .unwrap();
@@ -9318,7 +9448,6 @@ async fn plugin_context_mutation_visible_in_same_step() {
         requests: Mutex::new(Vec::new()),
     });
     let llm_ref = Arc::clone(&llm);
-
     let agent = ResolvedAgent::new("test", "m", "sys", llm);
     let runtime = make_runtime();
     let resolver = FixedResolver::with_plugins(
@@ -9342,6 +9471,7 @@ async fn plugin_context_mutation_visible_in_same_step() {
         inbox: None,
         is_continuation: false,
         commit: CommitWiring::default(),
+        initial_state_seed: None,
     })
     .await
     .unwrap();
@@ -9361,7 +9491,6 @@ async fn plugin_context_mutation_visible_in_same_step() {
 async fn multiple_plugins_same_phase_both_fire() {
     let count_a = Arc::new(Mutex::new(0u32));
     let count_b = Arc::new(Mutex::new(0u32));
-
     struct SimpleCounter(Arc<Mutex<u32>>);
     #[async_trait]
     impl PhaseHook for SimpleCounter {
@@ -9438,6 +9567,7 @@ async fn multiple_plugins_same_phase_both_fire() {
         inbox: None,
         is_continuation: false,
         commit: CommitWiring::default(),
+        initial_state_seed: None,
     })
     .await
     .unwrap();
@@ -9501,11 +9631,9 @@ async fn tool_result_message_contains_output() {
         call_count: Mutex::new(0),
     });
     let llm_ref = Arc::clone(&llm);
-
     let agent = ResolvedAgent::new("test", "m", "sys", llm).with_tool(Arc::new(EchoTool));
     let runtime = make_runtime();
     let resolver = FixedResolver::new(agent);
-
     let sink: Arc<dyn awaken::contract::event_sink::EventSink> = Arc::new(NullEventSink);
     run_agent_loop(AgentLoopParams {
         resolver: &resolver,
@@ -9522,6 +9650,7 @@ async fn tool_result_message_contains_output() {
         inbox: None,
         is_continuation: false,
         commit: CommitWiring::default(),
+        initial_state_seed: None,
     })
     .await
     .unwrap();
@@ -9584,7 +9713,6 @@ async fn failed_tool_result_message_indicates_error() {
         call_count: Mutex::new(0),
     });
     let llm_ref = Arc::clone(&llm);
-
     let agent = ResolvedAgent::new("test", "m", "sys", llm).with_tool(Arc::new(FailingTool));
     let runtime = make_runtime();
     let resolver = FixedResolver::new(agent);
@@ -9605,6 +9733,7 @@ async fn failed_tool_result_message_indicates_error() {
         inbox: None,
         is_continuation: false,
         commit: CommitWiring::default(),
+        initial_state_seed: None,
     })
     .await
     .unwrap();
@@ -9690,6 +9819,7 @@ async fn unknown_tool_result_indicates_not_found() {
         inbox: None,
         is_continuation: false,
         commit: CommitWiring::default(),
+        initial_state_seed: None,
     })
     .await
     .unwrap();
@@ -9747,6 +9877,7 @@ async fn tool_call_start_emitted_before_done() {
         inbox: None,
         is_continuation: false,
         commit: CommitWiring::default(),
+        initial_state_seed: None,
     })
     .await
     .unwrap();
@@ -9811,6 +9942,7 @@ async fn multiple_tools_each_get_start_done_pair() {
         inbox: None,
         is_continuation: false,
         commit: CommitWiring::default(),
+        initial_state_seed: None,
     })
     .await
     .unwrap();
@@ -9890,6 +10022,7 @@ async fn replay_tool_call_executes_original_tool() {
         inbox: None,
         is_continuation: false,
         commit: CommitWiring::default(),
+        initial_state_seed: None,
     })
     .await
     .unwrap();
@@ -9947,6 +10080,7 @@ async fn replay_tool_call_executes_original_tool() {
         inbox: None,
         is_continuation: false,
         commit: CommitWiring::default(),
+        initial_state_seed: None,
     })
     .await
     .unwrap();
@@ -9989,6 +10123,7 @@ async fn use_decision_records_decision_payload_without_rewriting_arguments() {
         inbox: None,
         is_continuation: false,
         commit: CommitWiring::default(),
+        initial_state_seed: None,
     })
     .await
     .unwrap();
@@ -10055,6 +10190,7 @@ async fn pass_decision_records_decision_payload_without_rewriting_arguments() {
         inbox: None,
         is_continuation: false,
         commit: CommitWiring::default(),
+        initial_state_seed: None,
     })
     .await
     .unwrap();
@@ -10121,6 +10257,7 @@ async fn cancel_resume_transitions_to_cancelled_status() {
         inbox: None,
         is_continuation: false,
         commit: CommitWiring::default(),
+        initial_state_seed: None,
     })
     .await
     .unwrap();
@@ -10178,6 +10315,7 @@ async fn resume_with_empty_decision_result_succeeds() {
         inbox: None,
         is_continuation: false,
         commit: CommitWiring::default(),
+        initial_state_seed: None,
     })
     .await
     .unwrap();
@@ -10259,6 +10397,7 @@ async fn three_step_events_have_correct_overall_sequence() {
         inbox: None,
         is_continuation: false,
         commit: CommitWiring::default(),
+        initial_state_seed: None,
     })
     .await
     .unwrap();
@@ -10333,6 +10472,7 @@ async fn suspend_on_step_two_preserves_first_step_context() {
         inbox: None,
         is_continuation: false,
         commit: CommitWiring::default(),
+        initial_state_seed: None,
     })
     .await
     .unwrap();
@@ -10417,6 +10557,7 @@ async fn error_on_third_step_after_two_successful_steps() {
         inbox: None,
         is_continuation: false,
         commit: CommitWiring::default(),
+        initial_state_seed: None,
     })
     .await;
 
@@ -10481,6 +10622,7 @@ async fn mixed_tool_counts_per_step() {
         inbox: None,
         is_continuation: false,
         commit: CommitWiring::default(),
+        initial_state_seed: None,
     })
     .await
     .unwrap();
@@ -10528,6 +10670,7 @@ async fn full_suspend_resume_complete_lifecycle() {
         inbox: None,
         is_continuation: false,
         commit: CommitWiring::default(),
+        initial_state_seed: None,
     })
     .await
     .unwrap();
@@ -10583,6 +10726,7 @@ async fn full_suspend_resume_complete_lifecycle() {
         inbox: None,
         is_continuation: false,
         commit: CommitWiring::default(),
+        initial_state_seed: None,
     })
     .await
     .unwrap();
@@ -10637,6 +10781,7 @@ async fn inference_error_produces_error_termination() {
         inbox: None,
         is_continuation: false,
         commit: CommitWiring::default(),
+        initial_state_seed: None,
     })
     .await;
 
@@ -10723,6 +10868,7 @@ async fn token_usage_values_accumulated_across_steps() {
         inbox: None,
         is_continuation: false,
         commit: CommitWiring::default(),
+        initial_state_seed: None,
     })
     .await
     .unwrap();
@@ -10924,6 +11070,7 @@ async fn awaiting_tasks_prevents_done_when_tasks_running() {
         inbox: None,
         is_continuation: false,
         commit: CommitWiring::default(),
+        initial_state_seed: None,
     })
     .await
     .unwrap();
@@ -10995,6 +11142,7 @@ async fn natural_end_without_tasks_completes_normally() {
         inbox: None,
         is_continuation: false,
         commit: CommitWiring::default(),
+        initial_state_seed: None,
     })
     .await
     .unwrap();
@@ -11065,6 +11213,7 @@ async fn awaiting_tasks_preserves_step_count() {
         inbox: None,
         is_continuation: false,
         commit: CommitWiring::default(),
+        initial_state_seed: None,
     })
     .await
     .unwrap();
@@ -11138,6 +11287,7 @@ async fn awaiting_tasks_final_step_should_complete_once() {
         inbox: None,
         is_continuation: false,
         commit: CommitWiring::default(),
+        initial_state_seed: None,
     })
     .await
     .unwrap();
@@ -11269,6 +11419,7 @@ async fn inbox_messages_injected_before_natural_end() {
         inbox: Some(inbox_rx),
         is_continuation: false,
         commit: CommitWiring::default(),
+        initial_state_seed: None,
     })
     .await
     .unwrap();
@@ -11412,6 +11563,7 @@ async fn mid_stream_r2_recovery_injects_cancelled_tool_hint_into_next_turn() {
         inbox: None,
         is_continuation: false,
         commit: CommitWiring::default(),
+        initial_state_seed: None,
     })
     .await
     .unwrap();
@@ -11540,6 +11692,7 @@ async fn mid_stream_recovery_without_parallel_tools_does_not_inject_hint() {
         inbox: None,
         is_continuation: false,
         commit: CommitWiring::default(),
+        initial_state_seed: None,
     })
     .await
     .unwrap();
@@ -11667,6 +11820,7 @@ async fn malformed_tool_args_on_end_turn_injects_user_hint_for_next_turn() {
         inbox: None,
         is_continuation: false,
         commit: CommitWiring::default(),
+        initial_state_seed: None,
     })
     .await
     .unwrap();
@@ -11739,6 +11893,7 @@ async fn malformed_tool_args_hint_absent_when_all_tools_have_valid_json() {
         inbox: None,
         is_continuation: false,
         commit: CommitWiring::default(),
+        initial_state_seed: None,
     })
     .await
     .unwrap();

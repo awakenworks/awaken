@@ -87,7 +87,7 @@ async fn main() {
     });
 
     let store = Arc::new(InMemoryStore::new());
-    let runtime = AgentRuntime::new(resolver).with_thread_run_store(store);
+    let runtime = AgentRuntime::new(resolver).with_in_memory_thread_run_store(store);
 
     let thread_id = "conversation-1";
 
@@ -106,7 +106,7 @@ async fn main() {
         );
 
         let request =
-            RunRequest::new(thread_id, vec![Message::user(*user_msg)]).with_agent_id("chat");
+            RunActivation::new(thread_id, vec![Message::user(*user_msg)]).with_agent_id("chat");
 
         match runtime.run(request, Arc::new(ConsoleSink)).await {
             Ok(result) => {

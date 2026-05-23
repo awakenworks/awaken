@@ -440,7 +440,7 @@ async fn emit_mcp_progress(
 fn map_mcp_error(e: McpTransportError) -> ToolError {
     match e {
         McpTransportError::UnknownTool(name) => ToolError::NotFound(name),
-        McpTransportError::Timeout(msg) => ToolError::ExecutionFailed(format!("timeout: {}", msg)),
+        McpTransportError::Timeout(msg) => ToolError::Timeout(msg),
         McpTransportError::TransportError(msg) if msg == CANCELLED_BY_CLIENT => {
             ToolError::Cancelled("client cancelled the MCP request".to_string())
         }
@@ -4502,7 +4502,7 @@ mod tests {
     #[test]
     fn map_mcp_error_timeout() {
         let err = map_mcp_error(McpTransportError::Timeout("30s".to_string()));
-        assert!(matches!(err, ToolError::ExecutionFailed(msg) if msg.contains("timeout")));
+        assert!(matches!(err, ToolError::Timeout(msg) if msg == "30s"));
     }
 
     #[test]

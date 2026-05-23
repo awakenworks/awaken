@@ -22,7 +22,7 @@ use awaken_contract::contract::tool::{
     Tool, ToolCallContext, ToolDescriptor, ToolError, ToolOutput, ToolResult,
 };
 use awaken_ext_generative_ui::{openui, run_streaming_subagent};
-use awaken_runtime::loop_runner::{AgentLoopParams, build_agent_env, run_agent_loop};
+use awaken_runtime::loop_runner::{AgentLoopParams, CommitWiring, build_agent_env, run_agent_loop};
 use awaken_runtime::plugins::Plugin;
 use awaken_runtime::{AgentResolver, PhaseRuntime, ResolvedAgent, RuntimeError, StateStore};
 
@@ -303,6 +303,7 @@ async fn main() {
         frontend_tools: Vec::new(),
         inbox: None,
         is_continuation: false,
+        commit: CommitWiring::default(),
         initial_state_seed: None,
     })
     .await

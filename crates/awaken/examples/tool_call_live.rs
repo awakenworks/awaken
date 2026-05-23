@@ -17,6 +17,7 @@ use awaken::engine::GenaiExecutor;
 use awaken::loop_runner::{AgentLoopParams, LoopStatePlugin, build_agent_env, run_agent_loop};
 use awaken::registry::ResolvedAgent;
 use awaken::*;
+use awaken_runtime::loop_runner::CommitWiring;
 use serde_json::{Value, json};
 use std::sync::Arc;
 
@@ -217,6 +218,7 @@ async fn main() {
         frontend_tools: Vec::new(),
         inbox: None,
         is_continuation: false,
+        commit: CommitWiring::default(),
         initial_state_seed: None,
     })
     .await;

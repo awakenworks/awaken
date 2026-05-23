@@ -479,8 +479,15 @@ impl MetricsSink for PersistentSink {
             }
             Err(e) => {
                 let pending: Vec<_> = self.pending.lock().drain(..).collect();
-                if !pending.is_empty() {
-                    let _ = self.persist_to_disk(&pending);
+                if !pending.is_empty()
+                    && let Err(spill_err) = self.persist_to_disk(&pending)
+                {
+                    tracing::error!(
+                        spill_error = %spill_err,
+                        flush_error = %e,
+                        count = pending.len(),
+                        "trace spill-to-disk failed after flush error; events lost",
+                    );
                 }
                 Err(e)
             }

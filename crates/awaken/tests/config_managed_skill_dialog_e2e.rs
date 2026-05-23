@@ -16,7 +16,7 @@ use awaken::ext_skills::{
 };
 use awaken::server::services::config_runtime::{ConfigRuntimeError, ConfigRuntimeManager};
 use awaken::{
-    AgentRuntime, AgentRuntimeBuilder, Plugin, RunRequest, SkillArgumentSpec, SkillSpec,
+    AgentRuntime, AgentRuntimeBuilder, Plugin, RunActivation, SkillArgumentSpec, SkillSpec,
     SkillSpecSink,
 };
 use awaken_contract::{
@@ -115,7 +115,7 @@ async fn build_dialog_harness(responses: Vec<StreamResult>) -> DialogHarness {
 
     let runtime = Arc::new(
         AgentRuntimeBuilder::new()
-            .with_thread_run_store(store.clone())
+            .with_in_memory_thread_run_store(store.clone())
             .with_plugin(
                 "skills-discovery",
                 Arc::new(SkillDiscoveryPlugin::new(managed_skills.clone())) as Arc<dyn Plugin>,
@@ -239,7 +239,7 @@ async fn run_dialog(
     harness
         .runtime
         .run_to_completion(
-            RunRequest::new(thread_id, vec![Message::user(prompt)]).with_agent_id("assistant"),
+            RunActivation::new(thread_id, vec![Message::user(prompt)]).with_agent_id("assistant"),
         )
         .await
         .expect("dialog run should succeed")

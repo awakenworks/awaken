@@ -344,6 +344,7 @@ async fn skill_activation_elevates_permission_for_dangerous_tool() {
         inbox: None,
         is_continuation: false,
         commit: CommitWiring::default(),
+        initial_state_seed: None,
     })
     .await
     .unwrap();
@@ -446,6 +447,7 @@ async fn dangerous_tool_blocked_without_skill_activation() {
         inbox: None,
         is_continuation: false,
         commit: CommitWiring::default(),
+        initial_state_seed: None,
     })
     .await
     .unwrap();
@@ -538,6 +540,7 @@ async fn permission_elevation_persists_across_steps_within_run() {
         inbox: None,
         is_continuation: false,
         commit: CommitWiring::default(),
+        initial_state_seed: None,
     })
     .await
     .unwrap();
@@ -645,6 +648,7 @@ async fn same_step_skill_activation_unlocks_guarded_tool() {
         inbox: None,
         is_continuation: false,
         commit: CommitWiring::default(),
+        initial_state_seed: None,
     })
     .await
     .unwrap();
@@ -722,6 +726,7 @@ async fn same_step_skill_activation_unlocks_guarded_tool_with_sequential_executo
         inbox: None,
         is_continuation: false,
         commit: CommitWiring::default(),
+        initial_state_seed: None,
     })
     .await
     .unwrap();
@@ -787,6 +792,7 @@ async fn same_step_skill_activation_preserves_other_parallel_tools() {
         inbox: None,
         is_continuation: false,
         commit: CommitWiring::default(),
+        initial_state_seed: None,
     })
     .await
     .unwrap();
@@ -869,6 +875,7 @@ async fn same_step_skill_activation_allows_multiple_guarded_tools() {
         inbox: None,
         is_continuation: false,
         commit: CommitWiring::default(),
+        initial_state_seed: None,
     })
     .await
     .unwrap();
@@ -950,6 +957,7 @@ async fn same_step_skill_activation_preserves_allowed_tool_before_skill() {
         inbox: None,
         is_continuation: false,
         commit: CommitWiring::default(),
+        initial_state_seed: None,
     })
     .await
     .unwrap();
@@ -1028,6 +1036,7 @@ async fn guarded_tool_before_skill_blocks_same_step_activation_attempt() {
         inbox: None,
         is_continuation: false,
         commit: CommitWiring::default(),
+        initial_state_seed: None,
     })
     .await
     .unwrap();
@@ -1112,6 +1121,7 @@ async fn allowed_prefix_commits_before_later_guarded_tool_blocks() {
         inbox: None,
         is_continuation: false,
         commit: CommitWiring::default(),
+        initial_state_seed: None,
     })
     .await
     .unwrap();
@@ -1199,6 +1209,7 @@ async fn standalone_skill_activation_advances_to_next_step() {
         inbox: None,
         is_continuation: false,
         commit: CommitWiring::default(),
+        initial_state_seed: None,
     })
     .await
     .unwrap();
@@ -1272,6 +1283,7 @@ async fn standalone_skill_activation_injects_active_instructions_on_next_inferen
         inbox: None,
         is_continuation: false,
         commit: CommitWiring::default(),
+        initial_state_seed: None,
     })
     .await
     .unwrap();
