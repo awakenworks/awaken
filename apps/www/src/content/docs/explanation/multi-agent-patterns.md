@@ -58,6 +58,12 @@ The `A2aBackend` handles the A2A protocol lifecycle:
 
 If the remote agent times out or fails, the `BackendRunStatus` reflects the failure and the parent agent receives an error tool result.
 
+## Programmatic Sub-Agent Invocation
+
+When you are writing a custom `Tool` that needs to delegate to another agent — and especially when you need parent ↔ child state to flow with strict control — use [`run_child_agent`](/awaken/how-to/invoke-sub-agent-from-tool/) from `awaken_runtime::child_agent`. It is the canonical lower-level helper that both `AgentTool` and `run_streaming_subagent` delegate to.
+
+`run_child_agent` accepts `initial_state_seed: Option<PersistedState>` for parent → child seeding and returns the child's `BackendRunResult.state` (a `PersistedState`) for the parent tool to decode and surface as a `StateCommand` on its `ToolOutput`. State flows back through the same `ToolOutput.command` channel any other tool uses — there is no separate "sub-agent export" mechanism.
+
 ## Sub-Agent Patterns
 
 ### Sequential Delegation
@@ -143,6 +149,7 @@ This trait is the extension point for custom local or remote execution backends 
 
 ## See Also
 
+- [Invoke a Sub-Agent from a Tool](/awaken/how-to/invoke-sub-agent-from-tool/) -- the operational guide for `run_child_agent`
 - [A2A Protocol Reference](/awaken/reference/protocols/a2a/) -- wire protocol details
 - [Architecture](/awaken/explanation/architecture/) -- runtime and resolver layers
 - [Tool and Plugin Boundary](/awaken/explanation/tool-and-plugin-boundary/) -- where delegation tools fit

@@ -51,6 +51,12 @@ agent 可以通过 `delegates` 声明它允许委托的子 agent：
 
 `A2aBackend` 会发送 `message:send`，读取返回的 `task.id` 并轮询任务状态，再把最终结果包装成 `BackendRunResult` / `ToolResult` 返回给父 agent。远端超时、失败、等待输入、等待认证和取消会保留在 `BackendRunStatus` 中。
 
+## 在工具里以代码方式调用 Sub-Agent
+
+当你写一个自定义 `Tool` 需要委托给另一个 agent，特别是需要严格控制父 ↔ 子 state 流动时，使用 `awaken_runtime::child_agent` 的 [`run_child_agent`](/awaken/zh-cn/how-to/invoke-sub-agent-from-tool/)。它是 `AgentTool` 与 `run_streaming_subagent` 共同依赖的底层辅助函数。
+
+`run_child_agent` 通过 `initial_state_seed: Option<PersistedState>` 接受父→子的初始状态注入，并通过 `BackendRunResult.state`（一个 `PersistedState`）把子的终态返回给父工具去解码并以 `StateCommand` 形式塞进 `ToolOutput`。子→父 state 走的是普通工具就在用的 `ToolOutput.command` 通路，没有单独的"sub-agent 导出"机制。
+
 ## Sub-Agent 模式
 
 ### 串行委托
@@ -127,6 +133,7 @@ pub trait ExecutionBackend: Send + Sync {
 
 ## 另见
 
+- [在工具里调用 Sub-Agent](/awaken/zh-cn/how-to/invoke-sub-agent-from-tool/) —— `run_child_agent` 操作指南
 - [A2A 协议](/awaken/zh-cn/reference/protocols/a2a/)
 - [架构](/awaken/zh-cn/explanation/architecture/)
 - [Tool 与 Plugin 的边界](/awaken/zh-cn/explanation/tool-and-plugin-boundary/)

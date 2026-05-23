@@ -228,6 +228,101 @@ async fn missing_seed_yields_no_value_in_child() {
 }
 
 #[tokio::test]
+async fn tool_round_trips_child_state_back_to_parent_store() {
+    // Demonstrates the full developer pattern: a tool's `execute` seeds the
+    // child with parent-derived state, runs it, decodes child terminal state,
+    // and returns a `StateCommand` that the loop runner would commit to the
+    // parent store. Here we commit it manually to a stand-in parent store
+    // and assert it landed.
+
+    use awaken_runtime::{MutationBatch, StateCommand, StateStore};
+
+    // —— Parent-side plugin: registers a key the tool will write into ——
+    struct ParentSummaryKey;
+    impl StateKey for ParentSummaryKey {
+        const KEY: &'static str = "test.parent_summary";
+        type Value = String;
+        type Update = String;
+        fn apply(value: &mut Self::Value, update: Self::Update) {
+            *value = update;
+        }
+    }
+    struct ParentSummaryPlugin;
+    impl Plugin for ParentSummaryPlugin {
+        fn descriptor(&self) -> PluginDescriptor {
+            PluginDescriptor {
+                name: "parent-summary-plugin",
+            }
+        }
+        fn register(&self, r: &mut PluginRegistrar) -> Result<(), StateError> {
+            r.register_key::<ParentSummaryKey>(StateKeyOptions {
+                persistent: true,
+                ..Default::default()
+            })
+        }
+    }
+
+    // —— Child runs once and ends naturally; the seed value flows through to
+    //    its final persisted state ——
+    let llm = Arc::new(ScriptedLlm::new(vec![StreamResult {
+        content: vec![ContentBlock::text("done")],
+        tool_calls: vec![],
+        usage: None,
+        stop_reason: Some(StopReason::EndTurn),
+        has_incomplete_tool_calls: false,
+    }]));
+    let resolver = make_resolver(llm);
+
+    // —— Tool author code path begins here ——
+    // ① Build the seed (typed) from "parent-derived" inputs.
+    let seed_value: i64 = 7;
+    let seed = seed_with(seed_value);
+
+    // ② Run the child.
+    let outcome = run_child_agent(ChildAgentParams {
+        resolver: &resolver,
+        agent_id: "child",
+        messages: vec![Message::user("kickoff")],
+        parent: BackendParentContext::default(),
+        initial_state_seed: Some(seed),
+        sink: Arc::new(NullEventSink),
+        control: BackendControl::default(),
+        policy: BackendDelegatePolicy::default(),
+    })
+    .await
+    .expect("child run should succeed");
+    assert!(matches!(outcome.status, BackendRunStatus::Completed));
+
+    // ③ Read child terminal state, decode, build the parent StateCommand.
+    let mut cmd = StateCommand::new();
+    if matches!(outcome.status, BackendRunStatus::Completed)
+        && let Some(state) = &outcome.state
+        && let Some(json) = state.extensions.get(SeedKey::KEY)
+    {
+        let observed: i64 = serde_json::from_value(json.clone()).unwrap();
+        let mut batch = MutationBatch::new();
+        batch.update::<ParentSummaryKey>(format!("child observed {observed}"));
+        cmd.patch.extend(batch).unwrap();
+    }
+    assert!(
+        !cmd.is_empty(),
+        "tool should have produced a non-empty StateCommand"
+    );
+
+    // —— Stand in for the loop runner: commit the StateCommand to a parent
+    //    StateStore and read back the typed value. ——
+    let parent_store = StateStore::new();
+    parent_store.install_plugin(ParentSummaryPlugin).unwrap();
+    parent_store.commit(cmd.patch).unwrap();
+
+    assert_eq!(
+        parent_store.read::<ParentSummaryKey>().as_deref(),
+        Some("child observed 7"),
+        "child's terminal state should round-trip into parent state",
+    );
+}
+
+#[tokio::test]
 async fn unknown_seed_key_fails_the_child_run() {
     let llm = Arc::new(ScriptedLlm::new(vec![]));
     let resolver = make_resolver(llm);
