@@ -4,19 +4,19 @@ use async_trait::async_trait;
 use awaken_contract::contract::identity::{RunIdentity, RunOrigin};
 use awaken_contract::contract::lifecycle::TerminationReason;
 
-use crate::loop_runner::{AgentLoopParams, prepare_resume, run_agent_loop};
+use crate::loop_runner::{AgentLoopParams, CommitWiring, prepare_resume, run_agent_loop};
 use crate::registry::ResolvedAgent;
 use crate::state::StateStore;
 
 use super::{
-    BackendCapabilities, BackendDelegateContinuation, BackendDelegatePersistence,
-    BackendDelegateRunRequest, BackendRootRunRequest, BackendRunOutput, BackendRunResult,
-    BackendRunStatus, ExecutionBackend, ExecutionBackendError,
+    BackendDelegateContinuation, BackendDelegatePersistence, BackendDelegateRunRequest,
+    BackendRootRunRequest, BackendRunOutput, BackendRunResult, BackendRunStatus, ExecutionBackend,
+    ExecutionBackendError,
 };
 
 #[cfg(feature = "background")]
 struct DelegateResolver<'a> {
-    inner: &'a dyn crate::registry::ExecutionResolver,
+    inner: &'a dyn crate::registry::AgentResolver,
     agent_id: &'a str,
     resolved: ResolvedAgent,
     context: Option<crate::extensions::background::BackgroundTaskExecutionContext>,
@@ -24,7 +24,7 @@ struct DelegateResolver<'a> {
 
 #[cfg(not(feature = "background"))]
 struct DelegateResolver<'a> {
-    inner: &'a dyn crate::registry::ExecutionResolver,
+    inner: &'a dyn crate::registry::AgentResolver,
     agent_id: &'a str,
     resolved: ResolvedAgent,
 }
@@ -32,7 +32,7 @@ struct DelegateResolver<'a> {
 #[cfg(feature = "background")]
 impl<'a> DelegateResolver<'a> {
     fn new(
-        inner: &'a dyn crate::registry::ExecutionResolver,
+        inner: &'a dyn crate::registry::AgentResolver,
         agent_id: &'a str,
         resolved: ResolvedAgent,
         context: Option<crate::extensions::background::BackgroundTaskExecutionContext>,
@@ -64,30 +64,34 @@ impl crate::registry::AgentResolver for DelegateResolver<'_> {
             .map(|resolved| self.with_background_control(resolved))
     }
 
-    fn agent_ids(&self) -> Vec<String> {
-        self.inner.agent_ids()
-    }
-}
-
-#[cfg(feature = "background")]
-impl crate::registry::ExecutionResolver for DelegateResolver<'_> {
     fn resolve_execution(
         &self,
         agent_id: &str,
-    ) -> Result<crate::registry::ResolvedExecution, crate::RuntimeError> {
+    ) -> Result<crate::resolution::ExecutionPlan, crate::RuntimeError> {
         if agent_id == self.agent_id {
-            return Ok(crate::registry::ResolvedExecution::local(
-                self.resolved.clone(),
+            return Ok(crate::resolution::ExecutionPlan::from_resolved_agent(
+                &self.resolved,
             ));
         }
-        self.inner.resolve_execution(agent_id)
+        match self.inner.resolve_execution(agent_id)? {
+            crate::resolution::ExecutionPlan::Local(agent) => Ok(
+                crate::resolution::ExecutionPlan::Local(Box::new(
+                    self.with_background_control(*agent),
+                )),
+            ),
+            other => Ok(other),
+        }
+    }
+
+    fn agent_ids(&self) -> Vec<String> {
+        self.inner.agent_ids()
     }
 }
 
 #[cfg(not(feature = "background"))]
 impl<'a> DelegateResolver<'a> {
     fn new(
-        inner: &'a dyn crate::registry::ExecutionResolver,
+        inner: &'a dyn crate::registry::AgentResolver,
         agent_id: &'a str,
         resolved: ResolvedAgent,
     ) -> Self {
@@ -108,26 +112,22 @@ impl crate::registry::AgentResolver for DelegateResolver<'_> {
         self.inner.resolve(agent_id)
     }
 
-    fn agent_ids(&self) -> Vec<String> {
-        self.inner.agent_ids()
-    }
-}
-
-#[cfg(not(feature = "background"))]
-impl crate::registry::ExecutionResolver for DelegateResolver<'_> {
     fn resolve_execution(
         &self,
         agent_id: &str,
-    ) -> Result<crate::registry::ResolvedExecution, crate::RuntimeError> {
+    ) -> Result<crate::resolution::ExecutionPlan, crate::RuntimeError> {
         if agent_id == self.agent_id {
-            return Ok(crate::registry::ResolvedExecution::local(
-                self.resolved.clone(),
+            return Ok(crate::resolution::ExecutionPlan::from_resolved_agent(
+                &self.resolved,
             ));
         }
         self.inner.resolve_execution(agent_id)
     }
-}
 
+    fn agent_ids(&self) -> Vec<String> {
+        self.inner.agent_ids()
+    }
+}
 /// Local runtime backend for executing the standard loop in-process.
 pub struct LocalBackend;
 
@@ -155,12 +155,8 @@ impl Default for LocalBackend {
 
 #[async_trait]
 impl ExecutionBackend for LocalBackend {
-    fn capabilities(&self) -> BackendCapabilities {
-        // Local is the only backend that actually applies `state_seed`
-        // before kicking off the child loop — see `execute_delegate`.
-        let mut caps = BackendCapabilities::full();
-        caps.delegate_state_seed = true;
-        caps
+    fn capabilities(&self) -> crate::resolution::BackendProfile {
+        crate::resolution::BackendProfile::full_local()
     }
 
     async fn execute_delegate(
@@ -208,6 +204,7 @@ impl LocalBackend {
                 runtime: phase_runtime,
                 sink: request.sink,
                 checkpoint_store: request.checkpoint_store,
+                commit: request.commit,
                 messages: request.messages,
                 run_identity,
                 cancellation_token: request.control.cancellation_token,
@@ -282,8 +279,6 @@ impl LocalBackend {
         let phase_runtime = crate::phase::PhaseRuntime::new(store.clone())
             .map_err(|error| ExecutionBackendError::ExecutionFailed(error.to_string()))?;
 
-        let state_seed = request.state_seed;
-
         let (owner_inbox, inbox_receiver) = {
             let (sender, receiver) = crate::inbox::inbox_channel();
             (Some(sender), receiver)
@@ -318,6 +313,7 @@ impl LocalBackend {
                 ))
                 .map_err(|error| ExecutionBackendError::ExecutionFailed(error.to_string()))?;
         }
+
         #[cfg(feature = "background")]
         let background_cancel_managers = {
             let mut managers =
@@ -338,9 +334,6 @@ impl LocalBackend {
         #[cfg(not(feature = "background"))]
         let delegate_resolver =
             DelegateResolver::new(request.resolver, request.agent_id, initial_resolved.clone());
-        #[cfg(feature = "background")]
-        let child_resolver: &dyn crate::registry::AgentResolver = &delegate_resolver;
-        #[cfg(not(feature = "background"))]
         let child_resolver: &dyn crate::registry::AgentResolver = &delegate_resolver;
 
         let sub_run_id = uuid::Uuid::now_v7().to_string();
@@ -368,6 +361,7 @@ impl LocalBackend {
             runtime: &phase_runtime,
             sink: request.sink,
             checkpoint_store: None,
+            commit: CommitWiring::default(),
             messages: request.messages,
             run_identity,
             cancellation_token: request.control.cancellation_token,
@@ -376,7 +370,7 @@ impl LocalBackend {
             frontend_tools: Vec::new(),
             inbox: Some(inbox_receiver),
             is_continuation: false,
-            initial_state_seed: state_seed,
+            initial_state_seed: request.state_seed,
         })
         .await
         .map_err(ExecutionBackendError::Loop)?;

@@ -8,6 +8,7 @@ pub mod config;
 pub mod diagnostics;
 pub mod lifecycle;
 pub mod memory;
+pub mod pinned;
 pub mod resolve;
 pub mod resolver;
 pub mod snapshot;
@@ -32,11 +33,9 @@ pub use memory::{
     MapAgentSpecRegistry, MapModelRegistry, MapPluginSource, MapProviderRegistry, MapRegistry,
     MapToolRegistry,
 };
+pub use pinned::{PinnedAgentSpecRegistry, PinnedRegistryError, PinnedSpecMap};
 pub use resolve::ResolveError;
-pub use resolver::{
-    AgentResolver, ExecutionResolver, LocalExecutionResolver, ResolvedAgent, ResolvedBackendAgent,
-    ResolvedExecution,
-};
+pub use resolver::{AgentResolver, ResolvedAgent, ResolvedBackendAgent};
 pub use snapshot::{RegistryHandle, RegistrySnapshot};
 #[cfg(feature = "a2a")]
 pub use traits::BackendRegistry;

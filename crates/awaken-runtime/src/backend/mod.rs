@@ -1,10 +1,12 @@
 //! Runtime execution backends and canonical request/result types.
-mod capabilities;
+
+mod checkpoint;
 mod local;
+
+mod capabilities;
 pub use capabilities::{
     BackendCancellationCapability, BackendCapabilities, BackendContinuationCapability,
     BackendOutputCapability, BackendTranscriptCapability, BackendWaitCapability,
-    reject_unsupported_delegate,
 };
 use std::sync::Arc;
 
@@ -13,11 +15,8 @@ use awaken_contract::contract::event::AgentEvent;
 use awaken_contract::contract::event_sink::EventSink;
 use awaken_contract::contract::identity::RunIdentity;
 use awaken_contract::contract::lifecycle::{RunStatus, TerminationReason};
-use awaken_contract::contract::message::{Message, Role, gen_message_id};
-use awaken_contract::contract::storage::{
-    MessageSeqRange, RunMessageInput, RunMessageOutput, RunOutcome, RunRecord, RunWaitingState,
-    ThreadRunStore, WaitingReason,
-};
+use awaken_contract::contract::message::{Message, gen_message_id};
+use awaken_contract::contract::storage::ThreadRunStore;
 use awaken_contract::contract::suspension::ToolCallResume;
 use awaken_contract::contract::tool::ToolDescriptor;
 use awaken_contract::now_ms;
@@ -31,7 +30,11 @@ use crate::cancellation::CancellationToken;
 use crate::inbox::{InboxReceiver, InboxSender};
 use crate::loop_runner::{AgentLoopError, AgentRunResult};
 use crate::phase::PhaseRuntime;
-use crate::registry::{ExecutionResolver, ResolvedBackendAgent, ResolvedExecution};
+use crate::{
+    registry::{AgentResolver, ResolvedBackendAgent},
+    resolution::ExecutionPlan,
+};
+use checkpoint::persist_remote_root_checkpoint;
 
 pub use local::LocalBackend;
 
@@ -44,7 +47,6 @@ pub struct BackendParentContext {
     pub parent_thread_id: Option<String>,
     pub parent_tool_call_id: Option<String>,
 }
-
 /// Cooperative runtime controls exposed to a backend implementation.
 #[derive(Default)]
 pub struct BackendControl {
@@ -58,9 +60,10 @@ pub struct BackendRootRunRequest<'a> {
     pub messages: Vec<Message>,
     pub new_messages: Vec<Message>,
     pub sink: Arc<dyn EventSink>,
-    pub resolver: &'a dyn ExecutionResolver,
+    pub resolver: &'a dyn AgentResolver,
     pub run_identity: RunIdentity,
     pub checkpoint_store: Option<&'a dyn ThreadRunStore>,
+    pub commit: crate::loop_runner::CommitWiring<'a>,
     pub control: BackendControl,
     pub decisions: Vec<(String, ToolCallResume)>,
     pub overrides: Option<awaken_contract::contract::inference::InferenceOverride>,
@@ -110,7 +113,7 @@ pub struct BackendDelegateRunRequest<'a> {
     pub messages: Vec<Message>,
     pub new_messages: Vec<Message>,
     pub sink: Arc<dyn EventSink>,
-    pub resolver: &'a dyn ExecutionResolver,
+    pub resolver: &'a dyn AgentResolver,
     pub parent: BackendParentContext,
     pub control: BackendControl,
     pub policy: BackendDelegatePolicy,
@@ -250,8 +253,8 @@ impl BackendRunStatus {
 /// Backend for executing an agent, either locally or through a remote transport.
 #[async_trait]
 pub trait ExecutionBackend: Send + Sync {
-    fn capabilities(&self) -> BackendCapabilities {
-        BackendCapabilities::remote_stateless_text()
+    fn capabilities(&self) -> crate::resolution::BackendProfile {
+        crate::resolution::BackendProfile::remote_stateless_text()
     }
 
     async fn abort(&self, _request: BackendAbortRequest<'_>) -> Result<(), ExecutionBackendError> {
@@ -310,44 +313,129 @@ pub enum ExecutionBackendError {
 }
 
 pub fn execution_capabilities(
-    execution: &ResolvedExecution,
-) -> Result<BackendCapabilities, ExecutionBackendError> {
+    execution: &ExecutionPlan,
+) -> Result<crate::resolution::BackendProfile, ExecutionBackendError> {
     match execution {
-        ResolvedExecution::Local(_) => Ok(LocalBackend::new().capabilities()),
-        ResolvedExecution::NonLocal(agent) => Ok(agent.backend()?.capabilities()),
+        ExecutionPlan::Local(_) => Ok(LocalBackend::new().capabilities()),
+        ExecutionPlan::Remote(agent) => Ok(agent.backend()?.capabilities()),
     }
 }
 
-pub fn validate_root_execution_request(
-    execution: &ResolvedExecution,
+fn root_request_requirements(
     request: &BackendRootRunRequest<'_>,
+) -> crate::resolution::BackendRequirements {
+    use crate::resolution::{
+        BackendRequirements, ContinuationCapability, DecisionCapability, FrontendToolCapability,
+        OverrideCapability,
+    };
+    let has_seeded = !request.decisions.is_empty();
+    let has_live = request.control.decision_rx.is_some();
+    let decisions = match (has_seeded, has_live) {
+        (false, false) => None,
+        (false, true) => Some(DecisionCapability::LiveOnly),
+        (true, false) => Some(DecisionCapability::DurableResume),
+        (true, true) => Some(DecisionCapability::LiveAndDurable),
+    };
+    BackendRequirements {
+        cancellation: None,
+        continuation: request
+            .is_continuation
+            .then_some(ContinuationCapability::InProcessState),
+        decisions,
+        overrides: request
+            .overrides
+            .as_ref()
+            .map(|_| OverrideCapability::InferenceParams),
+        frontend_tools: (!request.frontend_tools.is_empty())
+            .then_some(FrontendToolCapability::DescriptorsOnly),
+        persistence: None,
+        waits: None,
+        transcript: None,
+        output: None,
+    }
+}
+
+fn delegate_request_requirements(
+    request: &BackendDelegateRunRequest<'_>,
+) -> crate::resolution::BackendRequirements {
+    use crate::resolution::{BackendRequirements, ContinuationCapability};
+    BackendRequirements {
+        cancellation: None,
+        continuation: (request.policy.continuation != BackendDelegateContinuation::Disabled)
+            .then_some(ContinuationCapability::InProcessState),
+        decisions: None,
+        overrides: None,
+        frontend_tools: None,
+        persistence: None,
+        waits: None,
+        transcript: None,
+        output: None,
+    }
+}
+
+fn check_profile(
+    profile: &crate::resolution::BackendProfile,
+    req: &crate::resolution::BackendRequirements,
+    agent_id: &str,
 ) -> Result<(), ExecutionBackendError> {
-    let unsupported = execution_capabilities(execution)?.unsupported_root_features(request);
-    if !unsupported.is_empty() {
+    use crate::resolution::CapabilityDecision;
+    if let CapabilityDecision::Unsupported(mismatches) = profile.check(req) {
+        let listed = mismatches
+            .iter()
+            .map(|m| m.capability)
+            .collect::<Vec<_>>()
+            .join(", ");
         return Err(ExecutionBackendError::ExecutionFailed(format!(
-            "agent '{}' backend does not support: {}",
-            request.agent_id,
-            unsupported.join(", ")
+            "agent '{agent_id}' backend does not support: {listed}"
         )));
     }
     Ok(())
 }
 
+pub fn validate_root_execution_request(
+    execution: &ExecutionPlan,
+    request: &BackendRootRunRequest<'_>,
+) -> Result<(), ExecutionBackendError> {
+    let profile = execution_capabilities(execution)?;
+    check_profile(
+        &profile,
+        &root_request_requirements(request),
+        request.agent_id,
+    )
+}
+
 pub fn validate_delegate_execution_request(
-    execution: &ResolvedExecution,
+    execution: &ExecutionPlan,
     request: &BackendDelegateRunRequest<'_>,
 ) -> Result<(), ExecutionBackendError> {
-    reject_unsupported_delegate(&execution_capabilities(execution)?, request)
+    if request.policy.persistence != BackendDelegatePersistence::Ephemeral {
+        return Err(ExecutionBackendError::ExecutionFailed(format!(
+            "agent '{}' backend does not support: delegate_persistence",
+            request.agent_id
+        )));
+    }
+    if request.state_seed.is_some() && !matches!(execution, ExecutionPlan::Local(_)) {
+        return Err(ExecutionBackendError::ExecutionFailed(format!(
+            "agent '{}' backend does not support: delegate_state_seed",
+            request.agent_id
+        )));
+    }
+    let profile = execution_capabilities(execution)?;
+    check_profile(
+        &profile,
+        &delegate_request_requirements(request),
+        request.agent_id,
+    )
 }
 
 pub async fn execute_resolved_delegate_execution(
-    execution: &ResolvedExecution,
+    execution: &ExecutionPlan,
     request: BackendDelegateRunRequest<'_>,
 ) -> Result<BackendRunResult, ExecutionBackendError> {
     validate_delegate_execution_request(execution, &request)?;
     match execution {
-        ResolvedExecution::Local(agent) => LocalBackend::execute_resolved(agent, request).await,
-        ResolvedExecution::NonLocal(agent) => agent.backend()?.execute_delegate(request).await,
+        ExecutionPlan::Local(agent) => LocalBackend::execute_resolved(agent.as_ref(), request).await,
+        ExecutionPlan::Remote(agent) => agent.backend()?.execute_delegate(request).await,
     }
 }
 
@@ -367,6 +455,7 @@ pub async fn execute_remote_root_lifecycle(
     let run_identity = request.run_identity.clone();
     let sink = request.sink.clone();
     let checkpoint_store = request.checkpoint_store;
+    let commit = request.commit;
     let mut messages = request.messages.clone();
     let input_message_count = messages.len();
     let request_is_continuation = request.is_continuation;
@@ -416,6 +505,7 @@ pub async fn execute_remote_root_lifecycle(
                         String::new(),
                         BackendRunOutput::default(),
                         latest_state,
+                        commit,
                         &sink,
                     )
                     .await;
@@ -464,6 +554,7 @@ pub async fn execute_remote_root_lifecycle(
                 String::new(),
                 BackendRunOutput::default(),
                 latest_state,
+                commit,
                 &sink,
             )
             .await;
@@ -519,6 +610,7 @@ pub async fn execute_remote_root_lifecycle(
         response,
         output,
         state,
+        commit,
         &sink,
     )
     .await
@@ -560,6 +652,7 @@ async fn finish_remote_root_run(
     response: String,
     output: BackendRunOutput,
     state: Option<PersistedState>,
+    commit: crate::loop_runner::CommitWiring<'_>,
     sink: &Arc<dyn EventSink>,
 ) -> Result<AgentRunResult, AgentLoopError> {
     let status = backend_status.durable_run_status(&termination);
@@ -597,6 +690,7 @@ async fn finish_remote_root_run(
         run_identity,
         steps,
         state,
+        commit,
     )
     .await?;
 
@@ -638,180 +732,6 @@ fn state_with_backend_output(
     Some(state)
 }
 
-fn waiting_reason_from_backend_status(status_reason: Option<&str>) -> WaitingReason {
-    match status_reason {
-        Some("input_required" | "user_input_required") => WaitingReason::UserInput,
-        Some("auth_required" | "suspended") => WaitingReason::ToolPermission,
-        Some("awaiting_tasks") => WaitingReason::BackgroundTasks,
-        Some("rate_limit") => WaitingReason::RateLimit,
-        Some("manual_pause") => WaitingReason::ManualPause,
-        _ => WaitingReason::ExternalEvent,
-    }
-}
-
-#[allow(clippy::too_many_arguments)]
-async fn persist_remote_root_checkpoint(
-    storage: Option<&dyn ThreadRunStore>,
-    thread_id: &str,
-    run_id: &str,
-    agent_id: &str,
-    parent_run_id: Option<String>,
-    run_created_at: u64,
-    messages: &[Message],
-    input_message_count: usize,
-    status: RunStatus,
-    termination_reason: Option<TerminationReason>,
-    status_reason: Option<String>,
-    final_output: Option<String>,
-    error_payload: Option<Value>,
-    run_identity: &RunIdentity,
-    steps: usize,
-    state: Option<PersistedState>,
-) -> Result<(), AgentLoopError> {
-    let Some(storage) = storage else {
-        return Ok(());
-    };
-    let previous = storage
-        .load_run(run_id)
-        .await
-        .map_err(|error| AgentLoopError::StorageError(error.to_string()))?;
-    let created_at = previous
-        .as_ref()
-        .map(|record| record.created_at)
-        .unwrap_or(run_created_at / 1000);
-    let finished_at = status.is_terminal().then_some(now_ms() / 1000);
-    let outcome = termination_reason
-        .clone()
-        .map(|termination_reason| RunOutcome {
-            termination_reason,
-            final_output: final_output.clone(),
-            error_payload: error_payload.clone(),
-        });
-    let waiting = (status == RunStatus::Waiting).then(|| RunWaitingState {
-        reason: waiting_reason_from_backend_status(status_reason.as_deref()),
-        ticket_ids: Vec::new(),
-        tickets: Vec::new(),
-        since_dispatch_id: run_identity.trace.dispatch_id.clone(),
-        message: status_reason.clone(),
-    });
-    let (messages, input, output) = materialize_remote_message_log(
-        messages.to_vec(),
-        previous.as_ref(),
-        run_identity,
-        steps,
-        input_message_count,
-    );
-
-    let record = RunRecord {
-        run_id: run_id.to_string(),
-        thread_id: thread_id.to_string(),
-        agent_id: agent_id.to_string(),
-        parent_run_id,
-        registry_manifest: None,
-        activation: None,
-        request: previous.as_ref().and_then(|record| record.request.clone()),
-        input,
-        output,
-        status,
-        termination_reason,
-        final_output,
-        error_payload,
-        dispatch_id: run_identity.trace.dispatch_id.clone(),
-        session_id: run_identity.trace.session_id.clone(),
-        transport_request_id: run_identity.trace.transport_request_id.clone(),
-        waiting,
-        outcome,
-        created_at,
-        started_at: previous
-            .as_ref()
-            .and_then(|record| record.started_at)
-            .or(Some(run_created_at / 1000)),
-        finished_at,
-        updated_at: now_ms() / 1000,
-        steps,
-        input_tokens: 0,
-        output_tokens: 0,
-        state,
-    };
-    storage
-        .checkpoint(thread_id, &messages, &record)
-        .await
-        .map_err(|error| AgentLoopError::StorageError(error.to_string()))
-}
-
-fn materialize_remote_message_log(
-    mut messages: Vec<Message>,
-    previous: Option<&RunRecord>,
-    run_identity: &RunIdentity,
-    steps: usize,
-    input_message_count: usize,
-) -> (
-    Vec<Message>,
-    Option<RunMessageInput>,
-    Option<RunMessageOutput>,
-) {
-    let input = previous
-        .and_then(|record| record.input.clone())
-        .or_else(|| {
-            infer_remote_input_from_initial_messages(&run_identity.thread_id, input_message_count)
-        });
-    let output_start_seq = input
-        .as_ref()
-        .and_then(|input| input.range)
-        .map(|range| range.to_seq.saturating_add(1))
-        .unwrap_or(input_message_count as u64 + 1);
-    let step_index = (steps > 0).then_some(steps.saturating_sub(1) as u32);
-    let mut output_message_ids = Vec::new();
-    let mut output_from_seq = None;
-    let mut output_to_seq = None;
-    for (index, message) in messages.iter_mut().enumerate() {
-        let seq = index as u64 + 1;
-        if seq < output_start_seq || !is_remote_run_output_message(message) {
-            continue;
-        }
-        message.mark_produced_by(&run_identity.run_id, step_index);
-        output_from_seq.get_or_insert(seq);
-        output_to_seq = Some(seq);
-        if let Some(id) = message.id.clone() {
-            output_message_ids.push(id);
-        }
-    }
-    let output = if output_from_seq.is_none() {
-        previous.and_then(|record| record.output.clone())
-    } else {
-        Some(RunMessageOutput {
-            thread_id: run_identity.thread_id.clone(),
-            range: output_from_seq
-                .zip(output_to_seq)
-                .and_then(|(from, to)| MessageSeqRange::new(from, to)),
-            message_ids: output_message_ids,
-        })
-    };
-    (messages, input, output)
-}
-
-fn infer_remote_input_from_initial_messages(
-    thread_id: &str,
-    input_message_count: usize,
-) -> Option<RunMessageInput> {
-    if input_message_count == 0 {
-        return None;
-    }
-    let to_seq = input_message_count as u64;
-    Some(RunMessageInput {
-        thread_id: thread_id.to_string(),
-        range: MessageSeqRange::new(1, to_seq),
-        trigger_message_ids: Vec::new(),
-        selected_message_ids: Vec::new(),
-        context_policy: None,
-        compacted_snapshot_id: None,
-    })
-}
-
-fn is_remote_run_output_message(message: &Message) -> bool {
-    matches!(message.role, Role::Assistant | Role::Tool)
-}
-
 fn remote_backend_error_message(error: ExecutionBackendError) -> String {
     match error {
         ExecutionBackendError::AgentNotFound(message)
@@ -831,5 +751,47 @@ fn run_status_label(status: RunStatus) -> &'static str {
 }
 
 #[cfg(test)]
-#[path = "mod_tests.rs"]
-mod tests;
+mod tests {
+    use super::*;
+
+    #[test]
+    fn backend_status_timeout_is_first_class_at_runtime_boundary() {
+        let status = BackendRunStatus::Timeout;
+
+        assert_eq!(
+            status.durable_run_status(&TerminationReason::Error("polling timeout exceeded".into())),
+            RunStatus::Done
+        );
+        assert_eq!(
+            status
+                .durable_status_reason(&TerminationReason::Error("polling timeout exceeded".into()))
+                .as_deref(),
+            Some("timeout")
+        );
+        assert_eq!(
+            status
+                .result_status_label(&TerminationReason::Error("polling timeout exceeded".into())),
+            "timeout"
+        );
+    }
+
+    #[test]
+    fn backend_status_waiting_is_first_class_at_runtime_boundary() {
+        let status = BackendRunStatus::WaitingInput(Some("need details".into()));
+
+        assert_eq!(
+            status.durable_run_status(&TerminationReason::Error("should not win".into())),
+            RunStatus::Waiting
+        );
+        assert_eq!(
+            status
+                .durable_status_reason(&TerminationReason::Error("should not win".into()))
+                .as_deref(),
+            Some("input_required")
+        );
+        assert_eq!(
+            status.result_status_label(&TerminationReason::Error("should not win".into())),
+            "waiting_input"
+        );
+    }
+}

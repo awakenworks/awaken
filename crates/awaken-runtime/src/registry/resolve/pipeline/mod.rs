@@ -1,10 +1,10 @@
 //! Resolution pipeline: `agent_id` + `RegistrySet` -> `ResolvedAgent` /
-//! `ResolvedExecution`.
+//! `ExecutionPlan`.
 
 mod catalog;
 mod filter;
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 
 use crate::error::RuntimeError;
@@ -13,13 +13,25 @@ use crate::phase::ExecutionEnv;
 use crate::plugins::Plugin;
 #[cfg(feature = "a2a")]
 use crate::registry::ResolvedBackendAgent;
-use crate::registry::{AgentResolver, ExecutionResolver, ResolvedAgent, ResolvedExecution};
+use crate::registry::{AgentResolver, ResolvedAgent};
+use crate::resolution::{
+    BackendProfile, BackendRequirements, ExecutionPlan, ExecutionRole, LiveOnlyScope,
+    ReplayableScope, ResolutionRequest, ResolutionTarget, ResolveError as RunResolveError,
+    ResolvedModelBinding, ResolvedRun, ResolvedRunPlan, ResolvedTool, Resolver,
+};
+use async_trait::async_trait;
 use awaken_contract::contract::executor::LlmExecutor;
+use awaken_contract::contract::run::RunResolutionScope;
 use awaken_contract::contract::tool::Tool;
+use awaken_contract::contract::versioned_registry::{PinnedRegistryEntry, PinnedRegistryManifest};
+use awaken_contract::registry_spec::{AgentSpec, ModelBindingSpec};
+use awaken_contract::{
+    REGISTRY_KIND_AGENT, REGISTRY_KIND_MODEL, REGISTRY_KIND_PROVIDER, registry_content_hash,
+};
+use serde::Serialize;
 
 use crate::registry::snapshot::RegistryHandle;
 use crate::registry::traits::RegistrySet;
-use awaken_contract::registry_spec::AgentSpec;
 
 use self::filter::filter_tools;
 use super::error::ResolveError;
@@ -95,7 +107,7 @@ pub(crate) fn resolve_registry_set(
 pub(crate) fn resolve_execution_registry_set(
     registries: &RegistrySet,
     agent_id: &str,
-) -> Result<ResolvedExecution, ResolveError> {
+) -> Result<ExecutionPlan, ResolveError> {
     let spec = lookup_spec(registries, agent_id)?;
 
     #[cfg(feature = "a2a")]
@@ -114,12 +126,14 @@ pub(crate) fn resolve_execution_registry_set(
                 backend: endpoint.backend.clone(),
                 message: error.to_string(),
             })?;
-        return Ok(ResolvedExecution::NonLocal(
-            ResolvedBackendAgent::with_factory(Arc::new(spec), factory, endpoint),
-        ));
+        return Ok(ExecutionPlan::Remote(ResolvedBackendAgent::with_factory(
+            Arc::new(spec),
+            factory,
+            endpoint,
+        )));
     }
 
-    resolve_local_spec(registries, spec).map(ResolvedExecution::local)
+    resolve_local_spec(registries, spec).map(|agent| ExecutionPlan::from_resolved_agent(&agent))
 }
 
 #[cfg(test)]
@@ -311,7 +325,7 @@ fn resolve_delegate_tools(
 ) -> Result<(), ResolveError> {
     #[cfg(feature = "a2a")]
     if !spec.delegates.is_empty() {
-        let resolver: Arc<dyn crate::registry::ExecutionResolver> =
+        let resolver: Arc<dyn crate::registry::AgentResolver> =
             Arc::new(RegistrySetResolver::new(registries.clone()));
         for delegate_id in &spec.delegates {
             let delegate_spec = registries
@@ -368,11 +382,24 @@ fn resolve_delegate_tools(
 /// resolution logic. `RegistrySet` stays a pure data container.
 pub struct RegistrySetResolver {
     registries: RegistrySet,
+    snapshot_version: Option<u64>,
 }
 
 impl RegistrySetResolver {
+    #[must_use]
     pub fn new(registries: RegistrySet) -> Self {
-        Self { registries }
+        Self {
+            registries,
+            snapshot_version: None,
+        }
+    }
+
+    #[must_use]
+    pub(crate) fn with_snapshot_version(registries: RegistrySet, snapshot_version: u64) -> Self {
+        Self {
+            registries,
+            snapshot_version: Some(snapshot_version),
+        }
     }
 }
 
@@ -383,18 +410,230 @@ impl AgentResolver for RegistrySetResolver {
         })
     }
 
-    fn agent_ids(&self) -> Vec<String> {
-        self.registries.agents.agent_ids()
-    }
-}
-
-impl ExecutionResolver for RegistrySetResolver {
-    fn resolve_execution(&self, agent_id: &str) -> Result<ResolvedExecution, RuntimeError> {
+    fn resolve_execution(&self, agent_id: &str) -> Result<ExecutionPlan, RuntimeError> {
         resolve_execution_registry_set(&self.registries, agent_id).map_err(|error| {
             RuntimeError::ResolveFailed {
                 message: error.to_string(),
             }
         })
+    }
+
+    fn agent_ids(&self) -> Vec<String> {
+        self.registries.agents.agent_ids()
+    }
+}
+
+#[async_trait]
+impl Resolver for RegistrySetResolver {
+    async fn resolve(
+        &self,
+        request: ResolutionRequest,
+    ) -> Result<ResolvedRunPlan, RunResolveError> {
+        let (agent_id, role) = target_agent_and_role(&request.target);
+        let agent_id = agent_id.to_string();
+        let execution = resolve_execution_registry_set(&self.registries, &agent_id)
+            .map_err(|error| RunResolveError::Runtime(error.to_string()))?;
+        let requirements = BackendRequirements::from_features(&request.features);
+        let profile = backend_profile_for_execution(&execution)?;
+        let resolution_scope =
+            self.resolution_scope_for_request(&agent_id, request.resolution_scope, &requirements)?;
+        let plan = resolved_run(
+            execution,
+            role,
+            request.overrides,
+            requirements,
+            profile,
+            resolution_scope,
+        )?;
+        Ok(plan)
+    }
+}
+
+impl RegistrySetResolver {
+    fn resolution_scope_for_request(
+        &self,
+        agent_id: &str,
+        scope: RunResolutionScope,
+        requirements: &BackendRequirements,
+    ) -> Result<RunResolutionScope, RunResolveError> {
+        match scope {
+            RunResolutionScope::Live if requirements.persistence.is_some() => Ok(
+                RunResolutionScope::Pinned(self.in_memory_manifest(agent_id)?),
+            ),
+            RunResolutionScope::Pinned(manifest) => {
+                self.validate_manifest_snapshot(&manifest)?;
+                Ok(RunResolutionScope::Pinned(manifest))
+            }
+            RunResolutionScope::Live => Ok(RunResolutionScope::Live),
+        }
+    }
+
+    fn validate_manifest_snapshot(
+        &self,
+        manifest: &PinnedRegistryManifest,
+    ) -> Result<(), RunResolveError> {
+        let (Some(expected), Some(actual)) =
+            (manifest.registry_snapshot_version, self.snapshot_version)
+        else {
+            return Ok(());
+        };
+        if expected != actual {
+            return Err(RunResolveError::UnsupportedPersistence(format!(
+                "pinned registry snapshot version {expected} is not active in this runtime \
+                 (current snapshot version {actual}); configure a versioned registry store \
+                 to replay across registry updates"
+            )));
+        }
+        Ok(())
+    }
+
+    fn in_memory_manifest(
+        &self,
+        root_agent_id: &str,
+    ) -> Result<PinnedRegistryManifest, RunResolveError> {
+        let mut entries = BTreeMap::<(String, String), PinnedRegistryEntry>::new();
+        let mut visiting = HashSet::<String>::new();
+        self.collect_agent_manifest_entries(root_agent_id, &mut entries, &mut visiting)?;
+        Ok(PinnedRegistryManifest {
+            publication_id: None,
+            registry_snapshot_version: self.snapshot_version,
+            entries: entries.into_values().collect(),
+        })
+    }
+
+    fn collect_agent_manifest_entries(
+        &self,
+        agent_id: &str,
+        entries: &mut BTreeMap<(String, String), PinnedRegistryEntry>,
+        visiting: &mut HashSet<String>,
+    ) -> Result<(), RunResolveError> {
+        if !visiting.insert(agent_id.to_string()) {
+            return Ok(());
+        }
+        let agent = self.registries.agents.get_agent(agent_id).ok_or_else(|| {
+            RunResolveError::Runtime(format!(
+                "agent not found while pinning registry: {agent_id}"
+            ))
+        })?;
+        insert_manifest_entry(entries, REGISTRY_KIND_AGENT, &agent.id, &agent);
+
+        if let Some(model) = self.registries.models.get_model(&agent.model_id) {
+            let provider_id = model.provider_id.clone();
+            let model_spec = ModelBindingSpec::new(
+                agent.model_id.clone(),
+                provider_id.clone(),
+                model.upstream_model,
+            );
+            insert_manifest_entry(entries, REGISTRY_KIND_MODEL, &model_spec.id, &model_spec);
+            insert_manifest_entry(
+                entries,
+                REGISTRY_KIND_PROVIDER,
+                &provider_id,
+                &serde_json::json!({ "id": provider_id }),
+            );
+        }
+
+        for delegate_id in &agent.delegates {
+            self.collect_agent_manifest_entries(delegate_id, entries, visiting)?;
+        }
+        visiting.remove(agent_id);
+        Ok(())
+    }
+}
+
+fn insert_manifest_entry<T: Serialize>(
+    entries: &mut BTreeMap<(String, String), PinnedRegistryEntry>,
+    kind: &str,
+    id: &str,
+    value: &T,
+) {
+    entries
+        .entry((kind.to_string(), id.to_string()))
+        .or_insert_with(|| PinnedRegistryEntry {
+            kind: kind.to_string(),
+            id: id.to_string(),
+            version: 1,
+            content_hash: runtime_content_hash(kind, id, value),
+        });
+}
+
+fn runtime_content_hash<T: Serialize>(kind: &str, id: &str, value: &T) -> String {
+    let value = serde_json::to_value(value)
+        .unwrap_or_else(|_| serde_json::json!({ "kind": kind, "id": id }));
+    registry_content_hash(1, &value)
+        .map(|(hash, _)| hash)
+        .unwrap_or_else(|_| format!("runtime:{kind}/{id}"))
+}
+
+fn target_agent_and_role(target: &ResolutionTarget) -> (&str, ExecutionRole) {
+    match target {
+        ResolutionTarget::Root { agent_id, .. } => (agent_id.as_str(), ExecutionRole::Root),
+        ResolutionTarget::Delegate { agent_id, .. } => (agent_id.as_str(), ExecutionRole::Delegate),
+        ResolutionTarget::Handoff { agent_id, .. } => (agent_id.as_str(), ExecutionRole::Handoff),
+    }
+}
+
+fn backend_profile_for_execution(
+    execution: &ExecutionPlan,
+) -> Result<BackendProfile, RunResolveError> {
+    match execution {
+        ExecutionPlan::Local(_) => Ok(BackendProfile::full_local()),
+        ExecutionPlan::Remote(agent) => Ok(agent.backend()?.capabilities()),
+    }
+}
+
+fn resolved_run(
+    execution: ExecutionPlan,
+    role: ExecutionRole,
+    overrides: Option<awaken_contract::contract::inference::InferenceOverride>,
+    requirements: BackendRequirements,
+    backend_profile: BackendProfile,
+    resolution_scope: RunResolutionScope,
+) -> Result<ResolvedRunPlan, RunResolveError> {
+    let agent_spec = execution.spec().clone();
+    let upstream_model = match &execution {
+        ExecutionPlan::Local(agent) => agent.upstream_model.clone(),
+        ExecutionPlan::Remote(agent) => agent.spec.model_id.clone(),
+    };
+    let tools = match &execution {
+        ExecutionPlan::Local(agent) => agent
+            .tool_descriptors()
+            .into_iter()
+            .map(|descriptor| ResolvedTool { descriptor })
+            .collect(),
+        ExecutionPlan::Remote(_) => Vec::new(),
+    };
+    match resolution_scope {
+        RunResolutionScope::Pinned(manifest) => Ok(ResolvedRunPlan::Replayable(ResolvedRun {
+            agent_spec,
+            role,
+            execution,
+            model: ResolvedModelBinding { upstream_model },
+            tools,
+            overrides,
+            backend_profile,
+            requirements,
+            scope: ReplayableScope { manifest },
+        })),
+        RunResolutionScope::Live => {
+            if requirements.persistence.is_some() {
+                return Err(RunResolveError::UnsupportedPersistence(
+                    "live RegistrySetResolver cannot materialize a replayable registry scope"
+                        .into(),
+                ));
+            }
+            Ok(ResolvedRunPlan::LiveOnly(ResolvedRun {
+                agent_spec,
+                role,
+                execution,
+                model: ResolvedModelBinding { upstream_model },
+                tools,
+                overrides,
+                backend_profile,
+                requirements,
+                scope: LiveOnlyScope,
+            }))
+        }
     }
 }
 
@@ -422,19 +661,31 @@ impl AgentResolver for DynamicRegistryResolver {
         })
     }
 
-    fn agent_ids(&self) -> Vec<String> {
-        self.handle.snapshot().registries().agents.agent_ids()
-    }
-}
-
-impl ExecutionResolver for DynamicRegistryResolver {
-    fn resolve_execution(&self, agent_id: &str) -> Result<ResolvedExecution, RuntimeError> {
+    fn resolve_execution(&self, agent_id: &str) -> Result<ExecutionPlan, RuntimeError> {
         let snapshot = self.handle.snapshot();
         resolve_execution_registry_set(snapshot.registries(), agent_id).map_err(|error| {
             RuntimeError::ResolveFailed {
                 message: error.to_string(),
             }
         })
+    }
+
+    fn agent_ids(&self) -> Vec<String> {
+        self.handle.snapshot().registries().agents.agent_ids()
+    }
+}
+
+#[async_trait]
+impl Resolver for DynamicRegistryResolver {
+    async fn resolve(
+        &self,
+        request: ResolutionRequest,
+    ) -> Result<ResolvedRunPlan, RunResolveError> {
+        let snapshot = self.handle.snapshot();
+        let version = snapshot.version();
+        let resolver =
+            RegistrySetResolver::with_snapshot_version(snapshot.into_registries(), version);
+        Resolver::resolve(&resolver, request).await
     }
 }
 
