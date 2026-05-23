@@ -15,7 +15,7 @@ use awaken_runtime::registry::traits::ModelBinding;
 use serde_json::{Value, json};
 use tokio::sync::Notify;
 
-use crate::app::{AppState, ServerConfig};
+use crate::app::{ServerConfig, ServerState};
 use crate::mailbox::{Mailbox, MailboxConfig};
 use crate::services::config_runtime::{ConfigRuntimeManager, ProviderExecutorFactory};
 
@@ -238,7 +238,9 @@ fn bootstrap_agent() -> AgentSpec {
     }
 }
 
-async fn build_state(config_store: Arc<dyn ConfigStore>) -> (AppState, Arc<ConfigRuntimeManager>) {
+async fn build_state(
+    config_store: Arc<dyn ConfigStore>,
+) -> (ServerState, Arc<ConfigRuntimeManager>) {
     let thread_store = Arc::new(awaken_stores::InMemoryStore::new());
     let runtime = Arc::new(
         AgentRuntimeBuilder::new()
@@ -282,7 +284,7 @@ async fn build_state(config_store: Arc<dyn ConfigStore>) -> (AppState, Arc<Confi
         "config-service-test".into(),
         MailboxConfig::default(),
     ));
-    let state = AppState::new(
+    let state = ServerState::new(
         runtime,
         mailbox,
         thread_store,
@@ -420,7 +422,7 @@ async fn service_requires_runtime_manager_for_mutations() {
         "config-service-test".into(),
         MailboxConfig::default(),
     ));
-    let state = AppState::new(
+    let state = ServerState::new(
         runtime.clone(),
         mailbox,
         thread_store,
@@ -429,18 +431,20 @@ async fn service_requires_runtime_manager_for_mutations() {
     )
     .with_config_store(Arc::new(awaken_stores::InMemoryStore::new()));
 
-    let service = ConfigService::new(&state).expect("config service");
-    let error = service
-        .create_with_headers(
-            ConfigNamespace::Providers,
-            json!({
-                "id": "missing-manager",
-                "adapter": "stub"
-            }),
-            &axum::http::HeaderMap::new(),
-        )
-        .await
-        .expect_err("missing manager should reject writes");
+    let error = match ConfigService::new(&state) {
+        Ok(service) => service
+            .create_with_headers(
+                ConfigNamespace::Providers,
+                json!({
+                    "id": "missing-manager",
+                    "adapter": "stub"
+                }),
+                &axum::http::HeaderMap::new(),
+            )
+            .await
+            .expect_err("missing manager should reject writes"),
+        Err(error) => error,
+    };
     assert!(matches!(error, ConfigServiceError::NotEnabled));
 }
 
@@ -1083,7 +1087,7 @@ async fn delete_rollback_re_emits_envelope() {
         "rollback-test".into(),
         crate::mailbox::MailboxConfig::default(),
     ));
-    let state_failing = crate::app::AppState::new(
+    let state_failing = crate::app::ServerState::new(
         runtime_failing.clone(),
         mailbox_failing,
         thread_store,
@@ -1687,7 +1691,7 @@ impl Tool for StubTool {
 async fn build_test_service_with_tool(
     id: &str,
     description: &str,
-) -> (ConfigService<'static>, Arc<AuditLogger>) {
+) -> (ConfigService, Arc<AuditLogger>) {
     use awaken_contract::{BuiltinSeedSet, BuiltinSpec, RecordMeta};
 
     let config_store: Arc<dyn awaken_contract::contract::config_store::ConfigStore> =
@@ -1773,7 +1777,7 @@ async fn build_test_service_with_tool(
         "tool-override-test".into(),
         crate::mailbox::MailboxConfig::default(),
     ));
-    let state = AppState::new(
+    let state = ServerState::new(
         runtime,
         mailbox,
         thread_store,
@@ -1786,7 +1790,7 @@ async fn build_test_service_with_tool(
 
     // SAFETY: state is owned for the duration of the test; the 'static bound is
     // satisfied by leaking the Box – acceptable in tests only.
-    let state: &'static AppState = Box::leak(Box::new(state));
+    let state: &'static ServerState = Box::leak(Box::new(state));
     let service = ConfigService::new(state).expect("config service");
     (service, audit_logger)
 }
@@ -2155,7 +2159,7 @@ async fn patch_tool_overrides_apply_failure_emits_apply_failed_audit_event() {
         "apply-failed-test".into(),
         crate::mailbox::MailboxConfig::default(),
     ));
-    let state = AppState::new(
+    let state = ServerState::new(
         runtime_failing.clone(),
         mailbox,
         thread_store,
@@ -2166,7 +2170,7 @@ async fn patch_tool_overrides_apply_failure_emits_apply_failed_audit_event() {
     .with_config_runtime_manager(manager_failing)
     .with_audit_log(audit_logger.clone());
 
-    let state: &'static AppState = Box::leak(Box::new(state));
+    let state: &'static ServerState = Box::leak(Box::new(state));
     let service = ConfigService::new(state).expect("failing config service");
 
     // Step 3: attempt patch_tool_overrides — apply_locked fails.

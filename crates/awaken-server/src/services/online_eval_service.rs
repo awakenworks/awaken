@@ -30,7 +30,7 @@ use axum::http::HeaderMap;
 use axum::response::{IntoResponse, Response};
 use serde::{Deserialize, Serialize};
 
-use crate::app::AppState;
+use crate::app::EvalRoutesState;
 use crate::error::ApiError;
 use crate::services::eval_cell::{
     DEFAULT_MAX_TOTAL_TOKENS, LiveCellOptions, ResolvedCell, run_live_eval_cells,
@@ -145,21 +145,13 @@ pub struct OnlineEvalResponse {
 /// `EvalRun` whose items are one per cell.
 #[tracing::instrument(skip_all, fields(models = ?body.models))]
 pub async fn start_online_eval(
-    State(state): State<AppState>,
+    State(state): State<EvalRoutesState>,
     headers: HeaderMap,
     Json(body): Json<OnlineEvalRequest>,
 ) -> Result<Response, ApiError> {
-    crate::config_routes::ensure_admin_auth(&state, &headers)?;
+    crate::config_routes::ensure_admin_auth(&state.admin, &headers)?;
 
-    // Fail fast on persist+no-store BEFORE any model resolution or
-    // provider call. Otherwise we'd burn tokens on a request that the
-    // persistence layer is already known to reject — bad UX, real $.
-    if body.persist && state.eval_run_store().is_none() {
-        return Err(ApiError::ServiceUnavailable(
-            "EvalRunStore is required when persist=true".into(),
-        ));
-    }
-    let limits = state.config.eval_limits.clone();
+    let limits = state.limits.clone();
     if body.models.is_empty() {
         return Err(ApiError::BadRequest(
             "models must contain at least one model id".into(),
@@ -275,9 +267,22 @@ pub async fn start_online_eval(
 
     // Capture started_at_secs BEFORE the per-cell execution loop so the
     // recorded time matches when work actually began.
+    let eval_run_id = mint_run_id();
     let started_at_secs = epoch_secs_now();
+    crate::services::eval_events::record_eval_run_started(
+        &state,
+        crate::services::eval_events::EvalRunStartedEvent {
+            eval_run_id: eval_run_id.clone(),
+            dataset_id: ADHOC_DATASET_ID.to_string(),
+            dataset_revision: 0,
+            mode: "online_live_matrix",
+            planned_item_count: total_units,
+            started_at_secs,
+        },
+    )
+    .await;
     // Run cells × samples in parallel with bounded concurrency.
-    let trace_store = state.trace_store();
+    let trace_store = state.trace.as_ref().map(|trace| trace.trace_store.clone());
     let trace_sink = trace_store.as_ref().map(|store| {
         Arc::new(TraceStoreSink::new(store.clone()))
             as Arc<dyn awaken_ext_observability::MetricsSink>
@@ -301,7 +306,7 @@ pub async fn start_online_eval(
     .await?;
 
     let run = EvalRun {
-        id: mint_run_id(),
+        id: eval_run_id,
         dataset_id: ADHOC_DATASET_ID.into(),
         dataset_revision: 0,
         execution_mode: EvalRunExecutionMode::Live,
@@ -311,21 +316,21 @@ pub async fn start_online_eval(
     };
 
     let persisted = if body.persist {
-        if let Some(store) = state.eval_run_store() {
-            store
-                .write(&run)
-                .map_err(super::eval_run_service::map_eval_run_store_error)?;
-            true
-        } else {
-            // EvalRunStore not configured — surface explicitly rather
-            // than silently lying about persistence.
-            return Err(ApiError::ServiceUnavailable(
-                "persist=true requested but EvalRunStore is not configured".into(),
-            ));
-        }
+        let store = state.eval.eval_run_store.clone();
+        store
+            .write(&run)
+            .map_err(super::eval_run_service::map_eval_run_store_error)?;
+        true
     } else {
         false
     };
+    crate::services::eval_events::record_eval_run_completed(
+        &state,
+        &run,
+        "online_live_matrix",
+        persisted,
+    )
+    .await;
 
     Ok(Json(OnlineEvalResponse { run, persisted }).into_response())
 }

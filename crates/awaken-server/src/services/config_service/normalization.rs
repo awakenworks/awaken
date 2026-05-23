@@ -5,7 +5,7 @@ use crate::services::config_envelope::{apply_overrides, unwrap_spec};
 
 use super::{ConfigNamespace, ConfigService, ConfigServiceError};
 
-impl<'a> ConfigService<'a> {
+impl ConfigService {
     pub(super) async fn prepare_body(
         &self,
         namespace: ConfigNamespace,

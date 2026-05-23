@@ -9,15 +9,12 @@ use crate::services::config_envelope::unwrap_spec;
 
 use super::{ConfigNamespace, ConfigService, ConfigServiceError, map_runtime_error};
 
-impl<'a> ConfigService<'a> {
+impl ConfigService {
     pub(super) fn runtime_manager(
         &self,
     ) -> Result<&Arc<crate::services::config_runtime::ConfigRuntimeManager>, ConfigServiceError>
     {
-        self.state
-            .config_runtime_manager
-            .as_ref()
-            .ok_or(ConfigServiceError::NotEnabled)
+        Ok(&self.state.config.runtime_manager)
     }
 
     fn user_record_from_body(body: &Value, previous: Option<&Value>) -> ConfigRecord<Value> {
@@ -168,6 +165,38 @@ impl<'a> ConfigService<'a> {
             .await?;
         }
         Ok(())
+    }
+
+    /// Write the payload to ConfigStore without invoking the runtime
+    /// hot-swap. ADR-0035 D11: "Restore from audit log remains valid as
+    /// an editing-store operation. Registry rollback is separate." Use
+    /// this from restore-style flows so the runtime continues observing
+    /// the previously-published `RegistryPublication` until an operator
+    /// explicitly publishes the restored payload.
+    pub(super) async fn persist_only_locked(
+        &self,
+        namespace: ConfigNamespace,
+        id: &str,
+        previous: Option<Value>,
+        body: Value,
+    ) -> Result<Value, ConfigServiceError> {
+        self.validate_payload(namespace, &body)?;
+        let mut record = Self::user_record_from_body(&body, previous.as_ref());
+        match previous.as_ref() {
+            Some(previous) => {
+                let expected_revision = ConfigRecord::<Value>::from_value(previous.clone())
+                    .map_err(|e| ConfigServiceError::Serialization(e.to_string()))?
+                    .meta
+                    .revision;
+                self.cas_put_record(namespace, id, &mut record, expected_revision)
+                    .await?
+            }
+            None => {
+                self.insert_record_absent(namespace, id, &mut record, 1)
+                    .await?
+            }
+        };
+        self.redact_response(namespace, body)
     }
 
     pub(super) async fn persist_and_apply_locked(

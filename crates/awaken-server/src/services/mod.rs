@@ -8,12 +8,15 @@ pub mod dataset_service;
 pub mod dataset_wire;
 pub mod eval_cell;
 pub mod eval_common;
+pub mod eval_events;
 pub mod eval_run_service;
+pub mod frozen_registry;
 pub mod online_eval_service;
 #[cfg(feature = "permission")]
 pub mod permission_preview;
 pub mod run_control_service;
 pub mod run_service;
+pub mod thread_events;
 pub mod thread_service;
 pub mod tool_overrides;
 pub mod trace_retention;

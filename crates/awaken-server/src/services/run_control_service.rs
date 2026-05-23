@@ -12,9 +12,9 @@ use awaken_contract::contract::mailbox::MailboxInterrupt;
 use awaken_contract::contract::message::Message;
 use awaken_contract::contract::storage::{RunQuery, RunRecord, RunWaitingState, StorageError};
 use awaken_contract::contract::suspension::ToolCallResume;
-use awaken_runtime::RunRequest;
+use awaken_runtime::RunActivation;
 
-use crate::app::AppState;
+use crate::app::RunModuleState;
 use crate::mailbox::{MailboxError, MailboxSubmitResult};
 
 /// How injected user input should interact with any active work.
@@ -89,11 +89,11 @@ pub enum RunControlError {
 /// Unified control plane for active runs.
 #[derive(Clone)]
 pub struct RunControlService {
-    state: AppState,
+    state: RunModuleState,
 }
 
 impl RunControlService {
-    pub fn new(state: AppState) -> Self {
+    pub fn new(state: RunModuleState) -> Self {
         Self { state }
     }
 
@@ -102,7 +102,7 @@ impl RunControlService {
         &self,
         thread_id: &str,
     ) -> Result<Option<ActiveRun>, RunControlError> {
-        if let Some(thread) = self.state.store.load_thread(thread_id).await? {
+        if let Some(thread) = self.state.store().load_thread(thread_id).await? {
             if let Some(active) = self
                 .load_projected_run(
                     thread_id,
@@ -138,7 +138,7 @@ impl RunControlService {
         let Some(run_id) = run_id else {
             return Ok(None);
         };
-        let Some(run) = self.state.store.load_run(run_id).await? else {
+        let Some(run) = self.state.store().load_run(run_id).await? else {
             return Ok(None);
         };
         if run.thread_id == thread_id && allowed_statuses.contains(&run.status) {
@@ -153,7 +153,7 @@ impl RunControlService {
         for status in [RunStatus::Running, RunStatus::Waiting] {
             let page = self
                 .state
-                .store
+                .store()
                 .list_runs(&RunQuery {
                     offset: 0,
                     limit: 200,
@@ -200,11 +200,11 @@ impl RunControlService {
         tool_call_id: String,
         resume: ToolCallResume,
     ) -> Result<(), RunControlError> {
-        let run = if let Some(run) = self.state.store.load_run(id).await? {
+        let run = if let Some(run) = self.state.store().load_run(id).await? {
             run
         } else if let Some(active) = self.get_active_run(id).await? {
             self.state
-                .store
+                .store()
                 .load_run(&active.run_id)
                 .await?
                 .ok_or_else(|| RunControlError::RunNotFound(active.run_id.clone()))?
@@ -219,11 +219,20 @@ impl RunControlService {
             return Err(RunControlError::DecisionTargetNotFound(id.to_string()));
         }
 
-        let request = RunRequest::new(run.thread_id.clone(), Vec::new())
+        let request = RunActivation::new(run.thread_id.clone(), Vec::new())
             .with_agent_id(run.agent_id.clone())
             .with_continue_run_id(run.run_id.clone())
-            .with_decisions(vec![(tool_call_id, resume)]);
+            .with_decisions(vec![(tool_call_id.clone(), resume.clone())]);
         self.state.mailbox.submit_background(request).await?;
+        self.state
+            .mailbox
+            .record_mailbox_decision_received_for_run(
+                &run,
+                &tool_call_id,
+                &resume,
+                "durable_dispatch",
+            )
+            .await;
         Ok(())
     }
 
@@ -260,7 +269,7 @@ impl RunControlService {
     ) -> Result<MailboxSubmitResult, RunControlError> {
         let thread = self
             .state
-            .store
+            .store()
             .load_thread(thread_id)
             .await?
             .ok_or_else(|| RunControlError::ThreadNotFound(thread_id.to_string()))?;
@@ -274,7 +283,7 @@ impl RunControlService {
                 .map_err(RunControlError::Mailbox)?;
         }
 
-        let mut request = RunRequest::new(thread_id.to_string(), messages);
+        let mut request = RunActivation::new(thread_id.to_string(), messages);
         if mode == InputMode::ResumeOpenRun {
             let run = self
                 .load_open_waiting_run(thread_id, thread.open_run_id.as_deref())
@@ -302,12 +311,12 @@ impl RunControlService {
     ) -> Result<MailboxSubmitResult, RunControlError> {
         let _thread = self
             .state
-            .store
+            .store()
             .load_thread(thread_id)
             .await?
             .ok_or_else(|| RunControlError::ThreadNotFound(thread_id.to_string()))?;
 
-        let mut request = RunRequest::new(thread_id.to_string(), messages);
+        let mut request = RunActivation::new(thread_id.to_string(), messages);
         if let Some(agent_id) = agent_id {
             request = request.with_agent_id(agent_id);
         }
@@ -328,7 +337,7 @@ impl RunControlService {
     ) -> Result<MailboxSubmitResult, RunControlError> {
         let run = self
             .state
-            .store
+            .store()
             .load_run(run_id)
             .await?
             .ok_or_else(|| RunControlError::RunNotFound(run_id.to_string()))?;
@@ -340,7 +349,7 @@ impl RunControlService {
         }
 
         if run.status == RunStatus::Waiting && run.is_resumable_waiting() {
-            let request = RunRequest::new(run.thread_id.clone(), messages)
+            let request = RunActivation::new(run.thread_id.clone(), messages)
                 .with_agent_id(run.agent_id)
                 .with_continue_run_id(run.run_id);
             return self
@@ -363,13 +372,13 @@ impl RunControlService {
     ) -> Result<MailboxSubmitResult, RunControlError> {
         let run = self
             .state
-            .store
+            .store()
             .load_run(run_id)
             .await?
             .ok_or_else(|| RunControlError::RunNotFound(run_id.to_string()))?;
 
         let request =
-            RunRequest::new(run.thread_id.clone(), messages).with_agent_id(run.agent_id.clone());
+            RunActivation::new(run.thread_id.clone(), messages).with_agent_id(run.agent_id.clone());
         self.state
             .mailbox
             .submit_live_then_queue(request, Some(&run.run_id))
@@ -389,7 +398,7 @@ impl RunControlService {
         };
         let run = self
             .state
-            .store
+            .store()
             .load_run(open_run_id)
             .await?
             .ok_or_else(|| RunControlError::RunNotFound(open_run_id.to_string()))?;

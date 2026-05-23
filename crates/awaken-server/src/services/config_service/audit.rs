@@ -4,7 +4,7 @@ use serde_json::Value;
 
 use super::{ConfigNamespace, ConfigService};
 
-impl<'a> ConfigService<'a> {
+impl ConfigService {
     /// Emit an audit event if an audit logger is configured.
     ///
     /// Best-effort: the call is fire-and-forget (matching the `AuditLogger::emit` contract).

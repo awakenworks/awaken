@@ -73,7 +73,7 @@ impl RetentionHandle {
 ///
 /// ## Embedding
 ///
-/// Call this function after constructing your [`AppState`] and hold the
+/// Call this function after constructing your [`ServerState`] and hold the
 /// returned [`RetentionHandle`] for the lifetime of the server so the
 /// spawned task is not orphaned:
 ///
