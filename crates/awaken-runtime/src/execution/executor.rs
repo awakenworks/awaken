@@ -1,14 +1,14 @@
 //! Tool execution strategies: Sequential and Parallel.
 
-use std::collections::HashMap;
-use std::sync::Arc;
-
 use async_trait::async_trait;
 use awaken_contract::contract::message::ToolCall;
 use awaken_contract::contract::suspension::ToolCallOutcome;
 use awaken_contract::contract::tool::{Tool, ToolCallContext, ToolOutput, ToolResult};
 use awaken_contract::state::StateCommand;
+use std::collections::HashMap;
+use std::sync::Arc;
 
+use super::tool_error::tool_error_result;
 #[cfg(feature = "background")]
 use crate::extensions::background::{ToolLineageContext, scope_tool_lineage_context};
 
@@ -221,7 +221,7 @@ pub(crate) async fn execute_single_tool(
 
     match execute_tool_with_runtime_context(tool, call, ctx).await {
         Ok(output) => output,
-        Err(e) => ToolResult::error(&call.name, e.to_string()).into(),
+        Err(e) => tool_error_result(&call.name, e).into(),
     }
 }
 

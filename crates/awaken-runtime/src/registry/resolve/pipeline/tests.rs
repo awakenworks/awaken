@@ -742,7 +742,7 @@ fn registry_set_resolver_resolves_agent() {
     );
 
     let resolver = RegistrySetResolver::new(regs);
-    let resolved = resolver.resolve("my-agent").unwrap();
+    let resolved = AgentResolver::resolve(&resolver, "my-agent").unwrap();
     assert_eq!(resolved.id(), "my-agent");
     assert_eq!(resolved.model_id(), "test-model");
     assert_eq!(resolved.upstream_model, "claude-test");
@@ -769,7 +769,7 @@ fn registry_set_resolver_not_found() {
     );
 
     let resolver = RegistrySetResolver::new(regs);
-    let err = resolver.resolve("missing").unwrap_err();
+    let err = AgentResolver::resolve(&resolver, "missing").unwrap_err();
     assert!(matches!(err, RuntimeError::ResolveFailed { .. }));
 }
 
