@@ -16,6 +16,7 @@ pub mod context;
 pub mod credentials;
 pub mod engine;
 mod error;
+pub mod event_buffer;
 pub mod execution;
 pub mod extensions;
 mod hooks;
@@ -26,7 +27,9 @@ pub mod plugins;
 pub mod policies;
 pub mod profile;
 pub mod registry;
+pub mod resolution;
 pub mod retry;
+pub mod run;
 pub mod runtime;
 pub mod state;
 
@@ -35,16 +38,17 @@ pub mod state;
 // CancellationToken now lives in awaken-contract; re-export for backward compat.
 pub use awaken_contract::{CancellationHandle, CancellationToken};
 pub use error::RuntimeError;
+pub use event_buffer::EventBuffer;
 pub use profile::ProfileAccess;
 
 pub use backend::{
-    BackendAbortRequest, BackendCancellationCapability, BackendCapabilities,
-    BackendContinuationCapability, BackendControl, BackendDelegateContinuation,
-    BackendDelegatePersistence, BackendDelegatePolicy, BackendDelegateRunRequest,
-    BackendLocalRootContext, BackendOutputArtifact, BackendOutputCapability, BackendParentContext,
-    BackendRootRunRequest, BackendRunOutput, BackendRunResult, BackendRunStatus,
-    BackendTranscriptCapability, BackendWaitCapability, ExecutionBackend, ExecutionBackendError,
-    ExecutionBackendFactory, ExecutionBackendFactoryError, LocalBackend,
+    BackendAbortRequest, BackendCancellationCapability, BackendContinuationCapability,
+    BackendControl, BackendDelegateContinuation, BackendDelegatePersistence, BackendDelegatePolicy,
+    BackendDelegateRunRequest, BackendLocalRootContext, BackendOutputArtifact,
+    BackendOutputCapability, BackendParentContext, BackendRootRunRequest, BackendRunOutput,
+    BackendRunResult, BackendRunStatus, BackendTranscriptCapability, BackendWaitCapability,
+    ExecutionBackend, ExecutionBackendError, ExecutionBackendFactory, ExecutionBackendFactoryError,
+    LocalBackend,
 };
 pub use builder::{AgentRuntimeBuilder, BuildError};
 pub use child_agent::{
@@ -57,12 +61,23 @@ pub use phase::{
 };
 pub use plugins::{Plugin, PluginDescriptor, PluginRegistrar};
 pub use registry::{
-    AgentResolver, ExecutionResolver, ProviderRemovalImpact, ProviderRemovalPolicy,
-    ProviderRemovalPreview, RegistryDiagnostic, RegistryDiagnosticSeverity, RegistryResourceRef,
-    RegistryUpdateError, RegistryValidationError, ResolvedAgent, ResolvedExecution,
-    RuntimeRegistryUpdate, SerializableRegistryDiagnostic, diagnose_agent_spec,
-    diagnose_registry_set, diagnose_registry_set_serializable, preview_provider_removal,
-    rebuild_agent_model_provider_registries,
+    AgentResolver, ProviderRemovalImpact, ProviderRemovalPolicy, ProviderRemovalPreview,
+    RegistryDiagnostic, RegistryDiagnosticSeverity, RegistryResourceRef, RegistryUpdateError,
+    RegistryValidationError, ResolvedAgent, RuntimeRegistryUpdate, SerializableRegistryDiagnostic,
+    diagnose_agent_spec, diagnose_registry_set, diagnose_registry_set_serializable,
+    preview_provider_removal, rebuild_agent_model_provider_registries,
 };
-pub use runtime::{AgentRuntime, RunRequest, ThreadContextSnapshot};
+pub use resolution::{
+    AgentSpecLookup, BackendProfile, BackendRequirements, CapabilityDecision, CapabilityMismatch,
+    DecisionCapability, DelegatePersistence, ExecutionPlan, ExecutionRole, FrontendToolCapability,
+    HandoffTranscriptRef, LiveOnlyScope, LocalRegistryResolver, OverrideCapability,
+    PersistenceCapability, PersistenceRequirement, ReplayableScope, ResolutionPolicy,
+    ResolutionRequest, ResolutionTarget, ResolveError, ResolvedModelBinding, ResolvedRun,
+    ResolvedRunPlan, ResolvedTool, Resolver, RunFeatureSet,
+};
+pub use run::{
+    CaptureWiring, PersistenceHints, ResolverInheritance, RunActivation, RunActivationError,
+    RunControl, ThreadContextSnapshot,
+};
+pub use runtime::AgentRuntime;
 pub use state::{CommitEvent, CommitHook, MutationBatch, StateCommand, StateStore};
