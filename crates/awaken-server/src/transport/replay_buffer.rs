@@ -28,12 +28,18 @@ impl EventReplayBuffer {
         }
     }
 
-    /// Allocate a sequence ID, format the JSON as a complete SSE frame
-    /// (`id: {seq}\ndata: {json}\n\n`), store it, notify subscribers,
-    /// and return `(seq, frame)`.
+    /// Allocate a sequence ID, format the JSON as an SSE frame
+    /// (`data: {json}\n\n`), store it, notify subscribers, and return
+    /// `(seq, frame)`.
+    ///
+    /// ADR-0034 D3: frames intentionally omit the SSE `id:` field so the
+    /// in-process buffer sequence is never leaked as a `Last-Event-ID`
+    /// the client could resend. Durable reconnect uses
+    /// `ProtocolReplayCursor` from `ProtocolReplayLog`; the buffer is a
+    /// live-only cache and reattaches replay the full retained window.
     pub fn push_json(&self, json: &str) -> (u64, Bytes) {
         let seq = self.next_seq.fetch_add(1, Ordering::Relaxed);
-        let frame = Bytes::from(format!("id: {seq}\ndata: {json}\n\n"));
+        let frame = Bytes::from(format!("data: {json}\n\n"));
         {
             let mut frames = self.frames.lock();
             frames.push_back((seq, frame.clone()));
@@ -124,8 +130,8 @@ mod tests {
 
         let replayed = buf.replay_after(1);
         assert_eq!(replayed.len(), 2);
-        assert!(String::from_utf8_lossy(&replayed[0]).contains("id: 2\n"));
-        assert!(String::from_utf8_lossy(&replayed[1]).contains("id: 3\n"));
+        assert!(String::from_utf8_lossy(&replayed[0]).contains(r#""a":2"#));
+        assert!(String::from_utf8_lossy(&replayed[1]).contains(r#""a":3"#));
     }
 
     #[test]
@@ -166,8 +172,8 @@ mod tests {
         // Oldest frames (seq 1, 2) should be evicted; remaining are seq 3, 4, 5.
         let replayed = buf.replay_after(0);
         assert_eq!(replayed.len(), 3);
-        assert!(String::from_utf8_lossy(&replayed[0]).contains("id: 3\n"));
-        assert!(String::from_utf8_lossy(&replayed[2]).contains("id: 5\n"));
+        assert!(String::from_utf8_lossy(&replayed[0]).contains(r#""n":3"#));
+        assert!(String::from_utf8_lossy(&replayed[2]).contains(r#""n":5"#));
     }
 
     #[test]
@@ -193,7 +199,6 @@ mod tests {
 
         let frame = rx.try_recv().unwrap();
         let s = String::from_utf8_lossy(&frame);
-        assert!(s.contains("id: 1\n"));
         assert!(s.contains(r#"{"event":"hello"}"#));
     }
 
@@ -207,7 +212,7 @@ mod tests {
         buf.push_json(r#"{"n":3}"#);
 
         let frame = rx.try_recv().unwrap();
-        assert!(String::from_utf8_lossy(&frame).contains("id: 3\n"));
+        assert!(String::from_utf8_lossy(&frame).contains(r#""n":3"#));
         assert!(rx.try_recv().is_err());
     }
 
@@ -254,13 +259,13 @@ mod tests {
         // Subscribe after seq 1 — should get frames 2, 3 replayed
         let (replayed, mut live_rx) = buf.subscribe_after(1);
         assert_eq!(replayed.len(), 2);
-        assert!(String::from_utf8_lossy(&replayed[0]).contains("id: 2\n"));
-        assert!(String::from_utf8_lossy(&replayed[1]).contains("id: 3\n"));
+        assert!(String::from_utf8_lossy(&replayed[0]).contains(r#""n":2"#));
+        assert!(String::from_utf8_lossy(&replayed[1]).contains(r#""n":3"#));
 
         // Push a new frame — live_rx should receive it
         buf.push_json(r#"{"n":4}"#);
         let frame = live_rx.try_recv().unwrap();
-        assert!(String::from_utf8_lossy(&frame).contains("id: 4\n"));
+        assert!(String::from_utf8_lossy(&frame).contains(r#""n":4"#));
 
         // No extra frames (no duplicates)
         assert!(live_rx.try_recv().is_err());

@@ -27,7 +27,7 @@ use tokio::sync::{Mutex, RwLock, Semaphore, mpsc, oneshot};
 use uuid::Uuid;
 
 use super::JSON_RPC_VERSION;
-use crate::app::AppState;
+use crate::app::ProtocolRoutesState;
 use crate::http_sse::{format_sse_data_with_id, sse_body_stream, sse_response};
 
 const HEADER_SESSION_ID: &str = "MCP-Session-Id";
@@ -272,9 +272,8 @@ enum ParsedInbound {
     Notification(JsonRpcNotification),
     Response(JsonRpcResponse),
 }
-
 /// Build MCP routes.
-pub fn mcp_routes() -> Router<AppState> {
+pub fn mcp_routes() -> Router<ProtocolRoutesState> {
     Router::new()
         .route("/v1/mcp", post(mcp_post))
         .route("/v1/mcp", get(mcp_sse))
@@ -282,7 +281,7 @@ pub fn mcp_routes() -> Router<AppState> {
 }
 
 async fn mcp_post(
-    State(st): State<AppState>,
+    State(st): State<ProtocolRoutesState>,
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<Response, McpApiError> {
@@ -311,7 +310,7 @@ async fn mcp_post(
 }
 
 async fn handle_request_post(
-    st: &AppState,
+    st: &ProtocolRoutesState,
     headers: HeaderMap,
     request: JsonRpcRequest,
 ) -> Result<Response, McpApiError> {
@@ -322,13 +321,13 @@ async fn handle_request_post(
             ));
         }
 
-        let session = McpHttpSession::new(&st.runtime);
+        let session = McpHttpSession::new(&st.run.runtime);
         let response = session.dispatch_json_request(request).await?;
         if response.is_success() {
             if let Some(version) = response_protocol_version(&response) {
                 session.set_protocol_version(version).await;
             }
-            st.mcp_http.insert(Arc::clone(&session)).await;
+            st.protocol.mcp_http.insert(Arc::clone(&session)).await;
 
             let mut http_response = Json(serde_json::to_value(&response).map_err(|e| {
                 McpApiError::internal(format!("failed to serialize MCP response: {e}"))
@@ -365,7 +364,7 @@ async fn handle_request_post(
     .into_response())
 }
 
-async fn mcp_sse(State(_st): State<AppState>, headers: HeaderMap) -> Response {
+async fn mcp_sse(State(_st): State<ProtocolRoutesState>, headers: HeaderMap) -> Response {
     if let Err(err) = validate_origin(&headers) {
         return err.into_response();
     }
@@ -373,14 +372,14 @@ async fn mcp_sse(State(_st): State<AppState>, headers: HeaderMap) -> Response {
 }
 
 async fn mcp_delete(
-    State(st): State<AppState>,
+    State(st): State<ProtocolRoutesState>,
     headers: HeaderMap,
 ) -> Result<Response, McpApiError> {
     validate_origin(&headers)?;
     let session_id = header_value(&headers, HEADER_SESSION_ID)
         .ok_or_else(|| McpApiError::bad_request("missing MCP-Session-Id header"))?;
 
-    let Some(session) = st.mcp_http.remove(&session_id).await else {
+    let Some(session) = st.protocol.mcp_http.remove(&session_id).await else {
         return Ok(StatusCode::NOT_FOUND.into_response());
     };
 
@@ -474,12 +473,13 @@ fn parse_json_rpc_id(value: &Value) -> Option<JsonRpcId> {
 }
 
 async fn require_session(
-    st: &AppState,
+    st: &ProtocolRoutesState,
     headers: &HeaderMap,
 ) -> Result<Arc<McpHttpSession>, McpApiError> {
     let session_id = header_value(headers, HEADER_SESSION_ID)
         .ok_or_else(|| McpApiError::bad_request("missing MCP-Session-Id header"))?;
-    st.mcp_http
+    st.protocol
+        .mcp_http
         .get(&session_id)
         .await
         .ok_or_else(|| McpApiError::not_found("unknown MCP session"))
@@ -660,7 +660,7 @@ mod tests {
         }
     }
 
-    fn make_app_state() -> AppState {
+    fn make_app_state() -> crate::app::ServerState {
         let runtime = Arc::new(AgentRuntime::new(Arc::new(StubResolver)));
         let store = Arc::new(InMemoryStore::new());
         let mailbox_store = Arc::new(InMemoryMailboxStore::new());
@@ -671,7 +671,7 @@ mod tests {
             "test".to_string(),
             crate::mailbox::MailboxConfig::default(),
         ));
-        AppState::new(
+        crate::app::ServerState::new(
             runtime,
             mailbox,
             store,
@@ -697,7 +697,7 @@ mod tests {
     async fn post_initialize_assigns_session_id() {
         let app = Router::new()
             .merge(mcp_routes())
-            .with_state(make_app_state());
+            .with_state(make_app_state().protocol_routes_state());
 
         let body = json!({
             "jsonrpc": JSON_RPC_VERSION,
@@ -729,7 +729,7 @@ mod tests {
     async fn post_requires_session_after_initialize() {
         let app = Router::new()
             .merge(mcp_routes())
-            .with_state(make_app_state());
+            .with_state(make_app_state().protocol_routes_state());
 
         let body = json!({
             "jsonrpc": JSON_RPC_VERSION,
@@ -755,7 +755,7 @@ mod tests {
     async fn delete_terminates_known_session() {
         let app = Router::new()
             .merge(mcp_routes())
-            .with_state(make_app_state());
+            .with_state(make_app_state().protocol_routes_state());
 
         let init = json!({
             "jsonrpc": JSON_RPC_VERSION,

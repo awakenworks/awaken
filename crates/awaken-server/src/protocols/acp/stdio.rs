@@ -156,7 +156,7 @@ impl acp::Agent for AcpAgent {
         let messages = vec![Message::user_with_content(content)];
         let (event_tx, mut event_rx) = tokio::sync::mpsc::unbounded_channel();
         let sink = crate::transport::channel_sink::ChannelEventSink::new(event_tx);
-        let mut run_request = awaken_runtime::RunRequest::new(thread_id.clone(), messages)
+        let mut run_request = awaken_runtime::RunActivation::new(thread_id.clone(), messages)
             .with_adapter(awaken_contract::contract::tool_intercept::AdapterKind::Acp)
             .with_session_id(session_id.clone());
         if let Some(agent_id) = agent_id {

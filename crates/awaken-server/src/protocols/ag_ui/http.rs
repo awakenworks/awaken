@@ -10,17 +10,17 @@ use serde_json::Value;
 use awaken_contract::contract::message::Message;
 use awaken_contract::contract::suspension::{ResumeDecisionAction, ToolCallResume};
 
-use crate::app::AppState;
+use crate::app::ProtocolRoutesState;
 use crate::http_run::wire_sse_relay;
 use crate::http_sse::{sse_body_stream, sse_response};
 use crate::routes::{ApiError, map_mailbox_error};
-use awaken_runtime::RunRequest;
+use awaken_runtime::RunActivation;
 
 use super::encoder::AgUiEncoder;
 use super::types::Role;
 
 /// Build AG-UI routes.
-pub fn ag_ui_routes() -> Router<AppState> {
+pub fn ag_ui_routes() -> Router<ProtocolRoutesState> {
     Router::new()
         .route("/v1/ag-ui/run", post(ag_ui_run))
         .route(
@@ -183,7 +183,7 @@ fn input_part_to_block(
 }
 
 async fn ag_ui_run(
-    State(st): State<AppState>,
+    State(st): State<ProtocolRoutesState>,
     Json(payload): Json<AgUiRunRequest>,
 ) -> Result<Response, ApiError> {
     ag_ui_run_inner(st, payload).await
@@ -191,7 +191,7 @@ async fn ag_ui_run(
 
 /// Thread-centric route: `POST /v1/ag-ui/threads/:thread_id/runs`
 async fn ag_ui_run_threaded(
-    State(st): State<AppState>,
+    State(st): State<ProtocolRoutesState>,
     Path(thread_id): Path<String>,
     Json(mut payload): Json<AgUiRunRequest>,
 ) -> Result<Response, ApiError> {
@@ -201,7 +201,7 @@ async fn ag_ui_run_threaded(
 
 /// Agent-scoped route: `POST /v1/ag-ui/agents/:agent_id/runs`
 async fn ag_ui_run_agent_scoped(
-    State(st): State<AppState>,
+    State(st): State<ProtocolRoutesState>,
     Path(agent_id): Path<String>,
     Json(mut payload): Json<AgUiRunRequest>,
 ) -> Result<Response, ApiError> {
@@ -210,10 +210,11 @@ async fn ag_ui_run_agent_scoped(
 }
 
 async fn interrupt_thread(
-    State(st): State<AppState>,
+    State(st): State<ProtocolRoutesState>,
     Path(thread_id): Path<String>,
 ) -> Result<Response, ApiError> {
     let interrupted = st
+        .run
         .mailbox
         .interrupt(&thread_id)
         .await
@@ -257,7 +258,10 @@ fn convert_resume_to_decision(resume: AgUiResumePayload) -> Option<(String, Tool
     ))
 }
 
-async fn ag_ui_run_inner(st: AppState, payload: AgUiRunRequest) -> Result<Response, ApiError> {
+async fn ag_ui_run_inner(
+    st: ProtocolRoutesState,
+    payload: AgUiRunRequest,
+) -> Result<Response, ApiError> {
     let (thread_id_raw, agent_id, raw_messages, state, resume, frontend_tools) =
         payload.into_parts();
     let messages = convert_messages(raw_messages);
@@ -286,7 +290,7 @@ async fn ag_ui_run_inner(st: AppState, payload: AgUiRunRequest) -> Result<Respon
         })
         .collect();
 
-    let mut request = RunRequest::new(thread_id, messages)
+    let mut request = RunActivation::new(thread_id, messages)
         .with_adapter(awaken_contract::contract::tool_intercept::AdapterKind::AgUi);
     if let Some(id) = agent_id {
         request = request.with_agent_id(id);
@@ -298,25 +302,28 @@ async fn ag_ui_run_inner(st: AppState, payload: AgUiRunRequest) -> Result<Respon
         request = request.with_decisions(decisions);
     }
     let (_result, event_rx) = st
+        .run
         .mailbox
         .submit(request)
         .await
         .map_err(map_mailbox_error)?;
 
     let encoder = AgUiEncoder::new();
-    let sse_rx = wire_sse_relay(event_rx, encoder, st.config.sse_buffer_size, None);
+    // TODO(ADR-0034 #24): add ProtocolReplayLog projector + resume endpoint.
+    let sse_rx = wire_sse_relay(event_rx, encoder, st.sse_buffer_size, None);
 
     Ok(sse_response(sse_body_stream(sse_rx)))
 }
 
 async fn thread_messages(
-    State(st): State<AppState>,
+    State(st): State<ProtocolRoutesState>,
     Path(id): Path<String>,
     Query(params): Query<crate::query::MessageQueryParams>,
 ) -> Result<Json<Value>, ApiError> {
     let query = params.storage_query().map_err(ApiError::BadRequest)?;
     let page = st
-        .store
+        .run
+        .store()
         .list_message_records(&id, &query)
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?;

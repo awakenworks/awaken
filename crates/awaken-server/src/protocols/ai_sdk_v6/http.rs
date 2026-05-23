@@ -22,13 +22,13 @@ use awaken_contract::contract::message::{Message, MessageRecord, Role, ToolCall}
 use awaken_contract::contract::storage::{MessageOrder, MessageQuery};
 use awaken_contract::registry_spec::AgentSpec;
 
-use crate::app::AppState;
+use crate::app::ProtocolRoutesState as S;
 use crate::http_run::wire_sse_relay;
 use crate::http_sse::{sse_body_stream, sse_response};
 use crate::routes::{ApiError, map_mailbox_error};
 use crate::transport::channel_sink::BoundedChannelEventSink;
 use crate::transport::replay_buffer::EventReplayBuffer;
-use awaken_runtime::RunRequest;
+use awaken_runtime::RunActivation;
 use awaken_runtime::registry::resolve::RegistrySetResolver;
 use awaken_runtime::registry::{AgentSpecRegistry, RegistryHandle, RegistrySet};
 use awaken_runtime::{AgentResolver, AgentRuntime};
@@ -39,9 +39,8 @@ use super::request::{AiSdkChatRequest, ProcessedRequest};
 /// AI SDK v6 header required by `DefaultChatTransport` to identify the stream format.
 const AI_SDK_STREAM_HEADER: &str = "x-vercel-ai-ui-message-stream";
 const AI_SDK_STREAM_VERSION: &str = "v1";
-
 /// Wrap [`sse_response`] with the AI SDK–specific stream protocol header.
-fn ai_sdk_sse_response<S>(stream: S) -> Response
+pub(super) fn ai_sdk_sse_response<S>(stream: S) -> Response
 where
     S: futures::Stream<Item = Result<Bytes, Infallible>> + Send + 'static,
 {
@@ -58,7 +57,7 @@ where
 /// The resume route `{api}/{chatId}/stream` matches the AI SDK's
 /// `HttpChatTransport.reconnectToStream()` URL pattern, where `chatId`
 /// maps to awaken's `threadId`.
-pub fn ai_sdk_routes() -> Router<AppState> {
+pub fn ai_sdk_routes() -> Router<S> {
     Router::new()
         .route("/v1/ai-sdk/chat", post(ai_sdk_chat))
         .route(
@@ -73,7 +72,6 @@ pub fn ai_sdk_routes() -> Router<AppState> {
             "/v1/ai-sdk/agent-previews/runs",
             post(ai_sdk_chat_preview_agent),
         )
-        // AI SDK reconnect: GET {api}/{chatId}/stream → chatId = thread_id
         .route("/v1/ai-sdk/chat/:thread_id/stream", get(resume_stream))
         .route("/v1/ai-sdk/threads/:thread_id/stream", get(resume_stream))
         .route(
@@ -85,12 +83,12 @@ pub fn ai_sdk_routes() -> Router<AppState> {
             "/v1/ai-sdk/threads/:thread_id/interrupt",
             post(interrupt_thread),
         )
+        .merge(super::replay::ai_sdk_replay_routes())
 }
-
 // ── Route handlers ──────────────────────────────────────────────────
 
 async fn ai_sdk_chat(
-    State(st): State<AppState>,
+    State(st): State<S>,
     Json(payload): Json<AiSdkChatRequest>,
 ) -> Result<Response, ApiError> {
     ai_sdk_chat_inner(st, payload).await
@@ -98,7 +96,7 @@ async fn ai_sdk_chat(
 
 /// Thread-centric route: `POST /v1/ai-sdk/threads/:thread_id/runs`
 async fn ai_sdk_chat_threaded(
-    State(st): State<AppState>,
+    State(st): State<S>,
     Path(thread_id): Path<String>,
     Json(mut payload): Json<AiSdkChatRequest>,
 ) -> Result<Response, ApiError> {
@@ -108,7 +106,7 @@ async fn ai_sdk_chat_threaded(
 
 /// Agent-scoped route: `POST /v1/ai-sdk/agents/:agent_id/runs`
 async fn ai_sdk_chat_agent_scoped(
-    State(st): State<AppState>,
+    State(st): State<S>,
     Path(agent_id): Path<String>,
     Json(mut payload): Json<AiSdkChatRequest>,
 ) -> Result<Response, ApiError> {
@@ -131,11 +129,11 @@ async fn ai_sdk_chat_agent_scoped(
 /// crafted payload bypass the registry-membership check; clearing the
 /// field forces the preview into the local-only resolve path.
 async fn ai_sdk_chat_preview_agent(
-    State(st): State<AppState>,
+    State(st): State<S>,
     headers: HeaderMap,
     Json(payload): Json<super::request::PreviewAgentChatRequest>,
 ) -> Result<Response, ApiError> {
-    if let Err(err) = crate::config_routes::ensure_admin_auth(&st, &headers) {
+    if let Err(err) = crate::config_routes::ensure_admin_auth(&st.admin, &headers) {
         return Ok(err.into_response());
     }
 
@@ -177,7 +175,7 @@ async fn ai_sdk_chat_preview_agent(
         .with_registry_handle(RegistryHandle::new(candidate)),
     );
 
-    let mut request = RunRequest::new(
+    let mut request = RunActivation::new(
         processed.thread_id,
         crate::request::inject_frontend_context(processed.messages, processed.state),
     )
@@ -187,14 +185,14 @@ async fn ai_sdk_chat_preview_agent(
         request = request.with_decisions(processed.decisions);
     }
 
-    let (event_tx, event_rx) = tokio::sync::mpsc::channel(st.config.sse_buffer_size.max(32));
+    let (event_tx, event_rx) = tokio::sync::mpsc::channel(st.sse_buffer_size.max(32));
     let sink: Arc<dyn EventSink> = Arc::new(BoundedChannelEventSink::new(event_tx));
     tokio::spawn(async move {
         let _ = preview_runtime.run(request, sink).await;
     });
 
     let encoder = AiSdkEncoder::new();
-    let sse_rx = wire_sse_relay(event_rx, encoder, st.config.sse_buffer_size, None);
+    let sse_rx = wire_sse_relay(event_rx, encoder, st.sse_buffer_size, None);
     Ok(ai_sdk_sse_response(sse_body_stream(sse_rx)))
 }
 
@@ -228,11 +226,11 @@ impl AgentSpecRegistry for PreviewAgentRegistry {
     }
 }
 
-fn build_preview_registry_set(st: &AppState, agent: &AgentSpec) -> Result<RegistrySet, ApiError> {
-    let current = st
-        .runtime
-        .registry_set()
-        .ok_or_else(|| ApiError::Internal("runtime does not expose a registry snapshot".into()))?;
+fn build_preview_registry_set(st: &S, agent: &AgentSpec) -> Result<RegistrySet, ApiError> {
+    let current =
+        st.run.runtime.registry_set().ok_or_else(|| {
+            ApiError::Internal("runtime does not expose a registry snapshot".into())
+        })?;
 
     let candidate = RegistrySet {
         agents: Arc::new(PreviewAgentRegistry::new(
@@ -259,8 +257,8 @@ fn build_preview_registry_set(st: &AppState, agent: &AgentSpec) -> Result<Regist
 
 // ── Core chat handler ───────────────────────────────────────────────
 
-async fn ai_sdk_chat_inner(st: AppState, payload: AiSdkChatRequest) -> Result<Response, ApiError> {
-    let processed = super::request::process_chat_request(st.store.as_ref(), payload)
+async fn ai_sdk_chat_inner(st: S, payload: AiSdkChatRequest) -> Result<Response, ApiError> {
+    let processed = super::request::process_chat_request(st.run.store().as_ref(), payload)
         .await
         .map_err(ApiError::BadRequest)?;
 
@@ -280,12 +278,17 @@ async fn ai_sdk_chat_inner(st: AppState, payload: AiSdkChatRequest) -> Result<Re
     // decisions to resume the run on a fresh SSE stream.
     if !decisions.is_empty() {
         let (new_event_tx, new_event_rx) = tokio::sync::mpsc::channel(256);
-        let reconnected = st.mailbox.reconnect_sink(&thread_id, new_event_tx).await;
+        let reconnected = st
+            .run
+            .mailbox
+            .reconnect_sink(&thread_id, new_event_tx)
+            .await;
 
         if reconnected {
             let mut any_delivered = false;
             for (tool_call_id, resume) in &decisions {
                 if st
+                    .run
                     .mailbox
                     .send_decision(&thread_id, tool_call_id.clone(), resume.clone())
                 {
@@ -295,15 +298,14 @@ async fn ai_sdk_chat_inner(st: AppState, payload: AiSdkChatRequest) -> Result<Re
 
             if any_delivered {
                 // Wire the reconnected channel to a fresh SSE stream.
-                let replay_buffer =
-                    Arc::new(EventReplayBuffer::new(st.config.replay_buffer_capacity));
+                let replay_buffer = Arc::new(EventReplayBuffer::new(st.replay_buffer_capacity));
                 st.insert_replay_buffer(thread_id.clone(), Arc::clone(&replay_buffer));
 
                 let encoder = AiSdkEncoder::new();
                 let sse_rx = wire_sse_relay(
                     new_event_rx,
                     encoder,
-                    st.config.sse_buffer_size,
+                    st.sse_buffer_size,
                     Some(Arc::clone(&replay_buffer)),
                 );
 
@@ -311,8 +313,7 @@ async fn ai_sdk_chat_inner(st: AppState, payload: AiSdkChatRequest) -> Result<Re
                 let replay_buf = Arc::clone(&replay_buffer);
                 let tid = thread_id;
                 let mut rx = sse_rx;
-                let (final_tx, final_rx) =
-                    tokio::sync::mpsc::channel::<Bytes>(st.config.sse_buffer_size);
+                let (final_tx, final_rx) = tokio::sync::mpsc::channel::<Bytes>(st.sse_buffer_size);
                 tokio::spawn(async move {
                     while let Some(frame) = rx.recv().await {
                         if final_tx.send(frame).await.is_err() {
@@ -333,13 +334,13 @@ async fn ai_sdk_chat_inner(st: AppState, payload: AiSdkChatRequest) -> Result<Re
         // Pure resume with no active run — return empty stream.
         let (_, rx) = tokio::sync::mpsc::channel(1);
         let encoder = AiSdkEncoder::new();
-        let sse_rx = crate::http_run::wire_sse_relay(rx, encoder, st.config.sse_buffer_size, None);
+        let sse_rx = crate::http_run::wire_sse_relay(rx, encoder, st.sse_buffer_size, None);
         return Ok(ai_sdk_sse_response(sse_body_stream(sse_rx)));
     }
 
     let messages = crate::request::inject_frontend_context(messages, state);
 
-    let mut request = RunRequest::new(thread_id.clone(), messages)
+    let mut request = RunActivation::new(thread_id.clone(), messages)
         .with_adapter(awaken_contract::contract::tool_intercept::AdapterKind::AiSdk);
     if let Some(id) = agent_id {
         request = request.with_agent_id(id);
@@ -348,12 +349,13 @@ async fn ai_sdk_chat_inner(st: AppState, payload: AiSdkChatRequest) -> Result<Re
         request = request.with_decisions(decisions);
     }
     let (_result, event_rx) = st
+        .run
         .mailbox
         .submit(request)
         .await
         .map_err(map_mailbox_error)?;
 
-    let replay_buffer = Arc::new(EventReplayBuffer::new(st.config.replay_buffer_capacity));
+    let replay_buffer = Arc::new(EventReplayBuffer::new(st.replay_buffer_capacity));
 
     // Register buffer by thread_id (not run_id). External consumers only see
     // threads — runs are internal state. This matches AI SDK's reconnect URL
@@ -361,12 +363,7 @@ async fn ai_sdk_chat_inner(st: AppState, payload: AiSdkChatRequest) -> Result<Re
     st.insert_replay_buffer(thread_id.clone(), Arc::clone(&replay_buffer));
 
     let encoder = AiSdkEncoder::new();
-    let sse_rx = wire_sse_relay(
-        event_rx,
-        encoder,
-        st.config.sse_buffer_size,
-        Some(replay_buffer),
-    );
+    let sse_rx = wire_sse_relay(event_rx, encoder, st.sse_buffer_size, Some(replay_buffer));
 
     // Spawn cleanup task: forward frames to client, but keep buffer alive for
     // the full run duration (not tied to client connection). This allows
@@ -378,7 +375,7 @@ async fn ai_sdk_chat_inner(st: AppState, payload: AiSdkChatRequest) -> Result<Re
         .ok_or_else(|| ApiError::Internal("replay buffer disappeared after insert".into()))?;
     let cleanup_thread_id = thread_id;
     let mut sse_rx_forwarded = sse_rx;
-    let (final_tx, final_rx) = tokio::sync::mpsc::channel::<Bytes>(st.config.sse_buffer_size);
+    let (final_tx, final_rx) = tokio::sync::mpsc::channel::<Bytes>(st.sse_buffer_size);
     tokio::spawn(async move {
         let mut client_tx = Some(final_tx);
         let mut waiting_for_client_finish = false;
@@ -414,37 +411,34 @@ async fn ai_sdk_chat_inner(st: AppState, payload: AiSdkChatRequest) -> Result<Re
     Ok(ai_sdk_sse_response(sse_body_stream(final_rx)))
 }
 
-/// Reconnect to an active thread's event stream.
-///
-/// Called by AI SDK's `HttpChatTransport.reconnectToStream()` which issues
-/// `GET {api}/{chatId}/stream`. In awaken, `chatId` maps to `thread_id`.
-///
-/// Replays buffered frames after the client's `Last-Event-ID` and then
-/// streams any new frames produced by the still-running agent.
-///
-/// Returns **204 No Content** if no active stream exists for the thread.
-/// AI SDK treats 204 as "nothing to resume" and returns `null` to the caller.
+/// Reconnect to an active thread stream, or replay protocol cursors.
 async fn resume_stream(
-    State(st): State<AppState>,
+    State(st): State<S>,
     Path(thread_id): Path<String>,
     headers: HeaderMap,
 ) -> Response {
-    let last_event_id: u64 = headers
-        .get("last-event-id")
-        .and_then(|v| v.to_str().ok())
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(0);
-
+    if super::replay::resume_header_has_protocol_cursor(&headers) {
+        match super::replay::resume_from_replay_log(&st, &thread_id, &headers).await {
+            Ok(Some(response)) => return response,
+            Ok(None) => return axum::http::StatusCode::NO_CONTENT.into_response(),
+            Err(error) => return error.into_response(),
+        }
+    }
+    // ADR-0034 D3: numeric last-event-id is not a durable cursor; the
+    // live cache reattach always replays the full retained window and
+    // delegates durable resume to the protocol-cursor path above.
     let buffer = st.get_replay_buffer(&thread_id);
 
     let Some(buffer) = buffer else {
-        // AI SDK expects 204 for "no active stream" — not 404.
+        match super::replay::resume_from_replay_log(&st, &thread_id, &headers).await {
+            Ok(Some(response)) => return response,
+            Ok(None) => {}
+            Err(error) => return error.into_response(),
+        }
         return axum::http::StatusCode::NO_CONTENT.into_response();
     };
 
-    // Atomically replay + subscribe under a single lock hold.
-    // This guarantees no duplicates and no gaps.
-    let (replayed, live_rx) = buffer.subscribe_after(last_event_id);
+    let (replayed, live_rx) = buffer.subscribe_after(0);
 
     let replay_stream = futures::stream::iter(replayed.into_iter().map(Ok::<Bytes, Infallible>));
     let live_stream =
@@ -457,13 +451,14 @@ async fn resume_stream(
 // ── Thread messages (history) ───────────────────────────────────────
 
 async fn thread_messages(
-    State(st): State<AppState>,
+    State(st): State<S>,
     Path(id): Path<String>,
     Query(params): Query<crate::query::MessageQueryParams>,
 ) -> Result<Json<Value>, ApiError> {
     let storage_query = params.storage_query().map_err(ApiError::BadRequest)?;
     let records = st
-        .store
+        .run
+        .store()
         .load_message_records(&id)
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?
@@ -631,10 +626,11 @@ fn parse_tool_message_output(message: &Message) -> Value {
 // ── Cancel / Interrupt ──────────────────────────────────────────────
 
 async fn cancel_thread(
-    State(st): State<AppState>,
+    State(st): State<S>,
     Path(thread_id): Path<String>,
 ) -> Result<Response, ApiError> {
     let cancelled = st
+        .run
         .mailbox
         .cancel(&thread_id)
         .await
@@ -655,10 +651,11 @@ async fn cancel_thread(
 }
 
 async fn interrupt_thread(
-    State(st): State<AppState>,
+    State(st): State<S>,
     Path(thread_id): Path<String>,
 ) -> Result<Response, ApiError> {
     let interrupted = st
+        .run
         .mailbox
         .interrupt(&thread_id)
         .await
