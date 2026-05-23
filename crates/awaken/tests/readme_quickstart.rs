@@ -11,7 +11,7 @@ use awaken::contract::tool::{
 };
 use awaken::registry::ModelBinding;
 use awaken::registry_spec::AgentSpec;
-use awaken::{AgentRuntimeBuilder, RunRequest};
+use awaken::{AgentRuntimeBuilder, RunActivation};
 use serde_json::{Value, json};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -120,7 +120,7 @@ async fn readme_quickstart_runs_end_to_end_without_streaming_events() {
         .build()
         .expect("quickstart runtime should build");
 
-    let request = RunRequest::new(
+    let request = RunActivation::new(
         "thread-1",
         vec![Message::user("Say hello using the echo tool")],
     )

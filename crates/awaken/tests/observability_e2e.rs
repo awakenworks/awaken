@@ -19,6 +19,7 @@ use awaken::ext_observability::{InMemorySink, ObservabilityPlugin};
 use awaken::loop_runner::{AgentLoopParams, build_agent_env, run_agent_loop};
 use awaken::*;
 use awaken::{AgentResolver, ResolvedAgent};
+use awaken_runtime::loop_runner::CommitWiring;
 use serde_json::{Value, json};
 use std::sync::{Arc, Mutex};
 
@@ -196,6 +197,7 @@ async fn observability_captures_single_inference_e2e() {
         frontend_tools: Vec::new(),
         inbox: None,
         is_continuation: false,
+        commit: CommitWiring::default(),
         initial_state_seed: None,
     })
     .await
@@ -290,6 +292,7 @@ async fn observability_captures_tool_execution_e2e() {
         frontend_tools: Vec::new(),
         inbox: None,
         is_continuation: false,
+        commit: CommitWiring::default(),
         initial_state_seed: None,
     })
     .await
@@ -351,6 +354,7 @@ async fn observability_captures_inference_error_e2e() {
         frontend_tools: Vec::new(),
         inbox: None,
         is_continuation: false,
+        commit: CommitWiring::default(),
         initial_state_seed: None,
     })
     .await;
@@ -461,6 +465,7 @@ async fn observability_stats_aggregation_e2e() {
         frontend_tools: Vec::new(),
         inbox: None,
         is_continuation: false,
+        commit: CommitWiring::default(),
         initial_state_seed: None,
     })
     .await

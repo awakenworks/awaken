@@ -5,7 +5,7 @@ use awaken::contract::message::Message;
 use awaken::engine::GenaiExecutor;
 use awaken::registry::ModelBinding;
 use awaken::registry_spec::AgentSpec;
-use awaken::{AgentRuntimeBuilder, RunRequest};
+use awaken::{AgentRuntimeBuilder, RunActivation};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -72,7 +72,7 @@ async fn readme_live_provider_smoke_test() {
         .build()
         .expect("live runtime should build");
 
-    let request = RunRequest::new(
+    let request = RunActivation::new(
         "thread-live-provider",
         vec![Message::user("Reply with one short sentence.")],
     )
