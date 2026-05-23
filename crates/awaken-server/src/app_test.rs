@@ -1,6 +1,6 @@
 use super::*;
 
-fn state_for_admin_surface_test(address: &str, admin_api_config: AdminApiConfig) -> AppState {
+fn state_for_admin_surface_test(address: &str, admin_api_config: AdminApiConfig) -> ServerState {
     use crate::mailbox::{Mailbox, MailboxConfig};
     use awaken_runtime::AgentRuntime;
     use awaken_stores::{InMemoryMailboxStore, InMemoryStore};
@@ -33,7 +33,7 @@ fn state_for_admin_surface_test(address: &str, admin_api_config: AdminApiConfig)
         ..ServerConfig::default()
     };
 
-    AppState::new(
+    ServerState::new(
         runtime,
         mailbox,
         store.clone() as Arc<dyn ThreadRunStore>,
@@ -314,8 +314,8 @@ fn shutdown_config_custom() {
 
 // ── Replay buffer management (standalone map) ───────────────────
 
-/// Helper: create a standalone replay buffer map (same type as `AppState::replay_buffers`)
-/// to test purge logic without needing a full `AppState`.
+/// Helper: create a standalone replay buffer map (same type as `ServerState::replay_buffers`)
+/// to test purge logic without needing a full `ServerState`.
 fn make_replay_map() -> ReplayBufferMap {
     Arc::new(Mutex::new(HashMap::new()))
 }
@@ -472,7 +472,7 @@ async fn with_audit_log_from_config_reuses_preset_logger() {
     let preset_logger = Arc::new(AuditLogger::new(store.clone() as Arc<dyn ConfigStore>));
     let preset_ptr = Arc::as_ptr(&preset_logger);
 
-    let state = AppState::new(
+    let state = ServerState::new(
         runtime,
         mailbox,
         store.clone() as Arc<dyn awaken_contract::contract::storage::ThreadRunStore>,

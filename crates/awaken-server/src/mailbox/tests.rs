@@ -1,6 +1,15 @@
+#![allow(deprecated)] // ADR-0038 D7: tests exercise the legacy checkpoint API directly
+
 use super::*;
 use async_trait::async_trait;
+use awaken_contract::RuntimeEventDurability;
+use awaken_contract::contract::commit_coordinator::{
+    EventPublishError, OutboxServerEventPublisher, ServerEventPublishOutcome,
+};
 use awaken_contract::contract::content::ContentBlock;
+use awaken_contract::contract::event_store::{
+    AppendOptions, CanonicalEventDraft, EventReader, EventScope, EventWriter,
+};
 use awaken_contract::contract::executor::{InferenceExecutionError, InferenceRequest, LlmExecutor};
 use awaken_contract::contract::inference::{StopReason, StreamResult};
 use awaken_contract::contract::lifecycle::{RunStatus, TerminationReason};
@@ -9,9 +18,11 @@ use awaken_contract::contract::mailbox::{
     RunDispatchStatus,
 };
 use awaken_contract::contract::message::{Message, ToolCall};
+use awaken_contract::contract::outbox::OutboxError;
 use awaken_contract::contract::storage::RunRequestOrigin;
 use awaken_contract::contract::storage::{
-    RunRecord, RunStore, RunWaitingState, ThreadRunStore, ThreadStore, WaitingReason,
+    PinnedRegistryEntry, PinnedRegistryManifest, RunRecord, RunStore, RunWaitingState,
+    ThreadRunStore, ThreadStore, WaitingReason,
 };
 use awaken_contract::contract::tool::{
     Tool, ToolCallContext, ToolDescriptor, ToolError, ToolOutput, ToolResult,
@@ -22,9 +33,9 @@ use awaken_runtime::extensions::background::{
     BackgroundTaskManager, BackgroundTaskPlugin, TaskParentContext,
     TaskResult as BackgroundTaskResult,
 };
-use awaken_runtime::loop_runner::build_agent_env;
-use awaken_runtime::{Plugin, ResolvedAgent};
-use awaken_stores::{InMemoryMailboxStore, InMemoryStore};
+use awaken_runtime::loop_runner::{AgentLoopError, AgentRunResult, build_agent_env};
+use awaken_runtime::{AgentRuntime, Plugin, ResolvedAgent};
+use awaken_stores::{InMemoryEventStore, InMemoryMailboxStore, InMemoryStore};
 use serde_json::{Value, json};
 use std::collections::VecDeque;
 use std::sync::Mutex as StdMutex;
@@ -58,6 +69,99 @@ fn make_resume() -> ToolCallResume {
         result: serde_json::json!({"approved": true}),
         reason: None,
         updated_at: 0,
+    }
+}
+
+struct EventStoreServerEventPublisher {
+    writer: Arc<dyn EventWriter>,
+}
+
+struct FailingServerEventPublisher;
+
+impl EventStoreServerEventPublisher {
+    fn new(writer: Arc<dyn EventWriter>) -> Self {
+        Self { writer }
+    }
+}
+
+fn test_server_event_publisher(
+    event_store: Arc<InMemoryEventStore>,
+) -> Arc<dyn OutboxServerEventPublisher> {
+    Arc::new(EventStoreServerEventPublisher::new(event_store))
+}
+
+#[async_trait]
+impl OutboxServerEventPublisher for FailingServerEventPublisher {
+    async fn publish(
+        &self,
+        _draft: CanonicalEventDraft,
+        _options: AppendOptions,
+    ) -> Result<ServerEventPublishOutcome, EventPublishError> {
+        Err(EventPublishError::Enqueue(OutboxError::Io(
+            "event publisher unavailable".to_string(),
+        )))
+    }
+}
+
+#[async_trait]
+impl OutboxServerEventPublisher for EventStoreServerEventPublisher {
+    async fn publish(
+        &self,
+        draft: CanonicalEventDraft,
+        options: AppendOptions,
+    ) -> Result<ServerEventPublishOutcome, EventPublishError> {
+        let dedupe_key = options.idempotency_key.clone();
+        let result = self
+            .writer
+            .append(draft, options)
+            .await
+            .map_err(|error| EventPublishError::Enqueue(OutboxError::Io(error.to_string())))?;
+        Ok(ServerEventPublishOutcome::Enqueued {
+            dedupe_key: dedupe_key
+                .unwrap_or_else(|| format!("canonical/{}", result.event.event_id.as_str())),
+        })
+    }
+}
+
+struct FixedRunResolver {
+    manifest: PinnedRegistryManifest,
+}
+
+#[async_trait]
+impl awaken_runtime::Resolver for FixedRunResolver {
+    async fn resolve(
+        &self,
+        req: awaken_runtime::ResolutionRequest,
+    ) -> Result<awaken_runtime::ResolvedRunPlan, awaken_runtime::ResolveError> {
+        let agent_id = match &req.target {
+            awaken_runtime::ResolutionTarget::Root { agent_id, .. } => agent_id.as_str(),
+            awaken_runtime::ResolutionTarget::Delegate { agent_id, .. } => agent_id.as_str(),
+            awaken_runtime::ResolutionTarget::Handoff { agent_id, .. } => agent_id.as_str(),
+        };
+        let agent = ResolvedAgent::new(
+            agent_id,
+            "model",
+            "system",
+            Arc::new(ScriptedLlm::new(vec![])),
+        );
+        let requirements = awaken_runtime::BackendRequirements::from_features(&req.features);
+        Ok(awaken_runtime::ResolvedRunPlan::Replayable(
+            awaken_runtime::ResolvedRun {
+                agent_spec: (*agent.spec).clone(),
+                role: awaken_runtime::ExecutionRole::Root,
+                execution: awaken_runtime::ExecutionPlan::from_resolved_agent(&agent),
+                model: awaken_runtime::ResolvedModelBinding {
+                    upstream_model: agent.upstream_model.clone(),
+                },
+                tools: Vec::new(),
+                overrides: req.overrides,
+                backend_profile: awaken_runtime::BackendProfile::full_local(),
+                requirements,
+                scope: awaken_runtime::ReplayableScope {
+                    manifest: self.manifest.clone(),
+                },
+            },
+        ))
     }
 }
 
@@ -301,6 +405,7 @@ struct SignalMailboxStore {
     signals: Arc<tokio::sync::Mutex<VecDeque<TestDispatchSignal>>>,
     acked_count: Arc<AtomicUsize>,
     nacked_count: Arc<AtomicUsize>,
+    enqueue_failures_remaining: AtomicUsize,
     claim_failures_remaining: AtomicUsize,
     claim_dispatch_empty_once: AtomicBool,
 }
@@ -312,6 +417,12 @@ impl SignalMailboxStore {
 
     fn with_claim_failures(claim_failures: usize) -> Self {
         Self::with_failures_and_empty_claim_dispatch(claim_failures, false)
+    }
+
+    fn with_enqueue_failures(enqueue_failures: usize) -> Self {
+        let mut store = Self::with_failures_and_empty_claim_dispatch(0, false);
+        store.enqueue_failures_remaining = AtomicUsize::new(enqueue_failures);
+        store
     }
 
     fn with_empty_claim_dispatch_once() -> Self {
@@ -327,6 +438,7 @@ impl SignalMailboxStore {
             signals: Arc::new(tokio::sync::Mutex::new(VecDeque::new())),
             acked_count: Arc::new(AtomicUsize::new(0)),
             nacked_count: Arc::new(AtomicUsize::new(0)),
+            enqueue_failures_remaining: AtomicUsize::new(0),
             claim_failures_remaining: AtomicUsize::new(claim_failures),
             claim_dispatch_empty_once: AtomicBool::new(claim_dispatch_empty_once),
         }
@@ -344,6 +456,15 @@ impl SignalMailboxStore {
 #[async_trait::async_trait]
 impl MailboxStore for SignalMailboxStore {
     async fn enqueue(&self, dispatch: &RunDispatch) -> Result<(), StorageError> {
+        let remaining = self.enqueue_failures_remaining.load(Ordering::SeqCst);
+        if remaining > 0
+            && self
+                .enqueue_failures_remaining
+                .compare_exchange(remaining, remaining - 1, Ordering::SeqCst, Ordering::SeqCst)
+                .is_ok()
+        {
+            return Err(StorageError::Io("injected enqueue failure".into()));
+        }
         self.inner.enqueue(dispatch).await?;
         self.signals.lock().await.push_back(TestDispatchSignal {
             thread_id: dispatch.thread_id.clone(),
@@ -805,7 +926,7 @@ struct NoopMailboxRuntime;
 impl RunDispatchExecutor for NoopMailboxRuntime {
     async fn run(
         &self,
-        _request: RunRequest,
+        _request: RunActivation,
         _sink: Arc<dyn EventSink>,
     ) -> Result<AgentRunResult, AgentLoopError> {
         panic!("decoupling test must not execute runs")
@@ -834,7 +955,7 @@ struct ImmediateLocalCancelRuntime;
 impl RunDispatchExecutor for ImmediateLocalCancelRuntime {
     async fn run(
         &self,
-        _request: RunRequest,
+        _request: RunActivation,
         _sink: Arc<dyn EventSink>,
     ) -> Result<AgentRunResult, AgentLoopError> {
         panic!("local cancel test must not execute runs")
@@ -872,21 +993,268 @@ impl CountingMailboxRuntime {
 impl RunDispatchExecutor for CountingMailboxRuntime {
     async fn run(
         &self,
-        request: RunRequest,
+        request: RunActivation,
         _sink: Arc<dyn EventSink>,
     ) -> Result<AgentRunResult, AgentLoopError> {
         self.run_count.fetch_add(1, Ordering::SeqCst);
         Ok(AgentRunResult {
             run_id: request
-                .continue_run_id
-                .clone()
-                .or(request.run_id_hint.clone())
-                .or(request.dispatch_id.clone())
+                .resume_run_id()
+                .map(str::to_owned)
+                .or(request.persistence.run_id_hint.clone())
+                .or(request.trace.dispatch_id.clone())
                 .unwrap_or_else(|| "counted-run".to_string()),
             response: "ok".to_string(),
             termination: TerminationReason::NaturalEnd,
             steps: 1,
         })
+    }
+
+    fn cancel(&self, _id: &str) -> bool {
+        false
+    }
+
+    async fn cancel_and_wait_by_thread(&self, _thread_id: &str) -> bool {
+        false
+    }
+
+    fn send_decision(&self, _id: &str, _tool_call_id: String, _resume: ToolCallResume) -> bool {
+        false
+    }
+
+    fn send_messages(&self, _id: &str, _messages: Vec<Message>) -> bool {
+        false
+    }
+
+    fn live_registry_set(&self) -> Option<awaken_runtime::registry::RegistrySet> {
+        Some(empty_live_registry_set())
+    }
+}
+
+fn empty_live_registry_set() -> awaken_runtime::registry::RegistrySet {
+    use awaken_runtime::registry::{
+        MapAgentSpecRegistry, MapBackendRegistry, MapModelRegistry, MapPluginSource,
+        MapProviderRegistry, MapToolRegistry, RegistrySet,
+    };
+    RegistrySet {
+        agents: std::sync::Arc::new(MapAgentSpecRegistry::default()),
+        tools: std::sync::Arc::new(MapToolRegistry::new()),
+        models: std::sync::Arc::new(MapModelRegistry::new()),
+        providers: std::sync::Arc::new(MapProviderRegistry::new()),
+        plugins: std::sync::Arc::new(MapPluginSource::new()),
+        backends: std::sync::Arc::new(MapBackendRegistry::new()),
+    }
+}
+
+struct EmittingMailboxRuntime;
+
+#[async_trait::async_trait]
+impl RunDispatchExecutor for EmittingMailboxRuntime {
+    async fn run(
+        &self,
+        request: RunActivation,
+        sink: Arc<dyn EventSink>,
+    ) -> Result<AgentRunResult, AgentLoopError> {
+        let run_id = request
+            .resume_run_id()
+            .map(str::to_owned)
+            .or(request.persistence.run_id_hint.clone())
+            .or(request.trace.dispatch_id.clone())
+            .unwrap_or_else(|| "emitting-run".to_string());
+        sink.emit(AgentEvent::RunStart {
+            thread_id: request.thread_id().to_owned(),
+            run_id: run_id.clone(),
+            parent_run_id: None,
+            identity: None,
+        })
+        .await;
+        sink.emit(AgentEvent::TextDelta {
+            delta: "live only".into(),
+        })
+        .await;
+        sink.emit(AgentEvent::ToolCallReady {
+            id: "call-1".into(),
+            name: "search".into(),
+            arguments: json!({"q": "awaken"}),
+        })
+        .await;
+        sink.emit(AgentEvent::RunFinish {
+            thread_id: request.thread_id().to_owned(),
+            run_id: run_id.clone(),
+            identity: None,
+            result: None,
+            termination: TerminationReason::NaturalEnd,
+        })
+        .await;
+        Ok(AgentRunResult {
+            run_id,
+            response: "ok".to_string(),
+            termination: TerminationReason::NaturalEnd,
+            steps: 1,
+        })
+    }
+
+    fn cancel(&self, _id: &str) -> bool {
+        false
+    }
+
+    async fn cancel_and_wait_by_thread(&self, _thread_id: &str) -> bool {
+        false
+    }
+
+    fn send_decision(&self, _id: &str, _tool_call_id: String, _resume: ToolCallResume) -> bool {
+        false
+    }
+
+    fn send_messages(&self, _id: &str, _messages: Vec<Message>) -> bool {
+        false
+    }
+
+    fn live_registry_set(&self) -> Option<awaken_runtime::registry::RegistrySet> {
+        Some(empty_live_registry_set())
+    }
+}
+
+struct CommittingEmittingMailboxRuntime {
+    event_store: Arc<InMemoryEventStore>,
+}
+
+impl CommittingEmittingMailboxRuntime {
+    fn new(event_store: Arc<InMemoryEventStore>) -> Self {
+        Self { event_store }
+    }
+
+    async fn append_staged_events(&self, request: &RunActivation) -> Result<(), AgentLoopError> {
+        let Some(buffer) = request.capture.event_buffer.as_ref() else {
+            return Ok(());
+        };
+        for staged in buffer.drain() {
+            self.event_store
+                .append(staged.draft, staged.append_options)
+                .await
+                .map_err(|error| AgentLoopError::StorageError(error.to_string()))?;
+        }
+        Ok(())
+    }
+}
+
+#[async_trait::async_trait]
+impl RunDispatchExecutor for CommittingEmittingMailboxRuntime {
+    async fn run(
+        &self,
+        request: RunActivation,
+        sink: Arc<dyn EventSink>,
+    ) -> Result<AgentRunResult, AgentLoopError> {
+        let run_id = request
+            .resume_run_id()
+            .map(str::to_owned)
+            .or(request.persistence.run_id_hint.clone())
+            .or(request.trace.dispatch_id.clone())
+            .unwrap_or_else(|| "emitting-run".to_string());
+        sink.emit(AgentEvent::RunStart {
+            thread_id: request.thread_id().to_owned(),
+            run_id: run_id.clone(),
+            parent_run_id: None,
+            identity: None,
+        })
+        .await;
+        sink.emit(AgentEvent::TextDelta {
+            delta: "live only".into(),
+        })
+        .await;
+        sink.emit(AgentEvent::ToolCallReady {
+            id: "call-1".into(),
+            name: "search".into(),
+            arguments: json!({"q": "awaken"}),
+        })
+        .await;
+        sink.emit(AgentEvent::RunFinish {
+            thread_id: request.thread_id().to_owned(),
+            run_id: run_id.clone(),
+            identity: None,
+            result: None,
+            termination: TerminationReason::NaturalEnd,
+        })
+        .await;
+        self.append_staged_events(&request).await?;
+        Ok(AgentRunResult {
+            run_id,
+            response: "ok".to_string(),
+            termination: TerminationReason::NaturalEnd,
+            steps: 1,
+        })
+    }
+
+    fn cancel(&self, _id: &str) -> bool {
+        false
+    }
+
+    async fn cancel_and_wait_by_thread(&self, _thread_id: &str) -> bool {
+        false
+    }
+
+    fn send_decision(&self, _id: &str, _tool_call_id: String, _resume: ToolCallResume) -> bool {
+        false
+    }
+
+    fn send_messages(&self, _id: &str, _messages: Vec<Message>) -> bool {
+        false
+    }
+
+    fn live_registry_set(&self) -> Option<awaken_runtime::registry::RegistrySet> {
+        Some(empty_live_registry_set())
+    }
+
+    fn has_commit_coordinator(&self) -> bool {
+        true
+    }
+}
+
+struct FailingMailboxRuntime;
+
+#[async_trait::async_trait]
+impl RunDispatchExecutor for FailingMailboxRuntime {
+    async fn run(
+        &self,
+        _request: RunActivation,
+        _sink: Arc<dyn EventSink>,
+    ) -> Result<AgentRunResult, AgentLoopError> {
+        Err(AgentLoopError::RuntimeError(
+            awaken_runtime::RuntimeError::AgentNotFound {
+                agent_id: "synthetic-missing-agent".into(),
+            },
+        ))
+    }
+
+    fn cancel(&self, _id: &str) -> bool {
+        false
+    }
+
+    async fn cancel_and_wait_by_thread(&self, _thread_id: &str) -> bool {
+        false
+    }
+
+    fn send_decision(&self, _id: &str, _tool_call_id: String, _resume: ToolCallResume) -> bool {
+        false
+    }
+
+    fn send_messages(&self, _id: &str, _messages: Vec<Message>) -> bool {
+        false
+    }
+}
+
+struct TransientFailingMailboxRuntime;
+
+#[async_trait::async_trait]
+impl RunDispatchExecutor for TransientFailingMailboxRuntime {
+    async fn run(
+        &self,
+        _request: RunActivation,
+        _sink: Arc<dyn EventSink>,
+    ) -> Result<AgentRunResult, AgentLoopError> {
+        Err(AgentLoopError::StorageError(
+            "synthetic transient storage failure".to_string(),
+        ))
     }
 
     fn cancel(&self, _id: &str) -> bool {
@@ -941,19 +1309,21 @@ impl BlockingMailboxRuntime {
 impl RunDispatchExecutor for BlockingMailboxRuntime {
     async fn run(
         &self,
-        request: RunRequest,
+        request: RunActivation,
         _sink: Arc<dyn EventSink>,
     ) -> Result<AgentRunResult, AgentLoopError> {
         let ordinal = self.run_count.fetch_add(1, Ordering::SeqCst) + 1;
-        let _ = self.started_tx.send((ordinal, request.dispatch_id.clone()));
+        let _ = self
+            .started_tx
+            .send((ordinal, request.trace.dispatch_id.clone()));
         if ordinal == 1 {
             self.release_first.notified().await;
         }
         let run_id = request
-            .continue_run_id
-            .clone()
-            .or(request.run_id_hint.clone())
-            .or(request.dispatch_id.clone())
+            .resume_run_id()
+            .map(str::to_owned)
+            .or(request.persistence.run_id_hint.clone())
+            .or(request.trace.dispatch_id.clone())
             .unwrap_or_else(|| format!("blocking-run-{ordinal}"));
         Ok(AgentRunResult {
             run_id,
@@ -984,22 +1354,22 @@ impl RunDispatchExecutor for BlockingMailboxRuntime {
 impl RunDispatchExecutor for RecordingMailboxRuntime {
     async fn run(
         &self,
-        request: RunRequest,
+        request: RunActivation,
         _sink: Arc<dyn EventSink>,
     ) -> Result<AgentRunResult, AgentLoopError> {
         let run_id = request
-            .continue_run_id
-            .clone()
-            .or(request.run_id_hint.clone())
+            .resume_run_id()
+            .map(str::to_owned)
+            .or(request.persistence.run_id_hint.clone())
             .unwrap_or_else(|| "recorded-run".to_string());
         self.requests
             .lock()
             .expect("lock poisoned")
             .push(RecordedMailboxRequest {
-                run_mode: request.run_mode,
-                adapter: request.adapter,
-                dispatch_id: request.dispatch_id.clone(),
-                session_id: request.session_id.clone(),
+                run_mode: request.trace.run_mode,
+                adapter: request.trace.adapter,
+                dispatch_id: request.trace.dispatch_id.clone(),
+                session_id: request.trace.session_id.clone(),
             });
         Ok(AgentRunResult {
             run_id,
@@ -1049,22 +1419,22 @@ impl RecordingStoreMailboxRuntime {
 impl RunDispatchExecutor for RecordingStoreMailboxRuntime {
     async fn run(
         &self,
-        request: RunRequest,
+        request: RunActivation,
         _sink: Arc<dyn EventSink>,
     ) -> Result<AgentRunResult, AgentLoopError> {
         let run_id = request
-            .continue_run_id
-            .clone()
-            .or(request.run_id_hint.clone())
+            .resume_run_id()
+            .map(str::to_owned)
+            .or(request.persistence.run_id_hint.clone())
             .unwrap_or_else(|| "recorded-run".to_string());
         self.requests
             .lock()
             .expect("lock poisoned")
             .push(RecordedStoreMailboxRequest {
-                thread_id: request.thread_id,
-                continue_run_id: request.continue_run_id,
-                run_mode: request.run_mode,
-                adapter: request.adapter,
+                thread_id: request.thread_id().to_owned(),
+                continue_run_id: request.resume_run_id().map(str::to_owned),
+                run_mode: request.trace.run_mode,
+                adapter: request.trace.adapter,
             });
         Ok(AgentRunResult {
             run_id,
@@ -1303,10 +1673,13 @@ async fn prepare_queued_dispatch(
     content: &str,
 ) -> RunDispatch {
     let mut request =
-        RunRequest::new(thread_id, vec![Message::user(content)]).with_agent_id("agent");
-    let (validated_thread_id, messages) =
-        validate_run_inputs(request.thread_id.clone(), request.messages.clone(), false)
-            .expect("test input should validate");
+        RunActivation::new(thread_id, vec![Message::user(content)]).with_agent_id("agent");
+    let (validated_thread_id, messages) = validate_run_inputs(
+        request.thread_id().to_owned(),
+        request.messages().to_vec(),
+        false,
+    )
+    .expect("test input should validate");
     mailbox
         .prepare_run_for_dispatch(&mut request, &validated_thread_id, &messages)
         .await
@@ -1467,10 +1840,14 @@ async fn start_lifecycle_ready_retries_startup_recovery_until_ready() {
         MailboxConfig::default(),
     ));
 
-    let mut request = RunRequest::new("thread-retry-recover", vec![Message::user("recover")])
+    let mut request = RunActivation::new("thread-retry-recover", vec![Message::user("recover")])
         .with_agent_id("missing-agent");
-    let (thread_id, messages) =
-        validate_run_inputs(request.thread_id.clone(), request.messages.clone(), false).unwrap();
+    let (thread_id, messages) = validate_run_inputs(
+        request.thread_id().to_owned(),
+        request.messages().to_vec(),
+        false,
+    )
+    .unwrap();
     mailbox
         .prepare_run_for_dispatch(&mut request, &thread_id, &messages)
         .await
@@ -1599,10 +1976,14 @@ async fn start_lifecycle_is_idempotent_and_drop_does_not_abort_recovery() {
     let runtime = make_runtime();
     let mailbox = make_mailbox(runtime, store.clone());
 
-    let mut request = RunRequest::new("thread-drop-recover", vec![Message::user("recover")])
+    let mut request = RunActivation::new("thread-drop-recover", vec![Message::user("recover")])
         .with_agent_id("missing-agent");
-    let (thread_id, messages) =
-        validate_run_inputs(request.thread_id.clone(), request.messages.clone(), false).unwrap();
+    let (thread_id, messages) = validate_run_inputs(
+        request.thread_id().to_owned(),
+        request.messages().to_vec(),
+        false,
+    )
+    .unwrap();
     mailbox
         .prepare_run_for_dispatch(&mut request, &thread_id, &messages)
         .await
@@ -1800,10 +2181,14 @@ async fn start_lifecycle_runs_startup_recovery_for_existing_queued_dispatches() 
     let runtime = make_runtime();
     let mailbox = make_mailbox(runtime, store.clone());
 
-    let mut request = RunRequest::new("thread-recover", vec![Message::user("recover me")])
+    let mut request = RunActivation::new("thread-recover", vec![Message::user("recover me")])
         .with_agent_id("missing-agent");
-    let (thread_id, messages) =
-        validate_run_inputs(request.thread_id.clone(), request.messages.clone(), false).unwrap();
+    let (thread_id, messages) = validate_run_inputs(
+        request.thread_id().to_owned(),
+        request.messages().to_vec(),
+        false,
+    )
+    .unwrap();
     mailbox
         .prepare_run_for_dispatch(&mut request, &thread_id, &messages)
         .await
@@ -1843,10 +2228,14 @@ async fn start_lifecycle_reclaims_expired_claimed_dispatches_and_executes_them()
     let runtime = make_runtime();
     let mailbox = make_mailbox(runtime, store.clone());
 
-    let mut request = RunRequest::new("thread-stale", vec![Message::user("recover stale")])
+    let mut request = RunActivation::new("thread-stale", vec![Message::user("recover stale")])
         .with_agent_id("missing-agent");
-    let (thread_id, messages) =
-        validate_run_inputs(request.thread_id.clone(), request.messages.clone(), false).unwrap();
+    let (thread_id, messages) = validate_run_inputs(
+        request.thread_id().to_owned(),
+        request.messages().to_vec(),
+        false,
+    )
+    .unwrap();
     mailbox
         .prepare_run_for_dispatch(&mut request, &thread_id, &messages)
         .await
@@ -1905,7 +2294,7 @@ async fn dispatch_signal_loop_claims_and_executes_queued_dispatch() {
     let store = Arc::new(SignalMailboxStore::new());
     let run_store = Arc::new(InMemoryStore::new());
     let runtime = Arc::new(RecordingMailboxRuntime::default());
-    let mailbox = Arc::new(Mailbox::new_with_executor(
+    let mailbox = Arc::new(Mailbox::new(
         runtime,
         store.clone(),
         run_store.clone(),
@@ -1913,11 +2302,14 @@ async fn dispatch_signal_loop_claims_and_executes_queued_dispatch() {
         MailboxConfig::default(),
     ));
 
-    let mut request =
-        RunRequest::new("thread-signal-loop", vec![Message::user("wake")]).with_agent_id("agent");
-    let (thread_id, messages) =
-        validate_run_inputs(request.thread_id.clone(), request.messages.clone(), false)
-            .expect("input should validate");
+    let mut request = RunActivation::new("thread-signal-loop", vec![Message::user("wake")])
+        .with_agent_id("agent");
+    let (thread_id, messages) = validate_run_inputs(
+        request.thread_id().to_owned(),
+        request.messages().to_vec(),
+        false,
+    )
+    .expect("input should validate");
     mailbox
         .prepare_run_for_dispatch(&mut request, &thread_id, &messages)
         .await
@@ -1956,7 +2348,7 @@ async fn dispatch_signal_loop_nacks_and_redelivers_after_claim_error() {
     let store = Arc::new(SignalMailboxStore::with_claim_failures(1));
     let run_store = Arc::new(InMemoryStore::new());
     let runtime = Arc::new(RecordingMailboxRuntime::default());
-    let mailbox = Arc::new(Mailbox::new_with_executor(
+    let mailbox = Arc::new(Mailbox::new(
         runtime,
         store.clone(),
         run_store.clone(),
@@ -1964,11 +2356,14 @@ async fn dispatch_signal_loop_nacks_and_redelivers_after_claim_error() {
         MailboxConfig::default(),
     ));
 
-    let mut request = RunRequest::new("thread-signal-redeliver", vec![Message::user("wake")])
+    let mut request = RunActivation::new("thread-signal-redeliver", vec![Message::user("wake")])
         .with_agent_id("agent");
-    let (thread_id, messages) =
-        validate_run_inputs(request.thread_id.clone(), request.messages.clone(), false)
-            .expect("input should validate");
+    let (thread_id, messages) = validate_run_inputs(
+        request.thread_id().to_owned(),
+        request.messages().to_vec(),
+        false,
+    )
+    .expect("input should validate");
     mailbox
         .prepare_run_for_dispatch(&mut request, &thread_id, &messages)
         .await
@@ -2007,7 +2402,7 @@ async fn dispatch_signal_loop_nacks_when_signal_is_blocked_by_active_claim() {
     let store = Arc::new(SignalMailboxStore::new());
     let run_store = Arc::new(InMemoryStore::new());
     let runtime = Arc::new(RecordingMailboxRuntime::default());
-    let mailbox = Arc::new(Mailbox::new_with_executor(
+    let mailbox = Arc::new(Mailbox::new(
         runtime,
         store.clone(),
         run_store.clone(),
@@ -2015,11 +2410,14 @@ async fn dispatch_signal_loop_nacks_when_signal_is_blocked_by_active_claim() {
         MailboxConfig::default(),
     ));
 
-    let mut active = RunRequest::new("thread-signal-blocked", vec![Message::user("active")])
+    let mut active = RunActivation::new("thread-signal-blocked", vec![Message::user("active")])
         .with_agent_id("agent");
-    let (thread_id, active_messages) =
-        validate_run_inputs(active.thread_id.clone(), active.messages.clone(), false)
-            .expect("active input should validate");
+    let (thread_id, active_messages) = validate_run_inputs(
+        active.thread_id().to_owned(),
+        active.messages().to_vec(),
+        false,
+    )
+    .expect("active input should validate");
     mailbox
         .prepare_run_for_dispatch(&mut active, &thread_id, &active_messages)
         .await
@@ -2039,11 +2437,14 @@ async fn dispatch_signal_loop_nacks_when_signal_is_blocked_by_active_claim() {
     assert_eq!(claimed.len(), 1);
     let active_claim_token = claimed[0].claim_token.clone().unwrap();
 
-    let mut queued = RunRequest::new("thread-signal-blocked", vec![Message::user("queued")])
+    let mut queued = RunActivation::new("thread-signal-blocked", vec![Message::user("queued")])
         .with_agent_id("agent");
-    let (_, queued_messages) =
-        validate_run_inputs(queued.thread_id.clone(), queued.messages.clone(), false)
-            .expect("queued input should validate");
+    let (_, queued_messages) = validate_run_inputs(
+        queued.thread_id().to_owned(),
+        queued.messages().to_vec(),
+        false,
+    )
+    .expect("queued input should validate");
     mailbox
         .prepare_run_for_dispatch(&mut queued, &thread_id, &queued_messages)
         .await
@@ -2112,12 +2513,12 @@ async fn dispatch_signal_loop_nacks_when_signal_is_blocked_by_active_claim() {
 
 #[test]
 fn run_request_fields() {
-    let req = RunRequest::new("t-1", vec![Message::user("hello")]).with_agent_id("agent-a");
-    assert_eq!(req.thread_id, "t-1");
-    assert_eq!(req.agent_id.as_deref(), Some("agent-a"));
-    assert_eq!(req.messages.len(), 1);
-    assert_eq!(req.run_mode, RunMode::Foreground);
-    assert_eq!(req.adapter, AdapterKind::Internal);
+    let req = RunActivation::new("t-1", vec![Message::user("hello")]).with_agent_id("agent-a");
+    assert_eq!(req.thread_id(), "t-1");
+    assert_eq!(req.intent.agent_id.as_deref(), Some("agent-a"));
+    assert_eq!(req.messages().len(), 1);
+    assert_eq!(req.trace.run_mode, RunMode::Foreground);
+    assert_eq!(req.trace.adapter, AdapterKind::Internal);
 }
 
 #[test]
@@ -2164,7 +2565,7 @@ fn dispatch_status_enum_variants() {
 #[test]
 fn mailbox_construction_depends_on_runtime_boundary_not_agent_runtime() {
     let runtime: Arc<dyn RunDispatchExecutor> = Arc::new(NoopMailboxRuntime);
-    let mailbox = Mailbox::new_with_executor(
+    let mailbox = Mailbox::new(
         runtime,
         make_store(),
         Arc::new(InMemoryStore::new()),
@@ -2182,7 +2583,7 @@ async fn submit_background_enqueues_dispatch() {
     let mailbox = make_mailbox(runtime, store.clone());
 
     let request =
-        RunRequest::new("thread-1", vec![Message::user("hello")]).with_agent_id("agent-1");
+        RunActivation::new("thread-1", vec![Message::user("hello")]).with_agent_id("agent-1");
     let result = mailbox.submit_background(request).await.unwrap();
 
     assert_eq!(result.thread_id, "thread-1");
@@ -2213,7 +2614,7 @@ async fn submit_background_delivers_scheduled_policy_context() {
 
     let result = mailbox
         .submit_background(
-            RunRequest::new("thread-policy-bg", vec![Message::user("hello")])
+            RunActivation::new("thread-policy-bg", vec![Message::user("hello")])
                 .with_agent_id("agent-1")
                 .with_adapter(AdapterKind::Acp),
         )
@@ -2256,18 +2657,25 @@ async fn prepare_run_for_dispatch_precreates_created_run_and_thread_projection()
         mailbox_store,
         thread_store.clone() as Arc<dyn ThreadRunStore>,
     );
-    let mut request = RunRequest::new("thread-created", vec![Message::user("plan this")])
+    let mut request = RunActivation::new("thread-created", vec![Message::user("plan this")])
         .with_agent_id("agent-created")
         .with_transport_request_id("transport-created");
-    let (thread_id, messages) =
-        validate_run_inputs(request.thread_id.clone(), request.messages.clone(), false).unwrap();
+    let (thread_id, messages) = validate_run_inputs(
+        request.thread_id().to_owned(),
+        request.messages().to_vec(),
+        false,
+    )
+    .unwrap();
 
     let run_id = mailbox
         .prepare_run_for_dispatch(&mut request, &thread_id, &messages)
         .await
         .expect("precreate");
 
-    assert_eq!(request.run_id_hint.as_deref(), Some(run_id.as_str()));
+    assert_eq!(
+        request.persistence.run_id_hint.as_deref(),
+        Some(run_id.as_str())
+    );
     let run = thread_store
         .load_run(&run_id)
         .await
@@ -2275,14 +2683,13 @@ async fn prepare_run_for_dispatch_precreates_created_run_and_thread_projection()
         .expect("created run");
     assert_eq!(run.status, RunStatus::Created);
     assert_eq!(run.agent_id, "agent-created");
-    let request_snapshot = run.request.as_ref().unwrap();
+    let activation_snapshot = run.activation.as_ref().unwrap();
     assert!(
-        !request_snapshot.input_message_ids.is_empty(),
+        !activation_snapshot.input.trigger_message_ids.is_empty(),
         "new run snapshots should reference thread messages instead of duplicating bodies"
     );
-    assert_eq!(request_snapshot.input_message_count, 1);
     assert_eq!(
-        request_snapshot.input_message_ids,
+        activation_snapshot.input.trigger_message_ids,
         vec![messages[0].id.clone().expect("message id")]
     );
     let input = run.input.as_ref().expect("run input message range");
@@ -2294,9 +2701,10 @@ async fn prepare_run_for_dispatch_precreates_created_run_and_thread_projection()
         vec![messages[0].id.clone().expect("message id")]
     );
     assert_eq!(
-        run.request
+        run.activation
             .as_ref()
             .unwrap()
+            .trace
             .transport_request_id
             .as_deref(),
         Some("transport-created")
@@ -2309,6 +2717,56 @@ async fn prepare_run_for_dispatch_precreates_created_run_and_thread_projection()
     assert_eq!(thread.open_run_id.as_deref(), Some(run_id.as_str()));
     assert_eq!(thread.latest_run_id.as_deref(), Some(run_id.as_str()));
     assert!(thread.active_run_id.is_none());
+}
+
+#[tokio::test]
+async fn prepare_run_for_dispatch_persists_resolved_registry_manifest() {
+    let thread_store = Arc::new(InMemoryStore::new());
+    let manifest = PinnedRegistryManifest {
+        publication_id: Some("pub-1".to_string()),
+        registry_snapshot_version: Some(1),
+        entries: vec![PinnedRegistryEntry {
+            kind: "agent".to_string(),
+            id: "agent-created".to_string(),
+            version: 3,
+            content_hash: "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+                .to_string(),
+        }],
+    };
+    let runtime = Arc::new(
+        AgentRuntime::new(Arc::new(StubResolver))
+            .with_in_memory_thread_run_store(thread_store.clone()),
+    );
+    runtime.set_run_resolver(Arc::new(FixedRunResolver {
+        manifest: manifest.clone(),
+    }));
+    let mailbox = Arc::new(Mailbox::new(
+        runtime.clone(),
+        make_store(),
+        thread_store.clone() as Arc<dyn ThreadRunStore>,
+        "test-consumer".to_string(),
+        MailboxConfig::default(),
+    ));
+    let mut request = RunActivation::new("thread-manifest", vec![Message::user("plan this")])
+        .with_agent_id("agent-created");
+    let (thread_id, messages) = validate_run_inputs(
+        request.thread_id().to_owned(),
+        request.messages().to_vec(),
+        false,
+    )
+    .unwrap();
+
+    let run_id = mailbox
+        .prepare_run_for_dispatch(&mut request, &thread_id, &messages)
+        .await
+        .expect("precreate");
+
+    let run = thread_store
+        .load_run(&run_id)
+        .await
+        .expect("load run")
+        .expect("created run");
+    assert_eq!(run.registry_manifest, Some(manifest));
 }
 
 #[tokio::test]
@@ -2337,9 +2795,13 @@ async fn prepare_run_for_dispatch_inherits_previous_runtime_state() {
         make_store(),
         thread_store.clone() as Arc<dyn ThreadRunStore>,
     );
-    let mut request = RunRequest::new("thread-state", vec![Message::user("second")]);
-    let (thread_id, messages) =
-        validate_run_inputs(request.thread_id.clone(), request.messages.clone(), false).unwrap();
+    let mut request = RunActivation::new("thread-state", vec![Message::user("second")]);
+    let (thread_id, messages) = validate_run_inputs(
+        request.thread_id().to_owned(),
+        request.messages().to_vec(),
+        false,
+    )
+    .unwrap();
 
     let run_id = mailbox
         .prepare_run_for_dispatch(&mut request, &thread_id, &messages)
@@ -2366,14 +2828,22 @@ async fn cancel_queued_dispatch_works() {
     crate::metrics::install_recorder();
     let store = make_store();
     let run_store = Arc::new(InMemoryStore::new());
+    let event_store = Arc::new(InMemoryEventStore::new());
     let runtime: Arc<dyn RunDispatchExecutor> = Arc::new(NoopMailboxRuntime);
-    let mailbox = Arc::new(Mailbox::new_with_executor(
-        runtime,
-        store.clone(),
-        run_store.clone(),
-        "test-consumer".to_string(),
-        MailboxConfig::default(),
-    ));
+    let mailbox = Arc::new(
+        Mailbox::new(
+            runtime,
+            store.clone(),
+            run_store.clone(),
+            "test-consumer".to_string(),
+            MailboxConfig::default(),
+        )
+        .with_server_event_publisher(
+            test_server_event_publisher(Arc::clone(&event_store)),
+            "server",
+        )
+        .unwrap(),
+    );
 
     let result =
         enqueue_prepared_dispatch(&mailbox, store.as_ref(), "thread-cancel", "hello").await;
@@ -2394,6 +2864,21 @@ async fn cancel_queued_dispatch_works() {
     assert_eq!(run.termination_reason, Some(TerminationReason::Cancelled));
     assert_eq!(run.dispatch_id.as_deref(), Some(dispatch_id.as_str()));
 
+    let page = event_store
+        .list(EventScope::thread("thread-cancel"), None, 10)
+        .await
+        .unwrap();
+    let event = page
+        .events
+        .iter()
+        .find(|event| event.event_kind.as_str() == "RunCancelled")
+        .expect("queued cancel should record RunCancelled");
+    assert_eq!(
+        event.payload["dispatch_id"].as_str(),
+        Some(dispatch_id.as_str())
+    );
+    assert_eq!(event.correlation_id.as_deref(), Some(dispatch_id.as_str()));
+
     let output = crate::metrics::render().unwrap_or_default();
     assert!(output.contains("operation=\"mark_run_cancelled\""));
     assert!(output.contains("outcome=\"cancelled\""));
@@ -2406,7 +2891,7 @@ async fn list_dispatches_returns_entries() {
     let mailbox = make_mailbox(runtime, store.clone());
 
     for i in 0..3 {
-        let request = RunRequest::new("thread-list", vec![Message::user("msg")])
+        let request = RunActivation::new("thread-list", vec![Message::user("msg")])
             .with_agent_id(format!("agent-{i}"));
         mailbox.submit_background(request).await.unwrap();
     }
@@ -2659,7 +3144,7 @@ async fn build_dispatch_sets_correct_fields() {
     let mailbox = make_mailbox(runtime, store);
 
     let request =
-        RunRequest::new("thread-42", vec![Message::user("test")]).with_run_id_hint("run-42");
+        RunActivation::new("thread-42", vec![Message::user("test")]).with_run_id_hint("run-42");
     let dispatch = mailbox.build_dispatch(&request, "thread-42").unwrap();
 
     assert_eq!(dispatch.thread_id, "thread-42");
@@ -2681,7 +3166,7 @@ fn build_dispatch_requires_prepared_run_id() {
     let runtime = make_runtime();
     let mailbox = make_mailbox(runtime, store);
 
-    let request = RunRequest::new("thread-1", vec![Message::user("hi")]);
+    let request = RunActivation::new("thread-1", vec![Message::user("hi")]);
     assert!(mailbox.build_dispatch(&request, "thread-1").is_err());
 }
 
@@ -2698,28 +3183,32 @@ async fn prepare_run_preserves_request_extras_on_run_snapshot() {
         MailboxConfig::default(),
     ));
 
-    let mut request = RunRequest::new("thread-ext", vec![Message::user("hi")])
+    let mut request = RunActivation::new("thread-ext", vec![Message::user("hi")])
         .with_agent_id("a1")
         .with_frontend_tools(vec![awaken_contract::contract::tool::ToolDescriptor::new(
             "ft1", "FT1", "desc",
         )]);
-    let (thread_id, messages) =
-        validate_run_inputs(request.thread_id.clone(), request.messages.clone(), false).unwrap();
+    let (thread_id, messages) = validate_run_inputs(
+        request.thread_id().to_owned(),
+        request.messages().to_vec(),
+        false,
+    )
+    .unwrap();
     let run_id = mailbox
         .prepare_run_for_dispatch(&mut request, &thread_id, &messages)
         .await
         .unwrap();
     let run = thread_store.load_run(&run_id).await.unwrap().unwrap();
 
-    let snapshot = run.request.expect("request snapshot");
-    assert_eq!(snapshot.frontend_tools.len(), 1);
-    assert!(snapshot.request_extras.is_some());
+    let snapshot = run.activation.expect("activation snapshot");
+    assert_eq!(snapshot.options.frontend_tools.len(), 1);
+    assert!(run.request.is_none());
 }
 
 #[test]
 fn run_request_extras_serde_roundtrip() {
     use awaken_contract::contract::tool::ToolDescriptor;
-    let extras = RunRequestExtras {
+    let extras = LegacyRunSnapshotExtras {
         overrides: None,
         decisions: vec![],
         frontend_tools: vec![ToolDescriptor::new("ft1", "FT1", "desc")],
@@ -2732,7 +3221,7 @@ fn run_request_extras_serde_roundtrip() {
         adapter: AdapterKind::Acp,
     };
     let value = extras.to_value().unwrap().unwrap();
-    let parsed = RunRequestExtras::from_value(&value).unwrap();
+    let parsed = LegacyRunSnapshotExtras::from_value(&value).unwrap();
     assert_eq!(parsed.frontend_tools.len(), 1);
     assert_eq!(parsed.frontend_tools[0].id, "ft1");
     assert!(parsed.decisions.is_empty());
@@ -2743,7 +3232,7 @@ fn run_request_extras_serde_roundtrip() {
 
 #[test]
 fn run_request_extras_empty_returns_none() {
-    let extras = RunRequestExtras {
+    let extras = LegacyRunSnapshotExtras {
         overrides: None,
         decisions: vec![],
         frontend_tools: vec![],
@@ -2761,7 +3250,7 @@ fn run_request_extras_empty_returns_none() {
 #[test]
 fn run_request_extras_apply_to_request() {
     use awaken_contract::contract::tool::ToolDescriptor;
-    let extras = RunRequestExtras {
+    let extras = LegacyRunSnapshotExtras {
         overrides: None,
         decisions: vec![],
         frontend_tools: vec![ToolDescriptor::new("ft1", "FT1", "desc")],
@@ -2773,15 +3262,24 @@ fn run_request_extras_apply_to_request() {
         run_mode: RunMode::Resume,
         adapter: AdapterKind::AgUi,
     };
-    let request = RunRequest::new("t1", vec![Message::user("hi")]);
+    let request = RunActivation::new("t1", vec![Message::user("hi")]);
     let applied = extras.apply_to(request);
-    assert_eq!(applied.frontend_tools.len(), 1);
-    assert_eq!(applied.run_id_hint.as_deref(), Some("run-1"));
-    assert_eq!(applied.dispatch_id_hint.as_deref(), Some("dispatch-1"));
-    assert_eq!(applied.parent_thread_id.as_deref(), Some("parent-thread"));
-    assert_eq!(applied.transport_request_id.as_deref(), Some("transport-1"));
-    assert_eq!(applied.run_mode, RunMode::Resume);
-    assert_eq!(applied.adapter, AdapterKind::AgUi);
+    assert_eq!(applied.options.frontend_tools.len(), 1);
+    assert_eq!(applied.persistence.run_id_hint.as_deref(), Some("run-1"));
+    assert_eq!(
+        applied.persistence.dispatch_id_hint.as_deref(),
+        Some("dispatch-1")
+    );
+    assert_eq!(
+        applied.trace.parent_thread_id.as_deref(),
+        Some("parent-thread")
+    );
+    assert_eq!(
+        applied.trace.transport_request_id.as_deref(),
+        Some("transport-1")
+    );
+    assert_eq!(applied.trace.run_mode, RunMode::Resume);
+    assert_eq!(applied.trace.adapter, AdapterKind::AgUi);
 }
 
 #[tokio::test]
@@ -2801,11 +3299,15 @@ async fn prepare_run_round_trips_parent_thread_id() {
         .await
         .unwrap();
 
-    let mut request = RunRequest::new("thread-child", vec![Message::user("hi")])
+    let mut request = RunActivation::new("thread-child", vec![Message::user("hi")])
         .with_agent_id("agent")
         .with_parent_thread_id("thread-parent");
-    let (thread_id, messages) =
-        validate_run_inputs(request.thread_id.clone(), request.messages.clone(), false).unwrap();
+    let (thread_id, messages) = validate_run_inputs(
+        request.thread_id().to_owned(),
+        request.messages().to_vec(),
+        false,
+    )
+    .unwrap();
     let run_id = mailbox
         .prepare_run_for_dispatch(&mut request, &thread_id, &messages)
         .await
@@ -2813,9 +3315,9 @@ async fn prepare_run_round_trips_parent_thread_id() {
     let run = thread_store.load_run(&run_id).await.unwrap().unwrap();
 
     assert_eq!(
-        run.request
+        run.activation
             .as_ref()
-            .and_then(|snapshot| snapshot.parent_thread_id.as_deref()),
+            .and_then(|snapshot| snapshot.trace.parent_thread_id.as_deref()),
         Some("thread-parent")
     );
 }
@@ -2833,20 +3335,27 @@ async fn prepare_run_preserves_origin_metadata() {
         MailboxConfig::default(),
     ));
 
-    let mut request = RunRequest::new("thread-meta", vec![Message::user("hi")])
+    let mut request = RunActivation::new("thread-meta", vec![Message::user("hi")])
         .with_agent_id("a1")
         .with_origin(RunRequestOrigin::A2A)
         .with_parent_run_id("parent-run-1");
-    let (thread_id, messages) =
-        validate_run_inputs(request.thread_id.clone(), request.messages.clone(), false).unwrap();
+    let (thread_id, messages) = validate_run_inputs(
+        request.thread_id().to_owned(),
+        request.messages().to_vec(),
+        false,
+    )
+    .unwrap();
     let run_id = mailbox
         .prepare_run_for_dispatch(&mut request, &thread_id, &messages)
         .await
         .unwrap();
     let run = thread_store.load_run(&run_id).await.unwrap().unwrap();
-    let snapshot = run.request.as_ref().unwrap();
+    let snapshot = run.activation.as_ref().unwrap();
 
-    assert!(matches!(snapshot.origin, RunRequestOrigin::A2A));
+    assert!(matches!(
+        RunRequestOrigin::from(snapshot.trace.origin),
+        RunRequestOrigin::A2A
+    ));
     assert_eq!(run.parent_run_id.as_deref(), Some("parent-run-1"));
 }
 
@@ -2863,9 +3372,13 @@ async fn prepare_run_defaults_origin_to_user() {
         MailboxConfig::default(),
     ));
 
-    let mut request = RunRequest::new("thread-default", vec![Message::user("hi")]);
-    let (thread_id, messages) =
-        validate_run_inputs(request.thread_id.clone(), request.messages.clone(), false).unwrap();
+    let mut request = RunActivation::new("thread-default", vec![Message::user("hi")]);
+    let (thread_id, messages) = validate_run_inputs(
+        request.thread_id().to_owned(),
+        request.messages().to_vec(),
+        false,
+    )
+    .unwrap();
     let run_id = mailbox
         .prepare_run_for_dispatch(&mut request, &thread_id, &messages)
         .await
@@ -2873,7 +3386,7 @@ async fn prepare_run_defaults_origin_to_user() {
     let run = thread_store.load_run(&run_id).await.unwrap().unwrap();
 
     assert!(matches!(
-        run.request.as_ref().unwrap().origin,
+        RunRequestOrigin::from(run.activation.as_ref().unwrap().trace.origin),
         RunRequestOrigin::User
     ));
     assert!(run.parent_run_id.is_none());
@@ -2920,7 +3433,7 @@ async fn mailbox_execution_records_dispatch_latency_metrics() {
     let mailbox_store = make_store();
     let run_store = Arc::new(InMemoryStore::new());
     let runtime: Arc<dyn RunDispatchExecutor> = Arc::new(RecordingMailboxRuntime::default());
-    let mailbox = Arc::new(Mailbox::new_with_executor(
+    let mailbox = Arc::new(Mailbox::new(
         runtime,
         mailbox_store.clone(),
         run_store,
@@ -2929,7 +3442,10 @@ async fn mailbox_execution_records_dispatch_latency_metrics() {
     ));
 
     let submitted = mailbox
-        .submit_background(RunRequest::new("thread-metrics", vec![Message::user("go")]))
+        .submit_background(RunActivation::new(
+            "thread-metrics",
+            vec![Message::user("go")],
+        ))
         .await
         .expect("submit should succeed");
 
@@ -2966,7 +3482,7 @@ async fn mailbox_lease_renewal_is_wired_and_prevents_reclaim() {
         started_tx,
         Arc::clone(&release_first),
     ));
-    let mailbox = Arc::new(Mailbox::new_with_executor(
+    let mailbox = Arc::new(Mailbox::new(
         runtime,
         mailbox_store.clone(),
         run_store,
@@ -2979,7 +3495,7 @@ async fn mailbox_lease_renewal_is_wired_and_prevents_reclaim() {
     ));
 
     let submitted = mailbox
-        .submit_background(RunRequest::new(
+        .submit_background(RunActivation::new(
             "thread-lease-renewal",
             vec![Message::user("go")],
         ))
@@ -3063,7 +3579,8 @@ async fn background_success_records_run_result_and_keeps_dispatch_id_separate_fr
 
     let submitted = mailbox
         .submit_background(
-            RunRequest::new("thread-run-result", vec![Message::user("go")]).with_agent_id("agent"),
+            RunActivation::new("thread-run-result", vec![Message::user("go")])
+                .with_agent_id("agent"),
         )
         .await
         .expect("submit should succeed");
@@ -3093,7 +3610,7 @@ async fn background_permanent_error_records_run_result_before_dead_letter() {
 
     let submitted = mailbox
         .submit_background(
-            RunRequest::new("thread-missing-agent", vec![Message::user("go")])
+            RunActivation::new("thread-missing-agent", vec![Message::user("go")])
                 .with_agent_id("missing-agent"),
         )
         .await
@@ -3134,7 +3651,7 @@ async fn reconstruct_failure_cleans_worker_and_dispatches_next_queued() {
     let store = make_store();
     let thread_store = Arc::new(InMemoryStore::new());
     let runtime = Arc::new(RecordingMailboxRuntime::default());
-    let mailbox = Arc::new(Mailbox::new_with_executor(
+    let mailbox = Arc::new(Mailbox::new(
         runtime,
         store.clone(),
         thread_store.clone(),
@@ -3171,10 +3688,10 @@ async fn reconstruct_failure_cleans_worker_and_dispatches_next_queued() {
     store.enqueue(&missing).await.expect("enqueue missing run");
 
     let mut next_request =
-        RunRequest::new(thread_id, vec![Message::user("next")]).with_agent_id("agent");
+        RunActivation::new(thread_id, vec![Message::user("next")]).with_agent_id("agent");
     let (_, next_messages) = validate_run_inputs(
-        next_request.thread_id.clone(),
-        next_request.messages.clone(),
+        next_request.thread_id().to_owned(),
+        next_request.messages().to_vec(),
         false,
     )
     .expect("next input should validate");
@@ -3229,7 +3746,8 @@ async fn interrupt_bumps_dispatch_epoch() {
     let mailbox = make_mailbox(runtime, store.clone());
 
     // Submit some dispatches
-    let request = RunRequest::new("thread-int", vec![Message::user("a")]).with_agent_id("agent-1");
+    let request =
+        RunActivation::new("thread-int", vec![Message::user("a")]).with_agent_id("agent-1");
     mailbox.submit_background(request).await.unwrap();
 
     let result = mailbox.interrupt("thread-int").await.unwrap();
@@ -3243,7 +3761,7 @@ async fn interrupt_marks_superseded_queued_runs_cancelled() {
     let store = make_store();
     let run_store = Arc::new(InMemoryStore::new());
     let runtime: Arc<dyn RunDispatchExecutor> = Arc::new(NoopMailboxRuntime);
-    let mailbox = Arc::new(Mailbox::new_with_executor(
+    let mailbox = Arc::new(Mailbox::new(
         runtime,
         store.clone(),
         run_store.clone(),
@@ -3287,11 +3805,192 @@ async fn interrupt_marks_superseded_queued_runs_cancelled() {
 }
 
 #[tokio::test]
+async fn runtime_event_capture_records_run_interrupted_on_thread_interrupt() {
+    let mailbox_store = make_store();
+    let run_store = Arc::new(InMemoryStore::new());
+    let event_store = Arc::new(InMemoryEventStore::new());
+    let runtime: Arc<dyn RunDispatchExecutor> = Arc::new(ImmediateLocalCancelRuntime);
+    let mailbox = Arc::new(
+        Mailbox::new(
+            runtime,
+            mailbox_store.clone(),
+            run_store,
+            "interrupt-consumer".to_string(),
+            MailboxConfig::default(),
+        )
+        .with_server_event_publisher(
+            test_server_event_publisher(Arc::clone(&event_store)),
+            "server",
+        )
+        .unwrap(),
+    );
+    let thread_id = "thread-interrupt-event";
+    let active_dispatch = prepare_queued_dispatch(&mailbox, thread_id, "active").await;
+    let active_dispatch_id = active_dispatch.dispatch_id.clone();
+    mailbox_store
+        .enqueue(&active_dispatch)
+        .await
+        .expect("enqueue active dispatch");
+    mailbox_store
+        .claim_dispatch(&active_dispatch_id, "interrupt-consumer", 30_000, now_ms())
+        .await
+        .expect("claim active dispatch")
+        .expect("active dispatch should be claimed");
+
+    let result = mailbox
+        .interrupt_detailed(thread_id)
+        .await
+        .expect("interrupt should succeed");
+
+    assert_eq!(
+        result
+            .active_dispatch
+            .as_ref()
+            .map(|dispatch| dispatch.dispatch_id.as_str()),
+        Some(active_dispatch_id.as_str())
+    );
+    let page = event_store
+        .list(EventScope::thread(thread_id), None, 10)
+        .await
+        .expect("list interrupted events");
+    let event = page
+        .events
+        .iter()
+        .find(|event| event.event_kind.as_str() == "RunInterrupted")
+        .expect("run interrupted event should be recorded");
+    assert_eq!(
+        event.run_id.as_deref(),
+        Some(active_dispatch.run_id.as_str())
+    );
+    assert_eq!(
+        event.correlation_id.as_deref(),
+        Some(active_dispatch_id.as_str())
+    );
+    assert_eq!(
+        event.payload["dispatch_id"].as_str(),
+        Some(active_dispatch_id.as_str())
+    );
+    assert_eq!(event.payload["status"].as_str(), Some("claimed"));
+}
+
+#[tokio::test]
+async fn runtime_event_capture_records_run_rescheduled_on_retry_backoff() {
+    let mailbox_store = make_store();
+    let run_store = Arc::new(InMemoryStore::new());
+    let event_store = Arc::new(InMemoryEventStore::new());
+    let runtime: Arc<dyn RunDispatchExecutor> = Arc::new(TransientFailingMailboxRuntime);
+    let mailbox = Arc::new(
+        Mailbox::new(
+            runtime,
+            mailbox_store.clone(),
+            run_store,
+            "retry-consumer".to_string(),
+            MailboxConfig::default(),
+        )
+        .with_server_event_publisher(
+            test_server_event_publisher(Arc::clone(&event_store)),
+            "server",
+        )
+        .unwrap(),
+    );
+    let thread_id = "thread-reschedule-retry";
+
+    let submitted = mailbox
+        .submit_background(
+            RunActivation::new(thread_id, vec![Message::user("retry")]).with_agent_id("agent"),
+        )
+        .await
+        .expect("background submit should succeed");
+    let queued = wait_for_dispatch(&mailbox_store, &submitted.dispatch_id, |dispatch| {
+        dispatch.status == RunDispatchStatus::Queued && dispatch.attempt_count == 1
+    })
+    .await;
+
+    let page = event_store
+        .list(EventScope::thread(thread_id), None, 20)
+        .await
+        .expect("list retry reschedule events");
+    let event = page
+        .events
+        .iter()
+        .find(|event| event.event_kind.as_str() == "RunRescheduled")
+        .expect("transient failure retry should record reschedule");
+    assert_eq!(event.run_id.as_deref(), Some(submitted.run_id.as_str()));
+    assert_eq!(
+        event.payload["dispatch_id"].as_str(),
+        Some(submitted.dispatch_id.as_str())
+    );
+    assert_eq!(event.payload["status"].as_str(), Some("queued"));
+    assert_eq!(event.payload["reason"].as_str(), Some("retry_backoff"));
+    assert_eq!(event.payload["attempt_count"].as_u64(), Some(1));
+    assert_eq!(
+        event.payload["available_at"].as_u64(),
+        Some(queued.available_at)
+    );
+}
+
+#[tokio::test]
+async fn runtime_event_capture_records_run_rescheduled_on_expired_lease_reclaim() {
+    let mailbox_store = make_store();
+    let run_store = Arc::new(InMemoryStore::new());
+    let event_store = Arc::new(InMemoryEventStore::new());
+    let runtime: Arc<dyn RunDispatchExecutor> = Arc::new(RecordingMailboxRuntime::default());
+    let mailbox = Arc::new(
+        Mailbox::new(
+            runtime,
+            mailbox_store.clone(),
+            run_store,
+            "reclaim-consumer".to_string(),
+            MailboxConfig::default(),
+        )
+        .with_server_event_publisher(
+            test_server_event_publisher(Arc::clone(&event_store)),
+            "server",
+        )
+        .unwrap(),
+    );
+    let thread_id = "thread-reschedule-reclaim";
+    let mut dispatch = prepare_queued_dispatch(&mailbox, thread_id, "reclaim").await;
+    dispatch.available_at = 1_000;
+    let dispatch_id = dispatch.dispatch_id.clone();
+    mailbox_store
+        .enqueue(&dispatch)
+        .await
+        .expect("enqueue dispatch");
+    mailbox_store
+        .claim(thread_id, "stale-consumer", 100, 1_000, 1)
+        .await
+        .expect("claim dispatch before simulated lease expiry");
+
+    mailbox.run_sweep().await;
+
+    let page = event_store
+        .list(EventScope::thread(thread_id), None, 20)
+        .await
+        .expect("list reclaim reschedule events");
+    let event = page
+        .events
+        .iter()
+        .find(|event| event.event_kind.as_str() == "RunRescheduled")
+        .expect("lease reclaim should record reschedule");
+    assert_eq!(
+        event.payload["dispatch_id"].as_str(),
+        Some(dispatch_id.as_str())
+    );
+    assert_eq!(event.payload["status"].as_str(), Some("queued"));
+    assert_eq!(
+        event.payload["reason"].as_str(),
+        Some("expired_lease_reclaimed")
+    );
+    assert_eq!(event.payload["attempt_count"].as_u64(), Some(1));
+}
+
+#[tokio::test]
 async fn foreground_submit_marks_prior_queued_run_cancelled() {
     let store = make_store();
     let run_store = Arc::new(InMemoryStore::new());
     let runtime = Arc::new(CountingMailboxRuntime::default());
-    let mailbox = Arc::new(Mailbox::new_with_executor(
+    let mailbox = Arc::new(Mailbox::new(
         runtime,
         store.clone(),
         run_store.clone(),
@@ -3304,7 +4003,7 @@ async fn foreground_submit_marks_prior_queued_run_cancelled() {
 
     let (_new_result, _events) = mailbox
         .submit(
-            RunRequest::new("thread-submit-supersede", vec![Message::user("new")])
+            RunActivation::new("thread-submit-supersede", vec![Message::user("new")])
                 .with_agent_id("agent"),
         )
         .await
@@ -3339,7 +4038,7 @@ async fn submit_inline_claim_empty_cancels_precreated_run() {
     let store = Arc::new(SignalMailboxStore::with_empty_claim_dispatch_once());
     let run_store = Arc::new(InMemoryStore::new());
     let runtime: Arc<dyn RunDispatchExecutor> = Arc::new(NoopMailboxRuntime);
-    let mailbox = Arc::new(Mailbox::new_with_executor(
+    let mailbox = Arc::new(Mailbox::new(
         runtime,
         store.clone(),
         run_store.clone(),
@@ -3349,7 +4048,7 @@ async fn submit_inline_claim_empty_cancels_precreated_run() {
 
     let error = match mailbox
         .submit(
-            RunRequest::new("thread-inline-empty", vec![Message::user("go")])
+            RunActivation::new("thread-inline-empty", vec![Message::user("go")])
                 .with_agent_id("agent"),
         )
         .await
@@ -3391,7 +4090,7 @@ async fn recover_reconciles_terminal_cancelled_and_superseded_dispatches_after_c
     let store = make_store();
     let run_store = Arc::new(InMemoryStore::new());
     let runtime: Arc<dyn RunDispatchExecutor> = Arc::new(NoopMailboxRuntime);
-    let mailbox = Arc::new(Mailbox::new_with_executor(
+    let mailbox = Arc::new(Mailbox::new(
         runtime,
         store.clone(),
         run_store.clone(),
@@ -3461,7 +4160,7 @@ async fn reclaim_dead_letter_marks_run_error() {
     let store = make_store();
     let run_store = Arc::new(InMemoryStore::new());
     let runtime: Arc<dyn RunDispatchExecutor> = Arc::new(NoopMailboxRuntime);
-    let mailbox = Arc::new(Mailbox::new_with_executor(
+    let mailbox = Arc::new(Mailbox::new(
         runtime,
         store.clone(),
         run_store.clone(),
@@ -3515,7 +4214,7 @@ async fn sweep_reconciles_dead_letter_dispatch_after_crash() {
     let store = make_store();
     let run_store = Arc::new(InMemoryStore::new());
     let runtime: Arc<dyn RunDispatchExecutor> = Arc::new(NoopMailboxRuntime);
-    let mailbox = Arc::new(Mailbox::new_with_executor(
+    let mailbox = Arc::new(Mailbox::new(
         runtime,
         store.clone(),
         run_store.clone(),
@@ -3585,7 +4284,7 @@ async fn submit_returns_event_channel() {
     let mailbox = make_mailbox(runtime, store.clone());
 
     let request =
-        RunRequest::new("thread-stream", vec![Message::user("hi")]).with_agent_id("agent-1");
+        RunActivation::new("thread-stream", vec![Message::user("hi")]).with_agent_id("agent-1");
     let (result, _event_rx) = mailbox.submit(request).await.unwrap();
 
     assert_eq!(result.thread_id, "thread-stream");
@@ -3594,6 +4293,517 @@ async fn submit_returns_event_channel() {
         result.status,
         MailboxDispatchStatus::Running | MailboxDispatchStatus::Queued
     ));
+}
+
+#[test]
+fn runtime_event_capture_disabled_clears_prior_capture_and_skips_origin_validation() {
+    let mailbox = Mailbox::new(
+        Arc::new(CoordinatorAwareNoopRuntime),
+        make_store(),
+        Arc::new(InMemoryStore::new()),
+        "test-consumer".to_string(),
+        MailboxConfig::default(),
+    )
+    .with_runtime_event_capture(RuntimeEventDurability::Compacted, "server")
+    .unwrap()
+    .with_runtime_event_capture(RuntimeEventDurability::Disabled, "")
+    .unwrap();
+
+    assert!(mailbox.runtime_event_capture.is_none());
+}
+
+#[tokio::test]
+async fn runtime_event_capture_compacted_persists_committed_events_and_keeps_live_deltas() {
+    let mailbox_store = make_store();
+    let run_store = Arc::new(InMemoryStore::new());
+    let event_store = Arc::new(InMemoryEventStore::new());
+    let mailbox = Arc::new(
+        Mailbox::new(
+            Arc::new(CommittingEmittingMailboxRuntime::new(Arc::clone(
+                &event_store,
+            ))),
+            mailbox_store,
+            run_store,
+            "test-consumer".to_string(),
+            MailboxConfig::default(),
+        )
+        .with_server_event_publisher(
+            test_server_event_publisher(Arc::clone(&event_store)),
+            "server",
+        )
+        .unwrap()
+        .with_runtime_event_capture(RuntimeEventDurability::Compacted, "server")
+        .unwrap(),
+    );
+
+    let request =
+        RunActivation::new("thread-events", vec![Message::user("hi")]).with_agent_id("agent-1");
+    let (result, mut event_rx) = mailbox.submit(request).await.unwrap();
+
+    let mut live_events = Vec::new();
+    loop {
+        let event = tokio::time::timeout(Duration::from_secs(2), event_rx.recv())
+            .await
+            .expect("runtime should emit or close")
+            .expect("runtime should emit terminal event");
+        let terminal = event.is_terminal();
+        live_events.push(event);
+        if terminal {
+            break;
+        }
+    }
+
+    assert!(
+        live_events
+            .iter()
+            .any(|event| matches!(event, AgentEvent::TextDelta { .. })),
+        "observed deltas should remain live in compacted mode"
+    );
+
+    let page = event_store
+        .list(EventScope::thread("thread-events"), None, 10)
+        .await
+        .unwrap();
+    let kinds = page
+        .events
+        .iter()
+        .map(|event| event.event_kind.as_str().to_string())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        kinds,
+        vec![
+            "MessageCommitted",
+            "ThreadMessagesCheckpointed",
+            "RunQueued",
+            "RunSubmitted",
+            "RunStarted",
+            "ToolCallReady",
+            "RunFinished",
+        ]
+    );
+    assert!(page.events.iter().all(|event| {
+        event.thread_id.as_deref() == Some("thread-events")
+            && event.run_id.as_deref() == Some(result.run_id.as_str())
+    }));
+    assert!(page.events.iter().all(|event| {
+        matches!(
+            event.event_kind.as_str(),
+            "MessageCommitted" | "ThreadMessagesCheckpointed"
+        ) || event.correlation_id.as_deref() == Some(result.dispatch_id.as_str())
+    }));
+}
+
+#[tokio::test]
+async fn runtime_event_capture_maps_continue_run_start_to_run_resumed() {
+    let mailbox_store = make_store();
+    let run_store = Arc::new(InMemoryStore::new());
+    let event_store = Arc::new(InMemoryEventStore::new());
+    let waiting = seeded_waiting_run("run-resume", "thread-resume", "agent-1");
+    run_store.create_run(&waiting).await.unwrap();
+    let mailbox = Arc::new(
+        Mailbox::new(
+            Arc::new(CommittingEmittingMailboxRuntime::new(Arc::clone(
+                &event_store,
+            ))),
+            mailbox_store,
+            run_store,
+            "test-consumer".to_string(),
+            MailboxConfig::default(),
+        )
+        .with_runtime_event_capture(RuntimeEventDurability::Compacted, "server")
+        .unwrap(),
+    );
+
+    let request = RunActivation::new("thread-resume", vec![Message::user("continue")])
+        .with_agent_id("agent-1")
+        .with_continue_run_id("run-resume");
+    let (_result, mut event_rx) = mailbox.submit(request).await.unwrap();
+    loop {
+        let event = tokio::time::timeout(Duration::from_secs(2), event_rx.recv())
+            .await
+            .expect("runtime should emit or close")
+            .expect("runtime should emit terminal event");
+        if event.is_terminal() {
+            break;
+        }
+    }
+
+    let page = event_store
+        .list(EventScope::thread("thread-resume"), None, 10)
+        .await
+        .unwrap();
+    let kinds = page
+        .events
+        .iter()
+        .map(|event| event.event_kind.as_str())
+        .collect::<Vec<_>>();
+    assert!(kinds.contains(&"RunResumed"));
+    assert!(!kinds.contains(&"RunStarted"));
+}
+
+#[tokio::test]
+async fn runtime_event_capture_live_forwarding_is_not_gated_by_staging() {
+    let mailbox_store = make_store();
+    let run_store = Arc::new(InMemoryStore::new());
+    let event_store = Arc::new(InMemoryEventStore::new());
+    let mailbox = Arc::new(
+        Mailbox::new(
+            Arc::new(CommittingEmittingMailboxRuntime::new(Arc::clone(
+                &event_store,
+            ))),
+            mailbox_store,
+            run_store,
+            "test-consumer".to_string(),
+            MailboxConfig::default(),
+        )
+        .with_runtime_event_capture(RuntimeEventDurability::Compacted, "server")
+        .unwrap(),
+    );
+
+    let request =
+        RunActivation::new("thread-event-fail", vec![Message::user("hi")]).with_agent_id("agent-1");
+    let (_result, mut event_rx) = mailbox.submit(request).await.unwrap();
+
+    let mut forwarded_kinds = Vec::new();
+    loop {
+        let event = tokio::time::timeout(Duration::from_secs(2), event_rx.recv())
+            .await
+            .expect("runtime should emit or close")
+            .expect("runtime should emit terminal event");
+        let terminal = event.is_terminal();
+        forwarded_kinds.push(std::mem::discriminant(&event));
+        if terminal {
+            break;
+        }
+    }
+    let run_start_kind = std::mem::discriminant(&AgentEvent::RunStart {
+        thread_id: String::new(),
+        run_id: String::new(),
+        parent_run_id: None,
+        identity: None,
+    });
+    let text_delta_kind = std::mem::discriminant(&AgentEvent::TextDelta {
+        delta: String::new(),
+    });
+    let tool_call_ready_kind = std::mem::discriminant(&AgentEvent::ToolCallReady {
+        id: String::new(),
+        name: String::new(),
+        arguments: json!({}),
+    });
+    let run_finish_kind = std::mem::discriminant(&AgentEvent::RunFinish {
+        thread_id: String::new(),
+        run_id: String::new(),
+        identity: None,
+        result: None,
+        termination: TerminationReason::NaturalEnd,
+    });
+    assert_eq!(
+        forwarded_kinds,
+        vec![
+            run_start_kind,
+            text_delta_kind,
+            tool_call_ready_kind,
+            run_finish_kind
+        ],
+        "durable staging must not suppress the live event stream"
+    );
+}
+
+#[tokio::test]
+async fn runtime_event_capture_persists_server_authored_terminal_errors() {
+    let mailbox_store = make_store();
+    let run_store = Arc::new(InMemoryStore::new());
+    let event_store = Arc::new(InMemoryEventStore::new());
+    let mailbox = Arc::new(
+        Mailbox::new(
+            Arc::new(FailingMailboxRuntime),
+            mailbox_store,
+            run_store,
+            "test-consumer".to_string(),
+            MailboxConfig::default(),
+        )
+        .with_server_event_publisher(
+            test_server_event_publisher(Arc::clone(&event_store)),
+            "server",
+        )
+        .unwrap(),
+    );
+
+    let request = RunActivation::new("thread-server-error", vec![Message::user("hi")])
+        .with_agent_id("agent-1");
+    let (result, mut event_rx) = mailbox.submit(request).await.unwrap();
+    let event = tokio::time::timeout(Duration::from_secs(2), event_rx.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(matches!(event, AgentEvent::RunFinish { .. }));
+
+    let page = event_store
+        .list(EventScope::thread("thread-server-error"), None, 10)
+        .await
+        .unwrap();
+    let kinds = page
+        .events
+        .iter()
+        .map(|event| event.event_kind.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        kinds,
+        vec![
+            "MessageCommitted",
+            "ThreadMessagesCheckpointed",
+            "RunQueued",
+            "RunSubmitted",
+            "RunErrored"
+        ]
+    );
+    let terminal = page
+        .events
+        .iter()
+        .find(|event| event.event_kind.as_str() == "RunErrored")
+        .unwrap();
+    assert_eq!(
+        terminal.correlation_id.as_deref(),
+        Some(result.dispatch_id.as_str())
+    );
+}
+
+#[tokio::test]
+async fn runtime_event_capture_records_mailbox_dispatch_lifecycle_events() {
+    let mailbox_store = make_store();
+    let run_store = Arc::new(InMemoryStore::new());
+    let event_store = Arc::new(InMemoryEventStore::new());
+    let mailbox = Arc::new(
+        Mailbox::new(
+            Arc::new(CommittingEmittingMailboxRuntime::new(Arc::clone(
+                &event_store,
+            ))),
+            mailbox_store,
+            run_store,
+            "test-consumer".to_string(),
+            MailboxConfig::default(),
+        )
+        .with_server_event_publisher(
+            test_server_event_publisher(Arc::clone(&event_store)),
+            "server",
+        )
+        .unwrap()
+        .with_runtime_event_capture(RuntimeEventDurability::Compacted, "server")
+        .unwrap(),
+    );
+
+    let request = RunActivation::new("thread-mailbox-events", vec![Message::user("hi")])
+        .with_agent_id("agent-1");
+    let (result, mut event_rx) = mailbox.submit(request).await.unwrap();
+    loop {
+        let event = tokio::time::timeout(Duration::from_secs(2), event_rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        if matches!(event, AgentEvent::RunFinish { .. }) {
+            break;
+        }
+    }
+
+    let page = event_store
+        .list(EventScope::thread("thread-mailbox-events"), None, 20)
+        .await
+        .unwrap();
+    let kinds = page
+        .events
+        .iter()
+        .map(|event| event.event_kind.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        kinds,
+        vec![
+            "MessageCommitted",
+            "ThreadMessagesCheckpointed",
+            "RunQueued",
+            "RunSubmitted",
+            "RunStarted",
+            "ToolCallReady",
+            "RunFinished",
+        ]
+    );
+    let queued = page
+        .events
+        .iter()
+        .find(|event| event.event_kind.as_str() == "RunQueued")
+        .unwrap();
+    let committed = page
+        .events
+        .iter()
+        .find(|event| event.event_kind.as_str() == "MessageCommitted")
+        .unwrap();
+    assert_eq!(committed.payload["message_seq"], 1);
+    assert_eq!(committed.payload["message_kind"], "user_input");
+    assert_eq!(
+        queued.payload["dispatch_id"].as_str(),
+        Some(result.dispatch_id.as_str())
+    );
+    assert_eq!(
+        queued.correlation_id.as_deref(),
+        Some(result.dispatch_id.as_str())
+    );
+}
+
+#[tokio::test]
+async fn runtime_event_capture_records_mailbox_submit_failed_on_enqueue_error() {
+    let mailbox_store = Arc::new(SignalMailboxStore::with_enqueue_failures(1));
+    let run_store = Arc::new(InMemoryStore::new());
+    let event_store = Arc::new(InMemoryEventStore::new());
+    let mailbox = Arc::new(
+        Mailbox::new(
+            Arc::new(NoopMailboxRuntime),
+            mailbox_store,
+            run_store,
+            "test-consumer".to_string(),
+            MailboxConfig::default(),
+        )
+        .with_server_event_publisher(
+            test_server_event_publisher(Arc::clone(&event_store)),
+            "server",
+        )
+        .unwrap(),
+    );
+
+    let error = mailbox
+        .submit_background(
+            RunActivation::new("thread-submit-failed", vec![Message::user("hi")])
+                .with_agent_id("agent-1"),
+        )
+        .await
+        .expect_err("enqueue failure should fail submit");
+    assert!(error.to_string().contains("injected enqueue failure"));
+
+    let page = event_store
+        .list(EventScope::thread("thread-submit-failed"), None, 10)
+        .await
+        .unwrap();
+    let kinds = page
+        .events
+        .iter()
+        .map(|event| event.event_kind.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        kinds,
+        vec![
+            "MessageCommitted",
+            "ThreadMessagesCheckpointed",
+            "MailboxSubmitFailed",
+        ]
+    );
+    let event = page
+        .events
+        .iter()
+        .find(|event| event.event_kind.as_str() == "MailboxSubmitFailed")
+        .expect("submit failure should be recorded");
+    assert!(!event.run_id.as_deref().unwrap().trim().is_empty());
+    assert_eq!(event.payload["thread_id"], "thread-submit-failed");
+    assert_eq!(event.payload["reason"], "enqueue_failed");
+    assert!(
+        event.payload["error"]
+            .as_str()
+            .unwrap()
+            .contains("injected enqueue failure")
+    );
+}
+
+#[tokio::test]
+async fn runtime_event_capture_records_mailbox_resume_failed_on_enqueue_error() {
+    let mailbox_store = Arc::new(SignalMailboxStore::with_enqueue_failures(1));
+    let run_store = Arc::new(InMemoryStore::new());
+    let event_store = Arc::new(InMemoryEventStore::new());
+    let thread_id = "thread-resume-failed";
+    run_store
+        .create_run(&seeded_waiting_run(
+            "run-resume-failed",
+            thread_id,
+            "agent-1",
+        ))
+        .await
+        .expect("seed waiting run");
+    let mailbox = Arc::new(
+        Mailbox::new(
+            Arc::new(NoopMailboxRuntime),
+            mailbox_store,
+            run_store,
+            "test-consumer".to_string(),
+            MailboxConfig::default(),
+        )
+        .with_server_event_publisher(
+            test_server_event_publisher(Arc::clone(&event_store)),
+            "server",
+        )
+        .unwrap(),
+    );
+
+    let error = mailbox
+        .submit_background(
+            RunActivation::new(thread_id, Vec::new())
+                .with_agent_id("agent-1")
+                .with_continue_run_id("run-resume-failed")
+                .with_decisions(vec![("tool-1".to_string(), make_resume())]),
+        )
+        .await
+        .expect_err("enqueue failure should fail durable resume");
+    assert!(error.to_string().contains("injected enqueue failure"));
+
+    let page = event_store
+        .list(EventScope::thread(thread_id), None, 10)
+        .await
+        .unwrap();
+    let kinds = page
+        .events
+        .iter()
+        .map(|event| event.event_kind.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(kinds, vec!["MailboxSubmitFailed", "MailboxResumeFailed"]);
+    let event = page
+        .events
+        .iter()
+        .find(|event| event.event_kind.as_str() == "MailboxResumeFailed")
+        .expect("resume failure should be recorded");
+    assert_eq!(event.run_id.as_deref(), Some("run-resume-failed"));
+    assert_eq!(event.payload["thread_id"], thread_id);
+    assert_eq!(event.payload["reason"], "enqueue_failed");
+    assert_eq!(event.payload["decisions"][0]["tool_call_id"], "tool-1");
+    assert_eq!(event.payload["decisions"][0]["decision_id"], "d1");
+    assert!(
+        event.payload["error"]
+            .as_str()
+            .unwrap()
+            .contains("injected enqueue failure")
+    );
+}
+
+#[tokio::test]
+async fn advisory_server_event_publish_failure_does_not_block_live_terminal_event() {
+    let mailbox_store = make_store();
+    let run_store = Arc::new(InMemoryStore::new());
+    let mailbox = Arc::new(
+        Mailbox::new(
+            Arc::new(FailingMailboxRuntime),
+            mailbox_store,
+            run_store,
+            "test-consumer".to_string(),
+            MailboxConfig::default(),
+        )
+        .with_server_event_publisher(Arc::new(FailingServerEventPublisher), "server")
+        .unwrap(),
+    );
+
+    let request = RunActivation::new("thread-server-error-fail", vec![Message::user("hi")])
+        .with_agent_id("agent-1");
+    let (_result, mut event_rx) = mailbox.submit(request).await.unwrap();
+    let next = tokio::time::timeout(Duration::from_secs(2), event_rx.recv())
+        .await
+        .expect("runtime task should finish and close the channel");
+    assert!(
+        matches!(next, Some(AgentEvent::RunFinish { .. })),
+        "advisory server-event publication failure must not suppress live terminal event"
+    );
 }
 
 #[tokio::test]
@@ -3640,7 +4850,7 @@ async fn live_then_queue_steers_active_run_without_new_dispatch() {
 
     let first = mailbox
         .submit_background(
-            RunRequest::new("thread-live-steer", vec![Message::user("start")])
+            RunActivation::new("thread-live-steer", vec![Message::user("start")])
                 .with_agent_id("agent"),
         )
         .await
@@ -3653,7 +4863,7 @@ async fn live_then_queue_steers_active_run_without_new_dispatch() {
 
     let steered = mailbox
         .submit_live_then_queue(
-            RunRequest::new("thread-live-steer", vec![Message::user("live steer")])
+            RunActivation::new("thread-live-steer", vec![Message::user("live steer")])
                 .with_agent_id("agent"),
             None,
         )
@@ -3717,7 +4927,7 @@ async fn live_then_queue_falls_back_to_durable_dispatch_when_receiver_unavailabl
     let mailbox_store = make_store();
     let thread_store = Arc::new(InMemoryStore::new());
     let runtime: Arc<dyn RunDispatchExecutor> = Arc::new(NoopMailboxRuntime);
-    let mailbox = Arc::new(Mailbox::new_with_executor(
+    let mailbox = Arc::new(Mailbox::new(
         runtime,
         mailbox_store.clone(),
         thread_store.clone(),
@@ -3726,10 +4936,10 @@ async fn live_then_queue_falls_back_to_durable_dispatch_when_receiver_unavailabl
     ));
     let thread_id = "thread-live-fallback";
     let mut active_request =
-        RunRequest::new(thread_id, vec![Message::user("active")]).with_agent_id("agent");
+        RunActivation::new(thread_id, vec![Message::user("active")]).with_agent_id("agent");
     let (_, active_messages) = validate_run_inputs(
-        active_request.thread_id.clone(),
-        active_request.messages.clone(),
+        active_request.thread_id().to_owned(),
+        active_request.messages().to_vec(),
         false,
     )
     .expect("active input should validate");
@@ -3763,7 +4973,7 @@ async fn live_then_queue_falls_back_to_durable_dispatch_when_receiver_unavailabl
 
     let result = mailbox
         .submit_live_then_queue(
-            RunRequest::new(thread_id, vec![Message::user("fallback")]).with_agent_id("agent"),
+            RunActivation::new(thread_id, vec![Message::user("fallback")]).with_agent_id("agent"),
             None,
         )
         .await
@@ -3799,21 +5009,29 @@ async fn foreground_submit_sends_live_cancel_for_remote_active_dispatch() {
 
     let mailbox_store = make_store();
     let thread_store = Arc::new(InMemoryStore::new());
+    let event_store = Arc::new(InMemoryEventStore::new());
     let runtime = Arc::new(RecordingMailboxRuntime::default());
-    let mailbox = Arc::new(Mailbox::new_with_executor(
-        runtime,
-        mailbox_store.clone(),
-        thread_store.clone(),
-        "foreground-consumer".to_string(),
-        MailboxConfig::default(),
-    ));
+    let mailbox = Arc::new(
+        Mailbox::new(
+            runtime,
+            mailbox_store.clone(),
+            thread_store.clone(),
+            "foreground-consumer".to_string(),
+            MailboxConfig::default(),
+        )
+        .with_server_event_publisher(
+            test_server_event_publisher(Arc::clone(&event_store)),
+            "server",
+        )
+        .unwrap(),
+    );
     let thread_id = "thread-remote-foreground";
 
     let mut active_request =
-        RunRequest::new(thread_id, vec![Message::user("active")]).with_agent_id("agent");
+        RunActivation::new(thread_id, vec![Message::user("active")]).with_agent_id("agent");
     let (_, active_messages) = validate_run_inputs(
-        active_request.thread_id.clone(),
-        active_request.messages.clone(),
+        active_request.thread_id().to_owned(),
+        active_request.messages().to_vec(),
         false,
     )
     .expect("active input should validate");
@@ -3872,7 +5090,8 @@ async fn foreground_submit_sends_live_cancel_for_remote_active_dispatch() {
 
     let (submitted, _events) = mailbox
         .submit(
-            RunRequest::new(thread_id, vec![Message::user("replacement")]).with_agent_id("agent"),
+            RunActivation::new(thread_id, vec![Message::user("replacement")])
+                .with_agent_id("agent"),
         )
         .await
         .expect("foreground submit should cancel remote active run and claim replacement");
@@ -3886,6 +5105,25 @@ async fn foreground_submit_sends_live_cancel_for_remote_active_dispatch() {
             .any(|command| matches!(command, LiveRunCommand::Cancel)),
         "foreground submit must deliver live Cancel to the remote active run"
     );
+    drop(commands);
+
+    let page = event_store
+        .list(EventScope::thread(thread_id), None, 20)
+        .await
+        .expect("list foreground interrupt events");
+    let event = page
+        .events
+        .iter()
+        .find(|event| event.event_kind.as_str() == "RunInterrupted")
+        .expect("foreground submit should record the interrupted prior run");
+    assert_eq!(
+        event.payload["dispatch_id"].as_str(),
+        Some(active_dispatch_id.as_str())
+    );
+    assert_eq!(
+        event.correlation_id.as_deref(),
+        Some(active_dispatch_id.as_str())
+    );
 }
 
 #[tokio::test]
@@ -3896,7 +5134,7 @@ async fn foreground_submit_does_not_prepare_replacement_when_remote_cancel_times
     let mailbox_store = make_store();
     let thread_store = Arc::new(InMemoryStore::new());
     let runtime = Arc::new(RecordingMailboxRuntime::default());
-    let mailbox = Arc::new(Mailbox::new_with_executor(
+    let mailbox = Arc::new(Mailbox::new(
         runtime,
         mailbox_store.clone(),
         thread_store.clone(),
@@ -3906,10 +5144,10 @@ async fn foreground_submit_does_not_prepare_replacement_when_remote_cancel_times
     let thread_id = "thread-remote-cancel-timeout";
 
     let mut active_request =
-        RunRequest::new(thread_id, vec![Message::user("active")]).with_agent_id("agent");
+        RunActivation::new(thread_id, vec![Message::user("active")]).with_agent_id("agent");
     let (_, active_messages) = validate_run_inputs(
-        active_request.thread_id.clone(),
-        active_request.messages.clone(),
+        active_request.thread_id().to_owned(),
+        active_request.messages().to_vec(),
         false,
     )
     .expect("active input should validate");
@@ -3946,7 +5184,8 @@ async fn foreground_submit_does_not_prepare_replacement_when_remote_cancel_times
 
     let result = mailbox
         .submit(
-            RunRequest::new(thread_id, vec![Message::user("replacement")]).with_agent_id("agent"),
+            RunActivation::new(thread_id, vec![Message::user("replacement")])
+                .with_agent_id("agent"),
         )
         .await;
     assert!(
@@ -3975,21 +5214,29 @@ async fn foreground_submit_does_not_prepare_replacement_when_remote_cancel_times
 async fn foreground_submit_does_not_prepare_replacement_when_local_cancel_times_out() {
     let mailbox_store = make_store();
     let thread_store = Arc::new(InMemoryStore::new());
-    let runtime: Arc<dyn RunDispatchExecutor> = Arc::new(NoopMailboxRuntime);
-    let mailbox = Arc::new(Mailbox::new_with_executor(
-        runtime,
-        mailbox_store.clone(),
-        thread_store.clone(),
-        "foreground-consumer".to_string(),
-        MailboxConfig::default(),
-    ));
+    let event_store = Arc::new(InMemoryEventStore::new());
+    let runtime: Arc<dyn RunDispatchExecutor> = Arc::new(ImmediateLocalCancelRuntime);
+    let mailbox = Arc::new(
+        Mailbox::new(
+            runtime,
+            mailbox_store.clone(),
+            thread_store.clone(),
+            "foreground-consumer".to_string(),
+            MailboxConfig::default(),
+        )
+        .with_server_event_publisher(
+            test_server_event_publisher(Arc::clone(&event_store)),
+            "server",
+        )
+        .unwrap(),
+    );
     let thread_id = "thread-local-cancel-timeout";
 
     let mut active_request =
-        RunRequest::new(thread_id, vec![Message::user("active")]).with_agent_id("agent");
+        RunActivation::new(thread_id, vec![Message::user("active")]).with_agent_id("agent");
     let (_, active_messages) = validate_run_inputs(
-        active_request.thread_id.clone(),
-        active_request.messages.clone(),
+        active_request.thread_id().to_owned(),
+        active_request.messages().to_vec(),
         false,
     )
     .expect("active input should validate");
@@ -4010,7 +5257,8 @@ async fn foreground_submit_does_not_prepare_replacement_when_local_cancel_times_
 
     let result = mailbox
         .submit(
-            RunRequest::new(thread_id, vec![Message::user("replacement")]).with_agent_id("agent"),
+            RunActivation::new(thread_id, vec![Message::user("replacement")])
+                .with_agent_id("agent"),
         )
         .await;
     assert!(
@@ -4033,6 +5281,22 @@ async fn foreground_submit_does_not_prepare_replacement_when_local_cancel_times_
     assert_eq!(all.len(), 1);
     assert_eq!(all[0].dispatch_id, active_dispatch_id);
     assert_eq!(all[0].status, RunDispatchStatus::Claimed);
+
+    let page = event_store
+        .list(EventScope::thread(thread_id), None, 10)
+        .await
+        .expect("list timeout events");
+    let event = page
+        .events
+        .iter()
+        .find(|event| event.event_kind.as_str() == "MailboxTimeout")
+        .expect("cancel release wait timeout should be recorded");
+    assert_eq!(
+        event.payload["dispatch_id"].as_str(),
+        Some(active_dispatch_id.as_str())
+    );
+    assert_eq!(event.payload["reason"], "local_cancel_release_wait");
+    assert_eq!(event.payload["timeout_ms"], REMOTE_CANCEL_WAIT_MS);
 }
 
 #[tokio::test]
@@ -4040,7 +5304,7 @@ async fn foreground_submit_waits_for_local_cancelled_dispatch_to_release_claim()
     let mailbox_store = make_store();
     let thread_store = Arc::new(InMemoryStore::new());
     let runtime: Arc<dyn RunDispatchExecutor> = Arc::new(ImmediateLocalCancelRuntime);
-    let mailbox = Arc::new(Mailbox::new_with_executor(
+    let mailbox = Arc::new(Mailbox::new(
         runtime,
         mailbox_store.clone(),
         thread_store.clone(),
@@ -4050,10 +5314,10 @@ async fn foreground_submit_waits_for_local_cancelled_dispatch_to_release_claim()
     let thread_id = "thread-local-cancel-claim-window";
 
     let mut active_request =
-        RunRequest::new(thread_id, vec![Message::user("active")]).with_agent_id("agent");
+        RunActivation::new(thread_id, vec![Message::user("active")]).with_agent_id("agent");
     let (_, active_messages) = validate_run_inputs(
-        active_request.thread_id.clone(),
-        active_request.messages.clone(),
+        active_request.thread_id().to_owned(),
+        active_request.messages().to_vec(),
         false,
     )
     .expect("active input should validate");
@@ -4074,7 +5338,8 @@ async fn foreground_submit_waits_for_local_cancelled_dispatch_to_release_claim()
 
     let result = mailbox
         .submit(
-            RunRequest::new(thread_id, vec![Message::user("replacement")]).with_agent_id("agent"),
+            RunActivation::new(thread_id, vec![Message::user("replacement")])
+                .with_agent_id("agent"),
         )
         .await;
     assert!(
@@ -4138,7 +5403,7 @@ async fn live_then_queue_publishes_for_remote_active_run() {
     });
 
     let runtime: Arc<dyn RunDispatchExecutor> = Arc::new(NoopMailboxRuntime);
-    let mailbox = Arc::new(Mailbox::new_with_executor(
+    let mailbox = Arc::new(Mailbox::new(
         runtime,
         mailbox_store.clone(),
         thread_store.clone(),
@@ -4148,7 +5413,8 @@ async fn live_then_queue_publishes_for_remote_active_run() {
 
     let result = mailbox
         .submit_live_then_queue(
-            RunRequest::new(thread_id, vec![Message::user("steer-remote")]).with_agent_id("agent"),
+            RunActivation::new(thread_id, vec![Message::user("steer-remote")])
+                .with_agent_id("agent"),
             None,
         )
         .await
@@ -4205,7 +5471,7 @@ async fn live_then_queue_falls_back_when_subscriber_drops_receipt() {
     });
 
     let runtime: Arc<dyn RunDispatchExecutor> = Arc::new(NoopMailboxRuntime);
-    let mailbox = Arc::new(Mailbox::new_with_executor(
+    let mailbox = Arc::new(Mailbox::new(
         runtime,
         mailbox_store.clone(),
         thread_store.clone(),
@@ -4215,7 +5481,7 @@ async fn live_then_queue_falls_back_when_subscriber_drops_receipt() {
 
     let result = mailbox
         .submit_live_then_queue(
-            RunRequest::new(thread_id, vec![Message::user("hello?")]).with_agent_id("agent"),
+            RunActivation::new(thread_id, vec![Message::user("hello?")]).with_agent_id("agent"),
             None,
         )
         .await
@@ -4275,7 +5541,7 @@ async fn live_then_queue_is_at_least_once_when_ack_lost() {
     });
 
     let runtime: Arc<dyn RunDispatchExecutor> = Arc::new(NoopMailboxRuntime);
-    let mailbox = Arc::new(Mailbox::new_with_executor(
+    let mailbox = Arc::new(Mailbox::new(
         runtime,
         mailbox_store.clone(),
         thread_store.clone(),
@@ -4285,7 +5551,8 @@ async fn live_then_queue_is_at_least_once_when_ack_lost() {
 
     let result = mailbox
         .submit_live_then_queue(
-            RunRequest::new(thread_id, vec![Message::user("steer-payload")]).with_agent_id("agent"),
+            RunActivation::new(thread_id, vec![Message::user("steer-payload")])
+                .with_agent_id("agent"),
             None,
         )
         .await
@@ -4324,7 +5591,7 @@ async fn live_then_queue_rejects_remote_mismatched_expected_run_id() {
     thread_store.create_run(&run).await.expect("seed run");
 
     let runtime: Arc<dyn RunDispatchExecutor> = Arc::new(NoopMailboxRuntime);
-    let mailbox = Arc::new(Mailbox::new_with_executor(
+    let mailbox = Arc::new(Mailbox::new(
         runtime,
         mailbox_store.clone(),
         thread_store.clone(),
@@ -4334,7 +5601,7 @@ async fn live_then_queue_rejects_remote_mismatched_expected_run_id() {
 
     let result = mailbox
         .submit_live_then_queue(
-            RunRequest::new(thread_id, vec![Message::user("wrong-run")]).with_agent_id("agent"),
+            RunActivation::new(thread_id, vec![Message::user("wrong-run")]).with_agent_id("agent"),
             Some("run-stale"),
         )
         .await
@@ -4376,7 +5643,7 @@ async fn send_decision_live_delivers_to_remote_waiting_run() {
     });
 
     let runtime: Arc<dyn RunDispatchExecutor> = Arc::new(NoopMailboxRuntime);
-    let mailbox = Arc::new(Mailbox::new_with_executor(
+    let mailbox = Arc::new(Mailbox::new(
         runtime,
         mailbox_store,
         thread_store,
@@ -4392,6 +5659,84 @@ async fn send_decision_live_delivers_to_remote_waiting_run() {
     let captured = captured.lock().await;
     assert_eq!(captured.len(), 1);
     assert_eq!(captured[0][0].0, "tool-1");
+}
+
+#[tokio::test]
+async fn runtime_event_capture_records_mailbox_decision_received() {
+    use awaken_contract::contract::mailbox::LiveRunCommand;
+    use futures::StreamExt;
+
+    let mailbox_store = make_store();
+    let thread_store = Arc::new(InMemoryStore::new());
+    let event_store = Arc::new(InMemoryEventStore::new());
+    let thread_id = "thread-decision-event";
+    let run = seeded_waiting_run("run-decision-event", thread_id, "agent");
+    thread_store.create_run(&run).await.expect("seed run");
+
+    let subscriber = mailbox_store
+        .open_live_channel_for(&live_target_for_run(&run))
+        .await
+        .expect("open targeted live channel");
+    let _forwarder = tokio::spawn(async move {
+        let mut subscriber = subscriber;
+        while let Some(entry) = subscriber.next().await {
+            if matches!(entry.command, LiveRunCommand::Decision(_)) {
+                entry.receipt.ack();
+                break;
+            }
+            drop(entry.receipt);
+        }
+    });
+
+    let runtime: Arc<dyn RunDispatchExecutor> = Arc::new(NoopMailboxRuntime);
+    let mailbox = Arc::new(
+        Mailbox::new(
+            runtime,
+            mailbox_store,
+            thread_store,
+            "test-consumer".to_string(),
+            MailboxConfig::default(),
+        )
+        .with_server_event_publisher(
+            test_server_event_publisher(Arc::clone(&event_store)),
+            "server",
+        )
+        .unwrap(),
+    );
+
+    let delivered = mailbox
+        .send_decision_live(thread_id, "tool-1".to_string(), make_resume())
+        .await
+        .expect("live decision should not error");
+
+    assert!(delivered);
+    let page = event_store
+        .list(EventScope::thread(thread_id), None, 10)
+        .await
+        .unwrap();
+    assert_eq!(page.events.len(), 2);
+    let event = page
+        .events
+        .iter()
+        .find(|event| event.event_kind.as_str() == "MailboxDecisionReceived")
+        .expect("mailbox decision event should be recorded");
+    assert_eq!(event.event_kind.as_str(), "MailboxDecisionReceived");
+    assert_eq!(event.run_id.as_deref(), Some("run-decision-event"));
+    assert_eq!(event.payload["tool_call_id"], "tool-1");
+    assert_eq!(event.payload["decision_id"], "d1");
+    assert_eq!(event.payload["action"], "resume");
+    assert_eq!(event.payload["result"]["approved"], true);
+    assert_eq!(event.payload["delivery_path"], "remote_live");
+    let permission = page
+        .events
+        .iter()
+        .find(|event| event.event_kind.as_str() == "ToolPermissionResolved")
+        .expect("approval decision should record permission resolution");
+    assert_eq!(permission.run_id.as_deref(), Some("run-decision-event"));
+    assert_eq!(permission.payload["tool_call_id"], "tool-1");
+    assert_eq!(permission.payload["decision_id"], "d1");
+    assert_eq!(permission.payload["approved"], true);
+    assert_eq!(permission.payload["delivery_path"], "remote_live");
 }
 
 /// Cross-node live delivery when **no subscriber** is attached to the
@@ -4410,7 +5755,7 @@ async fn live_then_queue_falls_back_to_queue_when_no_remote_subscriber() {
     thread_store.create_run(&run).await.expect("seed run");
 
     let runtime: Arc<dyn RunDispatchExecutor> = Arc::new(NoopMailboxRuntime);
-    let mailbox = Arc::new(Mailbox::new_with_executor(
+    let mailbox = Arc::new(Mailbox::new(
         runtime,
         mailbox_store.clone(),
         thread_store.clone(),
@@ -4420,7 +5765,7 @@ async fn live_then_queue_falls_back_to_queue_when_no_remote_subscriber() {
 
     let result = mailbox
         .submit_live_then_queue(
-            RunRequest::new(thread_id, vec![Message::user("hello?")]).with_agent_id("agent"),
+            RunActivation::new(thread_id, vec![Message::user("hello?")]).with_agent_id("agent"),
             None,
         )
         .await
@@ -4476,7 +5821,8 @@ async fn waiting_thread_is_reactivated_by_incoming_message() {
 
     let submitted = mailbox
         .submit_background(
-            RunRequest::new("thread-waiting", vec![Message::user("poke")]).with_agent_id("agent"),
+            RunActivation::new("thread-waiting", vec![Message::user("poke")])
+                .with_agent_id("agent"),
         )
         .await
         .expect("submit should succeed");
@@ -4530,7 +5876,7 @@ async fn structured_user_input_waiting_thread_is_reused_by_incoming_message() {
 
     let submitted = mailbox
         .submit_background(
-            RunRequest::new("thread-user-input", vec![Message::user("continue")])
+            RunActivation::new("thread-user-input", vec![Message::user("continue")])
                 .with_agent_id("agent"),
         )
         .await
@@ -4578,7 +5924,8 @@ async fn reusable_waiting_run_prefers_thread_open_run_projection_over_latest_run
 
     let submitted = mailbox
         .submit_background(
-            RunRequest::new(thread_id, vec![Message::user("continue open")]).with_agent_id("agent"),
+            RunActivation::new(thread_id, vec![Message::user("continue open")])
+                .with_agent_id("agent"),
         )
         .await
         .expect("submit should succeed");
@@ -4707,7 +6054,7 @@ async fn background_task_completion_should_enqueue_internal_wake_message() {
 
     mailbox
         .submit_background(
-            RunRequest::new("thread-bg", vec![Message::user("start")]).with_agent_id("agent"),
+            RunActivation::new("thread-bg", vec![Message::user("start")]).with_agent_id("agent"),
         )
         .await
         .expect("submit should succeed");
@@ -4778,7 +6125,7 @@ async fn concurrent_submit_background_same_thread_only_one_runs() {
     for i in 0..5 {
         let mb = Arc::clone(&mailbox);
         handles.push(tokio::spawn(async move {
-            let req = RunRequest::new("thread-conc", vec![Message::user(format!("msg-{i}"))])
+            let req = RunActivation::new("thread-conc", vec![Message::user(format!("msg-{i}"))])
                 .with_agent_id("agent-1");
             mb.submit_background(req).await
         }));
@@ -4826,7 +6173,7 @@ async fn concurrent_submit_same_thread_only_one_claims() {
     for i in 0..3 {
         let mb = Arc::clone(&mailbox);
         handles.push(tokio::spawn(async move {
-            let req = RunRequest::new(
+            let req = RunActivation::new(
                 "thread-stream-conc",
                 vec![Message::user(format!("msg-{i}"))],
             )
@@ -4867,7 +6214,7 @@ async fn interrupt_between_claim_and_execution_supersedes_without_runtime_start(
     let store = Arc::new(InterruptOnLoadMailboxStore::new());
     let run_store = Arc::new(InMemoryStore::new());
     let runtime = Arc::new(CountingMailboxRuntime::default());
-    let mailbox = Arc::new(Mailbox::new_with_executor(
+    let mailbox = Arc::new(Mailbox::new(
         runtime.clone(),
         store.clone(),
         run_store.clone(),
@@ -4881,7 +6228,8 @@ async fn interrupt_between_claim_and_execution_supersedes_without_runtime_start(
 
     let result = mailbox
         .submit_background(
-            RunRequest::new("thread-epoch-race", vec![Message::user("go")]).with_agent_id("agent"),
+            RunActivation::new("thread-epoch-race", vec![Message::user("go")])
+                .with_agent_id("agent"),
         )
         .await
         .expect("submit should succeed");
@@ -4942,7 +6290,7 @@ async fn dispatch_signal_busy_ack_still_runs_queued_dispatch_after_current_finis
         started_tx,
         Arc::clone(&release_first),
     ));
-    let mailbox = Arc::new(Mailbox::new_with_executor(
+    let mailbox = Arc::new(Mailbox::new(
         runtime,
         store.clone(),
         run_store,
@@ -4950,11 +6298,14 @@ async fn dispatch_signal_busy_ack_still_runs_queued_dispatch_after_current_finis
         MailboxConfig::default(),
     ));
 
-    let mut first =
-        RunRequest::new("thread-signal-busy", vec![Message::user("first")]).with_agent_id("agent");
-    let (thread_id, first_messages) =
-        validate_run_inputs(first.thread_id.clone(), first.messages.clone(), false)
-            .expect("first input should validate");
+    let mut first = RunActivation::new("thread-signal-busy", vec![Message::user("first")])
+        .with_agent_id("agent");
+    let (thread_id, first_messages) = validate_run_inputs(
+        first.thread_id().to_owned(),
+        first.messages().to_vec(),
+        false,
+    )
+    .expect("first input should validate");
     mailbox
         .prepare_run_for_dispatch(&mut first, &thread_id, &first_messages)
         .await
@@ -4965,11 +6316,14 @@ async fn dispatch_signal_busy_ack_still_runs_queued_dispatch_after_current_finis
     let first_dispatch_id = first_dispatch.dispatch_id.clone();
     store.enqueue(&first_dispatch).await.expect("enqueue first");
 
-    let mut second =
-        RunRequest::new("thread-signal-busy", vec![Message::user("second")]).with_agent_id("agent");
-    let (_, second_messages) =
-        validate_run_inputs(second.thread_id.clone(), second.messages.clone(), false)
-            .expect("second input should validate");
+    let mut second = RunActivation::new("thread-signal-busy", vec![Message::user("second")])
+        .with_agent_id("agent");
+    let (_, second_messages) = validate_run_inputs(
+        second.thread_id().to_owned(),
+        second.messages().to_vec(),
+        false,
+    )
+    .expect("second input should validate");
     mailbox
         .prepare_run_for_dispatch(&mut second, &thread_id, &second_messages)
         .await
@@ -5051,7 +6405,8 @@ async fn submit_background_returns_correct_status() {
     let mailbox = make_mailbox(runtime, store.clone());
 
     // First submit should dispatch (Running or Queued depending on timing).
-    let req1 = RunRequest::new("thread-status", vec![Message::user("a")]).with_agent_id("agent-1");
+    let req1 =
+        RunActivation::new("thread-status", vec![Message::user("a")]).with_agent_id("agent-1");
     let result1 = mailbox.submit_background(req1).await.unwrap();
     // First dispatch should be claimed/running since thread is idle.
     assert!(
@@ -5063,7 +6418,8 @@ async fn submit_background_returns_correct_status() {
     );
 
     // Second submit while first is running should be Queued.
-    let req2 = RunRequest::new("thread-status", vec![Message::user("b")]).with_agent_id("agent-1");
+    let req2 =
+        RunActivation::new("thread-status", vec![Message::user("b")]).with_agent_id("agent-1");
     let result2 = mailbox.submit_background(req2).await.unwrap();
     assert!(
         matches!(result2.status, MailboxDispatchStatus::Queued),
@@ -5078,7 +6434,7 @@ async fn worker_status_not_corrupted_after_empty_claim() {
     let mailbox = make_mailbox(runtime, store.clone());
 
     // Submit and dispatch a dispatch to get worker into Running state.
-    let req = RunRequest::new("thread-guard", vec![Message::user("a")]).with_agent_id("agent-1");
+    let req = RunActivation::new("thread-guard", vec![Message::user("a")]).with_agent_id("agent-1");
     mailbox.submit_background(req).await.unwrap();
 
     // Worker should be Running (or Claiming).
@@ -5111,7 +6467,7 @@ async fn worker_status_not_corrupted_after_empty_claim() {
 #[test]
 fn run_request_extras_corrupt_json_returns_error() {
     let corrupt = serde_json::json!({"overrides": "not-an-object", "decisions": 42});
-    let result = RunRequestExtras::from_value(&corrupt);
+    let result = LegacyRunSnapshotExtras::from_value(&corrupt);
     assert!(result.is_err(), "corrupt JSON should fail deserialization");
 }
 
@@ -5123,14 +6479,14 @@ async fn submit_inline_claim_fails_when_thread_already_claimed() {
 
     // First submit claims successfully.
     let req1 =
-        RunRequest::new("thread-clash", vec![Message::user("first")]).with_agent_id("agent-1");
+        RunActivation::new("thread-clash", vec![Message::user("first")]).with_agent_id("agent-1");
     let result1 = mailbox.submit(req1).await;
     assert!(result1.is_ok(), "first submit should succeed");
 
     // Second submit to same thread: interrupt will cancel the first,
     // but timing may allow the second to also succeed or fail gracefully.
     let req2 =
-        RunRequest::new("thread-clash", vec![Message::user("second")]).with_agent_id("agent-1");
+        RunActivation::new("thread-clash", vec![Message::user("second")]).with_agent_id("agent-1");
     let result2 = mailbox.submit(req2).await;
     // Either succeeds (interrupt cancelled old) or fails with validation error.
     // Crucially: no panic, no double-claimed state.
@@ -5217,10 +6573,10 @@ async fn build_dispatch_extras_roundtrip_with_decisions() {
         },
     )];
 
-    let request = RunRequest::new("thread-dec", vec![Message::user("hi")])
+    let request = RunActivation::new("thread-dec", vec![Message::user("hi")])
         .with_agent_id("a1")
         .with_decisions(decisions.clone());
-    let extras = RunRequestExtras::from_request(&request);
+    let extras = LegacyRunSnapshotExtras::from_request(&request);
     assert_eq!(extras.decisions.len(), 1);
     assert_eq!(extras.decisions[0].0, "call-1");
 }
@@ -5238,11 +6594,15 @@ async fn prepare_run_origin_a2a_roundtrip() {
         MailboxConfig::default(),
     ));
 
-    let mut request = RunRequest::new("thread-a2a", vec![Message::user("hi")])
+    let mut request = RunActivation::new("thread-a2a", vec![Message::user("hi")])
         .with_origin(RunRequestOrigin::A2A)
         .with_parent_run_id("parent-123");
-    let (thread_id, messages) =
-        validate_run_inputs(request.thread_id.clone(), request.messages.clone(), false).unwrap();
+    let (thread_id, messages) = validate_run_inputs(
+        request.thread_id().to_owned(),
+        request.messages().to_vec(),
+        false,
+    )
+    .unwrap();
     let run_id = mailbox
         .prepare_run_for_dispatch(&mut request, &thread_id, &messages)
         .await
@@ -5250,7 +6610,7 @@ async fn prepare_run_origin_a2a_roundtrip() {
     let run = thread_store.load_run(&run_id).await.unwrap().unwrap();
 
     assert!(matches!(
-        run.request.as_ref().unwrap().origin,
+        RunRequestOrigin::from(run.activation.as_ref().unwrap().trace.origin),
         RunRequestOrigin::A2A
     ));
     assert_eq!(run.parent_run_id.as_deref(), Some("parent-123"));
@@ -5364,7 +6724,7 @@ async fn gc_idle_workers_keeps_worker_with_queued_dispatches() {
 
     // Enqueue a dispatch for the thread (background so it goes to store).
     let request =
-        RunRequest::new("thread-gc-keep", vec![Message::user("hi")]).with_agent_id("agent-1");
+        RunActivation::new("thread-gc-keep", vec![Message::user("hi")]).with_agent_id("agent-1");
     mailbox.submit_background(request).await.unwrap();
 
     // Force the worker to Idle status (simulating it finished one dispatch
@@ -5459,7 +6819,7 @@ fn make_waiting_run_record(run_id: &str, thread_id: &str) -> RunRecord {
 fn make_noop_mailbox(thread_store: Arc<InMemoryStore>) -> Arc<Mailbox> {
     let mailbox_store = make_store();
     let runtime: Arc<dyn RunDispatchExecutor> = Arc::new(NoopMailboxRuntime);
-    Arc::new(Mailbox::new_with_executor(
+    Arc::new(Mailbox::new(
         runtime,
         mailbox_store,
         thread_store,
@@ -5520,8 +6880,8 @@ async fn thread_context_cache_updated_after_prepare_checkpoint() {
 
     // Prepare a new dispatch — this should update the cache.
     let mut request =
-        RunRequest::new(thread_id, vec![Message::user("second")]).with_agent_id("agent");
-    let msgs = request.messages.clone();
+        RunActivation::new(thread_id, vec![Message::user("second")]).with_agent_id("agent");
+    let msgs = request.messages().to_vec();
     mailbox
         .prepare_run_for_dispatch(&mut request, thread_id, &msgs)
         .await
@@ -5549,8 +6909,8 @@ async fn prepare_run_falls_back_to_store_without_cache() {
 
     // No cache — should fall back to store.
     let mut request =
-        RunRequest::new(thread_id, vec![Message::user("second")]).with_agent_id("agent");
-    let msgs = request.messages.clone();
+        RunActivation::new(thread_id, vec![Message::user("second")]).with_agent_id("agent");
+    let msgs = request.messages().to_vec();
     let run_id = mailbox
         .prepare_run_for_dispatch(&mut request, thread_id, &msgs)
         .await
@@ -5600,8 +6960,8 @@ async fn prepare_run_uses_durable_messages_when_active_cache_is_stale() {
         .unwrap();
 
     let mut request =
-        RunRequest::new(thread_id, vec![Message::user("second")]).with_agent_id("agent");
-    let msgs = request.messages.clone();
+        RunActivation::new(thread_id, vec![Message::user("second")]).with_agent_id("agent");
+    let msgs = request.messages().to_vec();
     mailbox
         .prepare_run_for_dispatch(&mut request, thread_id, &msgs)
         .await
@@ -5743,4 +7103,139 @@ async fn reusable_waiting_run_id_returns_none_for_done_cached_run() {
 
     let result = mailbox.reusable_waiting_run_id(thread_id).await;
     assert_eq!(result, None, "Done run should not be reusable");
+}
+
+// ── ADR-0036 D9 mailbox dispatch wiring ─────────────────────────────
+
+struct CoordinatorAwareNoopRuntime;
+
+#[async_trait]
+impl RunDispatchExecutor for CoordinatorAwareNoopRuntime {
+    async fn run(
+        &self,
+        _request: RunActivation,
+        _sink: Arc<dyn EventSink>,
+    ) -> Result<AgentRunResult, AgentLoopError> {
+        panic!("wiring test must not execute runs")
+    }
+    fn cancel(&self, _id: &str) -> bool {
+        false
+    }
+    async fn cancel_and_wait_by_thread(&self, _thread_id: &str) -> bool {
+        false
+    }
+    fn send_decision(&self, _id: &str, _tool_call_id: String, _resume: ToolCallResume) -> bool {
+        false
+    }
+    fn has_commit_coordinator(&self) -> bool {
+        true
+    }
+}
+
+fn sample_dispatch(thread_id: &str, run_id: &str, dispatch_id: &str) -> RunDispatch {
+    let now = now_ms();
+    RunDispatch {
+        dispatch_id: dispatch_id.to_string(),
+        thread_id: thread_id.to_string(),
+        run_id: run_id.to_string(),
+        priority: 0,
+        dedupe_key: None,
+        dispatch_epoch: 0,
+        status: RunDispatchStatus::Queued,
+        available_at: now,
+        attempt_count: 0,
+        max_attempts: 3,
+        last_error: None,
+        claim_token: None,
+        claimed_by: None,
+        lease_until: None,
+        dispatch_instance_id: None,
+        run_status: None,
+        termination: None,
+        run_response: None,
+        run_error: None,
+        completed_at: None,
+        created_at: now,
+        updated_at: now,
+    }
+}
+
+/// ADR-0036 D9: when a per-run `EventBuffer` is supplied to
+/// `wrap_dispatch_runtime_event_sink`, durable events stage into the buffer
+/// (atomic-commit path) and are NOT inline-appended to the canonical writer.
+#[tokio::test]
+async fn wrap_dispatch_with_buffer_stages_into_buffer_not_writer() {
+    use crate::transport::channel_sink::ReconnectableEventSink;
+    use awaken_runtime::EventBuffer;
+
+    let event_store = Arc::new(InMemoryEventStore::new());
+    let mailbox_store = make_store();
+    let thread_store = Arc::new(InMemoryStore::new());
+    let runtime: Arc<dyn RunDispatchExecutor> = Arc::new(CoordinatorAwareNoopRuntime);
+    let mailbox = Arc::new(
+        Mailbox::new(
+            runtime,
+            mailbox_store,
+            thread_store,
+            "c".into(),
+            MailboxConfig::default(),
+        )
+        .with_runtime_event_capture(RuntimeEventDurability::Compacted, "test")
+        .unwrap(),
+    );
+
+    let dispatch = sample_dispatch("t-buf", "r-buf", "d-buf");
+    let (tx, _rx) = mpsc::channel::<AgentEvent>(16);
+    let reconnectable = Arc::new(ReconnectableEventSink::new(tx));
+    let buffer = Arc::new(EventBuffer::new());
+
+    let wrapped = mailbox.wrap_dispatch_runtime_event_sink(
+        reconnectable,
+        &dispatch,
+        "d-buf".into(),
+        false,
+        Some(Arc::clone(&buffer)),
+    );
+
+    wrapped
+        .emit(AgentEvent::ToolCallReady {
+            id: "c1".into(),
+            name: "search".into(),
+            arguments: json!({"q": "x"}),
+        })
+        .await;
+
+    assert_eq!(
+        buffer.len(),
+        1,
+        "durable draft must stage into the per-run buffer"
+    );
+    let writer_count = event_store.count(EventScope::run("r-buf")).await.unwrap();
+    assert_eq!(
+        writer_count, 0,
+        "buffered path must not write to canonical writer inline"
+    );
+}
+
+#[test]
+fn runtime_event_capture_requires_commit_coordinator() {
+    let mailbox_store = make_store();
+    let thread_store = Arc::new(InMemoryStore::new());
+    let runtime: Arc<dyn RunDispatchExecutor> = Arc::new(NoopMailboxRuntime);
+    let result = Mailbox::new(
+        runtime,
+        mailbox_store,
+        thread_store,
+        "c".into(),
+        MailboxConfig::default(),
+    )
+    .with_runtime_event_capture(RuntimeEventDurability::Compacted, "test");
+    let error = match result {
+        Ok(_) => panic!("capture without a coordinator must be rejected"),
+        Err(error) => error,
+    };
+    assert_eq!(
+        error.to_string(),
+        "validation error: runtime event capture requires an executor with CommitCoordinator"
+    );
 }

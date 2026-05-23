@@ -212,7 +212,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn resumable_relay_assigns_sequential_ids() {
+    async fn resumable_relay_emits_frames_without_durable_event_id() {
+        // ADR-0034 D3: frames produced by the in-process EventReplayBuffer
+        // omit `id:` so the buffer sequence is never leaked as a
+        // Last-Event-ID that the client could re-send as a durable cursor.
         let (tx, rx) = mpsc::channel::<AgentEvent>(256);
         let encoder = Identity::<AgentEvent>::default();
         let replay_buffer = std::sync::Arc::new(EventReplayBuffer::new(64));
@@ -230,9 +233,13 @@ mod tests {
             chunks.push(String::from_utf8(chunk.to_vec()).unwrap());
         }
         assert_eq!(chunks.len(), 3);
-        assert!(chunks[0].starts_with("id: 1\n"));
-        assert!(chunks[1].starts_with("id: 2\n"));
-        assert!(chunks[2].starts_with("id: 3\n"));
+        for chunk in &chunks {
+            assert!(
+                !chunk.contains("id:"),
+                "in-process buffer frames must not advertise an SSE id: {chunk}"
+            );
+            assert!(chunk.starts_with("data:"));
+        }
     }
 
     #[tokio::test]

@@ -428,7 +428,7 @@ fn list_params_explicit_values() {
 
 mod health_integration {
     use super::*;
-    use crate::app::{AppState, ServerConfig};
+    use crate::app::{ServerConfig, ServerState};
     use crate::mailbox::{Mailbox, MailboxConfig};
     use awaken_runtime::AgentRuntime;
     use awaken_stores::{InMemoryMailboxStore, InMemoryStore};
@@ -448,7 +448,7 @@ mod health_integration {
         }
     }
 
-    fn make_app_state() -> AppState {
+    fn make_app_state() -> ServerState {
         let runtime = Arc::new(AgentRuntime::new(Arc::new(StubResolver)));
         let store = Arc::new(InMemoryStore::new());
         let mailbox_store = Arc::new(InMemoryMailboxStore::new());
@@ -459,7 +459,7 @@ mod health_integration {
             "test".to_string(),
             MailboxConfig::default(),
         ));
-        AppState::new(
+        ServerState::new(
             runtime,
             mailbox,
             store.clone(),
@@ -477,7 +477,7 @@ mod health_integration {
             expose_config_routes: false,
             ..AdminApiConfig::default()
         });
-        let app = build_router(&state).with_state(state);
+        let app = build_router(&state);
 
         let req = axum::http::Request::builder()
             .uri("/v1/agents")
@@ -500,10 +500,9 @@ mod health_integration {
             expose_config_routes: false,
             ..AdminApiConfig::default()
         });
-        let app = build_router(&state).with_state(state);
+        let app = build_router(&state);
 
         for uri in [
-            "/v1/system/info",
             "/v1/agents/runtime-stats",
             "/v1/agents/default/runtime-stats",
         ] {
@@ -515,9 +514,16 @@ mod health_integration {
             assert_eq!(
                 resp.status(),
                 StatusCode::NOT_FOUND,
-                "{uri} must not be mounted when the admin surface is disabled"
+                "{uri} must not be mounted when the config-admin surface is disabled"
             );
         }
+
+        let req = axum::http::Request::builder()
+            .uri("/v1/system/info")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
     }
 
     #[tokio::test]
@@ -531,7 +537,7 @@ mod health_integration {
             bearer_token: Some(token),
             ..AdminApiConfig::default()
         });
-        let app = build_router(&state).with_state(state);
+        let app = build_router(&state);
 
         let req = axum::http::Request::builder()
             .uri("/v1/system/info")
@@ -550,29 +556,28 @@ mod health_integration {
     }
 
     #[tokio::test]
-    async fn config_routes_mounted_by_default() {
+    async fn config_routes_are_absent_without_config_module() {
         use axum::http::StatusCode;
 
         let state = make_app_state();
-        let app = build_router(&state).with_state(state);
+        let app = build_router(&state);
 
         let req = axum::http::Request::builder()
             .uri("/v1/agents")
             .body(axum::body::Body::empty())
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();
-        assert_ne!(
+        assert_eq!(
             resp.status(),
             StatusCode::NOT_FOUND,
-            "default config routes must remain mounted; got {}",
-            resp.status()
+            "config routes require a ConfigModuleState"
         );
     }
 
     #[tokio::test]
     async fn health_live_returns_200() {
         let state = make_app_state();
-        let app = build_router(&state).with_state(state);
+        let app = build_router(&state);
 
         let req = axum::http::Request::builder()
             .uri("/health/live")
@@ -585,7 +590,7 @@ mod health_integration {
     #[tokio::test]
     async fn system_info_returns_real_fields() {
         let state = make_app_state();
-        let app = build_router(&state).with_state(state);
+        let app = build_router(&state);
 
         let req = axum::http::Request::builder()
             .uri("/v1/system/info")
@@ -607,7 +612,7 @@ mod health_integration {
     #[tokio::test]
     async fn health_ready_returns_healthy_with_working_store() {
         let state = make_app_state();
-        let app = build_router(&state).with_state(state);
+        let app = build_router(&state);
 
         let req = axum::http::Request::builder()
             .uri("/health")
@@ -626,7 +631,7 @@ mod health_integration {
     #[tokio::test]
     async fn metrics_endpoint_is_installed_and_records_http_requests() {
         let state = make_app_state();
-        let app = build_router(&state).with_state(state);
+        let app = build_router(&state);
 
         let req = axum::http::Request::builder()
             .uri("/health/live")
@@ -743,14 +748,14 @@ mod health_integration {
             "test".to_string(),
             MailboxConfig::default(),
         ));
-        let state = AppState::new(
+        let state = ServerState::new(
             runtime,
             mailbox,
             store,
             Arc::new(StubResolver),
             ServerConfig::default(),
         );
-        let app = build_router(&state).with_state(state);
+        let app = build_router(&state);
 
         let req = axum::http::Request::builder()
             .uri("/health")

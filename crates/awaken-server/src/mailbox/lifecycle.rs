@@ -8,7 +8,7 @@ use awaken_contract::contract::mailbox::RunDispatchStatus;
 use awaken_contract::contract::message::Message;
 use awaken_contract::contract::tool_intercept::{AdapterKind, RunMode};
 use awaken_contract::now_ms;
-use awaken_runtime::RunRequest;
+use awaken_runtime::RunActivation;
 
 use super::{
     Mailbox, MailboxError, MailboxLifecycleConfig, MailboxLifecycleHandle, MailboxLifecycleTasks,
@@ -201,6 +201,8 @@ impl Mailbox {
             self.refresh_dispatch_depth_metrics().await;
         }
         for dispatch in &reclaimed {
+            self.record_run_rescheduled_dispatch(dispatch, "expired_lease_reclaimed")
+                .await;
             self.reconcile_terminal_dispatch(dispatch).await;
         }
         self.reconcile_terminal_dispatches().await;
@@ -232,7 +234,7 @@ impl Mailbox {
                     if queued_set.contains(&run.thread_id) {
                         continue;
                     }
-                    let request = RunRequest::new(
+                    let request = RunActivation::new(
                         run.thread_id.clone(),
                         vec![Message::internal_user("<background-tasks-updated />")],
                     )
@@ -304,6 +306,8 @@ impl Mailbox {
                     tracing::info!(count = reclaimed.len(), "sweep reclaimed expired leases");
                     self.refresh_dispatch_depth_metrics().await;
                     for dispatch in reclaimed {
+                        self.record_run_rescheduled_dispatch(&dispatch, "expired_lease_reclaimed")
+                            .await;
                         self.reconcile_terminal_dispatch(&dispatch).await;
                         if dispatch.status == RunDispatchStatus::Queued {
                             let thread_id = dispatch.thread_id.clone();

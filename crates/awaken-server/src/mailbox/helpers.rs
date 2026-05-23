@@ -5,6 +5,7 @@ use std::time::{Duration, Instant};
 use parking_lot::Mutex as SyncMutex;
 use tokio::sync::RwLock;
 
+use awaken_contract::contract::identity::RunOrigin;
 use awaken_contract::contract::mailbox::{
     LiveRunTarget, RunDispatch, RunDispatchResult, RunDispatchStatus,
 };
@@ -12,7 +13,7 @@ use awaken_contract::contract::message::Message;
 use awaken_contract::contract::storage::RunRecord;
 use awaken_contract::contract::tool_intercept::RunMode;
 use awaken_contract::now_ms;
-use awaken_runtime::RunRequest;
+use awaken_runtime::RunActivation;
 
 use super::{
     DISPATCH_SIGNAL_BATCH_DEFAULT, DISPATCH_SIGNAL_BATCH_ENV,
@@ -41,23 +42,21 @@ pub(super) async fn revert_claiming_to_idle(
 
 // ── Free functions ───────────────────────────────────────────────────
 
-pub(super) fn normalize_mailbox_run_mode(request: &mut RunRequest, background: bool) {
-    if request.run_mode != RunMode::Foreground {
+pub(super) fn normalize_mailbox_run_mode(request: &mut RunActivation, background: bool) {
+    if request.trace.run_mode != RunMode::Foreground {
         return;
     }
 
-    request.run_mode = if !request.decisions.is_empty() || request.continue_run_id.is_some() {
-        RunMode::Resume
-    } else if matches!(
-        request.origin,
-        awaken_contract::contract::storage::RunRequestOrigin::Internal
-    ) {
-        RunMode::InternalWake
-    } else if background {
-        RunMode::Scheduled
-    } else {
-        RunMode::Foreground
-    };
+    request.trace.run_mode =
+        if !request.control.seeded_decisions.is_empty() || request.resume_run_id().is_some() {
+            RunMode::Resume
+        } else if matches!(request.trace.origin, RunOrigin::Internal) {
+            RunMode::InternalWake
+        } else if background {
+            RunMode::Scheduled
+        } else {
+            RunMode::Foreground
+        };
 }
 
 /// Validate and normalize run request inputs.
