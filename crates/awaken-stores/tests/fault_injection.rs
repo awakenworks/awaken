@@ -1,3 +1,4 @@
+#![allow(deprecated)] // ADR-0038 D7: integration tests exercise the legacy checkpoint API directly
 //! Fault injection tests for storage backends.
 //!
 //! Verifies that the system degrades gracefully when storage operations fail:

@@ -1,3 +1,4 @@
+#![allow(deprecated)] // ADR-0038 D7: integration tests exercise the legacy checkpoint API directly
 #![cfg(feature = "nats")]
 
 #[path = "nats_buffered_thread_fixture.rs"]

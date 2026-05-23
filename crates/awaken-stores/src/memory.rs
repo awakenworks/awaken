@@ -1,5 +1,4 @@
 //! In-memory storage backend for testing and local development.
-
 use std::collections::HashMap;
 
 use async_trait::async_trait;
@@ -24,10 +23,10 @@ use tokio::sync::RwLock;
 /// Data lives only in memory and is lost when the store is dropped.
 #[derive(Debug)]
 pub struct InMemoryStore {
-    threads: RwLock<HashMap<String, Thread>>,
-    runs: RwLock<HashMap<String, RunRecord>>,
+    pub(crate) threads: RwLock<HashMap<String, Thread>>,
+    pub(crate) runs: RwLock<HashMap<String, RunRecord>>,
     /// Thread ID -> ordered messages (single source of truth).
-    messages: RwLock<HashMap<String, Vec<Message>>>,
+    pub(crate) messages: RwLock<HashMap<String, Vec<Message>>>,
     /// Profile entries keyed by (owner, key).
     profiles: RwLock<HashMap<ProfileOwner, HashMap<String, ProfileEntry>>>,
     /// Config entries keyed by namespace then ID.
@@ -609,7 +608,6 @@ impl ConfigChangeSubscriber for InMemoryConfigChangeSubscriber {
         }
     }
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -627,10 +625,29 @@ mod tests {
             run_id: run_id.to_string(),
             thread_id: thread_id.to_string(),
             agent_id: "agent".to_string(),
+            parent_run_id: None,
+            registry_manifest: None,
+            activation: None,
+            request: None,
+            input: None,
+            output: None,
             status,
+            termination_reason: None,
+            final_output: None,
+            error_payload: None,
+            dispatch_id: None,
+            session_id: None,
+            transport_request_id: None,
+            waiting: None,
+            outcome: None,
             created_at: 100,
+            started_at: None,
+            finished_at: None,
             updated_at: 100,
-            ..Default::default()
+            steps: 0,
+            input_tokens: 0,
+            output_tokens: 0,
+            state: None,
         }
     }
 
