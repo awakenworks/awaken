@@ -29,6 +29,8 @@ use serde_json::{Value, json};
 use sqlx::PgPool;
 use tower::ServiceExt;
 
+const ADMIN_TOKEN: &str = "config-backends-admin-token";
+
 #[cfg(feature = "nats")]
 use awaken_stores::{InMemoryStore, NatsBufferedThreadConfig, NatsBufferedThreadStore};
 #[cfg(feature = "nats")]
@@ -154,6 +156,7 @@ where
         runtime.resolver_arc(),
         ServerConfig::default(),
     )
+    .with_admin_api_bearer_token(ADMIN_TOKEN)
     .with_config_store(config_store)
     .with_config_runtime_manager(manager);
 
@@ -295,7 +298,10 @@ async fn send_request(
     uri: &str,
     body: Option<Value>,
 ) -> (StatusCode, String) {
-    let mut builder = Request::builder().method(method).uri(uri);
+    let mut builder = Request::builder()
+        .method(method)
+        .uri(uri)
+        .header("authorization", format!("Bearer {ADMIN_TOKEN}"));
     let request = if let Some(body) = body {
         builder = builder.header("content-type", "application/json");
         builder
