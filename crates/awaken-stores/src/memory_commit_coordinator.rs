@@ -177,6 +177,7 @@ mod tests {
             run_id: run_id.to_string(),
             thread_id: thread_id.to_string(),
             status: RunStatus::Done,
+            agent_id: "agent-1".to_string(),
             ..Default::default()
         }
     }
