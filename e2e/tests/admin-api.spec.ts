@@ -64,16 +64,63 @@ test.describe('admin API surface coverage', () => {
     });
     expect(providerCreate.status(), 'POST /v1/config/:namespace').toBe(201);
 
+    // Exercise the capability/pricing fields on the create path so this
+    // suite covers the post-unification ModelSpec wire shape end-to-end.
     const modelPayload = {
       id: modelId,
       provider_id: providerId,
       upstream_model: 'coverage-model',
+      context_window: 200_000,
+      max_output_tokens: 16_384,
+      modalities: { input: ['text'], output: ['text'] },
+      knowledge_cutoff: '2026-01',
+      input_token_price_per_million_usd: 3,
+      output_token_price_per_million_usd: 15,
     };
     const modelCreate = await request.post(`${BACKEND_URL}/v1/config/models`, {
       headers,
       data: modelPayload,
     });
     expect(modelCreate.status(), 'POST /v1/config/models').toBe(201);
+
+    // Read-back round-trip: every capability field must persist verbatim.
+    const modelRead = await request.get(`${BACKEND_URL}/v1/config/models/${modelId}`, {
+      headers,
+    });
+    expect(modelRead.ok(), 'GET /v1/config/models/:id').toBeTruthy();
+    const modelReadBody = (await modelRead.json()) as Record<string, unknown>;
+    expect(modelReadBody.context_window, 'context_window round-trip').toBe(200_000);
+    expect(modelReadBody.max_output_tokens, 'max_output_tokens round-trip').toBe(16_384);
+    expect(modelReadBody.knowledge_cutoff, 'knowledge_cutoff round-trip').toBe('2026-01');
+    expect(modelReadBody.modalities, 'modalities round-trip').toEqual({
+      input: ['text'],
+      output: ['text'],
+    });
+    expect(modelReadBody.input_token_price_per_million_usd, 'input price round-trip').toBe(3);
+    expect(modelReadBody.output_token_price_per_million_usd, 'output price round-trip').toBe(15);
+
+    // Validation: max_output_tokens > context_window is rejected by the
+    // server-side `validate_model_spec`. Use a fresh id so the failure isn't
+    // confused with a duplicate-id 409.
+    const invalidModelPayload = {
+      id: `${modelId}-invalid`,
+      provider_id: providerId,
+      upstream_model: 'coverage-model',
+      context_window: 1000,
+      max_output_tokens: 2000,
+    };
+    const invalidModelCreate = await request.post(`${BACKEND_URL}/v1/config/models`, {
+      headers,
+      data: invalidModelPayload,
+    });
+    expect(invalidModelCreate.status(), 'POST invalid model spec').toBe(400);
+
+    // Duplicate-id rejection on a second create with the same id.
+    const duplicateModelCreate = await request.post(`${BACKEND_URL}/v1/config/models`, {
+      headers,
+      data: modelPayload,
+    });
+    expect(duplicateModelCreate.status(), 'POST duplicate model id').toBe(409);
 
     const agentPayload = {
       id: agentId,

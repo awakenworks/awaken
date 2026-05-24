@@ -6,7 +6,7 @@ import {
   type AgentSpec,
   type Capabilities,
   type McpServerRecord,
-  type ModelBindingSpec,
+  type ModelSpec,
   type ProviderRecord,
   type SystemInfo,
 } from "../../api";
@@ -35,7 +35,7 @@ export type DashboardData = {
   capabilities: Capabilities;
   mcpServers: McpServerRecord[];
   providers: ProviderRecord[];
-  models: ModelBindingSpec[];
+  models: ModelSpec[];
   agents: AgentSpec[];
   auditPage: AuditPage | null;
   auditDisabled: boolean;
@@ -66,7 +66,7 @@ export function useDashboardQuery(range: TimeRange) {
         capabilitiesApi.capabilities(),
         tolerantList(configResourceApi.list<McpServerRecord>("mcp-servers")),
         tolerantList(configResourceApi.list<ProviderRecord>("providers")),
-        tolerantList(configResourceApi.list<ModelBindingSpec>("models")),
+        tolerantList(configResourceApi.list<ModelSpec>("models")),
         tolerantList(configResourceApi.list<AgentSpec>("agents")),
         auditPromise,
         loadOptionalSystemInfo(),

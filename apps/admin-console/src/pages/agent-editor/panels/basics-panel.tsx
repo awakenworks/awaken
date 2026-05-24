@@ -99,11 +99,22 @@ export function BasicsPanel({
             className="w-full rounded-sm border border-line-strong bg-surface px-3 py-2 text-sm text-fg outline-none transition focus:border-fg aria-[invalid=true]:border-tone-error"
           >
             <option value="">{t("editor.fields.selectModel")}</option>
-            {(capabilities?.models ?? []).map((model) => (
-              <option key={model.id} value={model.id}>
-                {model.id} ({model.upstream_model})
-              </option>
-            ))}
+            {(capabilities?.models ?? []).map((model) => {
+              // Surface context-window when published so authors can pick a
+              // model with sufficient headroom for the agent's prompts.
+              const ctx = model.context_window
+                ? ` · ${
+                    model.context_window >= 1_000
+                      ? `${Math.round(model.context_window / 1_000)}K ctx`
+                      : `${model.context_window} ctx`
+                  }`
+                : "";
+              return (
+                <option key={model.id} value={model.id}>
+                  {model.id} ({model.upstream_model}){ctx}
+                </option>
+              );
+            })}
           </select>
         </Field>
         <Field label={t("editor.fields.maxRounds")} {...fieldResetProps("max_rounds")}>

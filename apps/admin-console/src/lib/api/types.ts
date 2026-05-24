@@ -67,10 +67,54 @@ export interface ToolSpec {
   parameters_schema?: unknown;
 }
 
-export interface ModelBindingSpec {
+/**
+ * Closed enum of input/output modalities a model can accept or produce.
+ * Mirrors the Rust `awaken_contract::registry_spec::Modality` enum; serde
+ * uses snake_case so the wire values match these literals exactly.
+ */
+export type Modality = "text" | "image" | "audio" | "video" | "pdf";
+
+/**
+ * Set of modalities a model accepts on input and produces on output.
+ *
+ * An empty/omitted list means "unspecified" — runtime treats the model's
+ * modality set as catalog metadata only and performs no enforcement.
+ */
+export interface Modalities {
+  input?: Modality[];
+  output?: Modality[];
+}
+
+/**
+ * Serializable model offering — addressing (id, provider, upstream model),
+ * intrinsic capabilities (context window, max output tokens, modalities,
+ * knowledge cutoff), and per-million-token pricing.
+ *
+ * Wire shape mirrors `awaken_contract::registry_spec::ModelSpec`. All
+ * capability/pricing fields are optional; `created_at` / `updated_at`
+ * are server-attached envelope metadata (epoch milliseconds).
+ */
+export interface ModelSpec {
   id: string;
   provider_id: string;
   upstream_model: string;
+
+  /** Maximum context window in tokens. Must be `> 0` when set. */
+  context_window?: number;
+  /** Hard ceiling on a single response's output tokens. Must be `> 0` and
+   *  `<= context_window` when both are set. */
+  max_output_tokens?: number;
+  /** Input/output modality sets. Duplicates within a list are rejected by
+   *  the server validator. */
+  modalities?: Modalities;
+  /** ISO date string: `YYYY-MM` or `YYYY-MM-DD`. */
+  knowledge_cutoff?: string;
+
+  /** USD per million input tokens. Must be finite and `>= 0` when set. */
+  input_token_price_per_million_usd?: number;
+  /** USD per million output tokens. Must be finite and `>= 0` when set. */
+  output_token_price_per_million_usd?: number;
+
   created_at?: number;
   updated_at?: number;
 }
@@ -175,7 +219,7 @@ export interface Capabilities {
   tools: ToolInfo[];
   plugins: PluginInfo[];
   skills: SkillInfo[];
-  models: ModelBindingSpec[];
+  models: ModelSpec[];
   providers: Array<{ id: string }>;
   supported_adapters?: string[];
   namespaces: Array<{

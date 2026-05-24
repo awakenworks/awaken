@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Link } from "react-router";
 import {
-  type ModelBindingSpec,
+  type ModelSpec,
   type ProviderRecord,
   configApi,
 } from "@/lib/config-api";
@@ -30,8 +30,18 @@ import {
 } from "@/lib/list-view";
 import { useListUrlState } from "@/lib/list-url-state";
 import { formatRelativeTime } from "@/lib/format-time";
+import {
+  CapabilitySummary,
+  ModalityChips,
+  PricingField,
+  normalizeModelForSave,
+  parseOptionalNumber,
+  toggleModality,
+  validateModelSpec,
+  type ModelFieldErrors,
+} from "./models-page-helpers";
 
-const EMPTY_MODEL: ModelBindingSpec = {
+const EMPTY_MODEL: ModelSpec = {
   id: "",
   provider_id: "",
   upstream_model: "",
@@ -45,7 +55,7 @@ const MODEL_AUXILIARY_QUERY_KEY = ["provider-ids"] as const;
 
 type ModelSortKey = "id" | "provider_id" | "upstream_model" | "updated_at";
 
-const SORT_CONFIG: SortConfig<ModelBindingSpec, ModelSortKey> = {
+const SORT_CONFIG: SortConfig<ModelSpec, ModelSortKey> = {
   id: (a, b) => compareString(a.id, b.id),
   provider_id: (a, b) => compareString(a.provider_id, b.provider_id),
   upstream_model: (a, b) => compareString(a.upstream_model, b.upstream_model),
@@ -56,6 +66,7 @@ const COLUMNS: SortableColumn<ModelSortKey>[] = [
   { key: "id", label: "ID" },
   { key: "provider_id", label: "Provider" },
   { key: "upstream_model", label: "Upstream Model" },
+  { key: null, label: "Capabilities" },
   { key: "updated_at", label: "Last modified" },
   { key: null, label: "Actions" },
 ];
@@ -65,30 +76,24 @@ const LIST_OPTIONS = {
   defaultSort: { key: "id" as ModelSortKey, direction: "asc" as const },
 } as const;
 
-type ModelFieldErrors = Partial<Record<"id" | "provider_id" | "upstream_model", string>>;
-
 export function ModelsPage() {
   const { t } = useTranslation();
-  const crud = useCrudPage<ModelBindingSpec>({
+  const crud = useCrudPage<ModelSpec>({
     namespace: "models",
     entityLabel: "model",
     auxiliaryLoaders,
     auxiliaryQueryKey: MODEL_AUXILIARY_QUERY_KEY,
+    // Normalize on the mutation closure (not via setDraft, which would race
+    // with the immediate handleSave() and ship un-normalized state). See
+    // models-page.test.tsx > "save payload reflects modality normalization".
+    prepareSave: (draft) => normalizeModelForSave(draft),
   });
   const [errors, setErrors] = useState<ModelFieldErrors>({});
   const [testModelId, setTestModelId] = useState<string | null>(null);
 
-  function validate(draft: ModelBindingSpec): ModelFieldErrors {
-    const next: ModelFieldErrors = {};
-    if (!draft.id.trim()) next.id = t("validation.required");
-    if (!draft.provider_id.trim()) next.provider_id = t("validation.required");
-    if (!draft.upstream_model.trim()) next.upstream_model = t("validation.required");
-    return next;
-  }
-
   async function handleSave() {
     if (!crud.draft) return;
-    const next = validate(crud.draft);
+    const next = validateModelSpec(crud.draft, t);
     setErrors(next);
     if (Object.keys(next).length > 0) return;
     await crud.handleSave();
@@ -99,7 +104,7 @@ export function ModelsPage() {
     crud.startNew({ ...EMPTY_MODEL });
   }
 
-  function startEditModel(model: ModelBindingSpec) {
+  function startEditModel(model: ModelSpec) {
     setErrors({});
     crud.startEdit(model);
   }
@@ -236,6 +241,121 @@ export function ModelsPage() {
             </Field>
           </div>
 
+          {/* Capability + pricing fields — all optional. Mirrors the Rust
+              `validate_model_spec` contract; client-side checks surface
+              errors inline on Save. */}
+          <div className="mt-5 grid gap-4 md:grid-cols-2">
+            <Field label={t("models.fields.contextWindow")} error={errors.context_window}>
+              <input
+                type="number"
+                inputMode="numeric"
+                min={1}
+                step={1}
+                value={crud.draft.context_window ?? ""}
+                aria-invalid={Boolean(errors.context_window)}
+                onChange={(event) => {
+                  const parsed = parseOptionalNumber(event.target.value);
+                  crud.setDraft((current) =>
+                    current ? { ...current, context_window: parsed } : current,
+                  );
+                  if (errors.context_window) setErrors((e) => ({ ...e, context_window: undefined }));
+                }}
+                className="w-full rounded-sm border border-line-strong px-3 py-2 text-sm text-fg outline-none transition focus:border-fg aria-[invalid=true]:border-tone-error"
+              />
+            </Field>
+            <Field label={t("models.fields.maxOutputTokens")} error={errors.max_output_tokens}>
+              <input
+                type="number"
+                inputMode="numeric"
+                min={1}
+                step={1}
+                value={crud.draft.max_output_tokens ?? ""}
+                aria-invalid={Boolean(errors.max_output_tokens)}
+                onChange={(event) => {
+                  const parsed = parseOptionalNumber(event.target.value);
+                  crud.setDraft((current) =>
+                    current ? { ...current, max_output_tokens: parsed } : current,
+                  );
+                  if (errors.max_output_tokens) setErrors((e) => ({ ...e, max_output_tokens: undefined }));
+                }}
+                className="w-full rounded-sm border border-line-strong px-3 py-2 text-sm text-fg outline-none transition focus:border-fg aria-[invalid=true]:border-tone-error"
+              />
+            </Field>
+            <Field label={t("models.fields.knowledgeCutoff")} error={errors.knowledge_cutoff}>
+              <input
+                type="text"
+                placeholder="YYYY-MM or YYYY-MM-DD"
+                value={crud.draft.knowledge_cutoff ?? ""}
+                aria-invalid={Boolean(errors.knowledge_cutoff)}
+                onChange={(event) => {
+                  const value = event.target.value;
+                  crud.setDraft((current) =>
+                    current ? { ...current, knowledge_cutoff: value === "" ? undefined : value } : current,
+                  );
+                  if (errors.knowledge_cutoff) setErrors((e) => ({ ...e, knowledge_cutoff: undefined }));
+                }}
+                className="w-full rounded-sm border border-line-strong px-3 py-2 text-sm text-fg outline-none transition focus:border-fg aria-[invalid=true]:border-tone-error"
+              />
+            </Field>
+            <PricingField
+              label={t("models.fields.inputPrice")}
+              value={crud.draft.input_token_price_per_million_usd}
+              error={errors.input_token_price_per_million_usd}
+              onChange={(parsed) => {
+                crud.setDraft((current) =>
+                  current ? { ...current, input_token_price_per_million_usd: parsed } : current,
+                );
+                if (errors.input_token_price_per_million_usd) {
+                  setErrors((e) => ({ ...e, input_token_price_per_million_usd: undefined }));
+                }
+              }}
+            />
+            <PricingField
+              label={t("models.fields.outputPrice")}
+              value={crud.draft.output_token_price_per_million_usd}
+              error={errors.output_token_price_per_million_usd}
+              onChange={(parsed) => {
+                crud.setDraft((current) =>
+                  current ? { ...current, output_token_price_per_million_usd: parsed } : current,
+                );
+                if (errors.output_token_price_per_million_usd) {
+                  setErrors((e) => ({ ...e, output_token_price_per_million_usd: undefined }));
+                }
+              }}
+            />
+          </div>
+
+          <div className="mt-5 grid gap-4 md:grid-cols-2">
+            <ModalityChips
+              label={t("models.fields.modalitiesInput")}
+              selected={crud.draft.modalities?.input ?? []}
+              onToggle={(m) => {
+                crud.setDraft((current) => {
+                  if (!current) return current;
+                  const nextInput = toggleModality(current.modalities?.input, m);
+                  return {
+                    ...current,
+                    modalities: { ...(current.modalities ?? {}), input: nextInput },
+                  };
+                });
+              }}
+            />
+            <ModalityChips
+              label={t("models.fields.modalitiesOutput")}
+              selected={crud.draft.modalities?.output ?? []}
+              onToggle={(m) => {
+                crud.setDraft((current) => {
+                  if (!current) return current;
+                  const nextOutput = toggleModality(current.modalities?.output, m);
+                  return {
+                    ...current,
+                    modalities: { ...(current.modalities ?? {}), output: nextOutput },
+                  };
+                });
+              }}
+            />
+          </div>
+
           <div className="mt-5 flex gap-3">
             <button
               type="button"
@@ -311,6 +431,9 @@ export function ModelsPage() {
                     <td className="px-5 py-4">{model.provider_id}</td>
                     <td className="px-5 py-4 text-fg-soft">
                       {model.upstream_model}
+                    </td>
+                    <td className="px-5 py-4">
+                      <CapabilitySummary model={model} />
                     </td>
                     <td className="px-5 py-4 text-fg-soft">
                       {formatRelativeTime(model.updated_at)}

@@ -3,13 +3,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter } from "react-router";
 import { ModelsPage } from "./models-page";
-import type { ModelBindingSpec } from "@/lib/config-api";
+import type { ModelSpec } from "@/lib/config-api";
 import type { SortState } from "@/lib/list-view";
 
 const pageState = vi.hoisted(() => ({
   crud: {} as {
-    items: ModelBindingSpec[];
-    draft: ModelBindingSpec | null;
+    items: ModelSpec[];
+    draft: ModelSpec | null;
     loading: boolean;
     saving: boolean;
     error: string | null;
@@ -30,6 +30,10 @@ const pageState = vi.hoisted(() => ({
     page: 1,
     apply: vi.fn(),
   },
+  // Captures the `prepareSave` option ModelsPage passes to useCrudPage so
+  // tests can assert payload normalization runs on the mutation closure
+  // (not via the racy setDraft → handleSave path).
+  capturedOptions: null as { prepareSave?: (draft: ModelSpec) => ModelSpec } | null,
 }));
 
 vi.mock("react-i18next", () => ({
@@ -37,7 +41,10 @@ vi.mock("react-i18next", () => ({
 }));
 
 vi.mock("@/lib/use-crud-page", () => ({
-  useCrudPage: () => pageState.crud,
+  useCrudPage: (options: { prepareSave?: (draft: ModelSpec) => ModelSpec }) => {
+    pageState.capturedOptions = options;
+    return pageState.crud;
+  },
 }));
 
 vi.mock("@/lib/list-url-state", async (importOriginal) => {
@@ -48,7 +55,7 @@ vi.mock("@/lib/list-url-state", async (importOriginal) => {
   };
 });
 
-function model(overrides: Partial<ModelBindingSpec>): ModelBindingSpec {
+function model(overrides: Partial<ModelSpec>): ModelSpec {
   return {
     id: "gpt-main",
     provider_id: "openai",
@@ -196,14 +203,14 @@ describe("ModelsPage", () => {
 
     fireEvent.change(providerSelect, { target: { value: "openai" } });
     let updater = pageState.crud.setDraft.mock.calls.at(-1)?.[0] as (
-      current: ModelBindingSpec | null,
-    ) => ModelBindingSpec | null;
+      current: ModelSpec | null,
+    ) => ModelSpec | null;
     expect(updater(draft)).toEqual({ ...draft, provider_id: "openai" });
 
     fireEvent.change(screen.getByDisplayValue("old-name"), { target: { value: "gpt-4.1" } });
     updater = pageState.crud.setDraft.mock.calls.at(-1)?.[0] as (
-      current: ModelBindingSpec | null,
-    ) => ModelBindingSpec | null;
+      current: ModelSpec | null,
+    ) => ModelSpec | null;
     expect(updater(draft)).toEqual({ ...draft, upstream_model: "gpt-4.1" });
 
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
@@ -241,5 +248,163 @@ describe("ModelsPage", () => {
       </MemoryRouter>,
     );
     expect(container.querySelectorAll(".animate-pulse").length).toBeGreaterThan(0);
+  });
+
+  it("rejects max_output_tokens > context_window with an inline error and blocks save", () => {
+    resetCrud({
+      draft: model({ id: "m", provider_id: "openai", upstream_model: "u", context_window: 1000, max_output_tokens: 2000 }),
+    });
+    renderModels();
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    expect(screen.getByText("models.validation.maxOutputExceedsContext")).toBeTruthy();
+    expect(pageState.crud.handleSave).not.toHaveBeenCalled();
+  });
+
+  it("rejects malformed knowledge_cutoff with an inline error", () => {
+    resetCrud({
+      draft: model({ id: "m", provider_id: "openai", upstream_model: "u", knowledge_cutoff: "yesterday" }),
+    });
+    renderModels();
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    expect(screen.getByText("models.validation.knowledgeCutoff")).toBeTruthy();
+    expect(pageState.crud.handleSave).not.toHaveBeenCalled();
+  });
+
+  it("rejects negative prices with an inline error", () => {
+    resetCrud({
+      draft: model({
+        id: "m",
+        provider_id: "openai",
+        upstream_model: "u",
+        input_token_price_per_million_usd: -1,
+      }),
+    });
+    renderModels();
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    expect(screen.getByText("models.validation.nonNegativeFinite")).toBeTruthy();
+    expect(pageState.crud.handleSave).not.toHaveBeenCalled();
+  });
+
+  it("rejects non-integer context_window with an inline error", () => {
+    resetCrud({
+      draft: model({ id: "m", provider_id: "openai", upstream_model: "u", context_window: 0 }),
+    });
+    renderModels();
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    expect(screen.getByText("models.validation.positiveInt")).toBeTruthy();
+    expect(pageState.crud.handleSave).not.toHaveBeenCalled();
+  });
+
+  it("modality chips enforce set semantics (toggle removes a duplicate rather than adding)", () => {
+    const draft = model({
+      id: "m",
+      provider_id: "openai",
+      upstream_model: "u",
+      modalities: { input: ["text"] },
+    });
+    resetCrud({ draft });
+    renderModels();
+
+    const textChip = screen.getAllByRole("switch", { name: "text" })[0];
+    expect(textChip.getAttribute("aria-checked")).toBe("true");
+    fireEvent.click(textChip);
+    const updater = pageState.crud.setDraft.mock.calls.at(-1)?.[0] as (
+      current: ModelSpec | null,
+    ) => ModelSpec | null;
+    expect(updater(draft)?.modalities?.input).toEqual([]);
+
+    fireEvent.click(textChip);
+    const addUpdater = pageState.crud.setDraft.mock.calls.at(-1)?.[0] as (
+      current: ModelSpec | null,
+    ) => ModelSpec | null;
+    // Adding "text" twice still produces a single entry — set semantics preserved.
+    const withDuplicateAttempt = addUpdater(model({ id: "m", provider_id: "openai", upstream_model: "u", modalities: { input: ["text"] } }));
+    expect(withDuplicateAttempt?.modalities?.input).toEqual([]);
+  });
+
+  it("renders capability summary chips for context window, output cap, and modalities", () => {
+    resetCrud({
+      items: [
+        model({
+          id: "rich",
+          provider_id: "openai",
+          upstream_model: "gpt-4.1",
+          context_window: 200_000,
+          max_output_tokens: 16_384,
+          modalities: { input: ["text", "image"], output: ["text"] },
+        }),
+      ],
+    });
+    renderModels();
+    expect(screen.getByText("200K ctx")).toBeTruthy();
+    expect(screen.getByText("16.4K out")).toBeTruthy();
+    expect(screen.getByText("in: text/image")).toBeTruthy();
+    expect(screen.getByText("out: text")).toBeTruthy();
+  });
+
+  it("round-trips all capability fields into setDraft updater calls", () => {
+    const draft = model({ id: "m", provider_id: "openai", upstream_model: "u" });
+    resetCrud({ draft });
+    renderModels();
+
+    fireEvent.change(screen.getByLabelText("models.fields.contextWindow"), { target: { value: "200000" } });
+    let updater = pageState.crud.setDraft.mock.calls.at(-1)?.[0] as (
+      current: ModelSpec | null,
+    ) => ModelSpec | null;
+    expect(updater(draft)?.context_window).toBe(200000);
+
+    fireEvent.change(screen.getByLabelText("models.fields.maxOutputTokens"), { target: { value: "16384" } });
+    updater = pageState.crud.setDraft.mock.calls.at(-1)?.[0] as (
+      current: ModelSpec | null,
+    ) => ModelSpec | null;
+    expect(updater(draft)?.max_output_tokens).toBe(16384);
+
+    fireEvent.change(screen.getByLabelText("models.fields.knowledgeCutoff"), { target: { value: "2026-01" } });
+    updater = pageState.crud.setDraft.mock.calls.at(-1)?.[0] as (
+      current: ModelSpec | null,
+    ) => ModelSpec | null;
+    expect(updater(draft)?.knowledge_cutoff).toBe("2026-01");
+
+    fireEvent.change(screen.getByLabelText(/models\.fields\.inputPrice/), { target: { value: "3" } });
+    updater = pageState.crud.setDraft.mock.calls.at(-1)?.[0] as (
+      current: ModelSpec | null,
+    ) => ModelSpec | null;
+    expect(updater(draft)?.input_token_price_per_million_usd).toBe(3);
+
+    fireEvent.change(screen.getByLabelText(/models\.fields\.outputPrice/), { target: { value: "15" } });
+    updater = pageState.crud.setDraft.mock.calls.at(-1)?.[0] as (
+      current: ModelSpec | null,
+    ) => ModelSpec | null;
+    expect(updater(draft)?.output_token_price_per_million_usd).toBe(15);
+  });
+
+  it("save payload reflects modality + capability normalization (no setDraft race)", () => {
+    renderModels();
+
+    expect(pageState.capturedOptions).not.toBeNull();
+    const prepareSave = pageState.capturedOptions!.prepareSave;
+    expect(typeof prepareSave).toBe("function");
+
+    // Simulate a dirty draft with duplicate input modalities, blank
+    // knowledge_cutoff, and an empty output modality list — every case
+    // normalizeModelForSave is supposed to scrub before sending.
+    const dirty: ModelSpec = {
+      id: "m1",
+      provider_id: "openai",
+      upstream_model: "gpt-4o",
+      knowledge_cutoff: "",
+      modalities: { input: ["text", "text", "image"], output: [] },
+    };
+
+    const payload = prepareSave!(dirty);
+
+    // Duplicates removed.
+    expect(payload.modalities?.input).toEqual(["text", "image"]);
+    // Empty output dropped (or normalized to undefined-ish) so the server
+    // never sees a meaningless empty array.
+    expect(payload.modalities?.output ?? []).toEqual([]);
+    // Blank string normalized away (server validator rejects whitespace
+    // knowledge_cutoff outright).
+    expect(payload.knowledge_cutoff).toBeUndefined();
   });
 });
