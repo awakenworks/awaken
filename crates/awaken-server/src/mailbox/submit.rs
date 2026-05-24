@@ -117,6 +117,7 @@ impl Mailbox {
             }
         }
 
+        self.ensure_dispatch_id_hint(&mut request);
         let run_id = self
             .prepare_run_for_dispatch(&mut request, &thread_id, &messages)
             .await?;
@@ -257,6 +258,7 @@ impl Mailbox {
             !request.control.seeded_decisions.is_empty(),
         )?;
 
+        self.ensure_dispatch_id_hint(&mut request);
         let run_id = self
             .prepare_run_for_dispatch(&mut request, &thread_id, &messages)
             .await?;
@@ -339,7 +341,22 @@ impl Mailbox {
 
     // ── Run preparation & reconstruction ─────────────────────────────
 
+    fn ensure_dispatch_id_hint(&self, request: &mut RunActivation) -> String {
+        match request.persistence.dispatch_id_hint.as_ref() {
+            Some(id) if !id.trim().is_empty() => id.clone(),
+            _ => {
+                let id = uuid::Uuid::now_v7().to_string();
+                request.persistence.dispatch_id_hint = Some(id.clone());
+                id
+            }
+        }
+    }
+
     /// Create or update the durable run truth before enqueuing a dispatch.
+    ///
+    /// The caller assigns `dispatch_id_hint` before this method persists the
+    /// checkpoint. Startup recovery can then reconcile the crash window where
+    /// the run checkpoint landed but the matching dispatch WAL write did not.
     pub(super) async fn prepare_run_for_dispatch(
         &self,
         request: &mut RunActivation,
@@ -365,6 +382,7 @@ impl Mailbox {
         if request.resume_run_id().is_none() {
             request.persistence.run_id_hint = Some(run_id.clone());
         }
+        let dispatch_id = self.ensure_dispatch_id_hint(request);
 
         let normalized_messages = normalize_message_ids(messages);
         let existing_messages = self
@@ -427,6 +445,7 @@ impl Mailbox {
             existing.activation = Some(request.snapshot(input_snapshot.clone(), registry_manifest));
             existing.request = None;
             existing.input = input;
+            existing.dispatch_id = Some(dispatch_id);
             existing.updated_at = now_ms() / 1000;
             self.commit_run_checkpoint(thread_id, &appended_messages, &existing)
                 .await?;
@@ -480,7 +499,7 @@ impl Mailbox {
             termination_reason: None,
             final_output: None,
             error_payload: None,
-            dispatch_id: None,
+            dispatch_id: Some(dispatch_id),
             session_id: None,
             transport_request_id: request.trace.transport_request_id.clone(),
             waiting: None,

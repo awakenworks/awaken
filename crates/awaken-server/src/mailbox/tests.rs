@@ -4129,7 +4129,10 @@ async fn recover_reconciles_terminal_cancelled_and_superseded_dispatches_after_c
             .unwrap()
             .expect("prepared run should exist before reconciliation");
         assert_eq!(before.status, RunStatus::Created);
-        assert!(before.dispatch_id.is_none());
+        assert_eq!(
+            before.dispatch_id.as_deref(),
+            Some(submitted.dispatch_id.as_str())
+        );
     }
 
     let recovered = mailbox.recover().await.expect("recover should reconcile");
@@ -6011,6 +6014,68 @@ async fn recover_only_enqueues_orphaned_background_task_waiting_runs() {
         user_dispatches.is_empty(),
         "user-input waiting runs must stay suspended until explicit input"
     );
+}
+
+#[tokio::test]
+async fn recover_reconstructs_dispatch_for_prepared_run_missing_wal() {
+    let store = Arc::new(InMemoryStore::new());
+    let mailbox_store = make_store();
+    let runtime = Arc::new(RecordingStoreMailboxRuntime::new(store.clone()));
+    let mailbox = Arc::new(Mailbox::new(
+        runtime.clone(),
+        mailbox_store.clone(),
+        store.clone(),
+        "test-consumer".to_string(),
+        MailboxConfig::default(),
+    ));
+    let mut request =
+        RunActivation::new("thread-prepared-crash", vec![Message::user("recover me")])
+            .with_agent_id("agent");
+    let (thread_id, messages) = validate_run_inputs(
+        request.thread_id().to_owned(),
+        request.messages().to_vec(),
+        false,
+    )
+    .expect("valid request");
+    let run_id = mailbox
+        .prepare_run_for_dispatch(&mut request, &thread_id, &messages)
+        .await
+        .expect("prepare durable run");
+    let dispatch_id = request
+        .persistence
+        .dispatch_id_hint
+        .clone()
+        .expect("prepare assigns dispatch id");
+    assert!(
+        mailbox_store
+            .load_dispatch(&dispatch_id)
+            .await
+            .expect("load dispatch")
+            .is_none(),
+        "test simulates crash before dispatch WAL enqueue"
+    );
+
+    let recovered = mailbox
+        .recover()
+        .await
+        .expect("recover should reconcile WAL");
+    assert_eq!(recovered, 1);
+
+    let deadline = Instant::now() + Duration::from_secs(1);
+    loop {
+        if !runtime.requests.lock().expect("lock poisoned").is_empty() {
+            break;
+        }
+        assert!(Instant::now() < deadline, "recovered dispatch did not run");
+        sleep(Duration::from_millis(5)).await;
+    }
+    let dispatch = mailbox_store
+        .load_dispatch(&dispatch_id)
+        .await
+        .expect("load reconstructed dispatch")
+        .expect("dispatch reconstructed");
+    assert_eq!(dispatch.run_id, run_id);
+    assert_eq!(dispatch.thread_id, "thread-prepared-crash");
 }
 
 #[tokio::test]
