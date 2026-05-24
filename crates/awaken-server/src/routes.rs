@@ -80,6 +80,7 @@ pub fn build_router(state: &AppState) -> Router<AppState> {
         .merge(health_routes())
         .merge(thread_routes())
         .merge(run_routes())
+        .merge(crate::services::run_service::summary_routes())
         .merge(ai_sdk_routes())
         .merge(ag_ui_routes())
         .merge(a2a_routes())
@@ -832,7 +833,6 @@ async fn get_run(
     Ok(Json(value))
 }
 
-#[tracing::instrument(skip(st))]
 async fn list_runs(
     State(st): State<AppState>,
     Query(params): Query<ListRunsParams>,

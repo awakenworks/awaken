@@ -1,6 +1,59 @@
 //! Run management operations.
 
+use awaken_contract::contract::lifecycle::RunStatus;
 use awaken_contract::contract::storage::{RunPage, RunQuery, RunRecord, RunStore, StorageError};
+
+/// Counters returned by [`runs_summary`]. The dashboard Workload card
+/// reads all three in one round-trip instead of fanning three parallel
+/// `?status=` queries; cuts polling load 3× and narrows the window for
+/// inconsistent combinations during status transitions. The three
+/// inner counts are still sequential against the store (no store-side
+/// batch count API yet), so the snapshot is best-effort, not strictly
+/// atomic.
+#[derive(Debug, Clone, Copy, serde::Serialize)]
+pub struct RunsSummary {
+    pub running: u64,
+    pub waiting: u64,
+    pub created: u64,
+}
+
+/// Count non-terminal runs in each status. See [`RunsSummary`].
+pub async fn runs_summary(store: &dyn RunStore) -> Result<RunsSummary, StorageError> {
+    async fn n(store: &dyn RunStore, status: RunStatus) -> Result<u64, StorageError> {
+        let q = RunQuery {
+            offset: 0,
+            limit: 1,
+            thread_id: None,
+            status: Some(status),
+        };
+        store.list_runs(&q).await.map(|page| page.total as u64)
+    }
+    Ok(RunsSummary {
+        running: n(store, RunStatus::Running).await?,
+        waiting: n(store, RunStatus::Waiting).await?,
+        created: n(store, RunStatus::Created).await?,
+    })
+}
+
+/// Axum handler thin wrapper. Lives here (not in `routes.rs`) so the
+/// router stays under its file-length budget and the count-storage
+/// logic is co-located with the rest of run-service.
+pub async fn runs_summary_handler(
+    axum::extract::State(st): axum::extract::State<crate::app::AppState>,
+) -> Result<axum::Json<serde_json::Value>, crate::error::ApiError> {
+    let summary = runs_summary(st.store.as_ref())
+        .await
+        .map_err(|e| crate::error::ApiError::Internal(e.to_string()))?;
+    Ok(axum::Json(
+        serde_json::to_value(summary).expect("serialize RunsSummary"),
+    ))
+}
+
+/// `/v1/runs/summary` router fragment. Merged into the main router so
+/// `routes.rs` only adds one line for the new endpoint.
+pub fn summary_routes() -> axum::Router<crate::app::AppState> {
+    axum::Router::new().route("/v1/runs/summary", axum::routing::get(runs_summary_handler))
+}
 
 /// Get a run by ID.
 pub async fn get_run(
