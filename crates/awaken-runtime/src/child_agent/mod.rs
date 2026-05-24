@@ -15,14 +15,11 @@
 //!
 //! Backend capabilities still apply. Parent → child state seeding is
 //! supported only by backends whose
-//! [`BackendCapabilities::delegate_state_seed`](crate::backend::BackendCapabilities)
-//! capability is `true`. The in-process Local backend currently opts in and
-//! applies the seed before the child's first step. A2A and any custom remote
-//! backend that does not implement a seed-passing wire protocol leave the bit
-//! `false`, and `run_child_agent` rejects seeded delegate requests against
-//! such backends with `ExecutionBackendError` rather than silently dropping the
-//! seed. If you need to ship data to a remote child, encode it into the prompt
-//! yourself.
+//! The in-process Local backend applies the seed before the child's first
+//! step. A2A and custom remote backends have no agreed seed-passing wire
+//! protocol; `run_child_agent` rejects seeded delegate requests against
+//! non-local execution plans rather than silently dropping the seed. If you
+//! need to ship data to a remote child, encode it into the prompt yourself.
 //!
 //! For tools that want to stream the child's tokens into their own output,
 //! wrap the activity sink with [`StreamingPassthroughSink`].
@@ -43,7 +40,7 @@ use crate::backend::{
     BackendRunResult, BackendRunStatus, ExecutionBackendError, execute_resolved_delegate_execution,
 };
 use crate::cancellation::CancellationToken;
-use crate::registry::ExecutionResolver;
+use crate::registry::AgentResolver;
 
 /// Parameters for [`run_child_agent`].
 ///
@@ -56,7 +53,7 @@ use crate::registry::ExecutionResolver;
 /// [`StateStore::apply_seed`](crate::state::StateStore::apply_seed).
 #[non_exhaustive]
 pub struct ChildAgentParams<'a> {
-    pub resolver: &'a dyn ExecutionResolver,
+    pub resolver: &'a dyn AgentResolver,
     pub agent_id: &'a str,
 
     /// Initial conversation seed for a **fresh** delegate run.
@@ -89,7 +86,7 @@ impl<'a> ChildAgentParams<'a> {
     /// transcript.
     #[must_use]
     pub fn new(
-        resolver: &'a dyn ExecutionResolver,
+        resolver: &'a dyn AgentResolver,
         agent_id: &'a str,
         initial_messages: Vec<Message>,
         parent: BackendParentContext,

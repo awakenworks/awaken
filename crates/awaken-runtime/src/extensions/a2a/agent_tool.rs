@@ -158,10 +158,15 @@ impl Tool for AgentTool {
             None => Arc::new(NullEventSink),
         };
 
-        let resolved = self
-            .resolver
-            .resolve_execution(&self.agent_id)
-            .map_err(|error| ToolError::ExecutionFailed(error.to_string()))?;
+        let resolved = match self.resolver.resolve_execution(&self.agent_id) {
+            Ok(resolved) => resolved,
+            Err(error) => {
+                let message = format!("delegation to {} failed: {error}", self.agent_id);
+                ctx.report_progress(ProgressStatus::Failed, Some(&message), None)
+                    .await;
+                return Ok(ToolResult::error(&tool_id, error.to_string()).into());
+            }
+        };
 
         let request = BackendDelegateRunRequest {
             agent_id: &self.agent_id,
@@ -176,6 +181,7 @@ impl Tool for AgentTool {
             },
             control: BackendControl::default(),
             policy: BackendDelegatePolicy::default(),
+            state_seed: None,
         };
 
         let execution = execute_resolved_delegate_execution(&resolved, request).await;

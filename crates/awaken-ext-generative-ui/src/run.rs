@@ -9,10 +9,9 @@ use std::sync::Arc;
 use awaken_contract::contract::event_sink::{EventSink, NullEventSink};
 use awaken_contract::contract::message::Message;
 use awaken_contract::contract::tool::{ToolCallContext, ToolError};
+use awaken_runtime::AgentResolver;
 use awaken_runtime::backend::{BackendParentContext, BackendRunStatus};
 use awaken_runtime::child_agent::{ChildAgentParams, StreamingPassthroughSink, run_child_agent};
-use awaken_runtime::registry::{ExecutionResolver, ResolvedAgent, ResolvedExecution};
-use awaken_runtime::{AgentResolver, RuntimeError};
 
 /// Result of a streaming sub-agent run.
 #[derive(Debug)]
@@ -45,11 +44,9 @@ pub async fn run_streaming_subagent(
         StreamingPassthroughSink::new(ctx.call_id.clone(), ctx.tool_name.clone(), parent_sink);
     let sink: Arc<dyn EventSink> = Arc::new(streaming_sink);
 
-    let shim = AgentResolverShim(resolver);
-
     let result = run_child_agent(
         ChildAgentParams::new(
-            &shim,
+            resolver,
             agent_id,
             vec![Message::user(prompt)],
             BackendParentContext {
@@ -82,27 +79,6 @@ pub async fn run_streaming_subagent(
         content,
         steps: result.steps,
     })
-}
-
-/// Adapter so a borrowed [`AgentResolver`] can satisfy the
-/// [`ExecutionResolver`] bound required by `run_child_agent`. Always
-/// resolves to a [`ResolvedExecution::Local`].
-struct AgentResolverShim<'a>(&'a dyn AgentResolver);
-
-impl AgentResolver for AgentResolverShim<'_> {
-    fn resolve(&self, agent_id: &str) -> Result<ResolvedAgent, RuntimeError> {
-        self.0.resolve(agent_id)
-    }
-
-    fn agent_ids(&self) -> Vec<String> {
-        self.0.agent_ids()
-    }
-}
-
-impl ExecutionResolver for AgentResolverShim<'_> {
-    fn resolve_execution(&self, agent_id: &str) -> Result<ResolvedExecution, RuntimeError> {
-        self.0.resolve(agent_id).map(ResolvedExecution::local)
-    }
 }
 
 #[cfg(test)]

@@ -25,7 +25,7 @@ use crate::extensions::background::{
 };
 use crate::loop_runner::build_agent_env;
 use crate::plugins::{Plugin, PluginDescriptor};
-use crate::registry::{AgentResolver, ExecutionResolver, ResolvedExecution};
+use crate::registry::AgentResolver;
 #[cfg(feature = "background")]
 use crate::state::StateStore;
 
@@ -141,12 +141,6 @@ impl AgentResolver for FixedResolver {
     }
 }
 
-impl ExecutionResolver for FixedResolver {
-    fn resolve_execution(&self, agent_id: &str) -> Result<ResolvedExecution, crate::RuntimeError> {
-        self.resolve(agent_id).map(ResolvedExecution::local)
-    }
-}
-
 struct FailingResolver;
 
 impl AgentResolver for FailingResolver {
@@ -154,12 +148,6 @@ impl AgentResolver for FailingResolver {
         Err(crate::RuntimeError::ResolveFailed {
             message: "resolver storage unavailable".into(),
         })
-    }
-}
-
-impl ExecutionResolver for FailingResolver {
-    fn resolve_execution(&self, agent_id: &str) -> Result<ResolvedExecution, crate::RuntimeError> {
-        self.resolve(agent_id).map(ResolvedExecution::local)
     }
 }
 

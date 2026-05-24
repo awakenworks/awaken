@@ -293,6 +293,7 @@ async fn tool_state_mutation_applied_after_execution() {
         frontend_tools: Vec::new(),
         inbox: None,
         is_continuation: false,
+        initial_state_seed: None,
         commit: CommitWiring::default(),
     })
     .await
@@ -342,6 +343,7 @@ async fn tool_scheduled_action_executed() {
         frontend_tools: Vec::new(),
         inbox: None,
         is_continuation: false,
+        initial_state_seed: None,
         commit: CommitWiring::default(),
     })
     .await
@@ -429,6 +431,7 @@ async fn tool_empty_command_has_no_side_effects() {
         frontend_tools: Vec::new(),
         inbox: None,
         is_continuation: false,
+        initial_state_seed: None,
         commit: CommitWiring::default(),
     })
     .await
@@ -488,6 +491,7 @@ async fn parallel_tool_commands_merge() {
         frontend_tools: Vec::new(),
         inbox: None,
         is_continuation: false,
+        initial_state_seed: None,
         commit: CommitWiring::default(),
     })
     .await
