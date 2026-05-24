@@ -248,6 +248,8 @@ struct TestApp {
     store: Arc<InMemoryStore>,
 }
 
+const TEST_ADMIN_TOKEN: &str = "run-api-test-token";
+
 fn make_test_app_with_runtime(
     runtime: Arc<awaken_runtime::AgentRuntime>,
     store: Arc<InMemoryStore>,
@@ -269,7 +271,8 @@ fn make_test_app_with_runtime(
         store.clone(),
         runtime.resolver_arc(),
         ServerConfig::default(),
-    );
+    )
+    .with_admin_api_bearer_token(TEST_ADMIN_TOKEN);
     TestApp {
         router: build_router(&state),
         store,
@@ -364,6 +367,7 @@ async fn post_json(app: axum::Router, uri: &str, payload: Value) -> (StatusCode,
                 .method("POST")
                 .uri(uri)
                 .header("content-type", "application/json")
+                .header("authorization", format!("Bearer {TEST_ADMIN_TOKEN}"))
                 .body(axum::body::Body::from(payload.to_string()))
                 .expect("request build"),
         )
