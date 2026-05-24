@@ -493,7 +493,7 @@ async fn tz_router_provider_compiles_smoke() {
                     upstream_model: "tensorzero::function_name::agent_chat".into(),
                 },
             )
-            .with_thread_run_store(store.clone())
+            .with_in_memory_thread_run_store(store.clone())
             .with_agent_spec(AgentSpec {
                 id: "default".into(),
                 model_id: "tz_chat".into(),
@@ -802,7 +802,7 @@ mod helper_tests {
                     upstream_model: "tensorzero::function_name::agent_chat".into(),
                 },
             )
-            .with_thread_run_store(store.clone())
+            .with_in_memory_thread_run_store(store.clone())
             .with_agent_spec(AgentSpec {
                 id: "default".into(),
                 model_id: "tz_chat".into(),

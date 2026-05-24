@@ -593,7 +593,7 @@ async fn make_runtime_manager_custom(
 
     let builder = AgentRuntimeBuilder::new()
         .with_provider("bootstrap", Arc::new(ImmediateExecutor))
-        .with_thread_run_store(store.clone());
+        .with_in_memory_thread_run_store(store.clone());
     #[cfg(feature = "permission")]
     let builder = if register_permission_plugin {
         builder.with_plugin("permission", Arc::new(PermissionPlugin))
@@ -2386,7 +2386,7 @@ async fn change_listener_coalesces_event_bursts_within_min_apply_interval() {
     let runtime = Arc::new(
         AgentRuntimeBuilder::new()
             .with_provider("bootstrap", Arc::new(ImmediateExecutor))
-            .with_thread_run_store(store.clone())
+            .with_in_memory_thread_run_store(store.clone())
             .build()
             .expect("build runtime"),
     );
@@ -2582,7 +2582,7 @@ async fn mcp_status_returns_503_when_no_runtime_configured() {
                 },
             )
             .with_agent_spec(bootstrap_agent)
-            .with_thread_run_store(thread_store.clone())
+            .with_in_memory_thread_run_store(thread_store.clone())
             .build()
             .expect("runtime"),
     );
@@ -3429,7 +3429,7 @@ async fn audit_event_emitted_for_patch_and_delete() {
     let runtime = Arc::new(
         AgentRuntimeBuilder::new()
             .with_provider("bootstrap", Arc::new(ImmediateExecutor))
-            .with_thread_run_store(thread_store.clone())
+            .with_in_memory_thread_run_store(thread_store.clone())
             .build()
             .expect("build runtime"),
     );
@@ -3780,7 +3780,7 @@ async fn make_permission_preview_runtime() -> (
         .with_provider("bootstrap", Arc::new(ImmediateExecutor))
         .with_plugin("permission", Arc::new(PermissionPlugin))
         .with_plugin("observability", Arc::new(NoopPlugin))
-        .with_thread_run_store(store.clone());
+        .with_in_memory_thread_run_store(store.clone());
     for id in ["Bash", "Read", "Edit", "mcp__db__query", "mcp__db__write"] {
         builder = builder.with_tool(id, Arc::new(PreviewMockTool { id: id.into() }));
     }

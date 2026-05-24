@@ -131,7 +131,7 @@ fn build_app(response: &str) -> (axum::Router, Arc<RuntimeStatsRegistry>) {
                     upstream_model: "scripted".into(),
                 },
             )
-            .with_thread_run_store(store.clone())
+            .with_in_memory_thread_run_store(store.clone())
             .with_agent_spec(AgentSpec {
                 id: "default".into(),
                 model_id: "scripted-model".into(),
