@@ -1,3 +1,5 @@
+mod config_assistant;
+mod eval_stores;
 pub mod frontend_tools;
 mod generative_ui_config;
 pub mod generative_ui_tools;
@@ -30,9 +32,7 @@ use awaken_ext_deferred_tools::DeferredToolsPlugin;
 use awaken_ext_generative_ui::{
     A2uiPlugin, A2uiPromptConfig, A2uiPromptConfigKey, json_render, openui,
 };
-use awaken_ext_observability::{
-    CompositeSink, InMemorySink, MetricsSink, ObservabilityPlugin, RuntimeStatsRegistry,
-};
+use awaken_ext_observability::RuntimeStatsRegistry;
 use awaken_ext_permission::{
     PermissionConfigKey, PermissionPlugin, PermissionRuleEntry, PermissionRulesConfig,
     ToolPermissionBehavior,
@@ -755,60 +755,33 @@ Deterministic compatibility directives:\n\
         &prompt_overrides,
     );
 
+    let config_assistant_agent = config_assistant::config_assistant_agent(&prompt_overrides);
     let mut managed_agents = vec![default_agent.clone()];
-    if default_id != "permission" {
-        managed_agents.push(permission_agent.clone());
-    }
-    if default_id != "travel" {
-        managed_agents.push(travel_agent.clone());
-    }
-    if default_id != "research" {
-        managed_agents.push(research_agent.clone());
-    }
-    if default_id != "skills" {
-        managed_agents.push(skills_agent.clone());
-    }
-    if default_id != "limited" {
-        managed_agents.push(limited_agent.clone());
-    }
-    if default_id != "thinking" {
-        managed_agents.push(thinking_agent.clone());
-    }
-    if default_id != "a2a" {
-        managed_agents.push(a2a_agent.clone());
-    }
-    if default_id != "phases" {
-        managed_agents.push(phases_agent.clone());
-    }
-    if default_id != "genui" {
-        managed_agents.push(genui_agent.clone());
-    }
-    if default_id != "a2ui" {
-        managed_agents.push(a2ui_agent.clone());
-    }
-    if default_id != "json-render" {
-        managed_agents.push(json_render_agent.clone());
-    }
-    if default_id != "openui" {
-        managed_agents.push(openui_agent.clone());
-    }
-    if default_id != "json-render-ui" {
-        managed_agents.push(json_render_ui_agent.clone());
-    }
-    if default_id != "openui-ui" {
-        managed_agents.push(openui_ui_agent.clone());
-    }
-    if default_id != "profile" {
-        managed_agents.push(profile_agent.clone());
-    }
-    if default_id != "creative" {
-        managed_agents.push(creative_agent.clone());
-    }
-    if default_id != "compact" {
-        managed_agents.push(compact_agent.clone());
-    }
-    if default_id != "budget" {
-        managed_agents.push(budget_agent.clone());
+    let optional_agents: &[(&str, &AgentSpec)] = &[
+        ("permission", &permission_agent),
+        ("travel", &travel_agent),
+        ("research", &research_agent),
+        ("skills", &skills_agent),
+        ("limited", &limited_agent),
+        ("thinking", &thinking_agent),
+        ("a2a", &a2a_agent),
+        ("phases", &phases_agent),
+        ("genui", &genui_agent),
+        ("a2ui", &a2ui_agent),
+        ("json-render", &json_render_agent),
+        ("openui", &openui_agent),
+        ("json-render-ui", &json_render_ui_agent),
+        ("openui-ui", &openui_ui_agent),
+        ("profile", &profile_agent),
+        ("creative", &creative_agent),
+        ("compact", &compact_agent),
+        ("budget", &budget_agent),
+        ("config-assistant", &config_assistant_agent),
+    ];
+    for (id, agent) in optional_agents {
+        if default_id != *id {
+            managed_agents.push((*agent).clone());
+        }
     }
 
     // -- Tools --
@@ -1018,18 +991,13 @@ Deterministic compatibility directives:\n\
         Arc::new(StopConditionPlugin::new(budget_policies)) as Arc<dyn Plugin>,
     );
 
-    // Observability plugin: wire RuntimeStatsRegistry as a sink so
-    // `/v1/agents/runtime-stats` returns real data, plus an in-memory sink
-    // for the demo. The same `Arc<RuntimeStatsRegistry>` is later attached
-    // to AppState so the HTTP handler shares the inner state.
+    // Observability: runtime-stats + in-memory + trace store sinks via the eval_stores helper.
     let runtime_stats = Arc::new(RuntimeStatsRegistry::new());
-    let composite_sink = CompositeSink::new(vec![
-        Arc::new(InMemorySink::new()) as Arc<dyn MetricsSink>,
-        runtime_stats.clone() as Arc<dyn MetricsSink>,
-    ]);
-    let observability = ObservabilityPlugin::new(composite_sink)
-        .with_model(&args.model)
-        .with_provider("default");
+    let (trace_store, observability) = eval_stores::build_observability(
+        args.storage_dir.as_path(),
+        runtime_stats.clone(),
+        &args.model,
+    );
     builder = builder.with_plugin("observability", Arc::new(observability) as Arc<dyn Plugin>);
 
     let (next_builder, starter_skills) = skills::install_plugins(builder, has_skills_dir);
@@ -1139,10 +1107,15 @@ Deterministic compatibility directives:\n\
             ..Default::default()
         },
     )
+    .with_admin_api_config(eval_stores::admin_api_config_with_traces())
     .with_config_store(config_store)
     .with_config_runtime_manager(config_runtime_manager)
     .with_credential_broker(Arc::clone(&credential_broker))
     .with_runtime_stats(runtime_stats)
+    .with_trace_store(trace_store)
+    .with_eval_run_store(eval_stores::build_eval_run_store(
+        args.storage_dir.as_path(),
+    ))
     .with_audit_log(audit_logger)
     .with_audit_log_from_config()
     .with_skill_catalog_provider(Arc::new(RegistryBackedSkillCatalogProvider::new(

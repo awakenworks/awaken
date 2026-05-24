@@ -318,8 +318,15 @@ pub(crate) async fn run_live_eval_cells(
                 let permit = semaphore.clone().acquire_owned().await.expect("semaphore");
                 handles.push(tokio::spawn(async move {
                     let _permit = permit;
-                    let mut builder =
-                        RuntimeReplayer::new().with_live_executor(executor, upstream_model);
+                    let mut builder = RuntimeReplayer::new()
+                        .with_live_executor(executor, upstream_model)
+                        // Live cells back the operator-facing save-trace-as-fixture
+                        // path. Without content capture the curate endpoint can't
+                        // recover `user_input` from the trace and rejects the
+                        // request — see `awaken_eval::curate::recover_user_input`.
+                        .with_content_capture(
+                            awaken_ext_observability::ContentCapture::Enabled,
+                        );
                     if let Some(max) = max_total_tokens {
                         builder = builder.with_max_total_tokens(max);
                     }

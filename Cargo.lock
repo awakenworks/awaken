@@ -359,6 +359,7 @@ version = "0.5.1-dev"
 dependencies = [
  "async-trait",
  "awaken-contract",
+ "awaken-eval",
  "awaken-ext-deferred-tools",
  "awaken-ext-generative-ui",
  "awaken-ext-mcp",
