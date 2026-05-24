@@ -908,6 +908,204 @@ async fn start_eval_run_400s_on_zero_walltime() {
     );
 }
 
+#[tokio::test]
+async fn start_eval_run_400s_on_zero_samples() {
+    // `samples: 0` is rejected explicitly instead of silently coerced to
+    // 1 — the operator who typed 0 most likely meant "off" (omit) or a
+    // real number, and coercing hides the typo.
+    let app = build_test_app().await;
+    let (status, _) = request(
+        &app.router,
+        "POST",
+        "/v1/eval/datasets",
+        Some(json!({
+            "id": "DS-SAMPLES",
+            "spec": { "fixtures": [sample_fixture("alpha")] }
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, body) = request(
+        &app.router,
+        "POST",
+        "/v1/eval/runs",
+        Some(json!({
+            "dataset_id": "DS-SAMPLES",
+            "models": ["m1"],
+            "samples": 0,
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(
+        body["error"].as_str().unwrap_or("").contains("samples"),
+        "body: {body}"
+    );
+}
+
+#[tokio::test]
+async fn start_eval_run_baseline_validated_before_replay() {
+    // Bad baseline_run_id must fail BEFORE any provider call or run
+    // persist. The whole point is symmetry with the persist+no-store
+    // guard: typo / wrong-dataset / wrong-revision baselines should not
+    // silently burn tokens and leave a polluting half-finished run in
+    // the store.
+    let app = build_test_app().await;
+    let (status, _) = request(
+        &app.router,
+        "POST",
+        "/v1/eval/datasets",
+        Some(json!({
+            "id": "DS-PREFLIGHT",
+            "spec": { "fixtures": [sample_fixture("alpha")] }
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    // Baseline that points at a non-existent run.
+    let (status, body) = request(
+        &app.router,
+        "POST",
+        "/v1/eval/runs",
+        Some(json!({
+            "dataset_id": "DS-PREFLIGHT",
+            "baseline_run_id": "nonexistent",
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert!(
+        body["error"]
+            .as_str()
+            .unwrap_or("")
+            .contains("baseline eval run not found"),
+        "body: {body}"
+    );
+    // Store stays empty — the missing-baseline check ran before any
+    // replay or persist.
+    assert_eq!(
+        app.eval_run_store.list(&Default::default()).unwrap().len(),
+        0
+    );
+}
+
+#[tokio::test]
+async fn start_eval_run_baseline_rejects_wrong_dataset_before_replay() {
+    // Baseline that points at a real run, but a different dataset, must
+    // fail upfront — never persist the new run before learning the diff
+    // request is malformed.
+    let app = build_test_app().await;
+    let other_baseline = EvalRun {
+        id: "WRONG-DS".into(),
+        dataset_id: "different-dataset".into(),
+        dataset_revision: 0,
+        items: vec![],
+        started_at_secs: 1_700_000_000,
+        ended_at_secs: 1_700_000_001,
+    };
+    app.eval_run_store.write(&other_baseline).unwrap();
+
+    let (status, _) = request(
+        &app.router,
+        "POST",
+        "/v1/eval/datasets",
+        Some(json!({
+            "id": "DS-MISMATCH",
+            "spec": { "fixtures": [sample_fixture("alpha")] }
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, body) = request(
+        &app.router,
+        "POST",
+        "/v1/eval/runs",
+        Some(json!({
+            "dataset_id": "DS-MISMATCH",
+            "baseline_run_id": "WRONG-DS",
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(
+        body["error"]
+            .as_str()
+            .unwrap_or("")
+            .contains("across datasets"),
+        "body: {body}"
+    );
+    // Pre-existing baseline is the only run in the store.
+    let runs = app.eval_run_store.list(&Default::default()).unwrap();
+    assert_eq!(runs.len(), 1);
+    assert_eq!(runs[0].id, "WRONG-DS");
+}
+
+#[tokio::test]
+async fn start_eval_run_baseline_with_duplicate_item_keys_rejected_before_replay() {
+    // Regression: a baseline whose items collide on
+    // (fixture_id, cell, sample_index) used to slip past the preflight
+    // and only fail inside `compute_diff_from_baseline` — i.e. AFTER
+    // live replay had burned provider tokens and the new run had been
+    // persisted to the store. `load_and_validate_baseline` now runs the
+    // duplicate-key check up front so the request fails fast and the
+    // store stays untouched.
+    let app = build_test_app().await;
+
+    // Register a dataset (dataset_revision=0) the baseline can pair with.
+    let (status, _) = request(
+        &app.router,
+        "POST",
+        "/v1/eval/datasets",
+        Some(json!({
+            "id": "DS-DUP-BASE",
+            "spec": { "fixtures": [sample_fixture("alpha")] }
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    // Hand-craft a baseline with two items sharing the same key — the
+    // store-write paths normally reject this, but a corrupt on-disk
+    // record (or a future store impl with weaker guarantees) would
+    // otherwise slip past the preflight gate.
+    let dup_baseline = EvalRun {
+        id: "DUP-BASE".into(),
+        dataset_id: "DS-DUP-BASE".into(),
+        dataset_revision: 0,
+        items: vec![item("alpha", true, "first"), item("alpha", true, "second")],
+        started_at_secs: 1_700_000_000,
+        ended_at_secs: 1_700_000_001,
+    };
+    app.eval_run_store.write(&dup_baseline).unwrap();
+
+    let (status, body) = request(
+        &app.router,
+        "POST",
+        "/v1/eval/runs",
+        Some(json!({
+            "dataset_id": "DS-DUP-BASE",
+            "baseline_run_id": "DUP-BASE",
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+    assert!(
+        body["error"]
+            .as_str()
+            .unwrap_or("")
+            .contains("duplicate eval-run item key"),
+        "body: {body}"
+    );
+    // Pre-existing duplicate-key baseline is still the only run — no
+    // half-finished new run was persisted before the diff bailed.
+    let runs = app.eval_run_store.list(&Default::default()).unwrap();
+    assert_eq!(runs.len(), 1);
+    assert_eq!(runs[0].id, "DUP-BASE");
+}
+
 // ── Online eval (POST /v1/eval/online) — validation paths ────────────────
 //
 // The happy path (cell execution against a real provider) is unit-tested
@@ -1028,6 +1226,31 @@ async fn online_eval_400s_on_zero_walltime() {
             .as_str()
             .unwrap_or("")
             .contains("max_walltime_secs"),
+        "body: {body}"
+    );
+}
+
+#[tokio::test]
+async fn online_eval_400s_on_zero_samples() {
+    // `samples: 0` would silently coerce to 1 under `unwrap_or(1).max(1)`
+    // — the explicit Some(0) guard rejects it instead so the operator
+    // notices the typo. Mirrors /v1/eval/runs same-named guard.
+    let app = build_test_app().await;
+    let (status, body) = request(
+        &app.router,
+        "POST",
+        "/v1/eval/online",
+        Some(json!({
+            "user_input": "test",
+            "models": ["missing-model"],
+            "samples": 0,
+            "persist": false,
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(
+        body["error"].as_str().unwrap_or("").contains("samples"),
         "body: {body}"
     );
 }

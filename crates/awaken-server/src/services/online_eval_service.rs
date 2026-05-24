@@ -166,6 +166,11 @@ pub async fn start_online_eval(
         ));
     }
     let cells = expand_cells(&body.models);
+    if body.samples == Some(0) {
+        return Err(ApiError::BadRequest(
+            "samples must be >= 1 (omit the field for a single sample)".into(),
+        ));
+    }
     let samples = body.samples.unwrap_or(1).max(1);
     if samples > limits.max_samples_per_cell {
         return Err(ApiError::BadRequest(format!(
@@ -299,29 +304,57 @@ pub async fn start_online_eval(
                     trace_sink,
                     revise_for_task,
                 );
-                // Per-cell wall-clock cap covers replay + scoring + judge.
-                // The judge is a live provider call; if left outside the
-                // timeout a stuck judge could pin the HTTP request slot.
-                let cell_future = async {
+                // Per-cell wall-clock cap covers replay + scoring + judge
+                // as a SINGLE deadline split across two `timeout_at`
+                // calls — a scoring/judge timeout AFTER replay completed
+                // routes to `cell_error_outcome(real_outcome, …)` so the
+                // model's actual `final_text` / tokens / trace are
+                // preserved, rather than collapsing into an empty
+                // synthetic timeout outcome that would fabricate phantom
+                // `AnswerMissingPhrase` failures.
+                let deadline = tokio::time::Instant::now() + walltime;
+                let walltime_secs = walltime.as_secs();
+                let outcome = match tokio::time::timeout_at(deadline, async {
                     let outcomes = replay_all(&replayer, std::slice::from_ref(&fixture)).await;
-                    let outcome = outcomes
+                    outcomes
                         .into_iter()
                         .next()
-                        .expect("one fixture → one outcome");
-                    let failures = crate::services::eval_run_service::score_outcome(
+                        .expect("one fixture → one outcome")
+                })
+                .await
+                {
+                    Ok(o) => o,
+                    Err(_) => {
+                        let (o, f) = crate::services::eval_cell::cell_timeout_outcome(
+                            fixture_id,
+                            walltime_secs,
+                            &fixture.expect,
+                        );
+                        return Ok::<_, ApiError>((cell, sample, o, f, binding));
+                    }
+                };
+                let (outcome, failures) = match tokio::time::timeout_at(
+                    deadline,
+                    crate::services::eval_run_service::score_outcome(
                         &outcome,
                         &fixture,
                         judge_for_task.as_ref(),
-                    )
-                    .await?;
-                    Ok::<_, ApiError>((outcome, failures))
-                };
-                let (outcome, failures) = match tokio::time::timeout(walltime, cell_future).await {
-                    Ok(Ok(pair)) => pair,
-                    Ok(Err(err)) => return Err(err),
-                    Err(_) => (
-                        awaken_eval::ReplayOutcome::timeout_failure(fixture_id, walltime.as_secs()),
-                        Vec::new(),
+                    ),
+                )
+                .await
+                {
+                    Ok(Ok(failures)) => (outcome, failures),
+                    Ok(Err(err)) => crate::services::eval_cell::cell_error_outcome(
+                        outcome,
+                        format!("scoring failed: {err}"),
+                        &fixture.expect,
+                    ),
+                    Err(_) => crate::services::eval_cell::cell_error_outcome(
+                        outcome,
+                        format!(
+                            "scoring timed out after {walltime_secs}s wall-clock (replay completed)"
+                        ),
+                        &fixture.expect,
                     ),
                 };
                 Ok::<_, ApiError>((cell, sample, outcome, failures, binding))

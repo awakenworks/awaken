@@ -1,5 +1,7 @@
 //! Canonical API error type for HTTP handlers.
 
+use std::fmt;
+
 use axum::Json;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
@@ -24,6 +26,25 @@ pub enum ApiError {
     /// differentiate "no such resource" from "feature not available".
     ServiceUnavailable(String),
     Internal(String),
+}
+
+impl fmt::Display for ApiError {
+    // Mirrors the user-facing message picked by `IntoResponse`. Lets call
+    // sites embed an `ApiError` in another diagnostic via `{err}` without
+    // leaking the variant name / `Debug` formatting into user-visible
+    // payloads (e.g. per-cell `ReplayRuntimeFailure::RuntimeError.message`).
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ApiError::BadRequest(msg)
+            | ApiError::Unauthorized(msg)
+            | ApiError::Conflict(msg)
+            | ApiError::NotFound(msg)
+            | ApiError::ServiceUnavailable(msg)
+            | ApiError::Internal(msg) => f.write_str(msg),
+            ApiError::ThreadNotFound(id) => write!(f, "thread not found: {id}"),
+            ApiError::RunNotFound(id) => write!(f, "run not found: {id}"),
+        }
+    }
 }
 
 impl IntoResponse for ApiError {

@@ -248,6 +248,22 @@ pub async fn start_eval_run(
         .map_err(map_storage_error)?
         .ok_or_else(|| ApiError::NotFound(format!("dataset not found: {}", body.dataset_id)))?;
     let dataset_revision = extract_meta_revision(&raw).unwrap_or(0);
+    // Preflight the baseline BEFORE any provider call. compute_diff()
+    // below would otherwise only catch a bad baseline_run_id (typo,
+    // _adhoc, wrong dataset, wrong revision) AFTER the live execution
+    // burned tokens AND the new run was persisted — same class of "burn
+    // tokens to learn the request was malformed" trap as persist+no-store.
+    // Hold the loaded baseline so compute_diff doesn't re-read it.
+    let preloaded_baseline = if let Some(ref baseline_id) = body.baseline_run_id {
+        Some(load_and_validate_baseline(
+            run_store.as_ref(),
+            baseline_id,
+            &body.dataset_id,
+            dataset_revision,
+        )?)
+    } else {
+        None
+    };
     let record = validate_config_record::<DatasetSpec>(raw)
         .map_err(|err| ApiError::BadRequest(format!("invalid dataset: {err}")))?;
     let fixtures: Vec<Fixture> = record.spec.fixtures;
@@ -297,6 +313,14 @@ pub async fn start_eval_run(
     let limits = state.config.eval_limits.clone();
     let models = body.models.clone().unwrap_or_default();
     let cells = expand_cells(&models);
+    // Reject an explicit 0 instead of silently bumping to 1 — operators
+    // who type `samples: 0` almost certainly meant either "off" (omit the
+    // field) or a real number; coercing hides the typo.
+    if body.samples == Some(0) {
+        return Err(ApiError::BadRequest(
+            "samples must be >= 1 (omit the field for a single sample)".into(),
+        ));
+    }
     let samples = body.samples.unwrap_or(1).max(1);
     if samples > limits.max_samples_per_cell {
         return Err(ApiError::BadRequest(format!(
@@ -396,15 +420,13 @@ pub async fn start_eval_run(
     };
     run_store.write(&run).map_err(map_eval_run_store_error)?;
 
-    // `baseline_run_id` is transient: used here to compute the response
-    // diff, never persisted onto the EvalRun. The diff endpoint at
-    // GET /v1/eval/runs/:id?baseline= can resurface it at any time
+    // Baseline was preflight-validated above; just use the already-loaded
+    // copy. `baseline_run_id` is transient — not persisted onto the
+    // EvalRun. GET /v1/eval/runs/:id?baseline= can resurface it later
     // against any baseline the operator picks.
-    let diff = if let Some(ref baseline_id) = body.baseline_run_id {
-        Some(compute_diff(run_store.as_ref(), &run, baseline_id)?)
-    } else {
-        None
-    };
+    let diff = preloaded_baseline
+        .map(|baseline| compute_diff_from_baseline(baseline, &run))
+        .transpose()?;
 
     Ok(Json(EvalRunResponse {
         run,
@@ -445,7 +467,13 @@ pub async fn get_eval_run(
     let store = eval_run_store_or_unavailable(&state)?;
     let run = store.read(&id).map_err(map_eval_run_store_error)?;
     let diff = if let Some(baseline_id) = params.baseline {
-        Some(compute_diff(store.as_ref(), &run, &baseline_id)?)
+        let baseline = load_and_validate_baseline(
+            store.as_ref(),
+            &baseline_id,
+            &run.dataset_id,
+            run.dataset_revision,
+        )?;
+        Some(compute_diff_from_baseline(baseline, &run)?)
     } else {
         None
     };
@@ -460,60 +488,67 @@ pub async fn get_eval_run(
     .into_response())
 }
 
-fn compute_diff(
+/// Load + validate a baseline EvalRun against the new run's
+/// (dataset_id, revision). Extracted so the POST handler can preflight
+/// before any provider call, and the GET handler can lazy-load.
+fn load_and_validate_baseline(
     store: &dyn EvalRunStore,
-    new_run: &EvalRun,
     baseline_id: &str,
-) -> Result<DiffSummary, ApiError> {
+    new_run_dataset_id: &str,
+    new_run_dataset_revision: u64,
+) -> Result<EvalRun, ApiError> {
     let baseline = store.read(baseline_id).map_err(|err| match err {
         EvalRunStoreError::NotFound(_) => {
             ApiError::NotFound(format!("baseline eval run not found: {baseline_id}"))
         }
         other => map_eval_run_store_error(other),
     })?;
-    // Refuse to diff ad-hoc online runs. They all persist with the
-    // sentinel `_adhoc` dataset_id + revision 0, so the dataset-revision
-    // schema check below would let two unrelated `_adhoc` runs (different
-    // prompt, different expectations, different models) compare against
-    // each other and produce a plausible-looking but meaningless diff.
-    // Operators wanting to compare online prompts should snapshot the
-    // request to a dataset first.
     let adhoc = crate::services::online_eval_service::ADHOC_DATASET_ID;
-    if baseline.dataset_id == adhoc || new_run.dataset_id == adhoc {
+    if baseline.dataset_id == adhoc || new_run_dataset_id == adhoc {
         return Err(ApiError::BadRequest(
             "cannot diff ad-hoc online runs (dataset_id=_adhoc); persist as a dataset first".into(),
         ));
     }
-    // Refuse to diff across different datasets or different revisions
-    // of the same dataset. The fixture set behind a (dataset_id,
-    // revision) pair is the schema both runs were scored against;
-    // matching fixture_ids across snapshots can refer to materially
-    // different prompts/expectations and the diff would be meaningless
-    // (or worse, silently misleading). Operators wanting cross-revision
-    // comparison should explicitly snapshot and rerun.
-    if baseline.dataset_id != new_run.dataset_id {
+    if baseline.dataset_id != new_run_dataset_id {
         return Err(ApiError::BadRequest(format!(
             "cannot diff across datasets: baseline={} new={}",
-            baseline.dataset_id, new_run.dataset_id,
+            baseline.dataset_id, new_run_dataset_id,
         )));
     }
-    if baseline.dataset_revision != new_run.dataset_revision {
+    if baseline.dataset_revision != new_run_dataset_revision {
         return Err(ApiError::BadRequest(format!(
             "cannot diff across dataset revisions of {}: baseline rev={} new rev={}",
-            new_run.dataset_id, baseline.dataset_revision, new_run.dataset_revision,
+            new_run_dataset_id, baseline.dataset_revision, new_run_dataset_revision,
         )));
     }
-    // Reject duplicate keys BEFORE the diff. `diff_against_baseline` /
-    // `diff_eval_items` collect into BTreeMap; without this guard, two
-    // items with the same fixture_id (or same (fixture, cell, sample)
-    // triple) would silently overwrite each other in the map and the
-    // returned DiffSummary would depend on Vec insertion order. The
-    // store-write paths already reject duplicates upstream — but a
-    // corrupt on-disk record or a future store impl with weaker
-    // guarantees would slip through, and "diff is wrong but plausible"
-    // is the worst possible failure mode for a regression gate.
+    // Reject a baseline whose items collide on the matrix key BEFORE
+    // any provider call. `compute_diff_from_baseline` re-checks below,
+    // but it runs AFTER live replay and EvalRun persist — so without
+    // this preflight a duplicate-key baseline would still cost tokens
+    // and leave a half-finished new run in the store. The store-write
+    // paths normally reject duplicates upstream, but a corrupt on-disk
+    // record (or a future store impl with weaker guarantees) would
+    // otherwise slip past this gate.
     awaken_eval::validate_unique_item_keys(&baseline.items)
         .map_err(|e| ApiError::Internal(format!("baseline run {}: {e}", baseline.id)))?;
+    Ok(baseline)
+}
+
+fn compute_diff_from_baseline(
+    baseline: EvalRun,
+    new_run: &EvalRun,
+) -> Result<DiffSummary, ApiError> {
+    // Reject duplicate keys BEFORE the diff. `diff_against_baseline` /
+    // `diff_eval_items` collect into BTreeMap; without this guard, two
+    // items with the same (fixture, cell, sample) triple would silently
+    // overwrite each other in the map and the returned DiffSummary would
+    // depend on Vec insertion order. The store-write paths already
+    // reject duplicates upstream — but a corrupt on-disk record or a
+    // future store impl with weaker guarantees would slip through, and
+    // "diff is wrong but plausible" is the worst possible failure mode
+    // for a regression gate. Baseline is already validated in
+    // `load_and_validate_baseline` (preflight) so we only re-check the
+    // newly-built `new_run` here.
     awaken_eval::validate_unique_item_keys(&new_run.items)
         .map_err(|e| ApiError::Internal(format!("current run {}: {e}", new_run.id)))?;
     // Use matrix-aware pairing when either side carries a cell. Single
@@ -649,33 +684,65 @@ async fn run_matrix_cells(
                     }
                     let replayer =
                         apply_cell_decorators(builder, overrides, trace_sink, revise_for_task);
-                    // Per-cell wall-clock cap covers the FULL eval cell:
-                    // replay + scoring + judge (live judge invocation
-                    // is its own provider call and was previously
-                    // outside this timeout — a stuck judge could pin
-                    // the request).
-                    let cell_future = async {
-                        let outcomes = replay_all(&replayer, std::slice::from_ref(&fixture)).await;
-                        let outcome = outcomes
+                    // Per-cell wall-clock cap covers replay + scoring +
+                    // judge as a SINGLE deadline (one `Instant::now() +
+                    // walltime`). The two halves are timed separately
+                    // so a timeout during scoring/judge — which runs
+                    // AFTER replay completed — falls back to
+                    // `cell_error_outcome(real_outcome, ...)` and keeps
+                    // the real `final_text` / tokens / trace link
+                    // instead of synthesizing an empty timeout outcome
+                    // that would blank the model's actual reply and
+                    // fabricate phantom deterministic failures.
+                    let deadline = tokio::time::Instant::now() + walltime;
+                    let walltime_secs = walltime.as_secs();
+                    let outcome = match tokio::time::timeout_at(deadline, async {
+                        let outcomes =
+                            replay_all(&replayer, std::slice::from_ref(&fixture)).await;
+                        outcomes
                             .into_iter()
                             .next()
-                            .expect("one fixture → one outcome");
-                        let failures =
-                            score_outcome(&outcome, &fixture, judge_for_task.as_ref()).await?;
-                        Ok::<_, ApiError>((outcome, failures))
+                            .expect("one fixture → one outcome")
+                    })
+                    .await
+                    {
+                        Ok(o) => o,
+                        Err(_) => {
+                            // Replay itself didn't finish → synthetic
+                            // timeout outcome is the truthful report.
+                            let (o, f) = super::eval_cell::cell_timeout_outcome(
+                                fixture_id,
+                                walltime_secs,
+                                &fixture.expect,
+                            );
+                            return Ok::<_, ApiError>((fixture, cell, sample, o, f, binding));
+                        }
                     };
-                    let (outcome, failures) =
-                        match tokio::time::timeout(walltime, cell_future).await {
-                            Ok(Ok(pair)) => pair,
-                            Ok(Err(err)) => return Err(err),
-                            Err(_) => (
-                                awaken_eval::ReplayOutcome::timeout_failure(
-                                    fixture_id,
-                                    walltime.as_secs(),
-                                ),
-                                Vec::new(),
+                    let (outcome, failures) = match tokio::time::timeout_at(
+                        deadline,
+                        score_outcome(&outcome, &fixture, judge_for_task.as_ref()),
+                    )
+                    .await
+                    {
+                        Ok(Ok(failures)) => (outcome, failures),
+                        // Judge / scoring error on THIS cell becomes a
+                        // per-cell RuntimeError. Bubbling it would discard
+                        // every sibling cell's already-computed report — a
+                        // single misconfigured judge would void an entire
+                        // matrix run.
+                        Ok(Err(err)) => super::eval_cell::cell_error_outcome(
+                            outcome,
+                            format!("scoring failed: {err}"),
+                            &fixture.expect,
+                        ),
+                        Err(_) => super::eval_cell::cell_error_outcome(
+                            outcome,
+                            format!(
+                                "scoring timed out after {walltime_secs}s wall-clock (replay completed)"
                             ),
-                        };
+                            &fixture.expect,
+                        ),
+                    };
                     Ok::<_, ApiError>((fixture, cell, sample, outcome, failures, binding))
                 }));
             }
