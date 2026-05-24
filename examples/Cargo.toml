@@ -20,6 +20,7 @@ awaken-ext-deferred-tools = { workspace = true }
 awaken-ext-mcp = { workspace = true }
 awaken-ext-skills = { workspace = true }
 awaken-ext-reminder = { workspace = true }
+awaken-eval = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 async-trait = { workspace = true }

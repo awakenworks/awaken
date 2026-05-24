@@ -44,7 +44,9 @@ use awaken_contract::agent_spec_patch::{AgentSpecPatch, merge_agent_spec};
 use awaken_contract::contract::executor::LlmExecutor;
 use awaken_contract::contract::message::Message;
 use awaken_contract::registry_spec::AgentSpec;
-use awaken_ext_observability::{CompositeSink, InMemorySink, MetricsSink, ObservabilityPlugin};
+use awaken_ext_observability::{
+    CompositeSink, ContentCapture, InMemorySink, MetricsSink, ObservabilityPlugin,
+};
 use awaken_runtime::builder::AgentRuntimeBuilder;
 use awaken_runtime::engine::{LlmRetryPolicy, RetryConfigKey, ScriptedLlmExecutor};
 use awaken_runtime::registry::traits::ModelBinding;
@@ -140,6 +142,9 @@ pub struct RuntimeReplayer {
     /// eval-run service) that want replay spans to land in a shared
     /// [`TraceStore`] alongside production traces.
     tee_sink: Option<Arc<dyn MetricsSink>>,
+    /// Off by default; eval handlers opt in via
+    /// [`Self::with_content_capture`] so save-trace-as-fixture works.
+    content_capture: ContentCapture,
     /// Optional base agent spec for Live mode. When `None`, the live
     /// replayer synthesises a stub agent with `DEFAULT_SYSTEM_PROMPT`.
     /// When set (typically by the server pulling the registered agent
@@ -157,9 +162,19 @@ impl RuntimeReplayer {
         Self {
             max_rounds_floor: 4,
             tee_sink: None,
+            content_capture: ContentCapture::Disabled,
             agent_base: None,
             mode: ReplayMode::default(),
         }
+    }
+
+    /// Enable content capture on the replay's observability plugin so
+    /// `request_messages` lands on tee'd events — required for the
+    /// curate endpoint to recover `user_input` from a live trace.
+    #[must_use]
+    pub fn with_content_capture(mut self, capture: ContentCapture) -> Self {
+        self.content_capture = capture;
+        self
     }
 
     /// Override the minimum `max_rounds` applied to the synthetic
@@ -354,7 +369,8 @@ impl RuntimeReplayer {
                 ObservabilityPlugin::new(composite).with_provider(SCRIPTED_PROVIDER_ID)
             }
             None => ObservabilityPlugin::new(sink.clone()).with_provider(SCRIPTED_PROVIDER_ID),
-        };
+        }
+        .with_content_capture(self.content_capture);
 
         let store = Arc::new(InMemoryStore::new());
         let max_rounds = std::cmp::max(self.max_rounds_floor, script.len().saturating_add(1));
@@ -493,7 +509,8 @@ impl RuntimeReplayer {
                 ObservabilityPlugin::new(composite).with_provider(LIVE_PROVIDER_ID)
             }
             None => ObservabilityPlugin::new(sink.clone()).with_provider(LIVE_PROVIDER_ID),
-        };
+        }
+        .with_content_capture(self.content_capture);
 
         let store = Arc::new(InMemoryStore::new());
         // Live mode has no script to bound max_rounds against; use the

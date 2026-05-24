@@ -24,8 +24,8 @@ mod otel_config;
 pub use batching::{BatchingConfig, BatchingSink};
 pub use composite::{CompositeSink, CompositeSinkBuilder};
 pub use metrics::{
-    AgentMetrics, BackgroundTaskSpan, DelegationSpan, EvaluationResultEvent, GenAISpan,
-    HandoffSpan, MetricsEvent, SpanContext, SuspensionSpan, ToolIoCapture, ToolSpan,
+    AgentMetrics, BackgroundTaskSpan, ContentCapture, DelegationSpan, EvaluationResultEvent,
+    GenAISpan, HandoffSpan, MetricsEvent, SpanContext, SuspensionSpan, ToolIoCapture, ToolSpan,
 };
 pub use persistent::{PersistenceConfig, PersistentSink};
 pub use plugin::{OBSERVABILITY_PLUGIN_ID, ObservabilityPlugin};
