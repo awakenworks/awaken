@@ -50,7 +50,6 @@ describe("i18n dictionaries", () => {
     // Spot-check a few keys with {{var}} placeholders.
     const samples: Array<[string, string]> = [
       [en.dashboard.health.meta, zhCN.dashboard.health.meta],
-      [en.dashboard.refGraph.seeAll, zhCN.dashboard.refGraph.seeAll],
       [en.dashboard.plugins.meta, zhCN.dashboard.plugins.meta],
       [en.editor.editTitle, zhCN.editor.editTitle],
     ];

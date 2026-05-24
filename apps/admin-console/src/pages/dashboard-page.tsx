@@ -1,11 +1,9 @@
-import { useMemo, useState } from "react";
+import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Link } from "react-router";
 import {
-  type AgentSpec,
   type McpServerRecord,
   type ProviderRecord,
-  type ModelBindingSpec,
   type SystemInfo,
 } from "@/lib/config-api";
 import { formatActor, isAgentActor, type AuditEvent, type AuditPage } from "@/lib/audit-log";
@@ -14,14 +12,25 @@ import { formatRelativeTime } from "@/lib/format-time";
 import { PageHeader } from "@/components/ui/page-header";
 import { Eyebrow } from "@/components/ui/eyebrow";
 import { Pill } from "@/components/ui/pill";
-import { ReferenceGraph, type GraphColumn, type GraphEdge } from "@/components/ui/reference-graph";
+import { StatCard } from "@/components/ui/stat-card";
+import { FeatureDisabledNotice } from "@/components/ui/feature-disabled-notice";
+import { LoadError } from "@/components/ui/load-error";
 import { TimeRangeSwitcher, type TimeRange } from "@/components/ui/time-range-switcher";
+import { WorkloadCard, type WorkloadState } from "@/components/dashboard/workload-card";
+import {
+  RuntimeActivityCard,
+  type RuntimeActivityState,
+} from "@/components/dashboard/runtime-activity-card";
 import { useDashboardQuery } from "@/lib/query/hooks/dashboard";
+import { useRunCountsQuery } from "@/lib/query/hooks/run-counts";
+import { useRuntimeStatsQuery } from "@/lib/query/hooks/runtime-stats";
 
 export function DashboardPage() {
   const { t } = useTranslation();
   const [range, setRange] = useState<TimeRange>("24h");
   const dashboardQuery = useDashboardQuery(range);
+  const runCountsQuery = useRunCountsQuery();
+  const runtimeStatsQuery = useRuntimeStatsQuery();
   const data = dashboardQuery.data ?? null;
   const error = dashboardQuery.error
     ? dashboardQuery.error instanceof Error
@@ -29,7 +38,13 @@ export function DashboardPage() {
       : String(dashboardQuery.error)
     : null;
 
-  if (error) return <PageError message={error} />;
+  if (error) {
+    return (
+      <div className="mx-auto w-full max-w-6xl 2xl:max-w-none p-6 md:p-8">
+        <LoadError message={error} onRetry={() => void dashboardQuery.refetch()} />
+      </div>
+    );
+  }
   if (!data) return <PageLoading />;
 
   const {
@@ -41,10 +56,32 @@ export function DashboardPage() {
     auditPage,
     auditDisabled,
     systemInfo,
+    degraded,
   } = data;
 
+  // Workload state — `useRunCountsQuery` now returns a discriminated
+  // result so the card can tell route-absent (old build / wrong route
+  // layer) from store-unavailable (runtime unhealthy).
+  const workloadState: WorkloadState = runCountsQuery.error
+    ? { kind: "error", message: errorMessage(runCountsQuery.error) }
+    : runCountsQuery.data === undefined
+      ? { kind: "loading" }
+      : runCountsQuery.data.kind === "ok"
+        ? { kind: "ready", counts: runCountsQuery.data.counts }
+        : runCountsQuery.data.kind === "route_absent"
+          ? { kind: "route_absent" }
+          : { kind: "store_unavailable" };
+
+  const runtimeActivityState: RuntimeActivityState = runtimeStatsQuery.error
+    ? { kind: "error", message: errorMessage(runtimeStatsQuery.error) }
+    : runtimeStatsQuery.data === undefined
+      ? { kind: "loading" }
+      : runtimeStatsQuery.data === null
+        ? { kind: "disabled" }
+        : { kind: "ready", snapshots: runtimeStatsQuery.data };
+
   return (
-    <div className="mx-auto max-w-6xl p-6 md:p-8">
+    <div className="mx-auto w-full max-w-6xl 2xl:max-w-none p-6 md:p-8">
       <PageHeader
         title={
           <>
@@ -55,65 +92,40 @@ export function DashboardPage() {
           </>
         }
         actions={
-          <div className="flex items-center gap-3">
-            <TimeRangeSwitcher value={range} onChange={setRange} />
-            <CountRibbon
-              stats={[
-                {
-                  label: t("dashboard.counters.agents"),
-                  count: agents.length,
-                  to: adminRoutes.agents,
-                },
-                {
-                  label: t("dashboard.counters.skills"),
-                  count: capabilities.skills.length,
-                  to: adminRoutes.skills,
-                },
-                {
-                  label: t("dashboard.counters.models"),
-                  count: models.length,
-                  to: adminRoutes.models,
-                },
-                {
-                  label: t("dashboard.counters.providers"),
-                  count: providers.length,
-                  to: adminRoutes.providers,
-                },
-                {
-                  label: t("dashboard.counters.mcp"),
-                  count: mcpServers.length,
-                  to: adminRoutes.mcpServers,
-                },
-                { label: t("dashboard.counters.tools"), count: capabilities.tools.length },
-              ]}
-            />
-          </div>
+          <CountRibbon
+            stats={[
+              { label: t("dashboard.counters.agents"), count: agents.length, to: adminRoutes.agents, degraded: degraded.agents },
+              { label: t("dashboard.counters.skills"), count: capabilities.skills.length, to: adminRoutes.skills },
+              { label: t("dashboard.counters.models"), count: models.length, to: adminRoutes.models, degraded: degraded.models },
+              { label: t("dashboard.counters.providers"), count: providers.length, to: adminRoutes.providers, degraded: degraded.providers },
+              { label: t("dashboard.counters.mcp"), count: mcpServers.length, to: adminRoutes.mcpServers, degraded: degraded.mcpServers },
+              { label: t("dashboard.counters.tools"), count: capabilities.tools.length },
+            ]}
+          />
         }
       />
 
-      <section className="grid gap-4 lg:grid-cols-2">
-        <ActivityTimeline auditPage={auditPage} disabled={auditDisabled} />
-        <HealthCard providers={providers} mcpServers={mcpServers} />
+      <section className="mb-4">
+        <WorkloadCard state={workloadState} />
       </section>
 
-      <section className="mt-4 rounded-sm border border-line bg-surface p-4 shadow-card">
-        <div className="flex items-baseline justify-between gap-4">
-          <h3 className="text-sm font-semibold text-fg-strong">
-            {t("dashboard.refGraph.title")}
-            <span className="ml-2 font-normal text-fg-soft">{t("dashboard.refGraph.sub")}</span>
-          </h3>
-        </div>
-        <div className="mt-3">
-          <DependencyGraph agents={agents} models={models} providers={providers} />
-        </div>
-        {agents.length > 8 && (
-          <div className="mt-3 text-right text-xs text-fg-soft">
-            {t("dashboard.refGraph.seeAll", { shown: 8, total: agents.length.toLocaleString() })}{" "}
-            <Link to={adminRoutes.agents} className="font-medium text-link hover:text-link-hover">
-              {t("dashboard.refGraph.viewAll")}
-            </Link>
-          </div>
-        )}
+      <section className="mb-4">
+        <RuntimeActivityCard state={runtimeActivityState} />
+      </section>
+
+      <section className="grid gap-4 lg:grid-cols-2">
+        <ActivityTimeline
+          auditPage={auditPage}
+          disabled={auditDisabled}
+          range={range}
+          onRangeChange={setRange}
+        />
+        <HealthCard
+          providers={providers}
+          mcpServers={mcpServers}
+          providersDegraded={!!degraded.providers}
+          mcpDegraded={!!degraded.mcpServers}
+        />
       </section>
 
       {systemInfo && (
@@ -121,144 +133,43 @@ export function DashboardPage() {
           <SystemCard info={systemInfo} />
         </section>
       )}
-
-      <section className="mt-4 grid gap-4 lg:grid-cols-2">
-        <div className="rounded-sm border border-line bg-surface p-5 shadow-card">
-          <div className="flex items-center justify-between">
-            <h3 className="text-lg font-semibold text-fg-strong">{t("dashboard.plugins.title")}</h3>
-            <span className="text-sm text-fg-soft">
-              {t("dashboard.plugins.meta", { count: capabilities.plugins.length })}
-            </span>
-          </div>
-          {capabilities.plugins.length === 0 ? (
-            <p className="mt-4 text-sm text-fg-soft">{t("dashboard.plugins.noConfig")}</p>
-          ) : (
-            <ul className="mt-4 space-y-3">
-              {capabilities.plugins.map((plugin) => (
-                <li key={plugin.id} className="rounded-sm border border-line bg-soft px-4 py-3">
-                  <div className="font-mono text-sm text-fg-strong">{plugin.id}</div>
-                  <div className="mt-1 text-sm text-fg-soft">
-                    {plugin.config_schemas.length === 0
-                      ? t("dashboard.plugins.noConfig")
-                      : t("dashboard.plugins.configSections", {
-                          sections: plugin.config_schemas.map((s) => s.key).join(", "),
-                        })}
-                  </div>
-                </li>
-              ))}
-            </ul>
-          )}
-        </div>
-
-        <div className="rounded-sm border border-line bg-surface p-5 shadow-card">
-          <div className="flex items-center justify-between">
-            <h3 className="text-lg font-semibold text-fg-strong">{t("dashboard.tools.title")}</h3>
-            <span className="text-sm text-fg-soft">
-              {t("dashboard.tools.meta", { count: capabilities.tools.length })}
-            </span>
-          </div>
-          {capabilities.tools.length === 0 ? (
-            <p className="mt-4 text-sm text-fg-soft">{t("dashboard.tools.empty")}</p>
-          ) : (
-            <ul className="mt-4 max-h-[24rem] space-y-3 overflow-auto">
-              {capabilities.tools.map((tool) => (
-                <li key={tool.id} className="rounded-sm border border-line bg-soft px-4 py-3">
-                  <div className="font-mono text-sm text-fg-strong">{tool.id}</div>
-                  <div className="mt-1 text-sm text-fg-soft">{tool.description || tool.name}</div>
-                </li>
-              ))}
-            </ul>
-          )}
-        </div>
-      </section>
     </div>
-  );
-}
-
-function DependencyGraph({
-  agents,
-  models,
-  providers,
-}: {
-  agents: AgentSpec[];
-  models: ModelBindingSpec[];
-  providers: ProviderRecord[];
-}) {
-  const columns: GraphColumn[] = useMemo(
-    () => [
-      {
-        id: "agents",
-        label: "Agents",
-        nodes: agents.slice(0, 8).map((a) => ({
-          id: `agent:${a.id}`,
-          label: a.id,
-          sub: a.model_id,
-          tone: "agent" as const,
-        })),
-      },
-      {
-        id: "models",
-        label: "Models",
-        nodes: models.slice(0, 8).map((m) => ({
-          id: `model:${m.id}`,
-          label: m.id,
-          sub: `${m.provider_id} · ${m.upstream_model}`,
-        })),
-      },
-      {
-        id: "providers",
-        label: "Providers",
-        nodes: providers.slice(0, 8).map((p) => ({
-          id: `provider:${p.id}`,
-          label: p.id,
-          sub: p.adapter,
-          tone: "info" as const,
-        })),
-      },
-    ],
-    [agents, models, providers],
-  );
-
-  const edges: GraphEdge[] = useMemo(() => {
-    const out: GraphEdge[] = [];
-    const modelIds = new Set(columns[1].nodes.map((n) => n.id));
-    const providerIds = new Set(columns[2].nodes.map((n) => n.id));
-    for (const agent of agents.slice(0, 8)) {
-      const target = `model:${agent.model_id}`;
-      if (modelIds.has(target)) out.push({ from: `agent:${agent.id}`, to: target });
-    }
-    for (const model of models.slice(0, 8)) {
-      const target = `provider:${model.provider_id}`;
-      if (providerIds.has(target)) out.push({ from: `model:${model.id}`, to: target });
-    }
-    return out;
-  }, [agents, models, columns]);
-
-  return (
-    <ReferenceGraph columns={columns} edges={edges} ariaLabel="agents to models to providers" />
   );
 }
 
 function HealthCard({
   providers,
   mcpServers,
+  providersDegraded = false,
+  mcpDegraded = false,
 }: {
   providers: ProviderRecord[];
   mcpServers: McpServerRecord[];
+  providersDegraded?: boolean;
+  mcpDegraded?: boolean;
 }) {
   const { t } = useTranslation();
   return (
     <div className="rounded-sm border border-line bg-surface p-5 shadow-card">
       <div className="flex items-center justify-between">
-        <h3 className="text-lg font-semibold text-fg-strong">{t("dashboard.health.title")}</h3>
+        <h2 className="text-lg font-semibold text-fg-strong">{t("dashboard.health.title")}</h2>
         <span className="text-sm text-fg-soft">
           {t("dashboard.health.meta", { providers: providers.length, mcp: mcpServers.length })}
         </span>
       </div>
 
       <div className="mt-4">
-        <Eyebrow>{t("dashboard.health.providers")}</Eyebrow>
-        {providers.length === 0 ? (
+        <div className="flex items-center gap-2">
+          <Eyebrow>{t("dashboard.health.providers")}</Eyebrow>
+          {providersDegraded && (
+            <Pill tone="warn" dot>
+              {t("dashboard.health.degraded")}
+            </Pill>
+          )}
+        </div>
+        {providersDegraded ? (
+          <p className="mt-2 text-sm text-fg-soft">{t("dashboard.health.degradedHint")}</p>
+        ) : providers.length === 0 ? (
           <p className="mt-2 text-sm text-fg-soft">{t("dashboard.health.noProviders")}</p>
         ) : (
           <ul className="mt-2 space-y-1.5">
@@ -281,8 +192,17 @@ function HealthCard({
       </div>
 
       <div className="mt-5">
-        <Eyebrow>{t("dashboard.health.mcpServers")}</Eyebrow>
-        {mcpServers.length === 0 ? (
+        <div className="flex items-center gap-2">
+          <Eyebrow>{t("dashboard.health.mcpServers")}</Eyebrow>
+          {mcpDegraded && (
+            <Pill tone="warn" dot>
+              {t("dashboard.health.degraded")}
+            </Pill>
+          )}
+        </div>
+        {mcpDegraded ? (
+          <p className="mt-2 text-sm text-fg-soft">{t("dashboard.health.degradedHint")}</p>
+        ) : mcpServers.length === 0 ? (
           <p className="mt-2 text-sm text-fg-soft">{t("dashboard.health.noMcp")}</p>
         ) : (
           <ul className="mt-2 space-y-1.5">
@@ -313,63 +233,49 @@ function HealthCard({
 
 function SystemCard({ info }: { info: SystemInfo }) {
   const { t } = useTranslation();
+  // System metadata is footer material — operators only consult it when
+  // something else surfaced a problem. It stays compact and at the
+  // bottom of the page so the upper viewport is reserved for live
+  // signals (workload, activity, audit, health).
   return (
     <div className="rounded-sm border border-line bg-surface p-5 shadow-card">
       <Eyebrow>{t("dashboard.system.title")}</Eyebrow>
       <div className="mt-3 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-        <SystemStat label={t("dashboard.system.version")} value={info.version} mono />
-        <SystemStat
+        <StatCard
+          layout="compact"
+          label={t("dashboard.system.version")}
+          value={info.version}
+          mono
+        />
+        <StatCard
+          layout="compact"
           label={t("dashboard.system.uptime")}
           value={formatUptime(info.uptime_seconds)}
+          mono={false}
         />
-        <SystemStat
+        <StatCard
+          layout="compact"
           label={t("dashboard.system.configStore")}
           value={
             info.config_store_enabled ? t("dashboard.system.wired") : t("dashboard.system.none")
           }
           tone={info.config_store_enabled ? "success" : "neutral"}
+          mono={false}
         />
-        <SystemStat
+        <StatCard
+          layout="compact"
           label={t("dashboard.system.auditLog")}
           value={info.audit_log_enabled ? t("dashboard.system.on") : t("dashboard.system.off")}
           tone={info.audit_log_enabled ? "success" : "neutral"}
+          mono={false}
         />
-        <SystemStat
+        <StatCard
+          layout="compact"
           label={t("dashboard.system.runtimeStats")}
           value={info.runtime_stats_enabled ? t("dashboard.system.on") : t("dashboard.system.off")}
           tone={info.runtime_stats_enabled ? "success" : "neutral"}
+          mono={false}
         />
-      </div>
-    </div>
-  );
-}
-
-function SystemStat({
-  label,
-  value,
-  mono = false,
-  tone = "neutral",
-}: {
-  label: string;
-  value: string;
-  mono?: boolean;
-  tone?: "success" | "neutral";
-}) {
-  return (
-    <div className="rounded-sm border border-line bg-soft px-3 py-2">
-      <div className="text-[10px] font-medium uppercase tracking-[0.18em] text-fg-faint">
-        {label}
-      </div>
-      <div
-        className={[
-          "mt-1 text-sm font-semibold",
-          mono ? "font-mono" : "",
-          tone === "success" ? "text-tone-success" : "text-fg-strong",
-        ]
-          .join(" ")
-          .trim()}
-      >
-        {value}
       </div>
     </div>
   );
@@ -388,32 +294,42 @@ function formatUptime(seconds: number): string {
 function ActivityTimeline({
   auditPage,
   disabled,
+  range,
+  onRangeChange,
 }: {
   auditPage: AuditPage | null;
   disabled: boolean;
+  range: TimeRange;
+  onRangeChange: (next: TimeRange) => void;
 }) {
   const { t } = useTranslation();
   return (
     <div className="rounded-sm border border-line bg-surface p-5 shadow-card">
-      <div className="flex items-center justify-between">
-        <h3 className="text-lg font-semibold text-fg-strong">{t("dashboard.activity.title")}</h3>
-        {!disabled && (
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <h2 className="text-lg font-semibold text-fg-strong">{t("dashboard.activity.title")}</h2>
+        {/* Range switcher lives here, not in PageHeader: it only
+            filters the audit window, and putting it page-global made
+            operators think workload / runtime stats also re-windowed. */}
+        {!disabled && <TimeRangeSwitcher value={range} onChange={onRangeChange} />}
+      </div>
+      {!disabled && (
+        <div className="mt-1">
           <Link
             to={adminRoutes.auditLog}
             className="text-xs font-medium text-link transition-colors hover:text-link-hover"
           >
             {t("dashboard.activity.viewAll")}
           </Link>
-        )}
-      </div>
+        </div>
+      )}
       {disabled ? (
         <FeatureDisabledNotice
-          title="Audit log is disabled on this server"
-          configHint="set AdminApiConfig.audit_log_enabled = true in the server config"
+          title={t("dashboard.activity.disabledTitle")}
+          configHint={t("dashboard.activity.disabledHint")}
           docsUrl="docs/architecture/admin-audit-log.md"
         />
       ) : !auditPage || auditPage.items.length === 0 ? (
-        <p className="mt-4 text-sm text-fg-soft">No recent activity yet.</p>
+        <p className="mt-4 text-sm text-fg-soft">{t("dashboard.activity.empty")}</p>
       ) : (
         <ol className="mt-4 space-y-3">
           {auditPage.items.slice(0, 8).map((event) => (
@@ -421,32 +337,6 @@ function ActivityTimeline({
           ))}
         </ol>
       )}
-    </div>
-  );
-}
-
-function FeatureDisabledNotice({
-  title,
-  configHint,
-  docsUrl,
-}: {
-  title: string;
-  configHint: string;
-  docsUrl?: string;
-}) {
-  return (
-    <div className="mt-4 rounded-sm border border-tone-warn/30 bg-tone-warn/10 px-3 py-3 text-sm">
-      <div className="font-medium text-fg-strong">{title}</div>
-      <div className="mt-1 text-xs text-fg-soft">
-        To enable, <span className="font-mono">{configHint}</span>
-        {docsUrl && (
-          <>
-            {" "}
-            (see <span className="font-mono">{docsUrl}</span>)
-          </>
-        )}
-        .
-      </div>
     </div>
   );
 }
@@ -507,11 +397,30 @@ const TONE_DOT: Record<"info" | "warn" | "success" | "error" | "neutral", string
   neutral: "bg-fg-faint",
 };
 
-function CountRibbon({ stats }: { stats: { label: string; count: number; to?: string }[] }) {
+function CountRibbon({
+  stats,
+}: {
+  stats: { label: string; count: number; to?: string; degraded?: boolean }[];
+}) {
+  const { t } = useTranslation();
+  // Hidden on narrow screens: the sidebar already shows these counts,
+  // and crowding them into PageHeader at mobile widths forces the title
+  // to truncate without buying the operator anything.
   return (
-    <div className="flex flex-wrap items-center gap-x-4 gap-y-1 font-mono text-xs text-fg-soft">
+    <div className="hidden flex-wrap items-center gap-x-4 gap-y-1 font-mono text-xs text-fg-soft md:flex">
       {stats.map((s, idx) => {
-        const inner = (
+        // When the underlying list failed, show "?" instead of a
+        // misleading 0 — operator should distinguish "no providers" from
+        // "providers list 5xx'd".
+        const inner = s.degraded ? (
+          <span
+            className="tabular-nums"
+            title={t("dashboard.health.degradedHint")}
+          >
+            <span className="font-semibold text-tone-warn">?</span>{" "}
+            <span className="text-fg-soft">{s.label}</span>
+          </span>
+        ) : (
           <span className="tabular-nums">
             <span className="font-semibold text-fg-strong">{s.count.toLocaleString()}</span>{" "}
             <span className="text-fg-soft">{s.label}</span>
@@ -539,21 +448,41 @@ function CountRibbon({ stats }: { stats: { label: string; count: number; to?: st
 }
 
 function PageLoading() {
+  // Skeleton mirrors the real layout so the page doesn't reflow on
+  // load: workload hero row + activity 4-tile row + two columns
+  // (audit + health). Operators perceive a faster first paint than a
+  // single "Loading…" line.
   return (
-    <div className="mx-auto max-w-6xl p-6 md:p-8">
-      <div className="rounded-sm border border-line bg-surface p-6 text-sm text-fg-soft shadow-card">
-        Loading dashboard...
+    <div
+      className="mx-auto w-full max-w-6xl 2xl:max-w-none p-6 md:p-8"
+      aria-busy="true"
+      aria-label="Loading dashboard"
+    >
+      <div className="mb-4 h-7 w-40 animate-pulse rounded-sm bg-soft" />
+      <div className="mb-4 grid gap-3 rounded-sm border border-line bg-surface p-5 shadow-card sm:grid-cols-[2fr_1fr_1fr]">
+        <SkeletonTile height="h-20" />
+        <SkeletonTile />
+        <SkeletonTile />
+      </div>
+      <div className="mb-4 grid gap-3 rounded-sm border border-line bg-surface p-5 shadow-card sm:grid-cols-2 lg:grid-cols-4">
+        <SkeletonTile />
+        <SkeletonTile />
+        <SkeletonTile />
+        <SkeletonTile />
+      </div>
+      <div className="grid gap-4 lg:grid-cols-2">
+        <div className="h-40 animate-pulse rounded-sm border border-line bg-surface shadow-card" />
+        <div className="h-40 animate-pulse rounded-sm border border-line bg-surface shadow-card" />
       </div>
     </div>
   );
 }
 
-function PageError({ message }: { message: string }) {
-  return (
-    <div className="mx-auto max-w-6xl p-6 md:p-8">
-      <div className="rounded-sm border border-tone-error/30 bg-tone-error/10 p-6 text-sm text-tone-error shadow-card">
-        {message}
-      </div>
-    </div>
-  );
+function SkeletonTile({ height = "h-14" }: { height?: string }) {
+  return <div className={`${height} animate-pulse rounded-sm bg-soft`} />;
 }
+
+function errorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+

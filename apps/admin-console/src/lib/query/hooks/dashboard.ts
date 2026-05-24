@@ -16,6 +16,21 @@ import { TIME_RANGE_SECONDS, type TimeRange } from "../../../components/ui/time-
 import { qk } from "../keys";
 import { loadOptionalSystemInfo } from "../system-info";
 
+/** How often the dashboard re-fetches its composite query. The same
+ *  interval is surfaced to the UI ("refreshes every {{seconds}}s") so
+ *  there is one source of truth. */
+export const DASHBOARD_REFETCH_MS = 30_000;
+
+/** Per-slot degradation flags. Set when a sub-query soft-degraded
+ *  (typically a 5xx that returned an empty list). UI uses this to
+ *  distinguish "configured empty" from "list endpoint failed". */
+export interface DegradedSlots {
+  mcpServers?: boolean;
+  providers?: boolean;
+  models?: boolean;
+  agents?: boolean;
+}
+
 export type DashboardData = {
   capabilities: Capabilities;
   mcpServers: McpServerRecord[];
@@ -25,6 +40,7 @@ export type DashboardData = {
   auditPage: AuditPage | null;
   auditDisabled: boolean;
   systemInfo: SystemInfo | null;
+  degraded: DegradedSlots;
 };
 
 export function useDashboardQuery(range: TimeRange) {
@@ -42,15 +58,24 @@ export function useDashboardQuery(range: TimeRange) {
           }
           throw err;
         });
+      // 5xx on any individual list endpoint soft-degrades to an empty
+      // page rather than crashing the dashboard with a red error box.
+      // Auth (401/403) and 4xx still propagate — the user needs to
+      // re-auth, not stare at half-blank cards.
       const [capabilities, mcp, providers, models, agents, audit, systemInfo] = await Promise.all([
         capabilitiesApi.capabilities(),
-        configResourceApi.list<McpServerRecord>("mcp-servers"),
-        configResourceApi.list<ProviderRecord>("providers"),
-        configResourceApi.list<ModelBindingSpec>("models"),
-        configResourceApi.list<AgentSpec>("agents"),
+        tolerantList(configResourceApi.list<McpServerRecord>("mcp-servers")),
+        tolerantList(configResourceApi.list<ProviderRecord>("providers")),
+        tolerantList(configResourceApi.list<ModelBindingSpec>("models")),
+        tolerantList(configResourceApi.list<AgentSpec>("agents")),
         auditPromise,
         loadOptionalSystemInfo(),
       ]);
+      const degraded: DegradedSlots = {};
+      if (mcp.degraded) degraded.mcpServers = true;
+      if (providers.degraded) degraded.providers = true;
+      if (models.degraded) degraded.models = true;
+      if (agents.degraded) degraded.agents = true;
       return {
         capabilities,
         mcpServers: mcp.items,
@@ -60,8 +85,27 @@ export function useDashboardQuery(range: TimeRange) {
         auditPage: audit.page,
         auditDisabled: audit.disabled,
         systemInfo,
+        degraded,
       };
     },
-    refetchInterval: 30_000,
+    refetchInterval: DASHBOARD_REFETCH_MS,
   });
+}
+
+/** Wrap a `configResourceApi.list` call so a transient 5xx returns an
+ *  empty list flagged as `degraded` instead of crashing the dashboard.
+ *  The flag is surfaced to the UI so a card can show "list unavailable"
+ *  rather than misleading the operator with "no items configured". */
+async function tolerantList<T>(
+  p: Promise<{ items: T[]; total?: number; has_more?: boolean }>,
+): Promise<{ items: T[]; total?: number; has_more?: boolean; degraded?: boolean }> {
+  try {
+    return await p;
+  } catch (err) {
+    if (err instanceof ConfigApiError && err.status >= 500) {
+      console.warn("[dashboard] sub-query failed, soft-degrading to empty:", err);
+      return { items: [], total: 0, has_more: false, degraded: true };
+    }
+    throw err;
+  }
 }
