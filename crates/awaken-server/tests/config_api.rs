@@ -46,6 +46,9 @@ use serde_json::{Value, json};
 use tokio::sync::broadcast;
 use tower::ServiceExt;
 
+const ADMIN_TOKEN: &str = "admin-token";
+const ADMIN_AUTH_HEADER: &str = "Bearer admin-token";
+
 struct ImmediateExecutor;
 
 #[async_trait]
@@ -675,7 +678,8 @@ async fn make_app_without_skill_sink() -> TestApp {
         ServerConfig::default(),
     )
     .with_config_store(config_store)
-    .with_config_runtime_manager(manager.clone());
+    .with_config_runtime_manager(manager.clone())
+    .with_admin_api_bearer_token(ADMIN_TOKEN);
 
     TestApp {
         router: build_router(&state),
@@ -737,9 +741,11 @@ async fn make_app_with_skill_catalog_config_and_admin(
     )
     .with_config_store(config_store)
     .with_config_runtime_manager(manager.clone());
-    if let Some(admin_config) = admin_config {
-        state = state.with_admin_api_config(admin_config);
-    }
+    state = if let Some(admin_config) = admin_config {
+        state.with_admin_api_config(admin_config)
+    } else {
+        state.with_admin_api_bearer_token(ADMIN_TOKEN)
+    };
     if let Some(provider) = skill_catalog_provider {
         state = state.with_skill_catalog_provider(provider);
     }
@@ -759,7 +765,14 @@ async fn request_json(
     uri: &str,
     body: Option<Value>,
 ) -> (StatusCode, Value) {
-    request_json_with_headers(router, method, uri, body, &[]).await
+    request_json_with_headers(
+        router,
+        method,
+        uri,
+        body,
+        &[("authorization", ADMIN_AUTH_HEADER)],
+    )
+    .await
 }
 
 async fn request_json_with_headers(
@@ -824,7 +837,8 @@ async fn wait_until(
 async fn admin_config_routes_require_bearer_token_when_configured() {
     let app = make_app_with_admin_token("admin-token").await;
 
-    let (status, body) = request_json(&app.router, Method::GET, "/v1/capabilities", None).await;
+    let (status, body) =
+        request_json_with_headers(&app.router, Method::GET, "/v1/capabilities", None, &[]).await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
     assert!(body["error"].as_str().unwrap().contains("authentication"));
 
@@ -853,7 +867,8 @@ async fn admin_config_routes_require_bearer_token_when_configured() {
         "/v1/config/diagnostics",
         "/v1/config/providers/bootstrap/removal-preview",
     ] {
-        let (status, body) = request_json(&app.router, Method::GET, uri, None).await;
+        let (status, body) =
+            request_json_with_headers(&app.router, Method::GET, uri, None, &[]).await;
         assert_eq!(status, StatusCode::UNAUTHORIZED, "uri: {uri}, body: {body}");
 
         let (status, body) = request_json_with_headers(
@@ -1545,7 +1560,8 @@ async fn documented_config_driven_agent_tuning_publishes_sections_and_retry() {
         ServerConfig::default(),
     )
     .with_config_store(config_store)
-    .with_config_runtime_manager(manager);
+    .with_config_runtime_manager(manager)
+    .with_admin_api_bearer_token(ADMIN_TOKEN);
     let router = build_router(&state);
 
     let (status, _) = request_json(
@@ -2600,7 +2616,8 @@ async fn mcp_status_routes_absent_without_config_module() {
         thread_store as Arc<dyn awaken_contract::contract::storage::ThreadRunStore>,
         runtime.resolver_arc(),
         ServerConfig::default(),
-    );
+    )
+    .with_admin_api_bearer_token(ADMIN_TOKEN);
     let router = build_router(&state);
 
     let (status, _body) = request_json(
@@ -2733,7 +2750,8 @@ async fn mcp_status_route_surfaces_session_reconnect_init_fields() {
         ServerConfig::default(),
     )
     .with_config_store(config_store)
-    .with_config_runtime_manager(manager.clone());
+    .with_config_runtime_manager(manager.clone())
+    .with_admin_api_bearer_token(ADMIN_TOKEN);
     let router = build_router(&state);
 
     // Register an MCP server so the factory's `connect` is called and
@@ -3481,7 +3499,8 @@ async fn audit_event_emitted_for_patch_and_delete() {
     )
     .with_config_store(config_store.clone() as Arc<dyn ConfigStore>)
     .with_config_runtime_manager(manager)
-    .with_audit_log(audit_logger.clone());
+    .with_audit_log(audit_logger.clone())
+    .with_admin_api_bearer_token(ADMIN_TOKEN);
 
     let headers = axum::http::HeaderMap::new();
 
@@ -3729,7 +3748,8 @@ async fn make_permission_preview_app() -> axum::Router {
         ServerConfig::default(),
     )
     .with_config_store(config_store)
-    .with_config_runtime_manager(manager);
+    .with_config_runtime_manager(manager)
+    .with_admin_api_bearer_token(ADMIN_TOKEN);
     build_router(&state)
 }
 
