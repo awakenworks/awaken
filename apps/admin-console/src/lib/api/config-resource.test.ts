@@ -123,4 +123,46 @@ describe("configResourceApi", () => {
     expect(fetchSpy.mock.calls[0][0]).toBe(`${BACKEND_URL}/v1/config/agents/agent%2Fa/meta`);
     expect(fetchSpy.mock.calls[1][0]).toBe(`${BACKEND_URL}/v1/config/agents/meta`);
   });
+
+  describe("listMeta defensive shape coercion", () => {
+    // Server builds disagree on the meta-list envelope: some return a
+    // bare `Vec<ConfigMetaItem>`, some wrap as `{ items: [...] }`.
+    // The client must absorb both so `for...of` callers don't blow up
+    // with "object is not iterable" when the backend reshapes.
+
+    it("accepts bare array shape (current awaken-server)", async () => {
+      const meta = { source: { kind: "user" }, hidden: false, created_at: 1, updated_at: 2 };
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue(jsonResponse([{ id: "a", meta }])));
+      await expect(configResourceApi.listMeta("agents")).resolves.toEqual([{ id: "a", meta }]);
+    });
+
+    it("unwraps { items: [...] } envelope shape (matching sibling list endpoint)", async () => {
+      const meta = { source: { kind: "user" }, hidden: false, created_at: 1, updated_at: 2 };
+      const wrapped = { namespace: "agents", offset: 0, limit: 100, items: [{ id: "a", meta }] };
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue(jsonResponse(wrapped)));
+      await expect(configResourceApi.listMeta("agents")).resolves.toEqual([{ id: "a", meta }]);
+    });
+
+    it("throws ConfigApiError(502) for null / undefined / unrecognised shapes", async () => {
+      // Earlier drafts silently coerced unknown shapes to `[]`, which
+      // hid backend drift behind an empty list. Now the API surfaces a
+      // typed error so query layers can render a real failure state
+      // (and a regression CI catches the schema mismatch).
+      for (const body of [null, undefined, {}, 42, "garbage"] as const) {
+        vi.unstubAllGlobals();
+        vi.stubGlobal("fetch", vi.fn().mockResolvedValue(jsonResponse(body)));
+        await expect(configResourceApi.listMeta("agents")).rejects.toMatchObject({
+          name: "ConfigApiError",
+          status: 502,
+        });
+      }
+    });
+
+    it("filters out non-ConfigMetaItem array entries (partial-shape payloads)", async () => {
+      const good = { id: "good", meta: { source: { kind: "user" } } };
+      const bad = [good, null, 7, "x", { not_id: true }, { id: 5 /* wrong type */ }];
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue(jsonResponse(bad)));
+      await expect(configResourceApi.listMeta("agents")).resolves.toEqual([good]);
+    });
+  });
 });

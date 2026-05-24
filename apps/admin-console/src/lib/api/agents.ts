@@ -4,14 +4,19 @@ import type { AgentRuntimeSnapshot, PermissionPreviewResponse } from "./types";
 export const agentsApi = {
   /** All-agents runtime stats. Backed by `/v1/agents/runtime-stats`, which
    *  returns `{ "agents": AgentRuntimeSnapshot[] }`. Returns `null` if the
-   *  observability registry isn't installed (HTTP 503). */
+   *  observability registry isn't installed (HTTP 503) OR if the server
+   *  predates the endpoint (HTTP 404 — older deploys / gradual rollout).
+   *  Both surfaces as the same "feature unavailable" notice; auth (401/403)
+   *  and other 4xx still propagate so the user fixes credentials. */
   agentsRuntimeStats: async (): Promise<{ agents: AgentRuntimeSnapshot[] } | null> => {
     try {
       return await fetchJson<{ agents: AgentRuntimeSnapshot[] }>(
         `${BACKEND_URL}/v1/agents/runtime-stats`,
       );
     } catch (err) {
-      if (err instanceof ConfigApiError && err.status === 503) return null;
+      if (err instanceof ConfigApiError && (err.status === 503 || err.status === 404)) {
+        return null;
+      }
       throw err;
     }
   },
