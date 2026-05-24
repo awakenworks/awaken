@@ -46,6 +46,7 @@ pub(super) async fn persist_remote_root_checkpoint(
     let Some(storage) = storage else {
         return Ok(());
     };
+    validate_remote_checkpoint_identity(thread_id, run_id, run_identity)?;
     let previous = storage
         .load_run(run_id)
         .await
@@ -124,6 +125,27 @@ pub(super) async fn persist_remote_root_checkpoint(
         .map(|_| ())
         .map_err(|error| AgentLoopError::StorageError(error.to_string()))
 }
+
+fn validate_remote_checkpoint_identity(
+    thread_id: &str,
+    run_id: &str,
+    run_identity: &RunIdentity,
+) -> Result<(), AgentLoopError> {
+    if thread_id != run_identity.thread_id {
+        return Err(AgentLoopError::StorageError(format!(
+            "remote checkpoint thread_id '{thread_id}' must match RunIdentity thread_id '{}'",
+            run_identity.thread_id
+        )));
+    }
+    if run_id != run_identity.run_id {
+        return Err(AgentLoopError::StorageError(format!(
+            "remote checkpoint run_id '{run_id}' must match RunIdentity run_id '{}'",
+            run_identity.run_id
+        )));
+    }
+    Ok(())
+}
+
 fn materialize_remote_message_log(
     mut messages: Vec<Message>,
     previous: Option<&RunRecord>,
@@ -194,4 +216,44 @@ fn infer_remote_input_from_initial_messages(
 
 fn is_remote_run_output_message(message: &Message) -> bool {
     matches!(message.role, Role::Assistant | Role::Tool)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use awaken_contract::contract::identity::RunOrigin;
+
+    fn identity() -> RunIdentity {
+        RunIdentity::new(
+            "thread-1".to_string(),
+            None,
+            "run-1".to_string(),
+            None,
+            "agent-1".to_string(),
+            RunOrigin::User,
+        )
+    }
+
+    #[test]
+    fn remote_checkpoint_identity_accepts_matching_ids() {
+        validate_remote_checkpoint_identity("thread-1", "run-1", &identity()).unwrap();
+    }
+
+    #[test]
+    fn remote_checkpoint_identity_rejects_thread_mismatch() {
+        let error =
+            validate_remote_checkpoint_identity("other-thread", "run-1", &identity()).unwrap_err();
+        assert!(
+            matches!(error, AgentLoopError::StorageError(message) if message.contains("thread_id"))
+        );
+    }
+
+    #[test]
+    fn remote_checkpoint_identity_rejects_run_mismatch() {
+        let error =
+            validate_remote_checkpoint_identity("thread-1", "other-run", &identity()).unwrap_err();
+        assert!(
+            matches!(error, AgentLoopError::StorageError(message) if message.contains("run_id"))
+        );
+    }
 }
