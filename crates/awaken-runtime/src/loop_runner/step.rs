@@ -28,6 +28,7 @@ use super::actions::{
     resolve_intercept_payloads, take_context_messages,
 };
 use super::checkpoint::{StepCompletion, check_termination, complete_step};
+#[cfg(feature = "background")]
 use super::compaction::maybe_spawn_compaction;
 use super::inference::{CheckpointHandle, execute_streaming};
 use super::{AgentLoopError, commit_update, now_ms, tool_result_to_content};
@@ -470,16 +471,15 @@ async fn run_inference_phase(
 ) -> Result<InferencePhaseOutput, AgentLoopError> {
     let store = ctx.runtime.store();
 
-    // Auto-compaction: if the token estimate has crossed the configured
-    // threshold and no background pass is already running, queue one. The
-    // current inference proceeds against the un-compacted message list;
-    // the swap lands via the inbox before the next inference round.
-    if let Some(policy) = ctx.agent.context_policy().cloned()
-        && let Some(threshold) = policy.autocompact_threshold
+    #[cfg(feature = "background")]
     {
-        let token_est = awaken_contract::contract::transform::estimate_tokens(ctx.messages);
-        if token_est >= threshold {
-            maybe_spawn_compaction(ctx, &policy).await;
+        if let Some(policy) = ctx.agent.context_policy().cloned()
+            && let Some(threshold) = policy.autocompact_threshold
+        {
+            let token_est = awaken_contract::contract::transform::estimate_tokens(ctx.messages);
+            if token_est >= threshold {
+                maybe_spawn_compaction(ctx, &policy).await;
+            }
         }
     }
 

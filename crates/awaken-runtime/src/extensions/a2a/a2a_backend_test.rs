@@ -1,7 +1,8 @@
 use super::*;
 use std::collections::BTreeMap;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex as StdMutex};
 
+use awaken_contract::CancellationToken;
 use awaken_contract::contract::event_sink::NullEventSink;
 use awaken_contract::contract::identity::{RunIdentity, RunOrigin};
 use awaken_contract::contract::lifecycle::RunStatus;
@@ -869,4 +870,243 @@ async fn execute_delegate_rejects_state_seed_directly() {
         message.contains("delegate_state_seed"),
         "error should name the unsupported capability, got: {message}"
     );
+}
+
+async fn spawn_minimal_a2a_server(
+    request_paths: Arc<StdMutex<Vec<String>>>,
+) -> (String, tokio::task::JoinHandle<()>) {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind test server");
+    let addr = listener.local_addr().expect("local addr");
+    let handle = tokio::spawn(async move {
+        for _ in 0..2 {
+            let (mut socket, _) = listener.accept().await.expect("accept test request");
+            let mut request = Vec::new();
+            let mut buffer = [0_u8; 1024];
+            loop {
+                let n = socket.read(&mut buffer).await.expect("read request");
+                if n == 0 {
+                    break;
+                }
+                request.extend_from_slice(&buffer[..n]);
+                if request.windows(4).any(|window| window == b"\r\n\r\n") {
+                    break;
+                }
+            }
+            let request_text = String::from_utf8_lossy(&request);
+            let path = request_text
+                .lines()
+                .next()
+                .and_then(|line| line.split_whitespace().nth(1))
+                .unwrap_or("<missing-path>")
+                .to_string();
+            request_paths.lock().expect("paths lock").push(path.clone());
+
+            let body = if path.ends_with("/message:send") {
+                serde_json::to_string(&SendMessageResponse::task(make_task(TaskState::Working)))
+                    .expect("serialize task")
+            } else if path.ends_with("/tasks/task-1:cancel") {
+                "{}".to_string()
+            } else {
+                serde_json::json!({"error": "unexpected path", "path": path}).to_string()
+            };
+            let response = format!(
+                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            socket
+                .write_all(response.as_bytes())
+                .await
+                .expect("write response");
+        }
+    });
+
+    (format!("http://{addr}"), handle)
+}
+
+async fn wait_for_recorded_path(request_paths: &Arc<StdMutex<Vec<String>>>, suffix: &str) {
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        loop {
+            if request_paths
+                .lock()
+                .expect("paths lock")
+                .iter()
+                .any(|path| path.ends_with(suffix))
+            {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("timed out waiting for request path ending with {suffix}"));
+}
+
+async fn spawn_midflight_cancel_a2a_server(
+    request_paths: Arc<StdMutex<Vec<String>>>,
+) -> (String, tokio::task::JoinHandle<()>) {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::sync::Notify;
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind test server");
+    let addr = listener.local_addr().expect("local addr");
+    let cancel_seen = Arc::new(Notify::new());
+    let handle = tokio::spawn(async move {
+        loop {
+            let (mut socket, _) = listener.accept().await.expect("accept test request");
+            let request_paths = request_paths.clone();
+            let cancel_seen = cancel_seen.clone();
+            tokio::spawn(async move {
+                let mut request = Vec::new();
+                let mut buffer = [0_u8; 1024];
+                loop {
+                    let n = socket.read(&mut buffer).await.expect("read request");
+                    if n == 0 {
+                        break;
+                    }
+                    request.extend_from_slice(&buffer[..n]);
+                    if request.windows(4).any(|window| window == b"\r\n\r\n") {
+                        break;
+                    }
+                }
+                let request_text = String::from_utf8_lossy(&request);
+                let path = request_text
+                    .lines()
+                    .next()
+                    .and_then(|line| line.split_whitespace().nth(1))
+                    .unwrap_or("<missing-path>")
+                    .to_string();
+                request_paths.lock().expect("paths lock").push(path.clone());
+
+                let body = if path.ends_with("/message:send") {
+                    serde_json::to_string(&SendMessageResponse::task(make_task(TaskState::Working)))
+                        .expect("serialize task")
+                } else if path.ends_with("/tasks/task-1:subscribe") {
+                    cancel_seen.notified().await;
+                    String::new()
+                } else if path.ends_with("/tasks/task-1:cancel") {
+                    cancel_seen.notify_waiters();
+                    "{}".to_string()
+                } else {
+                    serde_json::json!({"error": "unexpected path", "path": path}).to_string()
+                };
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+                socket
+                    .write_all(response.as_bytes())
+                    .await
+                    .expect("write response");
+            });
+        }
+    });
+
+    (format!("http://{addr}"), handle)
+}
+
+#[tokio::test]
+async fn execute_delegate_cancels_remote_task_when_parent_token_cancelled() {
+    let request_paths = Arc::new(StdMutex::new(Vec::new()));
+    let (base_url, server) = spawn_minimal_a2a_server(request_paths.clone()).await;
+    let backend = A2aBackend::new(A2aConfig::new(base_url));
+    let resolver = NoopResolver;
+    let token = CancellationToken::new();
+    token.cancel();
+
+    let result = backend
+        .execute_delegate(crate::backend::BackendDelegateRunRequest {
+            agent_id: "remote-child",
+            messages: vec![Message::user("delegate")],
+            new_messages: vec![Message::user("delegate")],
+            sink: Arc::new(NullEventSink),
+            resolver: &resolver,
+            parent: crate::backend::BackendParentContext::default(),
+            control: crate::backend::BackendControl {
+                cancellation_token: Some(token),
+                decision_rx: None,
+            },
+            policy: crate::backend::BackendDelegatePolicy::default(),
+            state_seed: None,
+        })
+        .await
+        .expect("cancelled delegate should return terminal result");
+
+    assert!(matches!(result.status, BackendRunStatus::Cancelled));
+    server.await.expect("server task should finish");
+    let paths = request_paths.lock().expect("paths lock").clone();
+    assert!(
+        paths.iter().any(|path| path.ends_with("/message:send")),
+        "delegate should submit a remote A2A task first: {paths:?}"
+    );
+    assert!(
+        paths
+            .iter()
+            .any(|path| path.ends_with("/tasks/task-1:cancel")),
+        "delegate cancellation should call remote task cancel endpoint: {paths:?}"
+    );
+}
+
+#[tokio::test]
+async fn execute_delegate_midflight_cancel_preserves_remote_task_context() {
+    let request_paths = Arc::new(StdMutex::new(Vec::new()));
+    let (base_url, server) = spawn_midflight_cancel_a2a_server(request_paths.clone()).await;
+    let backend = A2aBackend::new(A2aConfig::new(base_url));
+    let target_key = backend.remote_target_key();
+    let token = CancellationToken::new();
+    let token_for_request = token.clone();
+
+    let execution = tokio::spawn(async move {
+        let resolver = NoopResolver;
+        backend
+            .execute_delegate(crate::backend::BackendDelegateRunRequest {
+                agent_id: "remote-child",
+                messages: vec![Message::user("delegate")],
+                new_messages: vec![Message::user("delegate")],
+                sink: Arc::new(NullEventSink),
+                resolver: &resolver,
+                parent: crate::backend::BackendParentContext::default(),
+                control: crate::backend::BackendControl {
+                    cancellation_token: Some(token_for_request),
+                    decision_rx: None,
+                },
+                policy: crate::backend::BackendDelegatePolicy::default(),
+                state_seed: None,
+            })
+            .await
+    });
+
+    wait_for_recorded_path(&request_paths, "/message:send").await;
+    wait_for_recorded_path(&request_paths, "/tasks/task-1:subscribe").await;
+    token.cancel();
+
+    let result = execution
+        .await
+        .expect("delegate task should join")
+        .expect("cancelled delegate should return terminal result");
+
+    assert!(matches!(result.status, BackendRunStatus::Cancelled));
+    let state = result
+        .state
+        .expect("cancelled delegate should retain persisted remote task state");
+    let remote = read_remote_state_entry(&state, &target_key).expect("remote state entry");
+    assert_eq!(remote.task_id.as_deref(), Some("task-1"));
+    assert_eq!(remote.context_id.as_deref(), Some("ctx-1"));
+    assert_eq!(remote.last_state.as_deref(), Some("TASK_STATE_CANCELED"));
+
+    let paths = request_paths.lock().expect("paths lock").clone();
+    assert!(
+        paths
+            .iter()
+            .any(|path| path.ends_with("/tasks/task-1:cancel")),
+        "mid-flight delegate cancellation should call remote task cancel endpoint: {paths:?}"
+    );
+    server.abort();
 }

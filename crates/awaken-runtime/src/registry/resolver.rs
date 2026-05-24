@@ -32,6 +32,7 @@ pub struct ResolvedAgent {
     /// Background task manager used to run context compaction off the
     /// main agent loop. `None` falls back to no compaction (compaction is
     /// only triggered when both this and `context_summarizer` are set).
+    #[cfg(feature = "background")]
     pub background_manager: Option<Arc<crate::extensions::background::BackgroundTaskManager>>,
     /// Optional store for cross-process stream resume. When `Some`, the
     /// loop runner flushes mid-stream accumulator snapshots to this
@@ -78,6 +79,7 @@ impl ResolvedAgent {
             llm_executor,
             tool_executor: Arc::new(SequentialToolExecutor),
             context_summarizer: None,
+            #[cfg(feature = "background")]
             background_manager: None,
             stream_checkpoint_store: None,
             env: ExecutionEnv::empty(),
@@ -171,6 +173,7 @@ impl ResolvedAgent {
     /// Attach a background task manager so context compaction can run
     /// off the main agent loop. Without this, compaction is disabled
     /// even if a summarizer is configured.
+    #[cfg(feature = "background")]
     #[must_use]
     pub fn with_background_manager(
         mut self,
@@ -441,10 +444,12 @@ mod tests {
         assert!(agent.tools.is_empty());
         assert!(agent.context_policy().is_none());
         assert!(agent.context_summarizer.is_none());
+        #[cfg(feature = "background")]
         assert!(agent.background_manager.is_none());
         assert_eq!(agent.max_continuation_retries(), 2);
     }
 
+    #[cfg(feature = "background")]
     #[test]
     fn with_background_manager_attaches_handle() {
         let manager = Arc::new(crate::extensions::background::BackgroundTaskManager::new());

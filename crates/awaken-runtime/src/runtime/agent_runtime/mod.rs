@@ -1,6 +1,9 @@
 //! Agent runtime: top-level orchestrator for run management, routing, and control.
 
 mod active_registry;
+#[cfg(feature = "background")]
+mod background_cancellation;
+mod compaction;
 mod control;
 mod run_request;
 mod runner;
@@ -32,10 +35,6 @@ pub use run_request::{RunRequest, ThreadContextSnapshot};
 use active_registry::ActiveRunRegistry;
 
 pub(crate) type DecisionBatch = Vec<(String, ToolCallResume)>;
-
-// ---------------------------------------------------------------------------
-// RunHandle
-// ---------------------------------------------------------------------------
 
 /// Internal control handle for a running agent loop.
 ///
@@ -89,10 +88,6 @@ impl RunHandle {
         inbox_tx.try_send(crate::inbox::inbox_messages_payload(messages))
     }
 }
-
-// ---------------------------------------------------------------------------
-// AgentRuntime
-// ---------------------------------------------------------------------------
 
 /// Top-level agent runtime. Manages runs across threads.
 ///

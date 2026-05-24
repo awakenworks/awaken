@@ -5,6 +5,7 @@
 
 pub(crate) mod actions;
 mod checkpoint;
+#[cfg(feature = "background")]
 mod compaction;
 mod inference;
 mod orchestrator;

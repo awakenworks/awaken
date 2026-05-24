@@ -1,6 +1,7 @@
 //! Integration tests for `run_child_agent` parent → child state seeding.
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use async_trait::async_trait;
 use serde_json::{Value, json};
@@ -356,6 +357,125 @@ async fn unknown_seed_key_fails_the_child_run() {
     assert!(
         message.contains("no.such.key") || message.to_ascii_lowercase().contains("unknown"),
         "error should mention the unknown key: {message}"
+    );
+}
+
+struct FailingExecutionResolver;
+
+impl AgentResolver for FailingExecutionResolver {
+    fn resolve(&self, agent_id: &str) -> Result<ResolvedAgent, RuntimeError> {
+        Err(RuntimeError::AgentNotFound {
+            agent_id: agent_id.to_string(),
+        })
+    }
+}
+
+impl ExecutionResolver for FailingExecutionResolver {
+    fn resolve_execution(&self, _agent_id: &str) -> Result<ResolvedExecution, RuntimeError> {
+        Err(RuntimeError::ResolveFailed {
+            message: "registry backend timed out".into(),
+        })
+    }
+}
+
+#[tokio::test]
+async fn child_agent_preserves_non_missing_resolver_errors() {
+    let err = run_child_agent(ChildAgentParams::new(
+        &FailingExecutionResolver,
+        "child",
+        vec![Message::user("go")],
+        BackendParentContext::default(),
+        Arc::new(NullEventSink),
+    ))
+    .await
+    .expect_err("resolver failure should surface");
+
+    match err {
+        ExecutionBackendError::ExecutionFailed(message) => {
+            assert!(
+                message.contains("failed to resolve agent 'child'"),
+                "error should include resolve context: {message}"
+            );
+            assert!(
+                message.contains("registry backend timed out"),
+                "error should preserve original resolver failure: {message}"
+            );
+        }
+        other => panic!("resolver infrastructure failure must not become AgentNotFound: {other:?}"),
+    }
+}
+
+struct SingleResolveLocalResolver {
+    agent: ResolvedAgent,
+    resolve_calls: AtomicUsize,
+    resolve_execution_calls: AtomicUsize,
+}
+
+impl SingleResolveLocalResolver {
+    fn new(agent: ResolvedAgent) -> Self {
+        Self {
+            agent,
+            resolve_calls: AtomicUsize::new(0),
+            resolve_execution_calls: AtomicUsize::new(0),
+        }
+    }
+}
+
+impl AgentResolver for SingleResolveLocalResolver {
+    fn resolve(&self, agent_id: &str) -> Result<ResolvedAgent, RuntimeError> {
+        self.resolve_calls.fetch_add(1, Ordering::SeqCst);
+        Err(RuntimeError::ResolveFailed {
+            message: format!("unexpected second local resolve for {agent_id}"),
+        })
+    }
+}
+
+impl ExecutionResolver for SingleResolveLocalResolver {
+    fn resolve_execution(&self, agent_id: &str) -> Result<ResolvedExecution, RuntimeError> {
+        self.resolve_execution_calls.fetch_add(1, Ordering::SeqCst);
+        if agent_id != self.agent.id() {
+            return Err(RuntimeError::AgentNotFound {
+                agent_id: agent_id.to_string(),
+            });
+        }
+        let mut agent = self.agent.clone();
+        agent.env = build_agent_env(&[], &agent)?;
+        Ok(ResolvedExecution::local(agent))
+    }
+}
+
+#[tokio::test]
+async fn local_child_agent_uses_resolved_execution_without_second_lookup() {
+    let llm = Arc::new(ScriptedLlm::new(vec![StreamResult {
+        content: vec![ContentBlock::text("done")],
+        tool_calls: vec![],
+        usage: None,
+        stop_reason: Some(StopReason::EndTurn),
+        has_incomplete_tool_calls: false,
+    }]));
+    let agent = ResolvedAgent::new("child", "m", "sys", llm).with_max_rounds(1);
+    let resolver = SingleResolveLocalResolver::new(agent);
+
+    let outcome = run_child_agent(ChildAgentParams::new(
+        &resolver,
+        "child",
+        vec![Message::user("go")],
+        BackendParentContext::default(),
+        Arc::new(NullEventSink),
+    ))
+    .await
+    .expect("canonical child helper should reuse the resolved local agent");
+
+    assert!(matches!(outcome.status, BackendRunStatus::Completed));
+    assert_eq!(
+        resolver.resolve_execution_calls.load(Ordering::SeqCst),
+        1,
+        "canonical helper should resolve execution exactly once"
+    );
+    assert_eq!(
+        resolver.resolve_calls.load(Ordering::SeqCst),
+        0,
+        "local delegate path must not perform a second AgentResolver::resolve lookup"
     );
 }
 

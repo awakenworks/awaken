@@ -348,7 +348,7 @@ pub async fn execute_resolved_delegate_execution(
 ) -> Result<BackendRunResult, ExecutionBackendError> {
     validate_delegate_execution_request(execution, &request)?;
     match execution {
-        ResolvedExecution::Local(_) => LocalBackend::new().execute_delegate(request).await,
+        ResolvedExecution::Local(agent) => LocalBackend::execute_resolved(agent, request).await,
         ResolvedExecution::NonLocal(agent) => agent.backend()?.execute_delegate(request).await,
     }
 }

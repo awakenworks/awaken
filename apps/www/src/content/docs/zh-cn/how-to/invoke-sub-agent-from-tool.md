@@ -125,7 +125,7 @@ use awaken_contract::contract::tool::{
 };
 use awaken_contract::state::PersistedState;
 
-use awaken_runtime::backend::{BackendParentContext, BackendRunResult};
+use awaken_runtime::backend::{BackendControl, BackendParentContext, BackendRunResult};
 use awaken_runtime::child_agent::{ChildAgentParams, run_child_agent_checked};
 use awaken_runtime::registry::ExecutionResolver;
 use awaken_runtime::{MutationBatch, StateCommand, StateStore};
@@ -172,7 +172,11 @@ impl Tool for ResearchTool {
                 ctx.activity_sink.clone()
                     .unwrap_or_else(|| Arc::new(NullEventSink)),
             )
-            .with_initial_state_seed(seed),
+            .with_initial_state_seed(seed)
+            .with_control(BackendControl {
+                cancellation_token: ctx.cancellation_token.clone(),
+                decision_rx: None,
+            }),
         )
         .await
         .map_err(|e| ToolError::ExecutionFailed(e.to_string()))?;
@@ -261,7 +265,7 @@ let command = build_export(&outcome, topic)?;
 
 ```rust
 use awaken_contract::contract::message::Message;
-use awaken_runtime::backend::BackendParentContext;
+use awaken_runtime::backend::{BackendControl, BackendParentContext};
 use awaken_runtime::{
     ChildAgentParams, StreamingPassthroughSink, run_child_agent_checked,
 };
@@ -282,6 +286,10 @@ let outcome = run_child_agent_checked(
         BackendParentContext::default(),
         Arc::new(passthrough),
     )
+    .with_control(BackendControl {
+        cancellation_token: ctx.cancellation_token.clone(),
+        decision_rx: None,
+    })
 ).await?;
 
 let streamed_text = buffer.lock().await.clone();
@@ -299,11 +307,13 @@ let streamed_text = buffer.lock().await.clone();
 ## 应当避免的做法
 
 - **不要 seed 子 agent 未注册的 key。** 子用 `UnknownKeyPolicy::Error` 应用 seed——未注册 key 会让子在首步前 fail。这是设计行为：把契约不一致暴露在启动期，而不是运行期。
+- **要透传父 run 的 cancellation。** 在工具里调用 child 时，调用 `.with_control(BackendControl { cancellation_token: ctx.cancellation_token.clone(), decision_rx: None })`，这样取消父 run 时也会取消 child run。
 - **`initial_state_seed` 只对 Local backend 生效。** state seeding 由 `BackendCapabilities::delegate_state_seed` 控制；目前只有进程内 Local backend 声明支持。A2A 以及任何尚未实现 seed wire 协议的非本地 backend 都会以 `ExecutionBackendError` 拒绝带 seed 的 delegate 请求，**不会**静默成功。如果远程子真的需要某些数据，请自己把它编码进 prompt。
-- **非 `Completed` 状态不要 export。** `outcome.state` 在失败/取消时仍会填充以便诊断，但把不完整的子 state 写回父 state 会引入不一致。导出前先判断 `outcome.status`。
+- **非 `Completed` 状态不要 export。** 对 `Failed` / `Cancelled` 这类已经返回 `BackendRunResult` 的终态，`outcome.state` 是否可用取决于 backend 以及失败发生的位置；backend dispatch 或 loop setup 级别的错误会直接返回 `Err`，不会提供 `BackendRunResult.state`。无论哪种情况，把不完整的子 state 写回父 state 都可能引入不一致。
 - **不要假设非持久 key 能跨 run 边界。** `BackendRunResult.state` 通过 `export_persisted` 构造，只包含 `persistent: true` 的 key。
 - **不要把 `ctx.activity_sink` 直接传给流式子 agent。** 不经 `StreamingPassthroughSink` 包装，子的 `TextDelta` 会原样出现在父 sink 上，污染父消息流。要么包装，要么传 `NullEventSink`。
 - **注意非本地 backend 的 transcript 语义。** 子通过 A2A backend（或其他 transcript-incremental 的远程 backend）跑时，只有 `User` 角色、`Visibility::All` 的内容会被转发给远端 agent——assistant / tool 历史不会。需要历史上下文时，要么自己编进 user prompt，要么用本地 backend。
+- **不要把 A2A delegate 的 `run_id` 和远端 task id 混淆。** 对 delegate 调用来说，`BackendRunResult.run_id` 是本地生成的 correlation id，用于子工具、suspension、trace 关联。远端 A2A task id 仍然保存在 A2A progress metadata/state 中，不会被这个本地 id 替代。
 - **`initial_messages` 是 fresh delegation 的初始输入，不是 history + 新增量的拆分。** `ChildAgentParams::new(..., initial_messages, ...)` 就是 child 启动时看到的输入，通常是单个 `Message::user`。当前 API 不支持复用旧 delegate transcript。内部 `run_child_agent` 会把这个 fresh input 映射到 `BackendDelegateRunRequest.messages` 和 `.new_messages`，不要据此假设公共 API 支持续跑。
 - **passthrough sink 的 raw 子错误是显式 opt-in。** `StreamingPassthroughSink::new` 默认把子的 `AgentEvent::Error` 包装成父 `ToolCallStreamDelta` 输出。只有当 UI 明确知道 raw error 来自 child tool stream、不会自动 kill parent run 时，才选择 `ChildErrorForwarding::ForwardRawParentError`。
 

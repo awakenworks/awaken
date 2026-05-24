@@ -1,4 +1,7 @@
 //! `cancel_task` tool for self/child background task cancellation.
+//!
+//! Outside a background task, `target.relation = "self"` cancels the current
+//! agent run and its background descendants.
 
 use std::sync::Arc;
 
@@ -120,7 +123,7 @@ impl Tool for CancelTaskTool {
         ToolDescriptor::new(
             CANCEL_TASK_TOOL_ID,
             CANCEL_TASK_TOOL_ID,
-            "Cancel the current background task or one of its child tasks. Descendant tasks are cancelled together.",
+            "Cancel the current background task, the current run outside background tasks, or one child task. Descendant tasks are cancelled together.",
         )
         .with_parameters(json!({
             "type": "object",

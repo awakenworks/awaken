@@ -1,5 +1,8 @@
 //! Remote A2A agent delegation backend -- HTTP client for A2A v1.0 HTTP+JSON.
 
+mod cancellation;
+mod completion;
+
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 use std::time::Duration;
@@ -12,6 +15,7 @@ use crate::backend::{
     ExecutionBackendError, ExecutionBackendFactory, ExecutionBackendFactoryError,
 };
 use async_trait::async_trait;
+use awaken_contract::CancellationToken;
 use awaken_contract::contract::content::{
     AudioSource, ContentBlock, DocumentSource, ImageSource, VideoSource,
 };
@@ -33,6 +37,9 @@ use futures::StreamExt;
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+
+use cancellation::observe_to_completion_or_cancel;
+use completion::{PollCompletion, map_completion_result};
 
 const A2A_VERSION: &str = "1.0";
 const A2A_BACKEND: &str = "a2a";
@@ -304,6 +311,13 @@ impl<'a> A2aExecutionRequest<'a> {
         match self {
             Self::Root(request) => request.sink.clone(),
             Self::Delegate(request) => request.sink.clone(),
+        }
+    }
+
+    fn cancellation_token(&self) -> Option<&CancellationToken> {
+        match self {
+            Self::Root(request) => request.control.cancellation_token.as_ref(),
+            Self::Delegate(request) => request.control.cancellation_token.as_ref(),
         }
     }
 
@@ -726,8 +740,10 @@ impl A2aBackend {
         let submitted_task_id = turn_message.task_id.clone();
         let submitted_context_id = turn_message.context_id.clone();
         // Delegate runs have no caller-supplied `RunIdentity`; synthesize a
-        // local id so child tools, suspension tickets, and trace correlation
-        // can hang off the same key.
+        // local-only id so child tools, suspension tickets, and trace
+        // correlation can hang off the same key. This is not the remote A2A
+        // task id and is generated after `build_turn_message`, so it is not
+        // injected into the outbound task/context id fields.
         let delegate_synthesized_run_id = match &request {
             A2aExecutionRequest::Delegate(_) => Some(uuid::Uuid::now_v7().to_string()),
             _ => None,
@@ -785,7 +801,13 @@ impl A2aBackend {
                 );
                 persist_accepted_checkpoint(&request, accepted_state.clone()).await?;
                 emit_task_progress(&sink, &submitted_snapshot).await;
-                let completion = self.observe_to_completion(submitted_snapshot, &sink).await;
+                let completion = observe_to_completion_or_cancel(
+                    self,
+                    submitted_snapshot,
+                    &sink,
+                    request.cancellation_token(),
+                )
+                .await;
 
                 if let Some(run_id) = &run_id {
                     self.in_flight_tasks.lock().remove(run_id);
@@ -813,115 +835,6 @@ impl A2aBackend {
             }
         }
     }
-}
-
-enum PollCompletion {
-    Finished(TaskSnapshot),
-    TimedOut(TaskSnapshot),
-}
-
-struct CompletionResult {
-    snapshot: TaskSnapshot,
-    status: BackendRunStatus,
-    termination: TerminationReason,
-    status_reason: Option<String>,
-}
-
-fn map_completion_result(completion: PollCompletion, root_run: bool) -> CompletionResult {
-    match completion {
-        PollCompletion::TimedOut(snapshot) => CompletionResult {
-            snapshot,
-            status: BackendRunStatus::Timeout,
-            termination: TerminationReason::stopped(WAIT_REASON_TIMEOUT),
-            status_reason: Some(WAIT_REASON_TIMEOUT.to_string()),
-        },
-        PollCompletion::Finished(snapshot) => {
-            let (status, termination, status_reason) = match snapshot.state {
-                TaskState::Completed => (
-                    BackendRunStatus::Completed,
-                    TerminationReason::NaturalEnd,
-                    None,
-                ),
-                TaskState::Canceled => (
-                    BackendRunStatus::Cancelled,
-                    TerminationReason::Cancelled,
-                    None,
-                ),
-                TaskState::Failed => {
-                    let message = snapshot
-                        .failure_message
-                        .clone()
-                        .unwrap_or_else(|| "remote agent run failed".into());
-                    (
-                        BackendRunStatus::Failed(message.clone()),
-                        TerminationReason::Error(message),
-                        None,
-                    )
-                }
-                TaskState::Rejected => {
-                    let message = snapshot
-                        .failure_message
-                        .clone()
-                        .unwrap_or_else(|| "remote agent rejected the task".into());
-                    (
-                        BackendRunStatus::Failed(message.clone()),
-                        TerminationReason::Error(message),
-                        None,
-                    )
-                }
-                TaskState::InputRequired => {
-                    interrupted_completion(snapshot.failure_message.clone(), root_run, false)
-                }
-                TaskState::AuthRequired => {
-                    interrupted_completion(snapshot.failure_message.clone(), root_run, true)
-                }
-                TaskState::Submitted | TaskState::Working => (
-                    BackendRunStatus::Failed("remote agent did not reach a terminal state".into()),
-                    TerminationReason::Error("remote agent did not reach a terminal state".into()),
-                    None,
-                ),
-            };
-            CompletionResult {
-                snapshot,
-                status,
-                termination,
-                status_reason,
-            }
-        }
-    }
-}
-
-fn interrupted_completion(
-    failure_message: Option<String>,
-    root_run: bool,
-    auth_required: bool,
-) -> (BackendRunStatus, TerminationReason, Option<String>) {
-    let (default_message, wait_reason) = if auth_required {
-        (
-            "remote agent requires authentication",
-            WAIT_REASON_AUTH_REQUIRED,
-        )
-    } else {
-        (
-            "remote agent requires additional input",
-            WAIT_REASON_INPUT_REQUIRED,
-        )
-    };
-
-    let message = if root_run {
-        failure_message
-    } else {
-        Some(failure_message.unwrap_or_else(|| default_message.into()))
-    };
-    (
-        if auth_required {
-            BackendRunStatus::WaitingAuth(message)
-        } else {
-            BackendRunStatus::WaitingInput(message)
-        },
-        TerminationReason::Suspended,
-        Some(wait_reason.to_string()),
-    )
 }
 
 impl SubmissionOutcome {

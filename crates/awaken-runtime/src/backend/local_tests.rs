@@ -16,7 +16,7 @@ use serde_json::{Value, json};
 
 use crate::backend::{
     BackendControl, BackendDelegatePolicy, BackendDelegateRunRequest, BackendParentContext,
-    BackendRunStatus,
+    BackendRunStatus, ExecutionBackendError,
 };
 #[cfg(feature = "background")]
 use crate::extensions::background::{
@@ -144,6 +144,50 @@ impl AgentResolver for FixedResolver {
 impl ExecutionResolver for FixedResolver {
     fn resolve_execution(&self, agent_id: &str) -> Result<ResolvedExecution, crate::RuntimeError> {
         self.resolve(agent_id).map(ResolvedExecution::local)
+    }
+}
+
+struct FailingResolver;
+
+impl AgentResolver for FailingResolver {
+    fn resolve(&self, _agent_id: &str) -> Result<ResolvedAgent, crate::RuntimeError> {
+        Err(crate::RuntimeError::ResolveFailed {
+            message: "resolver storage unavailable".into(),
+        })
+    }
+}
+
+impl ExecutionResolver for FailingResolver {
+    fn resolve_execution(&self, agent_id: &str) -> Result<ResolvedExecution, crate::RuntimeError> {
+        self.resolve(agent_id).map(ResolvedExecution::local)
+    }
+}
+
+#[tokio::test]
+async fn execute_delegate_preserves_non_missing_resolver_errors() {
+    let err = LocalBackend::new()
+        .execute_delegate(BackendDelegateRunRequest {
+            agent_id: "delegate",
+            messages: vec![Message::user("hello")],
+            new_messages: vec![Message::user("hello")],
+            sink: Arc::new(NullEventSink),
+            resolver: &FailingResolver,
+            parent: BackendParentContext::default(),
+            control: BackendControl::default(),
+            policy: BackendDelegatePolicy::default(),
+            state_seed: None,
+        })
+        .await
+        .expect_err("resolver infrastructure failure should surface");
+
+    match err {
+        ExecutionBackendError::ExecutionFailed(message) => {
+            assert!(
+                message.contains("resolver storage unavailable"),
+                "error should preserve resolver failure: {message}"
+            );
+        }
+        other => panic!("non-missing resolver error must not become AgentNotFound: {other:?}"),
     }
 }
 

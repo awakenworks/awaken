@@ -15,29 +15,53 @@ use super::{
 };
 
 #[cfg(feature = "background")]
-struct BackgroundControlResolver<'a> {
+struct DelegateResolver<'a> {
     inner: &'a dyn crate::registry::ExecutionResolver,
+    agent_id: &'a str,
+    resolved: ResolvedAgent,
     context: Option<crate::extensions::background::BackgroundTaskExecutionContext>,
 }
 
+#[cfg(not(feature = "background"))]
+struct DelegateResolver<'a> {
+    inner: &'a dyn crate::registry::ExecutionResolver,
+    agent_id: &'a str,
+    resolved: ResolvedAgent,
+}
+
 #[cfg(feature = "background")]
-impl<'a> BackgroundControlResolver<'a> {
+impl<'a> DelegateResolver<'a> {
     fn new(
         inner: &'a dyn crate::registry::ExecutionResolver,
+        agent_id: &'a str,
+        resolved: ResolvedAgent,
         context: Option<crate::extensions::background::BackgroundTaskExecutionContext>,
     ) -> Self {
-        Self { inner, context }
+        Self {
+            inner,
+            agent_id,
+            resolved,
+            context,
+        }
+    }
+
+    fn with_background_control(&self, mut resolved: ResolvedAgent) -> ResolvedAgent {
+        if let Some(context) = &self.context {
+            LocalBackend::ensure_background_cancel_tool(&mut resolved, context);
+        }
+        resolved
     }
 }
 
 #[cfg(feature = "background")]
-impl crate::registry::AgentResolver for BackgroundControlResolver<'_> {
+impl crate::registry::AgentResolver for DelegateResolver<'_> {
     fn resolve(&self, agent_id: &str) -> Result<ResolvedAgent, crate::RuntimeError> {
-        let mut resolved = self.inner.resolve(agent_id)?;
-        if let Some(context) = &self.context {
-            LocalBackend::ensure_background_cancel_tool(&mut resolved, context);
+        if agent_id == self.agent_id {
+            return Ok(self.resolved.clone());
         }
-        Ok(resolved)
+        self.inner
+            .resolve(agent_id)
+            .map(|resolved| self.with_background_control(resolved))
     }
 
     fn agent_ids(&self) -> Vec<String> {
@@ -46,11 +70,60 @@ impl crate::registry::AgentResolver for BackgroundControlResolver<'_> {
 }
 
 #[cfg(feature = "background")]
-impl crate::registry::ExecutionResolver for BackgroundControlResolver<'_> {
+impl crate::registry::ExecutionResolver for DelegateResolver<'_> {
     fn resolve_execution(
         &self,
         agent_id: &str,
     ) -> Result<crate::registry::ResolvedExecution, crate::RuntimeError> {
+        if agent_id == self.agent_id {
+            return Ok(crate::registry::ResolvedExecution::local(
+                self.resolved.clone(),
+            ));
+        }
+        self.inner.resolve_execution(agent_id)
+    }
+}
+
+#[cfg(not(feature = "background"))]
+impl<'a> DelegateResolver<'a> {
+    fn new(
+        inner: &'a dyn crate::registry::ExecutionResolver,
+        agent_id: &'a str,
+        resolved: ResolvedAgent,
+    ) -> Self {
+        Self {
+            inner,
+            agent_id,
+            resolved,
+        }
+    }
+}
+
+#[cfg(not(feature = "background"))]
+impl crate::registry::AgentResolver for DelegateResolver<'_> {
+    fn resolve(&self, agent_id: &str) -> Result<ResolvedAgent, crate::RuntimeError> {
+        if agent_id == self.agent_id {
+            return Ok(self.resolved.clone());
+        }
+        self.inner.resolve(agent_id)
+    }
+
+    fn agent_ids(&self) -> Vec<String> {
+        self.inner.agent_ids()
+    }
+}
+
+#[cfg(not(feature = "background"))]
+impl crate::registry::ExecutionResolver for DelegateResolver<'_> {
+    fn resolve_execution(
+        &self,
+        agent_id: &str,
+    ) -> Result<crate::registry::ResolvedExecution, crate::RuntimeError> {
+        if agent_id == self.agent_id {
+            return Ok(crate::registry::ResolvedExecution::local(
+                self.resolved.clone(),
+            ));
+        }
         self.inner.resolve_execution(agent_id)
     }
 }
@@ -62,6 +135,15 @@ impl LocalBackend {
     #[must_use]
     pub fn new() -> Self {
         Self
+    }
+
+    pub(crate) async fn execute_resolved(
+        resolved: &ResolvedAgent,
+        request: BackendDelegateRunRequest<'_>,
+    ) -> Result<BackendRunResult, ExecutionBackendError> {
+        Self::new()
+            .execute_resolved_delegate(resolved, request)
+            .await
     }
 }
 
@@ -164,18 +246,30 @@ impl LocalBackend {
         &self,
         request: BackendDelegateRunRequest<'_>,
     ) -> Result<BackendRunResult, ExecutionBackendError> {
+        let resolved = crate::registry::AgentResolver::resolve(request.resolver, request.agent_id)
+            .map_err(|error| map_resolve_error(request.agent_id, error))?;
+
+        self.execute_resolved_delegate(&resolved, request).await
+    }
+
+    pub(crate) async fn execute_resolved_delegate(
+        &self,
+        resolved: &ResolvedAgent,
+        request: BackendDelegateRunRequest<'_>,
+    ) -> Result<BackendRunResult, ExecutionBackendError> {
         match (request.policy.persistence, request.policy.continuation) {
             (BackendDelegatePersistence::Ephemeral, BackendDelegateContinuation::Disabled) => {}
         }
         #[cfg(feature = "background")]
         let background_context = crate::extensions::background::current_background_task_context();
-        let resolved = crate::registry::AgentResolver::resolve(request.resolver, request.agent_id)
-            .map_err(|error| {
-                ExecutionBackendError::AgentNotFound(format!(
-                    "failed to resolve agent '{}': {error}",
-                    request.agent_id
-                ))
-            })?;
+        #[cfg(feature = "background")]
+        let mut initial_resolved = resolved.clone();
+        #[cfg(not(feature = "background"))]
+        let initial_resolved = resolved.clone();
+        #[cfg(feature = "background")]
+        if let Some(context) = &background_context {
+            Self::ensure_background_cancel_tool(&mut initial_resolved, context);
+        }
 
         let store = crate::state::StateStore::new();
         store
@@ -195,11 +289,11 @@ impl LocalBackend {
             (Some(sender), receiver)
         };
 
-        Self::bind_local_execution_env(&store, &resolved, owner_inbox.as_ref())
+        Self::bind_local_execution_env(&store, &initial_resolved, owner_inbox.as_ref())
             .map_err(|error| ExecutionBackendError::ExecutionFailed(error.to_string()))?;
 
         #[cfg(feature = "background")]
-        let bg_manager = if resolved
+        let bg_manager = if initial_resolved
             .env
             .plugins
             .iter()
@@ -224,12 +318,30 @@ impl LocalBackend {
                 ))
                 .map_err(|error| ExecutionBackendError::ExecutionFailed(error.to_string()))?;
         }
+        #[cfg(feature = "background")]
+        let background_cancel_managers = {
+            let mut managers =
+                crate::extensions::background::managers_for_resolved_agent(&initial_resolved);
+            if let Some(manager) = &bg_manager {
+                managers.push(manager.clone());
+            }
+            crate::extensions::background::dedup_managers(managers)
+        };
 
         #[cfg(feature = "background")]
-        let background_resolver =
-            BackgroundControlResolver::new(request.resolver, background_context.clone());
+        let delegate_resolver = DelegateResolver::new(
+            request.resolver,
+            request.agent_id,
+            initial_resolved.clone(),
+            background_context.clone(),
+        );
         #[cfg(not(feature = "background"))]
-        let background_resolver = request.resolver;
+        let delegate_resolver =
+            DelegateResolver::new(request.resolver, request.agent_id, initial_resolved.clone());
+        #[cfg(feature = "background")]
+        let child_resolver: &dyn crate::registry::AgentResolver = &delegate_resolver;
+        #[cfg(not(feature = "background"))]
+        let child_resolver: &dyn crate::registry::AgentResolver = &delegate_resolver;
 
         let sub_run_id = uuid::Uuid::now_v7().to_string();
         let mut run_identity = RunIdentity::new(
@@ -243,9 +355,15 @@ impl LocalBackend {
         if let Some(parent_tool_call_id) = request.parent.parent_tool_call_id.clone() {
             run_identity = run_identity.with_parent_tool_call_id(parent_tool_call_id);
         }
+        #[cfg(feature = "background")]
+        let _background_cancel_guard = crate::extensions::background::spawn_run_cancellation_guard(
+            sub_run_id.clone(),
+            request.control.cancellation_token.clone(),
+            background_cancel_managers,
+        );
 
         let result = run_agent_loop(AgentLoopParams {
-            resolver: &background_resolver,
+            resolver: child_resolver,
             agent_id: request.agent_id,
             runtime: &phase_runtime,
             sink: request.sink,
@@ -343,6 +461,17 @@ fn map_termination(termination: &TerminationReason) -> BackendRunStatus {
         }
         TerminationReason::Suspended => BackendRunStatus::Suspended(None),
         TerminationReason::Error(message) => BackendRunStatus::Failed(message.clone()),
+    }
+}
+
+fn map_resolve_error(agent_id: &str, error: crate::RuntimeError) -> ExecutionBackendError {
+    match error {
+        crate::RuntimeError::AgentNotFound { agent_id } => {
+            ExecutionBackendError::AgentNotFound(agent_id)
+        }
+        other => ExecutionBackendError::ExecutionFailed(format!(
+            "failed to resolve agent '{agent_id}': {other}"
+        )),
     }
 }
 

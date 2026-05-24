@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -7,6 +7,7 @@ use parking_lot::RwLock;
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
 
+mod run_cancellation;
 use crate::cancellation::{CancellationHandle, CancellationToken};
 use crate::inbox::InboxSender;
 use crate::state::{MutationBatch, StateStore};
@@ -72,6 +73,9 @@ pub enum SpawnError {
     /// Commit to the state store failed.
     #[error(transparent)]
     State(#[from] StateError),
+    /// The owning agent run has already been cancelled.
+    #[error("parent run '{0}' has already been cancelled")]
+    ParentRunCancelled(String),
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -116,6 +120,7 @@ pub struct BackgroundTaskManager {
     counter: AtomicU64,
     owner_inbox: RwLock<Option<InboxSender>>,
     store: std::sync::OnceLock<StateStore>,
+    cancelled_run_ids: RwLock<HashSet<String>>,
 }
 
 impl BackgroundTaskManager {
@@ -125,11 +130,11 @@ impl BackgroundTaskManager {
             counter: AtomicU64::new(0),
             owner_inbox: RwLock::new(None),
             store: std::sync::OnceLock::new(),
+            cancelled_run_ids: RwLock::new(HashSet::new()),
         }
     }
 
-    /// Set the inbox sender that background tasks receive for pushing
-    /// messages to the owner thread.
+    /// Set the inbox sender that background tasks receive for pushing messages to the owner thread.
     pub fn set_owner_inbox(&self, inbox: InboxSender) {
         *self.owner_inbox.write() = Some(inbox);
     }
@@ -195,6 +200,9 @@ impl BackgroundTaskManager {
         if parent_context.task_id.is_none()
             && let Some(context) = current_background_task_context()
         {
+            if parent_context.run_id.is_none() {
+                parent_context.run_id = context.run_id;
+            }
             parent_context.task_id = Some(context.task_id);
         }
 
@@ -263,9 +271,6 @@ impl BackgroundTaskManager {
 
     /// Spawn a background task.
     ///
-    /// The `task_fn` receives a [`TaskContext`] and returns a `TaskResult`.
-    /// Spawn a background task.
-    ///
     /// `name` is an optional short identifier for addressing (e.g. "researcher").
     /// If provided, it must be unique among running tasks on this thread and
     /// must not be a reserved name ("parent", "self", "all", "broadcast").
@@ -285,6 +290,9 @@ impl BackgroundTaskManager {
         let parent_context = self.merge_ambient_parent_context(parent_context);
         if let Some(n) = name {
             self.validate_name(n, owner_thread_id)?;
+        }
+        if let Some(run_id) = self.is_parent_run_cancelled(&parent_context) {
+            return Err(SpawnError::ParentRunCancelled(run_id));
         }
         let task_id = self.next_task_id();
         let (cancel_handle, cancel_token) = CancellationToken::new_pair();
@@ -323,12 +331,14 @@ impl BackgroundTaskManager {
         let ttype = task_type.to_string();
         let tname = task_name.clone();
         let desc = description.to_string();
+        let parent_context_for_task = parent_context.clone();
 
         let join_handle = tokio::spawn(async move {
             let result = scope_background_task_context(
                 BackgroundTaskExecutionContext {
                     manager: manager.clone(),
                     task_id: tid.clone(),
+                    run_id: parent_context_for_task.run_id.clone(),
                 },
                 task_fn(ctx),
             )
@@ -354,7 +364,7 @@ impl BackgroundTaskManager {
                     result: result_val,
                     created_at_ms: now,
                     completed_at_ms: Some(completed_at),
-                    parent_context,
+                    parent_context: parent_context_for_task,
                 })),
                 "task_completion",
                 &tid,
@@ -377,7 +387,12 @@ impl BackgroundTaskManager {
             agent_inbox: None,
         };
 
-        self.handles.lock().await.insert(task_id.clone(), handle);
+        self.insert_handle_and_cancel_if_parent_run_cancelled(
+            task_id.clone(),
+            handle,
+            &parent_context,
+        )
+        .await;
         Ok(task_id)
     }
 
@@ -598,6 +613,9 @@ impl BackgroundTaskManager {
         if let Some(n) = name {
             self.validate_name(n, owner_thread_id)?;
         }
+        if let Some(run_id) = self.is_parent_run_cancelled(&parent_context) {
+            return Err(SpawnError::ParentRunCancelled(run_id));
+        }
         let task_id = self.next_task_id();
         let (cancel_handle, cancel_token) = CancellationToken::new_pair();
         let now = now_ms();
@@ -631,12 +649,14 @@ impl BackgroundTaskManager {
         let owner = owner_thread_id.to_string();
         let tname = task_name.clone();
         let desc = description.to_string();
+        let parent_context_for_task = parent_context.clone();
 
         let join_handle = tokio::spawn(async move {
             let result = scope_background_task_context(
                 BackgroundTaskExecutionContext {
                     manager: manager.clone(),
                     task_id: tid.clone(),
+                    run_id: parent_context_for_task.run_id.clone(),
                 },
                 task_fn(AgentTaskContext {
                     task_id: tid.clone(),
@@ -666,7 +686,7 @@ impl BackgroundTaskManager {
                     result: result_val,
                     created_at_ms: now,
                     completed_at_ms: Some(completed_at),
-                    parent_context,
+                    parent_context: parent_context_for_task,
                 })),
                 "sub_agent_completion",
                 &tid,
@@ -688,7 +708,12 @@ impl BackgroundTaskManager {
             agent_inbox: Some(stored_sender),
         };
 
-        self.handles.lock().await.insert(task_id.clone(), handle);
+        self.insert_handle_and_cancel_if_parent_run_cancelled(
+            task_id.clone(),
+            handle,
+            &parent_context,
+        )
+        .await;
         Ok(task_id)
     }
 
@@ -804,31 +829,6 @@ impl BackgroundTaskManager {
             }
         }
         None
-    }
-
-    pub async fn cancel_descendants_for_run(&self, parent_run_id: &str) -> usize {
-        let root_task_ids = self
-            .store()
-            .and_then(|store| store.read::<BackgroundTaskStateKey>())
-            .map(|snapshot| {
-                snapshot
-                    .tasks
-                    .values()
-                    .filter(|meta| {
-                        !meta.status.is_terminal()
-                            && meta.parent_context.run_id.as_deref() == Some(parent_run_id)
-                            && meta.parent_context.task_id.is_none()
-                    })
-                    .map(|meta| meta.task_id.clone())
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default();
-
-        let mut cancelled = 0usize;
-        for task_id in root_task_ids {
-            cancelled += self.cancel_tree(&task_id).await;
-        }
-        cancelled
     }
 
     #[cfg(test)]

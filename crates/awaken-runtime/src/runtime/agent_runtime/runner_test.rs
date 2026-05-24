@@ -44,7 +44,7 @@ use awaken_contract::registry_spec::{AgentSpec, RemoteEndpoint};
 use awaken_stores::InMemoryStore;
 use serde_json::{Value, json};
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 struct ScriptedLlm {
@@ -1170,6 +1170,119 @@ impl Tool for SpawnShortBgTaskTool {
     }
 }
 
+struct SpawnCancellableBgTaskTool {
+    manager: Arc<crate::extensions::background::BackgroundTaskManager>,
+    spawned_task_id: Arc<Mutex<Option<String>>>,
+    child_task_id: Arc<Mutex<Option<String>>>,
+    task_started: Arc<AtomicBool>,
+    child_started: Arc<AtomicBool>,
+}
+
+#[async_trait]
+impl Tool for SpawnCancellableBgTaskTool {
+    fn descriptor(&self) -> ToolDescriptor {
+        ToolDescriptor::new("spawn_bg", "spawn_bg", "spawn cancellable background task")
+    }
+
+    async fn execute(&self, _args: Value, ctx: &ToolCallContext) -> Result<ToolOutput, ToolError> {
+        let task_started = self.task_started.clone();
+        let child_started = self.child_started.clone();
+        let child_task_id = self.child_task_id.clone();
+        let manager = self.manager.clone();
+        let owner_thread_id = ctx.run_identity.thread_id.clone();
+        let task_id = self
+            .manager
+            .spawn(
+                &ctx.run_identity.thread_id,
+                "bg",
+                None,
+                "cancellable task",
+                crate::extensions::background::TaskParentContext::default(),
+                move |task_ctx| async move {
+                    task_started.store(true, Ordering::SeqCst);
+                    let child_id = manager
+                        .spawn(
+                            &owner_thread_id,
+                            "bg-child",
+                            None,
+                            "cancellable child task",
+                            crate::extensions::background::TaskParentContext::default(),
+                            move |child_ctx| async move {
+                                child_started.store(true, Ordering::SeqCst);
+                                child_ctx.cancel_token.cancelled().await;
+                                crate::extensions::background::TaskResult::Cancelled
+                            },
+                        )
+                        .await
+                        .expect("child background task should spawn");
+                    *child_task_id.lock().expect("child task lock") = Some(child_id);
+                    task_ctx.cancel_token.cancelled().await;
+                    crate::extensions::background::TaskResult::Cancelled
+                },
+            )
+            .await
+            .map_err(|e| ToolError::ExecutionFailed(e.to_string()))?;
+        *self.spawned_task_id.lock().expect("spawned task lock") = Some(task_id.clone());
+        Ok(ToolResult::success("spawn_bg", json!({"task_id": task_id})).into())
+    }
+}
+
+struct BlockingAfterToolLlm {
+    calls: AtomicUsize,
+}
+
+#[async_trait]
+impl LlmExecutor for BlockingAfterToolLlm {
+    async fn execute(
+        &self,
+        _request: InferenceRequest,
+    ) -> Result<StreamResult, InferenceExecutionError> {
+        if self.calls.fetch_add(1, Ordering::SeqCst) == 0 {
+            return Ok(StreamResult {
+                content: vec![ContentBlock::text("start background")],
+                tool_calls: vec![
+                    awaken_contract::contract::message::ToolCall::new("bg1", "spawn_bg", json!({})),
+                    awaken_contract::contract::message::ToolCall::new("wait1", "wait", json!({})),
+                ],
+                usage: None,
+                stop_reason: Some(StopReason::ToolUse),
+                has_incomplete_tool_calls: false,
+            });
+        }
+
+        Ok(StreamResult {
+            content: vec![ContentBlock::text("done")],
+            tool_calls: vec![],
+            usage: None,
+            stop_reason: Some(StopReason::EndTurn),
+            has_incomplete_tool_calls: false,
+        })
+    }
+
+    fn name(&self) -> &str {
+        "blocking-after-tool"
+    }
+}
+
+struct CancellableBlockingTool {
+    started: Arc<AtomicBool>,
+}
+
+#[async_trait]
+impl Tool for CancellableBlockingTool {
+    fn descriptor(&self) -> ToolDescriptor {
+        ToolDescriptor::new("wait", "wait", "waits until the run is cancelled")
+    }
+
+    async fn execute(&self, _args: Value, ctx: &ToolCallContext) -> Result<ToolOutput, ToolError> {
+        self.started.store(true, Ordering::SeqCst);
+        if let Some(token) = &ctx.cancellation_token {
+            token.cancelled().await;
+        }
+        Err(ToolError::ExecutionFailed("cancelled".into()))
+    }
+}
+
 struct RecordingLlm {
     responses: Mutex<Vec<StreamResult>>,
     requests: Arc<Mutex<Vec<InferenceRequest>>>,
@@ -1718,6 +1831,113 @@ async fn background_events_buffer_while_suspended_until_decision_arrives() {
         }),
         "buffered background event should be injected into the resumed request"
     );
+}
+
+#[tokio::test]
+async fn cancelling_agent_run_cancels_background_descendants() {
+    let spawned_task_id = Arc::new(Mutex::new(None::<String>));
+    let child_task_id = Arc::new(Mutex::new(None::<String>));
+    let task_started = Arc::new(AtomicBool::new(false));
+    let child_started = Arc::new(AtomicBool::new(false));
+    let blocking_started = Arc::new(AtomicBool::new(false));
+    let manager = Arc::new(crate::extensions::background::BackgroundTaskManager::new());
+    let llm = Arc::new(BlockingAfterToolLlm {
+        calls: AtomicUsize::new(0),
+    });
+    let resolver = Arc::new(FixedResolver {
+        agent: ResolvedAgent::new("agent", "m", "sys", llm)
+            .with_background_manager(manager.clone())
+            .with_tool(Arc::new(SpawnCancellableBgTaskTool {
+                manager: manager.clone(),
+                spawned_task_id: spawned_task_id.clone(),
+                child_task_id: child_task_id.clone(),
+                task_started: task_started.clone(),
+                child_started: child_started.clone(),
+            }))
+            .with_tool(Arc::new(CancellableBlockingTool {
+                started: blocking_started.clone(),
+            })),
+        plugins: vec![Arc::new(
+            crate::extensions::background::BackgroundTaskPlugin::new(manager.clone()),
+        )],
+    });
+    let runtime = Arc::new(AgentRuntime::new(resolver));
+
+    let run_task = {
+        let runtime = runtime.clone();
+        tokio::spawn(async move {
+            runtime
+                .run(
+                    RunRequest::new("thread-bg-cancel", vec![Message::user("go")])
+                        .with_agent_id("agent"),
+                    Arc::new(NullEventSink),
+                )
+                .await
+        })
+    };
+
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        loop {
+            if task_started.load(Ordering::SeqCst)
+                && child_started.load(Ordering::SeqCst)
+                && blocking_started.load(Ordering::SeqCst)
+            {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("background task and second inference should start");
+
+    assert!(
+        runtime.cancel_by_thread("thread-bg-cancel"),
+        "active run should accept cancellation"
+    );
+
+    let result = tokio::time::timeout(std::time::Duration::from_secs(2), run_task)
+        .await
+        .expect("run should finish after cancellation")
+        .expect("run task should join")
+        .expect("run should return cancellation result");
+    assert_eq!(result.termination, TerminationReason::Cancelled);
+
+    let task_id = spawned_task_id
+        .lock()
+        .expect("spawned task lock")
+        .clone()
+        .expect("background task id should be recorded");
+    let child_id = child_task_id
+        .lock()
+        .expect("child task lock")
+        .clone()
+        .expect("child background task id should be recorded");
+
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        loop {
+            if let Some(summary) = manager.get(&task_id).await
+                && summary.status == crate::extensions::background::TaskStatus::Cancelled
+            {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("background descendant should be cancelled with the agent run");
+
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        loop {
+            if let Some(summary) = manager.get(&child_id).await
+                && summary.status == crate::extensions::background::TaskStatus::Cancelled
+            {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("nested background descendant should be cancelled with the agent run");
 }
 
 #[tokio::test]

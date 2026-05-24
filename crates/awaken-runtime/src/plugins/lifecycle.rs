@@ -1,3 +1,5 @@
+use std::any::Any;
+
 use crate::state::MutationBatch;
 use awaken_contract::registry_spec::AgentSpec;
 use awaken_contract::{PluginConfigKey, StateError};
@@ -28,7 +30,7 @@ impl ConfigSchema {
     }
 }
 
-pub trait Plugin: Send + Sync + 'static {
+pub trait Plugin: Send + Sync + Any + 'static {
     fn descriptor(&self) -> PluginDescriptor;
 
     /// Bind per-run runtime context to the plugin instance.
@@ -71,6 +73,13 @@ pub trait Plugin: Send + Sync + 'static {
     /// Called when switching away from an agent that uses this plugin.
     fn on_deactivate(&self, _patch: &mut MutationBatch) -> Result<(), StateError> {
         Ok(())
+    }
+}
+
+impl dyn Plugin {
+    #[cfg(feature = "background")]
+    pub(crate) fn as_any(&self) -> &dyn Any {
+        self
     }
 }
 

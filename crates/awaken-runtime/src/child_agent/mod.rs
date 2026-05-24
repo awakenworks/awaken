@@ -1,8 +1,8 @@
 //! Plumbing for invoking a sub-agent run from inside a tool.
 //!
 //! [`run_child_agent`] is the single canonical entry point for spawning a
-//! child agent run. Routes through the resolved backend
-//! ([`ExecutionBackend`](crate::backend::ExecutionBackend)) so local and
+//! child agent run. It routes delegate execution through the resolved backend
+//! ([`ExecutionBackend`](crate::backend::ExecutionBackend)), so local and
 //! remote (A2A) children share one call shape, and returns the full
 //! [`BackendRunResult`] so the calling tool can decode child output,
 //! propagate suspensions, or read the child's final persisted state.
@@ -13,15 +13,16 @@
 //! - **Outbound**: read `BackendRunResult.state` after the call, then publish
 //!   to parent state via `ToolOutput.command`.
 //!
-//! Parent → child state seeding is **Local-backend-only**, gated by
-//! [`BackendCapabilities::delegate_state_seed`](crate::backend::BackendCapabilities).
-//! The in-process Local backend opts in and applies the seed before the
-//! child's first step. Every other backend (including A2A and any custom
-//! remote backend that does not implement a seed-passing wire protocol)
-//! leaves the bit `false`, and `run_child_agent` rejects seeded delegate
-//! requests against such backends with `ExecutionBackendError` rather than
-//! silently dropping the seed. If you need to ship data to a remote child,
-//! encode it into the prompt yourself.
+//! Backend capabilities still apply. Parent → child state seeding is
+//! supported only by backends whose
+//! [`BackendCapabilities::delegate_state_seed`](crate::backend::BackendCapabilities)
+//! capability is `true`. The in-process Local backend currently opts in and
+//! applies the seed before the child's first step. A2A and any custom remote
+//! backend that does not implement a seed-passing wire protocol leave the bit
+//! `false`, and `run_child_agent` rejects seeded delegate requests against
+//! such backends with `ExecutionBackendError` rather than silently dropping the
+//! seed. If you need to ship data to a remote child, encode it into the prompt
+//! yourself.
 //!
 //! For tools that want to stream the child's tokens into their own output,
 //! wrap the activity sink with [`StreamingPassthroughSink`].
@@ -36,6 +37,7 @@ use awaken_contract::contract::event_sink::EventSink;
 use awaken_contract::contract::message::Message;
 use awaken_contract::state::PersistedState;
 
+use crate::RuntimeError;
 use crate::backend::{
     BackendControl, BackendDelegatePolicy, BackendDelegateRunRequest, BackendParentContext,
     BackendRunResult, BackendRunStatus, ExecutionBackendError, execute_resolved_delegate_execution,
@@ -184,7 +186,7 @@ pub async fn run_child_agent(
 
     let resolved = resolver
         .resolve_execution(agent_id)
-        .map_err(|error| ExecutionBackendError::AgentNotFound(error.to_string()))?;
+        .map_err(|error| map_resolve_error(agent_id, error))?;
 
     let request = BackendDelegateRunRequest {
         agent_id,
@@ -199,6 +201,15 @@ pub async fn run_child_agent(
     };
 
     execute_resolved_delegate_execution(&resolved, request).await
+}
+
+fn map_resolve_error(agent_id: &str, error: RuntimeError) -> ExecutionBackendError {
+    match error {
+        RuntimeError::AgentNotFound { agent_id } => ExecutionBackendError::AgentNotFound(agent_id),
+        other => ExecutionBackendError::ExecutionFailed(format!(
+            "failed to resolve agent '{agent_id}': {other}"
+        )),
+    }
 }
 
 /// Spawn a child agent run and require it to complete successfully.

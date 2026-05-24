@@ -280,6 +280,122 @@ async fn manager_cancel_tree_cascades_to_descendants() {
 }
 
 #[tokio::test]
+async fn cancel_descendants_for_run_rejects_late_root_spawns() {
+    let (manager, _store) = manager_with_store();
+
+    assert_eq!(manager.cancel_descendants_for_run("run-cancelled").await, 0);
+
+    let err = manager
+        .spawn(
+            "thread-1",
+            "late",
+            None,
+            "late root task",
+            TaskParentContext {
+                run_id: Some("run-cancelled".into()),
+                ..TaskParentContext::default()
+            },
+            |_ctx| async { TaskResult::Success(serde_json::Value::Null) },
+        )
+        .await
+        .expect_err("late root spawn should be rejected after run cancellation");
+
+    assert!(matches!(
+        err,
+        super::manager::SpawnError::ParentRunCancelled(run_id)
+            if run_id == "run-cancelled"
+    ));
+    assert!(
+        manager.list("thread-1").await.is_empty(),
+        "rejected late spawn should not persist background metadata"
+    );
+}
+
+#[tokio::test]
+async fn cancel_descendants_for_run_rejects_late_nested_spawns() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use tokio::sync::Notify;
+
+    let (manager, _store) = manager_with_store();
+    let started = Arc::new(Notify::new());
+    let try_spawn = Arc::new(Notify::new());
+    let rejected = Arc::new(AtomicBool::new(false));
+
+    let root_id = manager
+        .spawn(
+            "thread-1",
+            "root",
+            None,
+            "root task",
+            TaskParentContext {
+                run_id: Some("run-cancelled".into()),
+                ..TaskParentContext::default()
+            },
+            {
+                let manager = manager.clone();
+                let started = started.clone();
+                let try_spawn = try_spawn.clone();
+                let rejected = rejected.clone();
+                move |_ctx| async move {
+                    started.notify_one();
+                    try_spawn.notified().await;
+                    let err = manager
+                        .spawn(
+                            "thread-1",
+                            "late-child",
+                            None,
+                            "late nested child task",
+                            TaskParentContext::default(),
+                            |_child_ctx| async { TaskResult::Success(serde_json::Value::Null) },
+                        )
+                        .await
+                        .expect_err("late nested spawn should inherit cancelled run lineage");
+                    rejected.store(
+                        matches!(
+                            err,
+                            super::manager::SpawnError::ParentRunCancelled(run_id)
+                                if run_id == "run-cancelled"
+                        ),
+                        Ordering::SeqCst,
+                    );
+                    TaskResult::Cancelled
+                }
+            },
+        )
+        .await
+        .unwrap();
+
+    started.notified().await;
+    assert_eq!(manager.cancel_descendants_for_run("run-cancelled").await, 1);
+    try_spawn.notify_one();
+
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        loop {
+            if manager
+                .get(&root_id)
+                .await
+                .is_some_and(|summary| summary.status == TaskStatus::Cancelled)
+            {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("root task should settle after cancellation");
+
+    assert!(
+        rejected.load(Ordering::SeqCst),
+        "late nested spawn should observe the cancelled parent run"
+    );
+    assert_eq!(
+        manager.list("thread-1").await.len(),
+        1,
+        "rejected late nested spawn should not add a second task"
+    );
+}
+
+#[tokio::test]
 async fn spawn_agent_with_context_exposes_task_id() {
     let (manager, _store) = manager_with_store();
     let seen = Arc::new(tokio::sync::Mutex::new(None::<String>));

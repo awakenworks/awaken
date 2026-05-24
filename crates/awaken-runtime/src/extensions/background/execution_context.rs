@@ -14,6 +14,7 @@ tokio::task_local! {
 pub(crate) struct BackgroundTaskExecutionContext {
     pub(crate) manager: Arc<BackgroundTaskManager>,
     pub(crate) task_id: TaskId,
+    pub(crate) run_id: Option<String>,
 }
 
 #[derive(Clone)]
