@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use awaken_contract::contract::commit_coordinator::CommitCoordinator;
 use awaken_contract::contract::config_store::ConfigStore;
 use awaken_contract::contract::executor::{InferenceExecutionError, InferenceRequest, LlmExecutor};
 use awaken_contract::contract::inference::{StopReason, StreamResult, TokenUsage};
@@ -103,14 +104,17 @@ fn bootstrap_agent() -> AgentSpec {
     }
 }
 
-async fn make_app<S>(store: Arc<S>, server_name: &str) -> TestApp<S>
+async fn make_app<S, F>(store: Arc<S>, server_name: &str, make_coordinator: F) -> TestApp<S>
 where
     S: ConfigStore + ThreadRunStore + Send + Sync + 'static,
+    F: FnOnce(Arc<S>) -> Arc<dyn CommitCoordinator>,
 {
+    let coordinator = make_coordinator(Arc::clone(&store));
     let runtime = Arc::new(
         AgentRuntimeBuilder::new()
             .with_provider("bootstrap", Arc::new(ImmediateExecutor))
             .with_thread_run_store(store.clone() as Arc<dyn ThreadRunStore>)
+            .with_commit_coordinator(coordinator)
             .build()
             .expect("build runtime"),
     );
@@ -156,6 +160,16 @@ where
     }
 }
 
+fn file_coordinator(store: Arc<FileStore>) -> Arc<dyn CommitCoordinator> {
+    awaken_stores::FileCommitCoordinator::wrap(store) as Arc<dyn CommitCoordinator>
+}
+
+fn postgres_coordinator(store: Arc<PostgresStore>) -> Arc<dyn CommitCoordinator> {
+    Arc::new(
+        awaken_stores::PgCommitCoordinator::new(store).expect("postgres coordinator constructs"),
+    ) as Arc<dyn CommitCoordinator>
+}
+
 async fn make_thread_app<S>(store: Arc<S>, server_name: &str) -> axum::Router
 where
     S: ThreadRunStore + Send + Sync + 'static,
@@ -177,7 +191,6 @@ where
                 max_rounds: 0,
                 ..Default::default()
             })
-            .with_thread_run_store(store.clone() as Arc<dyn ThreadRunStore>)
             .build()
             .expect("build runtime"),
     );
@@ -446,7 +459,12 @@ async fn seed_managed_agent(router: &axum::Router, prefix: &str) {
 #[tokio::test]
 async fn file_store_config_api_persists_and_publishes_runtime() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let app = make_app(Arc::new(FileStore::new(dir.path())), "file-config-test").await;
+    let app = make_app(
+        Arc::new(FileStore::new(dir.path())),
+        "file-config-test",
+        file_coordinator,
+    )
+    .await;
 
     seed_managed_agent(&app.router, "file").await;
 
@@ -511,7 +529,12 @@ async fn file_store_config_api_persists_and_publishes_runtime() {
 #[tokio::test]
 async fn file_store_thread_lineage_filters_round_trip_via_http() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let app = make_app(Arc::new(FileStore::new(dir.path())), "file-lineage-test").await;
+    let app = make_app(
+        Arc::new(FileStore::new(dir.path())),
+        "file-lineage-test",
+        file_coordinator,
+    )
+    .await;
 
     app.store
         .save_thread(
@@ -601,7 +624,7 @@ async fn table_exists(pool: &PgPool, table_name: &str) -> bool {
 #[ignore = "requires PostgreSQL via DATABASE_URL"]
 async fn postgres_store_auto_creates_schema_and_supports_end_to_end_runtime() {
     let (store, pool, prefix) = make_postgres_store("cfg_runtime").await;
-    let app = make_app(store.clone(), "postgres-config-test").await;
+    let app = make_app(store.clone(), "postgres-config-test", postgres_coordinator).await;
 
     seed_managed_agent(&app.router, "pg").await;
 
@@ -660,7 +683,7 @@ async fn postgres_store_auto_creates_schema_and_supports_end_to_end_runtime() {
 #[ignore = "requires PostgreSQL via DATABASE_URL"]
 async fn postgres_store_thread_lineage_filters_round_trip_via_http() {
     let (store, _pool, _prefix) = make_postgres_store("cfg_lineage").await;
-    let app = make_app(store.clone(), "postgres-lineage-test").await;
+    let app = make_app(store.clone(), "postgres-lineage-test", postgres_coordinator).await;
 
     store
         .save_thread(
