@@ -126,9 +126,10 @@ pub struct Expectation {
     /// Minimum LLM-judge score in `[0.0, 1.0]`.
     ///
     /// The pure deterministic [`crate::score`] function ignores this
-    /// field; server endpoints reject runs that set it without a judge
-    /// config and explicit rubric so the criterion is never silently
-    /// skipped or graded against a vague default.
+    /// field; offline CLI replay/curation rejects it, and server
+    /// endpoints require Live mode with judge config and explicit rubric
+    /// so the criterion is never silently skipped or graded against a
+    /// vague default.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub min_judge_score: Option<f32>,
 
@@ -154,6 +155,42 @@ impl Expectation {
             && self.min_judge_score.is_none()
             && self.expected_error_type.is_none()
     }
+}
+
+/// Validate the numeric range promised by [`Expectation::min_judge_score`].
+///
+/// JSON and Rust callers can both construct values outside the documented
+/// `[0.0, 1.0]` interval. Since judge implementations clamp their result into
+/// that same interval, accepting a threshold above `1.0` creates an impossible
+/// fixture and accepting a threshold below `0.0` creates an always-pass one.
+/// Validate at every ingestion boundary instead of letting scoring semantics
+/// depend on malformed data.
+pub fn validate_min_judge_score(expect: &Expectation, label: &str) -> Result<(), String> {
+    let Some(threshold) = expect.min_judge_score else {
+        return Ok(());
+    };
+    if threshold.is_finite() && (0.0..=1.0).contains(&threshold) {
+        return Ok(());
+    }
+    Err(format!(
+        "{label} sets expect.min_judge_score={threshold}; value must be finite and within [0.0, 1.0]"
+    ))
+}
+
+/// Validate an expectation before it enters the offline CLI replay path.
+///
+/// `awaken-eval replay` intentionally has no provider/judge configuration:
+/// it runs deterministic fixture scripts through the pure scorer. Therefore a
+/// fixture that asks for `min_judge_score` cannot be evaluated correctly in the
+/// CLI and must fail closed instead of being silently green.
+pub fn validate_offline_expectation(expect: &Expectation, label: &str) -> Result<(), String> {
+    validate_min_judge_score(expect, label)?;
+    if expect.min_judge_score.is_some() {
+        return Err(format!(
+            "{label} sets expect.min_judge_score; offline awaken-eval replay/curate cannot run an LLM judge — use server live eval with `judge.rubric`, or remove the judge-only criterion"
+        ));
+    }
+    Ok(())
 }
 
 /// A specific way a replay deviated from its expectation.
@@ -377,6 +414,39 @@ mod tests {
             ..Expectation::default()
         };
         assert!(!e.is_empty());
+    }
+
+    #[test]
+    fn min_judge_score_validation_accepts_closed_unit_interval() {
+        for threshold in [0.0, 0.5, 1.0] {
+            let e = Expectation {
+                min_judge_score: Some(threshold),
+                ..Expectation::default()
+            };
+            validate_min_judge_score(&e, "fixture").unwrap();
+        }
+    }
+
+    #[test]
+    fn min_judge_score_validation_rejects_out_of_range_and_non_finite() {
+        for threshold in [-0.1, 1.01, f32::NAN, f32::INFINITY] {
+            let e = Expectation {
+                min_judge_score: Some(threshold),
+                ..Expectation::default()
+            };
+            let err = validate_min_judge_score(&e, "fixture").unwrap_err();
+            assert!(err.contains("[0.0, 1.0]"), "err: {err}");
+        }
+    }
+
+    #[test]
+    fn offline_validation_rejects_judge_only_expectation() {
+        let e = Expectation {
+            min_judge_score: Some(0.8),
+            ..Expectation::default()
+        };
+        let err = validate_offline_expectation(&e, "fixture").unwrap_err();
+        assert!(err.contains("offline awaken-eval"), "err: {err}");
     }
 
     #[test]

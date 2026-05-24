@@ -12,7 +12,7 @@ use std::process::ExitCode;
 use awaken_eval::{
     Expectation, Fixture, ReplayReport, RuntimeReplayer, diff_against_baseline,
     fixture::load_directory, read_ndjson_path, replay_all, score, trace_to_provider_script,
-    validate_unique_report_keys, write_ndjson_path,
+    validate_offline_expectation, validate_unique_report_keys, write_ndjson_path,
 };
 use awaken_ext_observability::trace_store::{TraceStore, file::FileTraceStore};
 
@@ -79,6 +79,9 @@ async fn replay_command(args: &[String]) -> Result<ExitCode, String> {
 
     let fixture_set =
         load_directory(&fixtures_dir).map_err(|err| format!("loading fixtures: {err}"))?;
+    for fixture in &fixture_set {
+        validate_offline_expectation(&fixture.expect, &format!("fixture {}", fixture.id))?;
+    }
     if fixture_set.is_empty() {
         eprintln!(
             "awaken-eval: no fixtures matched in {}",
@@ -231,6 +234,7 @@ async fn curate_command(args: &[String]) -> Result<ExitCode, String> {
                 .to_string(),
         );
     }
+    validate_offline_expectation(&expect, "--expect-json")?;
 
     let store = FileTraceStore::new(&trace_root)
         .map_err(|err| format!("opening trace store at {}: {err}", trace_root.display()))?;
@@ -285,4 +289,75 @@ async fn curate_command(args: &[String]) -> Result<ExitCode, String> {
         out_path.display()
     );
     Ok(ExitCode::SUCCESS)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn temp_path(prefix: &str) -> PathBuf {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or_default();
+        let path = std::env::temp_dir().join(format!("awaken-eval-cli-{prefix}-{nanos}"));
+        std::fs::create_dir_all(&path).unwrap();
+        path
+    }
+
+    #[tokio::test]
+    async fn replay_rejects_min_judge_score_in_offline_fixture() {
+        let dir = temp_path("replay-judge");
+        std::fs::write(
+            dir.join("judge.json"),
+            r#"{
+                "id": "judge-only",
+                "user_input": "grade me",
+                "mock_response": { "kind": "text", "text": "ok" },
+                "expect": { "min_judge_score": 0.8 }
+            }"#,
+        )
+        .unwrap();
+        let report = dir.join("report.ndjson");
+
+        let err = replay_command(&[
+            "--fixtures".into(),
+            dir.display().to_string(),
+            "--report".into(),
+            report.display().to_string(),
+        ])
+        .await
+        .unwrap_err();
+
+        assert!(err.contains("offline awaken-eval"), "err: {err}");
+        assert!(
+            !report.exists(),
+            "report must not be written when judge-only expectations cannot be evaluated"
+        );
+    }
+
+    #[tokio::test]
+    async fn curate_rejects_min_judge_score_expect_json() {
+        let dir = temp_path("curate-judge");
+        let out = dir.join("fixture.json");
+
+        let err = curate_command(&[
+            "--trace-root".into(),
+            dir.display().to_string(),
+            "--run-id".into(),
+            "missing-run".into(),
+            "--out".into(),
+            out.display().to_string(),
+            "--expect-json".into(),
+            r#"{"min_judge_score":0.8}"#.into(),
+        ])
+        .await
+        .unwrap_err();
+
+        assert!(err.contains("offline awaken-eval"), "err: {err}");
+        assert!(
+            !out.exists(),
+            "fixture must not be written when the CLI cannot evaluate the expectation"
+        );
+    }
 }

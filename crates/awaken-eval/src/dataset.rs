@@ -38,6 +38,22 @@ pub struct DatasetSpec {
 }
 
 impl DatasetSpec {
+    /// Validate every expectation embedded in the dataset.
+    ///
+    /// Dataset records can be created through HTTP, CLI import tooling, or
+    /// direct store seeding in migrations/tests. Keep judge threshold range
+    /// validation with the dataset type so every writer can reuse the same
+    /// invariant instead of drifting.
+    pub fn validate_expectations(&self) -> Result<(), String> {
+        for fixture in &self.fixtures {
+            crate::expectation::validate_min_judge_score(
+                &fixture.expect,
+                &format!("fixture {}", fixture.id),
+            )?;
+        }
+        Ok(())
+    }
+
     /// Reject duplicate `fixture.id` values. Required at every dataset
     /// write site — `diff_against_baseline` / `diff_eval_items` key by
     /// fixture_id, so duplicates would silently overwrite each other in
@@ -52,6 +68,12 @@ impl DatasetSpec {
             }
         }
         Ok(())
+    }
+
+    /// Full validation required before a dataset spec is persisted.
+    pub fn validate_for_write(&self) -> Result<(), String> {
+        self.validate_unique_fixture_ids()?;
+        self.validate_expectations()
     }
 }
 
@@ -171,5 +193,17 @@ mod tests {
             msg.contains("invalid config record overrides"),
             "wrong error variant: {msg}"
         );
+    }
+
+    #[test]
+    fn validate_for_write_rejects_invalid_min_judge_score() {
+        let mut spec = DatasetSpec {
+            description: String::new(),
+            fixtures: vec![sample_fixture("needs-judge")],
+        };
+        spec.fixtures[0].expect.min_judge_score = Some(1.5);
+        let err = spec.validate_for_write().unwrap_err();
+        assert!(err.contains("min_judge_score"), "err: {err}");
+        assert!(err.contains("[0.0, 1.0]"), "err: {err}");
     }
 }

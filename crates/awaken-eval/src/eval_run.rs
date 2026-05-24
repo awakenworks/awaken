@@ -1,17 +1,4 @@
 //! `EvalRun` model + filesystem-backed store (ADR-0032 D1).
-//!
-//! An [`EvalRun`] is one server-side execution of a dataset against the
-//! runtime: each fixture is replayed, scored, and recorded. The run is
-//! immutable once written — re-running the same dataset produces a new
-//! [`EvalRun`] with a fresh id, leaving the previous one for diffing
-//! (ADR-0032 D7).
-//!
-//! Storage layout (mirrors [`awaken_ext_observability::trace_store`]):
-//!
-//!   `{root}/eval_runs/{yyyy-mm}/{run_id}.json`
-//!
-//! One JSON document per run. Write-once + immutable, so unlike the
-//! trace store we don't need NDJSON appending or revision bookkeeping.
 
 use std::fs;
 use std::io;
@@ -27,14 +14,8 @@ use crate::outcome::ReplayReport;
 ///
 /// Persisting this on the run record keeps `provider_script` replay
 /// (deterministic CI smoke tests) distinct from Live provider evaluation
-/// (real model/agent behaviour). Older run JSON did not carry the field;
-/// records missing `execution_mode` are inferred from their items —
-/// presence of any `item.cell` means the run went through the matrix /
-/// live path, so it is restored as `Live`. Pre-matrix records (no
-/// `item.cell`) are restored as `Scripted`, matching historical
-/// behaviour. This keeps live-matrix baselines created before the field
-/// existed comparable to new live runs (the diff path rejects mode
-/// mismatches).
+/// (real model/agent behaviour). Legacy records infer the mode only when
+/// item cell presence is all-or-none; mixed legacy records are corrupt.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EvalRunExecutionMode {
@@ -45,7 +26,7 @@ pub enum EvalRunExecutionMode {
 
 /// One server-side eval run.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(from = "EvalRunWire")]
+#[serde(try_from = "EvalRunWire")]
 pub struct EvalRun {
     /// Globally unique run id (ULID, minted at run start).
     pub id: String,
@@ -67,10 +48,7 @@ pub struct EvalRun {
     pub ended_at_secs: u64,
 }
 
-// Deserialisation shadow: lets `execution_mode` be absent on disk and
-// reconstructed from `items[*].cell` so legacy live-matrix runs round-
-// trip as `Live` instead of being mislabelled `Scripted` and then
-// rejected by the baseline mode-equality check.
+// Deserialisation shadow for legacy JSON without `execution_mode`.
 #[derive(Deserialize)]
 struct EvalRunWire {
     id: String,
@@ -83,16 +61,39 @@ struct EvalRunWire {
     ended_at_secs: u64,
 }
 
-impl From<EvalRunWire> for EvalRun {
-    fn from(wire: EvalRunWire) -> Self {
-        let execution_mode = wire.execution_mode.unwrap_or_else(|| {
-            if wire.items.iter().any(|item| item.cell.is_some()) {
-                EvalRunExecutionMode::Live
-            } else {
-                EvalRunExecutionMode::Scripted
+impl TryFrom<EvalRunWire> for EvalRun {
+    type Error = String;
+
+    fn try_from(wire: EvalRunWire) -> Result<Self, Self::Error> {
+        let any_with_cell = wire.items.iter().any(|item| item.cell.is_some());
+        let any_without_cell = wire.items.iter().any(|item| item.cell.is_none());
+        let execution_mode = match wire.execution_mode {
+            Some(EvalRunExecutionMode::Live) if any_without_cell => {
+                return Err(format!(
+                    "eval run {} declares execution_mode=live but contains item(s) without matrix cell",
+                    wire.id
+                ));
             }
-        });
-        Self {
+            Some(EvalRunExecutionMode::Scripted) if any_with_cell => {
+                return Err(format!(
+                    "eval run {} declares execution_mode=scripted but contains item(s) with matrix cell",
+                    wire.id
+                ));
+            }
+            Some(mode) => mode,
+            None => match (any_with_cell, any_without_cell) {
+                (true, false) => EvalRunExecutionMode::Live,
+                (false, _) => EvalRunExecutionMode::Scripted,
+                (true, true) => {
+                    return Err(format!(
+                        "legacy eval run {} mixes items with and without matrix cells; execution_mode cannot be inferred",
+                        wire.id
+                    ));
+                }
+            },
+        };
+        validate_execution_shape(&wire.id, execution_mode, &wire.items)?;
+        Ok(Self {
             id: wire.id,
             dataset_id: wire.dataset_id,
             dataset_revision: wire.dataset_revision,
@@ -100,7 +101,25 @@ impl From<EvalRunWire> for EvalRun {
             items: wire.items,
             started_at_secs: wire.started_at_secs,
             ended_at_secs: wire.ended_at_secs,
+        })
+    }
+}
+
+fn validate_execution_shape(
+    run_id: &str,
+    execution_mode: EvalRunExecutionMode,
+    items: &[EvalRunItem],
+) -> Result<(), String> {
+    match execution_mode {
+        EvalRunExecutionMode::Live if items.iter().any(|item| item.cell.is_none()) => Err(format!(
+            "eval run {run_id} declares execution_mode=live but contains item(s) without matrix cell"
+        )),
+        EvalRunExecutionMode::Scripted if items.iter().any(|item| item.cell.is_some()) => {
+            Err(format!(
+                "eval run {run_id} declares execution_mode=scripted but contains item(s) with matrix cell"
+            ))
         }
+        _ => Ok(()),
     }
 }
 
@@ -188,6 +207,10 @@ pub enum EvalRunStoreError {
     /// store will not silently clobber a prior run.
     #[error("eval run {0} already exists")]
     AlreadyExists(String),
+    /// Returned by [`EvalRunStore::write`] when the run's
+    /// `execution_mode` disagrees with item cell presence.
+    #[error("eval run {0} has invalid execution shape: {1}")]
+    InvalidExecutionShape(String, String),
     /// Returned by [`EvalRunStore::write`] / [`EvalRunStore::read`]
     /// when `run.items` contains duplicate `(fixture_id, cell,
     /// sample_index)` keys.
@@ -317,19 +340,9 @@ impl From<&EvalRun> for EvalRunSummary {
 
 /// Persistence + query API for [`EvalRun`]s.
 ///
-/// Implementations MUST enforce write-once immutability by `run.id`
-/// globally (not only by the physical shard/path chosen for a given
-/// `started_at_secs`). They also MUST reject writes whose `items` carry
-/// duplicate `(fixture_id, cell, sample_index)` keys and must not return
-/// such runs from normal query paths
-/// ([`EvalRunStoreError::DuplicateItemKeys`]). The matrix diff path
-/// (`diff_against_baseline` / `diff_eval_items`) keys items on that
-/// triple and silently overwrites collisions in its `BTreeMap`; exposing
-/// a duplicate-key run turns every later baseline diff against that run
-/// into an order-dependent lie. The check belongs at the store boundary
-/// so dataset runs, online runs, and future entry points all share the
-/// same invariant — see
-/// [`crate::validate_unique_item_keys`].
+/// Implementations MUST enforce global write-once `run.id`s, reject duplicate
+/// `(fixture_id, cell, sample_index)` keys, and keep `execution_mode`
+/// consistent with item cell presence.
 pub trait EvalRunStore: Send + Sync {
     fn write(&self, run: &EvalRun) -> Result<(), EvalRunStoreError>;
     fn read(&self, run_id: &str) -> Result<EvalRun, EvalRunStoreError>;
@@ -346,10 +359,7 @@ pub trait EvalRunStore: Send + Sync {
         }
         Ok(runs)
     }
-    /// Delete every persisted run whose `started_at_secs` is older than
-    /// `older_than_secs`. Returns the number of runs removed. Implementations
-    /// should clean up empty shard directories after deleting their last
-    /// run so the layout doesn't accumulate hollow `{yyyy-mm}/` shells.
+    /// Delete persisted runs older than `older_than_secs`.
     fn prune(&self, older_than_secs: u64) -> Result<u64, EvalRunStoreError>;
 }
 
@@ -443,6 +453,38 @@ fn validate_run_item_keys(run: &EvalRun) -> Result<(), EvalRunStoreError> {
         .map_err(|e| EvalRunStoreError::DuplicateItemKeys(run.id.clone(), e))
 }
 
+fn validate_run_shape(run: &EvalRun) -> Result<(), EvalRunStoreError> {
+    validate_execution_shape(&run.id, run.execution_mode, &run.items)
+        .map_err(|e| EvalRunStoreError::InvalidExecutionShape(run.id.clone(), e))
+}
+
+fn validate_loaded_run_identity(
+    path: &Path,
+    expected_id: Option<&str>,
+    run: &EvalRun,
+) -> Result<(), EvalRunStoreError> {
+    validate_run_id(&run.id)?;
+    if let Some(expected) = expected_id
+        && run.id != expected
+    {
+        return Err(EvalRunStoreError::InvalidRunId(format!(
+            "file for {expected} contained run id {}",
+            run.id
+        )));
+    }
+    let file_stem = path.file_stem().and_then(|stem| stem.to_str());
+    if file_stem != Some(run.id.as_str()) {
+        return Err(EvalRunStoreError::InvalidRunId(format!(
+            "file name {} does not match run id {}",
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or("<invalid>"),
+            run.id
+        )));
+    }
+    Ok(())
+}
+
 fn is_internal_dir(path: &Path) -> bool {
     path.file_name()
         .and_then(|name| name.to_str())
@@ -452,25 +494,17 @@ fn is_internal_dir(path: &Path) -> bool {
 impl EvalRunStore for FileEvalRunStore {
     fn write(&self, run: &EvalRun) -> Result<(), EvalRunStoreError> {
         validate_run_id(&run.id)?;
-        // Write-once semantics take priority over payload validation:
-        // if a run id already exists, the caller is attempting to
-        // clobber immutable storage regardless of what the new payload
-        // contains.
+        // Write-once takes priority over payload validation.
         if self.locate(&run.id).is_some() {
             return Err(EvalRunStoreError::AlreadyExists(run.id.clone()));
         }
         if self.id_marker_path(&run.id).exists() {
             return Err(EvalRunStoreError::AlreadyExists(run.id.clone()));
         }
-        // Enforce the trait-level invariant at the store boundary so
-        // every entry point (dataset matrix runs, online ad-hoc runs,
-        // future bulk-import tooling) is guarded uniformly. See the
-        // EvalRunStore trait doc for why duplicate (fixture_id, cell,
-        // sample_index) keys would silently break baseline diffs.
+        // Keep diff invariants at the store boundary.
+        validate_run_shape(run)?;
         validate_run_item_keys(run)?;
-        // Resolve started_at_secs locally (only for shard routing) AND
-        // also clone it into the persisted run, so the on-disk record
-        // never carries a 0 sentinel that diverges from its location.
+        // Resolve started_at_secs for both shard routing and persisted JSON.
         let now_secs = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_secs())
@@ -488,37 +522,49 @@ impl EvalRunStore for FileEvalRunStore {
         fs::create_dir_all(&shard)?;
         let path = shard.join(format!("{}.json", run.id));
         let bytes = serde_json::to_vec_pretty(&persisted)?;
-        // Cross-shard atomic create-or-fail: reserve the run id in the
-        // stable `.ids/` registry before writing the sharded JSON. The
-        // final data file still uses O_EXCL, but the registry path is
-        // independent of `started_at_secs`, so two writers racing with
-        // the same `run.id` and different shard months cannot both win.
         let marker = self.reserve_run_id(&run.id, &path)?;
-        //
-        // A crash between `open` and `write_all` leaves a 0-byte file
-        // which `read` will fail on (serde_json on empty input). That
-        // surfaces as a corrupt-store error rather than silent data
-        // loss, which is the right side of the trade — the alternative
-        // (tmp + rename) couldn't make AlreadyExists fail-fast.
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let tmp = shard.join(format!(
+            ".{}.{}.{}.json.tmp",
+            run.id,
+            std::process::id(),
+            nanos
+        ));
         use std::io::Write;
         match fs::OpenOptions::new()
             .write(true)
             .create_new(true)
-            .open(&path)
+            .open(&tmp)
         {
             Ok(mut f) => {
                 if let Err(err) = f.write_all(&bytes).and_then(|_| f.sync_all()) {
-                    let _ = fs::remove_file(&path);
+                    let _ = fs::remove_file(&tmp);
                     let _ = fs::remove_file(&marker);
                     return Err(EvalRunStoreError::Io(err));
                 }
+            }
+            Err(err) => {
+                let _ = fs::remove_file(&marker);
+                return Err(EvalRunStoreError::Io(err));
+            }
+        }
+        match fs::hard_link(&tmp, &path) {
+            Ok(()) => {
+                let _ = fs::File::open(&shard).and_then(|dir| dir.sync_all());
+                let _ = fs::remove_file(&tmp);
+                let _ = fs::File::open(&shard).and_then(|dir| dir.sync_all());
                 Ok(())
             }
             Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {
+                let _ = fs::remove_file(&tmp);
                 let _ = fs::remove_file(&marker);
                 Err(EvalRunStoreError::AlreadyExists(run.id.clone()))
             }
             Err(err) => {
+                let _ = fs::remove_file(&tmp);
                 let _ = fs::remove_file(&marker);
                 Err(EvalRunStoreError::Io(err))
             }
@@ -526,11 +572,14 @@ impl EvalRunStore for FileEvalRunStore {
     }
 
     fn read(&self, run_id: &str) -> Result<EvalRun, EvalRunStoreError> {
+        validate_run_id(run_id)?;
         let path = self
             .locate(run_id)
             .ok_or_else(|| EvalRunStoreError::NotFound(run_id.into()))?;
         let bytes = fs::read(&path)?;
         let run: EvalRun = serde_json::from_slice(&bytes)?;
+        validate_loaded_run_identity(&path, Some(run_id), &run)?;
+        validate_run_shape(&run)?;
         validate_run_item_keys(&run)?;
         Ok(run)
     }
@@ -561,12 +610,8 @@ impl EvalRunStore for FileEvalRunStore {
                 if path.extension().and_then(|e| e.to_str()) != Some("json") {
                     continue;
                 }
-                // Corrupt / partially-written records must NOT disappear
-                // silently — eval runs are the source of truth for the
-                // diff/list API and a missing run looks identical to "no
-                // such id" from upstream. Log loud and continue; admins
-                // can grep the warning + delete the file or restore from
-                // backup.
+                // Corrupt records must not disappear silently. Log loud and
+                // continue so list APIs remain usable while admins inspect.
                 let bytes = match fs::read(&path) {
                     Ok(b) => b,
                     Err(err) => {
@@ -589,6 +634,22 @@ impl EvalRunStore for FileEvalRunStore {
                         continue;
                     }
                 };
+                if let Err(err) = validate_loaded_run_identity(&path, None, &run) {
+                    tracing::warn!(
+                        path = %path.display(),
+                        error = %err,
+                        "FileEvalRunStore: skipping eval-run file with invalid identity"
+                    );
+                    continue;
+                }
+                if let Err(err) = validate_run_shape(&run) {
+                    tracing::warn!(
+                        path = %path.display(),
+                        error = %err,
+                        "FileEvalRunStore: skipping eval-run file with invalid execution shape"
+                    );
+                    continue;
+                }
                 if let Err(err) = validate_run_item_keys(&run) {
                     tracing::warn!(
                         path = %path.display(),
@@ -654,6 +715,16 @@ impl EvalRunStore for FileEvalRunStore {
                     shard_empty_after = false;
                     continue;
                 };
+                if validate_loaded_run_identity(&path, None, &run)
+                    .and_then(|_| validate_run_shape(&run))
+                    .and_then(|_| validate_run_item_keys(&run))
+                    .is_err()
+                {
+                    // Invalid historical files should be inspected, not
+                    // pruned based on untrusted ids inside their JSON.
+                    shard_empty_after = false;
+                    continue;
+                }
                 if run.started_at_secs < older_than_secs {
                     fs::remove_file(&path)?;
                     self.release_run_id_marker(&run.id);

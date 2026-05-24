@@ -16,9 +16,12 @@
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use awaken_contract::config_record::{ConfigRecord, RecordMeta};
+use awaken_contract::contract::config_store::ConfigStore;
 use awaken_eval::test_support::UnusedExecutor;
 use awaken_eval::{
-    EvalRun, EvalRunExecutionMode, EvalRunItem, EvalRunStore, FileEvalRunStore, Fixture,
+    DATASETS_NAMESPACE, DatasetSpec, EvalRun, EvalRunExecutionMode, EvalRunItem, EvalRunStore,
+    FileEvalRunStore, Fixture, MatrixCell,
 };
 use awaken_ext_observability::trace_store::{TraceStore, file::FileTraceStore};
 use awaken_ext_observability::{GenAISpan, MetricsEvent, SpanContext};
@@ -49,6 +52,7 @@ fn temp_dir(prefix: &str) -> std::path::PathBuf {
 
 struct TestApp {
     router: axum::Router,
+    config_store: Arc<InMemoryStore>,
     trace_store: Arc<FileTraceStore>,
     eval_run_store: Arc<FileEvalRunStore>,
     /// Root passed to `FileEvalRunStore::new`. Tests that need to seed a
@@ -147,6 +151,7 @@ async fn build_test_app() -> TestApp {
 
     TestApp {
         router: build_router(&state).with_state(state),
+        config_store,
         trace_store,
         eval_run_store,
         eval_run_root,
@@ -217,6 +222,18 @@ fn sample_fixture(id: &str) -> Fixture {
     .unwrap()
 }
 
+async fn seed_dataset_record(app: &TestApp, id: &str, spec: DatasetSpec) {
+    let record = ConfigRecord {
+        spec,
+        meta: RecordMeta::new_user(),
+    };
+    let value = record.to_value().unwrap();
+    app.config_store
+        .put(DATASETS_NAMESPACE, id, &value)
+        .await
+        .unwrap();
+}
+
 // ── Dataset CRUD ──────────────────────────────────────────────────────────
 
 #[tokio::test]
@@ -282,6 +299,34 @@ async fn dataset_create_400s_on_duplicate_fixture_id() {
             .contains("duplicate fixture id"),
         "body: {body}"
     );
+}
+
+#[tokio::test]
+async fn dataset_create_400s_on_invalid_min_judge_score() {
+    let app = build_test_app().await;
+    let (status, body) = request(
+        &app.router,
+        "POST",
+        "/v1/eval/datasets",
+        Some(json!({
+            "id": "DS-BAD-JUDGE-THRESHOLD",
+            "spec": {
+                "fixtures": [{
+                    "id": "bad-threshold",
+                    "user_input": "grade this",
+                    "provider_script": [
+                        {"kind": "chat_response", "content": "ok"}
+                    ],
+                    "expect": { "min_judge_score": 1.5 }
+                }]
+            }
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    let err = body["error"].as_str().unwrap_or("");
+    assert!(err.contains("min_judge_score"), "body: {body}");
+    assert!(err.contains("[0.0, 1.0]"), "body: {body}");
 }
 
 #[tokio::test]
@@ -805,6 +850,106 @@ async fn get_eval_run_with_baseline_surfaces_diff() {
 }
 
 #[tokio::test]
+async fn get_eval_run_diff_keys_cell_less_samples_by_sample_index() {
+    let app = build_test_app().await;
+    let store = app.eval_run_store.clone();
+
+    let mut baseline = baseline_run("BASE-SAMPLES");
+    baseline.items = vec![
+        {
+            let mut it = item("alpha", true, "same");
+            it.sample_index = Some(0);
+            it
+        },
+        {
+            let mut it = item("alpha", true, "old");
+            it.sample_index = Some(1);
+            it
+        },
+    ];
+    let mut new = baseline_run("NEW-SAMPLES");
+    new.items = vec![
+        {
+            let mut it = item("alpha", true, "same");
+            it.sample_index = Some(0);
+            it
+        },
+        {
+            let mut it = item("alpha", false, "bad");
+            it.sample_index = Some(1);
+            it
+        },
+    ];
+    store.write(&baseline).unwrap();
+    store.write(&new).unwrap();
+
+    let (status, body) = request(
+        &app.router,
+        "GET",
+        "/v1/eval/runs/NEW-SAMPLES?baseline=BASE-SAMPLES",
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "body: {body}");
+    let entries = body["diff"]["entries"].as_array().unwrap();
+    assert_eq!(entries.len(), 2, "body: {body}");
+    assert!(
+        entries
+            .iter()
+            .any(|e| e["sample_index"] == 0 && e["kind"] == "unchanged"),
+        "sample 0 should pair independently: {body}"
+    );
+    assert!(
+        entries
+            .iter()
+            .any(|e| e["sample_index"] == 1 && e["kind"] == "regression"),
+        "sample 1 should pair independently: {body}"
+    );
+}
+
+#[tokio::test]
+async fn get_eval_run_diff_400s_on_sample_count_mismatch() {
+    let app = build_test_app().await;
+    let store = app.eval_run_store.clone();
+    let cell = MatrixCell {
+        model_id: Some("m1".into()),
+    };
+
+    let mut baseline = baseline_run("BASE-SAMPLE-DIFF");
+    baseline.execution_mode = EvalRunExecutionMode::Live;
+    baseline.items[0].cell = Some(cell.clone());
+
+    let mut new = baseline_run("NEW-SAMPLE-DIFF");
+    new.execution_mode = EvalRunExecutionMode::Live;
+    new.items = (0..2)
+        .map(|sample| {
+            let mut it = item("alpha", true, &format!("sample {sample}"));
+            it.cell = Some(cell.clone());
+            it.sample_index = Some(sample);
+            it
+        })
+        .collect();
+
+    store.write(&baseline).unwrap();
+    store.write(&new).unwrap();
+    let (status, body) = request(
+        &app.router,
+        "GET",
+        "/v1/eval/runs/NEW-SAMPLE-DIFF?baseline=BASE-SAMPLE-DIFF",
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(
+        body["error"]
+            .as_str()
+            .unwrap_or("")
+            .contains("different sample counts"),
+        "body: {body}"
+    );
+}
+
+#[tokio::test]
 async fn get_eval_run_baseline_400s_on_adhoc_run() {
     // Ad-hoc online runs all carry dataset_id="_adhoc" + revision 0.
     // Without an explicit guard, two unrelated _adhoc runs would pass
@@ -1138,6 +1283,52 @@ async fn start_eval_run_with_models_404s_on_unknown_model() {
 }
 
 #[tokio::test]
+async fn start_eval_run_revalidates_dataset_fixture_ids_before_model_lookup() {
+    // Directly seed a corrupt historical dataset: normal dataset CRUD would
+    // reject duplicate fixture ids. start_eval_run must catch it before model
+    // lookup/provider calls, so the response is a dataset 400 rather than a
+    // missing-model 404 after partial preflight.
+    let app = build_test_app().await;
+    seed_dataset_record(
+        &app,
+        "DS-CORRUPT-DUP-FX",
+        DatasetSpec {
+            description: String::new(),
+            fixtures: vec![sample_fixture("dup"), sample_fixture("dup")],
+        },
+    )
+    .await;
+
+    let (status, body) = request(
+        &app.router,
+        "POST",
+        "/v1/eval/runs",
+        Some(json!({
+            "dataset_id": "DS-CORRUPT-DUP-FX",
+            "mode": "live",
+            "models": ["missing-model"]
+        })),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(
+        body["error"]
+            .as_str()
+            .unwrap_or("")
+            .contains("duplicate fixture id"),
+        "body: {body}"
+    );
+    assert!(
+        app.eval_run_store
+            .list(&awaken_eval::EvalRunFilter::default())
+            .unwrap()
+            .is_empty(),
+        "dirty dataset preflight must not persist a run"
+    );
+}
+
+#[tokio::test]
 async fn start_eval_run_caps_total_cells() {
     // 50 fixtures × 3 models = 150 cells exceeds MAX_CELLS_PER_SYNC_RUN (100).
     let app = build_test_app().await;
@@ -1250,6 +1441,42 @@ async fn start_eval_run_400s_when_scripted_sets_walltime() {
 }
 
 #[tokio::test]
+async fn start_eval_run_400s_when_scripted_sets_token_budget() {
+    let app = build_test_app().await;
+    let (status, _) = request(
+        &app.router,
+        "POST",
+        "/v1/eval/datasets",
+        Some(json!({
+            "id": "DS-SCRIPTED-TOKENS",
+            "spec": { "fixtures": [sample_fixture("alpha")] }
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, body) = request(
+        &app.router,
+        "POST",
+        "/v1/eval/runs",
+        Some(json!({
+            "dataset_id": "DS-SCRIPTED-TOKENS",
+            "mode": "scripted",
+            "max_total_tokens": 10,
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(
+        body["error"]
+            .as_str()
+            .unwrap_or("")
+            .contains("max_total_tokens requires mode=\"live\""),
+        "body: {body}"
+    );
+}
+
+#[tokio::test]
 async fn start_eval_run_400s_on_zero_samples() {
     // `samples: 0` is rejected explicitly instead of silently coerced to
     // 1 — the operator who typed 0 most likely meant "off" (omit) or a
@@ -1289,9 +1516,9 @@ async fn start_eval_run_400s_on_zero_samples() {
 async fn start_eval_run_400s_when_scripted_passes_samples() {
     // `samples` is a Live-only request field (documented on
     // `StartRunRequest.samples` and listed in the PR summary). Scripted
-    // replays are deterministic, so an explicit value — even
-    // `samples: 1` — is misconfiguration and gets rejected. Omitting
-    // `samples` still works in both modes.
+    // replays are deterministic, so an explicit value is misconfiguration
+    // and gets rejected before the numeric cap check. Omitting `samples`
+    // still works in both modes.
     let app = build_test_app().await;
     let (status, _) = request(
         &app.router,
@@ -1312,7 +1539,7 @@ async fn start_eval_run_400s_when_scripted_passes_samples() {
         Some(json!({
             "dataset_id": "DS-SAMPLES-SCRIPTED",
             "mode": "scripted",
-            "samples": 1,
+            "samples": 999999,
         })),
     )
     .await;
@@ -1593,6 +1820,61 @@ async fn start_eval_run_baseline_with_duplicate_item_keys_rejected_before_replay
         app.eval_run_store.read("DUP-BASE").unwrap_err(),
         awaken_eval::EvalRunStoreError::DuplicateItemKeys(_, _)
     ));
+}
+
+#[tokio::test]
+async fn start_eval_run_baseline_rejects_sample_count_mismatch_before_replay() {
+    let app = build_test_app().await;
+    let (status, _) = request(
+        &app.router,
+        "POST",
+        "/v1/eval/datasets",
+        Some(json!({
+            "id": "DS-SAMPLE-MISMATCH",
+            "spec": { "fixtures": [sample_fixture("alpha")] }
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let mut one_sample_baseline = EvalRun {
+        id: "BASE-SAMPLE-1".into(),
+        dataset_id: "DS-SAMPLE-MISMATCH".into(),
+        dataset_revision: 0,
+        execution_mode: EvalRunExecutionMode::Live,
+        items: vec![item("alpha", true, "baseline")],
+        started_at_secs: 1_700_000_000,
+        ended_at_secs: 1_700_000_001,
+    };
+    one_sample_baseline.items[0].cell = Some(MatrixCell {
+        model_id: Some("missing-model".into()),
+    });
+    app.eval_run_store.write(&one_sample_baseline).unwrap();
+
+    let (status, body) = request(
+        &app.router,
+        "POST",
+        "/v1/eval/runs",
+        Some(json!({
+            "dataset_id": "DS-SAMPLE-MISMATCH",
+            "mode": "live",
+            "models": ["missing-model"],
+            "samples": 2,
+            "baseline_run_id": "BASE-SAMPLE-1"
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "body: {body}");
+    assert!(
+        body["error"]
+            .as_str()
+            .unwrap_or("")
+            .contains("different sample counts"),
+        "body: {body}"
+    );
+    let runs = app.eval_run_store.list(&Default::default()).unwrap();
+    assert_eq!(runs.len(), 1);
+    assert_eq!(runs[0].id, "BASE-SAMPLE-1");
 }
 
 // ── Online eval (POST /v1/eval/online) — validation paths ────────────────
@@ -2271,6 +2553,40 @@ async fn start_eval_run_400s_when_min_judge_score_has_no_live_judge() {
 }
 
 #[tokio::test]
+async fn start_eval_run_400s_on_historical_invalid_min_judge_score() {
+    let app = build_test_app().await;
+    let mut fixture = sample_fixture("bad-threshold");
+    fixture.expect.min_judge_score = Some(-0.2);
+    seed_dataset_record(
+        &app,
+        "DS-CORRUPT-JUDGE-THRESHOLD",
+        DatasetSpec {
+            description: String::new(),
+            fixtures: vec![fixture],
+        },
+    )
+    .await;
+
+    let (status, body) = request(
+        &app.router,
+        "POST",
+        "/v1/eval/runs",
+        Some(json!({
+            "dataset_id": "DS-CORRUPT-JUDGE-THRESHOLD",
+            "mode": "live",
+            "models": ["missing-model"],
+            "judge": { "model_id": "missing-judge", "rubric": "grade correctness" },
+        })),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    let err = body["error"].as_str().unwrap_or("");
+    assert!(err.contains("min_judge_score"), "body: {body}");
+    assert!(err.contains("[0.0, 1.0]"), "body: {body}");
+}
+
+#[tokio::test]
 async fn start_eval_run_404s_on_unknown_judge_model() {
     let app = build_test_app().await;
     let fixtures = vec![sample_fixture("f1")];
@@ -2349,6 +2665,28 @@ async fn online_eval_400s_when_min_judge_score_has_no_judge() {
             .contains("judge.rubric"),
         "body: {body}"
     );
+}
+
+#[tokio::test]
+async fn online_eval_400s_on_invalid_min_judge_score() {
+    let app = build_test_app().await;
+    let (status, body) = request(
+        &app.router,
+        "POST",
+        "/v1/eval/online",
+        Some(json!({
+            "user_input": "test",
+            "models": ["missing-model"],
+            "persist": false,
+            "expectations": { "min_judge_score": 1.2 },
+            "judge": { "model_id": "missing-judge", "rubric": "grade correctness" },
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    let err = body["error"].as_str().unwrap_or("");
+    assert!(err.contains("min_judge_score"), "body: {body}");
+    assert!(err.contains("[0.0, 1.0]"), "body: {body}");
 }
 
 #[tokio::test]
@@ -2632,6 +2970,7 @@ async fn get_run_with_aggregate_samples_returns_pass_at_k_rollup() {
     let app = build_test_app().await;
     // 3 items for the same (fixture, cell) — 2 pass + 1 fail.
     let mut run = baseline_run("AGG-R");
+    run.execution_mode = EvalRunExecutionMode::Live;
     run.items.clear();
     for (i, passed) in [(0u32, true), (1u32, false), (2u32, true)] {
         let mut report = item("alpha", passed, "x").report;

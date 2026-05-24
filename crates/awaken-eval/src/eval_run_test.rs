@@ -113,6 +113,57 @@ fn eval_run_deserialises_legacy_live_matrix_run_as_live() {
 }
 
 #[test]
+fn eval_run_rejects_legacy_mixed_cell_presence() {
+    let mut run = sample_run("LEGACY-MIXED", "DS1", 1_700_000_000);
+    run.items[0].cell = Some(MatrixCell {
+        model_id: Some("gpt-x".into()),
+    });
+    let mut value = serde_json::to_value(&run).unwrap();
+    value.as_object_mut().unwrap().remove("execution_mode");
+
+    let err = serde_json::from_value::<EvalRun>(value).unwrap_err();
+
+    assert!(
+        err.to_string().contains("mixes items"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn eval_run_rejects_explicit_live_items_without_cells() {
+    let mut run = sample_run("LIVE-MISSING-CELL", "DS1", 1_700_000_000);
+    run.execution_mode = EvalRunExecutionMode::Live;
+    run.items[0].cell = Some(MatrixCell {
+        model_id: Some("gpt-x".into()),
+    });
+    // item[1] remains cell=None, which is not a valid explicit live run.
+    let value = serde_json::to_value(&run).unwrap();
+
+    let err = serde_json::from_value::<EvalRun>(value).unwrap_err();
+
+    assert!(
+        err.to_string().contains("execution_mode=live"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn eval_run_rejects_explicit_scripted_items_with_cells() {
+    let mut run = sample_run("SCRIPTED-WITH-CELL", "DS1", 1_700_000_000);
+    run.items[0].cell = Some(MatrixCell {
+        model_id: Some("gpt-x".into()),
+    });
+    let value = serde_json::to_value(&run).unwrap();
+
+    let err = serde_json::from_value::<EvalRun>(value).unwrap_err();
+
+    assert!(
+        err.to_string().contains("execution_mode=scripted"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
 fn file_store_round_trips_run_and_locates_by_id() {
     let tmp = tempfile::tempdir().unwrap();
     let store = FileEvalRunStore::new(tmp.path()).unwrap();
@@ -140,6 +191,32 @@ fn file_store_write_is_write_once() {
     // Persisted bytes still belong to the first writer.
     let read = store.read("RUN42").unwrap();
     assert_eq!(read.dataset_id, "DS1");
+}
+
+#[test]
+fn file_store_successful_write_removes_temp_file() {
+    let tmp = tempfile::tempdir().unwrap();
+    let store = FileEvalRunStore::new(tmp.path()).unwrap();
+    store
+        .write(&sample_run("RUN-ATOMIC", "DS1", 1_700_000_000))
+        .unwrap();
+
+    let runs_root = tmp.path().join("eval_runs");
+    let mut temp_files = Vec::new();
+    for entry in std::fs::read_dir(&runs_root).unwrap() {
+        let dir = entry.unwrap().path();
+        if !dir.is_dir() || dir.file_name().and_then(|n| n.to_str()) == Some(".ids") {
+            continue;
+        }
+        for file in std::fs::read_dir(&dir).unwrap() {
+            let path = file.unwrap().path();
+            if path.extension().and_then(|e| e.to_str()) == Some("tmp") {
+                temp_files.push(path);
+            }
+        }
+    }
+    assert!(temp_files.is_empty(), "temp files: {temp_files:?}");
+    assert!(runs_root.join(".ids").join("RUN-ATOMIC").exists());
 }
 
 #[test]
@@ -229,6 +306,27 @@ fn file_store_rejects_duplicate_item_keys() {
 }
 
 #[test]
+fn file_store_rejects_invalid_execution_shape() {
+    let tmp = tempfile::tempdir().unwrap();
+    let store = FileEvalRunStore::new(tmp.path()).unwrap();
+    let mut run = sample_run("RUN-BAD-SHAPE", "DS", 1_700_000_000);
+    run.execution_mode = EvalRunExecutionMode::Live;
+    run.items[0].cell = Some(MatrixCell {
+        model_id: Some("m1".into()),
+    });
+    // item[1] still has no cell, so this is not a valid Live run.
+
+    let err = store.write(&run).unwrap_err();
+
+    assert!(matches!(
+        err,
+        EvalRunStoreError::InvalidExecutionShape(ref id, _) if id == "RUN-BAD-SHAPE"
+    ));
+    let read_err = store.read("RUN-BAD-SHAPE").unwrap_err();
+    assert!(matches!(read_err, EvalRunStoreError::NotFound(_)));
+}
+
+#[test]
 fn file_store_write_once_takes_priority_over_duplicate_item_keys() {
     let tmp = tempfile::tempdir().unwrap();
     let store = FileEvalRunStore::new(tmp.path()).unwrap();
@@ -269,6 +367,27 @@ fn file_store_read_rejects_historical_duplicate_item_keys() {
 }
 
 #[test]
+fn file_store_read_rejects_file_name_and_run_id_mismatch() {
+    let tmp = tempfile::tempdir().unwrap();
+    let store = FileEvalRunStore::new(tmp.path()).unwrap();
+    let mut dirty = sample_run("RUN-B", "DS-DIRTY", 1_700_000_000);
+    dirty.id = "RUN-B".into();
+
+    let path = run_path_for(tmp.path(), "RUN-A", dirty.started_at_secs);
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(&path, serde_json::to_vec_pretty(&dirty).unwrap()).unwrap();
+
+    let err = store.read("RUN-A").unwrap_err();
+    match err {
+        EvalRunStoreError::InvalidRunId(msg) => {
+            assert!(msg.contains("RUN-A"), "unexpected message: {msg}");
+            assert!(msg.contains("RUN-B"), "unexpected message: {msg}");
+        }
+        other => panic!("expected InvalidRunId, got {other:?}"),
+    }
+}
+
+#[test]
 fn file_store_list_full_skips_historical_duplicate_item_keys() {
     let tmp = tempfile::tempdir().unwrap();
     let store = FileEvalRunStore::new(tmp.path()).unwrap();
@@ -295,6 +414,51 @@ fn file_store_list_full_skips_historical_duplicate_item_keys() {
     let summaries = store.list(&filter).unwrap();
     assert_eq!(summaries.len(), 1);
     assert_eq!(summaries[0].id, "GOOD");
+}
+
+#[test]
+fn file_store_list_full_skips_file_name_and_run_id_mismatch() {
+    let tmp = tempfile::tempdir().unwrap();
+    let store = FileEvalRunStore::new(tmp.path()).unwrap();
+    store
+        .write(&sample_run("GOOD", "DS-DIRTY", 1_700_000_500))
+        .unwrap();
+
+    let dirty = sample_run("RUN-B", "DS-DIRTY", 1_700_000_000);
+    let dirty_path = run_path_for(tmp.path(), "RUN-A", dirty.started_at_secs);
+    std::fs::create_dir_all(dirty_path.parent().unwrap()).unwrap();
+    std::fs::write(&dirty_path, serde_json::to_vec_pretty(&dirty).unwrap()).unwrap();
+
+    let runs = store.list_full(&EvalRunFilter::default()).unwrap();
+    assert_eq!(runs.len(), 1);
+    assert_eq!(runs[0].id, "GOOD");
+}
+
+#[test]
+fn file_store_prune_leaves_file_name_and_run_id_mismatch_in_place() {
+    let tmp = tempfile::tempdir().unwrap();
+    let store = FileEvalRunStore::new(tmp.path()).unwrap();
+    let dirty = sample_run("RUN-B", "DS-DIRTY", 1_700_000_000);
+    let dirty_path = run_path_for(tmp.path(), "RUN-A", dirty.started_at_secs);
+    std::fs::create_dir_all(dirty_path.parent().unwrap()).unwrap();
+    std::fs::write(&dirty_path, serde_json::to_vec_pretty(&dirty).unwrap()).unwrap();
+    let ids_dir = tmp.path().join("eval_runs/.ids");
+    std::fs::create_dir_all(&ids_dir).unwrap();
+    std::fs::write(ids_dir.join("RUN-A"), b"file marker").unwrap();
+    std::fs::write(ids_dir.join("RUN-B"), b"json marker").unwrap();
+
+    let removed = store.prune(u64::MAX).unwrap();
+
+    assert_eq!(removed, 0);
+    assert!(
+        dirty_path.exists(),
+        "dirty file must be retained for operator inspection"
+    );
+    assert!(ids_dir.join("RUN-A").exists());
+    assert!(
+        ids_dir.join("RUN-B").exists(),
+        "prune must not trust dirty JSON id when cleaning markers"
+    );
 }
 
 #[test]

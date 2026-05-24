@@ -76,7 +76,8 @@ POST /v1/eval/runs
   "agent_overrides": { ... },          // optional, live only
   // required, with rubric, when any fixture sets min_judge_score; live only
   "judge": { "model_id": "judge", "rubric": "..." },
-  "max_walltime_secs": 60              // optional, live only
+  "max_walltime_secs": 60,             // optional, live only
+  "max_total_tokens": 10000            // optional per-cell cap, live only
 }
 ```
 

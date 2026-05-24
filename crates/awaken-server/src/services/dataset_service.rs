@@ -15,7 +15,7 @@ use awaken_contract::contract::config_store::extract_meta_revision;
 use awaken_eval::fixture::DialogueTurn;
 use awaken_eval::{
     CurateError, DATASETS_NAMESPACE, DatasetSpec, Expectation, Fixture, MockResponse,
-    trace_fixture_source, trace_to_provider_script,
+    trace_fixture_source, trace_to_provider_script, validate_min_judge_score,
 };
 use awaken_ext_observability::trace_store::{ReferenceKind, TraceStore};
 use awaken_runtime::engine::ProviderScriptEvent;
@@ -44,6 +44,7 @@ fn require_non_empty_expected(expect: &Expectation) -> Result<(), ApiError> {
             "expected must contain at least one expectation criterion".into(),
         ));
     }
+    validate_min_judge_score(expect, "expected").map_err(ApiError::BadRequest)?;
     Ok(())
 }
 
@@ -154,7 +155,7 @@ pub async fn create_dataset(
         .or(body.id.clone())
         .ok_or_else(|| ApiError::BadRequest("dataset id is required (in body or ?id=)".into()))?;
     body.spec
-        .validate_unique_fixture_ids()
+        .validate_for_write()
         .map_err(ApiError::BadRequest)?;
     let record = ConfigRecord {
         spec: body.spec,
@@ -203,7 +204,7 @@ pub async fn put_dataset(
 ) -> Result<Response, ApiError> {
     crate::config_routes::ensure_admin_auth(&state, &headers)?;
     body.spec
-        .validate_unique_fixture_ids()
+        .validate_for_write()
         .map_err(ApiError::BadRequest)?;
     let store = config_store_or_unavailable(&state)?;
     let mut meta = match store
@@ -262,6 +263,11 @@ pub async fn append_fixture(
     Json(body): Json<AppendFixtureRequest>,
 ) -> Result<Response, ApiError> {
     crate::config_routes::ensure_admin_auth(&state, &headers)?;
+    validate_min_judge_score(
+        &body.fixture.expect,
+        &format!("fixture {}", body.fixture.id),
+    )
+    .map_err(ApiError::BadRequest)?;
     let store = config_store_or_unavailable(&state)?;
     let existing_value = store
         .get(DATASETS_NAMESPACE, &id)
@@ -284,6 +290,10 @@ pub async fn append_fixture(
         )));
     }
     record.spec.fixtures.push(body.fixture);
+    record
+        .spec
+        .validate_for_write()
+        .map_err(ApiError::Internal)?;
     let now = awaken_contract::time::now_ms();
     record.meta.updated_at = now;
     record.meta.revision = record.meta.revision.saturating_add(1);
@@ -381,6 +391,10 @@ pub async fn curate_items(
         continued_turns: vec![],
     };
     record.spec.fixtures.push(fixture);
+    record
+        .spec
+        .validate_for_write()
+        .map_err(ApiError::Internal)?;
 
     let now = awaken_contract::time::now_ms();
     record.meta.updated_at = now;
@@ -411,10 +425,10 @@ pub async fn curate_items(
 /// promote them to fixtures in one shot.
 ///
 /// Closes the loop between production observability and the regression
-/// dataset: an operator filters traces by agent / time, the server runs
-/// [`trace_to_provider_script`] on each, and appends the resulting
-/// fixtures under CAS. Traces whose `run_id` matches an existing fixture
-/// id are skipped (no clobber).
+/// dataset. `provider_script_mode=require` requires trace-to-script
+/// conversion, `optional` stores live-only fixtures when conversion fails,
+/// and `skip` always stores live-only fixtures. The resulting fixtures are
+/// appended under CAS; existing fixture ids are skipped (no clobber).
 #[tracing::instrument(skip_all, fields(id = %id, agent_id = ?body.agent_id))]
 pub async fn import_traces(
     State(state): State<AppState>,
@@ -530,7 +544,7 @@ pub async fn import_traces(
     // dataset that breaks the diff layer downstream.
     record
         .spec
-        .validate_unique_fixture_ids()
+        .validate_for_write()
         .map_err(ApiError::Internal)?;
 
     if imported == 0 {
@@ -705,6 +719,10 @@ pub async fn import_dialogue(
         continued_turns,
     };
     record.spec.fixtures.push(fixture);
+    record
+        .spec
+        .validate_for_write()
+        .map_err(ApiError::Internal)?;
 
     record.meta.updated_at = awaken_contract::time::now_ms();
     record.meta.revision = record.meta.revision.saturating_add(1);

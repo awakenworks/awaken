@@ -4,19 +4,25 @@
 //! that file under the lefthook line cap and makes the contract between
 //! the two drivers explicit instead of cross-module inline duplication.
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use awaken_contract::agent_spec_patch::AgentSpecPatch;
 use awaken_contract::contract::executor::LlmExecutor;
 use awaken_contract::registry_spec::{AgentSpec, ModelBindingSpec};
 use awaken_eval::{
-    EvalRunItem, Expectation, Failure, Fixture, LlmExecutorJudge, MatrixCell, ReplayOutcome,
-    ReplayReport, RuntimeReplayer, replay_all, score, score_with_judge,
+    EvalRun, EvalRunExecutionMode, EvalRunItem, Expectation, Failure, Fixture, LlmExecutorJudge,
+    MatrixCell, ReplayOutcome, ReplayReport, RuntimeReplayer, replay_all, score, score_with_judge,
 };
 use awaken_ext_observability::MetricsSink;
 use awaken_ext_observability::trace_store::TraceStore;
 
 use crate::error::ApiError;
+
+/// Shared default for live eval token budgets. Both dataset matrix runs and
+/// ad-hoc online runs should start with the same cost guardrail unless the
+/// caller explicitly overrides it.
+pub(crate) const DEFAULT_MAX_TOTAL_TOKENS: u32 = 10_000;
 
 /// Resolved judge config carried through the replay loop. Replaces the
 /// `(LlmExecutorJudge, Option<String>, Option<u32>)` tuple this code used
@@ -31,7 +37,8 @@ pub(crate) struct JudgeContext {
 
 /// Per-cell revise loop config: `(judge, rubric, threshold, max_retries)`.
 /// `None` when any required piece (judge, fixture threshold, retry budget)
-/// is missing — same gating in dataset matrix runs and online ad-hoc runs.
+/// is missing or when `revise_max_retries == 0` — same gating in dataset
+/// matrix runs and online ad-hoc runs.
 pub(crate) type ReviseTuple = (Arc<dyn awaken_eval::judge::Judge>, Option<String>, f32, u32);
 
 /// One pre-resolved live matrix cell. Model/provider resolution happens
@@ -62,7 +69,9 @@ pub(crate) struct LiveCellOptions {
 }
 
 /// Build the per-cell revise tuple, applying the all-three-pieces gating
-/// rule both eval services share.
+/// rule both eval services share. A configured retry budget of `0` means
+/// "do not revise"; the judge still runs in the scoring phase where
+/// timeout/error promotion can preserve the real replay outcome.
 pub(crate) fn revise_tuple_for(
     judge: Option<&JudgeContext>,
     expect: &Expectation,
@@ -75,7 +84,7 @@ pub(crate) fn revise_tuple_for(
                 revise_max_retries: Some(retries),
             }),
             Some(threshold),
-        ) => Some((
+        ) if *retries > 0 => Some((
             Arc::new(j.clone()) as Arc<dyn awaken_eval::judge::Judge>,
             rubric.clone(),
             threshold,
@@ -83,6 +92,63 @@ pub(crate) fn revise_tuple_for(
         )),
         _ => None,
     }
+}
+
+pub(crate) fn validate_baseline_sample_count(
+    baseline: &EvalRun,
+    new_run_samples: Option<u32>,
+) -> Result<(), ApiError> {
+    let Some(new_samples) = new_run_samples else {
+        return Ok(());
+    };
+    let Some(baseline_samples) = live_run_sample_count(baseline)? else {
+        return Ok(());
+    };
+    if baseline_samples != new_samples {
+        return Err(ApiError::BadRequest(format!(
+            "cannot diff live runs with different sample counts: baseline {} has {}, new run has {}",
+            baseline.id, baseline_samples, new_samples
+        )));
+    }
+    Ok(())
+}
+
+pub(crate) fn live_run_sample_count(run: &EvalRun) -> Result<Option<u32>, ApiError> {
+    if run.execution_mode != EvalRunExecutionMode::Live {
+        return Ok(None);
+    }
+    let mut groups: BTreeMap<(String, MatrixCell), BTreeSet<u32>> = BTreeMap::new();
+    for item in &run.items {
+        groups
+            .entry((
+                item.fixture_id.clone(),
+                item.cell.clone().unwrap_or_default(),
+            ))
+            .or_default()
+            .insert(item.sample_index.unwrap_or(0));
+    }
+    let mut sample_count = None;
+    for ((fixture_id, cell), indexes) in groups {
+        let actual: Vec<u32> = indexes.into_iter().collect();
+        let expected: Vec<u32> = (0..actual.len() as u32).collect();
+        if actual != expected {
+            return Err(ApiError::BadRequest(format!(
+                "run {} has non-contiguous samples for fixture {} cell {:?}: {:?}",
+                run.id, fixture_id, cell, actual
+            )));
+        }
+        let n = actual.len() as u32;
+        if let Some(previous) = sample_count
+            && previous != n
+        {
+            return Err(ApiError::BadRequest(format!(
+                "run {} has inconsistent sample counts across live cells",
+                run.id
+            )));
+        }
+        sample_count = Some(n);
+    }
+    Ok(sample_count)
 }
 
 /// Apply the three optional decorators every cell shares: agent overrides,
@@ -138,6 +204,7 @@ pub(crate) fn validate_judge_required_for_expectation(
     if expect.min_judge_score.is_none() {
         return Ok(());
     }
+    awaken_eval::validate_min_judge_score(expect, label).map_err(ApiError::BadRequest)?;
     if !live_mode {
         return Err(ApiError::BadRequest(format!(
             "{label} sets expect.min_judge_score; LLM grading requires mode=\"live\" with `judge`"
@@ -441,303 +508,5 @@ pub(crate) async fn score_outcome(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use awaken_eval::{Expectation, ReplayReport};
-
-    #[test]
-    fn cell_timeout_outcome_reports_as_failed() {
-        // Regression: pairing the timeout outcome with `Vec::new()`
-        // failures would let `passed = failures.is_empty()` flip true,
-        // silently dressing a timed-out cell as a green report. The
-        // helper must promote the runtime_failure into a real Failure.
-        let expect = Expectation::default();
-        let (outcome, failures) = cell_timeout_outcome("fx".into(), 5, &expect);
-        assert!(outcome.runtime_failure.is_some());
-        assert!(!failures.is_empty(), "timeout must produce failures");
-        let report = ReplayReport::from_outcome(&outcome, failures);
-        assert!(!report.passed, "timeout cell must report passed=false");
-        assert!(
-            report
-                .failures
-                .iter()
-                .any(|f| matches!(f, awaken_eval::Failure::ReplayRuntimeFailure { .. })),
-            "expected ReplayRuntimeFailure in failures: {:?}",
-            report.failures
-        );
-    }
-
-    #[test]
-    fn cell_error_outcome_reports_as_failed() {
-        // Per-cell judge/scoring errors must surface as a per-cell
-        // failure, never bubble up and discard sibling cells' reports.
-        let expect = Expectation::default();
-        let outcome = ReplayOutcome {
-            fixture_id: "fx".into(),
-            final_text: String::new(),
-            metrics: awaken_ext_observability::AgentMetrics::default(),
-            elapsed: std::time::Duration::ZERO,
-            error_type: None,
-            inference_error_count: 0,
-            runtime_failure: None,
-            revision_count: 0,
-            judge_score: None,
-            judge_reasoning: None,
-        };
-        let (outcome, failures) =
-            cell_error_outcome(outcome, "judge returned non-JSON".into(), &expect);
-        let report = ReplayReport::from_outcome(&outcome, failures);
-        assert!(!report.passed);
-        assert!(report.runtime_failure.is_some());
-    }
-
-    #[test]
-    fn cell_error_outcome_preserves_real_outcome_data() {
-        // Regression: when judge/scoring errors but the replay itself
-        // succeeded, the per-cell report must still carry the real
-        // `final_text`, token usage, trace run_id, elapsed, and revision
-        // count. Rebuilding an empty outcome would (1) fabricate phantom
-        // deterministic failures like `AnswerMissingPhrase` for expects
-        // the model actually satisfied, (2) zero out tokens that were
-        // really burned (breaking cost accounting), and (3) drop the
-        // trace link the admin UI uses to explain "why did judge fail".
-        use awaken_eval::Failure;
-        use awaken_ext_observability::{AgentMetrics, GenAISpan, SpanContext};
-
-        let expect = Expectation {
-            final_answer_contains: vec!["42".into()],
-            ..Expectation::default()
-        };
-        let mut inf_span = GenAISpan {
-            context: SpanContext {
-                run_id: "RUN-REAL".into(),
-                ..SpanContext::default()
-            },
-            step_index: None,
-            model: "m".into(),
-            provider: "p".into(),
-            operation: "chat".into(),
-            response_model: None,
-            response_id: None,
-            finish_reasons: Vec::new(),
-            error_type: None,
-            error_class: None,
-            thinking_tokens: None,
-            input_tokens: Some(10),
-            output_tokens: Some(20),
-            total_tokens: Some(30),
-            cache_read_input_tokens: None,
-            cache_creation_input_tokens: None,
-            temperature: None,
-            top_p: None,
-            max_tokens: None,
-            stop_sequences: Vec::new(),
-            duration_ms: 5,
-            started_at_ms: 0,
-            ended_at_ms: 5,
-            response_content: None,
-            response_tool_calls: None,
-            request_messages: None,
-        };
-        inf_span.context.run_id = "RUN-REAL".into();
-        let metrics = AgentMetrics {
-            inferences: vec![inf_span],
-            session_duration_ms: 42,
-            ..Default::default()
-        };
-        let real_outcome = ReplayOutcome {
-            fixture_id: "fx".into(),
-            final_text: "the answer is 42".into(),
-            metrics,
-            elapsed: std::time::Duration::from_millis(123),
-            error_type: None,
-            inference_error_count: 0,
-            runtime_failure: None,
-            revision_count: 2,
-            judge_score: None,
-            judge_reasoning: None,
-        };
-
-        let (outcome, failures) = cell_error_outcome(
-            real_outcome,
-            "scoring failed: judge timeout".into(),
-            &expect,
-        );
-
-        // The deterministic expectation `final_answer_contains: ["42"]`
-        // was satisfied by the real reply, so scoring must NOT emit a
-        // phantom `AnswerMissingPhrase` failure.
-        assert!(
-            !failures
-                .iter()
-                .any(|f| matches!(f, Failure::AnswerMissingPhrase { .. })),
-            "must not fabricate AnswerMissingPhrase from a blanked final_text: {failures:?}",
-        );
-        // The runtime failure must be present (drives passed=false).
-        assert!(matches!(
-            outcome.runtime_failure,
-            Some(awaken_eval::ReplayRuntimeFailure::RuntimeError { .. })
-        ));
-
-        let report = ReplayReport::from_outcome(&outcome, failures);
-        assert!(!report.passed);
-        // Real replay observables preserved end-to-end into the report.
-        assert_eq!(report.final_text, "the answer is 42");
-        assert_eq!(report.total_input_tokens, 10);
-        assert_eq!(report.total_output_tokens, 20);
-        assert_eq!(report.total_tokens, 30);
-        assert_eq!(report.inference_count, 1);
-        assert_eq!(report.session_duration_ms, 42);
-        assert_eq!(report.elapsed_ms, 123);
-        assert_eq!(report.revision_count, 2);
-        assert_eq!(outcome.trace_run_id(), Some("RUN-REAL"));
-        assert!(report.runtime_failure.is_some());
-    }
-
-    #[test]
-    fn cell_error_outcome_preserves_existing_runtime_failure() {
-        // Regression: when replay itself already set a runtime_failure
-        // (e.g. token budget exceeded), a downstream scoring error must
-        // NOT overwrite it. The original cause is the load-bearing one
-        // for ops triage; the scoring error is downstream noise. Both
-        // reasons must reach the per-cell report.
-        use awaken_eval::{Failure, ReplayRuntimeFailure};
-
-        let expect = Expectation::default();
-        let mut real_outcome = ReplayOutcome {
-            fixture_id: "fx".into(),
-            final_text: "partial reply".into(),
-            metrics: awaken_ext_observability::AgentMetrics::default(),
-            elapsed: std::time::Duration::from_millis(50),
-            error_type: None,
-            inference_error_count: 0,
-            runtime_failure: None,
-            revision_count: 0,
-            judge_score: None,
-            judge_reasoning: None,
-        };
-        real_outcome.runtime_failure = Some(ReplayRuntimeFailure::RuntimeError {
-            message: "token budget exceeded".into(),
-        });
-
-        let (outcome, failures) = cell_error_outcome(
-            real_outcome,
-            "scoring failed: judge returned non-JSON".into(),
-            &expect,
-        );
-
-        // Primary (replay) runtime_failure preserved verbatim — NOT
-        // replaced by the scoring error message.
-        match &outcome.runtime_failure {
-            Some(ReplayRuntimeFailure::RuntimeError { message }) => {
-                assert_eq!(message, "token budget exceeded");
-            }
-            other => panic!("expected preserved RuntimeError, got {other:?}"),
-        }
-
-        // Both reasons must be in the failures vec — the replay
-        // failure (emitted by score()) and the scoring error
-        // (appended by cell_error_outcome).
-        let runtime_failure_messages: Vec<String> = failures
-            .iter()
-            .filter_map(|f| match f {
-                Failure::ReplayRuntimeFailure {
-                    failure: ReplayRuntimeFailure::RuntimeError { message },
-                } => Some(message.clone()),
-                _ => None,
-            })
-            .collect();
-        assert!(
-            runtime_failure_messages
-                .iter()
-                .any(|m| m == "token budget exceeded"),
-            "expected original replay runtime_failure to remain in failures list: {runtime_failure_messages:?}",
-        );
-        assert!(
-            runtime_failure_messages
-                .iter()
-                .any(|m| m == "scoring failed: judge returned non-JSON"),
-            "expected scoring error to be appended to failures list: {runtime_failure_messages:?}",
-        );
-    }
-
-    #[tokio::test]
-    async fn score_outcome_returns_judge_result_so_caller_can_stamp_outcome() {
-        // Regression: `score_outcome` used to discard the JudgeResult
-        // from `score_with_judge`, so non-revise min_judge_score runs
-        // produced a passed/failed report whose `judge_score` /
-        // `judge_reasoning` were always `None`. The baseline diff now
-        // compares `judge_score`, so this silently masked LLM-grade
-        // drift on every comparison.
-        use awaken_eval::test_support::ScriptedExecutor;
-        use awaken_eval::{Failure, Fixture, LlmExecutorJudge, MockResponse};
-
-        let judge_executor = ScriptedExecutor::new(
-            "judge-stub",
-            vec![r#"{"score": 0.91, "reasoning": "thorough"}"#],
-        )
-        .arc();
-        let context = JudgeContext {
-            judge: LlmExecutorJudge::new(judge_executor, "judge-model"),
-            rubric: None,
-            revise_max_retries: None,
-        };
-
-        let fixture = Fixture {
-            id: "fx".into(),
-            description: None,
-            user_input: "explain it".into(),
-            provider_script: vec![],
-            provider_script_error: None,
-            source_run_id: None,
-            source_model_id: None,
-            allow_unused_provider_script: false,
-            mock_response: MockResponse::default(),
-            expect: Expectation {
-                min_judge_score: Some(0.7),
-                ..Expectation::default()
-            },
-            continued_turns: vec![],
-        };
-
-        // Outcome arrives at scoring with NO cached judge score — the
-        // non-revise path. score_outcome must invoke the judge AND
-        // hand the result back so the caller can stamp the outcome.
-        let outcome = ReplayOutcome {
-            fixture_id: "fx".into(),
-            final_text: "agent answer".into(),
-            metrics: awaken_ext_observability::AgentMetrics::default(),
-            elapsed: std::time::Duration::from_millis(10),
-            error_type: None,
-            inference_error_count: 0,
-            runtime_failure: None,
-            revision_count: 0,
-            judge_score: None,
-            judge_reasoning: None,
-        };
-
-        let (failures, judge_result) = score_outcome(&outcome, &fixture, Some(&context))
-            .await
-            .expect("judge invocation succeeded");
-        assert!(
-            !failures
-                .iter()
-                .any(|f| matches!(f, Failure::JudgeBelowThreshold { .. })),
-            "0.91 is above threshold; no JudgeBelowThreshold should fire"
-        );
-        let jr = judge_result.expect("score_outcome must surface the JudgeResult to the caller");
-        assert!((jr.score - 0.91).abs() < f32::EPSILON);
-        assert_eq!(jr.reasoning.as_deref(), Some("thorough"));
-
-        // Apply the documented caller pattern and verify the report
-        // round-trips both fields. Without this stamp the report would
-        // be `judge_score: None` even though the judge actually ran.
-        let mut outcome = outcome;
-        outcome.judge_score = Some(jr.score);
-        outcome.judge_reasoning = jr.reasoning;
-        let report = ReplayReport::from_outcome(&outcome, failures);
-        assert_eq!(report.judge_score, Some(0.91));
-        assert_eq!(report.judge_reasoning.as_deref(), Some("thorough"));
-        assert!(report.passed, "above threshold and no other failures");
-    }
-}
+#[path = "eval_cell_test.rs"]
+mod tests;
