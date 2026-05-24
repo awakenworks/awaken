@@ -388,7 +388,7 @@ fn make_gateway_app_with_options(
                 }),
                 ..Default::default()
             })
-            .with_thread_run_store(store.clone())
+            .with_in_memory_thread_run_store(store.clone())
             .build()
             .expect("build gateway runtime"),
     );
@@ -455,7 +455,7 @@ fn make_delegate_gateway_app(mock_base_url: &str) -> TestApp {
                 }),
                 ..Default::default()
             })
-            .with_thread_run_store(store.clone())
+            .with_in_memory_thread_run_store(store.clone())
             .build()
             .expect("build delegate gateway runtime"),
     );
