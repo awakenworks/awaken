@@ -308,6 +308,55 @@ pre-commit:
         fi
       stage_fixed: false
 
+    check-legacy-model-binding:
+      run: |
+        # Guard against reintroduction of the legacy ModelBindingSpec / ModelBinding
+        # symbol family after the ModelSpec unification refactor.
+        #
+        # Allowed exceptions (must appear in this allowlist or the hook fails):
+        #   - CHANGELOG.md historical entries (release notes describe past behavior)
+        #   - reference/provider-model-config.md migration tables (intentional "old -> new" rows)
+        #   - this lefthook rule itself
+        staged=$(git diff --cached --name-only --diff-filter=ACMR \
+          | grep -E '\.(rs|ts|tsx|js|jsx|md|json|toml|yml|yaml)$' \
+          | grep -vE '^(CHANGELOG\.md|lefthook\.yml)$' \
+          | grep -vE 'apps/www/src/content/docs/(zh-cn/)?reference/provider-model-config\.md$' \
+          || true)
+        if [ -z "$staged" ]; then
+          exit 0
+        fi
+        violations=""
+        for file in $staged; do
+          git cat-file -e ":$file" 2>/dev/null || continue
+          hits=$(git show ":$file" | grep -nE '\b(ModelBindingSpec|with_model_binding|validate_model_binding|MODEL_BINDING_SPEC|CascadeUnusedModelBindings|cascade_unused_model_bindings|model_bindings)\b' || true)
+          if [ -n "$hits" ]; then
+            violations="${violations}${file}:\n${hits}\n\n"
+          fi
+        done
+        if [ -n "$violations" ]; then
+          echo "ERROR: 检测到已废弃的 ModelBinding* 符号被重新引入:"
+          printf '%b' "$violations"
+          echo "❌ ModelBindingSpec / runtime ModelBinding / with_model_binding 等已合并为 ModelSpec / with_model。"
+          echo ""
+          echo "替换对照:"
+          echo "  ModelBindingSpec               -> ModelSpec"
+          echo "  runtime ModelBinding           -> ModelSpec (ModelRegistry::get_model 直接返回)"
+          echo "  with_model_binding(id, b)      -> with_model(ModelSpec::new(id, p, u))"
+          echo "  validate_model_binding_spec    -> validate_model_spec"
+          echo "  MODEL_BINDING_SPEC_*           -> MODEL_SPEC_*"
+          echo "  CascadeUnusedModelBindings     -> CascadeUnusedModels"
+          echo "  cascade_unused_model_bindings_allowed -> cascade_unused_models_allowed"
+          echo "  Rust field 'model_bindings'    -> 'models'"
+          echo ""
+          echo "允许例外: CHANGELOG.md 历史条目、reference/provider-model-config.md 迁移表。"
+          echo ""
+          echo "<system-reminder>"
+          echo "→ Next: replace legacy symbol with ModelSpec form → git add → re-commit"
+          echo "</system-reminder>"
+          exit 1
+        fi
+      stage_fixed: false
+
     check-code-quality:
       run: |
         # 检查代码文件中的占位符、TODO、调试代码
