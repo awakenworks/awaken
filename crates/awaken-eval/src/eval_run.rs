@@ -246,6 +246,13 @@ pub struct EvalRunSummary {
     pub started_at_secs: u64,
     pub item_count: usize,
     pub passed_count: usize,
+    /// Items whose `report.passed == false`. Today every persisted
+    /// item carries a report, so `failed_count = item_count -
+    /// passed_count`; the field is kept explicit so consumers don't
+    /// have to assume that invariant. If a future schema lets items
+    /// be stored without a report (partial run), pending items will
+    /// be `item_count - passed_count - failed_count`.
+    pub failed_count: usize,
 }
 
 /// Per-(fixture, cell) roll-up across flakiness samples. The boolean
@@ -326,6 +333,7 @@ impl EvalRun {
 impl From<&EvalRun> for EvalRunSummary {
     fn from(run: &EvalRun) -> Self {
         let passed_count = run.items.iter().filter(|i| i.report.passed).count();
+        let failed_count = run.items.iter().filter(|i| !i.report.passed).count();
         Self {
             id: run.id.clone(),
             dataset_id: run.dataset_id.clone(),
@@ -334,6 +342,7 @@ impl From<&EvalRun> for EvalRunSummary {
             started_at_secs: run.started_at_secs,
             item_count: run.items.len(),
             passed_count,
+            failed_count,
         }
     }
 }
