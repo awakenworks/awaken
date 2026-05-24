@@ -10,6 +10,7 @@ import {
 } from "@/lib/agent-stats";
 import { useAgentRuntimeStatsQuery } from "@/lib/query/hooks/agent-stats";
 import { adminRoutes } from "@/lib/routes";
+import { StatCard } from "@/components/ui/stat-card";
 
 const WINDOW_OPTIONS = [
   { label: "Default", value: "" },
@@ -141,12 +142,12 @@ export function AgentDashboardPage() {
           <StatCard
             label="Errors"
             value={snapshot.error_count}
-            tone={snapshot.error_count > 0 ? "negative" : "neutral"}
+            tone={snapshot.error_count > 0 ? "error" : "neutral"}
           />
           <StatCard
             label="Error rate"
             value={`${(errorRate(snapshot) * 100).toFixed(1)}%`}
-            tone={errorRate(snapshot) > 0 ? "negative" : "neutral"}
+            tone={errorRate(snapshot) > 0 ? "error" : "neutral"}
           />
           <StatCard label="Input tokens" value={snapshot.input_tokens} />
           <StatCard label="Output tokens" value={snapshot.output_tokens} />
@@ -176,7 +177,7 @@ export function AgentDashboardPage() {
           <StatCard
             label="Tool failure rate"
             value={`${(toolFailureRate(snapshot) * 100).toFixed(1)}%`}
-            tone={toolFailureRate(snapshot) > 0 ? "negative" : "neutral"}
+            tone={toolFailureRate(snapshot) > 0 ? "error" : "neutral"}
           />
         </StatGrid>
       </Section>
@@ -321,7 +322,7 @@ function QuickActionsSection({ agentId }: { agentId: string }) {
 
 function Shell({ title, children }: { title: string; children: React.ReactNode }) {
   return (
-    <div className="mx-auto max-w-6xl p-6 md:p-8">
+    <div className="mx-auto w-full max-w-6xl 2xl:max-w-none p-6 md:p-8">
       <header className="mb-4">
         <h1 className="text-[22px] font-bold tracking-title-em text-fg-strong">{title}</h1>
       </header>
@@ -343,28 +344,6 @@ function StatGrid({ children }: { children: React.ReactNode }) {
   return <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">{children}</div>;
 }
 
-function StatCard({
-  label,
-  value,
-  tone = "neutral",
-}: {
-  label: string;
-  value: number | string;
-  tone?: "neutral" | "positive" | "negative";
-}) {
-  const toneClass =
-    tone === "positive"
-      ? "text-tone-success"
-      : tone === "negative"
-        ? "text-tone-error"
-        : "text-fg-strong";
-  return (
-    <div className="rounded-sm border border-line bg-surface p-5 shadow-sm">
-      <div className={`text-3xl font-semibold ${toneClass}`}>{value}</div>
-      <div className="mt-2 text-sm text-fg-soft">{label}</div>
-    </div>
-  );
-}
 
 function RegistryDisabledPanel({ onReload }: { onReload: () => void }) {
   return (

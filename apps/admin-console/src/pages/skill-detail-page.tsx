@@ -182,7 +182,7 @@ export function SkillDetailPage() {
 }
 
 function Shell({ children }: { children: React.ReactNode }) {
-  return <div className="mx-auto max-w-5xl p-6 md:p-8">{children}</div>;
+  return <div className="mx-auto w-full max-w-5xl 2xl:max-w-none p-6 md:p-8">{children}</div>;
 }
 
 function Card({ title, children }: { title: string; children: React.ReactNode }) {

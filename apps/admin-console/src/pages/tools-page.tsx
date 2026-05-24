@@ -32,7 +32,7 @@ export function ToolsPage() {
     : items;
 
   return (
-    <div className="mx-auto max-w-6xl p-6 md:p-8">
+    <div className="mx-auto w-full max-w-6xl 2xl:max-w-none p-6 md:p-8">
       <div className="mb-6 flex items-start justify-between gap-4">
         <h1 className="text-[22px] font-bold tracking-title-em text-fg-strong">
           {t("tools.list.title", { defaultValue: "Tools" })}

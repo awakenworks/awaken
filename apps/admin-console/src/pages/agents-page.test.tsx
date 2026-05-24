@@ -359,7 +359,10 @@ describe("AgentsPage source badges", () => {
       buildFetchMock([agentItem("disabled-stats")], [metaItem("disabled-stats", "user")]),
     );
     renderAgentsPage();
-    await screen.findByText("Runtime stats disabled.", undefined, { timeout: 5_000 });
+    // Banner is now the shared FeatureDisabledNotice — match the
+    // localised title, which carries the "Inferences column shows n/a"
+    // hint that the test below verifies.
+    await screen.findByText(/Runtime stats disabled/, undefined, { timeout: 5_000 });
     const disabledRow = screen.getByText("disabled-stats").closest("tr");
     expect(disabledRow).not.toBeNull();
     expect(within(disabledRow!).getByText("n/a")).toBeDefined();

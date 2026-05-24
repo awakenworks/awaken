@@ -482,10 +482,11 @@ export function normalizePreviewAgent(draft: AgentSpec): AgentSpec {
   // without this strip every preview of a registry-resident agent would
   // fail with `BadRequest`. The runtime preview is always local —
   // endpoint and registry are not meaningful here.
+  // `String(x ?? "")` on every string field so a partial draft (missing `id` etc) doesn't crash.
   const { endpoint: _endpoint, registry: _registry, ...localDraft } = draft;
   return {
     ...localDraft,
-    id: localDraft.id.trim() || "draft-preview",
+    id: String(localDraft.id ?? "").trim() || "draft-preview",
     model_id: String(localDraft.model_id ?? "").trim(),
     system_prompt: String(localDraft.system_prompt ?? ""),
     plugin_ids: [...(localDraft.plugin_ids ?? [])],

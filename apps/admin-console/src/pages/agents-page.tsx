@@ -20,6 +20,7 @@ import {
   type SortableColumn,
 } from "@/components/list-controls";
 import { EmptyState } from "@/components/ui/empty-state";
+import { FeatureDisabledNotice } from "@/components/ui/feature-disabled-notice";
 import { FilterBar, FilterChip } from "@/components/ui/filter-bar";
 import { PageHeader } from "@/components/ui/page-header";
 import { Pill, PillStack } from "@/components/ui/pill";
@@ -46,12 +47,14 @@ type AgentSortKey = "id" | "model_id" | "plugin_count" | "updated_at";
 
 type ModifiedRange = "any" | "1h" | "24h" | "7d" | "30d";
 
-const RANGE_OPTIONS: { value: ModifiedRange; label: string; seconds: number }[] = [
-  { value: "any", label: "any", seconds: 0 },
-  { value: "1h", label: "last 1h", seconds: 60 * 60 },
-  { value: "24h", label: "last 24h", seconds: 60 * 60 * 24 },
-  { value: "7d", label: "last 7d", seconds: 60 * 60 * 24 * 7 },
-  { value: "30d", label: "last 30d", seconds: 60 * 60 * 24 * 30 },
+/** Range filter options. Labels are i18n keys resolved inside the
+ *  component so language switching picks them up. */
+const RANGE_OPTIONS: { value: ModifiedRange; seconds: number }[] = [
+  { value: "any", seconds: 0 },
+  { value: "1h", seconds: 60 * 60 },
+  { value: "24h", seconds: 60 * 60 * 24 },
+  { value: "7d", seconds: 60 * 60 * 24 * 7 },
+  { value: "30d", seconds: 60 * 60 * 24 * 30 },
 ];
 
 const SORT_CONFIG: SortConfig<AgentSpec, AgentSortKey> = {
@@ -60,16 +63,6 @@ const SORT_CONFIG: SortConfig<AgentSpec, AgentSortKey> = {
   plugin_count: (a, b) => compareNumber(a.plugin_ids?.length ?? 0, b.plugin_ids?.length ?? 0),
   updated_at: (a, b) => compareNumber(a.updated_at ?? 0, b.updated_at ?? 0),
 };
-
-const COLUMNS: SortableColumn<AgentSortKey>[] = [
-  { key: "id", label: "Agent" },
-  { key: "model_id", label: "Model" },
-  { key: "plugin_count", label: "Plugins" },
-  { key: "updated_at", label: "Last modified" },
-  { key: null, label: "Source" },
-  { key: null, label: "Inferences (24h)" },
-  { key: null, label: "Actions" },
-];
 
 const LIST_OPTIONS = {
   validSortKeys: ["id", "model_id", "plugin_count", "updated_at"] as const,
@@ -116,6 +109,22 @@ export function AgentsPage() {
 
   const agents = agentsQuery.data?.items ?? EMPTY_AGENTS;
   const loading = agentsQuery.isPending;
+
+  // Column labels live inside the component so they can pick up the
+  // active locale. Memoised on `t` to keep the SortableHeader stable
+  // across renders that don't change the language.
+  const columns = useMemo<SortableColumn<AgentSortKey>[]>(
+    () => [
+      { key: "id", label: t("agents.columns.agent") },
+      { key: "model_id", label: t("agents.columns.model") },
+      { key: "plugin_count", label: t("agents.columns.plugins") },
+      { key: "updated_at", label: t("agents.columns.lastModified") },
+      { key: null, label: t("agents.columns.source") },
+      { key: null, label: t("agents.columns.inferences") },
+      { key: null, label: t("agents.columns.actions") },
+    ],
+    [t],
+  );
   const metaMap = useMemo(() => {
     const map = new Map<string, ConfigSourceState>();
     for (const item of metaQuery.data ?? []) {
@@ -145,23 +154,23 @@ export function AgentsPage() {
     const set = new Set<string>();
     for (const a of agents) set.add(a.model_id);
     return [
-      { value: "any", label: "any" },
+      { value: "any", label: t("agents.filters.any") },
       ...Array.from(set)
         .sort()
         .map((m) => ({ value: m, label: m })),
     ];
-  }, [agents]);
+  }, [agents, t]);
 
   const pluginOptions = useMemo(() => {
     const set = new Set<string>();
     for (const a of agents) for (const p of a.plugin_ids ?? []) set.add(p);
     return [
-      { value: "any", label: "any" },
+      { value: "any", label: t("agents.filters.any") },
       ...Array.from(set)
         .sort()
         .map((p) => ({ value: p, label: p })),
     ];
-  }, [agents]);
+  }, [agents, t]);
 
   const filtered = useMemo(() => {
     const nowSec = Math.floor(Date.now() / 1000);
@@ -229,7 +238,7 @@ export function AgentsPage() {
   const noMatches = !loading && agents.length > 0 && view.items.length === 0;
 
   return (
-    <div className="mx-auto max-w-6xl p-6 md:p-8">
+    <div className="mx-auto w-full max-w-6xl 2xl:max-w-none p-6 md:p-8">
       <PageHeader
         title={t("agents.title")}
         count={agents.length}
@@ -260,40 +269,42 @@ export function AgentsPage() {
           filters={
             <>
               <FilterChip
-                label="model"
+                label={t("agents.filters.model")}
                 value={modelFilter}
                 options={modelOptions}
                 onChange={setModelFilter}
               />
               <FilterChip
-                label="plugin"
+                label={t("agents.filters.plugin")}
                 value={pluginFilter}
                 options={pluginOptions}
                 onChange={setPluginFilter}
               />
               <FilterChip
-                label="modified"
+                label={t("agents.filters.modified")}
                 value={modifiedRange}
                 options={RANGE_OPTIONS.map((r) => ({
                   value: r.value,
-                  label: r.label,
+                  label: t(`agents.filters.range.${r.value}`),
                 }))}
                 onChange={setModifiedRange}
               />
             </>
           }
           sort={sortMeta}
-          meta={`showing ${view.items.length} of ${agents.length}`}
+          meta={t("agents.filters.showing", {
+            shown: view.items.length,
+            total: agents.length,
+          })}
         />
       )}
 
       {runtimeUnavailable && (
-        <div className="mb-3 rounded-sm border border-tone-warn/30 bg-tone-warn/10 px-3 py-2 text-xs text-fg-soft">
-          <span className="font-medium text-fg-strong">Runtime stats disabled.</span> The
-          "Inferences (24h)" column shows <span className="font-mono">n/a</span> because the server
-          has no <span className="font-mono">RuntimeStatsRegistry</span> installed (install the
-          observability plugin or wire{" "}
-          <span className="font-mono">AppState::with_runtime_stats</span>).
+        <div className="mb-3">
+          <FeatureDisabledNotice
+            title={t("agents.runtimeDisabled.title")}
+            configHint={t("agents.runtimeDisabled.hint")}
+          />
         </div>
       )}
 
@@ -314,16 +325,16 @@ export function AgentsPage() {
         ) : (
           <table className="min-w-full">
             <SortableHeader
-              columns={COLUMNS}
+              columns={columns}
               sort={sort}
               onSort={(key) => applyListState({ sort: toggleSort(sort, key), page: 1 })}
             />
             <tbody>
-              {loading && <SkeletonRows rows={4} cols={COLUMNS.length} />}
+              {loading && <SkeletonRows rows={4} cols={columns.length} />}
               {!loading && noMatches && (
                 <tr>
                   <td
-                    colSpan={COLUMNS.length}
+                    colSpan={columns.length}
                     className="px-5 py-8 text-center text-sm text-fg-soft"
                   >
                     {t("agents.noMatches")}
@@ -401,27 +412,20 @@ export function AgentsPage() {
 function SourceBadge({ state }: { state: ConfigSourceState | undefined }) {
   const { t } = useTranslation();
   if (!state) return null;
+  // Built-in / user-defined are static facts; customized is the
+  // informational signal an operator might act on (compare against
+  // the published baseline), so it gets the `info` tone + status dot.
   if (state === "builtin") {
-    return (
-      <span className="inline-flex items-center rounded-full bg-muted px-2 py-0.5 text-xs font-medium text-fg-soft">
-        {t("agents.source.builtin")}
-      </span>
-    );
+    return <Pill tone="neutral">{t("agents.source.builtin")}</Pill>;
   }
   if (state === "customized") {
     return (
-      <span className="inline-flex items-center gap-1 rounded-full bg-blue-100 px-2 py-0.5 text-xs font-medium text-blue-800 dark:bg-blue-900/30 dark:text-blue-300">
-        <span aria-hidden className="h-1.5 w-1.5 rounded-full bg-blue-500" />
+      <Pill tone="info" dot>
         {t("agents.source.customized")}
-      </span>
+      </Pill>
     );
   }
-  // user
-  return (
-    <span className="inline-flex items-center rounded-full bg-soft px-2 py-0.5 text-xs font-medium text-fg">
-      {t("agents.source.userDefined")}
-    </span>
-  );
+  return <Pill tone="neutral">{t("agents.source.userDefined")}</Pill>;
 }
 
 function InferenceCount({

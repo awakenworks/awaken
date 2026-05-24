@@ -90,12 +90,12 @@ export function McpServerDetailPage() {
 
   if (!id) {
     return (
-      <div className="mx-auto max-w-5xl p-6 md:p-8 text-sm text-fg-soft">Missing server id.</div>
+      <div className="mx-auto w-full max-w-5xl 2xl:max-w-none p-6 md:p-8 text-sm text-fg-soft">Missing server id.</div>
     );
   }
   if (notFound) {
     return (
-      <div className="mx-auto max-w-5xl p-6 md:p-8">
+      <div className="mx-auto w-full max-w-5xl 2xl:max-w-none p-6 md:p-8">
         <div className="mb-3 text-xs">
           <Link to={adminRoutes.mcpServers} className="text-fg-soft hover:text-fg">
             ← {t("mcp.title")}
@@ -110,7 +110,7 @@ export function McpServerDetailPage() {
   }
   if (error) {
     return (
-      <div className="mx-auto max-w-5xl p-6 md:p-8">
+      <div className="mx-auto w-full max-w-5xl 2xl:max-w-none p-6 md:p-8">
         <div className="mb-3 text-xs">
           <Link to={adminRoutes.mcpServers} className="text-fg-soft hover:text-fg">
             ← {t("mcp.title")}
@@ -124,7 +124,7 @@ export function McpServerDetailPage() {
   }
   if (!server) {
     return (
-      <div className="mx-auto max-w-5xl p-6 md:p-8 text-sm text-fg-soft">{t("common.loading")}</div>
+      <div className="mx-auto w-full max-w-5xl 2xl:max-w-none p-6 md:p-8 text-sm text-fg-soft">{t("common.loading")}</div>
     );
   }
 
@@ -162,7 +162,7 @@ export function McpServerDetailPage() {
           : "not connected";
 
   return (
-    <div className="mx-auto max-w-5xl p-6 md:p-8">
+    <div className="mx-auto w-full max-w-5xl 2xl:max-w-none p-6 md:p-8">
       <header className="mb-4">
         <div className="mb-2 text-xs">
           <Link to={adminRoutes.mcpServers} className="text-fg-soft hover:text-fg">

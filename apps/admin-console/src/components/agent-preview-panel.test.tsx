@@ -518,6 +518,27 @@ describe("normalizePreviewAgent — strip endpoint/registry for preview (R14)", 
     expect(out.id).toBe("draft-preview");
   });
 
+  it("tolerates a draft with id undefined (server returned partial / inflight state)", () => {
+    // AgentSpec.id is typed as required, but at runtime some server
+    // responses or transient editor states leave the field absent. The
+    // helper must not throw `Cannot read properties of undefined`.
+    const draft = previewSpec();
+    delete (draft as Partial<AgentSpec>).id;
+    const out = normalizePreviewAgent(draft);
+    expect(out.id).toBe("draft-preview");
+    expect(out.model_id).toBe("research-default");
+  });
+
+  it("tolerates a draft with model_id / system_prompt undefined", () => {
+    const draft = previewSpec();
+    delete (draft as Partial<AgentSpec>).model_id;
+    delete (draft as Partial<AgentSpec>).system_prompt;
+    const out = normalizePreviewAgent(draft);
+    expect(out.id).toBe("draft");
+    expect(out.model_id).toBe("");
+    expect(out.system_prompt).toBe("");
+  });
+
   it("does not mutate the source draft", () => {
     const draft = previewSpec({ endpoint: REMOTE_ENDPOINT, registry: "cloud" });
     const snapshot = JSON.parse(JSON.stringify(draft));

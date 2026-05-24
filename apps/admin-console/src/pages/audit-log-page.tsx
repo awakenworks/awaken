@@ -2,6 +2,9 @@ import { useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { ConfigApiError } from "@/lib/api";
 import { redactSecretsForDisplay } from "@/lib/agent-editor-helpers";
+import { FeatureDisabledNotice } from "@/components/ui/feature-disabled-notice";
+import { LoadError } from "@/components/ui/load-error";
+import { Pill, type PillTone } from "@/components/ui/pill";
 
 /** Quote a CSV cell per RFC 4180 (double-quote any cell containing , " or \n). */
 function csvCell(v: string): string {
@@ -20,23 +23,26 @@ import {
 import { useAuditFilterUrlState } from "@/lib/list-url-state";
 import { useAuditLogInfiniteQuery } from "@/lib/query/hooks/audit";
 
-const ACTION_OPTIONS: Array<{ value: AuditAction | ""; label: string }> = [
-  { value: "", label: "All actions" },
-  { value: "create", label: "Create" },
-  { value: "update", label: "Update" },
-  { value: "delete", label: "Delete" },
-  { value: "restart", label: "Restart" },
-  { value: "publish", label: "Publish" },
-  { value: "restore", label: "Restore" },
+const ACTION_VALUES: ReadonlyArray<AuditAction | ""> = [
+  "",
+  "create",
+  "update",
+  "delete",
+  "restart",
+  "publish",
+  "restore",
 ];
 
-const ACTION_BADGE: Record<AuditAction, string> = {
-  create: "bg-tone-success/15 text-tone-success",
-  update: "bg-blue-100 text-blue-800",
-  delete: "bg-tone-error/15 text-tone-error",
-  restart: "bg-tone-warn/15 text-tone-warn",
-  publish: "bg-violet-100 text-violet-800",
-  restore: "bg-purple-100 text-purple-800",
+/** Same mapping the dashboard's audit timeline uses — keep these in
+ *  sync if either side gains a new action. Restore/restart fall under
+ *  warn because both rewind or interrupt prior state. */
+const ACTION_TONE: Record<AuditAction, PillTone> = {
+  create: "success",
+  update: "info",
+  delete: "error",
+  restart: "warn",
+  publish: "info",
+  restore: "warn",
 };
 
 type AuditFilterState = Omit<ReturnType<typeof useAuditFilterUrlState>, "apply">;
@@ -109,7 +115,7 @@ export function AuditLogPage() {
   }
 
   return (
-    <div className="mx-auto max-w-6xl p-6 md:p-8">
+    <div className="mx-auto w-full max-w-6xl 2xl:max-w-none p-6 md:p-8">
       <header className="mb-4 flex items-baseline justify-between gap-3">
         <div className="flex items-baseline gap-3">
           <h2 className="text-2xl font-semibold tracking-title-em text-fg-strong">
@@ -134,9 +140,10 @@ export function AuditLogPage() {
       </header>
 
       {notConfigured && (
-        <div className="mb-6 rounded-sm border border-tone-warn/35 bg-tone-warn/10 p-4 text-sm text-tone-warn shadow-sm">
-          {t("audit.notConfigured")}
-        </div>
+        <FeatureDisabledNotice
+          title={t("audit.notConfigured")}
+          configHint={t("audit.notConfiguredHint")}
+        />
       )}
 
       {/* Filter bar */}
@@ -169,9 +176,11 @@ export function AuditLogPage() {
               onChange={(e) => apply({ action: e.target.value as AuditAction | "" })}
               className="rounded-sm border border-line-strong bg-surface px-3 py-2 text-sm text-fg outline-none transition focus:border-fg"
             >
-              {ACTION_OPTIONS.map((opt) => (
-                <option key={opt.value} value={opt.value}>
-                  {opt.label}
+              {ACTION_VALUES.map((value) => (
+                <option key={value} value={value}>
+                  {value === ""
+                    ? t("audit.filters.allActions")
+                    : t(`audit.filters.actions.${value}`)}
                 </option>
               ))}
             </select>
@@ -231,8 +240,8 @@ export function AuditLogPage() {
       </section>
 
       {error && (
-        <div className="mb-4 rounded-sm border border-tone-error/30 bg-tone-error/10 p-4 text-sm text-tone-error shadow-sm">
-          {error}
+        <div className="mb-4">
+          <LoadError message={error} onRetry={() => void auditQuery.refetch()} />
         </div>
       )}
 
@@ -272,7 +281,7 @@ export function AuditLogPage() {
                 disabled={loading || !auditQuery.hasNextPage}
                 className="text-sm font-medium text-fg transition hover:text-fg-strong disabled:opacity-60"
               >
-                {loading ? "Loading…" : "Load more"}
+                {loading ? t("audit.filters.loading") : t("audit.loadMore")}
               </button>
             </div>
           )}
@@ -281,7 +290,7 @@ export function AuditLogPage() {
 
       {!hasLoaded && loading && !notConfigured && (
         <div className="rounded-sm border border-line bg-surface p-8 text-center text-sm text-fg-soft shadow-sm">
-          Loading audit events…
+          {t("audit.loadingPage")}
         </div>
       )}
 
@@ -291,6 +300,7 @@ export function AuditLogPage() {
 }
 
 function AuditRow({ event, onView }: { event: AuditEvent; onView: () => void }) {
+  const { t } = useTranslation();
   const actor = formatActor(event.actor);
   const ts = new Date(event.ts);
   const fromAgent = isAgentActor(event.actor);
@@ -315,14 +325,7 @@ function AuditRow({ event, onView }: { event: AuditEvent; onView: () => void }) 
         )}
       </td>
       <td className="px-4 py-3">
-        <span
-          className={[
-            "inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium",
-            ACTION_BADGE[event.action] ?? "bg-muted text-fg",
-          ].join(" ")}
-        >
-          {event.action}
-        </span>
+        <Pill tone={ACTION_TONE[event.action] ?? "neutral"}>{event.action}</Pill>
       </td>
       <td className="max-w-xs truncate px-4 py-3 font-mono text-xs text-fg-strong">
         {event.resource}
@@ -334,7 +337,7 @@ function AuditRow({ event, onView }: { event: AuditEvent; onView: () => void }) 
           onClick={onView}
           className="text-xs font-medium text-fg-soft transition hover:text-fg-strong"
         >
-          View
+          {t("audit.actions.view")}
         </button>
       </td>
     </tr>
@@ -342,13 +345,14 @@ function AuditRow({ event, onView }: { event: AuditEvent; onView: () => void }) 
 }
 
 function EventPanel({ event, onClose }: { event: AuditEvent; onClose: () => void }) {
+  const { t } = useTranslation();
   const actor = formatActor(event.actor);
 
   return (
     <div
       role="dialog"
       aria-modal="true"
-      aria-label="Audit event details"
+      aria-label={t("audit.event.dialogLabel")}
       className="fixed inset-0 z-50 flex items-start justify-end bg-black/30"
       onClick={(e) => {
         if (e.target === e.currentTarget) onClose();
@@ -356,47 +360,40 @@ function EventPanel({ event, onClose }: { event: AuditEvent; onClose: () => void
     >
       <div className="flex h-full w-full max-w-2xl flex-col overflow-y-auto bg-surface shadow-2xl md:max-w-xl">
         <div className="flex items-center justify-between border-b border-line px-6 py-4">
-          <h3 className="text-base font-semibold text-fg-strong">Audit event</h3>
+          <h3 className="text-base font-semibold text-fg-strong">{t("audit.event.title")}</h3>
           <button
             type="button"
             onClick={onClose}
             className="rounded-sm px-2 py-1 text-sm text-fg-soft hover:bg-muted"
           >
-            Close
+            {t("audit.event.close")}
           </button>
         </div>
 
         <dl className="grid gap-3 px-6 py-4 text-sm">
-          <Row label="ID">
+          <Row label={t("audit.event.fields.id")}>
             <span className="font-mono text-xs">{event.id}</span>
           </Row>
-          <Row label="Time">
+          <Row label={t("audit.event.fields.time")}>
             <span className="font-mono text-xs">{event.ts}</span>
           </Row>
-          <Row label="Actor">
+          <Row label={t("audit.event.fields.actor")}>
             <span className="font-mono text-xs">{actor.hash}</span>
             {actor.label && <span className="ml-1 text-fg-soft">/{actor.label}</span>}
           </Row>
-          <Row label="Action">
-            <span
-              className={[
-                "inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium",
-                ACTION_BADGE[event.action] ?? "bg-muted text-fg",
-              ].join(" ")}
-            >
-              {event.action}
-            </span>
+          <Row label={t("audit.event.fields.action")}>
+            <Pill tone={ACTION_TONE[event.action] ?? "neutral"}>{event.action}</Pill>
           </Row>
-          <Row label="Resource">
+          <Row label={t("audit.event.fields.resource")}>
             <span className="font-mono text-xs">{event.resource}</span>
           </Row>
           {event.ip && (
-            <Row label="IP">
+            <Row label={t("audit.event.fields.ip")}>
               <span className="font-mono text-xs">{event.ip}</span>
             </Row>
           )}
           {event.request_id && (
-            <Row label="Request ID">
+            <Row label={t("audit.event.fields.requestId")}>
               <span className="font-mono text-xs">{event.request_id}</span>
             </Row>
           )}
@@ -404,7 +401,9 @@ function EventPanel({ event, onClose }: { event: AuditEvent; onClose: () => void
 
         <div className="grid gap-4 px-6 pb-6 md:grid-cols-2">
           <div>
-            <p className="mb-2 text-xs font-medium uppercase tracking-wide text-fg-soft">Before</p>
+            <p className="mb-2 text-xs font-medium uppercase tracking-wide text-fg-soft">
+              {t("audit.event.before")}
+            </p>
             <pre className="overflow-auto rounded-sm border border-line bg-soft p-3 text-xs leading-relaxed text-fg">
               {event.before != null ? (
                 // Audit snapshots can contain a full AgentSpec, including
@@ -417,7 +416,9 @@ function EventPanel({ event, onClose }: { event: AuditEvent; onClose: () => void
             </pre>
           </div>
           <div>
-            <p className="mb-2 text-xs font-medium uppercase tracking-wide text-fg-soft">After</p>
+            <p className="mb-2 text-xs font-medium uppercase tracking-wide text-fg-soft">
+              {t("audit.event.after")}
+            </p>
             <pre className="overflow-auto rounded-sm border border-line bg-soft p-3 text-xs leading-relaxed text-fg">
               {event.after != null ? (
                 JSON.stringify(redactSecretsForDisplay(event.after), null, 2)

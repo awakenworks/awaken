@@ -37,7 +37,14 @@ export function AdminLayout() {
         )}
         <div className="flex min-w-0 flex-1 flex-col">
           <AdminTopbar onOpenDrawer={() => setDrawerOpen(true)} />
-          <main className="flex-1">
+          {/* `min-w-0` lets `<main>` shrink below the natural width of
+              its children so flex layout works. Don't clip overflow
+              globally: long JSON / wide tables / trace payloads must
+              be horizontally scrollable inside their own container,
+              not hidden by an outer wrapper. Pages that need local
+              clipping wrap the offending child in `overflow-x-auto`
+              (see JsonInspector, RecentTracesDrawer, tables). */}
+          <main className="min-w-0 flex-1">
             <Outlet />
           </main>
         </div>
