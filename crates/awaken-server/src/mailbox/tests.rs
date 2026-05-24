@@ -2248,7 +2248,7 @@ async fn prepare_run_for_dispatch_precreates_created_run_and_thread_projection()
     let thread_store = Arc::new(InMemoryStore::new());
     let runtime = Arc::new(
         AgentRuntime::new(Arc::new(StubResolver))
-            .with_thread_run_store(thread_store.clone() as Arc<dyn ThreadRunStore>),
+            .with_in_memory_thread_run_store(thread_store.clone()),
     );
     let mailbox_store = make_store();
     let mailbox = make_mailbox_with_run_store(
@@ -2330,7 +2330,7 @@ async fn prepare_run_for_dispatch_inherits_previous_runtime_state() {
 
     let runtime = Arc::new(
         AgentRuntime::new(Arc::new(StubResolver))
-            .with_thread_run_store(thread_store.clone() as Arc<dyn ThreadRunStore>),
+            .with_in_memory_thread_run_store(thread_store.clone()),
     );
     let mailbox = make_mailbox_with_run_store(
         runtime,
@@ -3629,7 +3629,7 @@ async fn live_then_queue_steers_active_run_without_new_dispatch() {
     });
     let runtime = Arc::new(
         AgentRuntime::new(resolver)
-            .with_thread_run_store(store.clone() as Arc<dyn ThreadRunStore>)
+            .with_in_memory_thread_run_store(store.clone())
             .with_mailbox_store(mailbox_store.clone()),
     );
     let mailbox = make_mailbox_with_run_store(
@@ -4465,9 +4465,8 @@ async fn waiting_thread_is_reactivated_by_incoming_message() {
         agent: ResolvedAgent::new("agent", "m", "sys", llm),
         plugins: vec![],
     });
-    let runtime = Arc::new(
-        AgentRuntime::new(resolver).with_thread_run_store(store.clone() as Arc<dyn ThreadRunStore>),
-    );
+    let runtime =
+        Arc::new(AgentRuntime::new(resolver).with_in_memory_thread_run_store(store.clone()));
     let mailbox_store = make_store();
     let mailbox = make_mailbox_with_run_store(
         runtime,
@@ -4519,9 +4518,8 @@ async fn structured_user_input_waiting_thread_is_reused_by_incoming_message() {
         agent: ResolvedAgent::new("agent", "m", "sys", llm),
         plugins: vec![],
     });
-    let runtime = Arc::new(
-        AgentRuntime::new(resolver).with_thread_run_store(store.clone() as Arc<dyn ThreadRunStore>),
-    );
+    let runtime =
+        Arc::new(AgentRuntime::new(resolver).with_in_memory_thread_run_store(store.clone()));
     let mailbox = Arc::new(Mailbox::new(
         runtime,
         make_store(),
@@ -4699,9 +4697,8 @@ async fn background_task_completion_should_enqueue_internal_wake_message() {
         agent,
         plugins: vec![Arc::new(BackgroundTaskPlugin::new(manager))],
     });
-    let runtime = Arc::new(
-        AgentRuntime::new(resolver).with_thread_run_store(store.clone() as Arc<dyn ThreadRunStore>),
-    );
+    let runtime =
+        Arc::new(AgentRuntime::new(resolver).with_in_memory_thread_run_store(store.clone()));
     let mailbox = make_mailbox_with_run_store(
         runtime,
         mailbox_store.clone(),

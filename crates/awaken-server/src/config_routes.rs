@@ -1002,7 +1002,7 @@ mod tests {
             let runtime = Arc::new(
                 AgentRuntimeBuilder::new()
                     .with_provider("bootstrap", Arc::new(ImmediateExecutor))
-                    .with_thread_run_store(thread_store.clone())
+                    .with_in_memory_thread_run_store(thread_store.clone())
                     .build()
                     .expect("build runtime"),
             );
@@ -1413,7 +1413,7 @@ mod tests {
                         },
                     )
                     .with_agent_spec(bootstrap_agent())
-                    .with_thread_run_store(thread_store.clone())
+                    .with_in_memory_thread_run_store(thread_store.clone())
                     .build()
                     .expect("build runtime"),
             );
@@ -1515,7 +1515,7 @@ mod tests {
                             desc: description.into(),
                         }),
                     )
-                    .with_thread_run_store(thread_store.clone())
+                    .with_in_memory_thread_run_store(thread_store.clone())
                     .build()
                     .expect("build runtime"),
             );

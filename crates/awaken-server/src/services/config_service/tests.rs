@@ -243,7 +243,7 @@ async fn build_state(config_store: Arc<dyn ConfigStore>) -> (AppState, Arc<Confi
     let runtime = Arc::new(
         AgentRuntimeBuilder::new()
             .with_provider("bootstrap", Arc::new(ImmediateExecutor))
-            .with_thread_run_store(thread_store.clone())
+            .with_in_memory_thread_run_store(thread_store.clone())
             .build()
             .expect("build runtime"),
     );
@@ -409,7 +409,7 @@ async fn service_requires_runtime_manager_for_mutations() {
                 },
             )
             .with_agent_spec(bootstrap_agent())
-            .with_thread_run_store(thread_store.clone())
+            .with_in_memory_thread_run_store(thread_store.clone())
             .build()
             .expect("build runtime"),
     );
@@ -1063,7 +1063,7 @@ async fn delete_rollback_re_emits_envelope() {
     let runtime_failing = Arc::new(
         AgentRuntimeBuilder::new()
             .with_provider("bootstrap", Arc::new(ImmediateExecutor))
-            .with_thread_run_store(thread_store.clone())
+            .with_in_memory_thread_run_store(thread_store.clone())
             .build()
             .expect("build runtime"),
     );
@@ -1700,7 +1700,7 @@ async fn build_test_service_with_tool(
     let runtime = Arc::new(
         AgentRuntimeBuilder::new()
             .with_provider("bootstrap", Arc::new(ImmediateExecutor))
-            .with_thread_run_store(thread_store.clone())
+            .with_in_memory_thread_run_store(thread_store.clone())
             .with_tool(
                 id,
                 Arc::new(StubTool {
@@ -2067,7 +2067,7 @@ async fn patch_tool_overrides_apply_failure_emits_apply_failed_audit_event() {
     let runtime = Arc::new(
         AgentRuntimeBuilder::new()
             .with_provider("bootstrap", Arc::new(ImmediateExecutor))
-            .with_thread_run_store(thread_store.clone())
+            .with_in_memory_thread_run_store(thread_store.clone())
             .with_tool(
                 "echo",
                 Arc::new(StubTool {
@@ -2136,7 +2136,7 @@ async fn patch_tool_overrides_apply_failure_emits_apply_failed_audit_event() {
     let runtime_failing = Arc::new(
         AgentRuntimeBuilder::new()
             .with_provider("bootstrap", Arc::new(ImmediateExecutor))
-            .with_thread_run_store(thread_store.clone())
+            .with_in_memory_thread_run_store(thread_store.clone())
             .build()
             .expect("build failing runtime"),
     );
