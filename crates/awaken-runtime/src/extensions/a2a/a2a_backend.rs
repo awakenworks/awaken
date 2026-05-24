@@ -272,7 +272,7 @@ fn remote_state_schema_version() -> u32 {
 
 enum A2aExecutionRequest<'a> {
     Root(Box<BackendRootRunRequest<'a>>),
-    Delegate(BackendDelegateRunRequest<'a>),
+    Delegate(Box<BackendDelegateRunRequest<'a>>),
 }
 
 impl<'a> A2aExecutionRequest<'a> {
@@ -703,7 +703,7 @@ impl ExecutionBackend for A2aBackend {
         &self,
         request: BackendDelegateRunRequest<'_>,
     ) -> Result<BackendRunResult, ExecutionBackendError> {
-        self.execute_turn(A2aExecutionRequest::Delegate(request))
+        self.execute_turn(A2aExecutionRequest::Delegate(Box::new(request)))
             .await
     }
 }
