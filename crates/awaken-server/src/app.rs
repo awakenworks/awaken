@@ -296,6 +296,8 @@ pub struct ServerState {
     pub(crate) credential_broker: Arc<dyn CredentialBroker>,
 }
 
+pub type AppState = ServerState;
+
 impl ServerState {
     pub fn new(
         runtime: Arc<AgentRuntime>,
@@ -656,43 +658,20 @@ pub fn build_service_router(state: ServerState) -> std::io::Result<axum::Router>
 pub fn validate_admin_surface(state: &ServerState) -> std::io::Result<()> {
     crate::eval_limits::validate_eval_limits(&state.config.eval_limits)?;
     let admin = admin_api_config(state);
-    // Sensitive surfaces (need bearer on non-loopback bind): config
-    // routes; trace routes when a trace store is wired; eval routes
-    // always (online eval triggers live provider calls even at persist=false).
-    let any_sensitive_route_exposed = admin.expose_config_routes
-        || (admin.expose_trace_routes && state.trace_store().is_some())
-        || admin.expose_eval_routes;
-    if !any_sensitive_route_exposed {
+    let any_admin_route_exposed =
+        admin.expose_config_routes || admin.expose_trace_routes || admin.expose_eval_routes;
+    if !any_admin_route_exposed {
         return Ok(());
     }
     if admin.bearer_token.is_some() {
         return Ok(());
     }
-    if !admin_surface_has_sensitive_state(state) {
-        return Ok(());
-    }
-    let Ok(addr) = state.config.address.parse::<std::net::SocketAddr>() else {
-        return Ok(());
-    };
-    if addr.ip().is_loopback() {
-        return Ok(());
-    }
     Err(std::io::Error::new(
         std::io::ErrorKind::PermissionDenied,
         format!(
-            "admin APIs require {ADMIN_API_BEARER_TOKEN_ENV} when binding a non-loopback address"
+            "admin, config, trace, and eval APIs require {ADMIN_API_BEARER_TOKEN_ENV} when any admin surface is exposed"
         ),
     ))
-}
-
-fn admin_surface_has_sensitive_state(state: &ServerState) -> bool {
-    state.config_store.is_some()
-        || state.config_runtime_manager.is_some()
-        || state.audit_log().is_some()
-        || state.runtime_stats().is_some()
-        || state.skill_catalog_provider.is_some()
-        || state.trace_store().is_some()
-        || state.eval_run_store().is_some() // EvalRun bodies carry prompt + tool data
 }
 
 pub fn admin_cors_layer(state: &ServerState) -> std::io::Result<tower_http::cors::CorsLayer> {

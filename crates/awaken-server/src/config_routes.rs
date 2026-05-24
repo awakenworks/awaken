@@ -623,7 +623,9 @@ fn ensure_admin_auth_for_token(
     headers: &HeaderMap,
 ) -> Result<(), ApiError> {
     let Some(expected) = expected else {
-        return Ok(());
+        return Err(ApiError::Unauthorized(
+            "admin authentication is not configured".into(),
+        ));
     };
     let mut auth_values = headers.get_all(axum::http::header::AUTHORIZATION).iter();
     let Some(auth) = auth_values.next() else {
@@ -828,20 +830,21 @@ mod tests {
     use super::*;
     use awaken_contract::RedactedString;
     use axum::http::{HeaderMap, HeaderValue, header};
-
     #[test]
-    fn admin_auth_allows_unconfigured_routes() {
+    fn admin_auth_rejects_when_token_not_configured() {
         let headers = HeaderMap::new();
-        assert!(ensure_admin_auth_for_token(None, &headers).is_ok());
+        let err = ensure_admin_auth_for_token(None, &headers).unwrap_err();
+        assert!(matches!(
+            err,
+            ApiError::Unauthorized(message) if message.contains("not configured")
+        ));
     }
-
     #[test]
     fn admin_auth_rejects_missing_or_wrong_token() {
         let expected = RedactedString::from("secret");
         let headers = HeaderMap::new();
         let missing = ensure_admin_auth_for_token(Some(&expected), &headers).unwrap_err();
         assert_eq!(missing.into_response().status(), StatusCode::UNAUTHORIZED);
-
         let mut headers = HeaderMap::new();
         headers.insert(
             header::AUTHORIZATION,
@@ -850,7 +853,6 @@ mod tests {
         let wrong = ensure_admin_auth_for_token(Some(&expected), &headers).unwrap_err();
         assert_eq!(wrong.into_response().status(), StatusCode::UNAUTHORIZED);
     }
-
     #[test]
     fn admin_auth_accepts_bearer_token() {
         let expected = RedactedString::from("secret");
@@ -861,7 +863,6 @@ mod tests {
         );
         assert!(ensure_admin_auth_for_token(Some(&expected), &headers).is_ok());
     }
-
     #[test]
     fn admin_auth_rejects_ambiguous_or_malformed_bearer_headers_without_leaking_secret() {
         let expected = RedactedString::from("secret-value-that-must-not-leak");
@@ -873,7 +874,6 @@ mod tests {
             "bearer wrong-token",
             "Bearer secret-value-that-must-not-leak extra",
         ];
-
         for value in cases {
             let mut headers = HeaderMap::new();
             headers.insert(

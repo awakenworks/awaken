@@ -43,9 +43,11 @@ impl fmt::Display for ApiError {
             ApiError::BadRequest(msg)
             | ApiError::Unauthorized(msg)
             | ApiError::Conflict(msg)
+            | ApiError::Gone(msg)
             | ApiError::NotFound(msg)
             | ApiError::ServiceUnavailable(msg)
-            | ApiError::Internal(msg) => f.write_str(msg),
+            | ApiError::Internal(msg)
+            | ApiError::DataIntegrity(msg) => f.write_str(msg),
             ApiError::ThreadNotFound(id) => write!(f, "thread not found: {id}"),
             ApiError::RunNotFound(id) => write!(f, "run not found: {id}"),
         }

@@ -123,7 +123,7 @@ fn completed_payload(run: &EvalRun, mode: &'static str, persisted: bool) -> Valu
 mod tests {
     use super::*;
     use awaken_contract::contract::event_store::{EventReader, EventScope};
-    use awaken_eval::{EvalRunItem, MatrixCell, ReplayReport};
+    use awaken_eval::{EvalRunExecutionMode, EvalRunItem, MatrixCell, ReplayReport};
     use awaken_stores::InMemoryEventStore;
 
     fn report(passed: bool, cost_usd: Option<f64>) -> ReplayReport {
@@ -156,6 +156,7 @@ mod tests {
             id: "eval_1".to_string(),
             dataset_id: "dataset-a".to_string(),
             dataset_revision: 7,
+            execution_mode: EvalRunExecutionMode::Live,
             items: vec![
                 EvalRunItem {
                     fixture_id: "fixture-1".to_string(),
@@ -168,7 +169,9 @@ mod tests {
                 },
                 EvalRunItem {
                     fixture_id: "fixture-2".to_string(),
-                    cell: None,
+                    cell: Some(MatrixCell {
+                        model_id: Some("model-b".to_string()),
+                    }),
                     report: report(false, Some(0.5)),
                     trace_run_id: None,
                     sample_index: None,
