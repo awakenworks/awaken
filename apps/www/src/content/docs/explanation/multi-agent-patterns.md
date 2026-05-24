@@ -66,6 +66,8 @@ When you are writing a custom `Tool` that needs to delegate to another agent —
 
 State seeding is **Local-backend only** and gated by `BackendCapabilities::delegate_state_seed`. Non-local backends (A2A and any future backend that lacks a seed-passing wire protocol) reject seeded delegate requests with `ExecutionBackendError`; the child's `BackendRunResult.state` is still returned for read-back.
 
+Backend implementors should construct `BackendCapabilities` via its constructors and set `delegate_state_seed = true` only when the backend actually applies `BackendDelegateRunRequest.state_seed`; otherwise seeded delegate requests are rejected instead of silently dropping the seed.
+
 ## Sub-Agent Patterns
 
 ### Sequential Delegation

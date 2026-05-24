@@ -47,7 +47,10 @@ pub use backend::{
     ExecutionBackendFactory, ExecutionBackendFactoryError, LocalBackend,
 };
 pub use builder::{AgentRuntimeBuilder, BuildError};
-pub use child_agent::{ChildAgentParams, StreamingPassthroughSink, run_child_agent};
+pub use child_agent::{
+    ChildAgentError, ChildAgentParams, ChildErrorForwarding, StreamingPassthroughSink,
+    run_child_agent, run_child_agent_checked,
+};
 pub use phase::{
     DEFAULT_MAX_PHASE_ROUNDS, ExecutionEnv, PhaseContext, PhaseHook, PhaseRuntime, ToolGateHook,
     ToolPolicyHook, TypedEffectHandler, TypedScheduledActionHandler,

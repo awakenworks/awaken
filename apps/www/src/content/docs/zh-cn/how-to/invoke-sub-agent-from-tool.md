@@ -52,6 +52,39 @@ impl StateKey for ResearchConfigKey {
     }
 }
 
+#[derive(Default, Clone, serde::Serialize, serde::Deserialize)]
+pub struct ResearchFindings {
+    pub items: Vec<String>,
+}
+
+pub struct ResearchFindingsKey;
+
+impl StateKey for ResearchFindingsKey {
+    const KEY: &'static str = "research.findings";
+    type Value = ResearchFindings;
+    type Update = ResearchFindings;
+    fn apply(value: &mut Self::Value, update: Self::Update) {
+        *value = update;
+    }
+}
+
+#[derive(Default, Clone, serde::Serialize, serde::Deserialize)]
+pub struct ResearchSummary {
+    pub topic: String,
+    pub items: Vec<String>,
+}
+
+pub struct ResearchSummaryKey;
+
+impl StateKey for ResearchSummaryKey {
+    const KEY: &'static str = "research.summary";
+    type Value = ResearchSummary;
+    type Update = ResearchSummary;
+    fn apply(value: &mut Self::Value, update: Self::Update) {
+        *value = update;
+    }
+}
+
 pub struct ResearchPlugin;
 
 impl Plugin for ResearchPlugin {
@@ -62,14 +95,22 @@ impl Plugin for ResearchPlugin {
         r.register_key::<ResearchConfigKey>(StateKeyOptions {
             persistent: true,
             ..Default::default()
+        })?;
+        r.register_key::<ResearchFindingsKey>(StateKeyOptions {
+            persistent: true,
+            ..Default::default()
+        })?;
+        r.register_key::<ResearchSummaryKey>(StateKeyOptions {
+            persistent: true,
+            ..Default::default()
         })
     }
 }
 ```
 
-子 agent 的 plugin 集里**必须**包含 `ResearchPlugin`，否则 seed 步骤会以 `StateError::UnknownKey` 失败。若你打算从父侧写入 `ResearchConfigKey`，父 agent 也要注册该 key。
+子 agent 必须注册 `ResearchConfigKey`，这样 seed 才能应用；如果你希望 findings 出现在 `outcome.state.extensions`，它还必须以 `persistent: true` 注册 `ResearchFindingsKey`。父 agent 在提交返回的 `StateCommand` 前必须注册 `ResearchSummaryKey`。上面的单个 `ResearchPlugin` 为了方便复制粘贴而注册了全部三个 key；生产代码可以拆成 `ChildResearchPlugin` / `ParentResearchPlugin`，只要两边分别注册自己会读写的 key 即可。
 
-2. 实现工具。关键调用是来自 `awaken_runtime::child_agent` 的 [`run_child_agent`](/awaken/zh-cn/reference/)：
+2. 实现工具。关键调用是来自 `awaken_runtime::child_agent` 的 [`run_child_agent_checked`](/awaken/zh-cn/reference/)；它包装了 [`run_child_agent`](/awaken/zh-cn/reference/)，并在子 run 进入非 `Completed` 终态时让父工具失败。
 
 ```rust
 use std::sync::Arc;
@@ -84,11 +125,8 @@ use awaken_contract::contract::tool::{
 };
 use awaken_contract::state::PersistedState;
 
-use awaken_runtime::backend::{
-    BackendControl, BackendDelegatePolicy, BackendParentContext, BackendRunResult,
-    BackendRunStatus,
-};
-use awaken_runtime::child_agent::{ChildAgentParams, run_child_agent};
+use awaken_runtime::backend::{BackendParentContext, BackendRunResult};
+use awaken_runtime::child_agent::{ChildAgentParams, run_child_agent_checked};
 use awaken_runtime::registry::ExecutionResolver;
 use awaken_runtime::{MutationBatch, StateCommand, StateStore};
 
@@ -121,32 +159,23 @@ impl Tool for ResearchTool {
         let seed = build_seed(topic, max_sources)
             .map_err(|e| ToolError::ExecutionFailed(e.to_string()))?;
 
-        let outcome = run_child_agent(ChildAgentParams {
-            resolver:           self.resolver.as_ref(),
-            agent_id:           "researcher",
-            messages:           vec![Message::user(&format!("Research: {topic}"))],
-            parent: BackendParentContext {
-                parent_run_id:       Some(ctx.run_identity.run_id.clone()),
-                parent_thread_id:    Some(ctx.run_identity.thread_id.clone()),
-                parent_tool_call_id: Some(ctx.call_id.clone()),
-            },
-            initial_state_seed: Some(seed),
-            sink:               ctx.activity_sink.clone()
-                                   .unwrap_or_else(|| Arc::new(NullEventSink)),
-            control:            BackendControl::default(),
-            policy:             BackendDelegatePolicy::default(),
-        })
+        let outcome = run_child_agent_checked(
+            ChildAgentParams::new(
+                self.resolver.as_ref(),
+                "researcher",
+                vec![Message::user(&format!("Research: {topic}"))],
+                BackendParentContext {
+                    parent_run_id:       Some(ctx.run_identity.run_id.clone()),
+                    parent_thread_id:    Some(ctx.run_identity.thread_id.clone()),
+                    parent_tool_call_id: Some(ctx.call_id.clone()),
+                },
+                ctx.activity_sink.clone()
+                    .unwrap_or_else(|| Arc::new(NullEventSink)),
+            )
+            .with_initial_state_seed(seed),
+        )
         .await
         .map_err(|e| ToolError::ExecutionFailed(e.to_string()))?;
-
-        // 子 run 未成功完成时直接报错，避免给 parent 返回 ToolResult::success
-        // 又不写任何 state——见下文 "应当避免的做法" 中关于挂起/失败处理的提示。
-        if !matches!(outcome.status, BackendRunStatus::Completed) {
-            return Err(ToolError::ExecutionFailed(format!(
-                "child agent did not complete: {}",
-                outcome.status,
-            )));
-        }
 
         let command = build_export(&outcome, topic)?;
 
@@ -190,35 +219,6 @@ fn build_seed(topic: &str, max_sources: u32)
 子的 `StateStore` 终态 snapshot 在 `BackendRunResult.state`（一个 `PersistedState`）里返回。解码你关心的 key，再翻译成针对父 state key 的 `StateCommand`——工具返回后 loop runner 会自动 commit。
 
 ```rust
-#[derive(Default, Clone, serde::Serialize, serde::Deserialize)]
-pub struct ResearchFindings {
-    pub items: Vec<String>,
-}
-
-pub struct ResearchFindingsKey;
-
-impl StateKey for ResearchFindingsKey {
-    const KEY: &'static str = "research.findings";
-    type Value = ResearchFindings;
-    type Update = ResearchFindings;
-    fn apply(value: &mut Self::Value, update: Self::Update) { *value = update; }
-}
-
-#[derive(Default, Clone, serde::Serialize, serde::Deserialize)]
-pub struct ResearchSummary {
-    pub topic: String,
-    pub items: Vec<String>,
-}
-
-pub struct ResearchSummaryKey;
-
-impl StateKey for ResearchSummaryKey {
-    const KEY: &'static str = "research.summary";
-    type Value = ResearchSummary;
-    type Update = ResearchSummary;
-    fn apply(value: &mut Self::Value, update: Self::Update) { *value = update; }
-}
-
 /// 把子终态 state 解码成 parent 的 `StateCommand`。外层 `execute` 已经拒
 /// 绝了非 Completed 的 outcome，所以这里只需要处理 "成功但没产出 key"
 /// 这种边界情况。
@@ -257,10 +257,14 @@ let command = build_export(&outcome, topic)?;
 
 ## 把子的文本流到父工具的输出
 
-如果父工具希望子的 token 看起来像是父工具自己在流式输出（典型如 generative UI 工具），用 `StreamingPassthroughSink` 把 activity sink 包一层再交给 `run_child_agent`：
+如果父工具希望子的 token 看起来像是父工具自己在流式输出（典型如 generative UI 工具），用 `StreamingPassthroughSink` 把 activity sink 包一层再交给 `run_child_agent_checked` 或 `run_child_agent`：
 
 ```rust
-use awaken_runtime::StreamingPassthroughSink;
+use awaken_contract::contract::message::Message;
+use awaken_runtime::backend::BackendParentContext;
+use awaken_runtime::{
+    ChildAgentParams, StreamingPassthroughSink, run_child_agent_checked,
+};
 
 let parent_sink = ctx.activity_sink.clone()
     .unwrap_or_else(|| Arc::new(NullEventSink));
@@ -270,15 +274,27 @@ let (passthrough, buffer) = StreamingPassthroughSink::new(
     parent_sink,
 );
 
-let outcome = run_child_agent(ChildAgentParams {
-    sink: Arc::new(passthrough),
-    // ...其它字段同上...
-}).await?;
+let outcome = run_child_agent_checked(
+    ChildAgentParams::new(
+        self.resolver.as_ref(),
+        "researcher",
+        vec![Message::user("stream the research")],
+        BackendParentContext::default(),
+        Arc::new(passthrough),
+    )
+).await?;
 
 let streamed_text = buffer.lock().await.clone();
 ```
 
-子的 `AgentEvent::TextDelta` 会被改装成 `AgentEvent::ToolCallStreamDelta` 发到父 sink，并以父工具的 `call_id` 为 key。`buffer` 累计完整文本。
+子的 `AgentEvent::TextDelta` 会被改装成 `AgentEvent::ToolCallStreamDelta` 发到父 sink，并以父工具的 `call_id` 为 key。`buffer` 累计完整文本。默认情况下，子的 `AgentEvent::Error` 也会被包装成 `ToolCallStreamDelta` 文本，避免前端误认为父 run fatal；只有当你的事件消费者明确理解 raw child error 语义时，才使用 `StreamingPassthroughSink::new_with_error_forwarding(..., ChildErrorForwarding::ForwardRawParentError)`。
+
+## Backend 实现者迁移提示
+
+`BackendCapabilities` 是 `#[non_exhaustive]`；请用 `BackendCapabilities::full()` 或 `BackendCapabilities::remote_stateless_text()` 构造后再修改字段。带 seed 的 delegate 请求现在受 capability 控制：
+
+- 如果你的 backend 确实会在运行 child 前应用 `BackendDelegateRunRequest.state_seed`，请设置 `capabilities.delegate_state_seed = true`。
+- 如果不支持，请保持 `false`；带 seed 的 delegate 调用会以 `ExecutionBackendError` 拒绝，而不是静默忽略 seed。
 
 ## 应当避免的做法
 
@@ -288,7 +304,8 @@ let streamed_text = buffer.lock().await.clone();
 - **不要假设非持久 key 能跨 run 边界。** `BackendRunResult.state` 通过 `export_persisted` 构造，只包含 `persistent: true` 的 key。
 - **不要把 `ctx.activity_sink` 直接传给流式子 agent。** 不经 `StreamingPassthroughSink` 包装，子的 `TextDelta` 会原样出现在父 sink 上，污染父消息流。要么包装，要么传 `NullEventSink`。
 - **注意非本地 backend 的 transcript 语义。** 子通过 A2A backend（或其他 transcript-incremental 的远程 backend）跑时，只有 `User` 角色、`Visibility::All` 的内容会被转发给远端 agent——assistant / tool 历史不会。需要历史上下文时，要么自己编进 user prompt，要么用本地 backend。
-- **passthrough sink 上的子错误会以"父级错误"的形态出现。** `StreamingPassthroughSink` 把子的 `AgentEvent::Error` 原样转发到父 sink。前端若把 run 级 error 当成致命错误，会同样对待子 agent 的失败；需要工具级语义时请自己在 sink 层包装/过滤。
+- **`initial_messages` 是 fresh delegation 的初始输入，不是 history + 新增量的拆分。** `ChildAgentParams::new(..., initial_messages, ...)` 就是 child 启动时看到的输入，通常是单个 `Message::user`。当前 API 不支持复用旧 delegate transcript。内部 `run_child_agent` 会把这个 fresh input 映射到 `BackendDelegateRunRequest.messages` 和 `.new_messages`，不要据此假设公共 API 支持续跑。
+- **passthrough sink 的 raw 子错误是显式 opt-in。** `StreamingPassthroughSink::new` 默认把子的 `AgentEvent::Error` 包装成父 `ToolCallStreamDelta` 输出。只有当 UI 明确知道 raw error 来自 child tool stream、不会自动 kill parent run 时，才选择 `ChildErrorForwarding::ForwardRawParentError`。
 
 ## 另见
 

@@ -5,9 +5,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use serde_json::{Value, json};
 
-use crate::backend::{
-    BackendControl, BackendDelegatePolicy, BackendParentContext, ExecutionBackend,
-};
+use crate::backend::{BackendParentContext, ExecutionBackend};
 use crate::child_agent::{ChildAgentParams, run_child_agent};
 use crate::registry::{
     AgentResolver, ExecutionResolver, LocalExecutionResolver, ResolvedBackendAgent,
@@ -164,20 +162,20 @@ impl Tool for AgentTool {
             None => Arc::new(NullEventSink),
         };
 
-        let execution = run_child_agent(ChildAgentParams {
-            resolver: self.resolver.as_ref(),
-            agent_id: &self.agent_id,
-            messages,
-            parent: BackendParentContext {
-                parent_run_id: Some(ctx.run_identity.run_id.clone()),
-                parent_thread_id: Some(ctx.run_identity.thread_id.clone()),
-                parent_tool_call_id: Some(ctx.call_id.clone()),
-            },
-            initial_state_seed: None,
-            sink,
-            control: BackendControl::default(),
-            policy: BackendDelegatePolicy::default(),
-        })
+        let execution = run_child_agent(
+            ChildAgentParams::new(
+                self.resolver.as_ref(),
+                &self.agent_id,
+                messages,
+                BackendParentContext {
+                    parent_run_id: Some(ctx.run_identity.run_id.clone()),
+                    parent_thread_id: Some(ctx.run_identity.thread_id.clone()),
+                    parent_tool_call_id: Some(ctx.call_id.clone()),
+                },
+                sink,
+            )
+            .with_cancellation_token(ctx.cancellation_token.clone()),
+        )
         .await;
 
         match execution {

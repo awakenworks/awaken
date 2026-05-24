@@ -70,6 +70,12 @@ pub enum BackendOutputCapability {
 /// source-breaking change for downstream backends. Construct via
 /// [`Self::full`] or [`Self::remote_stateless_text`] then mutate fields,
 /// rather than struct-literal syntax.
+///
+/// Backend implementors migrating to delegate state seeding should set
+/// [`Self::delegate_state_seed`] to `true` only if `execute_delegate` actually
+/// applies `BackendDelegateRunRequest.state_seed` before running the child.
+/// Unsupported seeded delegate requests are rejected during validation rather
+/// than silently dropping the seed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct BackendCapabilities {

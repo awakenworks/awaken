@@ -28,7 +28,7 @@
 
 pub mod sink;
 
-pub use sink::StreamingPassthroughSink;
+pub use sink::{ChildErrorForwarding, StreamingPassthroughSink};
 
 use std::sync::Arc;
 
@@ -38,25 +38,122 @@ use awaken_contract::state::PersistedState;
 
 use crate::backend::{
     BackendControl, BackendDelegatePolicy, BackendDelegateRunRequest, BackendParentContext,
-    BackendRunResult, ExecutionBackendError, execute_resolved_delegate_execution,
+    BackendRunResult, BackendRunStatus, ExecutionBackendError, execute_resolved_delegate_execution,
 };
+use crate::cancellation::CancellationToken;
 use crate::registry::ExecutionResolver;
 
 /// Parameters for [`run_child_agent`].
 ///
-/// `messages` becomes both the full history and the new turn for the child
-/// (delegate runs start fresh). `initial_state_seed` is applied to the child's
-/// store after plugin activation but before the first inference step — see
+/// Construct with [`Self::new`] instead of struct literal syntax. The type is
+/// `#[non_exhaustive]` so future support for resumed child transcripts can
+/// add explicit transcript/new-turn fields without breaking callers.
+///
+/// `initial_state_seed` is applied to the child's store after plugin
+/// activation but before the first inference step — see
 /// [`StateStore::apply_seed`](crate::state::StateStore::apply_seed).
+#[non_exhaustive]
 pub struct ChildAgentParams<'a> {
     pub resolver: &'a dyn ExecutionResolver,
     pub agent_id: &'a str,
-    pub messages: Vec<Message>,
+
+    /// Initial conversation seed for a **fresh** delegate run.
+    ///
+    /// `run_child_agent` does not support resuming a prior delegate
+    /// transcript: there is no full-history vs new-turn split. The vec you
+    /// pass here is what the child sees as its starting input — typically
+    /// a single [`Message::user`] built from your tool args. Internally it
+    /// is forwarded as both `BackendDelegateRunRequest.messages` and
+    /// `.new_messages`, mirroring how `AgentTool` invokes delegates.
+    ///
+    /// If a future revision needs to distinguish prior context from the
+    /// new turn (continuation, multi-turn handoff), it will add dedicated
+    /// input fields; do not rely on the current internal duplication to mean
+    /// otherwise.
+    pub initial_messages: Vec<Message>,
+
     pub parent: BackendParentContext,
     pub initial_state_seed: Option<PersistedState>,
     pub sink: Arc<dyn EventSink>,
     pub control: BackendControl,
     pub policy: BackendDelegatePolicy,
+}
+
+impl<'a> ChildAgentParams<'a> {
+    /// Build parameters for a fresh child run.
+    ///
+    /// `initial_messages` is the child run's starting input. It is not a
+    /// transcript/new-turn split and does not resume an existing delegate
+    /// transcript.
+    #[must_use]
+    pub fn new(
+        resolver: &'a dyn ExecutionResolver,
+        agent_id: &'a str,
+        initial_messages: Vec<Message>,
+        parent: BackendParentContext,
+        sink: Arc<dyn EventSink>,
+    ) -> Self {
+        Self {
+            resolver,
+            agent_id,
+            initial_messages,
+            parent,
+            initial_state_seed: None,
+            sink,
+            control: BackendControl::default(),
+            policy: BackendDelegatePolicy::default(),
+        }
+    }
+
+    /// Seed the child's state store before its first inference step.
+    #[must_use]
+    pub fn with_initial_state_seed(mut self, seed: PersistedState) -> Self {
+        self.initial_state_seed = Some(seed);
+        self
+    }
+
+    /// Override cooperative backend controls for the child run.
+    #[must_use]
+    pub fn with_control(mut self, control: BackendControl) -> Self {
+        self.control = control;
+        self
+    }
+
+    /// Propagate a parent cancellation token without rebuilding
+    /// [`BackendControl`] by hand.
+    #[must_use]
+    pub fn with_cancellation_token(mut self, token: Option<CancellationToken>) -> Self {
+        self.control.cancellation_token = token;
+        self
+    }
+
+    /// Override delegate execution policy for the child run.
+    #[must_use]
+    pub fn with_policy(mut self, policy: BackendDelegatePolicy) -> Self {
+        self.policy = policy;
+        self
+    }
+}
+
+/// Error returned by [`run_child_agent_checked`].
+#[derive(Debug, thiserror::Error)]
+pub enum ChildAgentError {
+    #[error(transparent)]
+    Backend(#[from] ExecutionBackendError),
+    #[error("child agent did not complete: {}", .0.status)]
+    Terminal(Box<BackendRunResult>),
+}
+
+impl ChildAgentError {
+    /// Return the terminal child result when the backend run finished in a
+    /// non-success status.
+    #[must_use]
+    pub fn terminal_result(&self) -> Option<&BackendRunResult> {
+        match self {
+            Self::Backend(_) => None,
+            Self::Terminal(result) => Some(result),
+        }
+    }
 }
 
 /// Spawn a child agent run and await its terminal state.
@@ -65,13 +162,19 @@ pub struct ChildAgentParams<'a> {
 /// status, response, and any suspension reason. Callers decide how to map
 /// these into a `ToolOutput` (typically packaging child state as a
 /// `StateCommand` for the parent store).
+///
+/// This helper treats backend dispatch failures as `Err`, but it does **not**
+/// treat a terminal child status such as `Failed`, `Cancelled`, `Timeout`, or
+/// `Suspended` as an error. Callers must inspect [`BackendRunResult::status`]
+/// before returning a successful parent tool result, or call
+/// [`run_child_agent_checked`] when only `Completed` is acceptable.
 pub async fn run_child_agent(
     params: ChildAgentParams<'_>,
 ) -> Result<BackendRunResult, ExecutionBackendError> {
     let ChildAgentParams {
         resolver,
         agent_id,
-        messages,
+        initial_messages,
         parent,
         initial_state_seed,
         sink,
@@ -85,8 +188,8 @@ pub async fn run_child_agent(
 
     let request = BackendDelegateRunRequest {
         agent_id,
-        new_messages: messages.clone(),
-        messages,
+        new_messages: initial_messages.clone(),
+        messages: initial_messages,
         sink,
         resolver,
         parent,
@@ -96,4 +199,19 @@ pub async fn run_child_agent(
     };
 
     execute_resolved_delegate_execution(&resolved, request).await
+}
+
+/// Spawn a child agent run and require it to complete successfully.
+///
+/// This is a convenience wrapper around [`run_child_agent`] for tools that
+/// should fail when the child reaches any non-`Completed` terminal status.
+pub async fn run_child_agent_checked(
+    params: ChildAgentParams<'_>,
+) -> Result<BackendRunResult, ChildAgentError> {
+    let result = run_child_agent(params).await?;
+    if matches!(result.status, BackendRunStatus::Completed) {
+        Ok(result)
+    } else {
+        Err(ChildAgentError::Terminal(Box::new(result)))
+    }
 }

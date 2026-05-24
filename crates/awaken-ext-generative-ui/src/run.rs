@@ -9,9 +9,7 @@ use std::sync::Arc;
 use awaken_contract::contract::event_sink::{EventSink, NullEventSink};
 use awaken_contract::contract::message::Message;
 use awaken_contract::contract::tool::{ToolCallContext, ToolError};
-use awaken_runtime::backend::{
-    BackendControl, BackendDelegatePolicy, BackendParentContext, BackendRunStatus,
-};
+use awaken_runtime::backend::{BackendParentContext, BackendRunStatus};
 use awaken_runtime::child_agent::{ChildAgentParams, StreamingPassthroughSink, run_child_agent};
 use awaken_runtime::registry::{ExecutionResolver, ResolvedAgent, ResolvedExecution};
 use awaken_runtime::{AgentResolver, RuntimeError};
@@ -49,20 +47,20 @@ pub async fn run_streaming_subagent(
 
     let shim = AgentResolverShim(resolver);
 
-    let result = run_child_agent(ChildAgentParams {
-        resolver: &shim,
-        agent_id,
-        messages: vec![Message::user(prompt)],
-        parent: BackendParentContext {
-            parent_run_id: Some(ctx.run_identity.run_id.clone()),
-            parent_thread_id: Some(ctx.run_identity.thread_id.clone()),
-            parent_tool_call_id: Some(ctx.call_id.clone()),
-        },
-        initial_state_seed: None,
-        sink,
-        control: BackendControl::default(),
-        policy: BackendDelegatePolicy::default(),
-    })
+    let result = run_child_agent(
+        ChildAgentParams::new(
+            &shim,
+            agent_id,
+            vec![Message::user(prompt)],
+            BackendParentContext {
+                parent_run_id: Some(ctx.run_identity.run_id.clone()),
+                parent_thread_id: Some(ctx.run_identity.thread_id.clone()),
+                parent_tool_call_id: Some(ctx.call_id.clone()),
+            },
+            sink,
+        )
+        .with_cancellation_token(ctx.cancellation_token.clone()),
+    )
     .await
     .map_err(|e| ToolError::ExecutionFailed(format!("sub-agent failed: {e}")))?;
 
@@ -112,9 +110,17 @@ mod tests {
     use super::*;
     use std::sync::Arc;
 
+    use awaken_contract::CancellationToken;
     use awaken_contract::contract::event_sink::VecEventSink;
+    use awaken_contract::contract::executor::{
+        InferenceExecutionError, InferenceRequest, LlmExecutor,
+    };
     use awaken_contract::contract::identity::{RunIdentity, RunOrigin};
-    use awaken_contract::contract::tool::ToolCallContext;
+    use awaken_contract::contract::inference::{StopReason, StreamResult};
+    use awaken_contract::contract::message::ToolCall;
+    use awaken_contract::contract::tool::{
+        Tool, ToolCallContext, ToolDescriptor, ToolError, ToolOutput,
+    };
     use awaken_contract::registry_spec::AgentSpec;
     use awaken_contract::state::Snapshot;
     use awaken_runtime::engine::MockLlmExecutor;
@@ -291,8 +297,98 @@ mod tests {
             })
             .collect();
         assert!(
-            !stream_deltas.is_empty() || !result.content.is_empty(),
-            "either stream deltas or content should be present"
+            !stream_deltas.is_empty(),
+            "parent sink should receive ToolCallStreamDelta events"
         );
+    }
+
+    struct CancellationToolLlm;
+
+    #[async_trait::async_trait]
+    impl LlmExecutor for CancellationToolLlm {
+        async fn execute(
+            &self,
+            _request: InferenceRequest,
+        ) -> Result<StreamResult, InferenceExecutionError> {
+            Ok(StreamResult {
+                content: vec![],
+                tool_calls: vec![ToolCall::new(
+                    "cancel-call",
+                    "wait_for_cancel",
+                    serde_json::json!({}),
+                )],
+                usage: None,
+                stop_reason: Some(StopReason::ToolUse),
+                has_incomplete_tool_calls: false,
+            })
+        }
+
+        fn name(&self) -> &str {
+            "cancellation-tool"
+        }
+    }
+
+    struct WaitForCancelTool;
+
+    #[async_trait::async_trait]
+    impl Tool for WaitForCancelTool {
+        fn descriptor(&self) -> ToolDescriptor {
+            ToolDescriptor::new(
+                "wait_for_cancel",
+                "wait_for_cancel",
+                "wait until cancellation is propagated",
+            )
+        }
+
+        async fn execute(
+            &self,
+            _args: serde_json::Value,
+            ctx: &ToolCallContext,
+        ) -> Result<ToolOutput, ToolError> {
+            let token = ctx
+                .cancellation_token
+                .as_ref()
+                .expect("child tool should receive parent cancellation token");
+            token.cancelled().await;
+            Err(ToolError::ExecutionFailed("child tool cancelled".into()))
+        }
+    }
+
+    #[tokio::test]
+    async fn streaming_subagent_propagates_parent_cancellation() {
+        let llm = Arc::new(CancellationToolLlm);
+        let mut agent = ResolvedAgent::new("sub-agent", "mock-model", "sys", llm);
+        agent
+            .tools
+            .insert("wait_for_cancel".into(), Arc::new(WaitForCancelTool));
+        let resolver = SingleAgentResolver { agent };
+
+        let token = CancellationToken::new();
+        let mut ctx = make_ctx(None);
+        ctx.cancellation_token = Some(token.clone());
+
+        let cancel = token.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+            cancel.cancel();
+        });
+
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            run_streaming_subagent(&resolver, "sub-agent", "go", &ctx),
+        )
+        .await
+        .expect("child run should observe parent cancellation promptly");
+
+        let err = result.expect_err("cancelled child should fail the streaming helper");
+        match err {
+            ToolError::ExecutionFailed(message) => {
+                assert!(
+                    message.to_ascii_lowercase().contains("cancel"),
+                    "expected cancellation error, got: {message}"
+                );
+            }
+            other => panic!("expected ExecutionFailed, got: {other:?}"),
+        }
     }
 }

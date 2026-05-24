@@ -59,6 +59,8 @@ agent 可以通过 `delegates` 声明它允许委托的子 agent：
 
 state seeding **只对 Local backend 生效**，由 `BackendCapabilities::delegate_state_seed` 控制。非本地 backend（A2A 以及其他未实现 seed wire 协议的 backend）会以 `ExecutionBackendError` 拒绝带 seed 的 delegate 请求；子 run 的 `BackendRunResult.state` 仍然可读，用于回写父侧。
 
+Backend 实现者应通过构造函数创建 `BackendCapabilities`，并且只有在 backend 确实会应用 `BackendDelegateRunRequest.state_seed` 时才设置 `delegate_state_seed = true`；否则带 seed 的 delegate 请求会被拒绝，而不是静默丢弃 seed。
+
 ## Sub-Agent 模式
 
 ### 串行委托

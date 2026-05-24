@@ -52,6 +52,39 @@ impl StateKey for ResearchConfigKey {
     }
 }
 
+#[derive(Default, Clone, serde::Serialize, serde::Deserialize)]
+pub struct ResearchFindings {
+    pub items: Vec<String>,
+}
+
+pub struct ResearchFindingsKey;
+
+impl StateKey for ResearchFindingsKey {
+    const KEY: &'static str = "research.findings";
+    type Value = ResearchFindings;
+    type Update = ResearchFindings;
+    fn apply(value: &mut Self::Value, update: Self::Update) {
+        *value = update;
+    }
+}
+
+#[derive(Default, Clone, serde::Serialize, serde::Deserialize)]
+pub struct ResearchSummary {
+    pub topic: String,
+    pub items: Vec<String>,
+}
+
+pub struct ResearchSummaryKey;
+
+impl StateKey for ResearchSummaryKey {
+    const KEY: &'static str = "research.summary";
+    type Value = ResearchSummary;
+    type Update = ResearchSummary;
+    fn apply(value: &mut Self::Value, update: Self::Update) {
+        *value = update;
+    }
+}
+
 pub struct ResearchPlugin;
 
 impl Plugin for ResearchPlugin {
@@ -62,14 +95,22 @@ impl Plugin for ResearchPlugin {
         r.register_key::<ResearchConfigKey>(StateKeyOptions {
             persistent: true,
             ..Default::default()
+        })?;
+        r.register_key::<ResearchFindingsKey>(StateKeyOptions {
+            persistent: true,
+            ..Default::default()
+        })?;
+        r.register_key::<ResearchSummaryKey>(StateKeyOptions {
+            persistent: true,
+            ..Default::default()
         })
     }
 }
 ```
 
-The child agent must have `ResearchPlugin` in its plugin set — otherwise the seed step will fail with `StateError::UnknownKey`. The parent agent must have it too if you intend to write to `ResearchConfigKey` from the parent side.
+The child agent must register `ResearchConfigKey` so seeding can apply, and it must register `ResearchFindingsKey` with `persistent: true` if you want findings to appear in `outcome.state.extensions`. The parent agent must register `ResearchSummaryKey` before committing the returned `StateCommand`. The single `ResearchPlugin` above registers all three for copy-paste simplicity; in production you may split that into `ChildResearchPlugin` and `ParentResearchPlugin` as long as each side registers the keys it reads or writes.
 
-2. Implement the tool. The key call is [`run_child_agent`](/awaken/reference/) from `awaken_runtime::child_agent`.
+2. Implement the tool. The key call is [`run_child_agent_checked`](/awaken/reference/) from `awaken_runtime::child_agent`; it wraps [`run_child_agent`](/awaken/reference/) and fails the parent tool when the child reaches a non-`Completed` terminal status.
 
 ```rust
 use std::sync::Arc;
@@ -84,11 +125,8 @@ use awaken_contract::contract::tool::{
 };
 use awaken_contract::state::PersistedState;
 
-use awaken_runtime::backend::{
-    BackendControl, BackendDelegatePolicy, BackendParentContext, BackendRunResult,
-    BackendRunStatus,
-};
-use awaken_runtime::child_agent::{ChildAgentParams, run_child_agent};
+use awaken_runtime::backend::{BackendParentContext, BackendRunResult};
+use awaken_runtime::child_agent::{ChildAgentParams, run_child_agent_checked};
 use awaken_runtime::registry::ExecutionResolver;
 use awaken_runtime::{MutationBatch, StateCommand, StateStore};
 
@@ -121,33 +159,24 @@ impl Tool for ResearchTool {
         let seed = build_seed(topic, max_sources)
             .map_err(|e| ToolError::ExecutionFailed(e.to_string()))?;
 
-        let outcome = run_child_agent(ChildAgentParams {
-            resolver:           self.resolver.as_ref(),
-            agent_id:           "researcher",
-            messages:           vec![Message::user(&format!("Research: {topic}"))],
-            parent: BackendParentContext {
-                parent_run_id:       Some(ctx.run_identity.run_id.clone()),
-                parent_thread_id:    Some(ctx.run_identity.thread_id.clone()),
-                parent_tool_call_id: Some(ctx.call_id.clone()),
-            },
-            initial_state_seed: Some(seed),
-            sink:               ctx.activity_sink.clone()
-                                   .unwrap_or_else(|| Arc::new(NullEventSink)),
-            control:            BackendControl::default(),
-            policy:             BackendDelegatePolicy::default(),
-        })
+        let outcome = run_child_agent_checked(
+            ChildAgentParams::new(
+                self.resolver.as_ref(),
+                "researcher",
+                vec![Message::user(&format!("Research: {topic}"))],
+                BackendParentContext {
+                    parent_run_id:       Some(ctx.run_identity.run_id.clone()),
+                    parent_thread_id:    Some(ctx.run_identity.thread_id.clone()),
+                    parent_tool_call_id: Some(ctx.call_id.clone()),
+                },
+                ctx.activity_sink.clone()
+                    .unwrap_or_else(|| Arc::new(NullEventSink)),
+            )
+            .with_initial_state_seed(seed)
+            .with_cancellation_token(ctx.cancellation_token.clone()),
+        )
         .await
         .map_err(|e| ToolError::ExecutionFailed(e.to_string()))?;
-
-        // Surface non-success child terminations as a tool error rather than
-        // returning ToolResult::success with no state update. See "What to
-        // avoid" below for the suspension passthrough alternative.
-        if !matches!(outcome.status, BackendRunStatus::Completed) {
-            return Err(ToolError::ExecutionFailed(format!(
-                "child agent did not complete: {}",
-                outcome.status,
-            )));
-        }
 
         let command = build_export(&outcome, topic)?;
 
@@ -189,35 +218,6 @@ Only `StateKey` entries with `persistent: true` survive `export_persisted`. If a
 The child's `StateStore` final snapshot is returned in `BackendRunResult.state` (a `PersistedState`). Decode the keys you care about and translate them into a `StateCommand` keyed against parent state keys — the loop runner will commit it after your tool returns.
 
 ```rust
-#[derive(Default, Clone, serde::Serialize, serde::Deserialize)]
-pub struct ResearchFindings {
-    pub items: Vec<String>,
-}
-
-pub struct ResearchFindingsKey;
-
-impl StateKey for ResearchFindingsKey {
-    const KEY: &'static str = "research.findings";
-    type Value = ResearchFindings;
-    type Update = ResearchFindings;
-    fn apply(value: &mut Self::Value, update: Self::Update) { *value = update; }
-}
-
-#[derive(Default, Clone, serde::Serialize, serde::Deserialize)]
-pub struct ResearchSummary {
-    pub topic: String,
-    pub items: Vec<String>,
-}
-
-pub struct ResearchSummaryKey;
-
-impl StateKey for ResearchSummaryKey {
-    const KEY: &'static str = "research.summary";
-    type Value = ResearchSummary;
-    type Update = ResearchSummary;
-    fn apply(value: &mut Self::Value, update: Self::Update) { *value = update; }
-}
-
 /// Decode child terminal state into a parent `StateCommand`. The outer
 /// `execute` already rejects non-Completed terminations, so this helper
 /// only needs to handle the success path's "no findings key present" edge.
@@ -250,10 +250,14 @@ Only keys registered with `persistent: true` on the child appear in `outcome.sta
 
 ## Stream the child's text into the parent tool's output
 
-When the parent tool wants the child's tokens to appear inside its own streaming output (typical for generative-UI tools), wrap the activity sink with `StreamingPassthroughSink` before passing it to `run_child_agent`:
+When the parent tool wants the child's tokens to appear inside its own streaming output (typical for generative-UI tools), wrap the activity sink with `StreamingPassthroughSink` before passing it to `run_child_agent_checked` or `run_child_agent`:
 
 ```rust
-use awaken_runtime::StreamingPassthroughSink;
+use awaken_contract::contract::message::Message;
+use awaken_runtime::backend::BackendParentContext;
+use awaken_runtime::{
+    ChildAgentParams, StreamingPassthroughSink, run_child_agent_checked,
+};
 
 let parent_sink = ctx.activity_sink.clone()
     .unwrap_or_else(|| Arc::new(NullEventSink));
@@ -263,25 +267,41 @@ let (passthrough, buffer) = StreamingPassthroughSink::new(
     parent_sink,
 );
 
-let outcome = run_child_agent(ChildAgentParams {
-    sink: Arc::new(passthrough),
-    // ...other fields as above...
-}).await?;
+let outcome = run_child_agent_checked(
+    ChildAgentParams::new(
+        self.resolver.as_ref(),
+        "researcher",
+        vec![Message::user("stream the research")],
+        BackendParentContext::default(),
+        Arc::new(passthrough),
+    )
+    .with_cancellation_token(ctx.cancellation_token.clone())
+).await?;
 
 let streamed_text = buffer.lock().await.clone();
 ```
 
-Child `AgentEvent::TextDelta` events become `AgentEvent::ToolCallStreamDelta` on the parent sink, keyed by the parent tool's `call_id`. `buffer` accumulates the full text.
+Child `AgentEvent::TextDelta` events become `AgentEvent::ToolCallStreamDelta` on the parent sink, keyed by the parent tool's `call_id`. `buffer` accumulates only child text output. By default, child `AgentEvent::Error` events are also wrapped as `ToolCallStreamDelta` diagnostics so front-ends do not mistake them for fatal parent-run errors, but those diagnostics are not appended to `buffer`; use `StreamingPassthroughSink::new_with_error_forwarding(..., ChildErrorForwarding::ForwardRawParentError)` only when your event consumer explicitly opts into raw child errors.
+
+## Backend implementor migration note
+
+`BackendCapabilities` is `#[non_exhaustive]`; construct it with `BackendCapabilities::full()` or `BackendCapabilities::remote_stateless_text()` and then mutate fields. Seeded delegate requests are now capability-gated:
+
+- If your backend actually applies `BackendDelegateRunRequest.state_seed` before running the child, set `capabilities.delegate_state_seed = true`.
+- If it does not, leave the flag `false`; seeded delegate calls will be rejected with `ExecutionBackendError` instead of silently ignoring the seed.
 
 ## What to avoid
 
 - **Do not seed keys the child agent has not registered.** The child runs `apply_seed` with `UnknownKeyPolicy::Error` — an unregistered key aborts the child before its first step. This is by design: it surfaces contract drift at startup rather than runtime.
+- **Do pass parent cancellation through.** When invoking a child from inside a tool, call `.with_cancellation_token(ctx.cancellation_token.clone())` so cancelling the parent run also cancels the child run.
 - **`initial_state_seed` is Local-backend only.** State seeding is gated by `BackendCapabilities::delegate_state_seed`; only the in-process Local backend currently advertises support. A2A and any other non-local backend that does not implement a seed-passing wire protocol reject seeded delegate requests with `ExecutionBackendError` — they will not silently succeed. If you need to ship data to a remote child, encode it in the prompt yourself.
-- **Do not export on non-`Completed` status.** `outcome.state` is populated even on failure/cancellation so you can inspect diagnostics, but writing partial child state back into the parent risks inconsistency. Check `outcome.status` first.
+- **Do not export on non-`Completed` status.** For terminal `BackendRunResult` statuses such as `Failed` or `Cancelled`, `outcome.state` may be available depending on the backend and where the failure occurred. Backend dispatch or loop setup errors return `Err` and do not provide `BackendRunResult.state`. In either case, writing partial child state back into the parent risks inconsistency.
 - **Do not assume non-persistent keys cross the run boundary.** `BackendRunResult.state` is built via `export_persisted` and only includes keys registered with `persistent: true`.
 - **Do not pass `ctx.activity_sink` directly to a streaming sub-agent.** Without `StreamingPassthroughSink`, the child's `TextDelta` events would surface as the parent's text — leaking the child's tokens into the parent's primary message stream. Wrap or pass `NullEventSink`.
 - **Be aware of non-local transcript semantics.** When the child runs through the A2A backend (or any other transcript-incremental backend), only `User`-role content with `Visibility::All` is forwarded to the remote agent — assistant/tool history is not. If your child needs prior context, bake it into the user prompt or use the Local backend.
-- **Child errors on the passthrough sink surface as parent-scope errors.** `StreamingPassthroughSink` re-emits child `AgentEvent::Error` events on the parent sink unchanged. Front-ends that treat run-level errors as fatal will see child failures that way too — wrap or filter in your sink layer if you need tool-scoped error semantics.
+- **Do not confuse A2A delegate `run_id` with the remote task id.** For delegate calls, `BackendRunResult.run_id` is a local-only correlation id for child tooling, suspension, and tracing. The remote A2A task id remains in A2A progress metadata/state and is not replaced by this synthesized local id.
+- **`initial_messages` is a fresh-delegation seed, not a history/new-turn split.** `ChildAgentParams::new(..., initial_messages, ...)` is what the child sees as its starting input — typically a single `Message::user`. The current API does not support resuming a prior delegate transcript. Internally, `run_child_agent` mirrors this fresh input into `BackendDelegateRunRequest.messages` and `.new_messages`; do not rely on that backend-level duplication to mean the public API supports continuation.
+- **Raw child errors on the passthrough sink are opt-in.** `StreamingPassthroughSink::new` wraps child `AgentEvent::Error` as parent `ToolCallStreamDelta` output by default. Only choose `ChildErrorForwarding::ForwardRawParentError` if your UI understands that the raw error came from a child tool stream and should not automatically kill the parent run.
 
 ## See Also
 

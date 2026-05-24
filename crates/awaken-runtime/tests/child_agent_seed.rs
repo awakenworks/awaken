@@ -10,18 +10,20 @@ use awaken_contract::contract::content::ContentBlock;
 use awaken_contract::contract::event_sink::NullEventSink;
 use awaken_contract::contract::executor::{InferenceExecutionError, InferenceRequest, LlmExecutor};
 use awaken_contract::contract::inference::{StopReason, StreamResult};
-use awaken_contract::contract::message::{Message, ToolCall};
+use awaken_contract::contract::lifecycle::TerminationReason;
+use awaken_contract::contract::message::{Message, Role, ToolCall};
 use awaken_contract::contract::tool::{
     Tool, ToolCallContext, ToolDescriptor, ToolError, ToolOutput, ToolResult,
 };
 use awaken_contract::state::{PersistedState, StateKey, StateKeyOptions};
 
 use awaken_runtime::backend::{
-    BackendCapabilities, BackendControl, BackendDelegatePolicy, BackendDelegateRunRequest,
-    BackendParentContext, BackendRunResult, BackendRunStatus, ExecutionBackend,
-    ExecutionBackendError,
+    BackendCapabilities, BackendDelegateRunRequest, BackendParentContext, BackendRunResult,
+    BackendRunStatus, ExecutionBackend, ExecutionBackendError,
 };
-use awaken_runtime::child_agent::{ChildAgentParams, run_child_agent};
+use awaken_runtime::child_agent::{
+    ChildAgentError, ChildAgentParams, run_child_agent, run_child_agent_checked,
+};
 use awaken_runtime::loop_runner::build_agent_env;
 use awaken_runtime::plugins::{Plugin, PluginDescriptor, PluginRegistrar};
 use awaken_runtime::registry::{
@@ -163,20 +165,20 @@ async fn child_observes_seeded_state_via_tool_context() {
     ]));
     let resolver = make_resolver(llm);
 
-    let result = run_child_agent(ChildAgentParams {
-        resolver: &resolver,
-        agent_id: "child",
-        messages: vec![Message::user("go")],
-        parent: BackendParentContext {
-            parent_run_id: Some("parent-run".into()),
-            parent_thread_id: Some("parent-thread".into()),
-            parent_tool_call_id: Some("parent-call".into()),
-        },
-        initial_state_seed: Some(seed_with(42)),
-        sink: Arc::new(NullEventSink),
-        control: BackendControl::default(),
-        policy: BackendDelegatePolicy::default(),
-    })
+    let result = run_child_agent(
+        ChildAgentParams::new(
+            &resolver,
+            "child",
+            vec![Message::user("go")],
+            BackendParentContext {
+                parent_run_id: Some("parent-run".into()),
+                parent_thread_id: Some("parent-thread".into()),
+                parent_tool_call_id: Some("parent-call".into()),
+            },
+            Arc::new(NullEventSink),
+        )
+        .with_initial_state_seed(seed_with(42)),
+    )
     .await
     .expect("child agent run should succeed");
 
@@ -202,20 +204,17 @@ async fn missing_seed_yields_no_value_in_child() {
     }]));
     let resolver = make_resolver(llm);
 
-    let result = run_child_agent(ChildAgentParams {
-        resolver: &resolver,
-        agent_id: "child",
-        messages: vec![Message::user("hi")],
-        parent: BackendParentContext {
+    let result = run_child_agent(ChildAgentParams::new(
+        &resolver,
+        "child",
+        vec![Message::user("hi")],
+        BackendParentContext {
             parent_run_id: None,
             parent_thread_id: None,
             parent_tool_call_id: None,
         },
-        initial_state_seed: None,
-        sink: Arc::new(NullEventSink),
-        control: BackendControl::default(),
-        policy: BackendDelegatePolicy::default(),
-    })
+        Arc::new(NullEventSink),
+    ))
     .await
     .expect("child run should succeed without a seed");
 
@@ -281,16 +280,16 @@ async fn tool_round_trips_child_state_back_to_parent_store() {
     let seed = seed_with(seed_value);
 
     // ② Run the child.
-    let outcome = run_child_agent(ChildAgentParams {
-        resolver: &resolver,
-        agent_id: "child",
-        messages: vec![Message::user("kickoff")],
-        parent: BackendParentContext::default(),
-        initial_state_seed: Some(seed),
-        sink: Arc::new(NullEventSink),
-        control: BackendControl::default(),
-        policy: BackendDelegatePolicy::default(),
-    })
+    let outcome = run_child_agent(
+        ChildAgentParams::new(
+            &resolver,
+            "child",
+            vec![Message::user("kickoff")],
+            BackendParentContext::default(),
+            Arc::new(NullEventSink),
+        )
+        .with_initial_state_seed(seed),
+    )
     .await
     .expect("child run should succeed");
     assert!(matches!(outcome.status, BackendRunStatus::Completed));
@@ -340,16 +339,16 @@ async fn unknown_seed_key_fails_the_child_run() {
         extensions: bad_seed,
     };
 
-    let err = run_child_agent(ChildAgentParams {
-        resolver: &resolver,
-        agent_id: "child",
-        messages: vec![Message::user("doomed")],
-        parent: BackendParentContext::default(),
-        initial_state_seed: Some(seed),
-        sink: Arc::new(NullEventSink),
-        control: BackendControl::default(),
-        policy: BackendDelegatePolicy::default(),
-    })
+    let err = run_child_agent(
+        ChildAgentParams::new(
+            &resolver,
+            "child",
+            vec![Message::user("doomed")],
+            BackendParentContext::default(),
+            Arc::new(NullEventSink),
+        )
+        .with_initial_state_seed(seed),
+    )
     .await
     .expect_err("unknown seed key must surface as an error");
 
@@ -366,6 +365,218 @@ async fn unknown_seed_key_fails_the_child_run() {
 fn _doc_imports_compile() {
     let _: Option<&dyn AgentResolver> = None;
     let _: Option<&StateStore> = None;
+}
+
+type CapturedMessages = Vec<(Role, String)>;
+
+struct CaptureMessagesBackend {
+    captured: std::sync::Mutex<Option<(CapturedMessages, CapturedMessages)>>,
+}
+
+impl CaptureMessagesBackend {
+    fn new() -> Self {
+        Self {
+            captured: std::sync::Mutex::new(None),
+        }
+    }
+
+    fn captured(&self) -> (CapturedMessages, CapturedMessages) {
+        self.captured
+            .lock()
+            .expect("lock poisoned")
+            .clone()
+            .expect("delegate request should have been captured")
+    }
+}
+
+#[async_trait]
+impl ExecutionBackend for CaptureMessagesBackend {
+    async fn execute_delegate(
+        &self,
+        request: BackendDelegateRunRequest<'_>,
+    ) -> Result<BackendRunResult, ExecutionBackendError> {
+        let messages = request
+            .messages
+            .iter()
+            .map(|message| (message.role, message.text()))
+            .collect();
+        let new_messages = request
+            .new_messages
+            .iter()
+            .map(|message| (message.role, message.text()))
+            .collect();
+        *self.captured.lock().expect("lock poisoned") = Some((messages, new_messages));
+
+        Ok(BackendRunResult {
+            agent_id: request.agent_id.to_string(),
+            status: BackendRunStatus::Completed,
+            termination: TerminationReason::NaturalEnd,
+            status_reason: None,
+            response: Some("captured".into()),
+            output: Default::default(),
+            steps: 0,
+            run_id: Some("capture-run".into()),
+            inbox: None,
+            state: None,
+        })
+    }
+}
+
+struct CaptureMessagesResolver {
+    backend: Arc<CaptureMessagesBackend>,
+    agent_id: String,
+}
+
+impl AgentResolver for CaptureMessagesResolver {
+    fn resolve(&self, _agent_id: &str) -> Result<ResolvedAgent, RuntimeError> {
+        Err(RuntimeError::ResolveFailed {
+            message: "capture backend is non-local; resolve_execution is the canonical path".into(),
+        })
+    }
+
+    fn agent_ids(&self) -> Vec<String> {
+        vec![self.agent_id.clone()]
+    }
+}
+
+impl ExecutionResolver for CaptureMessagesResolver {
+    fn resolve_execution(&self, agent_id: &str) -> Result<ResolvedExecution, RuntimeError> {
+        if agent_id != self.agent_id {
+            return Err(RuntimeError::ResolveFailed {
+                message: format!("agent not found: {agent_id}"),
+            });
+        }
+        let spec = Arc::new(awaken_contract::registry_spec::AgentSpec {
+            id: self.agent_id.clone(),
+            ..Default::default()
+        });
+        Ok(ResolvedExecution::NonLocal(
+            ResolvedBackendAgent::with_backend(spec, self.backend.clone()),
+        ))
+    }
+}
+
+#[tokio::test]
+async fn child_agent_messages_are_fresh_delegate_input() {
+    let backend = Arc::new(CaptureMessagesBackend::new());
+    let resolver = CaptureMessagesResolver {
+        backend: backend.clone(),
+        agent_id: "remote-child".into(),
+    };
+
+    let outcome = run_child_agent(ChildAgentParams::new(
+        &resolver,
+        "remote-child",
+        vec![
+            Message::system("child system seed"),
+            Message::user("current child task"),
+        ],
+        BackendParentContext::default(),
+        Arc::new(NullEventSink),
+    ))
+    .await
+    .expect("delegate request should dispatch");
+
+    assert!(matches!(outcome.status, BackendRunStatus::Completed));
+    let expected = vec![
+        (Role::System, "child system seed".to_string()),
+        (Role::User, "current child task".to_string()),
+    ];
+    let (messages, new_messages) = backend.captured();
+    assert_eq!(
+        messages, expected,
+        "ChildAgentParams.initial_messages is the child run's full fresh input"
+    );
+    assert_eq!(
+        new_messages, expected,
+        "run_child_agent intentionally mirrors fresh input into new_messages"
+    );
+}
+
+struct FailedStatusBackend;
+
+#[async_trait]
+impl ExecutionBackend for FailedStatusBackend {
+    async fn execute_delegate(
+        &self,
+        request: BackendDelegateRunRequest<'_>,
+    ) -> Result<BackendRunResult, ExecutionBackendError> {
+        Ok(BackendRunResult {
+            agent_id: request.agent_id.to_string(),
+            status: BackendRunStatus::Failed("child failed".into()),
+            termination: TerminationReason::Error("child failed".into()),
+            status_reason: Some("child failed".into()),
+            response: None,
+            output: Default::default(),
+            steps: 0,
+            run_id: Some("failed-run".into()),
+            inbox: None,
+            state: None,
+        })
+    }
+}
+
+struct FailedStatusResolver {
+    backend: Arc<FailedStatusBackend>,
+    agent_id: String,
+}
+
+impl AgentResolver for FailedStatusResolver {
+    fn resolve(&self, _agent_id: &str) -> Result<ResolvedAgent, RuntimeError> {
+        Err(RuntimeError::ResolveFailed {
+            message: "failed-status backend is non-local".into(),
+        })
+    }
+
+    fn agent_ids(&self) -> Vec<String> {
+        vec![self.agent_id.clone()]
+    }
+}
+
+impl ExecutionResolver for FailedStatusResolver {
+    fn resolve_execution(&self, agent_id: &str) -> Result<ResolvedExecution, RuntimeError> {
+        if agent_id != self.agent_id {
+            return Err(RuntimeError::ResolveFailed {
+                message: format!("agent not found: {agent_id}"),
+            });
+        }
+        let spec = Arc::new(awaken_contract::registry_spec::AgentSpec {
+            id: self.agent_id.clone(),
+            ..Default::default()
+        });
+        Ok(ResolvedExecution::NonLocal(
+            ResolvedBackendAgent::with_backend(spec, self.backend.clone()),
+        ))
+    }
+}
+
+#[tokio::test]
+async fn checked_child_agent_rejects_non_completed_status() {
+    let resolver = FailedStatusResolver {
+        backend: Arc::new(FailedStatusBackend),
+        agent_id: "remote-child".into(),
+    };
+
+    let err = run_child_agent_checked(ChildAgentParams::new(
+        &resolver,
+        "remote-child",
+        vec![Message::user("go")],
+        BackendParentContext::default(),
+        Arc::new(NullEventSink),
+    ))
+    .await
+    .expect_err("checked helper should reject failed terminal status");
+
+    match &err {
+        ChildAgentError::Terminal(result) => {
+            assert!(matches!(result.status, BackendRunStatus::Failed(_)));
+        }
+        other => panic!("expected terminal child status error, got: {other:?}"),
+    }
+    assert!(
+        err.terminal_result().is_some(),
+        "terminal result should remain available for diagnostics"
+    );
 }
 
 /// Backend that advertises no `delegate_state_seed` capability and panics if
@@ -431,16 +642,16 @@ async fn seed_rejected_when_backend_lacks_capability() {
         agent_id: "remote-child".into(),
     };
 
-    let result = run_child_agent(ChildAgentParams {
-        resolver: &resolver,
-        agent_id: "remote-child",
-        messages: vec![Message::user("go")],
-        parent: BackendParentContext::default(),
-        initial_state_seed: Some(seed_with(1)),
-        sink: Arc::new(NullEventSink),
-        control: BackendControl::default(),
-        policy: BackendDelegatePolicy::default(),
-    })
+    let result = run_child_agent(
+        ChildAgentParams::new(
+            &resolver,
+            "remote-child",
+            vec![Message::user("go")],
+            BackendParentContext::default(),
+            Arc::new(NullEventSink),
+        )
+        .with_initial_state_seed(seed_with(1)),
+    )
     .await;
 
     let err = result.expect_err("seeded delegate against an unsupported backend must error");
@@ -462,16 +673,13 @@ async fn no_seed_against_no_seed_backend_still_dispatches() {
         agent_id: "remote-child".into(),
     };
 
-    let dispatched = std::panic::AssertUnwindSafe(run_child_agent(ChildAgentParams {
-        resolver: &resolver,
-        agent_id: "remote-child",
-        messages: vec![Message::user("go")],
-        parent: BackendParentContext::default(),
-        initial_state_seed: None,
-        sink: Arc::new(NullEventSink),
-        control: BackendControl::default(),
-        policy: BackendDelegatePolicy::default(),
-    }));
+    let dispatched = std::panic::AssertUnwindSafe(run_child_agent(ChildAgentParams::new(
+        &resolver,
+        "remote-child",
+        vec![Message::user("go")],
+        BackendParentContext::default(),
+        Arc::new(NullEventSink),
+    )));
 
     let outcome = futures::FutureExt::catch_unwind(dispatched).await;
     assert!(
