@@ -59,7 +59,7 @@ fn make_app() -> axum::Router {
                 },
             )
             .with_provider("mock", Arc::new(EchoExecutor))
-            .with_thread_run_store(store.clone())
+            .with_in_memory_thread_run_store(store.clone())
             .with_agent_spec(AgentSpec {
                 id: "default".into(),
                 model_id: "test-model".into(),

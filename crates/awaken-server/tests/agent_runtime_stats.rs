@@ -50,7 +50,7 @@ fn build_app(runtime_stats: Option<Arc<RuntimeStatsRegistry>>) -> axum::Router {
     let store = Arc::new(InMemoryStore::new());
     let runtime = Arc::new(
         AgentRuntimeBuilder::new()
-            .with_thread_run_store(store.clone())
+            .with_in_memory_thread_run_store(store.clone())
             .with_provider("mock", Arc::new(StubExecutor))
             .with_model_binding(
                 "test-model",

@@ -193,7 +193,7 @@ fn make_ag_ui_app(llm: Arc<dyn LlmExecutor>, tools: Vec<(String, Arc<dyn Tool>)>
             max_rounds: 5,
             ..Default::default()
         })
-        .with_thread_run_store(store.clone());
+        .with_in_memory_thread_run_store(store.clone());
 
     for (id, tool) in tools {
         builder = builder.with_tool(id, tool);
@@ -996,7 +996,7 @@ async fn multiple_sequential_runs_on_same_thread() {
                 max_rounds: 5,
                 ..Default::default()
             })
-            .with_thread_run_store(store.clone())
+            .with_in_memory_thread_run_store(store.clone())
             .build()
             .expect("build runtime"),
     );

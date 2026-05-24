@@ -246,7 +246,7 @@ fn make_test_app_with_executor(
                 max_rounds: 0,
                 ..Default::default()
             })
-            .with_thread_run_store(store.clone())
+            .with_in_memory_thread_run_store(store.clone())
             .build()
             .expect("build runtime"),
     );
@@ -277,7 +277,7 @@ fn make_test_app_with_remote_root_agent() -> TestApp {
                 ..Default::default()
             })
             .with_agent_backend_factory(Arc::new(StaticRemoteBackendFactory))
-            .with_thread_run_store(store.clone())
+            .with_in_memory_thread_run_store(store.clone())
             .build()
             .expect("build runtime with remote root agent"),
     );
@@ -833,7 +833,7 @@ async fn ai_sdk_agent_preview_requires_admin_token_when_configured() {
                 max_rounds: 0,
                 ..Default::default()
             })
-            .with_thread_run_store(store.clone())
+            .with_in_memory_thread_run_store(store.clone())
             .build()
             .expect("build runtime"),
     );

@@ -333,7 +333,7 @@ mod integration {
                     max_rounds: 0,
                     ..Default::default()
                 })
-                .with_thread_run_store(store.clone())
+                .with_in_memory_thread_run_store(store.clone())
                 .build()
                 .expect("build runtime"),
         );

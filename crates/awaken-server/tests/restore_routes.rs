@@ -72,7 +72,7 @@ async fn build_test_app() -> axum::Router {
     let runtime = Arc::new(
         AgentRuntimeBuilder::new()
             .with_provider("bootstrap", Arc::new(ImmediateExecutor))
-            .with_thread_run_store(thread_store.clone())
+            .with_in_memory_thread_run_store(thread_store.clone())
             .build()
             .expect("build runtime"),
     );
@@ -342,7 +342,7 @@ async fn restore_restart_event_returns_422() {
     let runtime = Arc::new(
         AgentRuntimeBuilder::new()
             .with_provider("bootstrap", Arc::new(ImmediateExecutor))
-            .with_thread_run_store(thread_store.clone())
+            .with_in_memory_thread_run_store(thread_store.clone())
             .build()
             .expect("build runtime"),
     );
@@ -649,7 +649,7 @@ async fn restore_rejects_seed_apply_event() {
     let runtime = Arc::new(
         AgentRuntimeBuilder::new()
             .with_provider("bootstrap", Arc::new(ImmediateExecutor))
-            .with_thread_run_store(thread_store.clone())
+            .with_in_memory_thread_run_store(thread_store.clone())
             .build()
             .expect("build runtime"),
     );

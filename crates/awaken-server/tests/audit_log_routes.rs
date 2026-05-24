@@ -72,7 +72,7 @@ async fn build_test_app_with_audit(token: Option<&str>) -> axum::Router {
     let runtime = Arc::new(
         AgentRuntimeBuilder::new()
             .with_provider("bootstrap", Arc::new(ImmediateExecutor))
-            .with_thread_run_store(thread_store.clone())
+            .with_in_memory_thread_run_store(thread_store.clone())
             .build()
             .expect("build runtime"),
     );
@@ -136,7 +136,7 @@ async fn build_test_app_without_audit() -> axum::Router {
     let runtime = Arc::new(
         AgentRuntimeBuilder::new()
             .with_provider("bootstrap", Arc::new(ImmediateExecutor))
-            .with_thread_run_store(thread_store.clone())
+            .with_in_memory_thread_run_store(thread_store.clone())
             .build()
             .expect("build runtime"),
     );
@@ -391,7 +391,7 @@ async fn seed_apply_event_visible_via_http_query() {
     let runtime = Arc::new(
         AgentRuntimeBuilder::new()
             .with_provider("bootstrap", Arc::new(ImmediateExecutor))
-            .with_thread_run_store(thread_store.clone())
+            .with_in_memory_thread_run_store(thread_store.clone())
             .build()
             .expect("build runtime"),
     );

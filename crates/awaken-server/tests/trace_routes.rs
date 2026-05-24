@@ -104,7 +104,7 @@ async fn build_test_app(token: Option<&str>, store: Arc<dyn TraceStore>) -> axum
     let runtime = Arc::new(
         AgentRuntimeBuilder::new()
             .with_provider("bootstrap", Arc::new(ImmediateExecutor))
-            .with_thread_run_store(thread_store.clone())
+            .with_in_memory_thread_run_store(thread_store.clone())
             .build()
             .expect("build runtime"),
     );
@@ -417,7 +417,7 @@ async fn list_traces_no_store_returns_503() {
     let runtime = Arc::new(
         AgentRuntimeBuilder::new()
             .with_provider("bootstrap", Arc::new(ImmediateExecutor))
-            .with_thread_run_store(thread_store.clone())
+            .with_in_memory_thread_run_store(thread_store.clone())
             .build()
             .expect("build runtime"),
     );
@@ -461,7 +461,7 @@ async fn default_admin_api_config_omits_trace_routes() {
     let runtime = Arc::new(
         AgentRuntimeBuilder::new()
             .with_provider("bootstrap", Arc::new(ImmediateExecutor))
-            .with_thread_run_store(thread_store.clone())
+            .with_in_memory_thread_run_store(thread_store.clone())
             .build()
             .expect("build runtime"),
     );
@@ -498,7 +498,7 @@ async fn expose_trace_routes_false_returns_404() {
     let runtime = Arc::new(
         AgentRuntimeBuilder::new()
             .with_provider("bootstrap", Arc::new(ImmediateExecutor))
-            .with_thread_run_store(thread_store.clone())
+            .with_in_memory_thread_run_store(thread_store.clone())
             .build()
             .expect("build runtime"),
     );
