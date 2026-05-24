@@ -17,7 +17,9 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use awaken_eval::test_support::UnusedExecutor;
-use awaken_eval::{EvalRun, EvalRunItem, EvalRunStore, FileEvalRunStore, Fixture};
+use awaken_eval::{
+    EvalRun, EvalRunExecutionMode, EvalRunItem, EvalRunStore, FileEvalRunStore, Fixture,
+};
 use awaken_ext_observability::trace_store::{TraceStore, file::FileTraceStore};
 use awaken_ext_observability::{GenAISpan, MetricsEvent, SpanContext};
 use awaken_runtime::builder::AgentRuntimeBuilder;
@@ -413,6 +415,17 @@ fn captured_inference_span(run_id: &str, text: &str, with_user: bool) -> GenAISp
     }
 }
 
+fn unsupported_provider_script_span(run_id: &str) -> GenAISpan {
+    let mut span = captured_inference_span(run_id, "", true);
+    span.finish_reasons = vec!["tool_use".into()];
+    span.response_content = None;
+    span.response_tool_calls = Some(json!([
+        {"id": "call-1", "name": "search", "arguments": {"q": "alpha"}},
+        {"id": "call-2", "name": "write", "arguments": {"text": "beta"}}
+    ]));
+    span
+}
+
 #[tokio::test]
 async fn curate_items_appends_fixture_recovered_from_trace() {
     let app = build_test_app().await;
@@ -467,6 +480,116 @@ async fn curate_items_appends_fixture_recovered_from_trace() {
     assert!(
         !app.trace_store.read(run_id).unwrap().is_empty(),
         "source trace should survive retention after curation"
+    );
+}
+
+#[tokio::test]
+async fn curate_items_defaults_to_live_only_when_provider_script_is_unsupported() {
+    // The primary curation value for Live eval is the captured user
+    // prompt + expectations. `provider_script` is an optional scripted
+    // snapshot; when its schema cannot represent the trace, the server
+    // must not reject an otherwise useful real-agent fixture.
+    let app = build_test_app().await;
+    let run_id = "01HXCUR0000000000000000004";
+    app.trace_store
+        .append(
+            run_id,
+            &MetricsEvent::Inference(unsupported_provider_script_span(run_id)),
+        )
+        .unwrap();
+
+    let (status, _) = request(
+        &app.router,
+        "POST",
+        "/v1/eval/datasets",
+        Some(json!({ "id": "DS-CUR-LIVE", "spec": {} })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, body) = request(
+        &app.router,
+        "POST",
+        "/v1/eval/datasets/DS-CUR-LIVE/items",
+        Some(json!({
+            "from_run_id": run_id,
+            "expected": { "final_answer_contains": ["answer"] },
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "body: {body}");
+    let added = &body["spec"]["fixtures"][0];
+    assert_eq!(added["user_input"], "auto prompt");
+    assert!(added["provider_script"].is_null());
+    assert!(
+        added["provider_script_error"]
+            .as_str()
+            .unwrap_or("")
+            .contains("provider_script currently supports one tool call"),
+        "fixture: {added}"
+    );
+
+    let (status, body) = request(
+        &app.router,
+        "POST",
+        "/v1/eval/runs",
+        Some(json!({
+            "dataset_id": "DS-CUR-LIVE",
+            "mode": "scripted",
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "body: {body}");
+    let report = &body["run"]["items"][0]["report"];
+    assert!(!report["passed"].as_bool().unwrap());
+    assert_eq!(report["runtime_failure"]["kind"], "runtime_error");
+    assert!(
+        report["runtime_failure"]["message"]
+            .as_str()
+            .unwrap_or("")
+            .contains("no replayable provider_script"),
+        "report: {report}"
+    );
+}
+
+#[tokio::test]
+async fn curate_items_require_mode_rejects_unsupported_provider_script() {
+    let app = build_test_app().await;
+    let run_id = "01HXCUR0000000000000000005";
+    app.trace_store
+        .append(
+            run_id,
+            &MetricsEvent::Inference(unsupported_provider_script_span(run_id)),
+        )
+        .unwrap();
+
+    let (status, _) = request(
+        &app.router,
+        "POST",
+        "/v1/eval/datasets",
+        Some(json!({ "id": "DS-CUR-REQ", "spec": {} })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, body) = request(
+        &app.router,
+        "POST",
+        "/v1/eval/datasets/DS-CUR-REQ/items",
+        Some(json!({
+            "from_run_id": run_id,
+            "provider_script_mode": "require",
+            "expected": { "final_answer_contains": ["answer"] },
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(
+        body["error"]
+            .as_str()
+            .unwrap_or("")
+            .contains("provider_script currently supports one tool call"),
+        "body: {body}"
     );
 }
 
@@ -576,6 +699,7 @@ async fn start_eval_run_drives_dataset_and_persists() {
     assert_eq!(status, StatusCode::OK, "body: {body}");
     let run = &body["run"];
     assert_eq!(run["dataset_id"], "DS-RUN");
+    assert_eq!(run["execution_mode"], "scripted");
     let items = run["items"].as_array().unwrap();
     assert_eq!(items.len(), 2);
     for item in items {
@@ -585,6 +709,37 @@ async fn start_eval_run_drives_dataset_and_persists() {
     }
     // No baseline requested → no diff.
     assert!(body["diff"].is_null());
+}
+
+#[tokio::test]
+async fn start_eval_run_accepts_explicit_scripted_mode() {
+    let app = build_test_app().await;
+    let (status, _) = request(
+        &app.router,
+        "POST",
+        "/v1/eval/datasets",
+        Some(json!({
+            "id": "DS-RUN-SCRIPTED",
+            "spec": { "fixtures": [sample_fixture("alpha")] }
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, body) = request(
+        &app.router,
+        "POST",
+        "/v1/eval/runs",
+        Some(json!({
+            "dataset_id": "DS-RUN-SCRIPTED",
+            "mode": "scripted",
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "body: {body}");
+    assert_eq!(body["run"]["execution_mode"], "scripted");
+    assert_eq!(body["run"]["items"].as_array().unwrap().len(), 1);
+    assert!(body["run"]["items"][0]["cell"].is_null());
 }
 
 #[tokio::test]
@@ -1032,6 +1187,45 @@ async fn start_eval_run_400s_on_zero_walltime() {
 }
 
 #[tokio::test]
+async fn start_eval_run_400s_when_scripted_sets_walltime() {
+    // The field is Live-only. Accepting a non-zero value on scripted
+    // mode would be a silent no-op, which makes API behaviour harder to
+    // reason about than rejecting the misconfiguration.
+    let app = build_test_app().await;
+    let (status, _) = request(
+        &app.router,
+        "POST",
+        "/v1/eval/datasets",
+        Some(json!({
+            "id": "DS-SCRIPTED-WALLTIME",
+            "spec": { "fixtures": [sample_fixture("alpha")] }
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, body) = request(
+        &app.router,
+        "POST",
+        "/v1/eval/runs",
+        Some(json!({
+            "dataset_id": "DS-SCRIPTED-WALLTIME",
+            "mode": "scripted",
+            "max_walltime_secs": 10,
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(
+        body["error"]
+            .as_str()
+            .unwrap_or("")
+            .contains("requires mode=\"live\""),
+        "body: {body}"
+    );
+}
+
+#[tokio::test]
 async fn start_eval_run_400s_on_zero_samples() {
     // `samples: 0` is rejected explicitly instead of silently coerced to
     // 1 — the operator who typed 0 most likely meant "off" (omit) or a
@@ -1124,6 +1318,7 @@ async fn start_eval_run_baseline_rejects_wrong_dataset_before_replay() {
         id: "WRONG-DS".into(),
         dataset_id: "different-dataset".into(),
         dataset_revision: 0,
+        execution_mode: EvalRunExecutionMode::Scripted,
         items: vec![],
         started_at_secs: 1_700_000_000,
         ended_at_secs: 1_700_000_001,
@@ -1167,6 +1362,62 @@ async fn start_eval_run_baseline_rejects_wrong_dataset_before_replay() {
 }
 
 #[tokio::test]
+async fn start_eval_run_baseline_rejects_execution_mode_mismatch_before_replay() {
+    // Scripted and Live runs have different semantics even when they
+    // point at the same dataset revision: scripted measures replay
+    // determinism; Live measures real provider/agent behaviour. Diffing
+    // them would be a misleading apples-to-oranges regression gate.
+    let app = build_test_app().await;
+    let (status, _) = request(
+        &app.router,
+        "POST",
+        "/v1/eval/datasets",
+        Some(json!({
+            "id": "DS-MODE-MISMATCH",
+            "spec": { "fixtures": [sample_fixture("alpha")] }
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let live_baseline = EvalRun {
+        id: "LIVE-BASE".into(),
+        dataset_id: "DS-MODE-MISMATCH".into(),
+        dataset_revision: 0,
+        execution_mode: EvalRunExecutionMode::Live,
+        items: vec![],
+        started_at_secs: 1_700_000_000,
+        ended_at_secs: 1_700_000_001,
+    };
+    app.eval_run_store.write(&live_baseline).unwrap();
+
+    let (status, body) = request(
+        &app.router,
+        "POST",
+        "/v1/eval/runs",
+        Some(json!({
+            "dataset_id": "DS-MODE-MISMATCH",
+            "mode": "scripted",
+            "baseline_run_id": "LIVE-BASE",
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(
+        body["error"]
+            .as_str()
+            .unwrap_or("")
+            .contains("execution modes"),
+        "body: {body}"
+    );
+
+    let runs = app.eval_run_store.list(&Default::default()).unwrap();
+    assert_eq!(runs.len(), 1);
+    assert_eq!(runs[0].id, "LIVE-BASE");
+    assert_eq!(runs[0].execution_mode, EvalRunExecutionMode::Live);
+}
+
+#[tokio::test]
 async fn start_eval_run_baseline_with_duplicate_item_keys_rejected_before_replay() {
     // Regression: a baseline whose items collide on
     // (fixture_id, cell, sample_index) used to slip past the preflight
@@ -1199,6 +1450,7 @@ async fn start_eval_run_baseline_with_duplicate_item_keys_rejected_before_replay
         id: "DUP-BASE".into(),
         dataset_id: "DS-DUP-BASE".into(),
         dataset_revision: 0,
+        execution_mode: EvalRunExecutionMode::Scripted,
         items: vec![item("alpha", true, "first"), item("alpha", true, "second")],
         started_at_secs: 1_700_000_000,
         ended_at_secs: 1_700_000_001,
@@ -1604,7 +1856,71 @@ async fn start_eval_run_400s_when_scripted_with_agent_id() {
         body["error"]
             .as_str()
             .unwrap_or("")
-            .contains("agent_id requires `models`"),
+            .contains("agent_id requires mode=\"live\""),
+        "body: {body}"
+    );
+}
+
+#[tokio::test]
+async fn start_eval_run_400s_when_live_mode_omits_models() {
+    let app = build_test_app().await;
+    let fixtures = vec![sample_fixture("f1")];
+    let (status, _) = request(
+        &app.router,
+        "POST",
+        "/v1/eval/datasets",
+        Some(json!({ "id": "DS-LIVE-NOMODELS", "spec": { "fixtures": fixtures } })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, body) = request(
+        &app.router,
+        "POST",
+        "/v1/eval/runs",
+        Some(json!({ "dataset_id": "DS-LIVE-NOMODELS", "mode": "live" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(
+        body["error"]
+            .as_str()
+            .unwrap_or("")
+            .contains("mode=\"live\" requires"),
+        "body: {body}"
+    );
+}
+
+#[tokio::test]
+async fn start_eval_run_400s_when_scripted_mode_has_models() {
+    let app = build_test_app().await;
+    let fixtures = vec![sample_fixture("f1")];
+    let (status, _) = request(
+        &app.router,
+        "POST",
+        "/v1/eval/datasets",
+        Some(json!({ "id": "DS-SCRIPTED-MODELS", "spec": { "fixtures": fixtures } })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, body) = request(
+        &app.router,
+        "POST",
+        "/v1/eval/runs",
+        Some(json!({
+            "dataset_id": "DS-SCRIPTED-MODELS",
+            "mode": "scripted",
+            "models": ["m1"],
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(
+        body["error"]
+            .as_str()
+            .unwrap_or("")
+            .contains("only valid with mode=\"live\""),
         "body: {body}"
     );
 }
@@ -1888,6 +2204,65 @@ async fn import_traces_appends_curatable_traces_and_skips_existing() {
     assert_eq!(body["imported_count"], 0);
     assert_eq!(body["skipped_count"], 2);
     assert_eq!(body["dataset_revision"], new_rev);
+}
+
+#[tokio::test]
+async fn import_traces_imports_live_only_fixture_when_provider_script_is_unsupported() {
+    let app = build_test_app().await;
+    use awaken_ext_observability::trace_store::RunSummary;
+    use std::time::{Duration, UNIX_EPOCH};
+
+    let id = "01HXIMP0000000000000000003";
+    app.trace_store
+        .append(
+            id,
+            &MetricsEvent::Inference(unsupported_provider_script_span(id)),
+        )
+        .unwrap();
+    app.trace_store
+        .write_index_for_run(
+            id,
+            &RunSummary {
+                run_id: id.into(),
+                agent_id: "default".into(),
+                started_at: UNIX_EPOCH + Duration::from_secs(1_700_000_250),
+                ended_at: None,
+                prompt_ids: vec![],
+                experiment_id: None,
+                variant_name: None,
+                final_status: None,
+                judge_score: None,
+            },
+        )
+        .unwrap();
+
+    let (_, body) = request(
+        &app.router,
+        "POST",
+        "/v1/eval/datasets",
+        Some(json!({ "id": "DS-IMP-LIVE", "spec": {} })),
+    )
+    .await;
+    let rev = body["meta"]["revision"].as_u64().unwrap();
+
+    let (status, body) = request(
+        &app.router,
+        "POST",
+        "/v1/eval/datasets/DS-IMP-LIVE/import-traces",
+        Some(json!({
+            "expected_revision": rev,
+            "expected": { "final_answer_contains": ["answer"] },
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "body: {body}");
+    assert_eq!(body["imported_count"], 1);
+
+    let (_, dataset) = request(&app.router, "GET", "/v1/eval/datasets/DS-IMP-LIVE", None).await;
+    let fixture = &dataset["spec"]["fixtures"][0];
+    assert_eq!(fixture["user_input"], "auto prompt");
+    assert!(fixture["provider_script_error"].is_string());
+    assert!(fixture["provider_script"].is_null());
 }
 
 #[tokio::test]
@@ -2335,6 +2710,7 @@ fn baseline_run(id: &str) -> EvalRun {
         id: id.into(),
         dataset_id: "DS-DIFF".into(),
         dataset_revision: 1,
+        execution_mode: EvalRunExecutionMode::Scripted,
         items: vec![item("alpha", true, "good answer")],
         started_at_secs: 1_700_000_000,
         ended_at_secs: 1_700_000_001,
@@ -2347,6 +2723,7 @@ fn new_run_with_drift(id: &str) -> EvalRun {
         id: id.into(),
         dataset_id: "DS-DIFF".into(),
         dataset_revision: 1,
+        execution_mode: EvalRunExecutionMode::Scripted,
         items: vec![item("alpha", true, "different answer")],
         started_at_secs: 1_700_000_100,
         ended_at_secs: 1_700_000_101,

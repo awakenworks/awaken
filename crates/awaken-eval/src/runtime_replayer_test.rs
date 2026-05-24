@@ -10,6 +10,7 @@ fn text_fixture(id: &str, prompt: &str, response: &str) -> Fixture {
         description: None,
         user_input: prompt.into(),
         provider_script: Vec::new(),
+        provider_script_error: None,
         source_run_id: None,
         source_model_id: None,
         allow_unused_provider_script: false,
@@ -27,12 +28,31 @@ fn scripted_fixture(id: &str, prompt: &str, script: Vec<ProviderScriptEvent>) ->
         description: None,
         user_input: prompt.into(),
         provider_script: script,
+        provider_script_error: None,
         source_run_id: None,
         source_model_id: None,
         allow_unused_provider_script: false,
         mock_response: MockResponse::default(),
         expect: Expectation::default(),
         continued_turns: vec![],
+    }
+}
+
+#[tokio::test]
+async fn replay_scripted_fails_closed_when_provider_script_unavailable() {
+    let mut fx = text_fixture("live-only", "prompt", "legacy fallback must not run");
+    fx.provider_script_error = Some("parallel tool calls are not representable".into());
+
+    let outcome = RuntimeReplayer::new().replay(&fx).await;
+
+    assert!(outcome.final_text.is_empty());
+    assert_eq!(outcome.inference_error_count, 0);
+    match outcome.runtime_failure {
+        Some(ReplayRuntimeFailure::RuntimeError { message }) => {
+            assert!(message.contains("no replayable provider_script"));
+            assert!(message.contains("parallel tool calls"));
+        }
+        other => panic!("expected RuntimeError, got {other:?}"),
     }
 }
 

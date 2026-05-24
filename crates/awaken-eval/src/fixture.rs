@@ -34,6 +34,16 @@ pub struct Fixture {
     /// see [`Fixture::effective_script`].
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub provider_script: Vec<ProviderScriptEvent>,
+    /// Why `provider_script` is intentionally absent for this fixture.
+    ///
+    /// Trace curation can still create Live-mode eval fixtures when the
+    /// captured trace is useful as a real-agent prompt but cannot be
+    /// represented by today's narrow `ProviderScriptEvent` schema (for
+    /// example parallel tool calls). Scripted replay checks this marker
+    /// and fails closed instead of falling through to the legacy empty
+    /// `mock_response` shim.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_script_error: Option<String>,
     /// Originating production `run_id` when this fixture was curated from
     /// a trace via `POST /v1/eval/datasets/:id/items`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -80,6 +90,8 @@ pub struct DialogueTurn {
     pub user_input: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub provider_script: Vec<ProviderScriptEvent>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_script_error: Option<String>,
 }
 
 /// Legacy single-turn response specifier, superseded by
@@ -216,6 +228,27 @@ impl Fixture {
         }
         script
     }
+
+    /// Returns a scripted-replay blocking error when this fixture was
+    /// curated for Live eval without a replayable `provider_script`.
+    pub fn scripted_replay_error(&self) -> Option<String> {
+        if let Some(reason) = &self.provider_script_error {
+            return Some(format!(
+                "fixture {} has no replayable provider_script: {reason}",
+                self.id
+            ));
+        }
+        for (idx, turn) in self.continued_turns.iter().enumerate() {
+            if let Some(reason) = &turn.provider_script_error {
+                return Some(format!(
+                    "fixture {} continued_turn {} has no replayable provider_script: {reason}",
+                    self.id,
+                    idx + 1
+                ));
+            }
+        }
+        None
+    }
 }
 
 /// Coarse `chars / 4` token estimate. Used by [`Fixture::effective_script`]
@@ -310,10 +343,12 @@ mod tests {
                 DialogueTurn {
                     user_input: "second".into(),
                     provider_script: vec![],
+                    provider_script_error: None,
                 },
                 DialogueTurn {
                     user_input: "third".into(),
                     provider_script: vec![],
+                    provider_script_error: None,
                 },
             ],
             ..Default::default()
@@ -322,6 +357,21 @@ mod tests {
         assert!(prompt.contains("Turn 1 (user): first"));
         assert!(prompt.contains("Turn 2 (user): second"));
         assert!(prompt.contains("Turn 3 (user): third"));
+    }
+
+    #[test]
+    fn scripted_replay_error_surfaces_live_only_marker() {
+        let fx = Fixture {
+            id: "live-only".into(),
+            user_input: "hi".into(),
+            provider_script_error: Some("parallel tool calls".into()),
+            ..Default::default()
+        };
+
+        let message = fx.scripted_replay_error().unwrap();
+
+        assert!(message.contains("live-only"));
+        assert!(message.contains("parallel tool calls"));
     }
 
     fn sample_json(id: &str) -> String {

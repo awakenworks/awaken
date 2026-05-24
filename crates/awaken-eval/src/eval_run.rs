@@ -23,6 +23,21 @@ use thiserror::Error;
 
 use crate::outcome::ReplayReport;
 
+/// Execution semantics used to produce an [`EvalRun`].
+///
+/// Persisting this on the run record keeps `provider_script` replay
+/// (deterministic CI smoke tests) distinct from Live provider evaluation
+/// (real model/agent behaviour). Older run JSON did not carry the field;
+/// deserialisation defaults those records to `Scripted`, which matches
+/// the historical behaviour.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EvalRunExecutionMode {
+    #[default]
+    Scripted,
+    Live,
+}
+
 /// One server-side eval run.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct EvalRun {
@@ -34,6 +49,9 @@ pub struct EvalRun {
     /// diff between two runs against different revisions must surface
     /// the schema change instead of pretending the fixtures matched.
     pub dataset_revision: u64,
+    /// How this run executed its fixtures.
+    #[serde(default)]
+    pub execution_mode: EvalRunExecutionMode,
     /// Per-fixture replay results, in the dataset's fixture order.
     pub items: Vec<EvalRunItem>,
     /// Wall-clock start (epoch seconds).
@@ -159,6 +177,7 @@ pub struct EvalRunSummary {
     pub id: String,
     pub dataset_id: String,
     pub dataset_revision: u64,
+    pub execution_mode: EvalRunExecutionMode,
     pub started_at_secs: u64,
     pub item_count: usize,
     pub passed_count: usize,
@@ -245,6 +264,7 @@ impl From<&EvalRun> for EvalRunSummary {
             id: run.id.clone(),
             dataset_id: run.dataset_id.clone(),
             dataset_revision: run.dataset_revision,
+            execution_mode: run.execution_mode,
             started_at_secs: run.started_at_secs,
             item_count: run.items.len(),
             passed_count,

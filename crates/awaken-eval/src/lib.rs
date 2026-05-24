@@ -31,11 +31,14 @@ pub mod score;
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_support;
 
-pub use curate::{CurateError, TraceConversion, trace_to_provider_script};
+pub use curate::{
+    CurateError, TraceConversion, TraceFixtureSource, trace_fixture_source,
+    trace_to_provider_script,
+};
 pub use dataset::{DATASETS_NAMESPACE, DatasetSpec};
 pub use eval_run::{
-    EvalRun, EvalRunFilter, EvalRunItem, EvalRunStore, EvalRunStoreError, EvalRunSummary,
-    FileEvalRunStore, MatrixCell, SampleAggregate, expand_cells, mint_run_id,
+    EvalRun, EvalRunExecutionMode, EvalRunFilter, EvalRunItem, EvalRunStore, EvalRunStoreError,
+    EvalRunSummary, FileEvalRunStore, MatrixCell, SampleAggregate, expand_cells, mint_run_id,
 };
 pub use expectation::{Expectation, Failure};
 pub use fixture::load_directory;

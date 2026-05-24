@@ -1,6 +1,22 @@
 use awaken_eval::{DatasetSpec, Expectation, Fixture};
 use serde::{Deserialize, Serialize};
 
+#[derive(Debug, Clone, Copy, Default, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderScriptMode {
+    /// Try to capture a deterministic scripted snapshot, but still
+    /// create a Live-only fixture when the trace cannot be represented
+    /// by today's `ProviderScriptEvent` schema.
+    #[default]
+    Optional,
+    /// Require a replayable `provider_script`; unsupported traces 400
+    /// (or are skipped by bulk import when `skip_uncuratable=true`).
+    Require,
+    /// Do not attempt `provider_script` conversion. The resulting
+    /// fixture is explicitly Live-only.
+    Skip,
+}
+
 #[derive(Debug, Serialize)]
 pub struct DatasetSummaryWire {
     pub id: String,
@@ -33,6 +49,8 @@ pub struct CurateItemsRequest {
     pub description: Option<String>,
     #[serde(default)]
     pub allow_unused_provider_script: bool,
+    #[serde(default)]
+    pub provider_script_mode: ProviderScriptMode,
     /// Operator-authored pass/fail criteria. Accept both the ADR wire
     /// name (`expected`) and the persisted fixture field (`expect`).
     #[serde(default, rename = "expected", alias = "expect")]
@@ -86,6 +104,8 @@ pub struct ImportTracesRequest {
     pub max_count: Option<usize>,
     #[serde(default)]
     pub skip_uncuratable: bool,
+    #[serde(default)]
+    pub provider_script_mode: ProviderScriptMode,
     #[serde(default, rename = "expected", alias = "expect")]
     pub expect: Expectation,
 }
@@ -106,6 +126,8 @@ pub struct ImportDialogueRequest {
     pub fixture_id: Option<String>,
     #[serde(default)]
     pub description: Option<String>,
+    #[serde(default)]
+    pub provider_script_mode: ProviderScriptMode,
     #[serde(default, rename = "expected", alias = "expect")]
     pub expect: Expectation,
 }

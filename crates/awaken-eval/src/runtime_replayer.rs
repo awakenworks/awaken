@@ -321,6 +321,20 @@ impl Replayer for RuntimeReplayer {
 
 impl RuntimeReplayer {
     async fn replay_scripted(&self, fixture: &Fixture) -> ReplayOutcome {
+        if let Some(message) = fixture.scripted_replay_error() {
+            return ReplayOutcome {
+                fixture_id: fixture.id.clone(),
+                final_text: String::new(),
+                metrics: Default::default(),
+                elapsed: Default::default(),
+                error_type: None,
+                inference_error_count: 0,
+                runtime_failure: Some(ReplayRuntimeFailure::RuntimeError { message }),
+                revision_count: 0,
+                judge_score: None,
+                judge_reasoning: None,
+            };
+        }
         // Combined script across turn 0 + every continued turn. The
         // ScriptedLlmExecutor's pointer advances naturally as each turn's
         // agent loop pulls events, so concatenation is sufficient — no

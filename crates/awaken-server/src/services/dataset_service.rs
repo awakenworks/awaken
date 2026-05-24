@@ -6,16 +6,19 @@
 //! every record in [`ConfigRecord<DatasetSpec>`] so revision-aware writes
 //! ([`ConfigStore::put_if_revision`]) protect against concurrent admin
 //! edits. The `items` endpoint reads a [`TraceStore`] run and curates a
-//! [`Fixture`] from it via [`trace_to_provider_script`] (ADR-0032 D5),
-//! appending the result to the dataset's fixture list.
+//! [`Fixture`] from recovered trace metadata and, when requested/possible,
+//! a `provider_script` snapshot (ADR-0032 D5), appending the result to
+//! the dataset's fixture list.
 
 use awaken_contract::config_record::{ConfigRecord, RecordMeta, validate_config_record};
 use awaken_contract::contract::config_store::extract_meta_revision;
 use awaken_eval::fixture::DialogueTurn;
 use awaken_eval::{
-    DATASETS_NAMESPACE, DatasetSpec, Expectation, Fixture, MockResponse, trace_to_provider_script,
+    CurateError, DATASETS_NAMESPACE, DatasetSpec, Expectation, Fixture, MockResponse,
+    trace_fixture_source, trace_to_provider_script,
 };
 use awaken_ext_observability::trace_store::{ReferenceKind, TraceStore};
+use awaken_runtime::engine::ProviderScriptEvent;
 use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
@@ -26,7 +29,7 @@ use crate::error::ApiError;
 use crate::services::dataset_wire::{
     AppendFixtureRequest, CreateDatasetRequest, CurateItemsRequest, DatasetSummaryWire, IdParam,
     ImportDialogueRequest, ImportDialogueResponse, ImportTracesRequest, ImportTracesResponse,
-    ListDatasetsResponse, ListParams, PutDatasetRequest,
+    ListDatasetsResponse, ListParams, ProviderScriptMode, PutDatasetRequest,
 };
 use crate::services::eval_common::{
     config_store_or_unavailable, map_storage_error, map_trace_store_error,
@@ -51,6 +54,51 @@ fn mark_dataset_trace_reference(
     trace_store
         .mark_referenced(run_id, ReferenceKind::Dataset)
         .map_err(map_trace_store_error)
+}
+
+struct CuratedTracePayload {
+    user_input: Option<String>,
+    source_model_id: Option<String>,
+    provider_script: Vec<ProviderScriptEvent>,
+    provider_script_error: Option<String>,
+}
+
+fn curate_trace_payload(
+    events: &[awaken_ext_observability::MetricsEvent],
+    mode: ProviderScriptMode,
+) -> Result<CuratedTracePayload, CurateError> {
+    let source = trace_fixture_source(events)?;
+    match mode {
+        ProviderScriptMode::Require => {
+            let conversion = trace_to_provider_script(events)?;
+            Ok(CuratedTracePayload {
+                user_input: conversion.user_input,
+                source_model_id: conversion.source_model_id,
+                provider_script: conversion.provider_script,
+                provider_script_error: None,
+            })
+        }
+        ProviderScriptMode::Optional => match trace_to_provider_script(events) {
+            Ok(conversion) => Ok(CuratedTracePayload {
+                user_input: conversion.user_input,
+                source_model_id: conversion.source_model_id,
+                provider_script: conversion.provider_script,
+                provider_script_error: None,
+            }),
+            Err(err) => Ok(CuratedTracePayload {
+                user_input: source.user_input,
+                source_model_id: source.source_model_id,
+                provider_script: Vec::new(),
+                provider_script_error: Some(err.to_string()),
+            }),
+        },
+        ProviderScriptMode::Skip => Ok(CuratedTracePayload {
+            user_input: source.user_input,
+            source_model_id: source.source_model_id,
+            provider_script: Vec::new(),
+            provider_script_error: Some("provider_script conversion skipped by request".into()),
+        }),
+    }
 }
 
 // Error mappers and store accessors live in `services::eval_common` so
@@ -287,7 +335,7 @@ pub async fn curate_items(
     let events = trace_store
         .read(&body.from_run_id)
         .map_err(map_trace_store_error)?;
-    let conversion = trace_to_provider_script(&events)
+    let payload = curate_trace_payload(&events, body.provider_script_mode)
         .map_err(|err| ApiError::BadRequest(format!("curating trace: {err}")))?;
 
     let existing_value = store
@@ -307,7 +355,7 @@ pub async fn curate_items(
     }
     let user_input = body
         .user_input
-        .or(conversion.user_input.clone())
+        .or(payload.user_input.clone())
         .ok_or_else(|| {
             ApiError::BadRequest(
                 "user_input is required: trace did not capture request_messages — \
@@ -323,9 +371,10 @@ pub async fn curate_items(
                 .unwrap_or_else(|| format!("Curated from trace {source_run_id}")),
         ),
         user_input,
-        provider_script: conversion.provider_script,
+        provider_script: payload.provider_script,
+        provider_script_error: payload.provider_script_error,
         source_run_id: Some(source_run_id.clone()),
-        source_model_id: conversion.source_model_id,
+        source_model_id: payload.source_model_id,
         allow_unused_provider_script: body.allow_unused_provider_script,
         mock_response: MockResponse::default(),
         expect: body.expect,
@@ -430,7 +479,7 @@ pub async fn import_traces(
         let events = trace_store
             .read(&summary.run_id)
             .map_err(map_trace_store_error)?;
-        let conversion = match trace_to_provider_script(&events) {
+        let payload = match curate_trace_payload(&events, body.provider_script_mode) {
             Ok(c) => c,
             Err(err) if body.skip_uncuratable => {
                 tracing::warn!(run_id = %summary.run_id, %err, "skipping uncuratable trace");
@@ -444,7 +493,7 @@ pub async fn import_traces(
                 )));
             }
         };
-        let user_input = match conversion.user_input.clone() {
+        let user_input = match payload.user_input.clone() {
             Some(u) => u,
             None if body.skip_uncuratable => {
                 skipped += 1;
@@ -462,9 +511,10 @@ pub async fn import_traces(
             id: summary.run_id.clone(),
             description: Some(format!("Imported from trace {}", summary.run_id)),
             user_input,
-            provider_script: conversion.provider_script,
+            provider_script: payload.provider_script,
+            provider_script_error: payload.provider_script_error,
             source_run_id: Some(summary.run_id.clone()),
-            source_model_id: conversion.source_model_id,
+            source_model_id: payload.source_model_id,
             allow_unused_provider_script: false,
             mock_response: MockResponse::default(),
             expect: body.expect.clone(),
@@ -562,7 +612,7 @@ pub async fn import_dialogue(
     }
 
     // Curate each run in order. First → turn 0; rest → continued_turns.
-    let mut turn_inputs: Vec<(String, Vec<awaken_runtime::engine::ProviderScriptEvent>)> =
+    let mut turn_inputs: Vec<(String, Vec<ProviderScriptEvent>, Option<String>)> =
         Vec::with_capacity(body.run_ids.len());
     let mut source_model_id: Option<String> = None;
     let mut conversation_thread_id: Option<String> = None;
@@ -595,9 +645,9 @@ pub async fn import_dialogue(
             }
             _ => {}
         }
-        let conversion = trace_to_provider_script(&events)
+        let payload = curate_trace_payload(&events, body.provider_script_mode)
             .map_err(|err| ApiError::BadRequest(format!("curating trace {run_id}: {err}")))?;
-        let user_input = conversion.user_input.ok_or_else(|| {
+        let user_input = payload.user_input.clone().ok_or_else(|| {
             ApiError::BadRequest(format!(
                 "trace {run_id} did not capture request_messages — \
                  enable ContentCapture::Enabled on the originating run"
@@ -607,7 +657,7 @@ pub async fn import_dialogue(
         // runs whose model differs — the agent isn't usually swapped
         // mid-conversation and the resulting fixture's pin would be
         // misleading.
-        match (&source_model_id, &conversion.source_model_id) {
+        match (&source_model_id, &payload.source_model_id) {
             (None, m) => source_model_id = m.clone(),
             (Some(first), Some(later)) if first != later => {
                 return Err(ApiError::BadRequest(format!(
@@ -617,16 +667,24 @@ pub async fn import_dialogue(
             }
             _ => {}
         }
-        turn_inputs.push((user_input, conversion.provider_script));
+        turn_inputs.push((
+            user_input,
+            payload.provider_script,
+            payload.provider_script_error,
+        ));
     }
 
     let mut iter = turn_inputs.into_iter();
-    let (first_input, first_script) = iter.next().expect("at least one run_id (validated above)");
+    let (first_input, first_script, first_script_error) =
+        iter.next().expect("at least one run_id (validated above)");
     let continued_turns: Vec<DialogueTurn> = iter
-        .map(|(user_input, provider_script)| DialogueTurn {
-            user_input,
-            provider_script,
-        })
+        .map(
+            |(user_input, provider_script, provider_script_error)| DialogueTurn {
+                user_input,
+                provider_script,
+                provider_script_error,
+            },
+        )
         .collect();
 
     let fixture = Fixture {
@@ -638,6 +696,7 @@ pub async fn import_dialogue(
         ),
         user_input: first_input,
         provider_script: first_script,
+        provider_script_error: first_script_error,
         source_run_id: Some(body.run_ids[0].clone()),
         source_model_id,
         allow_unused_provider_script: false,

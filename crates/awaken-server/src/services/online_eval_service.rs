@@ -21,7 +21,7 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use awaken_contract::agent_spec_patch::AgentSpecPatch;
-use awaken_eval::{EvalRun, LlmExecutorJudge, expand_cells, mint_run_id};
+use awaken_eval::{EvalRun, EvalRunExecutionMode, LlmExecutorJudge, expand_cells, mint_run_id};
 use awaken_eval::{Expectation, Fixture, MockResponse};
 use awaken_ext_observability::trace_store::TraceStoreSink;
 use axum::Json;
@@ -251,6 +251,7 @@ pub async fn start_online_eval(
         description: None,
         user_input: body.user_input.clone(),
         provider_script: vec![],
+        provider_script_error: None,
         source_run_id: None,
         source_model_id: None,
         allow_unused_provider_script: false,
@@ -290,6 +291,7 @@ pub async fn start_online_eval(
         id: mint_run_id(),
         dataset_id: ADHOC_DATASET_ID.into(),
         dataset_revision: 0,
+        execution_mode: EvalRunExecutionMode::Live,
         items,
         started_at_secs,
         ended_at_secs: epoch_secs_now(),

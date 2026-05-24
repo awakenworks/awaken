@@ -39,6 +39,7 @@ mod tests {
             description: None,
             user_input: prompt.into(),
             provider_script: Vec::new(),
+            provider_script_error: None,
             source_run_id: None,
             source_model_id: None,
             allow_unused_provider_script: false,

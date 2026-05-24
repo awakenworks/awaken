@@ -70,16 +70,23 @@ place, `awaken-server` exposes `POST /v1/eval/runs`:
 POST /v1/eval/runs
 {
   "dataset_id": "regressions",
-  "override":   { "agent_id": "weather", "content_id": "a1b2c3d4e5f6" }, // optional
-  "judge":      { "kind": "tensorzero", "min_score": 0.7 }                // optional
+  "mode": "scripted" | "live",
+  "models": ["claude-sonnet"],        // required for live, invalid for scripted
+  "agent_id": "weather",              // optional, live only
+  "agent_overrides": { ... },          // optional, live only
+  "judge": { "model_id": "judge" },    // optional, live only
+  "max_walltime_secs": 60              // optional, live only
 }
 ```
 
 The handler:
 
-1. Loads the dataset, resolves the override (if any), and constructs an
-   `Engine` per item with a single registered `MockProvider` driven
-   by the item's `provider_script` (D3).
+1. Loads the dataset and chooses an explicit execution mode. `scripted`
+   treats each fixture's `provider_script` as a deterministic
+   `LlmExecutor`; `live` ignores `provider_script` and resolves real
+   provider executors from the request's `models` axis. For backward
+   compatibility, omitted `mode` is inferred from `models`, but clients
+   should send `mode` explicitly.
 2. Submits each `user_input` through the engine and lets the
    `awaken-ext-observability` hooks emit spans naturally. Spans land
    in `TraceStore` (ADR-0030) tagged with the `awaken.replay = true`
@@ -88,8 +95,9 @@ The handler:
    completes and combines it with the trace into a `ReplayOutcome`.
 4. Scores via `awaken-eval::score` and, if `judge` is present,
    invokes `TensorZeroJudge`.
-5. Persists a thin `EvalRun` index document referencing the trace
-   `run_id`s and the per-fixture pass / fail / failures vector.
+5. Persists a thin `EvalRun` index document with `execution_mode`,
+   trace `run_id` links, and the per-fixture pass / fail / failures
+   vector. Baseline diffs reject runs whose `execution_mode` differs.
 6. Returns the `EvalRun` id; full report is fetched via `GET
    /v1/eval/runs/:id`.
 
@@ -151,7 +159,8 @@ are exactly the numbers in the script — no heuristics, no drift.
 ### D4: `provider_script` in Dataset Items
 
 `crates/awaken-eval/fixtures/*.json` evolves additively. Existing
-fields stay. A new `provider_script` array is preferred:
+fields stay. A new `provider_script` array is preferred when scripted
+replay is available:
 
 ```jsonc
 {
@@ -170,6 +179,7 @@ fields stay. A new `provider_script` array is preferred:
       "arguments": { "city": "..." }
     }
   ],
+  "provider_script_error": "parallel tool calls are not representable",
   "source_run_id": "01HXYZ...",         // optional, when curated from a trace
   "source_model_id": "claude-opus-4-7", // optional, mismatch guard
   "expect": { "final_answer_contains": [...], "tool_sequence": [...] },
@@ -180,9 +190,16 @@ fields stay. A new `provider_script` array is preferred:
 }
 ```
 
+`provider_script_error` is present only for Live-only curated fixtures:
+the trace supplied a useful `user_input` / expectation seed, but today's
+`ProviderScriptEvent` schema cannot replay the provider turn
+losslessly. Scripted replay fails closed for such fixtures instead of
+falling through to the legacy empty `mock_response` shim.
+
 `Fixture::load` synthesises `provider_script` from `mock_response` when
-needed, so existing committed fixtures keep loading. After one cycle
-of validation the legacy field is removed.
+needed and no `provider_script_error` is present, so existing committed
+fixtures keep loading. After one cycle of validation the legacy field is
+removed.
 
 ### D5: Dataset Curation From Traces
 
@@ -191,16 +208,26 @@ of validation the legacy field is removed.
 ```
 {
   "from_run_id": "01HXYZ...",
+  "provider_script_mode": "optional" | "require" | "skip",
   "expected": { "final_answer_contains": [...], ... }
 }
 ```
 
 The handler reads the trace from `TraceStore::read` (ADR-0030 D3),
-extracts every `GenAISpan` and `ToolSpan` in order, transcribes them
-into a `provider_script`, and writes the dataset item with
-`source_run_id` set to the originating `run_id` and `source_model_id`
-set to the trace's `response_model`. The trace is marked referenced
-(`mark_referenced`) so retention does not delete it.
+recovers fixture source metadata (`user_input`, `source_model_id`) from
+captured `GenAISpan::request_messages`, and then handles
+`provider_script_mode`:
+
+- `optional` (default): transcribe a `provider_script` when possible;
+  otherwise write a Live-only fixture with `provider_script_error`.
+- `require`: unsupported traces fail the request (or are skipped by
+  bulk import when `skip_uncuratable=true`).
+- `skip`: do not attempt scripted conversion; write a Live-only fixture.
+
+The dataset item is written with `source_run_id` set to the originating
+`run_id` and `source_model_id` set to the recovered source model. The
+trace is marked referenced (`mark_referenced`) so retention does not
+delete it.
 
 The expected payload is operator-supplied — it is the human judgement
 of "what should this run have produced". The handler never auto-derives
@@ -210,6 +237,10 @@ expectations from the trace; that would defeat the point of curation.
 production observations enter the eval system. Every other dataset
 mutation (rename, reorder, edit expectations) goes through standard
 `PATCH` operations on the dataset record.
+
+Bulk import endpoints (`/import-traces`, `/import-dialogue`) use the
+same `provider_script_mode` semantics so single-trace and batched
+curation cannot drift.
 
 ### D6: Dataset is a `ConfigRecord` Kind
 
@@ -239,19 +270,18 @@ pub struct EvalRun {
     pub id: String,                       // ULID
     pub dataset_id: String,
     pub dataset_revision: u64,
-    pub override_content_id: Option<String>,
+    pub execution_mode: EvalRunExecutionMode,
     pub items: Vec<EvalRunItem>,
-    pub started_at: DateTime<Utc>,
-    pub ended_at: Option<DateTime<Utc>>,
-    pub baseline_run_id: Option<String>,  // for diff
+    pub started_at_secs: u64,
+    pub ended_at_secs: u64,
 }
 
 pub struct EvalRunItem {
-    pub item_id: String,
-    pub run_id: String,                   // points at TraceStore
-    pub failures: Vec<Failure>,
-    pub judge_score: Option<f32>,
-    pub judge_reasoning: Option<String>,
+    pub fixture_id: String,
+    pub cell: Option<MatrixCell>,
+    pub report: ReplayReport,
+    pub trace_run_id: Option<String>,     // points at TraceStore
+    pub sample_index: Option<u32>,
 }
 ```
 

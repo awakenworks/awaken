@@ -258,6 +258,7 @@ async fn curate_command(args: &[String]) -> Result<ExitCode, String> {
         description: Some(format!("Curated from trace {run_id}")),
         user_input,
         provider_script: conversion.provider_script,
+        provider_script_error: None,
         source_run_id: Some(run_id),
         source_model_id: conversion.source_model_id,
         allow_unused_provider_script: allow_unused,

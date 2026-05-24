@@ -285,6 +285,7 @@ async fn trace_curate_round_trips_through_file_store_and_replays() {
         // the operator supplies the original user prompt out of band.
         user_input: "what is six times seven".into(),
         provider_script: conversion.provider_script,
+        provider_script_error: None,
         source_run_id: Some(run_id.into()),
         source_model_id: conversion.source_model_id,
         allow_unused_provider_script: false,
@@ -329,6 +330,7 @@ mod live_mode {
             description: None,
             user_input: prompt.into(),
             provider_script: vec![],
+            provider_script_error: None,
             source_run_id: None,
             source_model_id: None,
             allow_unused_provider_script: false,
@@ -469,6 +471,7 @@ async fn dialogue_fixture_replays_two_turns_on_same_thread() {
         description: None,
         user_input: "hello".into(),
         provider_script: vec![turn_response("first answer")],
+        provider_script_error: None,
         source_run_id: None,
         source_model_id: None,
         allow_unused_provider_script: false,
@@ -480,6 +483,7 @@ async fn dialogue_fixture_replays_two_turns_on_same_thread() {
         continued_turns: vec![DialogueTurn {
             user_input: "follow up".into(),
             provider_script: vec![turn_response("second answer")],
+            provider_script_error: None,
         }],
     };
     let replayer = RuntimeReplayer::new();
@@ -515,6 +519,7 @@ async fn dialogue_fixture_first_turn_error_short_circuits_second() {
             error_type: "rate_limit".into(),
             message: "429".into(),
         }],
+        provider_script_error: None,
         source_run_id: None,
         source_model_id: None,
         allow_unused_provider_script: true,
@@ -527,6 +532,7 @@ async fn dialogue_fixture_first_turn_error_short_circuits_second() {
                 tokens: Default::default(),
                 finish_reason: awaken_contract::contract::inference::StopReason::EndTurn,
             }],
+            provider_script_error: None,
         }],
     };
     let replayer = RuntimeReplayer::new();
@@ -559,6 +565,7 @@ async fn live_mode_replays_continued_turns_on_same_thread() {
         description: None,
         user_input: "hello".into(),
         provider_script: vec![],
+        provider_script_error: None,
         source_run_id: None,
         source_model_id: None,
         allow_unused_provider_script: false,
@@ -567,6 +574,7 @@ async fn live_mode_replays_continued_turns_on_same_thread() {
         continued_turns: vec![DialogueTurn {
             user_input: "follow up".into(),
             provider_script: vec![],
+            provider_script_error: None,
         }],
     };
     let replayer = RuntimeReplayer::new().with_live_executor(exec, "test-model");
@@ -599,6 +607,7 @@ mod revise_mode {
             description: None,
             user_input: prompt.into(),
             provider_script: vec![],
+            provider_script_error: None,
             source_run_id: None,
             source_model_id: None,
             allow_unused_provider_script: false,
@@ -710,6 +719,7 @@ async fn metrics_demo_exercises_all_indicators_together() {
         id: "DEMO-RUN".into(),
         dataset_id: "metrics-demo".into(),
         dataset_revision: 1,
+        execution_mode: awaken_eval::EvalRunExecutionMode::Live,
         items: Vec::new(),
         started_at_secs: 1_700_000_000,
         ended_at_secs: 1_700_000_010,
@@ -756,6 +766,7 @@ async fn metrics_demo_exercises_all_indicators_together() {
             description: None,
             user_input: "be insightful".into(),
             provider_script: vec![],
+            provider_script_error: None,
             source_run_id: None,
             source_model_id: None,
             allow_unused_provider_script: false,

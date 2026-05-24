@@ -38,6 +38,7 @@ fn sample_run(id: &str, dataset: &str, started: u64) -> EvalRun {
         id: id.into(),
         dataset_id: dataset.into(),
         dataset_revision: 1,
+        execution_mode: EvalRunExecutionMode::Scripted,
         items: vec![
             EvalRunItem {
                 fixture_id: "alpha".into(),
@@ -70,6 +71,18 @@ fn summary_counts_passed_items() {
     assert_eq!(summary.passed_count, 1);
     assert_eq!(summary.dataset_id, "DS1");
     assert_eq!(summary.dataset_revision, 1);
+    assert_eq!(summary.execution_mode, EvalRunExecutionMode::Scripted);
+}
+
+#[test]
+fn eval_run_deserialises_legacy_json_without_execution_mode() {
+    let run = sample_run("LEGACY", "DS1", 1_700_000_000);
+    let mut value = serde_json::to_value(&run).unwrap();
+    value.as_object_mut().unwrap().remove("execution_mode");
+
+    let parsed: EvalRun = serde_json::from_value(value).unwrap();
+
+    assert_eq!(parsed.execution_mode, EvalRunExecutionMode::Scripted);
 }
 
 #[test]

@@ -15,6 +15,9 @@
 //! - `RuntimeReplayer` builds a self-contained runtime with an
 //!   `InMemoryStore` — replays do not touch the server's thread store,
 //!   so eval runs can't pollute production data.
+//! - `mode="scripted"` treats `provider_script` as a deterministic LLM
+//!   adapter for regression replay; `mode="live"` evaluates fixture
+//!   prompts against real provider executors from the `models` axis.
 //! - Replay spans tee into the server's `TraceStore` via `TraceStoreSink`
 //!   when one is wired; `EvalRunItem.trace_run_id` then links each item
 //!   back to its observability trace.
@@ -26,10 +29,10 @@ use awaken_contract::agent_spec_patch::AgentSpecPatch;
 use awaken_contract::config_record::validate_config_record;
 use awaken_contract::contract::config_store::extract_meta_revision;
 use awaken_eval::{
-    DATASETS_NAMESPACE, DatasetSpec, DiffSummary, EvalRun, EvalRunFilter, EvalRunItem,
-    EvalRunStore, EvalRunStoreError, EvalRunSummary, Fixture, LlmExecutorJudge, MatrixCell,
-    ReplayReport, RuntimeReplayer, SampleAggregate, diff_against_baseline, expand_cells,
-    mint_run_id, replay_all, score,
+    DATASETS_NAMESPACE, DatasetSpec, DiffSummary, EvalRun, EvalRunExecutionMode, EvalRunFilter,
+    EvalRunItem, EvalRunStore, EvalRunStoreError, EvalRunSummary, Fixture, LlmExecutorJudge,
+    MatrixCell, ReplayReport, RuntimeReplayer, SampleAggregate, diff_against_baseline,
+    expand_cells, mint_run_id, replay_all, score,
 };
 use awaken_ext_observability::MetricsSink;
 use awaken_ext_observability::trace_store::{TraceStore, TraceStoreSink};
@@ -61,11 +64,22 @@ pub struct StartRunRequest {
     /// the common "run and compare" flow).
     #[serde(default)]
     pub baseline_run_id: Option<String>,
+    /// Execution semantics for this dataset run. `scripted` routes each
+    /// fixture through its recorded `provider_script` using
+    /// `ScriptedLlmExecutor`; `live` ignores `provider_script` and
+    /// evaluates the fixture prompts against real provider executors
+    /// selected by `models`.
+    ///
+    /// Omitted for backward compatibility: requests with `models`
+    /// infer `live`; requests without `models` infer `scripted`. New
+    /// clients should send this field explicitly so mode is not hidden
+    /// behind the matrix axis.
+    #[serde(default)]
+    pub mode: Option<EvalRunExecutionMode>,
     /// Optional matrix model axis. When set, each fixture is replayed
     /// once per model in **Live** mode (real provider executors); the
-    /// fixture's `provider_script` is ignored. When unset, falls back
-    /// to **Scripted** mode (default, current behaviour) — provider_script
-    /// drives the LLM, suitable for CI smoke runs.
+    /// fixture's `provider_script` is ignored. Required when
+    /// `mode="live"`; invalid when `mode="scripted"`.
     #[serde(default)]
     pub models: Option<Vec<String>>,
     /// Registered agent whose `system_prompt` / `allowed_tools` /
@@ -107,9 +121,30 @@ pub struct StartRunRequest {
     /// only the scoring/judge failure is appended. Omitting the field
     /// defaults to 60s; passing `0` is rejected (would time out every
     /// cell immediately) — matches `/v1/eval/online` semantics.
-    /// Ignored on Scripted runs (deterministic, no wall-clock risk).
+    /// Invalid on Scripted runs (deterministic, no wall-clock risk).
     #[serde(default)]
     pub max_walltime_secs: Option<u64>,
+}
+
+fn execution_mode_from_request(body: &StartRunRequest) -> EvalRunExecutionMode {
+    body.mode.unwrap_or_else(|| {
+        if body.models.is_some() {
+            EvalRunExecutionMode::Live
+        } else {
+            EvalRunExecutionMode::Scripted
+        }
+    })
+}
+
+fn is_live_mode(mode: EvalRunExecutionMode) -> bool {
+    matches!(mode, EvalRunExecutionMode::Live)
+}
+
+fn execution_mode_name(mode: EvalRunExecutionMode) -> &'static str {
+    match mode {
+        EvalRunExecutionMode::Scripted => "scripted",
+        EvalRunExecutionMode::Live => "live",
+    }
 }
 
 /// Per-run judge configuration. `model_id` must resolve via the registry
@@ -248,6 +283,7 @@ pub async fn start_eval_run(
     crate::config_routes::ensure_admin_auth(&state, &headers)?;
     let config_store = config_store_or_unavailable(&state)?;
     let run_store = eval_run_store_or_unavailable(&state)?;
+    let execution_mode = execution_mode_from_request(&body);
 
     let raw = config_store
         .get(DATASETS_NAMESPACE, &body.dataset_id)
@@ -267,6 +303,7 @@ pub async fn start_eval_run(
             baseline_id,
             &body.dataset_id,
             dataset_revision,
+            execution_mode,
         )?)
     } else {
         None
@@ -281,44 +318,69 @@ pub async fn start_eval_run(
         )));
     }
     // `Some([])` is rejected up front: it would otherwise pass
-    // `body.models.is_some()`, `expand_cells(&[])` would yield a single
-    // default cell with `model_id: None`, and `run_matrix_cells` would
-    // then panic on its `expect("matrix expansion always sets model_id")`.
-    if let Some(models) = &body.models {
-        if models.is_empty() {
+    // mode inference, `expand_cells(&[])` would yield a single default
+    // cell with `model_id: None`, and `run_matrix_cells` would then
+    // panic on its `expect("matrix expansion always sets model_id")`.
+    match (execution_mode, body.models.as_ref()) {
+        (EvalRunExecutionMode::Scripted, Some(_)) => {
             return Err(ApiError::BadRequest(
-                "`models` must be non-empty when supplied; omit the field for scripted replay"
+                "`models` is only valid with mode=\"live\"; scripted replay uses provider_script"
                     .into(),
             ));
         }
-        crate::services::eval_cell::validate_unique_models(models)?;
+        (EvalRunExecutionMode::Live, Some(models)) if models.is_empty() => {
+            return Err(ApiError::BadRequest(
+                "`models` must be non-empty when mode=\"live\"".into(),
+            ));
+        }
+        (EvalRunExecutionMode::Live, Some(models)) => {
+            crate::services::eval_cell::validate_unique_models(models)?;
+        }
+        (EvalRunExecutionMode::Live, None) => {
+            return Err(ApiError::BadRequest(
+                "mode=\"live\" requires a non-empty `models` axis".into(),
+            ));
+        }
+        (EvalRunExecutionMode::Scripted, None) => {}
     }
-    // Reject explicit zero walltime — would time out every cell on the
-    // first poll. Mirrors `/v1/eval/online` so the two endpoints agree.
-    // `None` still falls through to the 60s default below.
-    if body.max_walltime_secs == Some(0) {
+    // Walltime is a Live-mode control: scripted runs have no provider /
+    // judge wall-clock risk and would otherwise accept a field that is
+    // silently ignored. Reject it instead of hiding misconfiguration.
+    if !is_live_mode(execution_mode) && body.max_walltime_secs.is_some() {
+        return Err(ApiError::BadRequest(
+            "max_walltime_secs requires mode=\"live\"; scripted replay ignores it".into(),
+        ));
+    }
+    // Reject explicit zero walltime — would time out every Live cell on
+    // the first poll. Mirrors `/v1/eval/online` so the two endpoints
+    // agree. `None` still falls through to the 60s default below.
+    if is_live_mode(execution_mode) && body.max_walltime_secs == Some(0) {
         return Err(ApiError::BadRequest(
             "max_walltime_secs must be >= 1 (omit the field for the 60s default)".into(),
         ));
     }
-    // agent_id / agent_overrides only make sense in Live (matrix) mode —
+    // agent_id / agent_overrides only make sense in Live mode —
     // scripted replays use the fixture's provider_script + a fixed stub
     // agent and have no per-cell agent context. Reject explicitly rather
     // than silently ignore so the operator isn't misled about which
     // fields took effect.
-    if body.models.is_none() && body.agent_id.is_some() {
+    if !is_live_mode(execution_mode) && body.agent_id.is_some() {
         return Err(ApiError::BadRequest(
-            "agent_id requires `models` (Live mode); scripted replay ignores it".into(),
+            "agent_id requires mode=\"live\"; scripted replay ignores it".into(),
         ));
     }
-    if body.models.is_none() && body.agent_overrides.is_some() {
+    if !is_live_mode(execution_mode) && body.agent_overrides.is_some() {
         return Err(ApiError::BadRequest(
-            "agent_overrides requires `models` (Live mode); scripted replay ignores it".into(),
+            "agent_overrides requires mode=\"live\"; scripted replay ignores it".into(),
         ));
     }
     // Expand the matrix (or 1-cell default for non-matrix runs).
     let limits = state.config.eval_limits.clone();
-    let models = body.models.clone().unwrap_or_default();
+    let models = if is_live_mode(execution_mode) {
+        body.models.clone().unwrap_or_default()
+    } else {
+        Vec::new()
+    };
     let cells = expand_cells(&models);
     // Reject an explicit 0 instead of silently bumping to 1 — operators
     // who type `samples: 0` almost certainly meant either "off" (omit the
@@ -339,9 +401,9 @@ pub async fn start_eval_run(
     // replays are deterministic, so samples > 1 would just duplicate
     // identical results. Reject it explicitly so the operator notices
     // the misconfiguration instead of silently doubling storage.
-    if samples > 1 && body.models.is_none() {
+    if samples > 1 && !is_live_mode(execution_mode) {
         return Err(ApiError::BadRequest(
-            "samples > 1 requires `models` (Live mode); scripted replays are deterministic".into(),
+            "samples > 1 requires mode=\"live\"; scripted replays are deterministic".into(),
         ));
     }
     let total_units = fixtures.len() * cells.len() * samples as usize;
@@ -358,9 +420,9 @@ pub async fn start_eval_run(
     // fails fast before any replay runs. Judge is also Live-only —
     // scripted runs don't need (or have a good user_prompt for) it.
     let judge = if let Some(ref jr) = body.judge {
-        if body.models.is_none() {
+        if !is_live_mode(execution_mode) {
             return Err(ApiError::BadRequest(
-                "judge requires `models` (Live mode); scripted replays don't use a judge".into(),
+                "judge requires mode=\"live\"; scripted replays don't use a judge".into(),
             ));
         }
         if let Some(n) = jr.revise_max_retries
@@ -394,7 +456,7 @@ pub async fn start_eval_run(
     // after-the-fact (the earlier shape) collapsed started ≈ ended for
     // every run and broke duration / list filtering / time-series.
     let started_at_secs = epoch_secs_now();
-    let items: Vec<EvalRunItem> = if body.models.is_some() {
+    let items: Vec<EvalRunItem> = if is_live_mode(execution_mode) {
         let walltime = match body.max_walltime_secs.unwrap_or(0) {
             0 => 60,
             n => n,
@@ -423,6 +485,7 @@ pub async fn start_eval_run(
         id: mint_run_id(),
         dataset_id: body.dataset_id.clone(),
         dataset_revision,
+        execution_mode,
         items,
         started_at_secs,
         ended_at_secs: epoch_secs_now(),
@@ -487,6 +550,7 @@ pub async fn get_eval_run(
             &baseline_id,
             &run.dataset_id,
             run.dataset_revision,
+            run.execution_mode,
         )?;
         Some(compute_diff_from_baseline(baseline, &run)?)
     } else {
@@ -511,6 +575,7 @@ fn load_and_validate_baseline(
     baseline_id: &str,
     new_run_dataset_id: &str,
     new_run_dataset_revision: u64,
+    new_run_execution_mode: EvalRunExecutionMode,
 ) -> Result<EvalRun, ApiError> {
     let baseline = store.read(baseline_id).map_err(|err| match err {
         EvalRunStoreError::NotFound(_) => {
@@ -537,6 +602,13 @@ fn load_and_validate_baseline(
         return Err(ApiError::BadRequest(format!(
             "cannot diff across dataset revisions of {}: baseline rev={} new rev={}",
             new_run_dataset_id, baseline.dataset_revision, new_run_dataset_revision,
+        )));
+    }
+    if baseline.execution_mode != new_run_execution_mode {
+        return Err(ApiError::BadRequest(format!(
+            "cannot diff across execution modes: baseline={} new={}",
+            execution_mode_name(baseline.execution_mode),
+            execution_mode_name(new_run_execution_mode),
         )));
     }
     // Reject a baseline whose items collide on the matrix key BEFORE

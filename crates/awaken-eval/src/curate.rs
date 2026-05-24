@@ -1,4 +1,4 @@
-//! Trace → `provider_script` converter (ADR-0032 D5).
+//! Trace → eval fixture curation helpers (ADR-0032 D5).
 //!
 //! Reads a `Vec<MetricsEvent>` (typically produced by a `TraceStore::read`)
 //! and reconstructs the sequence of [`ProviderScriptEvent`]s that would,
@@ -23,6 +23,10 @@
 //!
 //! When `request_messages` isn't captured (legacy traces, or capture
 //! disabled), `user_input` is `None` and the caller must supply it.
+//!
+//! `trace_fixture_source` performs only this metadata recovery. Callers
+//! use it for Live-only eval fixtures when `provider_script` cannot
+//! faithfully represent a captured provider turn.
 
 use awaken_contract::contract::content::ContentBlock;
 use awaken_contract::contract::inference::{StopReason, TokenUsage};
@@ -49,6 +53,16 @@ pub struct TraceConversion {
     /// user message appears in the captured history, or when the
     /// message text was non-string content (image, document). Callers
     /// fall back to operator-supplied input in that case.
+    pub user_input: Option<String>,
+}
+
+/// Metadata that can be recovered from a trace even when its assistant
+/// output cannot be losslessly represented as `provider_script`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TraceFixtureSource {
+    /// `GenAISpan::model` of the first inference span in the trace.
+    pub source_model_id: Option<String>,
+    /// Latest user text recovered from captured `request_messages`.
     pub user_input: Option<String>,
 }
 
@@ -122,28 +136,49 @@ pub enum CurateError {
 /// replayer drives itself. Skipping tool spans is therefore correct, not
 /// a loss.
 pub fn trace_to_provider_script(events: &[MetricsEvent]) -> Result<TraceConversion, CurateError> {
+    let source = trace_fixture_source(events)?;
     let mut provider_script = Vec::new();
-    let mut source_model_id: Option<String> = None;
-    let mut user_input: Option<String> = None;
 
     for event in events {
         if let MetricsEvent::Inference(span) = event {
+            provider_script.push(inference_to_script(span)?);
+        }
+    }
+
+    Ok(TraceConversion {
+        provider_script,
+        source_model_id: source.source_model_id,
+        user_input: source.user_input,
+    })
+}
+
+/// Recover the fixture-driving metadata from a trace without requiring
+/// a scripted replay snapshot. This is the Live-eval curation seam:
+/// an operator may still want to evaluate the real agent on the same
+/// user prompt even when `provider_script` cannot represent a provider
+/// turn (parallel tool calls, multimodal response blocks, etc.).
+pub fn trace_fixture_source(events: &[MetricsEvent]) -> Result<TraceFixtureSource, CurateError> {
+    let mut source_model_id: Option<String> = None;
+    let mut user_input: Option<String> = None;
+    let mut saw_inference = false;
+
+    for event in events {
+        if let MetricsEvent::Inference(span) = event {
+            saw_inference = true;
             if source_model_id.is_none() && !span.model.is_empty() {
                 source_model_id = Some(span.model.clone());
             }
             if user_input.is_none() {
                 user_input = latest_user_text(span);
             }
-            provider_script.push(inference_to_script(span)?);
         }
     }
 
-    if provider_script.is_empty() {
+    if !saw_inference {
         return Err(CurateError::NoInferences);
     }
 
-    Ok(TraceConversion {
-        provider_script,
+    Ok(TraceFixtureSource {
         source_model_id,
         user_input,
     })
