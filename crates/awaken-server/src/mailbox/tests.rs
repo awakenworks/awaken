@@ -1046,75 +1046,6 @@ fn empty_live_registry_set() -> awaken_runtime::registry::RegistrySet {
     }
 }
 
-struct EmittingMailboxRuntime;
-
-#[async_trait::async_trait]
-impl RunDispatchExecutor for EmittingMailboxRuntime {
-    async fn run(
-        &self,
-        request: RunActivation,
-        sink: Arc<dyn EventSink>,
-    ) -> Result<AgentRunResult, AgentLoopError> {
-        let run_id = request
-            .resume_run_id()
-            .map(str::to_owned)
-            .or(request.persistence.run_id_hint.clone())
-            .or(request.trace.dispatch_id.clone())
-            .unwrap_or_else(|| "emitting-run".to_string());
-        sink.emit(AgentEvent::RunStart {
-            thread_id: request.thread_id().to_owned(),
-            run_id: run_id.clone(),
-            parent_run_id: None,
-            identity: None,
-        })
-        .await;
-        sink.emit(AgentEvent::TextDelta {
-            delta: "live only".into(),
-        })
-        .await;
-        sink.emit(AgentEvent::ToolCallReady {
-            id: "call-1".into(),
-            name: "search".into(),
-            arguments: json!({"q": "awaken"}),
-        })
-        .await;
-        sink.emit(AgentEvent::RunFinish {
-            thread_id: request.thread_id().to_owned(),
-            run_id: run_id.clone(),
-            identity: None,
-            result: None,
-            termination: TerminationReason::NaturalEnd,
-        })
-        .await;
-        Ok(AgentRunResult {
-            run_id,
-            response: "ok".to_string(),
-            termination: TerminationReason::NaturalEnd,
-            steps: 1,
-        })
-    }
-
-    fn cancel(&self, _id: &str) -> bool {
-        false
-    }
-
-    async fn cancel_and_wait_by_thread(&self, _thread_id: &str) -> bool {
-        false
-    }
-
-    fn send_decision(&self, _id: &str, _tool_call_id: String, _resume: ToolCallResume) -> bool {
-        false
-    }
-
-    fn send_messages(&self, _id: &str, _messages: Vec<Message>) -> bool {
-        false
-    }
-
-    fn live_registry_set(&self) -> Option<awaken_runtime::registry::RegistrySet> {
-        Some(empty_live_registry_set())
-    }
-}
-
 struct CommittingEmittingMailboxRuntime {
     event_store: Arc<InMemoryEventStore>,
 }
@@ -6014,6 +5945,45 @@ async fn recover_only_enqueues_orphaned_background_task_waiting_runs() {
         user_dispatches.is_empty(),
         "user-input waiting runs must stay suspended until explicit input"
     );
+}
+
+#[tokio::test]
+async fn recover_pages_orphaned_background_task_waiting_runs() {
+    let store = Arc::new(InMemoryStore::new());
+    let run_count = 205usize;
+    for index in 0..run_count {
+        let run = seeded_waiting_run(
+            &format!("run-bg-page-{index}"),
+            &format!("thread-bg-page-{index}"),
+            "agent",
+        );
+        store.create_run(&run).await.expect("seed bg run");
+    }
+
+    let mailbox_store = make_store();
+    let runtime = Arc::new(RecordingStoreMailboxRuntime::new(store.clone()));
+    let mailbox = Arc::new(Mailbox::new(
+        runtime.clone(),
+        mailbox_store,
+        store,
+        "test-consumer".to_string(),
+        MailboxConfig::default(),
+    ));
+
+    let recovered = mailbox.recover().await.expect("recover should succeed");
+    assert_eq!(recovered, run_count);
+
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        if runtime.requests.lock().expect("lock poisoned").len() == run_count {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "recover did not dispatch every background wake"
+        );
+        sleep(Duration::from_millis(5)).await;
+    }
 }
 
 #[tokio::test]
