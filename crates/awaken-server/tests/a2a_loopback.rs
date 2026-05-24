@@ -329,7 +329,7 @@ async fn a2a_loopback_remote_self_cancel_cascades_background_children() {
             .with_agent_spec(orchestrator_spec)
             .with_agent_spec(worker_local)
             .with_agent_spec(worker_remote)
-            .with_thread_run_store(store.clone())
+            .with_in_memory_thread_run_store(store.clone())
             .build_unchecked()
             .expect("build runtime"),
     );
@@ -507,7 +507,7 @@ async fn a2a_dual_server_remote_self_cancel_cascades_background_children() {
                 plugin_ids: vec!["background".into()],
                 ..Default::default()
             })
-            .with_thread_run_store(worker_store.clone())
+            .with_in_memory_thread_run_store(worker_store.clone())
             .build()
             .expect("build worker runtime"),
     );
@@ -590,7 +590,7 @@ async fn a2a_dual_server_remote_self_cancel_cascades_background_children() {
                 }),
                 ..Default::default()
             })
-            .with_thread_run_store(orchestrator_store.clone())
+            .with_in_memory_thread_run_store(orchestrator_store.clone())
             .build_unchecked()
             .expect("build orchestrator runtime"),
     );
@@ -826,7 +826,7 @@ async fn a2a_loopback_orchestrator_delegates_to_worker() {
             .with_agent_spec(orchestrator_spec)
             .with_agent_spec(worker_local)
             .with_agent_spec(worker_remote)
-            .with_thread_run_store(store.clone())
+            .with_in_memory_thread_run_store(store.clone())
             // Use build_unchecked: the "worker-remote" spec has an endpoint
             // and cannot be resolved locally (by design — it's a remote delegate).
             .build_unchecked()
