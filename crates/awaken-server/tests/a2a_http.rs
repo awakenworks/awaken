@@ -193,7 +193,7 @@ where
     }
 
     let store = Arc::new(InMemoryStore::new());
-    builder = builder.with_thread_run_store(store.clone());
+    builder = builder.with_in_memory_thread_run_store(store.clone());
     let runtime = Arc::new(builder.build().expect("build runtime"));
     let mailbox_store = Arc::new(awaken_stores::InMemoryMailboxStore::new());
     let mailbox = Arc::new(awaken_server::mailbox::Mailbox::new(
@@ -271,7 +271,7 @@ fn build_background_cancel_fixture()
                 "background",
                 Arc::new(BackgroundTaskPlugin::new(manager.clone())),
             )
-            .with_thread_run_store(store.clone())
+            .with_in_memory_thread_run_store(store.clone())
             .build()
             .expect("build runtime"),
     );
