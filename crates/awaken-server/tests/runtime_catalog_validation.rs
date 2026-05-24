@@ -14,7 +14,7 @@ use awaken_runtime::AgentRuntime;
 use awaken_runtime::builder::AgentRuntimeBuilder;
 use awaken_runtime::registry::traits::ModelBinding;
 use awaken_server::services::config_runtime::ConfigRuntimeManager;
-use awaken_stores::InMemoryStore;
+use awaken_stores::{InMemoryStore, MemoryCommitCoordinator};
 use serde_json::json;
 
 struct StubExec;
@@ -60,7 +60,8 @@ async fn make_manager() -> (ConfigRuntimeManager, Arc<dyn ConfigStore>) {
                 max_rounds: 1,
                 ..Default::default()
             })
-            .with_thread_run_store(thread_store)
+            .with_thread_run_store(thread_store.clone())
+            .with_commit_coordinator(MemoryCommitCoordinator::wrap(thread_store))
             .build()
             .expect("build runtime"),
     );
