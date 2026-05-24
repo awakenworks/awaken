@@ -99,12 +99,14 @@ pub struct StartRunRequest {
     /// `Failure::JudgeBelowThreshold` to the report.
     #[serde(default)]
     pub judge: Option<JudgeRequest>,
-    /// Per-cell wall-clock cap in Live (matrix) mode. Wraps the cell's
-    /// replay in `tokio::time::timeout` so a stuck provider doesn't pin
-    /// an HTTP request slot; on expiry the cell surfaces a
-    /// `ReplayRuntimeFailure::RuntimeError`. Omitting the field defaults
-    /// to 60s; passing `0` is rejected (would time out every cell
-    /// immediately) — matches `/v1/eval/online` semantics.
+    /// Per-cell wall-clock cap in Live (matrix) mode. Replay and
+    /// scoring/judge share one `Instant + max_walltime_secs` deadline,
+    /// so a stuck provider or judge can't pin an HTTP request slot. On
+    /// expiry the cell surfaces a `ReplayRuntimeFailure::RuntimeError`;
+    /// if replay already finished, the real outcome is preserved and
+    /// only the scoring/judge failure is appended. Omitting the field
+    /// defaults to 60s; passing `0` is rejected (would time out every
+    /// cell immediately) — matches `/v1/eval/online` semantics.
     /// Ignored on Scripted runs (deterministic, no wall-clock risk).
     #[serde(default)]
     pub max_walltime_secs: Option<u64>,
@@ -198,7 +200,7 @@ pub enum RunAggregateKind {
 // shared with `dataset_service` so the two can't drift on revision-
 // conflict shape.
 
-fn map_eval_run_store_error(err: EvalRunStoreError) -> ApiError {
+pub(crate) fn map_eval_run_store_error(err: EvalRunStoreError) -> ApiError {
     match err {
         EvalRunStoreError::NotFound(id) => ApiError::NotFound(format!("eval run not found: {id}")),
         EvalRunStoreError::InvalidRunId(id) => {
@@ -207,6 +209,11 @@ fn map_eval_run_store_error(err: EvalRunStoreError) -> ApiError {
         EvalRunStoreError::AlreadyExists(id) => {
             ApiError::Conflict(format!("eval run already exists: {id}"))
         }
+        // A duplicate-key run is either a server-generated invariant
+        // violation or corrupt stored data. Surface as 500 outside the
+        // explicit diff-preflight path, where the operator has selected
+        // a non-diffable run and the handler returns 400 directly.
+        err @ EvalRunStoreError::DuplicateItemKeys(..) => ApiError::Internal(err.to_string()),
         err => ApiError::Internal(err.to_string()),
     }
 }
@@ -465,7 +472,13 @@ pub async fn get_eval_run(
 ) -> Result<Response, ApiError> {
     crate::config_routes::ensure_admin_auth(&state, &headers)?;
     let store = eval_run_store_or_unavailable(&state)?;
-    let run = store.read(&id).map_err(map_eval_run_store_error)?;
+    let wants_diff = params.baseline.is_some();
+    let run = store.read(&id).map_err(|err| match err {
+        EvalRunStoreError::DuplicateItemKeys(_, msg) if wants_diff => {
+            ApiError::BadRequest(format!("current run {id}: {msg}"))
+        }
+        other => map_eval_run_store_error(other),
+    })?;
     let diff = if let Some(baseline_id) = params.baseline {
         let baseline = load_and_validate_baseline(
             store.as_ref(),
@@ -501,6 +514,9 @@ fn load_and_validate_baseline(
         EvalRunStoreError::NotFound(_) => {
             ApiError::NotFound(format!("baseline eval run not found: {baseline_id}"))
         }
+        EvalRunStoreError::DuplicateItemKeys(_, msg) => {
+            ApiError::BadRequest(format!("baseline run {baseline_id}: {msg}"))
+        }
         other => map_eval_run_store_error(other),
     })?;
     let adhoc = crate::services::online_eval_service::ADHOC_DATASET_ID;
@@ -530,7 +546,7 @@ fn load_and_validate_baseline(
     // record (or a future store impl with weaker guarantees) would
     // otherwise slip past this gate.
     awaken_eval::validate_unique_item_keys(&baseline.items)
-        .map_err(|e| ApiError::Internal(format!("baseline run {}: {e}", baseline.id)))?;
+        .map_err(|e| ApiError::BadRequest(format!("baseline run {}: {e}", baseline.id)))?;
     Ok(baseline)
 }
 
@@ -550,7 +566,7 @@ fn compute_diff_from_baseline(
     // `load_and_validate_baseline` (preflight) so we only re-check the
     // newly-built `new_run` here.
     awaken_eval::validate_unique_item_keys(&new_run.items)
-        .map_err(|e| ApiError::Internal(format!("current run {}: {e}", new_run.id)))?;
+        .map_err(|e| ApiError::BadRequest(format!("current run {}: {e}", new_run.id)))?;
     // Use matrix-aware pairing when either side carries a cell. Single
     // unified call site — `diff_eval_items` handles the cell-less path
     // identically to the report-based diff.
@@ -607,9 +623,9 @@ async fn run_scripted_fixtures(
 pub(crate) struct MatrixOptions {
     pub samples: u32,
     pub max_concurrent: usize,
-    /// Per-cell wall-clock cap. Mirrors the online-eval timeout — Live
-    /// matrix runs hit real providers too, and a stuck cell shouldn't
-    /// pin the HTTP request slot indefinitely.
+    /// Per-cell wall-clock cap. Replay and scoring/judge share one
+    /// deadline, mirroring `/v1/eval/online`, so a stuck provider or
+    /// judge can't pin the HTTP request slot indefinitely.
     pub max_walltime_secs: u64,
     pub agent_base: Option<awaken_contract::registry_spec::AgentSpec>,
     pub agent_overrides: Option<AgentSpecPatch>,

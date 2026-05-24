@@ -128,6 +128,16 @@ pub enum EvalRunStoreError {
     /// store will not silently clobber a prior run.
     #[error("eval run {0} already exists")]
     AlreadyExists(String),
+    /// Returned by [`EvalRunStore::write`] / [`EvalRunStore::read`]
+    /// when `run.items` contains duplicate `(fixture_id, cell,
+    /// sample_index)` keys.
+    /// `diff_against_baseline` / `diff_eval_items` collect items into a
+    /// `BTreeMap` keyed on that triple — duplicates would silently
+    /// overwrite each other and produce an insertion-order-dependent
+    /// DiffSummary. The store rejects the write so an invalid run can't
+    /// land on disk in the first place.
+    #[error("eval run {0} contains duplicate item keys: {1}")]
+    DuplicateItemKeys(String, String),
 }
 
 /// Filter for [`EvalRunStore::list`] and [`EvalRunStore::list_full`].
@@ -243,6 +253,17 @@ impl From<&EvalRun> for EvalRunSummary {
 }
 
 /// Persistence + query API for [`EvalRun`]s.
+///
+/// Implementations MUST reject writes whose `items` carry duplicate
+/// `(fixture_id, cell, sample_index)` keys and must not return such runs
+/// from normal query paths ([`EvalRunStoreError::DuplicateItemKeys`]).
+/// The matrix diff path (`diff_against_baseline` / `diff_eval_items`)
+/// keys items on that triple and silently overwrites collisions in its
+/// `BTreeMap`; exposing a duplicate-key run turns every later baseline
+/// diff against that run into an order-dependent lie. The check belongs
+/// at the store boundary so dataset runs, online runs, and future entry
+/// points all share the same invariant — see
+/// [`crate::validate_unique_item_keys`].
 pub trait EvalRunStore: Send + Sync {
     fn write(&self, run: &EvalRun) -> Result<(), EvalRunStoreError>;
     fn read(&self, run_id: &str) -> Result<EvalRun, EvalRunStoreError>;
@@ -308,9 +329,27 @@ impl FileEvalRunStore {
     }
 }
 
+fn validate_run_item_keys(run: &EvalRun) -> Result<(), EvalRunStoreError> {
+    crate::report::validate_unique_item_keys(&run.items)
+        .map_err(|e| EvalRunStoreError::DuplicateItemKeys(run.id.clone(), e))
+}
+
 impl EvalRunStore for FileEvalRunStore {
     fn write(&self, run: &EvalRun) -> Result<(), EvalRunStoreError> {
         validate_run_id(&run.id)?;
+        // Write-once semantics take priority over payload validation:
+        // if a run id already exists, the caller is attempting to
+        // clobber immutable storage regardless of what the new payload
+        // contains.
+        if self.locate(&run.id).is_some() {
+            return Err(EvalRunStoreError::AlreadyExists(run.id.clone()));
+        }
+        // Enforce the trait-level invariant at the store boundary so
+        // every entry point (dataset matrix runs, online ad-hoc runs,
+        // future bulk-import tooling) is guarded uniformly. See the
+        // EvalRunStore trait doc for why duplicate (fixture_id, cell,
+        // sample_index) keys would silently break baseline diffs.
+        validate_run_item_keys(run)?;
         // Resolve started_at_secs locally (only for shard routing) AND
         // also clone it into the persisted run, so the on-disk record
         // never carries a 0 sentinel that diverges from its location.
@@ -330,14 +369,6 @@ impl EvalRunStore for FileEvalRunStore {
         let shard = self.shard_dir(start);
         fs::create_dir_all(&shard)?;
         let path = shard.join(format!("{}.json", run.id));
-        // Atomic create-or-fail: locate() walks every shard, so the
-        // canonical existence check has to cover both new-shape (sharded
-        // by started_at) and any pre-existing record under a different
-        // shard. Anything found ⇒ refuse to clobber; eval runs are
-        // write-once.
-        if self.locate(&run.id).is_some() {
-            return Err(EvalRunStoreError::AlreadyExists(run.id.clone()));
-        }
         let bytes = serde_json::to_vec_pretty(&persisted)?;
         // True atomic create-or-fail: open the FINAL path with O_EXCL
         // (`create_new(true)`). If two writers race past the locate()
@@ -374,6 +405,7 @@ impl EvalRunStore for FileEvalRunStore {
             .ok_or_else(|| EvalRunStoreError::NotFound(run_id.into()))?;
         let bytes = fs::read(&path)?;
         let run: EvalRun = serde_json::from_slice(&bytes)?;
+        validate_run_item_keys(&run)?;
         Ok(run)
     }
 
@@ -431,6 +463,14 @@ impl EvalRunStore for FileEvalRunStore {
                         continue;
                     }
                 };
+                if let Err(err) = validate_run_item_keys(&run) {
+                    tracing::warn!(
+                        path = %path.display(),
+                        error = %err,
+                        "FileEvalRunStore: skipping invalid eval-run file"
+                    );
+                    continue;
+                }
                 if let Some(ref ds) = filter.dataset_id
                     && &run.dataset_id != ds
                 {
