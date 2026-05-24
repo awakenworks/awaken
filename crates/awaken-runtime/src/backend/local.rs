@@ -74,11 +74,11 @@ impl crate::registry::AgentResolver for DelegateResolver<'_> {
             ));
         }
         match self.inner.resolve_execution(agent_id)? {
-            crate::resolution::ExecutionPlan::Local(agent) => Ok(
-                crate::resolution::ExecutionPlan::Local(Box::new(
+            crate::resolution::ExecutionPlan::Local(agent) => {
+                Ok(crate::resolution::ExecutionPlan::Local(Box::new(
                     self.with_background_control(*agent),
-                )),
-            ),
+                )))
+            }
             other => Ok(other),
         }
     }

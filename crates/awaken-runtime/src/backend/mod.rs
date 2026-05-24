@@ -434,7 +434,9 @@ pub async fn execute_resolved_delegate_execution(
 ) -> Result<BackendRunResult, ExecutionBackendError> {
     validate_delegate_execution_request(execution, &request)?;
     match execution {
-        ExecutionPlan::Local(agent) => LocalBackend::execute_resolved(agent.as_ref(), request).await,
+        ExecutionPlan::Local(agent) => {
+            LocalBackend::execute_resolved(agent.as_ref(), request).await
+        }
         ExecutionPlan::Remote(agent) => agent.backend()?.execute_delegate(request).await,
     }
 }
