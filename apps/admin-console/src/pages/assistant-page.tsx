@@ -45,7 +45,13 @@ export function AssistantPage() {
   };
 
   return (
-    <div className="flex h-full flex-col">
+    // The chat layout needs an explicit height for the message list
+    // (`flex-1 overflow-auto`) and the bottom input bar to behave. We
+    // pin to dynamic viewport height (`100dvh`) minus the topbar so
+    // the input is always anchored at the visible bottom — `h-full`
+    // collapses to `auto` whenever an ancestor stops propagating a
+    // definite height, hiding the input below the fold.
+    <div className="flex h-[calc(100dvh-3rem)] flex-col">
       <header className="border-b border-line bg-surface px-6 py-4">
         <h2 className="text-lg font-semibold text-fg-strong">
           AI Config Assistant

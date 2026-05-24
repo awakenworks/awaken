@@ -49,7 +49,7 @@ export function SkillsPage() {
   const visibleSkills = useMemo(() => filterSkills(skills, filter), [skills, filter]);
 
   return (
-    <div className="mx-auto max-w-6xl p-6 md:p-8">
+    <div className="mx-auto w-full max-w-6xl 2xl:max-w-none p-6 md:p-8">
       <PageHeader title={t("skills.title")} count={skills.length} />
 
       <section className="mb-4 flex flex-wrap items-end gap-3 rounded-sm border border-line bg-surface p-4 shadow-card">

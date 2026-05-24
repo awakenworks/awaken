@@ -540,7 +540,7 @@ export function AgentEditorPage() {
 
   if (loading) {
     return (
-      <div className="mx-auto max-w-6xl p-6 md:p-8">
+      <div className="mx-auto w-full max-w-6xl 2xl:max-w-none p-6 md:p-8">
         <div className="rounded-sm border border-line bg-surface p-6 text-sm text-fg-soft shadow-sm">
           Loading agent...
         </div>
@@ -549,7 +549,7 @@ export function AgentEditorPage() {
   }
   if (agentError) {
     return (
-      <div className="mx-auto max-w-6xl p-6 md:p-8">
+      <div className="mx-auto w-full max-w-6xl 2xl:max-w-none p-6 md:p-8">
         <div className="rounded-sm border border-tone-error/30 bg-tone-error/10 p-4 text-sm text-tone-error">
           Agent unavailable: {agentError}
         </div>
@@ -558,7 +558,7 @@ export function AgentEditorPage() {
   }
 
   return (
-    <div className="mx-auto max-w-[96rem]">
+    <div className="mx-auto w-full max-w-[96rem] 2xl:max-w-none">
       <StickyEditorHeader
         isNew={isNew}
         agentId={spec.id}

@@ -149,7 +149,7 @@ export function ModelsPage() {
   }, [view.page, page]);
 
   return (
-    <div className="mx-auto max-w-5xl p-6 md:p-8">
+    <div className="mx-auto w-full max-w-5xl 2xl:max-w-none p-6 md:p-8">
       <div className="mb-4 flex items-end justify-between gap-4">
         <div className="flex items-baseline gap-3">
           <h1 className="text-[22px] font-bold tracking-title-em text-fg-strong">{t("models.title")}</h1>

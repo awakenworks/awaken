@@ -20,6 +20,7 @@ import {
   type FixtureStatusFilter,
 } from "@/lib/eval-reports-filter";
 import { useFixtureFilterUrlState } from "@/lib/list-url-state";
+import { StatCard } from "@/components/ui/stat-card";
 
 const STATUS_OPTIONS: Array<{ value: FixtureStatusFilter; label: string }> = [
   { value: "all", label: "All fixtures" },
@@ -91,7 +92,7 @@ export function EvalReportsPage() {
   );
 
   return (
-    <div className="mx-auto max-w-6xl p-6 md:p-8">
+    <div className="mx-auto w-full max-w-6xl 2xl:max-w-none p-6 md:p-8">
       <header className="mb-4 flex items-baseline justify-between gap-3">
         <h1 className="text-[22px] font-bold tracking-title-em text-fg-strong">
           {t("evals.title")}
@@ -131,12 +132,12 @@ export function EvalReportsPage() {
               <StatCard
                 label="Passed"
                 value={summary.passed}
-                tone="positive"
+                tone="success"
               />
               <StatCard
                 label="Failed"
                 value={summary.failed}
-                tone={summary.failed > 0 ? "negative" : "neutral"}
+                tone={summary.failed > 0 ? "error" : "neutral"}
               />
               <StatCard
                 label="Input tokens"
@@ -347,28 +348,6 @@ function FileDrop({
   );
 }
 
-function StatCard({
-  label,
-  value,
-  tone = "neutral",
-}: {
-  label: string;
-  value: number;
-  tone?: "neutral" | "positive" | "negative";
-}) {
-  const toneClass =
-    tone === "positive"
-      ? "text-tone-success"
-      : tone === "negative"
-        ? "text-tone-error"
-        : "text-fg-strong";
-  return (
-    <div className="rounded-sm border border-line bg-surface p-5 shadow-sm">
-      <div className={`text-3xl font-semibold ${toneClass}`}>{value}</div>
-      <div className="mt-2 text-sm text-fg-soft">{label}</div>
-    </div>
-  );
-}
 
 function DiffStat({ label, value }: { label: string; value: number }) {
   return (
