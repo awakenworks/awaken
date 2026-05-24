@@ -56,13 +56,22 @@ describe("agentsApi", () => {
     );
   });
 
-  it("returns null when runtime stats are disabled", async () => {
+  it("returns null when runtime stats are disabled (503)", async () => {
     mockFetch(503, { error: "runtime stats disabled" });
 
     await expect(agentsApi.agentsRuntimeStats()).resolves.toBeNull();
   });
 
-  it("rethrows non-503 runtime stats errors", async () => {
+  it("returns null when the runtime stats endpoint is absent (404)", async () => {
+    // Older deploys / gradual rollouts predate /v1/agents/runtime-stats.
+    // The dashboard should render the same "feature unavailable" notice
+    // rather than crashing with an unhandled error.
+    mockFetch(404, { error: "not found" });
+
+    await expect(agentsApi.agentsRuntimeStats()).resolves.toBeNull();
+  });
+
+  it("rethrows auth/other runtime stats errors so the operator fixes credentials", async () => {
     mockFetch(403, { error: "forbidden" });
 
     await expect(agentsApi.agentsRuntimeStats()).rejects.toMatchObject({

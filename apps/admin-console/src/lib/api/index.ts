@@ -6,6 +6,7 @@ export { configResourceApi } from "./config-resource";
 export { ADMIN_TOKEN_STORAGE_KEY, BACKEND_URL, ConfigApiError, agentPreviewRunUrl } from "./http";
 export { mcpApi } from "./mcp";
 export { providersApi } from "./providers";
+export { runsApi, type ListRunsPage, type ListRunsParams, type RunStatus } from "./runs";
 export { systemApi } from "./system";
 export { toolsApi } from "./tools";
 export { tracesApi } from "./traces";

@@ -1,4 +1,4 @@
-import { BACKEND_URL, configUrl, fetchJson } from "./http";
+import { BACKEND_URL, ConfigApiError, configUrl, fetchJson } from "./http";
 import type { ConfigMetaItem, ListResponse, RecordMeta, RestoreResponse } from "./types";
 
 export const configResourceApi = {
@@ -57,5 +57,50 @@ export const configResourceApi = {
   getMeta: (namespace: string, id: string) =>
     fetchJson<RecordMeta>(`${configUrl(namespace, id)}/meta`),
 
-  listMeta: (namespace: string) => fetchJson<ConfigMetaItem[]>(`${configUrl(namespace)}/meta`),
+  /** Per-resource metadata list. Returns a plain array.
+   *
+   *  Some `awaken-server` builds return the bare `Vec<ConfigMetaItem>`
+   *  array, others wrap it as `{ items: [...] }` to match the sibling
+   *  `list` endpoints. We accept either shape so the UI doesn't crash
+   *  with "object is not iterable" when the backend reshapes the
+   *  response (which has happened in the wild — see GH-issue/PR). */
+  listMeta: async (namespace: string): Promise<ConfigMetaItem[]> => {
+    const raw = await fetchJson<unknown>(`${configUrl(namespace)}/meta`);
+    return coerceMetaListResponse(raw);
+  },
 };
+
+/** Defensive parse for `/v1/config/:ns/meta`. Coerces:
+ *  - `ConfigMetaItem[]`           → returned as-is
+ *  - `{ items: ConfigMetaItem[] }`→ `.items` extracted
+ *  - anything else                 → throws `ConfigApiError(502)` so the
+ *    query layer renders a typed error state instead of silently
+ *    pretending the resource has no entries.
+ *  Filters out array members that don't look like `ConfigMetaItem` so a
+ *  partial-shape payload doesn't blow up downstream `for...of` loops. */
+function coerceMetaListResponse(raw: unknown): ConfigMetaItem[] {
+  const candidate = Array.isArray(raw)
+    ? raw
+    : raw && typeof raw === "object" && Array.isArray((raw as { items?: unknown }).items)
+      ? ((raw as { items: unknown[] }).items)
+      : null;
+  if (candidate === null) {
+    throw new ConfigApiError(
+      502,
+      `unexpected meta response shape: ${describeShape(raw)} — expected ConfigMetaItem[] or { items: ConfigMetaItem[] }`,
+    );
+  }
+  return candidate.filter(
+    (entry): entry is ConfigMetaItem =>
+      entry !== null &&
+      typeof entry === "object" &&
+      typeof (entry as { id?: unknown }).id === "string",
+  );
+}
+
+function describeShape(raw: unknown): string {
+  if (raw === null) return "null";
+  if (raw === undefined) return "undefined";
+  if (Array.isArray(raw)) return "array";
+  return typeof raw;
+}
