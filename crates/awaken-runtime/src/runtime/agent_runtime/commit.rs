@@ -18,8 +18,9 @@ impl AgentRuntime {
         self
     }
 
-    /// ADR-0036 D8 convenience: pair an in-memory `ThreadRunStore` with a
-    /// matching `MemoryCommitCoordinator` in one call.
+    /// ADR-0036 D8 test/development convenience: pair an in-memory
+    /// `ThreadRunStore` with a matching `MemoryCommitCoordinator` in one call.
+    #[cfg(feature = "test-utils")]
     #[must_use]
     pub fn with_in_memory_thread_run_store(self, store: Arc<awaken_stores::InMemoryStore>) -> Self {
         let coord = awaken_stores::MemoryCommitCoordinator::wrap(Arc::clone(&store));

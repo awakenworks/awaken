@@ -44,6 +44,12 @@ pub(super) async fn persist_remote_root_checkpoint(
     commit: crate::loop_runner::CommitWiring<'_>,
 ) -> Result<(), AgentLoopError> {
     let Some(storage) = storage else {
+        if commit.commit_coordinator.is_some() {
+            return Err(AgentLoopError::StorageError(
+                "remote checkpoint requires checkpoint_store when CommitCoordinator is wired"
+                    .to_string(),
+            ));
+        }
         return Ok(());
     };
     validate_remote_checkpoint_identity(thread_id, run_id, run_identity)?;

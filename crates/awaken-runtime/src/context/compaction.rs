@@ -206,15 +206,23 @@ pub fn try_consume_compaction_event(
                 .and_then(|p| p.get("pre_tokens"))
                 .and_then(|v| v.as_u64())
                 .unwrap_or(0) as usize;
+            let prior_in_flight = store
+                .read::<CompactionStateKey>()
+                .and_then(|state| state.in_flight);
 
             let mut batch = MutationBatch::new();
             if !boundary_id.is_empty()
                 && !summary.is_empty()
                 && let Some(applied) = apply_summary(messages, boundary_id, summary)
             {
+                let task_id = prior_in_flight
+                    .as_ref()
+                    .map(|in_flight| in_flight.task_id.clone());
                 batch.update::<CompactionStateKey>(CompactionAction::RecordBoundary(
                     CompactionBoundary {
                         summary: summary.to_string(),
+                        task_id,
+                        boundary_message_id: Some(boundary_id.to_string()),
                         pre_tokens: applied.pre_tokens.max(reported_pre_tokens),
                         post_tokens: applied.post_tokens,
                         timestamp_ms: now_ms(),
