@@ -1,5 +1,4 @@
 //! Axum router setup — unified route registration.
-use crate::eval_router::eval_routes;
 use crate::services::trace_service::{get_trace, list_traces, pin_trace};
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
@@ -14,15 +13,10 @@ use crate::app::{RunRoutesState, ServerState, TraceRoutesState};
 use crate::http_run::wire_sse_relay;
 use crate::http_sse::{sse_body_stream, sse_response};
 use crate::mailbox::{ACTIVE_RUN_CONFLICT_MESSAGE, MailboxDispatchStatus, MailboxError};
-use crate::protocols::a2a::a2a_routes;
-use crate::protocols::ag_ui::http::ag_ui_routes;
-use crate::protocols::ai_sdk_v6::http::ai_sdk_routes;
-use crate::protocols::mcp::http::mcp_routes;
 use crate::query::{self, MessageQueryParams, ThreadQueryParams};
 use crate::services::run_control_service::{
     InputMode, InterruptMode, RunControlError, RunControlService,
 };
-use crate::{config_routes::config_routes, event_routes::event_routes};
 use awaken_contract::contract::message::Message;
 use awaken_contract::contract::storage::{ChildThreadDeleteStrategy, StorageError};
 use awaken_runtime::RunActivation;
