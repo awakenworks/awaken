@@ -110,7 +110,7 @@ impl Plugin for ResearchPlugin {
 
 子 agent 必须注册 `ResearchConfigKey`，这样 seed 才能应用；如果你希望 findings 出现在 `outcome.state.extensions`，它还必须以 `persistent: true` 注册 `ResearchFindingsKey`。父 agent 在提交返回的 `StateCommand` 前必须注册 `ResearchSummaryKey`。上面的单个 `ResearchPlugin` 为了方便复制粘贴而注册了全部三个 key；生产代码可以拆成 `ChildResearchPlugin` / `ParentResearchPlugin`，只要两边分别注册自己会读写的 key 即可。
 
-2. 实现工具。关键调用是来自 `awaken_runtime::child_agent` 的 [`run_child_agent_checked`](/awaken/zh-cn/reference/)；它包装了 [`run_child_agent`](/awaken/zh-cn/reference/)，并在子 run 进入非 `Completed` 终态时让父工具失败。
+2. 实现工具。关键调用是来自 `awaken_runtime::child_agent` 的 [`run_child_agent`](/awaken/zh-cn/reference/)。它返回子 run 的终态 [`BackendRunResult`](/awaken/zh-cn/reference/)；父工具自行决定如何把这个生命周期状态解释成自己的 `ToolOutput.result`。下面示例采用语义透传策略：父工具返回成功 payload，并显式带上 `child_status`，但 state export 仍保持保守。
 
 ```rust
 use std::sync::Arc;
@@ -125,8 +125,8 @@ use awaken_contract::contract::tool::{
 };
 use awaken_contract::state::PersistedState;
 
-use awaken_runtime::backend::{BackendControl, BackendParentContext, BackendRunResult};
-use awaken_runtime::child_agent::{ChildAgentParams, run_child_agent_checked};
+use awaken_runtime::backend::{BackendParentContext, BackendRunResult, BackendRunStatus};
+use awaken_runtime::child_agent::{ChildAgentParams, run_child_agent};
 use awaken_runtime::registry::ExecutionResolver;
 use awaken_runtime::{MutationBatch, StateCommand, StateStore};
 
@@ -159,7 +159,7 @@ impl Tool for ResearchTool {
         let seed = build_seed(topic, max_sources)
             .map_err(|e| ToolError::ExecutionFailed(e.to_string()))?;
 
-        let outcome = run_child_agent_checked(
+        let outcome = run_child_agent(
             ChildAgentParams::new(
                 self.resolver.as_ref(),
                 "researcher",
@@ -173,25 +173,22 @@ impl Tool for ResearchTool {
                     .unwrap_or_else(|| Arc::new(NullEventSink)),
             )
             .with_initial_state_seed(seed)
-            .with_control(BackendControl {
-                cancellation_token: ctx.cancellation_token.clone(),
-                decision_rx: None,
-            }),
+            .with_cancellation_token(ctx.cancellation_token.clone()),
         )
         .await
         .map_err(|e| ToolError::ExecutionFailed(e.to_string()))?;
 
         let command = build_export(&outcome, topic)?;
 
-        Ok(ToolOutput {
-            result: ToolResult::success("research_topic", json!({
+        Ok(ToolOutput::with_command(
+            ToolResult::success("research_topic", json!({
+                "child_status": outcome.status.to_string(),
                 "response":     outcome.response,
                 "child_run_id": outcome.run_id,
                 "steps":        outcome.steps,
             })),
             command,
-            ..Default::default()
-        })
+        ))
     }
 
     fn validate_args(&self, _args: &Value) -> Result<(), ToolError> { Ok(()) }
@@ -223,11 +220,14 @@ fn build_seed(topic: &str, max_sources: u32)
 子的 `StateStore` 终态 snapshot 在 `BackendRunResult.state`（一个 `PersistedState`）里返回。解码你关心的 key，再翻译成针对父 state key 的 `StateCommand`——工具返回后 loop runner 会自动 commit。
 
 ```rust
-/// 把子终态 state 解码成 parent 的 `StateCommand`。外层 `execute` 已经拒
-/// 绝了非 Completed 的 outcome，所以这里只需要处理 "成功但没产出 key"
-/// 这种边界情况。
+/// 把子终态 state 解码成 parent 的 `StateCommand`。这个 export 策略
+/// 比上面的语义结果策略更严格：只有子 run Completed 时才把 findings
+/// 写回父 state。
 fn build_export(outcome: &BackendRunResult, topic: &str) -> Result<StateCommand, ToolError> {
     let mut cmd = StateCommand::new();
+    if !matches!(outcome.status, BackendRunStatus::Completed) {
+        return Ok(cmd);
+    }
     let Some(state) = outcome.state.as_ref() else {
         return Ok(cmd);
     };
@@ -259,13 +259,30 @@ let command = build_export(&outcome, topic)?;
 
 只有以 `persistent: true` 注册的 key 会出现在 `outcome.state.extensions`。如果你需要的值是非持久 key，要么改 child 端的注册，要么回退到 `outcome.response` / `outcome.output`（结构化文本输出与持久化标记无关）。
 
+### 为 child status 选择父工具策略
+
+`BackendRunResult.status` 是子 run 的生命周期状态。`ToolOutput.result` 是父工具对这个结果的解释。上面的语义透传示例即使在 child 返回 `Failed`、`Cancelled`、`Timeout`、`Suspended` 或等待状态时，也会让父工具成功返回一条带 `child_status` 的 payload，让父 agent 继续判断下一步。
+
+如果父工具只接受完成的 child，可以使用严格策略：
+
+```rust
+if !matches!(outcome.status, BackendRunStatus::Completed) {
+    return Err(ToolError::ExecutionFailed(format!(
+        "sub-agent did not complete: {}",
+        outcome.status
+    )));
+}
+```
+
+`run_streaming_subagent` 就属于这种严格 helper：它把 child stream 当作当前工具输出，所以会拒绝非 `Completed` 的 child 结果。state export 是另一层独立策略；不要因为父工具返回语义成功 payload，就盲目把 child state 写回父 state。
+
 ## 把子的文本流到父工具的输出
 
 如果父工具希望子的 token 看起来像是父工具自己在流式输出（典型如 generative UI 工具），用 `StreamingPassthroughSink` 把 activity sink 包一层再交给 `run_child_agent_checked` 或 `run_child_agent`：
 
 ```rust
 use awaken_contract::contract::message::Message;
-use awaken_runtime::backend::{BackendControl, BackendParentContext};
+use awaken_runtime::backend::BackendParentContext;
 use awaken_runtime::{
     ChildAgentParams, StreamingPassthroughSink, run_child_agent_checked,
 };
@@ -286,11 +303,10 @@ let outcome = run_child_agent_checked(
         BackendParentContext::default(),
         Arc::new(passthrough),
     )
-    .with_control(BackendControl {
-        cancellation_token: ctx.cancellation_token.clone(),
-        decision_rx: None,
-    })
-).await?;
+    .with_cancellation_token(ctx.cancellation_token.clone()),
+)
+.await
+.map_err(|e| ToolError::ExecutionFailed(e.to_string()))?;
 
 let streamed_text = buffer.lock().await.clone();
 ```
@@ -307,9 +323,9 @@ let streamed_text = buffer.lock().await.clone();
 ## 应当避免的做法
 
 - **不要 seed 子 agent 未注册的 key。** 子用 `UnknownKeyPolicy::Error` 应用 seed——未注册 key 会让子在首步前 fail。这是设计行为：把契约不一致暴露在启动期，而不是运行期。
-- **要透传父 run 的 cancellation。** 在工具里调用 child 时，调用 `.with_control(BackendControl { cancellation_token: ctx.cancellation_token.clone(), decision_rx: None })`，这样取消父 run 时也会取消 child run。
+- **要透传父 run 的 cancellation。** 在工具里调用 child 时，调用 `.with_cancellation_token(ctx.cancellation_token.clone())`，这样取消父 run 时也会取消 child run。
 - **`initial_state_seed` 只对 Local backend 生效。** state seeding 由 `BackendCapabilities::delegate_state_seed` 控制；目前只有进程内 Local backend 声明支持。A2A 以及任何尚未实现 seed wire 协议的非本地 backend 都会以 `ExecutionBackendError` 拒绝带 seed 的 delegate 请求，**不会**静默成功。如果远程子真的需要某些数据，请自己把它编码进 prompt。
-- **非 `Completed` 状态不要 export。** 对 `Failed` / `Cancelled` 这类已经返回 `BackendRunResult` 的终态，`outcome.state` 是否可用取决于 backend 以及失败发生的位置；backend dispatch 或 loop setup 级别的错误会直接返回 `Err`，不会提供 `BackendRunResult.state`。无论哪种情况，把不完整的子 state 写回父 state 都可能引入不一致。
+- **不要在非 `Completed` 状态下盲目 export child state。** 子结果是给父 agent 解释的语义消息；父工具应单独决定是失败、返回语义成功 payload，还是选择性导出诊断 state。对 `Failed` / `Cancelled` 这类已经返回 `BackendRunResult` 的终态，`outcome.state` 是否可用取决于 backend 以及失败发生的位置；backend dispatch 或 loop setup 级别的错误会直接返回 `Err`，不会提供 `BackendRunResult.state`。
 - **不要假设非持久 key 能跨 run 边界。** `BackendRunResult.state` 通过 `export_persisted` 构造，只包含 `persistent: true` 的 key。
 - **不要把 `ctx.activity_sink` 直接传给流式子 agent。** 不经 `StreamingPassthroughSink` 包装，子的 `TextDelta` 会原样出现在父 sink 上，污染父消息流。要么包装，要么传 `NullEventSink`。
 - **注意非本地 backend 的 transcript 语义。** 子通过 A2A backend（或其他 transcript-incremental 的远程 backend）跑时，只有 `User` 角色、`Visibility::All` 的内容会被转发给远端 agent——assistant / tool 历史不会。需要历史上下文时，要么自己编进 user prompt，要么用本地 backend。

@@ -110,7 +110,7 @@ impl Plugin for ResearchPlugin {
 
 The child agent must register `ResearchConfigKey` so seeding can apply, and it must register `ResearchFindingsKey` with `persistent: true` if you want findings to appear in `outcome.state.extensions`. The parent agent must register `ResearchSummaryKey` before committing the returned `StateCommand`. The single `ResearchPlugin` above registers all three for copy-paste simplicity; in production you may split that into `ChildResearchPlugin` and `ParentResearchPlugin` as long as each side registers the keys it reads or writes.
 
-2. Implement the tool. The key call is [`run_child_agent_checked`](/awaken/reference/) from `awaken_runtime::child_agent`; it wraps [`run_child_agent`](/awaken/reference/) and fails the parent tool when the child reaches a non-`Completed` terminal status.
+2. Implement the tool. The key call is [`run_child_agent`](/awaken/reference/) from `awaken_runtime::child_agent`. It returns the child run's terminal [`BackendRunResult`](/awaken/reference/); the parent tool decides how to interpret that lifecycle status as its own `ToolOutput.result`. The example below uses a semantic pass-through policy: the parent tool succeeds with a payload that includes `child_status`, while state export stays conservative.
 
 ```rust
 use std::sync::Arc;
@@ -125,8 +125,8 @@ use awaken_contract::contract::tool::{
 };
 use awaken_contract::state::PersistedState;
 
-use awaken_runtime::backend::{BackendParentContext, BackendRunResult};
-use awaken_runtime::child_agent::{ChildAgentParams, run_child_agent_checked};
+use awaken_runtime::backend::{BackendParentContext, BackendRunResult, BackendRunStatus};
+use awaken_runtime::child_agent::{ChildAgentParams, run_child_agent};
 use awaken_runtime::registry::ExecutionResolver;
 use awaken_runtime::{MutationBatch, StateCommand, StateStore};
 
@@ -159,7 +159,7 @@ impl Tool for ResearchTool {
         let seed = build_seed(topic, max_sources)
             .map_err(|e| ToolError::ExecutionFailed(e.to_string()))?;
 
-        let outcome = run_child_agent_checked(
+        let outcome = run_child_agent(
             ChildAgentParams::new(
                 self.resolver.as_ref(),
                 "researcher",
@@ -180,15 +180,15 @@ impl Tool for ResearchTool {
 
         let command = build_export(&outcome, topic)?;
 
-        Ok(ToolOutput {
-            result: ToolResult::success("research_topic", json!({
+        Ok(ToolOutput::with_command(
+            ToolResult::success("research_topic", json!({
+                "child_status": outcome.status.to_string(),
                 "response":     outcome.response,
                 "child_run_id": outcome.run_id,
                 "steps":        outcome.steps,
             })),
             command,
-            ..Default::default()
-        })
+        ))
     }
 
     fn validate_args(&self, _args: &Value) -> Result<(), ToolError> { Ok(()) }
@@ -218,11 +218,14 @@ Only `StateKey` entries with `persistent: true` survive `export_persisted`. If a
 The child's `StateStore` final snapshot is returned in `BackendRunResult.state` (a `PersistedState`). Decode the keys you care about and translate them into a `StateCommand` keyed against parent state keys — the loop runner will commit it after your tool returns.
 
 ```rust
-/// Decode child terminal state into a parent `StateCommand`. The outer
-/// `execute` already rejects non-Completed terminations, so this helper
-/// only needs to handle the success path's "no findings key present" edge.
+/// Decode child terminal state into a parent `StateCommand`. This export
+/// policy is intentionally stricter than the semantic tool-result policy:
+/// only a completed child may write research findings back to parent state.
 fn build_export(outcome: &BackendRunResult, topic: &str) -> Result<StateCommand, ToolError> {
     let mut cmd = StateCommand::new();
+    if !matches!(outcome.status, BackendRunStatus::Completed) {
+        return Ok(cmd);
+    }
     let Some(state) = outcome.state.as_ref() else {
         return Ok(cmd);
     };
@@ -247,6 +250,23 @@ fn build_export(outcome: &BackendRunResult, topic: &str) -> Result<StateCommand,
 The loop runner commits `ToolOutput.command` to the parent store after the tool returns — see [Tool and Plugin Boundary](/awaken/explanation/tool-and-plugin-boundary/). No new commit path is involved; this is the same machinery any tool already uses.
 
 Only keys registered with `persistent: true` on the child appear in `outcome.state.extensions`. If a value you need is non-persistent, either change the child key registration or fall back to `outcome.response` / `outcome.output` (the structured text output is preserved regardless of persistence).
+
+### Choose a parent policy for child status
+
+`BackendRunResult.status` is the child run lifecycle status. `ToolOutput.result` is the parent tool's interpretation of that result. The semantic pass-through example above returns a successful parent tool result even when the child reports `Failed`, `Cancelled`, `Timeout`, `Suspended`, or a waiting status, so the parent agent can inspect `child_status` and decide what to do next.
+
+Use a strict policy when the parent tool should fail unless the child completed:
+
+```rust
+if !matches!(outcome.status, BackendRunStatus::Completed) {
+    return Err(ToolError::ExecutionFailed(format!(
+        "sub-agent did not complete: {}",
+        outcome.status
+    )));
+}
+```
+
+`run_streaming_subagent` is one such strict helper: because it treats the child's stream as the current tool's output, it rejects non-`Completed` child results. State export is a separate policy decision; do not blindly write child state back to the parent just because the parent tool returned a semantic success payload.
 
 ## Stream the child's text into the parent tool's output
 
@@ -275,8 +295,10 @@ let outcome = run_child_agent_checked(
         BackendParentContext::default(),
         Arc::new(passthrough),
     )
-    .with_cancellation_token(ctx.cancellation_token.clone())
-).await?;
+    .with_cancellation_token(ctx.cancellation_token.clone()),
+)
+.await
+.map_err(|e| ToolError::ExecutionFailed(e.to_string()))?;
 
 let streamed_text = buffer.lock().await.clone();
 ```
@@ -295,7 +317,7 @@ Child `AgentEvent::TextDelta` events become `AgentEvent::ToolCallStreamDelta` on
 - **Do not seed keys the child agent has not registered.** The child runs `apply_seed` with `UnknownKeyPolicy::Error` — an unregistered key aborts the child before its first step. This is by design: it surfaces contract drift at startup rather than runtime.
 - **Do pass parent cancellation through.** When invoking a child from inside a tool, call `.with_cancellation_token(ctx.cancellation_token.clone())` so cancelling the parent run also cancels the child run.
 - **`initial_state_seed` is Local-backend only.** State seeding is gated by `BackendCapabilities::delegate_state_seed`; only the in-process Local backend currently advertises support. A2A and any other non-local backend that does not implement a seed-passing wire protocol reject seeded delegate requests with `ExecutionBackendError` — they will not silently succeed. If you need to ship data to a remote child, encode it in the prompt yourself.
-- **Do not export on non-`Completed` status.** For terminal `BackendRunResult` statuses such as `Failed` or `Cancelled`, `outcome.state` may be available depending on the backend and where the failure occurred. Backend dispatch or loop setup errors return `Err` and do not provide `BackendRunResult.state`. In either case, writing partial child state back into the parent risks inconsistency.
+- **Do not blindly export child state on non-`Completed` status.** The child result is a semantic message for the parent to interpret; decide separately whether the parent tool should fail, return a semantic success payload, or selectively export diagnostic state. For terminal `BackendRunResult` statuses such as `Failed` or `Cancelled`, `outcome.state` may be available depending on the backend and where the failure occurred. Backend dispatch or loop setup errors return `Err` and do not provide `BackendRunResult.state`.
 - **Do not assume non-persistent keys cross the run boundary.** `BackendRunResult.state` is built via `export_persisted` and only includes keys registered with `persistent: true`.
 - **Do not pass `ctx.activity_sink` directly to a streaming sub-agent.** Without `StreamingPassthroughSink`, the child's `TextDelta` events would surface as the parent's text — leaking the child's tokens into the parent's primary message stream. Wrap or pass `NullEventSink`.
 - **Be aware of non-local transcript semantics.** When the child runs through the A2A backend (or any other transcript-incremental backend), only `User`-role content with `Visibility::All` is forwarded to the remote agent — assistant/tool history is not. If your child needs prior context, bake it into the user prompt or use the Local backend.
