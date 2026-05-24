@@ -466,6 +466,7 @@ mod health_integration {
             Arc::new(StubResolver),
             ServerConfig::default(),
         )
+        .with_admin_api_bearer_token("test-admin-token")
     }
 
     #[tokio::test]
@@ -496,10 +497,12 @@ mod health_integration {
         use crate::app::AdminApiConfig;
         use axum::http::StatusCode;
 
-        let state = make_app_state().with_admin_api_config(AdminApiConfig {
-            expose_config_routes: false,
-            ..AdminApiConfig::default()
-        });
+        let state = make_app_state()
+            .with_admin_api_config(AdminApiConfig {
+                expose_config_routes: false,
+                ..AdminApiConfig::default()
+            })
+            .with_admin_api_bearer_token("test-admin-token");
         let app = build_router(&state);
 
         for uri in [
@@ -520,6 +523,7 @@ mod health_integration {
 
         let req = axum::http::Request::builder()
             .uri("/v1/system/info")
+            .header(axum::http::header::AUTHORIZATION, "Bearer test-admin-token")
             .body(axum::body::Body::empty())
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();
@@ -594,6 +598,7 @@ mod health_integration {
 
         let req = axum::http::Request::builder()
             .uri("/v1/system/info")
+            .header(axum::http::header::AUTHORIZATION, "Bearer test-admin-token")
             .body(axum::body::Body::empty())
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();

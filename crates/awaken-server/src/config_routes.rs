@@ -920,8 +920,10 @@ mod tests {
     // ── delete 409 / force integration tests ──────────────────────────────
 
     mod delete_integration {
-        use std::sync::Arc;
-
+        use crate::app::{ServerConfig, ServerState};
+        use crate::mailbox::{Mailbox, MailboxConfig};
+        use crate::routes::build_router;
+        use crate::services::config_runtime::{ConfigRuntimeManager, ProviderExecutorFactory};
         use async_trait::async_trait;
         use awaken_contract::contract::executor::{
             InferenceExecutionError, InferenceRequest, LlmExecutor,
@@ -936,15 +938,9 @@ mod tests {
         use axum::http::{Request, StatusCode};
         use http_body_util::BodyExt;
         use serde_json::Value;
+        use std::sync::Arc;
         use tower::ServiceExt;
-
-        use crate::app::{ServerConfig, ServerState};
-        use crate::mailbox::{Mailbox, MailboxConfig};
-        use crate::routes::build_router;
-        use crate::services::config_runtime::{ConfigRuntimeManager, ProviderExecutorFactory};
-
         struct ImmediateExecutor;
-
         #[async_trait]
         impl LlmExecutor for ImmediateExecutor {
             async fn execute(
@@ -959,14 +955,11 @@ mod tests {
                     has_incomplete_tool_calls: false,
                 })
             }
-
             fn name(&self) -> &str {
                 "immediate"
             }
         }
-
         struct TestProviderFactory;
-
         impl ProviderExecutorFactory for TestProviderFactory {
             fn build(
                 &self,
@@ -983,7 +976,6 @@ mod tests {
                 )
             }
         }
-
         fn bootstrap_agent() -> AgentSpec {
             AgentSpec {
                 id: "bootstrap".into(),
@@ -993,7 +985,21 @@ mod tests {
                 ..Default::default()
             }
         }
+        const TEST_ADMIN_TOKEN: &str = "test-admin-token";
 
+        fn build_authorized_test_router(state: &ServerState) -> axum::Router {
+            use axum::http::{HeaderValue, header};
+            use axum::middleware::{self, Next};
+            build_router(state).layer(middleware::from_fn(
+                |mut req: Request<Body>, next: Next| async move {
+                    req.headers_mut().insert(
+                        header::AUTHORIZATION,
+                        HeaderValue::from_static("Bearer test-admin-token"),
+                    );
+                    next.run(req).await
+                },
+            ))
+        }
         async fn build_test_app() -> axum::Router {
             let config_store = Arc::new(awaken_stores::InMemoryStore::new());
             let thread_store = Arc::new(awaken_stores::InMemoryStore::new());
@@ -1004,7 +1010,6 @@ mod tests {
                     .build()
                     .expect("build runtime"),
             );
-
             let manager = Arc::new(
                 ConfigRuntimeManager::new(runtime.clone(), config_store.clone())
                     .expect("config runtime manager")
@@ -1028,7 +1033,6 @@ mod tests {
             };
             manager.apply_seed(&seed).await.expect("apply_seed");
             manager.apply().await.expect("publish config");
-
             let resolver = runtime.resolver_arc();
             let mailbox = Arc::new(Mailbox::new(
                 runtime.clone(),
@@ -1045,11 +1049,10 @@ mod tests {
                 ServerConfig::default(),
             )
             .with_config_store(config_store)
-            .with_config_runtime_manager(manager);
-
-            build_router(&state)
+            .with_config_runtime_manager(manager)
+            .with_admin_api_bearer_token(TEST_ADMIN_TOKEN);
+            build_authorized_test_router(&state)
         }
-
         async fn create_record(app: &axum::Router, namespace: &str, body: &str) -> StatusCode {
             let req = Request::builder()
                 .method("POST")
@@ -1059,7 +1062,6 @@ mod tests {
                 .unwrap();
             app.clone().oneshot(req).await.unwrap().status()
         }
-
         async fn delete_record(
             app: &axum::Router,
             namespace: &str,
@@ -1086,7 +1088,6 @@ mod tests {
             };
             (status, body)
         }
-
         async fn validate_record(
             app: &axum::Router,
             namespace: &str,
@@ -1108,7 +1109,6 @@ mod tests {
             };
             (status, body)
         }
-
         async fn get_json(app: &axum::Router, uri: &str) -> (StatusCode, Value) {
             let req = Request::builder()
                 .method("GET")
@@ -1125,7 +1125,6 @@ mod tests {
             };
             (status, body)
         }
-
         #[tokio::test]
         async fn validate_returns_normalized_payload_without_persisting() {
             let app = build_test_app().await;
@@ -1147,18 +1146,15 @@ mod tests {
             let get_resp = app.clone().oneshot(get_req).await.unwrap();
             assert_eq!(get_resp.status(), StatusCode::NOT_FOUND);
         }
-
         #[tokio::test]
         async fn validate_rejects_missing_id() {
             let app = build_test_app().await;
             let (status, _) = validate_record(&app, "providers", r#"{"adapter":"stub"}"#).await;
             assert_eq!(status, StatusCode::BAD_REQUEST);
         }
-
         #[tokio::test]
         async fn validate_rejects_unknown_provider_and_empty_model_fields() {
             let app = build_test_app().await;
-
             let (status, body) = validate_record(
                 &app,
                 "providers",
@@ -1167,7 +1163,6 @@ mod tests {
             .await;
             assert_eq!(status, StatusCode::BAD_REQUEST);
             assert!(body["error"].as_str().unwrap().contains("future_top_level"));
-
             let (status, body) = validate_record(
                 &app,
                 "models",
@@ -1177,7 +1172,6 @@ mod tests {
             assert_eq!(status, StatusCode::BAD_REQUEST);
             assert!(body["error"].as_str().unwrap().contains("provider_id"));
         }
-
         #[tokio::test]
         async fn validate_agent_overrides_does_not_persist_patch() {
             let app = build_test_app().await;
@@ -1193,7 +1187,6 @@ mod tests {
             let body: Value = serde_json::from_slice(&bytes).unwrap();
             assert_eq!(body["ok"], Value::Bool(true));
             assert_eq!(body["normalized"]["system_prompt"], "patched");
-
             let (status, meta) = get_json(&app, "/v1/config/agents/bootstrap/meta").await;
             assert_eq!(status, StatusCode::OK);
             assert!(meta["user_overrides"].is_null());
@@ -1449,8 +1442,9 @@ mod tests {
                 ServerConfig::default(),
             )
             .with_config_store(config_store)
-            .with_config_runtime_manager(manager);
-            let app = build_router(&state);
+            .with_config_runtime_manager(manager)
+            .with_admin_api_bearer_token(TEST_ADMIN_TOKEN);
+            let app = build_authorized_test_router(&state);
 
             let (status, body) = test_provider(&app, "prov-openai").await;
             assert_eq!(status, StatusCode::OK, "body: {body}");
@@ -1564,9 +1558,10 @@ mod tests {
                 ServerConfig::default(),
             )
             .with_config_store(config_store)
-            .with_config_runtime_manager(manager);
+            .with_config_runtime_manager(manager)
+            .with_admin_api_bearer_token(TEST_ADMIN_TOKEN);
 
-            build_router(&state)
+            build_authorized_test_router(&state)
         }
 
         #[tokio::test]
