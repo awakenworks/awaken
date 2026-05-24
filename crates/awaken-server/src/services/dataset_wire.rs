@@ -85,6 +85,19 @@ pub struct IdParam {
     pub id: Option<String>,
 }
 
+/// Query params for `DELETE /v1/eval/datasets/:id`. `expected_revision`
+/// turns the delete into a compare-and-swap: the store only removes the
+/// record when its current `meta.revision` matches. The trace → fixture
+/// flow uses this to roll back an inline-created dataset *without* risking
+/// a concurrent operator's fixture that landed between create and curate
+/// (plain delete would wipe it). Absent → unconditional delete.
+#[derive(Debug, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+pub struct DeleteDatasetParams {
+    #[serde(default)]
+    pub expected_revision: Option<u64>,
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PutDatasetRequest {
