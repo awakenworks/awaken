@@ -45,6 +45,8 @@ impl LlmExecutor for ImmediateExecutor {
 
 struct TestProviderFactory;
 
+const ADMIN_TOKEN: &str = "restore-test-token";
+
 impl ProviderExecutorFactory for TestProviderFactory {
     fn build(&self, spec: &ProviderSpec) -> Result<Arc<dyn LlmExecutor>, ConfigRuntimeError> {
         if spec.adapter.eq_ignore_ascii_case("stub") {
@@ -119,6 +121,7 @@ async fn build_test_app() -> axum::Router {
         resolver,
         ServerConfig::default(),
     )
+    .with_admin_api_bearer_token(ADMIN_TOKEN)
     .with_config_store(config_store)
     .with_config_runtime_manager(manager)
     .with_audit_log(audit_logger);
@@ -133,6 +136,7 @@ async fn post_json(app: &axum::Router, uri: &str, body: &Value) -> (StatusCode, 
         .method("POST")
         .uri(uri)
         .header("content-type", "application/json")
+        .header("authorization", format!("Bearer {ADMIN_TOKEN}"))
         .body(Body::from(serde_json::to_vec(body).unwrap()))
         .unwrap();
     let resp = app.clone().oneshot(req).await.unwrap();
@@ -147,6 +151,7 @@ async fn put_json(app: &axum::Router, uri: &str, body: &Value) -> (StatusCode, V
         .method("PUT")
         .uri(uri)
         .header("content-type", "application/json")
+        .header("authorization", format!("Bearer {ADMIN_TOKEN}"))
         .body(Body::from(serde_json::to_vec(body).unwrap()))
         .unwrap();
     let resp = app.clone().oneshot(req).await.unwrap();
@@ -161,6 +166,7 @@ async fn patch_json(app: &axum::Router, uri: &str, body: &Value) -> (StatusCode,
         .method("PATCH")
         .uri(uri)
         .header("content-type", "application/json")
+        .header("authorization", format!("Bearer {ADMIN_TOKEN}"))
         .body(Body::from(serde_json::to_vec(body).unwrap()))
         .unwrap();
     let resp = app.clone().oneshot(req).await.unwrap();
@@ -174,6 +180,7 @@ async fn delete_resource(app: &axum::Router, uri: &str) -> StatusCode {
     let req = Request::builder()
         .method("DELETE")
         .uri(uri)
+        .header("authorization", format!("Bearer {ADMIN_TOKEN}"))
         .body(Body::empty())
         .unwrap();
     app.clone().oneshot(req).await.unwrap().status()
@@ -188,6 +195,7 @@ async fn get_audit_log(app: &axum::Router, qs: &str) -> Value {
     let req = Request::builder()
         .method("GET")
         .uri(&uri)
+        .header("authorization", format!("Bearer {ADMIN_TOKEN}"))
         .body(Body::empty())
         .unwrap();
     let resp = app.clone().oneshot(req).await.unwrap();
@@ -412,6 +420,7 @@ async fn restore_restart_event_returns_422() {
         resolver,
         ServerConfig::default(),
     )
+    .with_admin_api_bearer_token(ADMIN_TOKEN)
     .with_config_store(config_store)
     .with_config_runtime_manager(manager)
     .with_audit_log(audit_logger);
@@ -727,6 +736,7 @@ async fn restore_rejects_seed_apply_event() {
         resolver,
         ServerConfig::default(),
     )
+    .with_admin_api_bearer_token(ADMIN_TOKEN)
     .with_config_store(config_store)
     .with_config_runtime_manager(manager)
     .with_audit_log(audit_logger);
