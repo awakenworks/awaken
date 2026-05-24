@@ -103,6 +103,108 @@ fn file_store_write_is_write_once() {
 }
 
 #[test]
+fn file_store_rejects_duplicate_item_keys() {
+    // Regression: runs whose items collide on (fixture_id, cell,
+    // sample_index) must never land on disk. `diff_eval_items` keys
+    // items on that triple and silently overwrites collisions in its
+    // BTreeMap, so a duplicate-key run would later make every baseline
+    // diff against it depend on Vec insertion order — exactly the
+    // "diff is wrong but plausible" failure mode the matrix gate is
+    // supposed to catch. The check belongs at the store boundary so
+    // dataset matrix runs, ad-hoc online runs, and any future bulk
+    // import all share the invariant.
+    let tmp = tempfile::tempdir().unwrap();
+    let store = FileEvalRunStore::new(tmp.path()).unwrap();
+    let mut run = sample_run("RUN-DUP", "DS-DUP", 1_700_000_000);
+    // Force a collision: two items with identical
+    // (fixture_id, cell, sample_index) — all three are equal here.
+    run.items[1].fixture_id = run.items[0].fixture_id.clone();
+    let err = store.write(&run).unwrap_err();
+    match err {
+        EvalRunStoreError::DuplicateItemKeys(id, msg) => {
+            assert_eq!(id, "RUN-DUP");
+            assert!(
+                msg.contains("duplicate eval-run item key"),
+                "unexpected duplicate-key message: {msg}",
+            );
+        }
+        other => panic!("expected DuplicateItemKeys, got {other:?}"),
+    }
+    // Nothing landed on disk — read must surface NotFound.
+    let read_err = store.read("RUN-DUP").unwrap_err();
+    assert!(matches!(read_err, EvalRunStoreError::NotFound(_)));
+}
+
+#[test]
+fn file_store_write_once_takes_priority_over_duplicate_item_keys() {
+    let tmp = tempfile::tempdir().unwrap();
+    let store = FileEvalRunStore::new(tmp.path()).unwrap();
+    let first = sample_run("RUN42", "DS1", 1_700_000_000);
+    store.write(&first).unwrap();
+
+    let mut duplicate_payload = first.clone();
+    duplicate_payload.items[1].fixture_id = duplicate_payload.items[0].fixture_id.clone();
+    let err = store.write(&duplicate_payload).unwrap_err();
+    assert!(matches!(
+        err,
+        EvalRunStoreError::AlreadyExists(ref id) if id == "RUN42"
+    ));
+}
+
+#[test]
+fn file_store_read_rejects_historical_duplicate_item_keys() {
+    let tmp = tempfile::tempdir().unwrap();
+    let store = FileEvalRunStore::new(tmp.path()).unwrap();
+    let mut run = sample_run("RUN-HIST-DUP", "DS-DUP", 1_700_000_000);
+    run.items[1].fixture_id = run.items[0].fixture_id.clone();
+
+    let path = run_path_for(tmp.path(), &run.id, run.started_at_secs);
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(&path, serde_json::to_vec_pretty(&run).unwrap()).unwrap();
+
+    let err = store.read(&run.id).unwrap_err();
+    match err {
+        EvalRunStoreError::DuplicateItemKeys(id, msg) => {
+            assert_eq!(id, "RUN-HIST-DUP");
+            assert!(
+                msg.contains("duplicate eval-run item key"),
+                "unexpected duplicate-key message: {msg}",
+            );
+        }
+        other => panic!("expected DuplicateItemKeys, got {other:?}"),
+    }
+}
+
+#[test]
+fn file_store_list_full_skips_historical_duplicate_item_keys() {
+    let tmp = tempfile::tempdir().unwrap();
+    let store = FileEvalRunStore::new(tmp.path()).unwrap();
+    store
+        .write(&sample_run("GOOD", "DS-DUP", 1_700_000_500))
+        .unwrap();
+
+    let mut dirty = sample_run("DIRTY", "DS-DUP", 1_700_000_000);
+    dirty.items[1].fixture_id = dirty.items[0].fixture_id.clone();
+    let dirty_path = run_path_for(tmp.path(), &dirty.id, dirty.started_at_secs);
+    std::fs::create_dir_all(dirty_path.parent().unwrap()).unwrap();
+    std::fs::write(&dirty_path, serde_json::to_vec_pretty(&dirty).unwrap()).unwrap();
+
+    let filter = EvalRunFilter {
+        dataset_id: Some("DS-DUP".into()),
+        since_secs: None,
+        until_secs: None,
+        limit: None,
+    };
+    let runs = store.list_full(&filter).unwrap();
+    assert_eq!(runs.len(), 1);
+    assert_eq!(runs[0].id, "GOOD");
+
+    let summaries = store.list(&filter).unwrap();
+    assert_eq!(summaries.len(), 1);
+    assert_eq!(summaries[0].id, "GOOD");
+}
+
+#[test]
 fn file_store_started_at_zero_is_resolved_in_persisted_record() {
     // Earlier shape resolved started_at_secs only for shard routing, so
     // the persisted JSON still carried a `0` that diverged from its

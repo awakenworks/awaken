@@ -84,13 +84,18 @@ pub struct OnlineEvalRequest {
     /// Default true — exploration is retroactively interesting.
     #[serde(default = "default_persist")]
     pub persist: bool,
-    /// Per-cell walltime cap. Enforced via `tokio::time::timeout` around
-    /// the per-cell future: when a cell's replay (initial inference +
-    /// any dialogue continuation + revise loop) exceeds this many
-    /// seconds, the in-flight provider call is dropped and the cell's
-    /// `EvalRunItem` carries a `ReplayRuntimeFailure::RuntimeError` with
-    /// a "cell walltime exceeded" message. Prevents a stuck provider
-    /// from holding the HTTP connection open past ingress timeouts.
+    /// Per-cell walltime cap. Enforced as a single deadline shared
+    /// across two phases: (1) replay (initial inference + any dialogue
+    /// continuation + revise loop) and (2) scoring + judge invocation.
+    /// Both `tokio::time::timeout_at` against the same `Instant +
+    /// max_walltime_secs`, so a stuck judge eats into the same budget
+    /// the model already consumed. On expiry the in-flight provider
+    /// call is dropped; the cell's `EvalRunItem` reports
+    /// `ReplayRuntimeFailure::RuntimeError`. When the timeout fires
+    /// AFTER replay completed, the real `final_text` / token usage /
+    /// trace_run_id are preserved — only the scoring/judge phase is
+    /// reported as the failure reason. Prevents a stuck provider or
+    /// judge from holding the HTTP connection past ingress timeouts.
     #[serde(default = "default_walltime")]
     pub max_walltime_secs: u64,
     /// Per-cell token budget (post-hoc enforced — see
@@ -396,7 +401,7 @@ pub async fn start_online_eval(
         if let Some(store) = state.eval_run_store() {
             store
                 .write(&run)
-                .map_err(|err| ApiError::Internal(format!("persisting online run: {err}")))?;
+                .map_err(super::eval_run_service::map_eval_run_store_error)?;
             true
         } else {
             // EvalRunStore not configured — surface explicitly rather

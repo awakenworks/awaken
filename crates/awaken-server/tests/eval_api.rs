@@ -49,6 +49,11 @@ struct TestApp {
     router: axum::Router,
     trace_store: Arc<FileTraceStore>,
     eval_run_store: Arc<FileEvalRunStore>,
+    /// Root passed to `FileEvalRunStore::new`. Tests that need to seed a
+    /// corrupt on-disk run (e.g. one with duplicate item keys that the
+    /// store's `write()` would normally reject) write the JSON file
+    /// straight to `{root}/eval_runs/{yyyy-mm}/{run_id}.json`.
+    eval_run_root: std::path::PathBuf,
 }
 
 async fn build_test_app_without_run_store() -> axum::Router {
@@ -97,7 +102,8 @@ async fn build_test_app() -> TestApp {
     let thread_store = Arc::new(InMemoryStore::new());
     let config_store = Arc::new(InMemoryStore::new());
     let trace_store = Arc::new(FileTraceStore::new(temp_dir("eval-trace")).unwrap());
-    let eval_run_store = Arc::new(FileEvalRunStore::new(temp_dir("eval-runs")).unwrap());
+    let eval_run_root = temp_dir("eval-runs");
+    let eval_run_store = Arc::new(FileEvalRunStore::new(eval_run_root.clone()).unwrap());
 
     let runtime = Arc::new(
         AgentRuntimeBuilder::new()
@@ -141,7 +147,31 @@ async fn build_test_app() -> TestApp {
         router: build_router(&state).with_state(state),
         trace_store,
         eval_run_store,
+        eval_run_root,
     }
+}
+
+/// Test-only backdoor: write a hand-crafted `EvalRun` JSON file straight
+/// into the `FileEvalRunStore` shard layout, bypassing
+/// `EvalRunStore::write`. Needed for regression tests that exercise
+/// "what if a corrupt run is already on disk" scenarios — the normal
+/// `write()` path now rejects duplicate-key runs, so the only way to
+/// stage one is to drop the file in by hand.
+fn seed_corrupt_eval_run(root: &std::path::Path, run: &EvalRun) {
+    let (year, month) = {
+        // Mirror FileEvalRunStore's shard layout: yyyy-mm derived from
+        // started_at_secs, UTC. Use chrono via time so we don't pull in
+        // a new test dep — the started_at is fully under test control
+        // and we can hard-code the shard if we generate it ourselves.
+        use chrono::{TimeZone, Utc};
+        let dt = Utc.timestamp_opt(run.started_at_secs as i64, 0).unwrap();
+        (dt.format("%Y").to_string(), dt.format("%m").to_string())
+    };
+    let shard = root.join("eval_runs").join(format!("{year}-{month}"));
+    std::fs::create_dir_all(&shard).unwrap();
+    let path = shard.join(format!("{}.json", run.id));
+    let bytes = serde_json::to_vec(run).unwrap();
+    std::fs::write(&path, bytes).unwrap();
 }
 
 async fn request(
@@ -591,7 +621,7 @@ async fn get_eval_run_baseline_400s_on_adhoc_run() {
 }
 
 #[tokio::test]
-async fn get_eval_run_baseline_500s_on_duplicate_item_keys() {
+async fn get_eval_run_baseline_400s_when_current_has_duplicate_item_keys() {
     // Diff must refuse to silently collapse duplicate (fixture_id, cell,
     // sample_index) keys via the BTreeMap pairing. A run that managed
     // to land two items with the same key (e.g. a future store impl
@@ -607,7 +637,12 @@ async fn get_eval_run_baseline_500s_on_duplicate_item_keys() {
     baseline.dataset_id = newer.dataset_id.clone();
     baseline.dataset_revision = newer.dataset_revision;
     app.eval_run_store.write(&baseline).unwrap();
-    app.eval_run_store.write(&newer).unwrap();
+    // `FileEvalRunStore::write` now rejects duplicate-key runs at the
+    // store boundary, so the only way to stage the corrupt-newer
+    // scenario this test exercises is to drop the JSON in by hand —
+    // exactly the "future store impl with weaker guarantees" the diff
+    // guard is supposed to catch.
+    seed_corrupt_eval_run(&app.eval_run_root, &newer);
     let (status, body) = request(
         &app.router,
         "GET",
@@ -615,9 +650,40 @@ async fn get_eval_run_baseline_500s_on_duplicate_item_keys() {
         None,
     )
     .await;
-    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+    assert_eq!(status, StatusCode::BAD_REQUEST);
     assert!(
         body["error"].as_str().unwrap_or("").contains("duplicate"),
+        "body: {body}"
+    );
+}
+
+#[tokio::test]
+async fn get_eval_run_baseline_400s_when_baseline_has_duplicate_item_keys() {
+    // Symmetric to the corrupt-current case above: selecting a baseline
+    // that cannot be diffed is a bad diff request, not an internal
+    // failure. The normal store write path rejects this shape, so seed
+    // it directly to model already-corrupt on-disk state.
+    let app = build_test_app().await;
+    let mut baseline = baseline_run("BASE-DUP");
+    let dup = baseline.items[0].clone();
+    baseline.items.push(dup);
+    let newer = new_run_with_drift("NEW-GOOD");
+    app.eval_run_store.write(&newer).unwrap();
+    seed_corrupt_eval_run(&app.eval_run_root, &baseline);
+
+    let (status, body) = request(
+        &app.router,
+        "GET",
+        "/v1/eval/runs/NEW-GOOD?baseline=BASE-DUP",
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(
+        body["error"]
+            .as_str()
+            .unwrap_or("")
+            .contains("duplicate eval-run item key"),
         "body: {body}"
     );
 }
@@ -1067,10 +1133,11 @@ async fn start_eval_run_baseline_with_duplicate_item_keys_rejected_before_replay
     .await;
     assert_eq!(status, StatusCode::CREATED);
 
-    // Hand-craft a baseline with two items sharing the same key — the
-    // store-write paths normally reject this, but a corrupt on-disk
-    // record (or a future store impl with weaker guarantees) would
-    // otherwise slip past the preflight gate.
+    // Hand-craft a baseline with two items sharing the same key. The
+    // store-write paths now reject duplicate keys (see
+    // `file_store_rejects_duplicate_item_keys`) so we have to drop
+    // the JSON file in by hand to simulate a pre-existing corrupt
+    // on-disk record — exactly the case the preflight guard exists for.
     let dup_baseline = EvalRun {
         id: "DUP-BASE".into(),
         dataset_id: "DS-DUP-BASE".into(),
@@ -1079,7 +1146,7 @@ async fn start_eval_run_baseline_with_duplicate_item_keys_rejected_before_replay
         started_at_secs: 1_700_000_000,
         ended_at_secs: 1_700_000_001,
     };
-    app.eval_run_store.write(&dup_baseline).unwrap();
+    seed_corrupt_eval_run(&app.eval_run_root, &dup_baseline);
 
     let (status, body) = request(
         &app.router,
@@ -1091,7 +1158,7 @@ async fn start_eval_run_baseline_with_duplicate_item_keys_rejected_before_replay
         })),
     )
     .await;
-    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+    assert_eq!(status, StatusCode::BAD_REQUEST);
     assert!(
         body["error"]
             .as_str()
@@ -1099,11 +1166,16 @@ async fn start_eval_run_baseline_with_duplicate_item_keys_rejected_before_replay
             .contains("duplicate eval-run item key"),
         "body: {body}"
     );
-    // Pre-existing duplicate-key baseline is still the only run — no
-    // half-finished new run was persisted before the diff bailed.
+    // No valid run was persisted before the diff bailed. The
+    // pre-existing duplicate-key baseline is still on disk, but
+    // FileEvalRunStore::list deliberately skips historical dirty runs
+    // so list endpoints don't expose invalid eval data.
     let runs = app.eval_run_store.list(&Default::default()).unwrap();
-    assert_eq!(runs.len(), 1);
-    assert_eq!(runs[0].id, "DUP-BASE");
+    assert!(runs.is_empty());
+    assert!(matches!(
+        app.eval_run_store.read("DUP-BASE").unwrap_err(),
+        awaken_eval::EvalRunStoreError::DuplicateItemKeys(_, _)
+    ));
 }
 
 // ── Online eval (POST /v1/eval/online) — validation paths ────────────────
