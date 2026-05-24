@@ -88,14 +88,12 @@ fn run_origin_exhaustive_match_keeps_0_2_variants() {
     fn label(origin: RunOrigin) -> &'static str {
         match origin {
             RunOrigin::User => "user",
-            RunOrigin::Mcp => "mcp",
             RunOrigin::Subagent => "subagent",
             RunOrigin::Internal => "internal",
             RunOrigin::Mcp => "mcp",
         }
     }
     assert_eq!(label(RunOrigin::User), "user");
-    assert_eq!(label(RunOrigin::Mcp), "mcp");
     assert_eq!(label(RunOrigin::Subagent), "subagent");
     assert_eq!(label(RunOrigin::Internal), "internal");
     assert_eq!(label(RunOrigin::Mcp), "mcp");
@@ -106,14 +104,12 @@ fn run_request_origin_exhaustive_match_keeps_0_2_variants() {
     fn label(o: RunRequestOrigin) -> &'static str {
         match o {
             RunRequestOrigin::User => "user",
-            RunRequestOrigin::Mcp => "mcp",
             RunRequestOrigin::A2A => "a2a",
             RunRequestOrigin::Internal => "internal",
             RunRequestOrigin::Mcp => "mcp",
         }
     }
     assert_eq!(label(RunRequestOrigin::User), "user");
-    assert_eq!(label(RunRequestOrigin::Mcp), "mcp");
     assert_eq!(label(RunRequestOrigin::A2A), "a2a");
     assert_eq!(label(RunRequestOrigin::Internal), "internal");
     assert_eq!(label(RunRequestOrigin::Mcp), "mcp");
