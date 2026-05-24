@@ -28,6 +28,8 @@ use crate::file::FileStore;
 use crate::memory_event_store::InMemoryEventStore;
 use crate::memory_outbox::InMemoryOutboxStore;
 
+pub const ALLOW_DEV_FILE_COORDINATOR_ENV: &str = "AWAKEN_ALLOW_DEV_FILE_COORDINATOR";
+
 #[derive(Clone)]
 pub struct FileCommitCoordinator {
     thread_run: Arc<FileStore>,
@@ -43,6 +45,16 @@ impl FileCommitCoordinator {
         events: Arc<InMemoryEventStore>,
         outbox: Arc<InMemoryOutboxStore>,
     ) -> Result<Self, CommitError> {
+        let allow_env = std::env::var(ALLOW_DEV_FILE_COORDINATOR_ENV).ok();
+        if !file_coordinator_allowed(cfg!(debug_assertions), allow_env.as_deref()) {
+            return Err(CommitError::Validation(format!(
+                "FileCommitCoordinator is dev-only; set {ALLOW_DEV_FILE_COORDINATOR_ENV}=true to opt in explicitly"
+            )));
+        }
+        tracing::warn!(
+            env = ALLOW_DEV_FILE_COORDINATOR_ENV,
+            "FileCommitCoordinator is dev-only and provides best-effort atomicity; use PgCommitCoordinator for production"
+        );
         let scope_descriptor = format!(
             "file::({:p},{:p},{:p})",
             Arc::as_ptr(&thread_run),
@@ -67,6 +79,16 @@ impl FileCommitCoordinator {
         let outbox = Arc::new(InMemoryOutboxStore::new());
         Arc::new(Self::new(store, events, outbox).expect("file coordinator constructs"))
     }
+}
+
+fn file_coordinator_allowed(debug_assertions: bool, allow_env: Option<&str>) -> bool {
+    debug_assertions
+        || allow_env.is_some_and(|value| {
+            matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
 }
 
 #[async_trait]
@@ -140,7 +162,7 @@ mod tests {
     use awaken_contract::contract::outbox::OutboxMessageDraft;
     use awaken_contract::contract::storage::{RunRecord, RunStore};
 
-    use super::FileCommitCoordinator;
+    use super::{FileCommitCoordinator, file_coordinator_allowed};
     use crate::file::FileStore;
 
     fn sample_draft(kind: &str, thread_id: &str, run_id: &str) -> CanonicalEventDraft {
@@ -159,6 +181,7 @@ mod tests {
         RunRecord {
             run_id: run_id.into(),
             thread_id: thread_id.into(),
+            agent_id: "agent-test".into(),
             status: RunStatus::Done,
             ..Default::default()
         }
@@ -175,6 +198,26 @@ mod tests {
         let store = Arc::new(FileStore::new(dir.path()));
         let coordinator = FileCommitCoordinator::wrap(Arc::clone(&store));
         (coordinator, store, dir)
+    }
+
+    #[test]
+    fn file_coordinator_guard_allows_debug_build_without_env() {
+        assert!(file_coordinator_allowed(true, None));
+    }
+
+    #[test]
+    fn file_coordinator_guard_rejects_release_without_explicit_env() {
+        assert!(!file_coordinator_allowed(false, None));
+        assert!(!file_coordinator_allowed(false, Some("")));
+        assert!(!file_coordinator_allowed(false, Some("false")));
+    }
+
+    #[test]
+    fn file_coordinator_guard_allows_release_with_explicit_env() {
+        assert!(file_coordinator_allowed(false, Some("true")));
+        assert!(file_coordinator_allowed(false, Some("1")));
+        assert!(file_coordinator_allowed(false, Some("YES")));
+        assert!(file_coordinator_allowed(false, Some(" on ")));
     }
 
     /// Happy path: a clean plan commits the FileStore thread/run record
