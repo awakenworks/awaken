@@ -682,15 +682,6 @@ pub struct Mailbox {
 
 impl Mailbox {
     /// Create a new Mailbox service.
-    ///
-    /// ADR-0038 D7: the mailbox holds a single `CommitCoordinator` and
-    /// derives its `ThreadRunStore` from that coordinator's
-    /// `thread_run_store()` — there is no parallel store handle to keep in
-    /// sync. When the executor exposes its own coordinator (production
-    /// runtime wiring), it is adopted directly. Debug/test builds retain the
-    /// legacy implicit run-store coordinator for embedded unit callers; release
-    /// builds panic if the executor has no coordinator so production durable
-    /// mailbox deployments cannot silently omit canonical events/outbox writes.
     pub fn new(
         executor: impl IntoDispatchExecutor,
         store: Arc<dyn MailboxStore>,
@@ -698,6 +689,24 @@ impl Mailbox {
         consumer_id: String,
         config: MailboxConfig,
     ) -> Self {
+        Self::try_new(executor, store, run_store, consumer_id, config)
+            .expect("Mailbox requires a CommitCoordinator outside debug/test fallback")
+    }
+
+    /// Fallible constructor for production wiring that must fail closed.
+    ///
+    /// ADR-0038 D7: the mailbox adopts `executor.commit_coordinator()` and
+    /// derives its `ThreadRunStore` from that coordinator. Debug/test builds
+    /// retain the legacy implicit run-store coordinator for embedded unit
+    /// callers; release builds return an error instead of silently taking a
+    /// partial durable path with no canonical events/outbox writes.
+    pub fn try_new(
+        executor: impl IntoDispatchExecutor,
+        store: Arc<dyn MailboxStore>,
+        run_store: Arc<dyn ThreadRunStore>,
+        consumer_id: String,
+        config: MailboxConfig,
+    ) -> Result<Self, MailboxError> {
         let executor = executor.into_dispatch_executor();
         let coordinator = if let Some(coordinator) = executor.commit_coordinator() {
             coordinator
@@ -709,13 +718,14 @@ impl Mailbox {
             Arc::new(MailboxRunStoreCoordinator::new(Arc::clone(&run_store)))
                 as Arc<dyn CommitCoordinator>
         } else {
-            panic!(
+            return Err(MailboxError::Internal(
                 "Mailbox requires a CommitCoordinator in release builds; wire a durable \
                  Memory/File/Pg coordinator through the runtime"
-            );
+                    .to_string(),
+            ));
         };
         let run_store = coordinator.thread_run_store();
-        Self {
+        Ok(Self {
             executor,
             store,
             coordinator,
@@ -728,7 +738,7 @@ impl Mailbox {
             server_event_origin: "mailbox".to_string(),
             lifecycle_tasks: Arc::new(StdMutex::new(None)),
             lifecycle_start_lock: Arc::new(Mutex::new(())),
-        }
+        })
     }
 
     /// Default bounded channel capacity for the runtime->SSE relay.

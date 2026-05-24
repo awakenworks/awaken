@@ -125,7 +125,8 @@ impl Mailbox {
         let dispatch_id = dispatch.dispatch_id.clone();
         let thread_id = dispatch.thread_id.clone();
 
-        // WAL: persist before anything else.
+        // WAL: persist after the prepared checkpoint; startup recovery
+        // reconciles the crash window before this enqueue.
         // Set available_at slightly in the future to prevent sweep from grabbing
         // the dispatch during the inline claim window. If the process crashes before
         // the claim completes, sweep will reclaim the dispatch after the guard period.
@@ -266,7 +267,8 @@ impl Mailbox {
         let dispatch_id = dispatch.dispatch_id.clone();
         let thread_id = dispatch.thread_id.clone();
 
-        // WAL: persist with available_at = now.
+        // WAL: persist with available_at = now; startup recovery reconstructs
+        // the row if the process crashed after preparing the run checkpoint.
         self.enqueue_dispatch_for_request(&request, &dispatch)
             .await?;
         self.record_mailbox_dispatch_event("RunQueued", &dispatch)
