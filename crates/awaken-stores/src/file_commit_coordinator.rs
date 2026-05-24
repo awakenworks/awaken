@@ -74,10 +74,10 @@ impl FileCommitCoordinator {
     /// Wrap an existing [`FileStore`] with fresh in-memory event/outbox
     /// stores. Intended for dev backends and tests that already hold a
     /// shared file-backed thread-run store.
-    pub fn wrap(store: Arc<FileStore>) -> Arc<Self> {
+    pub fn wrap(store: Arc<FileStore>) -> Result<Arc<Self>, CommitError> {
         let events = Arc::new(InMemoryEventStore::new());
         let outbox = Arc::new(InMemoryOutboxStore::new());
-        Arc::new(Self::new(store, events, outbox).expect("file coordinator constructs"))
+        Self::new(store, events, outbox).map(Arc::new)
     }
 }
 
@@ -196,7 +196,8 @@ mod tests {
     ) {
         let dir = tempdir().expect("tempdir");
         let store = Arc::new(FileStore::new(dir.path()));
-        let coordinator = FileCommitCoordinator::wrap(Arc::clone(&store));
+        let coordinator =
+            FileCommitCoordinator::wrap(Arc::clone(&store)).expect("file coordinator constructs");
         (coordinator, store, dir)
     }
 
