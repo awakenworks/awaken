@@ -77,7 +77,7 @@ pub use resolution::{
 };
 pub use run::{
     CaptureWiring, PersistenceHints, ResolverInheritance, RunActivation, RunActivationError,
-    RunControl, ThreadContextSnapshot,
+    RunControl, RunRequest, ThreadContextSnapshot,
 };
 pub use runtime::AgentRuntime;
 pub use state::{CommitEvent, CommitHook, MutationBatch, StateCommand, StateStore};

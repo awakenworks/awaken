@@ -2,7 +2,7 @@
 
 use super::{
     BackendDelegateContinuation, BackendDelegatePersistence, BackendDelegateRunRequest,
-    BackendRootRunRequest, ExecutionBackendError,
+    BackendRootRunRequest,
 };
 
 /// How a backend can be interrupted after execution starts.
@@ -182,21 +182,4 @@ impl Default for BackendCapabilities {
     fn default() -> Self {
         Self::full()
     }
-}
-
-/// Helper used by validation and individual backends to reject delegate
-/// requests that exercise features the backend does not advertise.
-pub fn reject_unsupported_delegate(
-    capabilities: &BackendCapabilities,
-    request: &BackendDelegateRunRequest<'_>,
-) -> Result<(), ExecutionBackendError> {
-    let unsupported = capabilities.unsupported_delegate_features(request);
-    if !unsupported.is_empty() {
-        return Err(ExecutionBackendError::ExecutionFailed(format!(
-            "agent '{}' backend does not support: {}",
-            request.agent_id,
-            unsupported.join(", ")
-        )));
-    }
-    Ok(())
 }

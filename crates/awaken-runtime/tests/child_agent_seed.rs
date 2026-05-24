@@ -19,17 +19,16 @@ use awaken_contract::contract::tool::{
 use awaken_contract::state::{PersistedState, StateKey, StateKeyOptions};
 
 use awaken_runtime::backend::{
-    BackendCapabilities, BackendDelegateRunRequest, BackendParentContext, BackendRunResult,
-    BackendRunStatus, ExecutionBackend, ExecutionBackendError,
+    BackendDelegateRunRequest, BackendParentContext, BackendRunResult, BackendRunStatus,
+    ExecutionBackend, ExecutionBackendError,
 };
 use awaken_runtime::child_agent::{
     ChildAgentError, ChildAgentParams, run_child_agent, run_child_agent_checked,
 };
 use awaken_runtime::loop_runner::build_agent_env;
 use awaken_runtime::plugins::{Plugin, PluginDescriptor, PluginRegistrar};
-use awaken_runtime::registry::{
-    AgentResolver, ExecutionResolver, ResolvedAgent, ResolvedBackendAgent, ResolvedExecution,
-};
+use awaken_runtime::registry::{AgentResolver, ResolvedAgent, ResolvedBackendAgent};
+use awaken_runtime::resolution::ExecutionPlan;
 use awaken_runtime::{RuntimeError, StateStore};
 
 struct SeedKey;
@@ -115,12 +114,6 @@ impl AgentResolver for FixedResolver {
         let mut agent = self.agent.clone();
         agent.env = build_agent_env(&self.plugins, &agent)?;
         Ok(agent)
-    }
-}
-
-impl ExecutionResolver for FixedResolver {
-    fn resolve_execution(&self, agent_id: &str) -> Result<ResolvedExecution, RuntimeError> {
-        self.resolve(agent_id).map(ResolvedExecution::local)
     }
 }
 
@@ -368,10 +361,8 @@ impl AgentResolver for FailingExecutionResolver {
             agent_id: agent_id.to_string(),
         })
     }
-}
 
-impl ExecutionResolver for FailingExecutionResolver {
-    fn resolve_execution(&self, _agent_id: &str) -> Result<ResolvedExecution, RuntimeError> {
+    fn resolve_execution(&self, _agent_id: &str) -> Result<ExecutionPlan, RuntimeError> {
         Err(RuntimeError::ResolveFailed {
             message: "registry backend timed out".into(),
         })
@@ -428,10 +419,8 @@ impl AgentResolver for SingleResolveLocalResolver {
             message: format!("unexpected second local resolve for {agent_id}"),
         })
     }
-}
 
-impl ExecutionResolver for SingleResolveLocalResolver {
-    fn resolve_execution(&self, agent_id: &str) -> Result<ResolvedExecution, RuntimeError> {
+    fn resolve_execution(&self, agent_id: &str) -> Result<ExecutionPlan, RuntimeError> {
         self.resolve_execution_calls.fetch_add(1, Ordering::SeqCst);
         if agent_id != self.agent.id() {
             return Err(RuntimeError::AgentNotFound {
@@ -440,7 +429,7 @@ impl ExecutionResolver for SingleResolveLocalResolver {
         }
         let mut agent = self.agent.clone();
         agent.env = build_agent_env(&[], &agent)?;
-        Ok(ResolvedExecution::local(agent))
+        Ok(ExecutionPlan::from_resolved_agent(&agent))
     }
 }
 
@@ -554,13 +543,7 @@ impl AgentResolver for CaptureMessagesResolver {
         })
     }
 
-    fn agent_ids(&self) -> Vec<String> {
-        vec![self.agent_id.clone()]
-    }
-}
-
-impl ExecutionResolver for CaptureMessagesResolver {
-    fn resolve_execution(&self, agent_id: &str) -> Result<ResolvedExecution, RuntimeError> {
+    fn resolve_execution(&self, agent_id: &str) -> Result<ExecutionPlan, RuntimeError> {
         if agent_id != self.agent_id {
             return Err(RuntimeError::ResolveFailed {
                 message: format!("agent not found: {agent_id}"),
@@ -570,9 +553,14 @@ impl ExecutionResolver for CaptureMessagesResolver {
             id: self.agent_id.clone(),
             ..Default::default()
         });
-        Ok(ResolvedExecution::NonLocal(
-            ResolvedBackendAgent::with_backend(spec, self.backend.clone()),
-        ))
+        Ok(ExecutionPlan::Remote(ResolvedBackendAgent::with_backend(
+            spec,
+            self.backend.clone(),
+        )))
+    }
+
+    fn agent_ids(&self) -> Vec<String> {
+        vec![self.agent_id.clone()]
     }
 }
 
@@ -648,13 +636,7 @@ impl AgentResolver for FailedStatusResolver {
         })
     }
 
-    fn agent_ids(&self) -> Vec<String> {
-        vec![self.agent_id.clone()]
-    }
-}
-
-impl ExecutionResolver for FailedStatusResolver {
-    fn resolve_execution(&self, agent_id: &str) -> Result<ResolvedExecution, RuntimeError> {
+    fn resolve_execution(&self, agent_id: &str) -> Result<ExecutionPlan, RuntimeError> {
         if agent_id != self.agent_id {
             return Err(RuntimeError::ResolveFailed {
                 message: format!("agent not found: {agent_id}"),
@@ -664,9 +646,14 @@ impl ExecutionResolver for FailedStatusResolver {
             id: self.agent_id.clone(),
             ..Default::default()
         });
-        Ok(ResolvedExecution::NonLocal(
-            ResolvedBackendAgent::with_backend(spec, self.backend.clone()),
-        ))
+        Ok(ExecutionPlan::Remote(ResolvedBackendAgent::with_backend(
+            spec,
+            self.backend.clone(),
+        )))
+    }
+
+    fn agent_ids(&self) -> Vec<String> {
+        vec![self.agent_id.clone()]
     }
 }
 
@@ -706,8 +693,8 @@ struct NoSeedBackend;
 
 #[async_trait]
 impl ExecutionBackend for NoSeedBackend {
-    fn capabilities(&self) -> BackendCapabilities {
-        BackendCapabilities::remote_stateless_text()
+    fn capabilities(&self) -> awaken_runtime::resolution::BackendProfile {
+        awaken_runtime::resolution::BackendProfile::remote_stateless_text()
     }
 
     async fn execute_delegate(
@@ -733,13 +720,7 @@ impl AgentResolver for NoSeedResolver {
         })
     }
 
-    fn agent_ids(&self) -> Vec<String> {
-        vec![self.agent_id.clone()]
-    }
-}
-
-impl ExecutionResolver for NoSeedResolver {
-    fn resolve_execution(&self, agent_id: &str) -> Result<ResolvedExecution, RuntimeError> {
+    fn resolve_execution(&self, agent_id: &str) -> Result<ExecutionPlan, RuntimeError> {
         if agent_id != self.agent_id {
             return Err(RuntimeError::ResolveFailed {
                 message: format!("agent not found: {agent_id}"),
@@ -749,9 +730,14 @@ impl ExecutionResolver for NoSeedResolver {
             id: self.agent_id.clone(),
             ..Default::default()
         });
-        Ok(ResolvedExecution::NonLocal(
-            ResolvedBackendAgent::with_backend(spec, self.backend.clone()),
-        ))
+        Ok(ExecutionPlan::Remote(ResolvedBackendAgent::with_backend(
+            spec,
+            self.backend.clone(),
+        )))
+    }
+
+    fn agent_ids(&self) -> Vec<String> {
+        vec![self.agent_id.clone()]
     }
 }
 

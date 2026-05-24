@@ -120,6 +120,193 @@ pub struct ResolverInheritance {
     pub pinned_registry_set: Option<RegistrySet>,
 }
 
+/// Legacy request shape kept for server code that is migrated in a later split PR.
+pub struct RunRequest {
+    pub messages: Vec<Message>,
+    pub messages_already_persisted: bool,
+    pub thread_id: String,
+    pub agent_id: Option<String>,
+    pub overrides: Option<InferenceOverride>,
+    pub decisions: Vec<(String, ToolCallResume)>,
+    pub frontend_tools: Vec<ToolDescriptor>,
+    pub origin: RunRequestOrigin,
+    pub run_mode: RunMode,
+    pub adapter: AdapterKind,
+    pub parent_run_id: Option<String>,
+    pub parent_thread_id: Option<String>,
+    pub continue_run_id: Option<String>,
+    pub run_id_hint: Option<String>,
+    pub dispatch_id_hint: Option<String>,
+    pub dispatch_id: Option<String>,
+    pub session_id: Option<String>,
+    pub transport_request_id: Option<String>,
+    pub run_inbox: Option<RunInbox>,
+}
+
+impl RunRequest {
+    #[must_use]
+    pub fn new(thread_id: impl Into<String>, messages: Vec<Message>) -> Self {
+        Self {
+            messages,
+            messages_already_persisted: false,
+            thread_id: thread_id.into(),
+            agent_id: None,
+            overrides: None,
+            decisions: Vec::new(),
+            frontend_tools: Vec::new(),
+            origin: RunRequestOrigin::User,
+            run_mode: RunMode::Foreground,
+            adapter: AdapterKind::Internal,
+            parent_run_id: None,
+            parent_thread_id: None,
+            continue_run_id: None,
+            run_id_hint: None,
+            dispatch_id_hint: None,
+            dispatch_id: None,
+            session_id: None,
+            transport_request_id: None,
+            run_inbox: None,
+        }
+    }
+
+    #[must_use]
+    pub fn with_agent_id(mut self, agent_id: impl Into<String>) -> Self {
+        self.agent_id = Some(agent_id.into());
+        self
+    }
+
+    #[must_use]
+    pub fn with_overrides(mut self, overrides: InferenceOverride) -> Self {
+        self.overrides = Some(overrides);
+        self
+    }
+
+    #[must_use]
+    pub fn with_decisions(mut self, decisions: Vec<(String, ToolCallResume)>) -> Self {
+        self.decisions = decisions;
+        self
+    }
+
+    #[must_use]
+    pub fn with_frontend_tools(mut self, tools: Vec<ToolDescriptor>) -> Self {
+        self.frontend_tools = tools;
+        self
+    }
+
+    #[must_use]
+    pub fn with_origin(mut self, origin: RunRequestOrigin) -> Self {
+        self.origin = origin;
+        self
+    }
+
+    #[must_use]
+    pub fn with_run_mode(mut self, run_mode: RunMode) -> Self {
+        self.run_mode = run_mode;
+        self
+    }
+
+    #[must_use]
+    pub fn with_adapter(mut self, adapter: AdapterKind) -> Self {
+        self.adapter = adapter;
+        self
+    }
+
+    #[must_use]
+    pub fn with_parent_run_id(mut self, parent_run_id: impl Into<String>) -> Self {
+        self.parent_run_id = Some(parent_run_id.into());
+        self
+    }
+
+    #[must_use]
+    pub fn with_parent_thread_id(mut self, parent_thread_id: impl Into<String>) -> Self {
+        self.parent_thread_id = Some(parent_thread_id.into());
+        self
+    }
+
+    #[must_use]
+    pub fn with_continue_run_id(mut self, continue_run_id: impl Into<String>) -> Self {
+        self.continue_run_id = Some(continue_run_id.into());
+        self
+    }
+
+    #[must_use]
+    pub fn with_run_id_hint(mut self, run_id_hint: impl Into<String>) -> Self {
+        self.run_id_hint = Some(run_id_hint.into());
+        self
+    }
+
+    #[must_use]
+    pub fn with_dispatch_id_hint(mut self, dispatch_id_hint: impl Into<String>) -> Self {
+        self.dispatch_id_hint = Some(dispatch_id_hint.into());
+        self
+    }
+
+    #[must_use]
+    pub fn with_trace_dispatch_id(mut self, dispatch_id: impl Into<String>) -> Self {
+        self.dispatch_id = Some(dispatch_id.into());
+        self
+    }
+
+    #[must_use]
+    pub fn with_dispatch_id(mut self, dispatch_id: impl Into<String>) -> Self {
+        self.dispatch_id = Some(dispatch_id.into());
+        self
+    }
+
+    #[must_use]
+    pub fn with_session_id(mut self, session_id: impl Into<String>) -> Self {
+        self.session_id = Some(session_id.into());
+        self
+    }
+
+    #[must_use]
+    pub fn with_transport_request_id(mut self, id: impl Into<String>) -> Self {
+        self.transport_request_id = Some(id.into());
+        self
+    }
+
+    #[must_use]
+    pub fn with_inbox(mut self, sender: InboxSender, receiver: InboxReceiver) -> Self {
+        self.run_inbox = Some(RunInbox { sender, receiver });
+        self
+    }
+
+    #[must_use]
+    pub fn with_messages_already_persisted(mut self, value: bool) -> Self {
+        self.messages_already_persisted = value;
+        self
+    }
+}
+
+impl From<RunRequest> for RunActivation {
+    fn from(request: RunRequest) -> Self {
+        let mut activation = RunActivation::new(request.thread_id, request.messages)
+            .with_messages_already_persisted(request.messages_already_persisted)
+            .with_legacy_origin(request.origin)
+            .with_run_mode(request.run_mode)
+            .with_adapter(request.adapter);
+        activation.intent.agent_id = request.agent_id;
+        activation.options.overrides = request.overrides;
+        activation.options.frontend_tools = request.frontend_tools;
+        activation.control.seeded_decisions = request.decisions;
+        activation.trace.parent_run_id = request.parent_run_id;
+        activation.trace.parent_thread_id = request.parent_thread_id;
+        activation.trace.dispatch_id = request.dispatch_id.or(request.dispatch_id_hint.clone());
+        activation.trace.session_id = request.session_id;
+        activation.trace.transport_request_id = request.transport_request_id;
+        activation.persistence.run_id_hint = request.run_id_hint;
+        activation.persistence.dispatch_id_hint = request.dispatch_id_hint;
+        if let Some(continue_run_id) = request.continue_run_id {
+            activation.intent.kind = RunKind::HitlResume {
+                run_id: continue_run_id,
+            };
+            activation.trace.run_mode = RunMode::Resume;
+        }
+        activation.control.inbox = request.run_inbox;
+        activation
+    }
+}
+
 /// Owned request to execute or resume a run.
 pub struct RunActivation {
     pub intent: RunIntent,
