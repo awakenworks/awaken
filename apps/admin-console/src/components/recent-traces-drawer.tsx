@@ -3,6 +3,7 @@ import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
 import { tracesApi, type TraceEvent, type TracePage, type TraceRunSummary } from "@/lib/config-api";
 import { redactSecretsForDisplay } from "@/lib/agent-editor-helpers";
 import { safeErrorMessage } from "@/lib/safe-error-message";
+import { SaveTraceAsFixtureModal } from "@/components/save-trace-as-fixture-modal";
 
 const TRACE_EVENT_PAGE_LIMIT = 1000;
 
@@ -189,6 +190,7 @@ function RunList({
 }
 
 function RunEventViewer({ runId, onBack }: { runId: string; onBack: () => void }) {
+  const [savingFixture, setSavingFixture] = useState(false);
   const eventsQuery = useInfiniteQuery({
     queryKey: ["traces", "events", runId],
     queryFn: ({ pageParam }) =>
@@ -213,7 +215,22 @@ function RunEventViewer({ runId, onBack }: { runId: string; onBack: () => void }
           ← Back to runs
         </button>
         <span className="font-mono text-[11px] text-fg-strong">{runId}</span>
+        <button
+          type="button"
+          onClick={() => setSavingFixture(true)}
+          data-testid="save-trace-as-fixture-button"
+          className="ml-auto rounded-sm border border-line-strong bg-soft px-2 py-1 text-[11px] font-medium text-fg-strong transition hover:bg-muted"
+        >
+          + Fixture
+        </button>
       </div>
+      {savingFixture && (
+        <SaveTraceAsFixtureModal
+          runId={runId}
+          onClose={() => setSavingFixture(false)}
+          onSaved={() => setSavingFixture(false)}
+        />
+      )}
       {eventsQuery.isPending && eventsQuery.fetchStatus === "fetching" && page === undefined ? (
         <div className="px-4 py-6 text-xs text-fg-soft">Loading events…</div>
       ) : eventsQuery.error && page === undefined ? (

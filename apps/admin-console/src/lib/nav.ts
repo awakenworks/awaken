@@ -66,6 +66,8 @@ export const navGroups: (NavGroup & { groupKey: string })[] = [
     items: [
       { id: "dashboard", path: adminRoutes.dashboard, label: "Dashboard", end: true, labelKey: "nav.items.dashboard" } as NavItemKeyed,
       { id: "audit-log", path: adminRoutes.auditLog, label: "Audit Log", labelKey: "nav.items.audit" } as NavItemKeyed,
+      { id: "datasets", path: adminRoutes.datasets, label: "Datasets", labelKey: "nav.items.datasets" } as NavItemKeyed,
+      { id: "eval-runs", path: adminRoutes.evalRuns, label: "Eval Runs", labelKey: "nav.items.evalRuns" } as NavItemKeyed,
       { id: "eval-reports", path: adminRoutes.evalReports, label: "Eval Reports", labelKey: "nav.items.evals" } as NavItemKeyed,
     ] as NavItem[],
   },
@@ -136,6 +138,22 @@ export function resolveBreadcrumbs(pathname: string): BreadcrumbCrumb[] {
       { label: "Resources", labelKey: "nav.resources" },
       { label: "Skills", labelKey: "nav.items.skills", path: adminRoutes.skills },
       { label: decodeURIComponent(skillMatch[1]) },
+    ];
+  }
+  const datasetMatch = pathname.match(/^\/datasets\/([^/]+)$/);
+  if (datasetMatch) {
+    return [
+      { label: "Observe", labelKey: "nav.observe" },
+      { label: "Datasets", labelKey: "nav.items.datasets", path: adminRoutes.datasets },
+      { label: decodeURIComponent(datasetMatch[1]) },
+    ];
+  }
+  const evalRunMatch = pathname.match(/^\/eval-runs\/([^/]+)$/);
+  if (evalRunMatch) {
+    return [
+      { label: "Observe", labelKey: "nav.observe" },
+      { label: "Eval Runs", labelKey: "nav.items.evalRuns", path: adminRoutes.evalRuns },
+      { label: decodeURIComponent(evalRunMatch[1]) },
     ];
   }
   const top = navIndexKeyed[pathname];

@@ -18,4 +18,8 @@ export const adminRoutes = {
   auditLog: "/audit-log",
   auditLogForResource: (resource: string) =>
     `/audit-log?resource=${encodeURIComponent(resource)}`,
+  datasets: "/datasets",
+  dataset: (id: string) => `/datasets/${encodeURIComponent(id)}`,
+  evalRuns: "/eval-runs",
+  evalRun: (id: string) => `/eval-runs/${encodeURIComponent(id)}`,
 } as const;
