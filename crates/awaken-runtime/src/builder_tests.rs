@@ -1,3 +1,5 @@
+//! Tests for the fluent [`AgentRuntimeBuilder`] API.
+
 use super::*;
 use async_trait::async_trait;
 use awaken_contract::contract::executor::{InferenceExecutionError, InferenceRequest};
@@ -134,13 +136,7 @@ fn make_registry_set(agent_id: &str, model_id: &str, upstream_model: &str) -> Re
 
     let mut models = MapModelRegistry::new();
     models
-        .register_model(
-            model_id,
-            ModelBinding {
-                provider_id: "mock".into(),
-                upstream_model: upstream_model.into(),
-            },
-        )
+        .register_model(ModelSpec::new(model_id, "mock", upstream_model))
         .expect("register test model");
 
     let mut providers = MapProviderRegistry::new();
@@ -170,61 +166,11 @@ fn builder_creates_runtime() {
     let runtime = AgentRuntimeBuilder::new()
         .with_agent_spec(spec)
         .with_tool("echo", Arc::new(MockTool { id: "echo".into() }))
-        .with_model_binding(
-            "test-model",
-            ModelBinding {
-                provider_id: "mock".into(),
-                upstream_model: "mock-model".into(),
-            },
-        )
+        .with_model(ModelSpec::new("test-model", "mock", "mock-model"))
         .with_provider("mock", Arc::new(MockExecutor))
         .build();
 
     assert!(runtime.is_ok());
-}
-
-#[tokio::test]
-async fn builder_runtime_resolves_persistent_activation_as_replayable() {
-    let runtime = AgentRuntimeBuilder::new()
-        .with_agent_spec(AgentSpec {
-            id: "test-agent".into(),
-            model_id: "test-model".into(),
-            system_prompt: "You are helpful.".into(),
-            ..Default::default()
-        })
-        .with_model_binding(
-            "test-model",
-            ModelBinding {
-                provider_id: "mock".into(),
-                upstream_model: "mock-model".into(),
-            },
-        )
-        .with_provider("mock", Arc::new(MockExecutor))
-        .build()
-        .expect("runtime");
-
-    let activation = crate::RunActivation::new(
-        "thread",
-        vec![awaken_contract::contract::message::Message::user("hi")],
-    )
-    .with_agent_id("test-agent");
-    let plan = runtime
-        .resolve_activation(
-            &activation,
-            crate::resolution::ResolutionPolicy::PersistentServer,
-        )
-        .await
-        .expect("persistent resolution");
-    let crate::ResolvedRunPlan::Replayable(plan) = plan else {
-        panic!("persistent builder runtime must resolve replayable plans");
-    };
-    assert_eq!(
-        plan.scope.manifest.registry_snapshot_version,
-        runtime.registry_version()
-    );
-    assert!(plan.scope.manifest.entries.iter().any(|entry| {
-        entry.kind == awaken_contract::REGISTRY_KIND_AGENT && entry.id == "test-agent"
-    }));
 }
 
 #[test]
@@ -273,13 +219,7 @@ fn builder_with_multiple_agents() {
 
     let runtime = AgentRuntimeBuilder::new()
         .with_agent_specs(vec![spec1, spec2])
-        .with_model_binding(
-            "m",
-            ModelBinding {
-                provider_id: "p".into(),
-                upstream_model: "n".into(),
-            },
-        )
+        .with_model(ModelSpec::new("m", "p", "n"))
         .with_provider("p", Arc::new(MockExecutor))
         .build()
         .unwrap();
@@ -307,13 +247,7 @@ fn builder_resolver_returns_correct_config() {
                 id: "search".into(),
             }),
         )
-        .with_model_binding(
-            "test-model",
-            ModelBinding {
-                provider_id: "mock".into(),
-                upstream_model: "claude-test".into(),
-            },
-        )
+        .with_model(ModelSpec::new("test-model", "mock", "claude-test"))
         .with_provider("mock", Arc::new(MockExecutor))
         .build()
         .unwrap();
@@ -329,13 +263,7 @@ fn builder_resolver_returns_correct_config() {
 #[test]
 fn builder_missing_agent_errors() {
     let runtime = AgentRuntimeBuilder::new()
-        .with_model_binding(
-            "m",
-            ModelBinding {
-                provider_id: "p".into(),
-                upstream_model: "n".into(),
-            },
-        )
+        .with_model(ModelSpec::new("m", "p", "n"))
         .with_provider("p", Arc::new(MockExecutor))
         .build()
         .unwrap();
@@ -386,13 +314,7 @@ fn builder_chained_tools_all_registered() {
         .with_tool("t1", Arc::new(MockTool { id: "t1".into() }))
         .with_tool("t2", Arc::new(MockTool { id: "t2".into() }))
         .with_tool("t3", Arc::new(MockTool { id: "t3".into() }))
-        .with_model_binding(
-            "m",
-            ModelBinding {
-                provider_id: "p".into(),
-                upstream_model: "n".into(),
-            },
-        )
+        .with_model(ModelSpec::new("m", "p", "n"))
         .with_provider("p", Arc::new(MockExecutor))
         .build()
         .unwrap();
@@ -435,13 +357,7 @@ fn build_succeeds_with_valid_config() {
 
     let result = AgentRuntimeBuilder::new()
         .with_agent_spec(spec)
-        .with_model_binding(
-            "m",
-            ModelBinding {
-                provider_id: "p".into(),
-                upstream_model: "n".into(),
-            },
-        )
+        .with_model(ModelSpec::new("m", "p", "n"))
         .with_provider("p", Arc::new(MockExecutor))
         .build();
 
@@ -457,13 +373,7 @@ fn builder_runtime_starts_with_registry_version_one() {
             system_prompt: "sys".into(),
             ..Default::default()
         })
-        .with_model_binding(
-            "m",
-            ModelBinding {
-                provider_id: "mock".into(),
-                upstream_model: "model-v1".into(),
-            },
-        )
+        .with_model(ModelSpec::new("m", "mock", "model-v1"))
         .with_provider("mock", Arc::new(MockExecutor))
         .build()
         .unwrap();
@@ -481,13 +391,7 @@ fn replacing_registry_set_updates_dynamic_resolver() {
             system_prompt: "sys".into(),
             ..Default::default()
         })
-        .with_model_binding(
-            "m",
-            ModelBinding {
-                provider_id: "mock".into(),
-                upstream_model: "model-v1".into(),
-            },
-        )
+        .with_model(ModelSpec::new("m", "mock", "model-v1"))
         .with_provider("mock", Arc::new(MockExecutor))
         .build()
         .unwrap();
@@ -509,7 +413,7 @@ fn replacing_registry_set_updates_dynamic_resolver() {
 }
 
 #[test]
-fn builder_model_binding_provider_name() {
+fn builder_model_spec_provider_name() {
     let spec = AgentSpec {
         id: "agent".into(),
         model_id: "gpt-4".into(),
@@ -519,13 +423,7 @@ fn builder_model_binding_provider_name() {
 
     let runtime = AgentRuntimeBuilder::new()
         .with_agent_spec(spec)
-        .with_model_binding(
-            "gpt-4",
-            ModelBinding {
-                provider_id: "openai".into(),
-                upstream_model: "gpt-4-turbo".into(),
-            },
-        )
+        .with_model(ModelSpec::new("gpt-4", "openai", "gpt-4-turbo"))
         .with_provider("openai", Arc::new(MockExecutor))
         .build()
         .unwrap();
@@ -623,13 +521,7 @@ fn duplicate_agent_spec_errors_at_build() {
     let result = AgentRuntimeBuilder::new()
         .with_agent_spec(spec.clone())
         .with_agent_spec(spec)
-        .with_model_binding(
-            "m",
-            ModelBinding {
-                provider_id: "p".into(),
-                upstream_model: "n".into(),
-            },
-        )
+        .with_model(ModelSpec::new("m", "p", "n"))
         .with_provider("p", Arc::new(MockExecutor))
         .build();
 
@@ -677,31 +569,99 @@ fn duplicate_tool_errors_at_build() {
 #[test]
 fn duplicate_model_errors_at_build() {
     let result = AgentRuntimeBuilder::new()
-        .with_model_binding(
-            "dup-model",
-            ModelBinding {
-                provider_id: "p".into(),
-                upstream_model: "n1".into(),
-            },
-        )
-        .with_model_binding(
-            "dup-model",
-            ModelBinding {
-                provider_id: "p".into(),
-                upstream_model: "n2".into(),
-            },
-        )
+        .with_model(ModelSpec::new("dup-model", "p", "n1"))
+        .with_model(ModelSpec::new("dup-model", "p", "n2"))
         .build();
 
     match result {
         Err(e) => {
-            let err = e.to_string();
             assert!(
-                err.contains("dup-model"),
-                "error should mention the duplicate model ID: {err}"
+                matches!(
+                    e,
+                    BuildError::ConfigValidation(
+                        awaken_contract::ConfigValidationError::DuplicateModelId { ref id }
+                    ) if id == "dup-model"
+                ),
+                "expected DuplicateModelId at builder surface, got: {e:?}"
             );
         }
         Ok(_) => panic!("expected build to fail for duplicate model"),
+    }
+}
+
+/// The builder/registry path must reject the same invalid `ModelSpec` values
+/// the JSON config surface rejects — capability bounds, cross-field invariant,
+/// pricing, calendar-valid cutoff, modality dedup — so the `ModelSpec` contract
+/// is not split across entry points.
+#[test]
+fn builder_rejects_invalid_model_specs() {
+    let cases: Vec<(&str, ModelSpec)> = vec![
+        (
+            "zero context_window",
+            ModelSpec {
+                context_window: Some(0),
+                ..ModelSpec::new("m", "p", "u")
+            },
+        ),
+        (
+            "output exceeds context",
+            ModelSpec {
+                context_window: Some(1_000),
+                max_output_tokens: Some(2_000),
+                ..ModelSpec::new("m", "p", "u")
+            },
+        ),
+        (
+            "negative price",
+            ModelSpec {
+                input_token_price_per_million_usd: Some(-1.0),
+                ..ModelSpec::new("m", "p", "u")
+            },
+        ),
+        (
+            "non-finite price",
+            ModelSpec {
+                output_token_price_per_million_usd: Some(f64::NAN),
+                ..ModelSpec::new("m", "p", "u")
+            },
+        ),
+        (
+            "malformed knowledge_cutoff",
+            ModelSpec {
+                knowledge_cutoff: Some("yesterday".into()),
+                ..ModelSpec::new("m", "p", "u")
+            },
+        ),
+        (
+            "calendar-invalid knowledge_cutoff",
+            ModelSpec {
+                knowledge_cutoff: Some("2026-02-31".into()),
+                ..ModelSpec::new("m", "p", "u")
+            },
+        ),
+        (
+            "duplicate input modalities",
+            ModelSpec {
+                modalities: awaken_contract::registry_spec::Modalities {
+                    input: vec![
+                        awaken_contract::registry_spec::Modality::Text,
+                        awaken_contract::registry_spec::Modality::Text,
+                    ],
+                    output: vec![],
+                },
+                ..ModelSpec::new("m", "p", "u")
+            },
+        ),
+    ];
+
+    for (label, spec) in cases {
+        match AgentRuntimeBuilder::new().with_model(spec).build() {
+            Err(BuildError::ConfigValidation(_)) => {}
+            Err(other) => {
+                panic!("{label}: expected ConfigValidation error from builder, got: {other:?}")
+            }
+            Ok(_) => panic!("{label}: expected build to fail validation, but it succeeded"),
+        }
     }
 }
 
@@ -741,4 +701,42 @@ fn duplicate_backend_factory_errors_at_build() {
         Err(other) => panic!("expected backend registry conflict, got {other}"),
         Ok(_) => panic!("expected build to fail for duplicate backend factory"),
     }
+}
+
+#[tokio::test]
+async fn builder_runtime_resolves_persistent_activation_as_replayable() {
+    let runtime = AgentRuntimeBuilder::new()
+        .with_agent_spec(AgentSpec {
+            id: "test-agent".into(),
+            model_id: "test-model".into(),
+            system_prompt: "You are helpful.".into(),
+            ..Default::default()
+        })
+        .with_model(ModelSpec::new("test-model", "mock", "mock-model"))
+        .with_provider("mock", Arc::new(MockExecutor))
+        .build()
+        .expect("runtime");
+
+    let activation = crate::RunActivation::new(
+        "thread",
+        vec![awaken_contract::contract::message::Message::user("hi")],
+    )
+    .with_agent_id("test-agent");
+    let plan = runtime
+        .resolve_activation(
+            &activation,
+            crate::resolution::ResolutionPolicy::PersistentServer,
+        )
+        .await
+        .expect("persistent resolution");
+    let crate::ResolvedRunPlan::Replayable(plan) = plan else {
+        panic!("persistent builder runtime must resolve replayable plans");
+    };
+    assert_eq!(
+        plan.scope.manifest.registry_snapshot_version,
+        runtime.registry_version()
+    );
+    assert!(plan.scope.manifest.entries.iter().any(|entry| {
+        entry.kind == awaken_contract::REGISTRY_KIND_AGENT && entry.id == "test-agent"
+    }));
 }

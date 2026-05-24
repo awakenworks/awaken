@@ -12,7 +12,6 @@ use crate::registry::memory::MapBackendRegistry;
 use crate::registry::memory::{
     MapAgentSpecRegistry, MapModelRegistry, MapPluginSource, MapProviderRegistry, MapToolRegistry,
 };
-use crate::registry::traits::ModelBinding;
 use async_trait::async_trait;
 use awaken_contract::contract::executor::{InferenceExecutionError, InferenceRequest};
 use awaken_contract::contract::inference::{StopReason, StreamResult, TokenUsage};
@@ -20,6 +19,7 @@ use awaken_contract::contract::lifecycle::TerminationReason;
 use awaken_contract::contract::tool::{
     ToolCallContext, ToolDescriptor, ToolError, ToolOutput, ToolResult,
 };
+use awaken_contract::registry_spec::ModelSpec;
 #[cfg(feature = "a2a")]
 use awaken_contract::registry_spec::RemoteEndpoint;
 use serde_json::Value;
@@ -150,7 +150,7 @@ impl Plugin for MockPlugin {
 fn build_registries(
     tools: Vec<(&str, Arc<dyn Tool>)>,
     model_id: &str,
-    model_binding: ModelBinding,
+    model_spec: ModelSpec,
     provider_id: &str,
     executor: Arc<dyn LlmExecutor>,
     plugins: Vec<(&str, Arc<dyn Plugin>)>,
@@ -163,9 +163,13 @@ fn build_registries(
             .expect("duplicate tool in test");
     }
 
+    debug_assert_eq!(
+        model_spec.id, model_id,
+        "model_spec.id must match model_id arg"
+    );
     let mut model_reg = MapModelRegistry::new();
     model_reg
-        .register_model(model_id, model_binding)
+        .register_model(model_spec)
         .expect("duplicate model in test");
 
     let mut provider_reg = MapProviderRegistry::new();
@@ -221,10 +225,7 @@ fn resolve_happy_path() {
             ("write", Arc::new(MockTool { id: "write".into() })),
         ],
         "test-model",
-        ModelBinding {
-            provider_id: "anthropic".into(),
-            upstream_model: "claude-opus-4-20250514".into(),
-        },
+        ModelSpec::new("test-model", "anthropic", "claude-opus-4-20250514"),
         "anthropic",
         Arc::new(MockExecutor),
         vec![("log", Arc::new(MockPlugin { name: "log" }))],
@@ -245,10 +246,7 @@ fn resolve_agent_not_found() {
     let regs = build_registries(
         vec![],
         "m",
-        ModelBinding {
-            provider_id: "p".into(),
-            upstream_model: "n".into(),
-        },
+        ModelSpec::new("m", "p", "n"),
         "p",
         Arc::new(MockExecutor),
         vec![],
@@ -276,10 +274,7 @@ fn resolve_remote_agent_returns_error() {
     let regs = build_registries(
         vec![],
         "test-model",
-        ModelBinding {
-            provider_id: "p".into(),
-            upstream_model: "n".into(),
-        },
+        ModelSpec::new("test-model", "p", "n"),
         "p",
         Arc::new(MockExecutor),
         vec![],
@@ -315,13 +310,7 @@ fn resolve_delegate_rejects_unknown_remote_backend() {
 
     let mut model_reg = MapModelRegistry::new();
     model_reg
-        .register_model(
-            "test-model",
-            ModelBinding {
-                provider_id: "p".into(),
-                upstream_model: "n".into(),
-            },
-        )
+        .register_model(ModelSpec::new("test-model", "p", "n"))
         .unwrap();
 
     let mut provider_reg = MapProviderRegistry::new();
@@ -374,13 +363,7 @@ async fn resolve_delegate_uses_registered_backend_factory() {
 
     let mut model_reg = MapModelRegistry::new();
     model_reg
-        .register_model(
-            "test-model",
-            ModelBinding {
-                provider_id: "p".into(),
-                upstream_model: "n".into(),
-            },
-        )
+        .register_model(ModelSpec::new("test-model", "p", "n"))
         .unwrap();
 
     let mut provider_reg = MapProviderRegistry::new();
@@ -450,10 +433,7 @@ fn resolve_model_not_found() {
     let regs = build_registries(
         vec![],
         "other-model",
-        ModelBinding {
-            provider_id: "p".into(),
-            upstream_model: "n".into(),
-        },
+        ModelSpec::new("other-model", "p", "n"),
         "p",
         Arc::new(MockExecutor),
         vec![],
@@ -469,10 +449,7 @@ fn resolve_provider_not_found() {
     let regs = build_registries(
         vec![],
         "test-model",
-        ModelBinding {
-            provider_id: "missing-provider".into(),
-            upstream_model: "n".into(),
-        },
+        ModelSpec::new("test-model", "missing-provider", "n"),
         "other-provider",
         Arc::new(MockExecutor),
         vec![],
@@ -496,10 +473,7 @@ fn resolve_invalid_retry_config_fails() {
     let regs = build_registries(
         vec![],
         "test-model",
-        ModelBinding {
-            provider_id: "p".into(),
-            upstream_model: "n".into(),
-        },
+        ModelSpec::new("test-model", "p", "n"),
         "p",
         Arc::new(MockExecutor),
         vec![],
@@ -531,10 +505,7 @@ fn resolve_plugin_not_found() {
     let regs = build_registries(
         vec![],
         "test-model",
-        ModelBinding {
-            provider_id: "p".into(),
-            upstream_model: "n".into(),
-        },
+        ModelSpec::new("test-model", "p", "n"),
         "p",
         Arc::new(MockExecutor),
         vec![],
@@ -567,10 +538,7 @@ fn resolve_tool_allow_list() {
             ),
         ],
         "test-model",
-        ModelBinding {
-            provider_id: "p".into(),
-            upstream_model: "n".into(),
-        },
+        ModelSpec::new("test-model", "p", "n"),
         "p",
         Arc::new(MockExecutor),
         vec![],
@@ -601,10 +569,7 @@ fn resolve_tool_exclude_list() {
             ),
         ],
         "test-model",
-        ModelBinding {
-            provider_id: "p".into(),
-            upstream_model: "n".into(),
-        },
+        ModelSpec::new("test-model", "p", "n"),
         "p",
         Arc::new(MockExecutor),
         vec![],
@@ -642,10 +607,7 @@ fn resolve_tool_allow_and_exclude_combined() {
             ("exec", Arc::new(MockTool { id: "exec".into() })),
         ],
         "test-model",
-        ModelBinding {
-            provider_id: "p".into(),
-            upstream_model: "n".into(),
-        },
+        ModelSpec::new("test-model", "p", "n"),
         "p",
         Arc::new(MockExecutor),
         vec![],
@@ -665,10 +627,7 @@ fn resolve_empty_plugins_yields_empty_env() {
     let regs = build_registries(
         vec![],
         "test-model",
-        ModelBinding {
-            provider_id: "p".into(),
-            upstream_model: "n".into(),
-        },
+        ModelSpec::new("test-model", "p", "n"),
         "p",
         Arc::new(MockExecutor),
         vec![],
@@ -731,10 +690,7 @@ fn registry_set_resolver_resolves_agent() {
             ("write", Arc::new(MockTool { id: "write".into() })),
         ],
         "test-model",
-        ModelBinding {
-            provider_id: "p".into(),
-            upstream_model: "claude-test".into(),
-        },
+        ModelSpec::new("test-model", "p", "claude-test"),
         "p",
         Arc::new(MockExecutor),
         vec![],
@@ -758,10 +714,7 @@ fn registry_set_resolver_not_found() {
     let regs = build_registries(
         vec![],
         "test-model",
-        ModelBinding {
-            provider_id: "p".into(),
-            upstream_model: "n".into(),
-        },
+        ModelSpec::new("test-model", "p", "n"),
         "p",
         Arc::new(MockExecutor),
         vec![],
@@ -816,10 +769,7 @@ fn validate_sections_valid_config_passes() {
     let regs = build_registries(
         vec![],
         "test-model",
-        ModelBinding {
-            provider_id: "p".into(),
-            upstream_model: "n".into(),
-        },
+        ModelSpec::new("test-model", "p", "n"),
         "p",
         Arc::new(MockExecutor),
         vec![("vp", Arc::new(ValidatedPlugin { name: "vp" }))],
@@ -845,10 +795,7 @@ fn validate_sections_invalid_config_fails() {
     let regs = build_registries(
         vec![],
         "test-model",
-        ModelBinding {
-            provider_id: "p".into(),
-            upstream_model: "n".into(),
-        },
+        ModelSpec::new("test-model", "p", "n"),
         "p",
         Arc::new(MockExecutor),
         vec![("vp", Arc::new(ValidatedPlugin { name: "vp" }))],
@@ -882,10 +829,7 @@ fn validate_sections_missing_section_is_ok() {
     let regs = build_registries(
         vec![],
         "test-model",
-        ModelBinding {
-            provider_id: "p".into(),
-            upstream_model: "n".into(),
-        },
+        ModelSpec::new("test-model", "p", "n"),
         "p",
         Arc::new(MockExecutor),
         vec![("vp", Arc::new(ValidatedPlugin { name: "vp" }))],
@@ -907,10 +851,7 @@ fn validate_sections_no_schema_plugin_still_works() {
     let regs = build_registries(
         vec![],
         "test-model",
-        ModelBinding {
-            provider_id: "p".into(),
-            upstream_model: "n".into(),
-        },
+        ModelSpec::new("test-model", "p", "n"),
         "p",
         Arc::new(MockExecutor),
         vec![("log", Arc::new(MockPlugin { name: "log" }))],
@@ -955,10 +896,7 @@ fn resolve_plugin_registered_tools_are_available() {
     let regs = build_registries(
         vec![],
         "test-model",
-        ModelBinding {
-            provider_id: "p".into(),
-            upstream_model: "n".into(),
-        },
+        ModelSpec::new("test-model", "p", "n"),
         "p",
         Arc::new(MockExecutor),
         vec![(
@@ -990,10 +928,7 @@ fn resolve_plugin_tool_conflict_with_global_tool() {
             }),
         )],
         "test-model",
-        ModelBinding {
-            provider_id: "p".into(),
-            upstream_model: "n".into(),
-        },
+        ModelSpec::new("test-model", "p", "n"),
         "p",
         Arc::new(MockExecutor),
         vec![(
@@ -1032,10 +967,7 @@ fn resolve_plugin_tools_respect_exclude_filter() {
             }),
         )],
         "test-model",
-        ModelBinding {
-            provider_id: "p".into(),
-            upstream_model: "n".into(),
-        },
+        ModelSpec::new("test-model", "p", "n"),
         "p",
         Arc::new(MockExecutor),
         vec![(
@@ -1072,10 +1004,7 @@ fn resolve_plugin_tools_respect_allow_filter() {
             }),
         )],
         "test-model",
-        ModelBinding {
-            provider_id: "p".into(),
-            upstream_model: "n".into(),
-        },
+        ModelSpec::new("test-model", "p", "n"),
         "p",
         Arc::new(MockExecutor),
         vec![(
@@ -1107,10 +1036,7 @@ fn resolve_multiple_plugins_all_loaded() {
     let regs = build_registries(
         vec![],
         "test-model",
-        ModelBinding {
-            provider_id: "p".into(),
-            upstream_model: "n".into(),
-        },
+        ModelSpec::new("test-model", "p", "n"),
         "p",
         Arc::new(MockExecutor),
         vec![
@@ -1131,10 +1057,7 @@ fn resolve_no_tools_yields_empty_tool_set() {
     let regs = build_registries(
         vec![],
         "test-model",
-        ModelBinding {
-            provider_id: "p".into(),
-            upstream_model: "n".into(),
-        },
+        ModelSpec::new("test-model", "p", "n"),
         "p",
         Arc::new(MockExecutor),
         vec![],
@@ -1155,10 +1078,7 @@ fn resolve_spec_max_rounds_propagated() {
     let regs = build_registries(
         vec![],
         "test-model",
-        ModelBinding {
-            provider_id: "p".into(),
-            upstream_model: "n".into(),
-        },
+        ModelSpec::new("test-model", "p", "n"),
         "p",
         Arc::new(MockExecutor),
         vec![],
@@ -1179,10 +1099,7 @@ fn resolve_spec_system_prompt_propagated() {
     let regs = build_registries(
         vec![],
         "test-model",
-        ModelBinding {
-            provider_id: "p".into(),
-            upstream_model: "n".into(),
-        },
+        ModelSpec::new("test-model", "p", "n"),
         "p",
         Arc::new(MockExecutor),
         vec![],
@@ -1194,14 +1111,11 @@ fn resolve_spec_system_prompt_propagated() {
 }
 
 #[test]
-fn resolve_upstream_model_from_model_binding() {
+fn resolve_upstream_model_from_model_spec() {
     let regs = build_registries(
         vec![],
         "test-model",
-        ModelBinding {
-            provider_id: "p".into(),
-            upstream_model: "claude-opus-4-20250514".into(),
-        },
+        ModelSpec::new("test-model", "p", "claude-opus-4-20250514"),
         "p",
         Arc::new(MockExecutor),
         vec![],
@@ -1228,10 +1142,7 @@ fn resolve_empty_allow_list_removes_all_tools() {
             ("write", Arc::new(MockTool { id: "write".into() })),
         ],
         "test-model",
-        ModelBinding {
-            provider_id: "p".into(),
-            upstream_model: "n".into(),
-        },
+        ModelSpec::new("test-model", "p", "n"),
         "p",
         Arc::new(MockExecutor),
         vec![],
@@ -1252,10 +1163,7 @@ fn resolve_exclude_nonexistent_tool_is_noop() {
     let regs = build_registries(
         vec![("read", Arc::new(MockTool { id: "read".into() }))],
         "test-model",
-        ModelBinding {
-            provider_id: "p".into(),
-            upstream_model: "n".into(),
-        },
+        ModelSpec::new("test-model", "p", "n"),
         "p",
         Arc::new(MockExecutor),
         vec![],
@@ -1274,10 +1182,7 @@ fn resolve_default_spec_has_expected_defaults() {
     let regs = build_registries(
         vec![],
         "test-model",
-        ModelBinding {
-            provider_id: "p".into(),
-            upstream_model: "n".into(),
-        },
+        ModelSpec::new("test-model", "p", "n"),
         "p",
         Arc::new(MockExecutor),
         vec![],
@@ -1305,13 +1210,7 @@ fn resolver_agent_ids_returns_all_registered() {
 
     let mut model_reg = MapModelRegistry::new();
     model_reg
-        .register_model(
-            "test-model",
-            ModelBinding {
-                provider_id: "p".into(),
-                upstream_model: "n".into(),
-            },
-        )
+        .register_model(ModelSpec::new("test-model", "p", "n"))
         .unwrap();
 
     let mut provider_reg = MapProviderRegistry::new();
@@ -1441,10 +1340,7 @@ fn config_sections_preserved_when_plugin_removed_from_plugin_ids() {
     let regs = build_registries(
         vec![],
         "test-model",
-        ModelBinding {
-            provider_id: "p".into(),
-            upstream_model: "n".into(),
-        },
+        ModelSpec::new("test-model", "p", "n"),
         "p",
         Arc::new(MockExecutor),
         vec![("sp", Arc::new(StatefulPlugin { name: "sp" }))],
@@ -1474,10 +1370,7 @@ fn reactivating_plugin_picks_up_existing_config_section() {
     let regs_without = build_registries(
         vec![],
         "test-model",
-        ModelBinding {
-            provider_id: "p".into(),
-            upstream_model: "n".into(),
-        },
+        ModelSpec::new("test-model", "p", "n"),
         "p",
         Arc::new(MockExecutor),
         vec![("sp", Arc::new(StatefulPlugin { name: "sp" }))],
@@ -1496,10 +1389,7 @@ fn reactivating_plugin_picks_up_existing_config_section() {
     let regs_with = build_registries(
         vec![],
         "test-model",
-        ModelBinding {
-            provider_id: "p".into(),
-            upstream_model: "n".into(),
-        },
+        ModelSpec::new("test-model", "p", "n"),
         "p",
         Arc::new(MockExecutor),
         vec![("sp", Arc::new(StatefulPlugin { name: "sp" }))],
@@ -1531,10 +1421,7 @@ fn on_activate_reads_typed_config_from_sections() {
     let regs = build_registries(
         vec![],
         "test-model",
-        ModelBinding {
-            provider_id: "p".into(),
-            upstream_model: "n".into(),
-        },
+        ModelSpec::new("test-model", "p", "n"),
         "p",
         Arc::new(MockExecutor),
         vec![("sp", Arc::new(StatefulPlugin { name: "sp" }))],
@@ -1574,10 +1461,7 @@ fn multiple_plugin_sections_survive_partial_activation() {
     let regs = build_registries(
         vec![],
         "test-model",
-        ModelBinding {
-            provider_id: "p".into(),
-            upstream_model: "n".into(),
-        },
+        ModelSpec::new("test-model", "p", "n"),
         "p",
         Arc::new(MockExecutor),
         vec![
@@ -1613,14 +1497,58 @@ fn config_defaults_when_section_absent_and_plugin_active() {
     let regs = build_registries(
         vec![],
         "test-model",
-        ModelBinding {
-            provider_id: "p".into(),
-            upstream_model: "n".into(),
-        },
+        ModelSpec::new("test-model", "p", "n"),
         "p",
         Arc::new(MockExecutor),
         vec![("sp", Arc::new(StatefulPlugin { name: "sp" }))],
         spec,
     );
     assert!(resolve(&regs, "a").is_ok());
+}
+
+// -- ContextWindowPolicy / ModelSpec clamping --------------------------------
+
+#[test]
+fn build_plugin_chain_clamps_context_policy_to_model_capabilities() {
+    use awaken_contract::contract::inference::ContextWindowPolicy;
+
+    let spec = AgentSpec {
+        context_policy: Some(ContextWindowPolicy {
+            max_context_tokens: 200_000,
+            max_output_tokens: 16_384,
+            ..Default::default()
+        }),
+        ..make_spec("a")
+    };
+
+    let model_spec = ModelSpec {
+        context_window: Some(32_000),
+        max_output_tokens: Some(4_096),
+        ..ModelSpec::new("test-model", "p", "u")
+    };
+
+    let regs = build_registries(
+        vec![],
+        "test-model",
+        model_spec,
+        "p",
+        Arc::new(MockExecutor),
+        vec![],
+        spec,
+    );
+
+    let run = resolve(&regs, "a").unwrap();
+    let plugin_arc = run
+        .env
+        .plugins
+        .iter()
+        .find(|p| p.descriptor().name == crate::context::CONTEXT_TRANSFORM_PLUGIN_ID)
+        .cloned()
+        .expect("ContextTransformPlugin must be installed when context_policy is set");
+    let transform = plugin_arc
+        .as_any()
+        .downcast_ref::<crate::context::ContextTransformPlugin>()
+        .expect("plugin must be ContextTransformPlugin");
+    assert_eq!(transform.policy().max_context_tokens, 32_000);
+    assert_eq!(transform.policy().max_output_tokens, 4_096);
 }

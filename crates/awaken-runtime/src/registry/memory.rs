@@ -15,9 +15,10 @@ use awaken_contract::contract::tool::Tool;
 #[cfg(feature = "a2a")]
 use super::traits::BackendRegistry;
 use super::traits::{
-    AgentSpecRegistry, ModelBinding, ModelRegistry, PluginSource, ProviderRegistry, ToolRegistry,
+    AgentSpecRegistry, ModelRegistry, PluginSource, ProviderRegistry, ToolRegistry,
 };
-use awaken_contract::registry_spec::AgentSpec;
+use awaken_contract::registry_spec::{AgentSpec, ModelSpec};
+use awaken_contract::validate_model_spec_struct;
 
 // ---------------------------------------------------------------------------
 // MapRegistry<V> — generic in-memory registry
@@ -88,7 +89,7 @@ impl<V: Clone> MapRegistry<V> {
 // ---------------------------------------------------------------------------
 
 pub type MapToolRegistry = MapRegistry<Arc<dyn Tool>>;
-pub type MapModelRegistry = MapRegistry<ModelBinding>;
+pub type MapModelRegistry = MapRegistry<ModelSpec>;
 pub type MapProviderRegistry = MapRegistry<Arc<dyn LlmExecutor>>;
 pub type MapAgentSpecRegistry = MapRegistry<AgentSpec>;
 pub type MapPluginSource = MapRegistry<Arc<dyn Plugin>>;
@@ -112,12 +113,17 @@ impl MapToolRegistry {
 }
 
 impl MapModelRegistry {
-    pub fn register_model(
-        &mut self,
-        id: impl Into<String>,
-        binding: ModelBinding,
-    ) -> Result<(), BuildError> {
-        self.register(id, binding, |msg| {
+    /// Register a `ModelSpec`, extracting the id from `spec.id`.
+    ///
+    /// This is the single registration chokepoint for every entry point
+    /// (`AgentRuntimeBuilder::with_model`, config compilation, lifecycle
+    /// rebuilds). It enforces the same semantic rules as the JSON config
+    /// surface via [`validate_model_spec_struct`], so a `ModelSpec` cannot
+    /// enter a registry with values `validate_model_spec` would reject.
+    pub fn register_model(&mut self, spec: ModelSpec) -> Result<(), BuildError> {
+        validate_model_spec_struct(&spec)?;
+        let id = spec.id.clone();
+        self.register(id, spec, |msg| {
             BuildError::ModelRegistryConflict(format!("model {msg}"))
         })
     }
@@ -205,7 +211,7 @@ impl ToolRegistry for MapToolRegistry {
 }
 
 impl ModelRegistry for MapModelRegistry {
-    fn get_model(&self, id: &str) -> Option<ModelBinding> {
+    fn get_model(&self, id: &str) -> Option<ModelSpec> {
         self.get_cloned(id)
     }
 
@@ -258,10 +264,50 @@ impl BackendRegistry for MapBackendRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use awaken_contract::registry_spec::{Modalities, Modality};
 
     /// Helper to create a simple error constructor for tests.
     fn test_err(msg: String) -> BuildError {
         BuildError::ToolRegistryConflict(msg)
+    }
+
+    #[test]
+    fn map_model_registry_preserves_full_modelspec() {
+        let spec = ModelSpec {
+            id: "m".into(),
+            provider_id: "p".into(),
+            upstream_model: "u".into(),
+            context_window: Some(200_000),
+            max_output_tokens: Some(8_192),
+            modalities: Modalities {
+                input: vec![Modality::Text, Modality::Image],
+                output: vec![Modality::Text],
+            },
+            knowledge_cutoff: Some("2026-01".into()),
+            input_token_price_per_million_usd: Some(3.0),
+            output_token_price_per_million_usd: Some(15.0),
+        };
+        let mut r = MapModelRegistry::new();
+        r.register_model(spec.clone()).expect("first register");
+        let got = r.get_model("m").expect("must find");
+        assert_eq!(
+            got, spec,
+            "registry must return the full ModelSpec unchanged"
+        );
+    }
+
+    #[test]
+    fn map_model_registry_rejects_duplicate_id() {
+        let mut r = MapModelRegistry::new();
+        r.register_model(ModelSpec::new("m", "p", "u1"))
+            .expect("first ok");
+        let err = r
+            .register_model(ModelSpec::new("m", "p", "u2"))
+            .unwrap_err();
+        assert!(
+            matches!(err, BuildError::ModelRegistryConflict(_)),
+            "expected ModelRegistryConflict, got: {err:?}"
+        );
     }
 
     #[test]

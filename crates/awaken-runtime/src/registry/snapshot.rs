@@ -121,7 +121,7 @@ mod tests {
         MapAgentSpecRegistry, MapBackendRegistry, MapModelRegistry, MapPluginSource,
         MapProviderRegistry, MapToolRegistry,
     };
-    use awaken_contract::registry_spec::AgentSpec;
+    use awaken_contract::registry_spec::{AgentSpec, ModelSpec};
 
     fn make_registry_set(agent_id: &str) -> RegistrySet {
         let mut agents = MapAgentSpecRegistry::new();
@@ -136,13 +136,7 @@ mod tests {
 
         let mut models = MapModelRegistry::new();
         models
-            .register_model(
-                "default",
-                crate::registry::ModelBinding {
-                    provider_id: "provider".into(),
-                    upstream_model: "gpt-test".into(),
-                },
-            )
+            .register_model(ModelSpec::new("default", "provider", "gpt-test"))
             .expect("register test model");
 
         RegistrySet {

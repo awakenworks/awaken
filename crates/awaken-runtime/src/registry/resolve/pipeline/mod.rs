@@ -24,7 +24,7 @@ use awaken_contract::contract::executor::LlmExecutor;
 use awaken_contract::contract::run::RunResolutionScope;
 use awaken_contract::contract::tool::Tool;
 use awaken_contract::contract::versioned_registry::{PinnedRegistryEntry, PinnedRegistryManifest};
-use awaken_contract::registry_spec::{AgentSpec, ModelBindingSpec};
+use awaken_contract::registry_spec::{AgentSpec, ModelSpec};
 use awaken_contract::{
     REGISTRY_KIND_AGENT, REGISTRY_KIND_MODEL, REGISTRY_KIND_PROVIDER, registry_content_hash,
 };
@@ -77,10 +77,10 @@ pub(crate) fn resolve_registry_set(
             spec.id.clone(),
         ));
     }
-    let (executor, upstream_model) = resolve_model_and_executor(registries, &spec)?;
+    let (executor, upstream_model, model) = resolve_model_and_executor(registries, &spec)?;
 
     // Stage 2: Plugin pipeline
-    let plugins = build_plugin_chain(registries, &spec)?;
+    let plugins = build_plugin_chain(registries, &spec, &model)?;
     let env = ExecutionEnv::from_plugins(&plugins, &spec.active_hook_filter)?;
 
     // Stage 3: Tool pipeline
@@ -157,8 +157,8 @@ fn resolve_local_spec(
     registries: &RegistrySet,
     spec: AgentSpec,
 ) -> Result<ResolvedAgent, ResolveError> {
-    let (executor, upstream_model) = resolve_model_and_executor(registries, &spec)?;
-    let plugins = build_plugin_chain(registries, &spec)?;
+    let (executor, upstream_model, model) = resolve_model_and_executor(registries, &spec)?;
+    let plugins = build_plugin_chain(registries, &spec, &model)?;
     let env = ExecutionEnv::from_plugins(&plugins, &spec.active_hook_filter)?;
     let tools = build_tool_set(registries, &spec, &env)?;
     let spec_arc = Arc::new(spec);
@@ -178,19 +178,23 @@ fn resolve_local_spec(
 }
 
 /// Resolve model and LLM executor, applying the agent retry policy.
+///
+/// Returns the resolved executor, upstream model name, and the resolved
+/// [`ModelSpec`] so downstream stages (e.g. `build_plugin_chain`) can use
+/// the model's capabilities without re-querying the registry.
 fn resolve_model_and_executor(
     registries: &RegistrySet,
     spec: &AgentSpec,
-) -> Result<(Arc<dyn LlmExecutor>, String), ResolveError> {
-    let binding = registries
+) -> Result<(Arc<dyn LlmExecutor>, String, ModelSpec), ResolveError> {
+    let model = registries
         .models
         .get_model(&spec.model_id)
         .ok_or_else(|| ResolveError::ModelNotFound(spec.model_id.clone()))?;
 
     let executor = registries
         .providers
-        .get_provider(&binding.provider_id)
-        .ok_or_else(|| ResolveError::ProviderNotFound(binding.provider_id.clone()))?;
+        .get_provider(&model.provider_id)
+        .ok_or_else(|| ResolveError::ProviderNotFound(model.provider_id.clone()))?;
 
     let policy = spec
         .config::<crate::engine::RetryConfigKey>()
@@ -211,7 +215,8 @@ fn resolve_model_and_executor(
         executor
     };
 
-    Ok((executor, binding.upstream_model.clone()))
+    let upstream_model = model.upstream_model.clone();
+    Ok((executor, upstream_model, model))
 }
 
 // ---------------------------------------------------------------------------
@@ -219,9 +224,14 @@ fn resolve_model_and_executor(
 // ---------------------------------------------------------------------------
 
 /// Resolve plugins by ID, inject defaults, add conditional plugins, validate.
+///
+/// `model` is the already-resolved [`ModelSpec`] from stage 1; the conditional
+/// context-policy plugins clamp against its capabilities without re-querying
+/// the registry.
 fn build_plugin_chain(
     registries: &RegistrySet,
     spec: &AgentSpec,
+    model: &ModelSpec,
 ) -> Result<Vec<Arc<dyn Plugin>>, ResolveError> {
     // User-declared plugins
     let plugins = resolve_plugins(registries, spec)?;
@@ -231,6 +241,7 @@ fn build_plugin_chain(
 
     // Conditional plugins (only when context_policy is set)
     if let Some(ref policy) = spec.context_policy {
+        let effective = crate::context::effective_policy(policy, model);
         let compaction_config = spec
             .config::<crate::context::CompactionConfigKey>()
             .unwrap_or_default();
@@ -238,7 +249,7 @@ fn build_plugin_chain(
             compaction_config,
         )));
         plugins.push(Arc::new(crate::context::ContextTransformPlugin::new(
-            policy.clone(),
+            effective,
         )));
     }
 

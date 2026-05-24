@@ -2,7 +2,8 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use awaken_contract::contract::executor::LlmExecutor;
-use awaken_contract::registry_spec::{AgentSpec, ModelBindingSpec};
+use awaken_contract::registry_spec::{AgentSpec, ModelSpec};
+use awaken_contract::validate_unique_model_ids;
 use serde::Serialize;
 
 #[cfg(feature = "a2a")]
@@ -14,12 +15,12 @@ use super::memory::{
 use super::snapshot::RegistryHandle;
 #[cfg(feature = "a2a")]
 use super::traits::BackendRegistry;
-use super::traits::{ModelBinding, RegistrySet};
+use super::traits::RegistrySet;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProviderRemovalPolicy {
     BlockIfReferenced,
-    CascadeUnusedModelBindings,
+    CascadeUnusedModels,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -28,7 +29,7 @@ pub struct ProviderRemovalPreview {
     pub model_ids: Vec<String>,
     pub agent_ids: Vec<String>,
     pub block_if_referenced_allowed: bool,
-    pub cascade_unused_model_bindings_allowed: bool,
+    pub cascade_unused_models_allowed: bool,
 }
 
 impl ProviderRemovalPreview {
@@ -44,7 +45,7 @@ impl ProviderRemovalPreview {
         Self {
             provider_id: provider_id.into(),
             block_if_referenced_allowed: model_ids.is_empty(),
-            cascade_unused_model_bindings_allowed: agent_ids.is_empty(),
+            cascade_unused_models_allowed: agent_ids.is_empty(),
             model_ids,
             agent_ids,
         }
@@ -76,11 +77,13 @@ pub enum RegistryUpdateError {
     Build(String),
     #[error("{0}")]
     Validation(#[from] RegistryValidationError),
+    #[error("config validation failed: {0}")]
+    ConfigValidation(#[from] awaken_contract::ConfigValidationError),
 }
 
 pub struct RuntimeRegistryUpdate {
     pub providers: HashMap<String, Arc<dyn LlmExecutor>>,
-    pub models: Vec<ModelBindingSpec>,
+    pub models: Vec<ModelSpec>,
     pub agents: Vec<AgentSpec>,
 }
 
@@ -150,9 +153,7 @@ impl RegistryHandle {
                         agent_ids: preview.agent_ids,
                     });
                 }
-                ProviderRemovalPolicy::CascadeUnusedModelBindings
-                    if !preview.agent_ids.is_empty() =>
-                {
+                ProviderRemovalPolicy::CascadeUnusedModels if !preview.agent_ids.is_empty() => {
                     return Err(RegistryUpdateError::ProviderInUse {
                         provider_id: id.to_string(),
                         model_ids: preview.model_ids,
@@ -204,11 +205,15 @@ pub fn rebuild_agent_model_provider_registries(
             .map_err(|error| RegistryUpdateError::Build(error.to_string()))?;
     }
 
+    // Reject duplicate model ids before populating so callers see a clean
+    // `DuplicateModelId` error instead of the registry's generic conflict.
+    validate_unique_model_ids(&update.models)?;
+
     draft.models = MapModelRegistry::new();
     for model in update.models {
         draft
             .models
-            .register_model(model.id.clone(), ModelBinding::from(&model))
+            .register_model(model)
             .map_err(|error| RegistryUpdateError::Build(error.to_string()))?;
     }
 
@@ -261,7 +266,7 @@ impl RegistrySetDraft {
         for id in set.models.model_ids() {
             if let Some(model) = set.models.get_model(&id) {
                 models
-                    .register_model(id, model)
+                    .register_model(model)
                     .map_err(|error| RegistryUpdateError::Build(error.to_string()))?;
             }
         }
@@ -442,13 +447,7 @@ mod tests {
 
         let mut models = MapModelRegistry::new();
         models
-            .register_model(
-                "m",
-                ModelBinding {
-                    provider_id: "p".into(),
-                    upstream_model: "upstream".into(),
-                },
-            )
+            .register_model(ModelSpec::new("m", "p", "upstream"))
             .unwrap();
 
         let mut providers = MapProviderRegistry::new();
@@ -478,27 +477,21 @@ mod tests {
                 model_ids: vec!["m".into()],
                 agent_ids: vec!["a".into()],
                 block_if_referenced_allowed: false,
-                cascade_unused_model_bindings_allowed: false,
+                cascade_unused_models_allowed: false,
             }
         );
 
         let err = handle
-            .remove_provider("p", ProviderRemovalPolicy::CascadeUnusedModelBindings)
+            .remove_provider("p", ProviderRemovalPolicy::CascadeUnusedModels)
             .expect_err("agent dependency must block removal");
         assert!(err.to_string().contains("agents [\"a\"]"));
     }
 
     #[test]
-    fn remove_provider_cascades_unused_model_bindings() {
+    fn remove_provider_cascades_unused_models() {
         let mut update = RuntimeRegistryUpdate {
             providers: HashMap::new(),
-            models: vec![ModelBindingSpec {
-                id: "m".into(),
-                provider_id: "p".into(),
-                upstream_model: "upstream".into(),
-                input_token_price_per_million_usd: None,
-                output_token_price_per_million_usd: None,
-            }],
+            models: vec![ModelSpec::new("m", "p", "upstream")],
             agents: Vec::new(),
         };
         update.providers.insert("p".into(), executor());
@@ -507,7 +500,7 @@ mod tests {
         let handle = RegistryHandle::new(registries);
 
         let impact = handle
-            .remove_provider("p", ProviderRemovalPolicy::CascadeUnusedModelBindings)
+            .remove_provider("p", ProviderRemovalPolicy::CascadeUnusedModels)
             .expect("unused model can be removed with provider");
 
         assert_eq!(impact.removed_model_ids, vec!["m"]);
@@ -517,7 +510,7 @@ mod tests {
     }
 
     #[test]
-    fn replace_provider_keeps_model_binding_and_agent() {
+    fn replace_provider_keeps_model_and_agent() {
         let handle = RegistryHandle::new(registry_set());
         let version = handle
             .replace_provider("p", executor())

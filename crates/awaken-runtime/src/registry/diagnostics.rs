@@ -118,7 +118,7 @@ impl fmt::Display for RegistryDiagnostic {
             Self::AgentMissingModel { agent_id, model_id } => {
                 write!(
                     f,
-                    "agent '{agent_id}' uses missing model binding '{model_id}'"
+                    "agent '{agent_id}' references missing model '{model_id}'"
                 )
             }
             Self::ModelMissingProvider {
@@ -126,7 +126,7 @@ impl fmt::Display for RegistryDiagnostic {
                 provider_id,
             } => write!(
                 f,
-                "model binding '{model_id}' points to missing provider '{provider_id}'"
+                "model '{model_id}' references missing provider '{provider_id}'"
             ),
             Self::AgentMissingPlugin {
                 agent_id,
@@ -307,7 +307,7 @@ mod tests {
         MapAgentSpecRegistry, MapModelRegistry, MapPluginSource, MapProviderRegistry,
         MapToolRegistry,
     };
-    use crate::registry::traits::ModelBinding;
+    use awaken_contract::registry_spec::ModelSpec;
     use std::sync::Arc;
 
     fn empty_registry_set() -> RegistrySet {
@@ -346,13 +346,7 @@ mod tests {
     fn diagnose_registry_set_reports_model_missing_provider() {
         let mut models = MapModelRegistry::new();
         models
-            .register_model(
-                "m",
-                ModelBinding {
-                    provider_id: "missing-provider".into(),
-                    upstream_model: "upstream".into(),
-                },
-            )
+            .register_model(ModelSpec::new("m", "missing-provider", "upstream"))
             .unwrap();
         let registries = RegistrySet {
             models: Arc::new(models),
@@ -373,13 +367,7 @@ mod tests {
     fn diagnose_registry_set_dedups_model_missing_provider() {
         let mut models = MapModelRegistry::new();
         models
-            .register_model(
-                "m",
-                ModelBinding {
-                    provider_id: "missing-provider".into(),
-                    upstream_model: "upstream".into(),
-                },
-            )
+            .register_model(ModelSpec::new("m", "missing-provider", "upstream"))
             .unwrap();
         let mut agents = MapAgentSpecRegistry::new();
         agents

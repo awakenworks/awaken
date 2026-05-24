@@ -7,8 +7,7 @@ use async_trait::async_trait;
 use awaken_contract::contract::content::ContentBlock;
 use awaken_contract::contract::executor::{InferenceExecutionError, InferenceRequest, LlmExecutor};
 use awaken_contract::contract::inference::{StopReason, StreamResult, TokenUsage};
-
-use crate::registry::ModelBinding;
+use awaken_contract::registry_spec::ModelSpec;
 
 /// A mock LLM executor that returns canned responses without calling any API.
 /// Used for testing and development.
@@ -87,11 +86,12 @@ impl MockProviderProfile {
         std::sync::Arc::new(MockLlmExecutor::new().with_responses(self.responses.clone()))
     }
 
-    pub fn model_binding(&self) -> ModelBinding {
-        ModelBinding {
-            provider_id: self.provider_id.clone(),
-            upstream_model: self.upstream_model.clone(),
-        }
+    pub fn model_spec(&self) -> ModelSpec {
+        ModelSpec::new(
+            self.model_id.clone(),
+            self.provider_id.clone(),
+            self.upstream_model.clone(),
+        )
     }
 }
 
@@ -209,13 +209,14 @@ mod tests {
     }
 
     #[test]
-    fn mock_provider_profile_produces_binding_and_executor() {
+    fn mock_provider_profile_produces_spec_and_executor() {
         let profile = MockProviderProfile::new("mock-provider", "mock-model")
             .with_upstream_model("upstream")
             .with_responses(vec!["ok".into()]);
-        let binding = profile.model_binding();
-        assert_eq!(binding.provider_id, "mock-provider");
-        assert_eq!(binding.upstream_model, "upstream");
+        let spec = profile.model_spec();
+        assert_eq!(spec.id, "mock-model");
+        assert_eq!(spec.provider_id, "mock-provider");
+        assert_eq!(spec.upstream_model, "upstream");
         assert_eq!(profile.executor().name(), "mock");
     }
 

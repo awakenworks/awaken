@@ -7,7 +7,7 @@ use awaken_contract::contract::commit_coordinator::CommitCoordinator;
 use awaken_contract::contract::executor::LlmExecutor;
 use awaken_contract::contract::storage::ThreadRunStore;
 use awaken_contract::contract::tool::Tool;
-use awaken_contract::registry_spec::AgentSpec;
+use awaken_contract::registry_spec::{AgentSpec, ModelSpec};
 
 #[cfg(feature = "a2a")]
 use crate::backend::ExecutionBackendFactory;
@@ -22,7 +22,7 @@ use crate::registry::memory::{
     MapAgentSpecRegistry, MapModelRegistry, MapPluginSource, MapProviderRegistry, MapToolRegistry,
 };
 use crate::registry::snapshot::RegistryHandle;
-use crate::registry::traits::{AgentSpecRegistry, ModelBinding, RegistrySet};
+use crate::registry::traits::{AgentSpecRegistry, RegistrySet};
 use crate::runtime::AgentRuntime;
 
 /// Error returned when the builder cannot construct the runtime.
@@ -53,6 +53,8 @@ pub enum BuildError {
          supplied by the store/server integration"
     )]
     CommitCoordinatorRequired,
+    #[error("config validation failed: {0}")]
+    ConfigValidation(#[from] awaken_contract::ConfigValidationError),
     #[cfg(feature = "a2a")]
     #[error("discovery failed: {0}")]
     DiscoveryFailed(#[from] crate::registry::composite::DiscoveryError),
@@ -131,9 +133,19 @@ impl AgentRuntimeBuilder {
         self
     }
 
-    /// Register a model binding by ID.
-    pub fn with_model_binding(mut self, id: impl Into<String>, binding: ModelBinding) -> Self {
-        if let Err(e) = self.models.register_model(id, binding) {
+    /// Register a model offering. The id is extracted from `spec.id`.
+    pub fn with_model(mut self, spec: ModelSpec) -> Self {
+        // Pre-check at the builder surface so the user-visible error is
+        // ConfigValidation::DuplicateModelId, matching the bulk-config path.
+        if self.models.contains_key(&spec.id) {
+            self.errors.push(BuildError::ConfigValidation(
+                awaken_contract::ConfigValidationError::DuplicateModelId {
+                    id: spec.id.clone(),
+                },
+            ));
+            return self;
+        }
+        if let Err(e) = self.models.register_model(spec) {
             self.errors.push(e);
         }
         self
@@ -147,23 +159,19 @@ impl AgentRuntimeBuilder {
         self
     }
 
-    /// Register an explicit mock provider and model binding.
+    /// Register an explicit mock provider and model offering.
     pub fn with_mock_provider_profile(
         mut self,
         profile: crate::engine::MockProviderProfile,
     ) -> Self {
         let provider_id = profile.provider_id.clone();
-        let model_id = profile.model_id.clone();
         if let Err(e) = self
             .providers
             .register_provider(provider_id, profile.executor())
         {
             self.errors.push(e);
         }
-        if let Err(e) = self
-            .models
-            .register_model(model_id, profile.model_binding())
-        {
+        if let Err(e) = self.models.register_model(profile.model_spec()) {
             self.errors.push(e);
         }
         self

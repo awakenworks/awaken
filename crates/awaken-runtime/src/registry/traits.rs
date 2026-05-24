@@ -8,7 +8,7 @@ use crate::plugins::Plugin;
 use awaken_contract::contract::executor::LlmExecutor;
 use awaken_contract::contract::tool::Tool;
 
-use awaken_contract::registry_spec::{AgentSpec, ModelBindingSpec};
+use awaken_contract::registry_spec::{AgentSpec, ModelSpec};
 
 // ---------------------------------------------------------------------------
 // ToolRegistry
@@ -23,31 +23,17 @@ pub trait ToolRegistry: Send + Sync {
 }
 
 // ---------------------------------------------------------------------------
-// ModelBinding + ModelRegistry
+// ModelRegistry
 // ---------------------------------------------------------------------------
 
-/// Runtime model binding from a model registry ID to a provider and upstream model.
-#[derive(Debug, Clone)]
-pub struct ModelBinding {
-    /// ProviderRegistry ID.
-    pub provider_id: String,
-    /// Actual model name sent to the upstream provider.
-    pub upstream_model: String,
-}
-
-impl From<&ModelBindingSpec> for ModelBinding {
-    fn from(spec: &ModelBindingSpec) -> Self {
-        Self {
-            provider_id: spec.provider_id.clone(),
-            upstream_model: spec.upstream_model.clone(),
-        }
-    }
-}
-
 /// Lookup interface for model definitions.
+///
+/// Returns the full [`ModelSpec`] (addressing, capabilities, pricing) so
+/// downstream callers — resolvers, cost reporters, context-window policy —
+/// can read intrinsic capability fields without a parallel lookup.
 pub trait ModelRegistry: Send + Sync {
-    /// Get a model binding by its ID.
-    fn get_model(&self, id: &str) -> Option<ModelBinding>;
+    /// Get a model spec by its ID.
+    fn get_model(&self, id: &str) -> Option<ModelSpec>;
     /// List all registered model IDs.
     fn model_ids(&self) -> Vec<String>;
 }
@@ -118,25 +104,4 @@ pub struct RegistrySet {
     pub plugins: Arc<dyn PluginSource>,
     #[cfg(feature = "a2a")]
     pub backends: Arc<dyn BackendRegistry>,
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn model_binding_spec_converts_to_runtime_model_binding() {
-        let spec = ModelBindingSpec {
-            id: "default".into(),
-            provider_id: "openai".into(),
-            upstream_model: "gpt-4o-mini".into(),
-            input_token_price_per_million_usd: None,
-            output_token_price_per_million_usd: None,
-        };
-
-        let binding = ModelBinding::from(&spec);
-
-        assert_eq!(binding.provider_id, "openai");
-        assert_eq!(binding.upstream_model, "gpt-4o-mini");
-    }
 }

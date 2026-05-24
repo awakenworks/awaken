@@ -76,8 +76,12 @@ pub trait Plugin: Send + Sync + Any + 'static {
     }
 }
 
+#[cfg(any(feature = "background", test))]
 impl dyn Plugin {
-    #[cfg(feature = "background")]
+    /// View this plugin as `&dyn Any` for downcasting.
+    ///
+    /// Available under the `background` feature (used by the background
+    /// scheduler) and in tests (used by resolve-pipeline introspection).
     pub(crate) fn as_any(&self) -> &dyn Any {
         self
     }

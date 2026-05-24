@@ -1,6 +1,7 @@
 //! Context management: compaction, summarization, truncation, and plugin state.
 
 pub mod compaction;
+pub mod effective_policy;
 pub mod plugin;
 pub mod summarizer;
 pub mod transform;
@@ -12,6 +13,7 @@ pub use compaction::{
     record_compaction_boundary, record_compaction_failure, record_compaction_in_flight,
     trim_to_compaction_boundary, try_consume_compaction_event,
 };
+pub use effective_policy::effective_policy;
 pub use plugin::{
     CONTEXT_COMPACTION_PLUGIN_ID, CONTEXT_TRANSFORM_PLUGIN_ID, CompactionAction,
     CompactionBoundary, CompactionConfig, CompactionConfigKey, CompactionFailure,

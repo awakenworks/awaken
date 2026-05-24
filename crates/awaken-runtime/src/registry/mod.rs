@@ -40,6 +40,5 @@ pub use snapshot::{RegistryHandle, RegistrySnapshot};
 #[cfg(feature = "a2a")]
 pub use traits::BackendRegistry;
 pub use traits::{
-    AgentSpecRegistry, ModelBinding, ModelRegistry, PluginSource, ProviderRegistry, RegistrySet,
-    ToolRegistry,
+    AgentSpecRegistry, ModelRegistry, PluginSource, ProviderRegistry, RegistrySet, ToolRegistry,
 };

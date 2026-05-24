@@ -10,7 +10,8 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 
 use awaken_contract::contract::executor::LlmExecutor;
-use awaken_contract::registry_spec::{AgentSpec, ModelBindingSpec};
+use awaken_contract::registry_spec::{AgentSpec, ModelSpec};
+use awaken_contract::validate_unique_model_ids;
 
 use crate::builder::BuildError;
 
@@ -21,7 +22,7 @@ use super::memory::MapBackendRegistry;
 use super::memory::{
     MapAgentSpecRegistry, MapModelRegistry, MapPluginSource, MapProviderRegistry, MapToolRegistry,
 };
-use super::traits::{ModelBinding, RegistrySet};
+use super::traits::RegistrySet;
 
 /// Serializable system configuration covering models and agents.
 ///
@@ -29,9 +30,9 @@ use super::traits::{ModelBinding, RegistrySet};
 /// that cannot be deserialized. Pass them to [`AgentSystemConfig::build_registries`] instead.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentSystemConfig {
-    /// Model bindings.
+    /// Model offerings — addressing, capabilities, and pricing.
     #[serde(default)]
-    pub models: Vec<ModelBindingSpec>,
+    pub models: Vec<ModelSpec>,
     /// Agent definitions.
     #[serde(default)]
     pub agents: Vec<AgentSpec>,
@@ -50,9 +51,13 @@ impl AgentSystemConfig {
         &self,
         providers: HashMap<String, Arc<dyn LlmExecutor>>,
     ) -> Result<RegistrySet, BuildError> {
+        // Reject duplicate model ids up front so callers see a clean
+        // `DuplicateModelId` error instead of a generic registry conflict.
+        validate_unique_model_ids(&self.models).map_err(BuildError::from)?;
+
         let mut model_reg = MapModelRegistry::new();
-        for binding in &self.models {
-            model_reg.register_model(binding.id.clone(), ModelBinding::from(binding))?;
+        for spec in &self.models {
+            model_reg.register_model(spec.clone())?;
         }
 
         let mut agent_reg = MapAgentSpecRegistry::new();
@@ -218,13 +223,11 @@ mod tests {
     #[test]
     fn config_serde_roundtrip() {
         let original = AgentSystemConfig {
-            models: vec![ModelBindingSpec {
-                id: "opus".to_string(),
-                provider_id: "anthropic".to_string(),
-                upstream_model: "claude-opus-4-0-20250514".to_string(),
-                input_token_price_per_million_usd: None,
-                output_token_price_per_million_usd: None,
-            }],
+            models: vec![ModelSpec::new(
+                "opus",
+                "anthropic",
+                "claude-opus-4-0-20250514",
+            )],
             agents: vec![AgentSpec {
                 id: "coder".into(),
                 model_id: "opus".into(),
