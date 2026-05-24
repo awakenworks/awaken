@@ -221,42 +221,42 @@ impl Mailbox {
             .recover_prepared_runs_missing_dispatch_wal(&thread_ids)
             .await?;
 
-        // Recover orphaned background-task waits with no queued wake dispatch.
-        {
-            let query = awaken_contract::contract::storage::RunQuery {
-                status: Some(awaken_contract::contract::lifecycle::RunStatus::Waiting),
-                limit: 200,
-                ..Default::default()
-            };
-            if let Ok(page) = self.run_store.list_runs(&query).await {
-                let queued_set: std::collections::HashSet<String> =
-                    thread_ids.iter().cloned().collect();
-                for run in &page.items {
-                    if !run.is_background_task_waiting() {
-                        continue;
-                    }
-                    // Skip if this thread already has a queued dispatch.
-                    if queued_set.contains(&run.thread_id) {
-                        continue;
-                    }
-                    let request = RunActivation::new(
-                        run.thread_id.clone(),
-                        vec![Message::internal_user("<background-tasks-updated />")],
-                    )
-                    .with_agent_id(run.agent_id.clone())
-                    .with_continue_run_id(run.run_id.clone())
-                    .with_origin(awaken_contract::contract::storage::RunRequestOrigin::Internal)
-                    .with_run_mode(RunMode::InternalWake)
-                    .with_adapter(AdapterKind::Internal);
-                    if self.submit_background(request).await.is_ok() {
-                        total += 1;
-                        tracing::info!(
-                            thread_id = %run.thread_id,
-                            run_id = %run.run_id,
-                            "recover: enqueued wake dispatch for orphaned background-task thread"
-                        );
-                    }
-                }
+        total += self
+            .recover_orphaned_background_task_waits(&thread_ids)
+            .await?;
+
+        Ok(total)
+    }
+
+    async fn recover_orphaned_background_task_waits(
+        self: &Arc<Self>,
+        queued_thread_ids: &[String],
+    ) -> Result<usize, MailboxError> {
+        let queued_set: std::collections::HashSet<String> =
+            queued_thread_ids.iter().cloned().collect();
+        let runs = self.background_task_waiting_runs().await?;
+        let mut total = 0usize;
+
+        for run in runs {
+            if queued_set.contains(&run.thread_id) {
+                continue;
+            }
+            let request = RunActivation::new(
+                run.thread_id.clone(),
+                vec![Message::internal_user("<background-tasks-updated />")],
+            )
+            .with_agent_id(run.agent_id.clone())
+            .with_continue_run_id(run.run_id.clone())
+            .with_origin(awaken_contract::contract::storage::RunRequestOrigin::Internal)
+            .with_run_mode(RunMode::InternalWake)
+            .with_adapter(AdapterKind::Internal);
+            if self.submit_background(request).await.is_ok() {
+                total += 1;
+                tracing::info!(
+                    thread_id = %run.thread_id,
+                    run_id = %run.run_id,
+                    "recover: enqueued wake dispatch for orphaned background-task thread"
+                );
             }
         }
 
@@ -332,6 +332,33 @@ impl Mailbox {
             self.refresh_dispatch_depth_metrics().await;
         }
         Ok(total)
+    }
+
+    async fn background_task_waiting_runs(&self) -> Result<Vec<RunRecord>, MailboxError> {
+        let mut runs = Vec::new();
+        let mut offset = 0usize;
+        loop {
+            let page = self
+                .run_store
+                .list_runs(&RunQuery {
+                    status: Some(RunStatus::Waiting),
+                    limit: 200,
+                    offset,
+                    ..Default::default()
+                })
+                .await?;
+            let page_len = page.items.len();
+            runs.extend(
+                page.items
+                    .into_iter()
+                    .filter(RunRecord::is_background_task_waiting),
+            );
+            if !page.has_more || page_len == 0 {
+                break;
+            }
+            offset += page_len;
+        }
+        Ok(runs)
     }
 
     async fn prepared_runs_missing_dispatch_wal(&self) -> Result<Vec<RunRecord>, MailboxError> {
