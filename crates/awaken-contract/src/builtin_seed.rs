@@ -8,7 +8,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::registry_spec::{AgentSpec, McpServerSpec, ModelBindingSpec, ProviderSpec};
+use crate::registry_spec::{AgentSpec, McpServerSpec, ModelSpec, ProviderSpec};
 use crate::skill_spec::SkillSpec;
 use crate::tool_spec::ToolSpec;
 
@@ -23,7 +23,7 @@ use crate::tool_spec::ToolSpec;
 pub enum BuiltinSpec {
     Agent(Box<AgentSpec>),
     Provider(ProviderSpec),
-    Model(ModelBindingSpec),
+    Model(ModelSpec),
     McpServer(McpServerSpec),
     Tool(ToolSpec),
     Skill(SkillSpec),
@@ -40,8 +40,8 @@ impl BuiltinSpec {
         Self::Provider(spec)
     }
 
-    /// Wrap a `ModelBindingSpec`.
-    pub fn model(spec: ModelBindingSpec) -> Self {
+    /// Wrap a `ModelSpec`.
+    pub fn model(spec: ModelSpec) -> Self {
         Self::Model(spec)
     }
 
@@ -143,13 +143,7 @@ mod tests {
 
     #[test]
     fn constructor_model_wraps() {
-        let spec = ModelBindingSpec {
-            id: "m1".to_owned(),
-            provider_id: "openai".to_owned(),
-            upstream_model: "gpt-4o".to_owned(),
-            input_token_price_per_million_usd: None,
-            output_token_price_per_million_usd: None,
-        };
+        let spec = ModelSpec::new("m1", "openai", "gpt-4o");
         assert!(matches!(BuiltinSpec::model(spec), BuiltinSpec::Model(_)));
     }
 

@@ -52,11 +52,15 @@ fn agent_spec_defaults() {
 }
 
 #[test]
-fn model_binding_spec_uses_canonical_names() {
-    let canonical = ModelBindingSpec {
+fn model_spec_uses_canonical_names() {
+    let canonical = ModelSpec {
         id: "default".into(),
         provider_id: "openai".into(),
         upstream_model: "gpt-4o-mini".into(),
+        context_window: None,
+        max_output_tokens: None,
+        modalities: Modalities::default(),
+        knowledge_cutoff: None,
         input_token_price_per_million_usd: None,
         output_token_price_per_million_usd: None,
     };
@@ -74,7 +78,7 @@ fn provider_model_legacy_fields_are_rejected() {
         serde_json::from_str::<AgentSpec>(r#"{"id":"min","model":"m","system_prompt":"sp"}"#);
     assert!(agent.is_err());
 
-    let model = serde_json::from_value::<ModelBindingSpec>(json!({
+    let model = serde_json::from_value::<ModelSpec>(json!({
         "id": "default",
         "provider": "openai",
         "model": "gpt-4o-mini"
@@ -359,11 +363,15 @@ fn provider_spec_adapter_options_skipped_when_empty() {
 }
 
 #[test]
-fn model_binding_spec_compute_cost_usd_with_both_prices() {
-    let s = ModelBindingSpec {
+fn model_spec_compute_cost_usd_with_both_prices() {
+    let s = ModelSpec {
         id: "m".into(),
         provider_id: "p".into(),
         upstream_model: "x".into(),
+        context_window: None,
+        max_output_tokens: None,
+        modalities: Modalities::default(),
+        knowledge_cutoff: None,
         input_token_price_per_million_usd: Some(3.0),
         output_token_price_per_million_usd: Some(15.0),
     };
@@ -373,22 +381,26 @@ fn model_binding_spec_compute_cost_usd_with_both_prices() {
 }
 
 #[test]
-fn model_binding_spec_compute_cost_usd_missing_either_returns_none() {
-    let base = ModelBindingSpec {
+fn model_spec_compute_cost_usd_missing_either_returns_none() {
+    let base = ModelSpec {
         id: "m".into(),
         provider_id: "p".into(),
         upstream_model: "x".into(),
+        context_window: None,
+        max_output_tokens: None,
+        modalities: Modalities::default(),
+        knowledge_cutoff: None,
         input_token_price_per_million_usd: None,
         output_token_price_per_million_usd: Some(15.0),
     };
     assert!(base.compute_cost_usd(100, 100).is_none());
-    let only_input = ModelBindingSpec {
+    let only_input = ModelSpec {
         input_token_price_per_million_usd: Some(3.0),
         output_token_price_per_million_usd: None,
         ..base.clone()
     };
     assert!(only_input.compute_cost_usd(100, 100).is_none());
-    let neither = ModelBindingSpec {
+    let neither = ModelSpec {
         input_token_price_per_million_usd: None,
         output_token_price_per_million_usd: None,
         ..base
@@ -397,24 +409,113 @@ fn model_binding_spec_compute_cost_usd_missing_either_returns_none() {
 }
 
 #[test]
-fn model_binding_spec_legacy_json_without_pricing_deserialises() {
-    // Pre-pricing ModelBindingSpec JSON must continue to parse so config
+fn model_spec_legacy_json_without_pricing_deserialises() {
+    // Pre-pricing ModelSpec JSON must continue to parse so config
     // stores written before this change keep loading.
     let json = r#"{"id":"m","provider_id":"p","upstream_model":"x"}"#;
-    let s: ModelBindingSpec = serde_json::from_str(json).unwrap();
+    let s: ModelSpec = serde_json::from_str(json).unwrap();
     assert!(s.input_token_price_per_million_usd.is_none());
     assert!(s.output_token_price_per_million_usd.is_none());
 }
 
 #[test]
-fn model_binding_spec_pricing_omitted_from_serialised_form_when_none() {
-    let s = ModelBindingSpec {
+fn model_spec_pricing_omitted_from_serialised_form_when_none() {
+    let s = ModelSpec {
         id: "m".into(),
         provider_id: "p".into(),
         upstream_model: "x".into(),
+        context_window: None,
+        max_output_tokens: None,
+        modalities: Modalities::default(),
+        knowledge_cutoff: None,
         input_token_price_per_million_usd: None,
         output_token_price_per_million_usd: None,
     };
     let encoded = serde_json::to_string(&s).unwrap();
     assert!(!encoded.contains("price"), "{encoded}");
+}
+
+#[test]
+fn model_spec_serde_roundtrip_full() {
+    let spec = ModelSpec {
+        id: "opus-direct".into(),
+        provider_id: "anthropic".into(),
+        upstream_model: "claude-opus-4-7".into(),
+        context_window: Some(1_000_000),
+        max_output_tokens: Some(32_000),
+        modalities: Modalities {
+            input: vec![Modality::Text, Modality::Image],
+            output: vec![Modality::Text],
+        },
+        knowledge_cutoff: Some("2026-01".into()),
+        input_token_price_per_million_usd: Some(15.0),
+        output_token_price_per_million_usd: Some(75.0),
+    };
+    let j = serde_json::to_string(&spec).unwrap();
+    let back: ModelSpec = serde_json::from_str(&j).unwrap();
+    assert_eq!(spec, back);
+}
+
+#[test]
+fn model_spec_serde_minimal_omits_optional_fields() {
+    let spec = ModelSpec::new("m", "p", "upstream");
+    let j = serde_json::to_value(&spec).unwrap();
+    assert_eq!(j["id"], "m");
+    assert_eq!(j["provider_id"], "p");
+    assert_eq!(j["upstream_model"], "upstream");
+    for omitted in [
+        "context_window",
+        "max_output_tokens",
+        "modalities",
+        "knowledge_cutoff",
+        "input_token_price_per_million_usd",
+        "output_token_price_per_million_usd",
+    ] {
+        assert!(
+            j.get(omitted).is_none(),
+            "{omitted} should be omitted when default/None"
+        );
+    }
+}
+
+#[test]
+fn modalities_serde_snake_case_variants() {
+    let m = Modalities {
+        input: vec![Modality::Text, Modality::Pdf],
+        output: vec![Modality::Image],
+    };
+    let j = serde_json::to_value(&m).unwrap();
+    assert_eq!(j["input"], serde_json::json!(["text", "pdf"]));
+    assert_eq!(j["output"], serde_json::json!(["image"]));
+    let back: Modalities = serde_json::from_value(j).unwrap();
+    assert_eq!(m, back);
+}
+
+#[test]
+fn model_spec_rejects_unknown_field() {
+    let err = serde_json::from_str::<ModelSpec>(
+        r#"{"id":"m","provider_id":"p","upstream_model":"u","bogus":true}"#,
+    )
+    .unwrap_err();
+    assert!(err.to_string().contains("unknown field"), "got: {err}");
+}
+
+#[test]
+fn modality_rejects_unknown_variant_string() {
+    let err = serde_json::from_str::<Modality>(r#""holographic""#).unwrap_err();
+    let msg = err.to_string();
+    assert!(
+        msg.contains("unknown variant") || msg.contains("variant"),
+        "expected unknown-variant error, got: {msg}"
+    );
+}
+
+#[test]
+fn modalities_rejects_unknown_field() {
+    let err =
+        serde_json::from_str::<Modalities>(r#"{"input":[],"output":[],"bogus":[]}"#).unwrap_err();
+    assert!(
+        err.to_string().contains("unknown field"),
+        "expected deny_unknown_fields error, got: {err}"
+    );
 }

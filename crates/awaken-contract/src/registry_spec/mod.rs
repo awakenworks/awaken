@@ -1,7 +1,7 @@
 //! Serializable agent definition — pure data, no trait objects.
 //!
 //! `AgentSpec` is the unified agent configuration: it describes both the
-//! declarative registry references (model binding, plugins, tools) and the runtime
+//! declarative registry references (model id, plugins, tools) and the runtime
 //! behavior (active_hook_filter filtering, typed plugin sections, context policy).
 //!
 //! Supersedes the former `AgentProfile` — see ADR-0009.
@@ -185,7 +185,7 @@ fn inject_legacy_allow_default(
 pub struct AgentSpec {
     /// Unique agent identifier.
     pub id: String,
-    /// ModelRegistry ID — resolved to a runtime model binding.
+    /// ModelRegistry ID — resolved to a `ModelSpec` carrying provider, upstream model, capabilities, and pricing.
     pub model_id: String,
     /// System prompt sent to the LLM.
     pub system_prompt: String,
@@ -396,60 +396,6 @@ impl<'de> Deserialize<'de> for RemoteEndpoint {
             timeout_ms: raw.timeout_ms.unwrap_or_else(default_timeout),
             options: raw.options,
         })
-    }
-}
-
-// ---------------------------------------------------------------------------
-// ModelBindingSpec
-// ---------------------------------------------------------------------------
-
-/// Serializable model binding from a stable ID to a provider and upstream model.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct ModelBindingSpec {
-    /// Unique identifier (for example `"gpt-4o-mini"` or `"research-default"`).
-    pub id: String,
-    /// Provider spec ID referenced by this binding.
-    pub provider_id: String,
-    /// Actual model name sent to the upstream provider.
-    pub upstream_model: String,
-    /// Optional input-token price in USD per million tokens. When paired
-    /// with `output_token_price_per_million_usd`, eval runs populate
-    /// `ReplayReport.cost_usd` so cost surfaces in regression diffs.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub input_token_price_per_million_usd: Option<f64>,
-    /// Optional output-token price in USD per million tokens.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub output_token_price_per_million_usd: Option<f64>,
-}
-
-impl ModelBindingSpec {
-    /// Convenience constructor for tests and bootstrap code. Pricing
-    /// fields default to `None`.
-    pub fn new(
-        id: impl Into<String>,
-        provider_id: impl Into<String>,
-        upstream_model: impl Into<String>,
-    ) -> Self {
-        Self {
-            id: id.into(),
-            provider_id: provider_id.into(),
-            upstream_model: upstream_model.into(),
-            input_token_price_per_million_usd: None,
-            output_token_price_per_million_usd: None,
-        }
-    }
-
-    /// USD cost from per-million pricing. Returns `None` unless **both**
-    /// input and output prices are set — partial pricing would silently
-    /// under-report cost.
-    pub fn compute_cost_usd(&self, input_tokens: u32, output_tokens: u32) -> Option<f64> {
-        let ip = self.input_token_price_per_million_usd?;
-        let op = self.output_token_price_per_million_usd?;
-        Some(
-            f64::from(input_tokens) * ip / 1_000_000.0
-                + f64::from(output_tokens) * op / 1_000_000.0,
-        )
     }
 }
 
@@ -793,7 +739,9 @@ impl AgentSpec {
 
 mod catalog_match;
 mod catalog_validation;
+mod model_spec;
 pub use catalog_validation::{IssueSeverity, ValidationIssue};
+pub use model_spec::{Modalities, Modality, ModelSpec};
 
 #[cfg(test)]
 mod tests;

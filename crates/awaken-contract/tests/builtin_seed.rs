@@ -1,4 +1,4 @@
-use awaken_contract::registry_spec::{AgentSpec, McpServerSpec, ModelBindingSpec, ProviderSpec};
+use awaken_contract::registry_spec::{AgentSpec, McpServerSpec, ModelSpec, ProviderSpec};
 use awaken_contract::{BuiltinSeedSet, BuiltinSpec, SkillSpec};
 
 // ── helpers ──────────────────────────────────────────────────────────────────
@@ -23,14 +23,8 @@ fn provider_spec() -> ProviderSpec {
     }
 }
 
-fn model_binding_spec() -> ModelBindingSpec {
-    ModelBindingSpec {
-        id: "gpt-4o".into(),
-        provider_id: "openai".into(),
-        upstream_model: "gpt-4o-mini".into(),
-        input_token_price_per_million_usd: None,
-        output_token_price_per_million_usd: None,
-    }
+fn model_spec() -> ModelSpec {
+    ModelSpec::new("gpt-4o", "openai", "gpt-4o-mini")
 }
 
 fn mcp_server_spec() -> McpServerSpec {
@@ -62,10 +56,7 @@ fn namespace_returns_expected_string_for_each_variant() {
         BuiltinSpec::Provider(provider_spec()).namespace(),
         "providers"
     );
-    assert_eq!(
-        BuiltinSpec::Model(model_binding_spec()).namespace(),
-        "models"
-    );
+    assert_eq!(BuiltinSpec::Model(model_spec()).namespace(), "models");
     assert_eq!(
         BuiltinSpec::McpServer(mcp_server_spec()).namespace(),
         "mcp-servers"
@@ -82,7 +73,7 @@ fn id_delegates_to_inner_spec_for_each_variant() {
         "test-agent"
     );
     assert_eq!(BuiltinSpec::Provider(provider_spec()).id(), "openai");
-    assert_eq!(BuiltinSpec::Model(model_binding_spec()).id(), "gpt-4o");
+    assert_eq!(BuiltinSpec::Model(model_spec()).id(), "gpt-4o");
     assert_eq!(BuiltinSpec::McpServer(mcp_server_spec()).id(), "test-mcp");
     assert_eq!(BuiltinSpec::Skill(skill_spec()).id(), "db-management");
 }
@@ -115,7 +106,7 @@ fn serde_roundtrip_provider() {
 
 #[test]
 fn serde_roundtrip_model() {
-    let original = BuiltinSpec::Model(model_binding_spec());
+    let original = BuiltinSpec::Model(model_spec());
     let value = serde_json::to_value(&original).unwrap();
     let decoded: BuiltinSpec = serde_json::from_value(value.clone()).unwrap();
     assert_eq!(
@@ -174,7 +165,7 @@ fn tag_discriminator_is_kind_with_snake_case_names() {
         "Provider kind tag mismatch"
     );
 
-    let model_value = serde_json::to_value(BuiltinSpec::Model(model_binding_spec())).unwrap();
+    let model_value = serde_json::to_value(BuiltinSpec::Model(model_spec())).unwrap();
     assert_eq!(
         model_value["kind"].as_str(),
         Some("model"),
@@ -196,7 +187,7 @@ fn mixed_variant_vec_round_trips() {
     let specs = vec![
         BuiltinSpec::Agent(Box::new(agent_spec())),
         BuiltinSpec::Provider(provider_spec()),
-        BuiltinSpec::Model(model_binding_spec()),
+        BuiltinSpec::Model(model_spec()),
         BuiltinSpec::McpServer(mcp_server_spec()),
         BuiltinSpec::Skill(skill_spec()),
     ];

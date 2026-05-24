@@ -4,7 +4,7 @@ use std::collections::HashSet;
 
 use crate::agent_spec_patch::AgentSpecPatch;
 use crate::config_record::{ConfigRecord, ConfigRecordError, ConfigRecordMerge};
-use crate::registry_spec::{AgentSpec, ModelBindingSpec, ProviderSpec};
+use crate::registry_spec::{AgentSpec, Modality, ModelSpec, ProviderSpec};
 use crate::skill_allowed_tools::{
     is_skill_allowed_tool_pattern, parse_skill_allowed_tools, validate_skill_allowed_tool_pattern,
 };
@@ -24,7 +24,7 @@ pub const AGENT_SPEC_PATCH_UNKNOWN_FIELD_POLICY: UnknownFieldPolicy = UnknownFie
 /// read-time compatibility, but config write/validate surfaces reject unknown
 /// fields so operators do not persist silently ignored provider settings.
 pub const PROVIDER_SPEC_UNKNOWN_FIELD_POLICY: UnknownFieldPolicy = UnknownFieldPolicy::Reject;
-pub const MODEL_BINDING_SPEC_UNKNOWN_FIELD_POLICY: UnknownFieldPolicy = UnknownFieldPolicy::Reject;
+pub const MODEL_SPEC_UNKNOWN_FIELD_POLICY: UnknownFieldPolicy = UnknownFieldPolicy::Reject;
 pub const SKILL_SPEC_UNKNOWN_FIELD_POLICY: UnknownFieldPolicy = UnknownFieldPolicy::Reject;
 
 const PROVIDER_SPEC_FIELDS: &[&str] = &[
@@ -35,7 +35,17 @@ const PROVIDER_SPEC_FIELDS: &[&str] = &[
     "timeout_secs",
     "adapter_options",
 ];
-const MODEL_BINDING_SPEC_FIELDS: &[&str] = &["id", "provider_id", "upstream_model"];
+const MODEL_SPEC_FIELDS: &[&str] = &[
+    "id",
+    "provider_id",
+    "upstream_model",
+    "context_window",
+    "max_output_tokens",
+    "modalities",
+    "knowledge_cutoff",
+    "input_token_price_per_million_usd",
+    "output_token_price_per_million_usd",
+];
 const SKILL_SPEC_FIELDS: &[&str] = &[
     "id",
     "name",
@@ -60,8 +70,8 @@ pub enum ConfigValidationError {
     AgentSpecPatch(#[source] serde_json::Error),
     #[error("invalid provider spec: {0}")]
     ProviderSpec(#[source] serde_json::Error),
-    #[error("invalid model binding spec: {0}")]
-    ModelBindingSpec(#[source] serde_json::Error),
+    #[error("invalid model spec: {0}")]
+    ModelSpec(#[source] serde_json::Error),
     #[error("invalid skill spec: {0}")]
     SkillSpec(#[source] serde_json::Error),
     #[error("invalid {surface}: unknown field '{field}'")]
@@ -76,6 +86,8 @@ pub enum ConfigValidationError {
     },
     #[error("invalid config record: {0}")]
     ConfigRecord(#[from] ConfigRecordError),
+    #[error("duplicate model id '{id}'")]
+    DuplicateModelId { id: String },
     #[error("invalid {surface}: {message}")]
     Invalid {
         surface: &'static str,
@@ -113,17 +125,159 @@ pub fn validate_provider_spec(value: Value) -> Result<ProviderSpec, ConfigValida
     Ok(spec)
 }
 
-/// Validate and decode a `ModelBindingSpec` for config write surfaces.
-pub fn validate_model_binding_spec(
-    value: Value,
-) -> Result<ModelBindingSpec, ConfigValidationError> {
-    reject_unknown_fields(&value, "model binding spec", MODEL_BINDING_SPEC_FIELDS)?;
-    let spec: ModelBindingSpec =
-        serde_json::from_value(value).map_err(ConfigValidationError::ModelBindingSpec)?;
-    reject_empty("model binding spec", "id", &spec.id)?;
-    reject_empty("model binding spec", "provider_id", &spec.provider_id)?;
-    reject_empty("model binding spec", "upstream_model", &spec.upstream_model)?;
+/// Validate and decode a `ModelSpec` from JSON for config write surfaces.
+///
+/// Rejects unknown fields (read-time deserialization stays lenient), then
+/// delegates every semantic rule to [`validate_model_spec_struct`] so the
+/// JSON path, the runtime builder, and the model registry all share one
+/// definition of a valid `ModelSpec`.
+pub fn validate_model_spec(value: Value) -> Result<ModelSpec, ConfigValidationError> {
+    reject_unknown_fields(&value, "model spec", MODEL_SPEC_FIELDS)?;
+    let spec: ModelSpec =
+        serde_json::from_value(value).map_err(ConfigValidationError::ModelSpec)?;
+    validate_model_spec_struct(&spec)?;
     Ok(spec)
+}
+
+/// Validate an already-constructed `ModelSpec`.
+///
+/// This is the single source of truth for `ModelSpec` validity. Both the
+/// JSON config surface ([`validate_model_spec`]) and in-memory construction
+/// paths (the runtime builder and model registry) call it so a `ModelSpec`
+/// cannot enter any registry with values the config API would reject.
+pub fn validate_model_spec_struct(spec: &ModelSpec) -> Result<(), ConfigValidationError> {
+    reject_empty("model spec", "id", &spec.id)?;
+    reject_empty("model spec", "provider_id", &spec.provider_id)?;
+    reject_empty("model spec", "upstream_model", &spec.upstream_model)?;
+    if let Some(cutoff) = spec.knowledge_cutoff.as_deref() {
+        reject_empty("model spec", "knowledge_cutoff", cutoff)?;
+        validate_knowledge_cutoff_format(cutoff)?;
+    }
+    reject_zero_capability("context_window", spec.context_window)?;
+    reject_zero_capability("max_output_tokens", spec.max_output_tokens)?;
+    if let (Some(ctx), Some(out)) = (spec.context_window, spec.max_output_tokens)
+        && out > ctx
+    {
+        return Err(ConfigValidationError::Invalid {
+            surface: "model spec",
+            message: format!("max_output_tokens ({out}) must not exceed context_window ({ctx})"),
+        });
+    }
+    reject_invalid_price(
+        "input_token_price_per_million_usd",
+        spec.input_token_price_per_million_usd,
+    )?;
+    reject_invalid_price(
+        "output_token_price_per_million_usd",
+        spec.output_token_price_per_million_usd,
+    )?;
+    reject_duplicate_modalities("input", &spec.modalities.input)?;
+    reject_duplicate_modalities("output", &spec.modalities.output)?;
+    Ok(())
+}
+
+fn reject_invalid_price(field: &str, value: Option<f64>) -> Result<(), ConfigValidationError> {
+    if let Some(price) = value
+        && (!price.is_finite() || price < 0.0)
+    {
+        return Err(ConfigValidationError::Invalid {
+            surface: "model spec",
+            message: format!("'{field}' must be a finite non-negative number, got {price}"),
+        });
+    }
+    Ok(())
+}
+
+fn validate_knowledge_cutoff_format(value: &str) -> Result<(), ConfigValidationError> {
+    let bytes = value.as_bytes();
+    let valid_shape = match bytes.len() {
+        7 => {
+            bytes[4] == b'-'
+                && bytes[..4].iter().all(|b| b.is_ascii_digit())
+                && bytes[5..].iter().all(|b| b.is_ascii_digit())
+        }
+        10 => {
+            bytes[4] == b'-'
+                && bytes[7] == b'-'
+                && bytes[..4].iter().all(|b| b.is_ascii_digit())
+                && bytes[5..7].iter().all(|b| b.is_ascii_digit())
+                && bytes[8..].iter().all(|b| b.is_ascii_digit())
+        }
+        _ => false,
+    };
+    if !valid_shape {
+        return Err(ConfigValidationError::Invalid {
+            surface: "model spec",
+            message: format!(
+                "'knowledge_cutoff' must be ISO date 'YYYY-MM' or 'YYYY-MM-DD', got '{value}'"
+            ),
+        });
+    }
+    let year: i32 = value[..4].parse().unwrap_or(0);
+    let month: u32 = value[5..7].parse().unwrap_or(0);
+    if !(1..=12).contains(&month) {
+        return Err(ConfigValidationError::Invalid {
+            surface: "model spec",
+            message: format!("'knowledge_cutoff' month must be 01-12, got '{value}'"),
+        });
+    }
+    if bytes.len() == 10 {
+        let day: u32 = value[8..10].parse().unwrap_or(0);
+        // Real calendar validity, not just 01-31 shape: rejects 2026-02-31,
+        // 2026-04-31, etc., and honors leap years for February.
+        let max_day = days_in_month(year, month);
+        if day < 1 || day > max_day {
+            return Err(ConfigValidationError::Invalid {
+                surface: "model spec",
+                message: format!(
+                    "'knowledge_cutoff' day must be 01-{max_day:02} for {year:04}-{month:02}, got '{value}'"
+                ),
+            });
+        }
+    }
+    Ok(())
+}
+
+/// Days in a Gregorian month. `month` is assumed already validated to 1..=12.
+fn days_in_month(year: i32, month: u32) -> u32 {
+    match month {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 => {
+            let leap = (year % 4 == 0 && year % 100 != 0) || year % 400 == 0;
+            if leap { 29 } else { 28 }
+        }
+        _ => 31,
+    }
+}
+
+fn reject_duplicate_modalities(
+    field: &str,
+    items: &[Modality],
+) -> Result<(), ConfigValidationError> {
+    let mut seen = HashSet::new();
+    for m in items {
+        if !seen.insert(*m) {
+            return Err(ConfigValidationError::Invalid {
+                surface: "model spec",
+                message: format!("'modalities.{field}' contains duplicate '{m:?}'"),
+            });
+        }
+    }
+    Ok(())
+}
+
+fn reject_zero_capability(
+    field: &'static str,
+    value: Option<u32>,
+) -> Result<(), ConfigValidationError> {
+    match value {
+        Some(0) => Err(ConfigValidationError::Invalid {
+            surface: "model spec",
+            message: format!("field '{field}' must be greater than zero"),
+        }),
+        _ => Ok(()),
+    }
 }
 
 /// Validate and decode a `SkillSpec` for config write surfaces.
@@ -180,6 +334,23 @@ pub fn validate_skill_spec(value: Value) -> Result<SkillSpec, ConfigValidationEr
         });
     }
     Ok(spec)
+}
+
+/// Validate that a slice of `ModelSpec` contains no duplicate `id` values.
+///
+/// Returns the first duplicate id encountered in input order. Intended for
+/// collection-holders (e.g. `ManagedConfig.models`) to call at write time so
+/// downstream registry assembly never observes shadowed entries.
+pub fn validate_unique_model_ids(specs: &[ModelSpec]) -> Result<(), ConfigValidationError> {
+    let mut seen = HashSet::new();
+    for spec in specs {
+        if !seen.insert(spec.id.as_str()) {
+            return Err(ConfigValidationError::DuplicateModelId {
+                id: spec.id.clone(),
+            });
+        }
+    }
+    Ok(())
 }
 
 /// Validate and decode a config record envelope, accepting legacy bare specs.
@@ -323,224 +494,4 @@ fn validate_allowed_tool_token(value: &str) -> Result<(), ConfigValidationError>
 }
 
 #[cfg(test)]
-mod tests {
-    use serde_json::json;
-
-    use super::*;
-
-    #[test]
-    fn validate_agent_spec_rejects_unknown_fields() {
-        let err = validate_agent_spec(json!({
-            "id": "a",
-            "model_id": "m",
-            "system_prompt": "s",
-            "model": "legacy"
-        }))
-        .expect_err("unknown field must be rejected");
-        assert!(err.to_string().contains("invalid agent spec"));
-    }
-
-    #[test]
-    fn validate_agent_spec_patch_rejects_unknown_fields() {
-        let err = validate_agent_spec_patch(json!({"bogus": true}))
-            .expect_err("unknown patch field must be rejected");
-        assert!(err.to_string().contains("invalid agent spec patch"));
-    }
-
-    #[test]
-    fn validate_config_record_accepts_legacy_bare_spec() {
-        let record = validate_config_record::<AgentSpec>(json!({
-            "id": "a",
-            "model_id": "m",
-            "system_prompt": "s"
-        }))
-        .expect("legacy bare spec must decode");
-        assert_eq!(record.spec.id, "a");
-    }
-
-    #[test]
-    fn validate_config_record_rejects_invalid_user_overrides() {
-        let err = validate_config_record::<AgentSpec>(json!({
-            "spec": {
-                "id": "a",
-                "model_id": "m",
-                "system_prompt": "s"
-            },
-            "meta": {
-                "source": {"kind": "builtin", "binary_version": "test"},
-                "user_overrides": {"unknown_patch_field": true}
-            }
-        }))
-        .expect_err("invalid overrides must fail validation");
-        assert!(err.to_string().contains("invalid config record"));
-    }
-
-    #[test]
-    fn validate_provider_spec_rejects_unknown_and_empty_fields() {
-        let err = validate_provider_spec(json!({
-            "id": "p",
-            "adapter": "openai",
-            "future_top_level": true
-        }))
-        .expect_err("unknown provider fields must be rejected on write surfaces");
-        assert!(err.to_string().contains("unknown field 'future_top_level'"));
-
-        let err = validate_provider_spec(json!({
-            "id": " ",
-            "adapter": "openai"
-        }))
-        .expect_err("empty provider id must be rejected");
-        assert!(err.to_string().contains("field 'id' cannot be empty"));
-
-        let err = validate_provider_spec(json!({
-            "id": "p",
-            "adapter": ""
-        }))
-        .expect_err("empty provider adapter must be rejected");
-        assert!(err.to_string().contains("field 'adapter' cannot be empty"));
-    }
-
-    #[test]
-    fn validate_model_binding_spec_rejects_unknown_and_empty_fields() {
-        let err = validate_model_binding_spec(json!({
-            "id": "m",
-            "provider_id": "p",
-            "upstream_model": "gpt-4",
-            "future_top_level": true
-        }))
-        .expect_err("unknown model fields must be rejected");
-        assert!(err.to_string().contains("unknown field 'future_top_level'"));
-
-        let err = validate_model_binding_spec(json!({
-            "id": "m",
-            "provider_id": " ",
-            "upstream_model": "gpt-4"
-        }))
-        .expect_err("empty provider_id must be rejected");
-        assert!(
-            err.to_string()
-                .contains("field 'provider_id' cannot be empty")
-        );
-    }
-
-    #[test]
-    fn validate_skill_spec_accepts_valid_spec() {
-        let spec = validate_skill_spec(json!({
-            "id": "db-management",
-            "name": "Database Management",
-            "description": "Helps with database operations",
-            "instructions_md": "Inspect schema before running SQL.",
-            "allowed_tools": ["db_query", "mcp__db__*"],
-            "arguments": [{"name": "dialect", "required": false}]
-        }))
-        .expect("valid skill spec");
-        assert_eq!(spec.id, "db-management");
-    }
-
-    #[test]
-    fn validate_skill_spec_accepts_unicode_id_aligned_with_skill_md() {
-        let spec = validate_skill_spec(json!({
-            "id": "数据库",
-            "name": "数据库",
-            "description": "Helps with database operations",
-            "instructions_md": "Inspect schema before running SQL."
-        }))
-        .expect("unicode skill names accepted by SKILL.md should import");
-        assert_eq!(spec.id, "数据库");
-    }
-
-    #[test]
-    fn validate_skill_spec_rejects_invalid_id_and_tools() {
-        let err = validate_skill_spec(json!({
-            "id": "DB",
-            "name": "Database Management",
-            "description": "Helps with database operations",
-            "instructions_md": "Inspect schema before running SQL."
-        }))
-        .expect_err("uppercase id must fail");
-        assert!(err.to_string().contains("must be lowercase"));
-
-        let err = validate_skill_spec(json!({
-            "id": "db-management",
-            "name": "Database Management",
-            "description": "Helps with database operations",
-            "instructions_md": "Inspect schema before running SQL.",
-            "allowed_tools": ["bad token"]
-        }))
-        .expect_err("whitespace in tool token must fail");
-        assert!(err.to_string().contains("exactly one token"));
-
-        let err = validate_skill_spec(json!({
-            "id": "db-management",
-            "name": "Database Management",
-            "description": "Helps with database operations",
-            "instructions_md": "Inspect schema before running SQL.",
-            "allowed_tools": ["()"]
-        }))
-        .expect_err("empty scoped tool id must fail");
-        assert!(err.to_string().contains("invalid allowed-tools token"));
-
-        let err = validate_skill_spec(json!({
-            "id": "db-management",
-            "name": "Database Management",
-            "description": "Helps with database operations",
-            "instructions_md": "Inspect schema before running SQL.",
-            "allowed_tools": ["Bash(command: \"git status\")"]
-        }))
-        .expect_err("DB-managed scoped tool grants are not supported yet");
-        assert!(err.to_string().contains("scoped allowed_tools entry"));
-
-        let err = validate_skill_spec(json!({
-            "id": "db-management",
-            "name": "Database Management",
-            "description": "Helps with database operations",
-            "instructions_md": "Inspect schema before running SQL.",
-            "allowed_tools": ["/[invalid/"]
-        }))
-        .expect_err("invalid regex matcher must fail");
-        assert!(err.to_string().contains("invalid allowed-tools pattern"));
-
-        let err = validate_skill_spec(json!({
-            "id": "db-management",
-            "name": "Database Management",
-            "description": "Helps with database operations",
-            "instructions_md": "Inspect schema before running SQL.",
-            "allowed_tools": [r"mcp__db__*\"]
-        }))
-        .expect_err("invalid glob matcher must fail");
-        assert!(err.to_string().contains("dangling escape"));
-    }
-
-    #[test]
-    fn validate_skill_spec_rejects_paths_and_duplicate_arguments() {
-        let err = validate_skill_spec(json!({
-            "id": "db-management",
-            "name": "Database Management",
-            "description": "Helps with database operations",
-            "instructions_md": "Inspect schema before running SQL.",
-            "paths": ["migrations/**"]
-        }))
-        .expect_err("paths are not supported yet");
-        assert!(err.to_string().contains("paths are not supported"));
-
-        let err = validate_skill_spec(json!({
-            "id": "db-management",
-            "name": "Database Management",
-            "description": "Helps with database operations",
-            "instructions_md": "Inspect schema before running SQL.",
-            "arguments": [{"name": "dialect"}, {"name": "dialect"}]
-        }))
-        .expect_err("duplicate arguments must fail");
-        assert!(err.to_string().contains("duplicate argument name"));
-
-        let err = validate_skill_spec(json!({
-            "id": "db-management",
-            "name": "Database Management",
-            "description": "Helps with database operations",
-            "instructions_md": "Inspect schema before running SQL.",
-            "arguments": [{"name": " dialect "}]
-        }))
-        .expect_err("argument names must be trim-stable");
-        assert!(err.to_string().contains("surrounding whitespace"));
-    }
-}
+mod tests;

@@ -54,7 +54,7 @@ pub use tool_spec_patch::{ToolSpecPatch, merge_tool_spec};
 
 // ── registry spec (AgentSpec, PluginConfigKey) ──
 pub use registry_spec::{
-    AgentSpec, McpRestartPolicy, McpServerSpec, McpTransportKind, ModelBindingSpec,
+    AgentSpec, McpRestartPolicy, McpServerSpec, McpTransportKind, Modalities, Modality, ModelSpec,
     PluginConfigKey, ProviderSpec,
 };
 
@@ -179,10 +179,11 @@ pub use config_record::{
 };
 pub use config_validation::{
     AGENT_SPEC_PATCH_UNKNOWN_FIELD_POLICY, AGENT_SPEC_UNKNOWN_FIELD_POLICY, ConfigValidationError,
-    MODEL_BINDING_SPEC_UNKNOWN_FIELD_POLICY, PROVIDER_SPEC_UNKNOWN_FIELD_POLICY,
+    MODEL_SPEC_UNKNOWN_FIELD_POLICY, PROVIDER_SPEC_UNKNOWN_FIELD_POLICY,
     SKILL_SPEC_UNKNOWN_FIELD_POLICY, UnknownFieldPolicy, validate_agent_spec,
-    validate_agent_spec_patch, validate_config_record, validate_model_binding_spec,
-    validate_provider_spec, validate_skill_spec,
+    validate_agent_spec_patch, validate_config_record, validate_model_spec,
+    validate_model_spec_struct, validate_provider_spec, validate_skill_spec,
+    validate_unique_model_ids,
 };
 
 // ── builtin seed ──
