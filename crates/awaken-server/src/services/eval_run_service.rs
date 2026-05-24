@@ -246,10 +246,11 @@ pub(crate) fn map_eval_run_store_error(err: EvalRunStoreError) -> ApiError {
         EvalRunStoreError::AlreadyExists(id) => {
             ApiError::Conflict(format!("eval run already exists: {id}"))
         }
-        // A duplicate-key run is either a server-generated invariant
-        // violation or corrupt stored data. Surface as 500 outside the
-        // explicit diff-preflight path, where the operator has selected
-        // a non-diffable run and the handler returns 400 directly.
+        // A duplicate-key run from a generic read/write/list path is
+        // either a server-generated invariant violation or corrupt
+        // stored data, so surface it as 500. The explicit diff paths
+        // map the same store error to 400 themselves because the user
+        // selected a non-diffable current/baseline run pair.
         err @ EvalRunStoreError::DuplicateItemKeys(..) => ApiError::Internal(err.to_string()),
         err => ApiError::Internal(err.to_string()),
     }

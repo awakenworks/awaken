@@ -833,7 +833,31 @@ async fn get_eval_run_baseline_400s_on_adhoc_run() {
 }
 
 #[tokio::test]
-async fn get_eval_run_baseline_400s_when_current_has_duplicate_item_keys() {
+async fn get_eval_run_dirty_historical_run_500s_without_diff_context() {
+    // Reading an already-corrupt stored run directly is a store
+    // corruption signal, not a bad diff selection. The diff routes map
+    // the same duplicate-key shape to 400 because the caller selected a
+    // non-diffable current/baseline pair; a plain GET has no such
+    // request context and should stay fail-loud as 500.
+    let app = build_test_app().await;
+    let mut dirty = baseline_run("DIRTY-NODIFF");
+    let dup = dirty.items[0].clone();
+    dirty.items.push(dup);
+    seed_corrupt_eval_run(&app.eval_run_root, &dirty);
+
+    let (status, body) = request(&app.router, "GET", "/v1/eval/runs/DIRTY-NODIFF", None).await;
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+    assert!(
+        body["error"]
+            .as_str()
+            .unwrap_or("")
+            .contains("duplicate eval-run item key"),
+        "body: {body}"
+    );
+}
+
+#[tokio::test]
+async fn get_eval_run_diff_400s_when_selected_current_has_duplicate_item_keys() {
     // Diff must refuse to silently collapse duplicate (fixture_id, cell,
     // sample_index) keys via the BTreeMap pairing. A run that managed
     // to land two items with the same key (e.g. a future store impl
@@ -870,7 +894,7 @@ async fn get_eval_run_baseline_400s_when_current_has_duplicate_item_keys() {
 }
 
 #[tokio::test]
-async fn get_eval_run_baseline_400s_when_baseline_has_duplicate_item_keys() {
+async fn get_eval_run_diff_400s_when_selected_baseline_has_duplicate_item_keys() {
     // Symmetric to the corrupt-current case above: selecting a baseline
     // that cannot be diffed is a bad diff request, not an internal
     // failure. The normal store write path rejects this shape, so seed
