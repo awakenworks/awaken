@@ -3,12 +3,27 @@
 //! Each module state knows its own route surface; [`crate::routes::build_router`]
 //! folds available modules together without per-module imperative if-chains.
 
-use axum::Router;
+use axum::extract::{Request, State};
+use axum::http::HeaderMap;
+use axum::middleware::Next;
+use axum::response::Response;
+use axum::{Router, middleware};
 
 use crate::app::{
-    AdminRunRoutesState, ConfigRoutesState, EvalRoutesState, EventModuleState, ProtocolRoutesState,
-    RunRoutesState, SystemRoutesState, TraceRoutesState,
+    AdminModuleState, AdminRunRoutesState, ConfigRoutesState, EvalRoutesState, EventModuleState,
+    ProtocolRoutesState, RunRoutesState, SystemRoutesState, TraceRoutesState,
 };
+use crate::routes::ApiError;
+
+async fn require_admin_auth_middleware(
+    State(admin): State<AdminModuleState>,
+    headers: HeaderMap,
+    request: Request,
+    next: Next,
+) -> Result<Response, ApiError> {
+    crate::config_routes::ensure_admin_auth(&admin, &headers)?;
+    Ok(next.run(request).await)
+}
 
 /// A self-contained router fragment that knows how to mount itself onto a
 /// parent `Router`. See module docs.
@@ -53,7 +68,13 @@ pub(crate) struct SystemRoutes(pub SystemRoutesState);
 
 impl RouteModule for SystemRoutes {
     fn mount(self, router: Router) -> Router {
-        router.merge(crate::system_routes::system_routes().with_state(self.0))
+        let auth =
+            middleware::from_fn_with_state(self.0.admin.clone(), require_admin_auth_middleware);
+        router.merge(
+            crate::system_routes::system_routes()
+                .route_layer(auth)
+                .with_state(self.0),
+        )
     }
 }
 
@@ -61,27 +82,55 @@ pub(crate) struct AdminRunModule(pub AdminRunRoutesState);
 
 impl RouteModule for AdminRunModule {
     fn mount(self, router: Router) -> Router {
-        router.merge(crate::admin_routes::admin_run_routes().with_state(self.0))
+        let auth =
+            middleware::from_fn_with_state(self.0.admin.clone(), require_admin_auth_middleware);
+        router.merge(
+            crate::admin_routes::admin_run_routes()
+                .route_layer(auth)
+                .with_state(self.0),
+        )
     }
 }
 
 impl RouteModule for ConfigRoutesState {
     fn mount(self, router: Router) -> Router {
+        let auth =
+            middleware::from_fn_with_state(self.admin.clone(), require_admin_auth_middleware);
         router
-            .merge(crate::config_routes::config_routes().with_state(self.clone()))
-            .merge(crate::admin_routes::config_admin_routes().with_state(self))
+            .merge(
+                crate::config_routes::config_routes()
+                    .route_layer(auth.clone())
+                    .with_state(self.clone()),
+            )
+            .merge(
+                crate::admin_routes::config_admin_routes()
+                    .route_layer(auth)
+                    .with_state(self),
+            )
     }
 }
 
 impl RouteModule for EvalRoutesState {
     fn mount(self, router: Router) -> Router {
-        router.merge(crate::eval_router::eval_routes().with_state(self))
+        let auth =
+            middleware::from_fn_with_state(self.admin.clone(), require_admin_auth_middleware);
+        router.merge(
+            crate::eval_router::eval_routes()
+                .route_layer(auth)
+                .with_state(self),
+        )
     }
 }
 
 impl RouteModule for TraceRoutesState {
     fn mount(self, router: Router) -> Router {
-        router.merge(crate::routes::trace_routes().with_state(self))
+        let auth =
+            middleware::from_fn_with_state(self.admin.clone(), require_admin_auth_middleware);
+        router.merge(
+            crate::routes::trace_routes()
+                .route_layer(auth)
+                .with_state(self),
+        )
     }
 }
 
