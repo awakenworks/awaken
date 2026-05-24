@@ -34,6 +34,7 @@ fn run_record(thread_id: &str, run_id: &str) -> RunRecord {
         thread_id: thread_id.to_string(),
         run_id: run_id.to_string(),
         status: RunStatus::Done,
+        agent_id: "agent-1".to_string(),
         ..Default::default()
     }
 }
