@@ -28,8 +28,13 @@ use crate::outcome::ReplayReport;
 /// Persisting this on the run record keeps `provider_script` replay
 /// (deterministic CI smoke tests) distinct from Live provider evaluation
 /// (real model/agent behaviour). Older run JSON did not carry the field;
-/// deserialisation defaults those records to `Scripted`, which matches
-/// the historical behaviour.
+/// records missing `execution_mode` are inferred from their items —
+/// presence of any `item.cell` means the run went through the matrix /
+/// live path, so it is restored as `Live`. Pre-matrix records (no
+/// `item.cell`) are restored as `Scripted`, matching historical
+/// behaviour. This keeps live-matrix baselines created before the field
+/// existed comparable to new live runs (the diff path rejects mode
+/// mismatches).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EvalRunExecutionMode {
@@ -40,6 +45,7 @@ pub enum EvalRunExecutionMode {
 
 /// One server-side eval run.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(from = "EvalRunWire")]
 pub struct EvalRun {
     /// Globally unique run id (ULID, minted at run start).
     pub id: String,
@@ -50,7 +56,6 @@ pub struct EvalRun {
     /// the schema change instead of pretending the fixtures matched.
     pub dataset_revision: u64,
     /// How this run executed its fixtures.
-    #[serde(default)]
     pub execution_mode: EvalRunExecutionMode,
     /// Per-fixture replay results, in the dataset's fixture order.
     pub items: Vec<EvalRunItem>,
@@ -60,6 +65,43 @@ pub struct EvalRun {
     /// written to storage exactly once, after every fixture has
     /// replayed (`EvalRunStore::write` is the only persistence path).
     pub ended_at_secs: u64,
+}
+
+// Deserialisation shadow: lets `execution_mode` be absent on disk and
+// reconstructed from `items[*].cell` so legacy live-matrix runs round-
+// trip as `Live` instead of being mislabelled `Scripted` and then
+// rejected by the baseline mode-equality check.
+#[derive(Deserialize)]
+struct EvalRunWire {
+    id: String,
+    dataset_id: String,
+    dataset_revision: u64,
+    #[serde(default)]
+    execution_mode: Option<EvalRunExecutionMode>,
+    items: Vec<EvalRunItem>,
+    started_at_secs: u64,
+    ended_at_secs: u64,
+}
+
+impl From<EvalRunWire> for EvalRun {
+    fn from(wire: EvalRunWire) -> Self {
+        let execution_mode = wire.execution_mode.unwrap_or_else(|| {
+            if wire.items.iter().any(|item| item.cell.is_some()) {
+                EvalRunExecutionMode::Live
+            } else {
+                EvalRunExecutionMode::Scripted
+            }
+        });
+        Self {
+            id: wire.id,
+            dataset_id: wire.dataset_id,
+            dataset_revision: wire.dataset_revision,
+            execution_mode,
+            items: wire.items,
+            started_at_secs: wire.started_at_secs,
+            ended_at_secs: wire.ended_at_secs,
+        }
+    }
 }
 
 /// One fixture's worth of an [`EvalRun`].
@@ -391,11 +433,21 @@ impl EvalRunStore for FileEvalRunStore {
         fs::create_dir_all(&shard)?;
         let path = shard.join(format!("{}.json", run.id));
         let bytes = serde_json::to_vec_pretty(&persisted)?;
-        // True atomic create-or-fail: open the FINAL path with O_EXCL
-        // (`create_new(true)`). If two writers race past the locate()
-        // check above, only ONE open succeeds; the loser maps to
-        // AlreadyExists. The earlier rename(tmp, path) silently
-        // clobbered on Unix — we no longer trust that.
+        // Same-path atomic create-or-fail: open the FINAL path with
+        // O_EXCL (`create_new(true)`). If two writers race for the same
+        // (run_id, started_at_secs) target, only ONE open succeeds; the
+        // loser maps to AlreadyExists. The earlier rename(tmp, path)
+        // silently clobbered on Unix — we no longer trust that.
+        //
+        // Caveat: O_EXCL only guarantees atomicity on the SAME path. Two
+        // writers racing to write the same `run.id` with different
+        // `started_at_secs` would route to different shard paths and
+        // both could succeed. In practice run ids are minted as ULIDs
+        // (`mint_run_id`) — globally unique across processes, so this
+        // failure mode requires a caller deliberately reusing an id,
+        // which the trait already forbids ("write-once / immutable").
+        // The locate() check above is the best-effort same-id guard
+        // across shards; O_EXCL is the hard guarantee within a shard.
         //
         // A crash between `open` and `write_all` leaves a 0-byte file
         // which `read` will fail on (serde_json on empty input). That

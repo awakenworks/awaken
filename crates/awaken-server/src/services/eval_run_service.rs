@@ -286,43 +286,21 @@ pub async fn start_eval_run(
     let config_store = config_store_or_unavailable(&state)?;
     let run_store = eval_run_store_or_unavailable(&state)?;
     let execution_mode = execution_mode_from_request(&body);
+    let limits = state.config.eval_limits.clone();
 
-    let raw = config_store
-        .get(DATASETS_NAMESPACE, &body.dataset_id)
-        .await
-        .map_err(map_storage_error)?
-        .ok_or_else(|| ApiError::NotFound(format!("dataset not found: {}", body.dataset_id)))?;
-    let dataset_revision = extract_meta_revision(&raw).unwrap_or(0);
-    // Preflight the baseline BEFORE any provider call. compute_diff()
-    // below would otherwise only catch a bad baseline_run_id (typo,
-    // _adhoc, wrong dataset, wrong revision) AFTER the live execution
-    // burned tokens AND the new run was persisted — same class of "burn
-    // tokens to learn the request was malformed" trap as persist+no-store.
-    // Hold the loaded baseline so compute_diff doesn't re-read it.
-    let preloaded_baseline = if let Some(ref baseline_id) = body.baseline_run_id {
-        Some(load_and_validate_baseline(
-            run_store.as_ref(),
-            baseline_id,
-            &body.dataset_id,
-            dataset_revision,
-            execution_mode,
-        )?)
-    } else {
-        None
-    };
-    let record = validate_config_record::<DatasetSpec>(raw)
-        .map_err(|err| ApiError::BadRequest(format!("invalid dataset: {err}")))?;
-    let fixtures: Vec<Fixture> = record.spec.fixtures;
-    if fixtures.is_empty() {
-        return Err(ApiError::BadRequest(format!(
-            "dataset {} has no fixtures to replay",
-            body.dataset_id
-        )));
-    }
-    // `Some([])` is rejected up front: it would otherwise pass
-    // mode inference, `expand_cells(&[])` would yield a single default
-    // cell with `model_id: None`, and `run_matrix_cells` would then
-    // panic on its `expect("matrix expansion always sets model_id")`.
+    // ── Request-shape validation (no I/O) ─────────────────────────────
+    //
+    // Run body-only checks BEFORE the dataset fetch + baseline preflight
+    // so a request that is simultaneously malformed and references a bad
+    // baseline surfaces the shape error first — the caller needs to fix
+    // the request itself before the baseline matters. Per-fixture checks
+    // (`fixtures.is_empty()`, fixture-level judge expectation, total
+    // units cap) stay below because they need the loaded dataset.
+    //
+    // `Some([])` is rejected up front: it would otherwise pass mode
+    // inference, `expand_cells(&[])` would yield a single default cell
+    // with `model_id: None`, and `run_matrix_cells` would then panic on
+    // its `expect("matrix expansion always sets model_id")`.
     match (execution_mode, body.models.as_ref()) {
         (EvalRunExecutionMode::Scripted, Some(_)) => {
             return Err(ApiError::BadRequest(
@@ -376,25 +354,6 @@ pub async fn start_eval_run(
             "agent_overrides requires mode=\"live\"; scripted replay ignores it".into(),
         ));
     }
-    for fixture in &fixtures {
-        validate_judge_required_for_expectation(
-            &fixture.expect,
-            &format!("fixture {}", fixture.id),
-            is_live_mode(execution_mode),
-            body.judge.is_some(),
-            body.judge
-                .as_ref()
-                .and_then(|judge| judge.rubric.as_deref()),
-        )?;
-    }
-    // Expand the matrix (or 1-cell default for non-matrix runs).
-    let limits = state.config.eval_limits.clone();
-    let models = if is_live_mode(execution_mode) {
-        body.models.clone().unwrap_or_default()
-    } else {
-        Vec::new()
-    };
-    let cells = expand_cells(&models);
     // Reject an explicit 0 instead of silently bumping to 1 — operators
     // who type `samples: 0` almost certainly meant either "off" (omit the
     // field) or a real number; coercing hides the typo.
@@ -411,28 +370,20 @@ pub async fn start_eval_run(
         )));
     }
     // Flakiness sampling only makes sense in Live mode — scripted
-    // replays are deterministic, so samples > 1 would just duplicate
-    // identical results. Reject it explicitly so the operator notices
-    // the misconfiguration instead of silently doubling storage.
-    if samples > 1 && !is_live_mode(execution_mode) {
+    // replays are deterministic, so even `samples: 1` is a documented
+    // Live-only field. Reject any explicit value in Scripted instead of
+    // silently accepting it (the docs and PR summary list `samples` with
+    // the other live-only request fields). Omitting `samples` still
+    // works in both modes.
+    if !is_live_mode(execution_mode) && body.samples.is_some() {
         return Err(ApiError::BadRequest(
-            "samples > 1 requires mode=\"live\"; scripted replays are deterministic".into(),
+            "samples requires mode=\"live\"; scripted replays are deterministic".into(),
         ));
     }
-    let total_units = fixtures.len() * cells.len() * samples as usize;
-    if total_units > limits.max_cells_per_sync_run {
-        return Err(ApiError::BadRequest(format!(
-            "dataset {} × matrix × samples expands to {total_units} units \
-             (max {} for synchronous run); split the dataset, \
-             shrink the matrix, or drop samples",
-            body.dataset_id, limits.max_cells_per_sync_run,
-        )));
-    }
-
-    // Resolve the judge model once (if configured) so a missing binding
-    // fails fast before any replay runs. Judge is also Live-only —
-    // scripted runs don't need (or have a good user_prompt for) it.
-    let judge = if let Some(ref jr) = body.judge {
+    // Judge top-level scope + revise cap. The per-fixture
+    // `min_judge_score → rubric` check still runs below because it
+    // needs the loaded fixtures.
+    if let Some(ref jr) = body.judge {
         if !is_live_mode(execution_mode) {
             return Err(ApiError::BadRequest(
                 "judge requires mode=\"live\"; scripted replays don't use a judge".into(),
@@ -446,6 +397,72 @@ pub async fn start_eval_run(
                 limits.max_judge_revisions
             )));
         }
+    }
+
+    // ── Dataset load + baseline preflight ─────────────────────────────
+    //
+    // Baseline preflight stays BEFORE any provider call (resolution +
+    // replay) so a bad baseline_run_id — typo, `_adhoc`, wrong dataset,
+    // wrong revision, wrong execution mode — fails fast without burning
+    // tokens or persisting a half-finished new run.
+    let raw = config_store
+        .get(DATASETS_NAMESPACE, &body.dataset_id)
+        .await
+        .map_err(map_storage_error)?
+        .ok_or_else(|| ApiError::NotFound(format!("dataset not found: {}", body.dataset_id)))?;
+    let dataset_revision = extract_meta_revision(&raw).unwrap_or(0);
+    let preloaded_baseline = if let Some(ref baseline_id) = body.baseline_run_id {
+        Some(load_and_validate_baseline(
+            run_store.as_ref(),
+            baseline_id,
+            &body.dataset_id,
+            dataset_revision,
+            execution_mode,
+        )?)
+    } else {
+        None
+    };
+    let record = validate_config_record::<DatasetSpec>(raw)
+        .map_err(|err| ApiError::BadRequest(format!("invalid dataset: {err}")))?;
+    let fixtures: Vec<Fixture> = record.spec.fixtures;
+    if fixtures.is_empty() {
+        return Err(ApiError::BadRequest(format!(
+            "dataset {} has no fixtures to replay",
+            body.dataset_id
+        )));
+    }
+    for fixture in &fixtures {
+        validate_judge_required_for_expectation(
+            &fixture.expect,
+            &format!("fixture {}", fixture.id),
+            is_live_mode(execution_mode),
+            body.judge.is_some(),
+            body.judge
+                .as_ref()
+                .and_then(|judge| judge.rubric.as_deref()),
+        )?;
+    }
+    // Expand the matrix (or 1-cell default for non-matrix runs).
+    let models = if is_live_mode(execution_mode) {
+        body.models.clone().unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+    let cells = expand_cells(&models);
+    let total_units = fixtures.len() * cells.len() * samples as usize;
+    if total_units > limits.max_cells_per_sync_run {
+        return Err(ApiError::BadRequest(format!(
+            "dataset {} × matrix × samples expands to {total_units} units \
+             (max {} for synchronous run); split the dataset, \
+             shrink the matrix, or drop samples",
+            body.dataset_id, limits.max_cells_per_sync_run,
+        )));
+    }
+
+    // Resolve the judge model once (if configured) so a missing binding
+    // fails fast before any replay runs. Scope/cap checks already ran
+    // above; this block just resolves the executor.
+    let judge = if let Some(ref jr) = body.judge {
         let resolved = resolve_live_executor(&state, &jr.model_id).await?;
         Some(JudgeContext {
             judge: LlmExecutorJudge::new(resolved.executor, resolved.upstream_model),

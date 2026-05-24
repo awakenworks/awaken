@@ -76,6 +76,10 @@ fn summary_counts_passed_items() {
 
 #[test]
 fn eval_run_deserialises_legacy_json_without_execution_mode() {
+    // Pre-`execution_mode` JSON whose items carry no `cell` was always a
+    // scripted run (matrix/live both stamp `cell` on every item). The
+    // shadow deserialiser must restore those records as `Scripted` so
+    // the field's introduction stays a non-breaking on-disk change.
     let run = sample_run("LEGACY", "DS1", 1_700_000_000);
     let mut value = serde_json::to_value(&run).unwrap();
     value.as_object_mut().unwrap().remove("execution_mode");
@@ -83,6 +87,29 @@ fn eval_run_deserialises_legacy_json_without_execution_mode() {
     let parsed: EvalRun = serde_json::from_value(value).unwrap();
 
     assert_eq!(parsed.execution_mode, EvalRunExecutionMode::Scripted);
+}
+
+#[test]
+fn eval_run_deserialises_legacy_live_matrix_run_as_live() {
+    // Regression: live-matrix runs created before `execution_mode` landed
+    // have `item.cell` set but no `execution_mode` field. Defaulting them
+    // to `Scripted` would make `load_and_validate_baseline` reject every
+    // pre-existing live baseline with "cannot diff across execution
+    // modes". Infer from items so the field's introduction stays a
+    // non-breaking on-disk change for live baselines too.
+    let mut run = sample_run("LEGACY-LIVE", "DS1", 1_700_000_000);
+    run.execution_mode = EvalRunExecutionMode::Live;
+    for item in &mut run.items {
+        item.cell = Some(MatrixCell {
+            model_id: Some("gpt-x".into()),
+        });
+    }
+    let mut value = serde_json::to_value(&run).unwrap();
+    value.as_object_mut().unwrap().remove("execution_mode");
+
+    let parsed: EvalRun = serde_json::from_value(value).unwrap();
+
+    assert_eq!(parsed.execution_mode, EvalRunExecutionMode::Live);
 }
 
 #[test]

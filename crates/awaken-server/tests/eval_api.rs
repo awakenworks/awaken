@@ -1262,6 +1262,47 @@ async fn start_eval_run_400s_on_zero_samples() {
 }
 
 #[tokio::test]
+async fn start_eval_run_400s_when_scripted_passes_samples() {
+    // `samples` is a Live-only request field (documented on
+    // `StartRunRequest.samples` and listed in the PR summary). Scripted
+    // replays are deterministic, so an explicit value — even
+    // `samples: 1` — is misconfiguration and gets rejected. Omitting
+    // `samples` still works in both modes.
+    let app = build_test_app().await;
+    let (status, _) = request(
+        &app.router,
+        "POST",
+        "/v1/eval/datasets",
+        Some(json!({
+            "id": "DS-SAMPLES-SCRIPTED",
+            "spec": { "fixtures": [sample_fixture("alpha")] }
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, body) = request(
+        &app.router,
+        "POST",
+        "/v1/eval/runs",
+        Some(json!({
+            "dataset_id": "DS-SAMPLES-SCRIPTED",
+            "mode": "scripted",
+            "samples": 1,
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(
+        body["error"]
+            .as_str()
+            .unwrap_or("")
+            .contains("samples requires mode=\"live\""),
+        "body: {body}"
+    );
+}
+
+#[tokio::test]
 async fn start_eval_run_baseline_validated_before_replay() {
     // Bad baseline_run_id must fail BEFORE any provider call or run
     // persist. The whole point is symmetry with the persist+no-store
@@ -1305,6 +1346,49 @@ async fn start_eval_run_baseline_validated_before_replay() {
     assert_eq!(
         app.eval_run_store.list(&Default::default()).unwrap().len(),
         0
+    );
+}
+
+#[tokio::test]
+async fn start_eval_run_shape_errors_surface_before_baseline_check() {
+    // Regression: when a request is BOTH shape-malformed (e.g.
+    // `mode=scripted` with a `models` axis) AND references a bad
+    // baseline, the response should report the shape error — the caller
+    // needs to fix the request itself before the baseline matters. An
+    // earlier ordering ran the baseline preflight first, so the caller
+    // saw "baseline not found" while the real bug was the body.
+    let app = build_test_app().await;
+    let (status, _) = request(
+        &app.router,
+        "POST",
+        "/v1/eval/datasets",
+        Some(json!({
+            "id": "DS-PRIORITY",
+            "spec": { "fixtures": [sample_fixture("alpha")] }
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, body) = request(
+        &app.router,
+        "POST",
+        "/v1/eval/runs",
+        Some(json!({
+            "dataset_id": "DS-PRIORITY",
+            "mode": "scripted",
+            "models": ["any-model"],
+            "baseline_run_id": "nonexistent",
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(
+        body["error"]
+            .as_str()
+            .unwrap_or("")
+            .contains("`models` is only valid with mode=\"live\""),
+        "body: {body}"
     );
 }
 
