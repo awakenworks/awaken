@@ -852,15 +852,15 @@ Deterministic compatibility directives:\n\
     } else {
         Vec::new()
     };
-
     // -- File store --
     let file_store = Arc::new(FileStore::new(&args.storage_dir));
     // -- Builder --
     let mut builder = AgentRuntimeBuilder::new()
         .with_thread_run_store(file_store.clone() as Arc<dyn ThreadRunStore>)
-        .with_commit_coordinator(awaken_stores::FileCommitCoordinator::wrap(
-            file_store.clone(),
-        ))
+        .with_commit_coordinator(
+            awaken_stores::FileCommitCoordinator::wrap(file_store.clone())
+                .expect("file coordinator constructs"),
+        )
         .with_profile_store(
             Arc::new(awaken_stores::InMemoryStore::default()) as Arc<dyn ProfileStore>
         );

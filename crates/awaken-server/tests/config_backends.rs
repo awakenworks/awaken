@@ -161,7 +161,8 @@ where
 }
 
 fn file_coordinator(store: Arc<FileStore>) -> Arc<dyn CommitCoordinator> {
-    awaken_stores::FileCommitCoordinator::wrap(store) as Arc<dyn CommitCoordinator>
+    awaken_stores::FileCommitCoordinator::wrap(store).expect("file coordinator constructs")
+        as Arc<dyn CommitCoordinator>
 }
 
 fn postgres_coordinator(store: Arc<PostgresStore>) -> Arc<dyn CommitCoordinator> {
