@@ -40,7 +40,7 @@ pub use eval_run::{
 pub use expectation::{Expectation, Failure};
 pub use fixture::load_directory;
 pub use fixture::{Fixture, FixtureError, MockResponse};
-pub use outcome::{ReplayOutcome, ReplayReport};
+pub use outcome::{ReplayOutcome, ReplayReport, ReplayRuntimeFailure};
 pub use replay::{Replayer, replay_all};
 pub use report::{
     DiffEntry, DiffSummary, ReportError, diff_against_baseline, diff_against_baseline_checked,
