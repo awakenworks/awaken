@@ -123,8 +123,12 @@ pub struct Expectation {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_duration_ms: Option<u64>,
 
-    /// Minimum LLM-judge score in `[0.0, 1.0]`. Reserved for the optional
-    /// `llm-judge` feature — the pure `score` function ignores it.
+    /// Minimum LLM-judge score in `[0.0, 1.0]`.
+    ///
+    /// The pure deterministic [`crate::score`] function ignores this
+    /// field; server endpoints reject runs that set it without a judge
+    /// config and explicit rubric so the criterion is never silently
+    /// skipped or graded against a vague default.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub min_judge_score: Option<f32>,
 

@@ -74,7 +74,8 @@ POST /v1/eval/runs
   "models": ["claude-sonnet"],        // required for live, invalid for scripted
   "agent_id": "weather",              // optional, live only
   "agent_overrides": { ... },          // optional, live only
-  "judge": { "model_id": "judge" },    // optional, live only
+  // required, with rubric, when any fixture sets min_judge_score; live only
+  "judge": { "model_id": "judge", "rubric": "..." },
   "max_walltime_secs": 60              // optional, live only
 }
 ```
@@ -93,8 +94,10 @@ The handler:
    resource attribute.
 3. Reads `AgentMetrics` back from the `InMemorySink` after each run
    completes and combines it with the trace into a `ReplayOutcome`.
-4. Scores via `awaken-eval::score` and, if `judge` is present,
-   invokes `TensorZeroJudge`.
+4. Scores via `awaken-eval::score` for deterministic criteria and,
+   when a fixture sets `expect.min_judge_score`, invokes the configured
+   judge. The handler rejects `min_judge_score` without `judge.rubric`
+   instead of silently skipping or vaguely grading the LLM criterion.
 5. Persists a thin `EvalRun` index document with `execution_mode`,
    trace `run_id` links, and the per-fixture pass / fail / failures
    vector. Baseline diffs reject runs whose `execution_mode` differs.
@@ -327,6 +330,13 @@ build might lack the feature.
 Judge results are written into the trace as
 `EvaluationResultEvent` (already supported by the observability
 plugin) and indexed on `EvalRunItem`.
+
+This follows the Claude eval guidance hierarchy: use automated
+code-based grading for crisp criteria, then LLM-based grading only for
+criteria that need judgement and only when the request supplies an
+explicit judge configuration and rubric. A `min_judge_score` fixture is
+therefore not runnable in scripted mode and not runnable in live mode
+without non-empty `judge.rubric`.
 
 ### D10: Schema Compatibility With ADR-0030
 

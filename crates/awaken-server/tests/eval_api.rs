@@ -2060,6 +2060,109 @@ async fn start_eval_run_400s_when_judge_without_models() {
 }
 
 #[tokio::test]
+async fn start_eval_run_400s_when_min_judge_score_has_no_live_judge() {
+    let app = build_test_app().await;
+    let (status, _) = request(
+        &app.router,
+        "POST",
+        "/v1/eval/datasets",
+        Some(json!({
+            "id": "DS-JUDGE-REQ",
+            "spec": {
+                "fixtures": [{
+                    "id": "needs-judge",
+                    "user_input": "grade this qualitatively",
+                    "provider_script": [
+                        {"kind": "chat_response", "content": "ok"}
+                    ],
+                    "expect": { "min_judge_score": 0.7 }
+                }]
+            }
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, body) = request(
+        &app.router,
+        "POST",
+        "/v1/eval/runs",
+        Some(json!({ "dataset_id": "DS-JUDGE-REQ" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(
+        body["error"]
+            .as_str()
+            .unwrap_or("")
+            .contains("mode=\"live\""),
+        "body: {body}"
+    );
+
+    let (status, body) = request(
+        &app.router,
+        "POST",
+        "/v1/eval/runs",
+        Some(json!({
+            "dataset_id": "DS-JUDGE-REQ",
+            "mode": "live",
+            "models": ["missing-model"],
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(
+        body["error"]
+            .as_str()
+            .unwrap_or("")
+            .contains("provide `judge`"),
+        "body: {body}"
+    );
+
+    let (status, body) = request(
+        &app.router,
+        "POST",
+        "/v1/eval/runs",
+        Some(json!({
+            "dataset_id": "DS-JUDGE-REQ",
+            "mode": "live",
+            "models": ["missing-model"],
+            "judge": { "model_id": "missing-judge" },
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(
+        body["error"]
+            .as_str()
+            .unwrap_or("")
+            .contains("judge.rubric"),
+        "body: {body}"
+    );
+
+    let (status, body) = request(
+        &app.router,
+        "POST",
+        "/v1/eval/runs",
+        Some(json!({
+            "dataset_id": "DS-JUDGE-REQ",
+            "mode": "live",
+            "models": ["missing-model"],
+            "judge": { "model_id": "missing-judge", "rubric": "   " },
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(
+        body["error"]
+            .as_str()
+            .unwrap_or("")
+            .contains("judge.rubric"),
+        "body: {body}"
+    );
+}
+
+#[tokio::test]
 async fn start_eval_run_404s_on_unknown_judge_model() {
     let app = build_test_app().await;
     let fixtures = vec![sample_fixture("f1")];
@@ -2089,6 +2192,53 @@ async fn start_eval_run_404s_on_unknown_judge_model() {
             .as_str()
             .unwrap_or("")
             .contains("missing-judge"),
+        "body: {body}"
+    );
+}
+
+#[tokio::test]
+async fn online_eval_400s_when_min_judge_score_has_no_judge() {
+    let app = build_test_app().await;
+    let (status, body) = request(
+        &app.router,
+        "POST",
+        "/v1/eval/online",
+        Some(json!({
+            "user_input": "test",
+            "models": ["missing-model"],
+            "persist": false,
+            "expectations": { "min_judge_score": 0.8 },
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(
+        body["error"]
+            .as_str()
+            .unwrap_or("")
+            .contains("provide `judge`"),
+        "body: {body}"
+    );
+
+    let (status, body) = request(
+        &app.router,
+        "POST",
+        "/v1/eval/online",
+        Some(json!({
+            "user_input": "test",
+            "models": ["missing-model"],
+            "persist": false,
+            "expectations": { "min_judge_score": 0.8 },
+            "judge": { "model_id": "missing-judge" },
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(
+        body["error"]
+            .as_str()
+            .unwrap_or("")
+            .contains("judge.rubric"),
         "body: {body}"
     );
 }

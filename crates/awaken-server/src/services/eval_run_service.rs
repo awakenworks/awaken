@@ -107,10 +107,10 @@ pub struct StartRunRequest {
     /// samples) must stay under [`MAX_CELLS_PER_SYNC_RUN`].
     #[serde(default)]
     pub samples: Option<u32>,
-    /// Optional LLM-as-judge config. When set and the fixture's
-    /// `expect.min_judge_score` is also set, each replay outcome is
-    /// graded by the named model; a score below threshold appends a
-    /// `Failure::JudgeBelowThreshold` to the report.
+    /// Optional LLM-as-judge config. Required, with non-empty `rubric`,
+    /// when any fixture sets `expect.min_judge_score`; each replay
+    /// outcome is graded by the named model, and a score below
+    /// threshold appends a `Failure::JudgeBelowThreshold` to the report.
     #[serde(default)]
     pub judge: Option<JudgeRequest>,
     /// Per-cell wall-clock cap in Live (matrix) mode. Replay and
@@ -147,9 +147,10 @@ fn execution_mode_name(mode: EvalRunExecutionMode) -> &'static str {
     }
 }
 
-/// Per-run judge configuration. `model_id` must resolve via the registry
-/// the same way replay models do. `rubric` is optional grading
-/// instructions; absent uses the built-in generic rubric.
+/// Per-run judge configuration. `model_id` must resolve via the
+/// registry the same way replay models do. `rubric` is required when a
+/// fixture sets `expect.min_judge_score`; otherwise it is optional
+/// grading instructions.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct JudgeRequest {
@@ -172,6 +173,7 @@ pub struct JudgeRequest {
 
 pub(crate) use super::eval_cell::{
     JudgeContext, LiveCellOptions, ResolvedCell, persisted_trace_run_id, run_live_eval_cells,
+    validate_judge_required_for_expectation,
 };
 
 #[derive(Debug, Serialize)]
@@ -373,6 +375,17 @@ pub async fn start_eval_run(
         return Err(ApiError::BadRequest(
             "agent_overrides requires mode=\"live\"; scripted replay ignores it".into(),
         ));
+    }
+    for fixture in &fixtures {
+        validate_judge_required_for_expectation(
+            &fixture.expect,
+            &format!("fixture {}", fixture.id),
+            is_live_mode(execution_mode),
+            body.judge.is_some(),
+            body.judge
+                .as_ref()
+                .and_then(|judge| judge.rubric.as_deref()),
+        )?;
     }
     // Expand the matrix (or 1-cell default for non-matrix runs).
     let limits = state.config.eval_limits.clone();

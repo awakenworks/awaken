@@ -183,10 +183,11 @@ pub struct EvalRunSummary {
     pub passed_count: usize,
 }
 
-/// Per-(fixture, cell) roll-up across flakiness samples. Mirrors the
-/// pass@k / pass^k metrics Anthropic Managed Agents reports for
-/// multi-trial agent runs: `pass_at_k = (passed >= 1)` (any sample
-/// passed), `pass_pow_k = (passed == samples)` (every sample passed).
+/// Per-(fixture, cell) roll-up across flakiness samples. The boolean
+/// `pass_at_k` here uses the run's emitted `samples` as `k`: at least
+/// one sample passed. `pass_pow_k` means every emitted sample passed.
+/// This is intentionally a direct empirical roll-up of the run, not a
+/// statistical estimator for an unobserved larger sample population.
 ///
 /// Single-sample runs (default) trivially have `pass_at_k == pass_pow_k`
 /// equal to the lone sample's pass bit — the aggregate is still

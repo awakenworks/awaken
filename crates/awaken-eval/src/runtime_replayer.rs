@@ -637,14 +637,24 @@ impl RuntimeReplayer {
                             RunRequest::new(thread_id.clone(), vec![Message::user(revise_msg)])
                                 .with_agent_id(DEFAULT_AGENT_ID);
                         revision_count += 1;
+                        // `judge_score` / `judge_reasoning` belong to the
+                        // pre-revision answer. Once `final_text` is about
+                        // to change (Ok) or be cleared (Err), the cached
+                        // values no longer correspond to the outcome and
+                        // must not flow into `score_with_judge` as a hit
+                        // or into `ReplayReport` as the recorded grade.
                         match runtime.run_to_completion(request).await {
                             Ok(r) => {
                                 final_text = r.response;
                                 last_error = None;
+                                judge_score = None;
+                                judge_reasoning = None;
                             }
                             Err(err) => {
                                 last_error = Some(err.to_string());
                                 final_text = String::new();
+                                judge_score = None;
+                                judge_reasoning = None;
                                 break;
                             }
                         }

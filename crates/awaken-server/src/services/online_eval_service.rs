@@ -32,7 +32,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::app::AppState;
 use crate::error::ApiError;
-use crate::services::eval_cell::{LiveCellOptions, ResolvedCell, run_live_eval_cells};
+use crate::services::eval_cell::{
+    LiveCellOptions, ResolvedCell, run_live_eval_cells, validate_judge_required_for_expectation,
+};
 use crate::services::eval_common::resolve_live_executor;
 
 /// Sentinel dataset id for ad-hoc online eval runs. Lets `/v1/eval/runs`
@@ -107,9 +109,10 @@ pub struct OnlineEvalRequest {
     /// (cells × samples) must stay under [`MAX_CELLS_PER_SYNC_ONLINE`].
     #[serde(default)]
     pub samples: Option<u32>,
-    /// Optional LLM-as-judge config. When set and `expectations.min_judge_score`
-    /// is also set, each cell's outcome is graded by `judge.model_id`; a score
-    /// below threshold appends `Failure::JudgeBelowThreshold`.
+    /// Optional LLM-as-judge config. Required, with non-empty `rubric`,
+    /// when `expectations.min_judge_score` is set; each cell's outcome
+    /// is graded by `judge.model_id`, and a score below threshold
+    /// appends `Failure::JudgeBelowThreshold`.
     #[serde(default)]
     pub judge: Option<crate::services::eval_run_service::JudgeRequest>,
 }
@@ -189,6 +192,16 @@ pub async fn start_online_eval(
             limits.max_cells_per_sync_online,
         )));
     }
+    let expectations = body.expectations.clone().unwrap_or_default();
+    validate_judge_required_for_expectation(
+        &expectations,
+        "online expectations",
+        true,
+        body.judge.is_some(),
+        body.judge
+            .as_ref()
+            .and_then(|judge| judge.rubric.as_deref()),
+    )?;
     // Validate judge.revise_max_retries cap up-front so a typo fails
     // before any registry lookup burns latency.
     if let Some(jr) = body.judge.as_ref()
@@ -256,7 +269,7 @@ pub async fn start_online_eval(
         source_model_id: None,
         allow_unused_provider_script: false,
         mock_response: MockResponse::default(),
-        expect: body.expectations.clone().unwrap_or_default(),
+        expect: expectations,
         continued_turns: vec![],
     };
 

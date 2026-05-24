@@ -700,6 +700,63 @@ mod revise_mode {
         assert_eq!(outcome.revision_count, 1);
         assert!(outcome.judge_score.unwrap() >= 0.7);
     }
+
+    /// Regression: when revision changes `final_text`, the judge cache
+    /// from the pre-revision answer must NOT survive into the outcome.
+    /// Otherwise `score_with_judge` later sees a populated
+    /// `judge_score`, treats it as a hit, and grades the revised answer
+    /// with the previous answer's score.
+    #[tokio::test]
+    async fn revise_loop_clears_judge_cache_when_followup_judge_errors() {
+        use async_trait::async_trait;
+        use awaken_eval::judge::{Judge, JudgeError, JudgeResult};
+        use awaken_eval::outcome::ReplayOutcome;
+        use std::sync::Mutex;
+
+        // Scripted judge: first call OK(0.2) (triggers revision),
+        // second call Err (transport failure on the revised answer).
+        struct ScriptedResultJudge {
+            results: Mutex<Vec<Result<f32, &'static str>>>,
+        }
+        #[async_trait]
+        impl Judge for ScriptedResultJudge {
+            async fn judge(
+                &self,
+                _outcome: &ReplayOutcome,
+                _user_prompt: &str,
+                _rubric: Option<&str>,
+            ) -> Result<JudgeResult, JudgeError> {
+                match self.results.lock().unwrap().remove(0) {
+                    Ok(score) => Ok(JudgeResult {
+                        score,
+                        reasoning: Some("scripted".into()),
+                        inference_id: None,
+                    }),
+                    Err(body) => Err(JudgeError::Parse { body: body.into() }),
+                }
+            }
+        }
+
+        let exec: Arc<dyn LlmExecutor> =
+            ScriptedExecutor::new("step-stub", vec!["bad answer", "revised answer"]).arc();
+        let judge: Arc<dyn Judge> = Arc::new(ScriptedResultJudge {
+            results: Mutex::new(vec![Ok(0.2), Err("transport blew up")]),
+        });
+        let replayer = RuntimeReplayer::new()
+            .with_live_executor(exec, "test-model")
+            .with_revise_on_judge_fail(judge, None, 0.7, 3);
+        let fixture = ad_hoc_fixture("be insightful");
+        let outcomes = replay_all(&replayer, std::slice::from_ref(&fixture)).await;
+        let outcome = &outcomes[0];
+
+        // Revision did fire and replaced final_text.
+        assert_eq!(outcome.revision_count, 1);
+        assert_eq!(outcome.final_text, "revised answer");
+        // The pre-revision 0.2 must NOT be cached on the outcome; the
+        // post-revision judge errored, so the score is unknown.
+        assert_eq!(outcome.judge_score, None);
+        assert_eq!(outcome.judge_reasoning, None);
+    }
 }
 // ── End-to-end metrics demo — every Anthropic-aligned indicator in one run
 

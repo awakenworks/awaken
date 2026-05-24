@@ -123,6 +123,42 @@ pub(crate) fn validate_unique_models(models: &[String]) -> Result<(), ApiError> 
     Ok(())
 }
 
+/// Claude eval guidance treats LLM grading as an explicit automated
+/// grading method with a clear rubric. If a fixture sets
+/// `min_judge_score`, silently falling back to deterministic scoring or
+/// a vague default rubric would make that success criterion look
+/// satisfied without actually evaluating it. Fail fast instead.
+pub(crate) fn validate_judge_required_for_expectation(
+    expect: &Expectation,
+    label: &str,
+    live_mode: bool,
+    has_judge: bool,
+    judge_rubric: Option<&str>,
+) -> Result<(), ApiError> {
+    if expect.min_judge_score.is_none() {
+        return Ok(());
+    }
+    if !live_mode {
+        return Err(ApiError::BadRequest(format!(
+            "{label} sets expect.min_judge_score; LLM grading requires mode=\"live\" with `judge`"
+        )));
+    }
+    if !has_judge {
+        return Err(ApiError::BadRequest(format!(
+            "{label} sets expect.min_judge_score; provide `judge` so the LLM grading criterion is actually evaluated"
+        )));
+    }
+    match judge_rubric {
+        Some(rubric) if !rubric.trim().is_empty() => {}
+        _ => {
+            return Err(ApiError::BadRequest(format!(
+                "{label} sets expect.min_judge_score; provide non-empty `judge.rubric` so the LLM grading criterion has an explicit rubric"
+            )));
+        }
+    }
+    Ok(())
+}
+
 /// Compute cell-level `cost_usd`, but only when the report carries an
 /// actual input/output token breakdown. Providers that only fill the
 /// aggregate `total_tokens` would otherwise yield `compute_cost_usd(0, 0)
@@ -253,7 +289,18 @@ pub(crate) async fn run_live_eval_cells(
                     )
                     .await
                     {
-                        Ok(Ok(failures)) => (outcome, failures),
+                        Ok(Ok((failures, judge_result))) => {
+                            // Stamp the LLM grade back onto the outcome
+                            // so ReplayReport (and the baseline diff that
+                            // compares `judge_score`) carry the score and
+                            // reasoning — not just the derived pass/fail.
+                            let mut outcome = outcome;
+                            if let Some(jr) = judge_result {
+                                outcome.judge_score = Some(jr.score);
+                                outcome.judge_reasoning = jr.reasoning;
+                            }
+                            (outcome, failures)
+                        }
                         Ok(Err(err)) => cell_error_outcome(
                             outcome,
                             format!("scoring failed: {err}"),
@@ -357,11 +404,16 @@ pub(crate) fn cell_error_outcome(
 /// Pick the scorer based on whether a judge is wired: judge-aware when a
 /// `JudgeContext` is present AND the fixture asks for it via
 /// `min_judge_score`; otherwise the deterministic scorer.
+///
+/// Returns `(failures, judge_result)`. When `judge_result` is `Some`, the
+/// caller is expected to stamp `judge_score`/`judge_reasoning` back onto
+/// the `ReplayOutcome` so the report and downstream diff carry the LLM
+/// grade — not just the pass/fail derived from it.
 pub(crate) async fn score_outcome(
     outcome: &awaken_eval::ReplayOutcome,
     fixture: &Fixture,
     judge: Option<&JudgeContext>,
-) -> Result<Vec<awaken_eval::Failure>, ApiError> {
+) -> Result<(Vec<awaken_eval::Failure>, Option<awaken_eval::JudgeResult>), ApiError> {
     match (judge, fixture.expect.min_judge_score) {
         (
             Some(JudgeContext {
@@ -369,7 +421,7 @@ pub(crate) async fn score_outcome(
             }),
             Some(_),
         ) => {
-            let (failures, _) = score_with_judge(
+            let (failures, judge_result) = score_with_judge(
                 outcome,
                 &fixture.expect,
                 &fixture.judge_prompt(),
@@ -378,9 +430,13 @@ pub(crate) async fn score_outcome(
             )
             .await
             .map_err(|err| ApiError::Internal(format!("judge invocation failed: {err}")))?;
-            Ok(failures)
+            Ok((failures, judge_result))
         }
-        _ => Ok(score(outcome, &fixture.expect)),
+        (None, Some(_)) => Err(ApiError::BadRequest(
+            "expect.min_judge_score requires `judge`; refusing to ignore the LLM grading criterion"
+                .into(),
+        )),
+        _ => Ok((score(outcome, &fixture.expect), None)),
     }
 }
 
@@ -603,5 +659,85 @@ mod tests {
                 .any(|m| m == "scoring failed: judge returned non-JSON"),
             "expected scoring error to be appended to failures list: {runtime_failure_messages:?}",
         );
+    }
+
+    #[tokio::test]
+    async fn score_outcome_returns_judge_result_so_caller_can_stamp_outcome() {
+        // Regression: `score_outcome` used to discard the JudgeResult
+        // from `score_with_judge`, so non-revise min_judge_score runs
+        // produced a passed/failed report whose `judge_score` /
+        // `judge_reasoning` were always `None`. The baseline diff now
+        // compares `judge_score`, so this silently masked LLM-grade
+        // drift on every comparison.
+        use awaken_eval::test_support::ScriptedExecutor;
+        use awaken_eval::{Failure, Fixture, LlmExecutorJudge, MockResponse};
+
+        let judge_executor = ScriptedExecutor::new(
+            "judge-stub",
+            vec![r#"{"score": 0.91, "reasoning": "thorough"}"#],
+        )
+        .arc();
+        let context = JudgeContext {
+            judge: LlmExecutorJudge::new(judge_executor, "judge-model"),
+            rubric: None,
+            revise_max_retries: None,
+        };
+
+        let fixture = Fixture {
+            id: "fx".into(),
+            description: None,
+            user_input: "explain it".into(),
+            provider_script: vec![],
+            provider_script_error: None,
+            source_run_id: None,
+            source_model_id: None,
+            allow_unused_provider_script: false,
+            mock_response: MockResponse::default(),
+            expect: Expectation {
+                min_judge_score: Some(0.7),
+                ..Expectation::default()
+            },
+            continued_turns: vec![],
+        };
+
+        // Outcome arrives at scoring with NO cached judge score — the
+        // non-revise path. score_outcome must invoke the judge AND
+        // hand the result back so the caller can stamp the outcome.
+        let outcome = ReplayOutcome {
+            fixture_id: "fx".into(),
+            final_text: "agent answer".into(),
+            metrics: awaken_ext_observability::AgentMetrics::default(),
+            elapsed: std::time::Duration::from_millis(10),
+            error_type: None,
+            inference_error_count: 0,
+            runtime_failure: None,
+            revision_count: 0,
+            judge_score: None,
+            judge_reasoning: None,
+        };
+
+        let (failures, judge_result) = score_outcome(&outcome, &fixture, Some(&context))
+            .await
+            .expect("judge invocation succeeded");
+        assert!(
+            !failures
+                .iter()
+                .any(|f| matches!(f, Failure::JudgeBelowThreshold { .. })),
+            "0.91 is above threshold; no JudgeBelowThreshold should fire"
+        );
+        let jr = judge_result.expect("score_outcome must surface the JudgeResult to the caller");
+        assert!((jr.score - 0.91).abs() < f32::EPSILON);
+        assert_eq!(jr.reasoning.as_deref(), Some("thorough"));
+
+        // Apply the documented caller pattern and verify the report
+        // round-trips both fields. Without this stamp the report would
+        // be `judge_score: None` even though the judge actually ran.
+        let mut outcome = outcome;
+        outcome.judge_score = Some(jr.score);
+        outcome.judge_reasoning = jr.reasoning;
+        let report = ReplayReport::from_outcome(&outcome, failures);
+        assert_eq!(report.judge_score, Some(0.91));
+        assert_eq!(report.judge_reasoning.as_deref(), Some("thorough"));
+        assert!(report.passed, "above threshold and no other failures");
     }
 }
