@@ -4,8 +4,10 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use awaken_contract::contract::mailbox::RunDispatchStatus;
+use awaken_contract::contract::lifecycle::RunStatus;
+use awaken_contract::contract::mailbox::{RunDispatch, RunDispatchStatus};
 use awaken_contract::contract::message::Message;
+use awaken_contract::contract::storage::RunQuery;
 use awaken_contract::contract::tool_intercept::{AdapterKind, RunMode};
 use awaken_contract::now_ms;
 use awaken_runtime::RunActivation;
@@ -215,6 +217,9 @@ impl Mailbox {
             self.get_or_create_worker(thread_id).await;
             self.try_dispatch_next(thread_id).await;
         }
+        total += self
+            .recover_prepared_runs_missing_dispatch_wal(&thread_ids)
+            .await?;
 
         // Recover orphaned background-task waits with no queued wake dispatch.
         {
@@ -255,6 +260,85 @@ impl Mailbox {
             }
         }
 
+        Ok(total)
+    }
+
+    async fn recover_prepared_runs_missing_dispatch_wal(
+        self: &Arc<Self>,
+        queued_thread_ids: &[String],
+    ) -> Result<usize, MailboxError> {
+        let mut total = 0usize;
+        let mut offset = 0usize;
+        let queued_set: std::collections::HashSet<&str> =
+            queued_thread_ids.iter().map(String::as_str).collect();
+
+        loop {
+            let page = self
+                .run_store
+                .list_runs(&RunQuery {
+                    status: Some(RunStatus::Created),
+                    limit: 200,
+                    offset,
+                    ..Default::default()
+                })
+                .await?;
+            let page_len = page.items.len();
+            for run in page.items {
+                let Some(dispatch_id) = run.dispatch_id.clone() else {
+                    continue;
+                };
+                if self.store.load_dispatch(&dispatch_id).await?.is_some() {
+                    continue;
+                }
+                let now = now_ms();
+                let dispatch = RunDispatch {
+                    dispatch_id: dispatch_id.clone(),
+                    thread_id: run.thread_id.clone(),
+                    run_id: run.run_id.clone(),
+                    priority: 128,
+                    dedupe_key: None,
+                    dispatch_epoch: 0,
+                    status: RunDispatchStatus::Queued,
+                    available_at: now,
+                    attempt_count: 0,
+                    max_attempts: self.config.default_max_attempts,
+                    last_error: None,
+                    claim_token: None,
+                    claimed_by: None,
+                    lease_until: None,
+                    dispatch_instance_id: None,
+                    run_status: None,
+                    termination: None,
+                    run_response: None,
+                    run_error: None,
+                    completed_at: None,
+                    created_at: now,
+                    updated_at: now,
+                };
+                self.store.enqueue(&dispatch).await?;
+                self.record_mailbox_dispatch_event("RunQueued", &dispatch)
+                    .await;
+                total += 1;
+                tracing::warn!(
+                    thread_id = %run.thread_id,
+                    run_id = %run.run_id,
+                    dispatch_id = %dispatch_id,
+                    "recover: reconstructed dispatch WAL for prepared run"
+                );
+                if !queued_set.contains(run.thread_id.as_str()) {
+                    self.get_or_create_worker(&run.thread_id).await;
+                    self.try_dispatch_next(&run.thread_id).await;
+                }
+            }
+            if !page.has_more || page_len == 0 {
+                break;
+            }
+            offset += page_len;
+        }
+
+        if total > 0 {
+            self.refresh_dispatch_depth_metrics().await;
+        }
         Ok(total)
     }
 

@@ -662,11 +662,10 @@ impl Drop for ActiveRunGuard {
 pub struct Mailbox {
     executor: Arc<dyn RunDispatchExecutor>,
     store: Arc<dyn MailboxStore>,
-    /// Single durable-write boundary. Sourced from
-    /// `executor.commit_coordinator()` when the runtime supplies one, or
-    /// from an implicit `MailboxRunStoreCoordinator` wrapping the
-    /// constructor-supplied `run_store` for embedded callers whose
-    /// executor doesn't expose a coordinator.
+    /// Single durable-write boundary. Production runtimes must provide this
+    /// through `executor.commit_coordinator()`. Debug/test builds may fall
+    /// back to `MailboxRunStoreCoordinator` for embedded unit callers, but
+    /// release builds fail closed instead of taking a partial durable path.
     coordinator: Arc<dyn CommitCoordinator>,
     /// Projection of `coordinator.thread_run_store()` cached for repeated
     /// read access; never diverges from the coordinator by construction.
@@ -688,10 +687,10 @@ impl Mailbox {
     /// derives its `ThreadRunStore` from that coordinator's
     /// `thread_run_store()` — there is no parallel store handle to keep in
     /// sync. When the executor exposes its own coordinator (production
-    /// runtime wiring), it is adopted directly; otherwise the supplied
-    /// `run_store` is wrapped in an implicit `MailboxRunStoreCoordinator`
-    /// for embedded/test callers whose executors carry no persistence
-    /// boundary.
+    /// runtime wiring), it is adopted directly. Debug/test builds retain the
+    /// legacy implicit run-store coordinator for embedded unit callers; release
+    /// builds panic if the executor has no coordinator so production durable
+    /// mailbox deployments cannot silently omit canonical events/outbox writes.
     pub fn new(
         executor: impl IntoDispatchExecutor,
         store: Arc<dyn MailboxStore>,
@@ -700,10 +699,21 @@ impl Mailbox {
         config: MailboxConfig,
     ) -> Self {
         let executor = executor.into_dispatch_executor();
-        let coordinator = executor.commit_coordinator().unwrap_or_else(|| {
+        let coordinator = if let Some(coordinator) = executor.commit_coordinator() {
+            coordinator
+        } else if cfg!(debug_assertions) {
+            tracing::warn!(
+                "using dev/test MailboxRunStoreCoordinator fallback; production executors must \
+                 provide a CommitCoordinator"
+            );
             Arc::new(MailboxRunStoreCoordinator::new(Arc::clone(&run_store)))
                 as Arc<dyn CommitCoordinator>
-        });
+        } else {
+            panic!(
+                "Mailbox requires a CommitCoordinator in release builds; wire a durable \
+                 Memory/File/Pg coordinator through the runtime"
+            );
+        };
         let run_store = coordinator.thread_run_store();
         Self {
             executor,
