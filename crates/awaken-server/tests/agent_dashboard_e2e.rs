@@ -35,13 +35,15 @@ use awaken_ext_observability::{
 };
 use awaken_runtime::builder::AgentRuntimeBuilder;
 use awaken_runtime::registry::traits::ModelBinding;
-use awaken_server::app::{ServerConfig, ServerState};
+use awaken_server::app::{AdminApiConfig, ServerConfig, ServerState};
 use awaken_server::routes::build_router;
 use awaken_stores::memory::InMemoryStore;
 use axum::body::to_bytes;
 use axum::http::{Request, StatusCode};
 use serde_json::{Value, json};
 use tower::ServiceExt;
+
+const ADMIN_TOKEN: &str = "test-admin-token";
 
 // ---------------------------------------------------------------------------
 // Scripted executor
@@ -161,6 +163,10 @@ fn build_app(response: &str) -> (axum::Router, Arc<RuntimeStatsRegistry>) {
         runtime.resolver_arc(),
         ServerConfig::default(),
     )
+    .with_admin_api_config(AdminApiConfig {
+        bearer_token: Some(ADMIN_TOKEN.into()),
+        ..Default::default()
+    })
     .with_runtime_stats(Arc::clone(&registry));
 
     let app = build_router(&state);
@@ -205,6 +211,7 @@ async fn fetch_json(app: axum::Router, uri: &str) -> (StatusCode, Value) {
             Request::builder()
                 .method("GET")
                 .uri(uri)
+                .header("authorization", format!("Bearer {ADMIN_TOKEN}"))
                 .body(axum::body::Body::empty())
                 .unwrap(),
         )
