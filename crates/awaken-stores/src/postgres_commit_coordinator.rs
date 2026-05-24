@@ -39,12 +39,7 @@ impl PgCommitCoordinator {
     /// supplies the connection pool, schema prefix, and ensures schema
     /// readiness; the coordinator only manages the transaction boundary.
     pub fn new(store: Arc<PostgresStore>) -> Result<Self, CommitError> {
-        let scope_descriptor = format!(
-            "pg::({:p})::{}",
-            Arc::as_ptr(&store),
-            store.threads_table.as_str()
-        );
-        let scope = TransactionScopeId::new(scope_descriptor)?;
+        let scope = TransactionScopeId::new(store.transaction_scope_descriptor())?;
         Ok(Self { store, scope })
     }
 
@@ -120,5 +115,59 @@ impl CommitCoordinator for PgCommitCoordinator {
             server_event_ids,
             additional_outbox_ids,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sqlx::PgPool;
+
+    fn lazy_pool(url: &str) -> PgPool {
+        PgPool::connect_lazy(url).expect("lazy pg pool")
+    }
+
+    #[tokio::test]
+    async fn scope_is_stable_for_equivalent_store_instances() {
+        let left = Arc::new(PostgresStore::with_prefix(
+            lazy_pool("postgres://user@localhost/awaken_test"),
+            "awaken",
+        ));
+        let right = Arc::new(PostgresStore::with_prefix(
+            lazy_pool("postgres://user@localhost/awaken_test"),
+            "awaken",
+        ));
+
+        let left_scope = PgCommitCoordinator::new(left).unwrap().scope();
+        let right_scope = PgCommitCoordinator::new(right).unwrap().scope();
+
+        assert_eq!(left_scope, right_scope);
+        assert!(!left_scope.as_str().contains("0x"));
+    }
+
+    #[tokio::test]
+    async fn scope_differs_for_distinct_database_or_tables() {
+        let base = Arc::new(PostgresStore::with_prefix(
+            lazy_pool("postgres://user@localhost/awaken_test"),
+            "awaken",
+        ));
+        let other_db = Arc::new(PostgresStore::with_prefix(
+            lazy_pool("postgres://user@localhost/other_test"),
+            "awaken",
+        ));
+        let other_prefix = Arc::new(PostgresStore::with_prefix(
+            lazy_pool("postgres://user@localhost/awaken_test"),
+            "other",
+        ));
+
+        let base_scope = PgCommitCoordinator::new(base).unwrap().scope();
+        assert_ne!(
+            base_scope,
+            PgCommitCoordinator::new(other_db).unwrap().scope()
+        );
+        assert_ne!(
+            base_scope,
+            PgCommitCoordinator::new(other_prefix).unwrap().scope()
+        );
     }
 }
