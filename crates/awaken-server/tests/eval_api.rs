@@ -18,13 +18,14 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use awaken_contract::config_record::{ConfigRecord, RecordMeta};
 use awaken_contract::contract::config_store::ConfigStore;
+use awaken_contract::contract::storage::StorageError;
 use awaken_eval::test_support::UnusedExecutor;
 use awaken_eval::{
     DATASETS_NAMESPACE, DatasetSpec, EvalRun, EvalRunExecutionMode, EvalRunItem, EvalRunStore,
     FileEvalRunStore, Fixture, MatrixCell,
 };
 use awaken_ext_observability::trace_store::{TraceStore, file::FileTraceStore};
-use awaken_ext_observability::{GenAISpan, MetricsEvent, SpanContext};
+use awaken_ext_observability::{DelegationSpan, GenAISpan, MetricsEvent, SpanContext};
 use awaken_runtime::builder::AgentRuntimeBuilder;
 use awaken_server::app::{AdminApiConfig, AppState, ServerConfig};
 use awaken_server::mailbox::{Mailbox, MailboxConfig};
@@ -52,7 +53,7 @@ fn temp_dir(prefix: &str) -> std::path::PathBuf {
 
 struct TestApp {
     router: axum::Router,
-    config_store: Arc<InMemoryStore>,
+    config_store: Arc<dyn ConfigStore>,
     trace_store: Arc<FileTraceStore>,
     eval_run_store: Arc<FileEvalRunStore>,
     /// Root passed to `FileEvalRunStore::new`. Tests that need to seed a
@@ -105,8 +106,11 @@ async fn build_test_app_without_run_store() -> axum::Router {
 }
 
 async fn build_test_app() -> TestApp {
+    build_test_app_with_config_store(Arc::new(InMemoryStore::new())).await
+}
+
+async fn build_test_app_with_config_store(config_store: Arc<dyn ConfigStore>) -> TestApp {
     let thread_store = Arc::new(InMemoryStore::new());
-    let config_store = Arc::new(InMemoryStore::new());
     let trace_store = Arc::new(FileTraceStore::new(temp_dir("eval-trace")).unwrap());
     let eval_run_root = temp_dir("eval-runs");
     let eval_run_store = Arc::new(FileEvalRunStore::new(eval_run_root.clone()).unwrap());
@@ -137,9 +141,7 @@ async fn build_test_app() -> TestApp {
             ..ServerConfig::default()
         },
     )
-    .with_config_store(
-        config_store.clone() as Arc<dyn awaken_contract::contract::config_store::ConfigStore>
-    )
+    .with_config_store(config_store.clone())
     .with_trace_store(trace_store.clone() as Arc<dyn TraceStore>)
     .with_eval_run_store(eval_run_store.clone() as Arc<dyn EvalRunStore>)
     .with_admin_api_config(AdminApiConfig {
@@ -155,6 +157,71 @@ async fn build_test_app() -> TestApp {
         trace_store,
         eval_run_store,
         eval_run_root,
+    }
+}
+
+struct CasConflictConfigStore {
+    inner: Arc<InMemoryStore>,
+    conflict_id: String,
+}
+
+impl CasConflictConfigStore {
+    fn new(conflict_id: &str) -> Self {
+        Self {
+            inner: Arc::new(InMemoryStore::new()),
+            conflict_id: conflict_id.to_string(),
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl ConfigStore for CasConflictConfigStore {
+    async fn get(&self, namespace: &str, id: &str) -> Result<Option<Value>, StorageError> {
+        self.inner.get(namespace, id).await
+    }
+
+    async fn list(
+        &self,
+        namespace: &str,
+        offset: usize,
+        limit: usize,
+    ) -> Result<Vec<(String, Value)>, StorageError> {
+        self.inner.list(namespace, offset, limit).await
+    }
+
+    async fn put(&self, namespace: &str, id: &str, value: &Value) -> Result<(), StorageError> {
+        self.inner.put(namespace, id, value).await
+    }
+
+    async fn delete(&self, namespace: &str, id: &str) -> Result<(), StorageError> {
+        self.inner.delete(namespace, id).await
+    }
+
+    async fn put_if_absent(
+        &self,
+        namespace: &str,
+        id: &str,
+        value: &Value,
+    ) -> Result<(), StorageError> {
+        self.inner.put_if_absent(namespace, id, value).await
+    }
+
+    async fn put_if_revision(
+        &self,
+        namespace: &str,
+        id: &str,
+        value: &Value,
+        expected_revision: u64,
+    ) -> Result<(), StorageError> {
+        if namespace == DATASETS_NAMESPACE && id == self.conflict_id {
+            return Err(StorageError::VersionConflict {
+                expected: expected_revision,
+                actual: expected_revision.saturating_add(1),
+            });
+        }
+        self.inner
+            .put_if_revision(namespace, id, value, expected_revision)
+            .await
     }
 }
 
@@ -210,6 +277,30 @@ async fn request(
     (status, value)
 }
 
+async fn request_bytes(
+    app: &axum::Router,
+    method: &str,
+    uri: &str,
+    body: Option<Value>,
+) -> (StatusCode, Vec<u8>) {
+    let mut builder = Request::builder()
+        .method(method)
+        .uri(uri)
+        .header("Authorization", format!("Bearer {BEARER}"));
+    let req = if let Some(b) = body {
+        builder = builder.header("Content-Type", "application/json");
+        builder
+            .body(Body::from(serde_json::to_vec(&b).unwrap()))
+            .unwrap()
+    } else {
+        builder.body(Body::empty()).unwrap()
+    };
+    let resp = app.clone().oneshot(req).await.unwrap();
+    let status = resp.status();
+    let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+    (status, bytes.to_vec())
+}
+
 fn sample_fixture(id: &str) -> Fixture {
     serde_json::from_value(json!({
         "id": id,
@@ -220,6 +311,47 @@ fn sample_fixture(id: &str) -> Fixture {
         "expect": { "final_answer_contains": ["42"] }
     }))
     .unwrap()
+}
+
+fn seed_indexed_trace(
+    trace_store: &FileTraceStore,
+    id: &str,
+    text: &str,
+    with_user: bool,
+    started_secs: u64,
+) {
+    use awaken_ext_observability::trace_store::RunSummary;
+    trace_store
+        .append(
+            id,
+            &MetricsEvent::Inference(captured_inference_span(id, text, with_user)),
+        )
+        .unwrap();
+    trace_store
+        .write_index_for_run(
+            id,
+            &RunSummary {
+                run_id: id.into(),
+                agent_id: "default".into(),
+                started_at: UNIX_EPOCH + std::time::Duration::from_secs(started_secs),
+                ended_at: None,
+                prompt_ids: vec![],
+                experiment_id: None,
+                variant_name: None,
+                final_status: None,
+                judge_score: None,
+            },
+        )
+        .unwrap();
+}
+
+fn prune_all_unreferenced_traces(trace_store: &FileTraceStore) -> u64 {
+    trace_store
+        .prune(
+            UNIX_EPOCH + std::time::Duration::from_secs(4_000_000_000),
+            &std::collections::HashSet::new(),
+        )
+        .unwrap()
 }
 
 async fn seed_dataset_record(app: &TestApp, id: &str, spec: DatasetSpec) {
@@ -471,6 +603,24 @@ fn unsupported_provider_script_span(run_id: &str) -> GenAISpan {
     span
 }
 
+fn delegation_span(parent_run_id: &str, child_run_id: &str) -> DelegationSpan {
+    DelegationSpan {
+        context: SpanContext {
+            run_id: parent_run_id.into(),
+            agent_id: "default".into(),
+            ..Default::default()
+        },
+        parent_run_id: parent_run_id.into(),
+        child_run_id: Some(child_run_id.into()),
+        target_agent_id: "researcher".into(),
+        tool_call_id: "call-subagent".into(),
+        duration_ms: Some(7),
+        success: true,
+        error_message: None,
+        timestamp_ms: 1,
+    }
+}
+
 #[tokio::test]
 async fn curate_items_appends_fixture_recovered_from_trace() {
     let app = build_test_app().await;
@@ -529,7 +679,161 @@ async fn curate_items_appends_fixture_recovered_from_trace() {
 }
 
 #[tokio::test]
-async fn curate_items_defaults_to_live_only_when_provider_script_is_unsupported() {
+async fn trace_to_dataset_to_eval_round_trips_with_subagent_trace() {
+    let app = build_test_app().await;
+    let parent_run_id = "01HXE2E000000000000000001";
+    let child_run_id = "01HXE2E000000000000000002";
+
+    app.trace_store
+        .append(
+            parent_run_id,
+            &MetricsEvent::Delegation(delegation_span(parent_run_id, child_run_id)),
+        )
+        .unwrap();
+    app.trace_store
+        .append(
+            parent_run_id,
+            &MetricsEvent::Inference(captured_inference_span(
+                parent_run_id,
+                "sub-agent found answer 42",
+                true,
+            )),
+        )
+        .unwrap();
+    app.trace_store
+        .append(
+            child_run_id,
+            &MetricsEvent::Inference(captured_inference_span(
+                child_run_id,
+                "child research result",
+                true,
+            )),
+        )
+        .unwrap();
+
+    let (status, bytes) = request_bytes(
+        &app.router,
+        "GET",
+        &format!("/v1/traces/{parent_run_id}"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let trace_body = String::from_utf8(bytes).unwrap();
+    assert!(trace_body.contains("\"type\":\"delegation\""));
+    assert!(trace_body.contains(child_run_id));
+    assert!(trace_body.contains("sub-agent found answer 42"));
+
+    let (status, bytes) = request_bytes(
+        &app.router,
+        "GET",
+        &format!("/v1/traces/{child_run_id}"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        String::from_utf8(bytes)
+            .unwrap()
+            .contains("child research result")
+    );
+
+    let (status, _) = request(
+        &app.router,
+        "POST",
+        "/v1/eval/datasets",
+        Some(json!({ "id": "DS-E2E-SUB", "spec": {} })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, dataset) = request(
+        &app.router,
+        "POST",
+        "/v1/eval/datasets/DS-E2E-SUB/items",
+        Some(json!({
+            "from_run_id": parent_run_id,
+            "expected": { "final_answer_contains": ["42"] },
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "body: {dataset}");
+    let fixture = &dataset["spec"]["fixtures"][0];
+    assert_eq!(fixture["source_run_id"], parent_run_id);
+    assert_eq!(fixture["source_model_id"], "claude-opus-4-7");
+    assert_eq!(fixture["user_input"], "auto prompt");
+    assert_eq!(
+        fixture["provider_script"][0]["content"],
+        "sub-agent found answer 42"
+    );
+
+    let (status, body) = request(
+        &app.router,
+        "POST",
+        "/v1/eval/runs",
+        Some(json!({
+            "dataset_id": "DS-E2E-SUB",
+            "mode": "scripted",
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "body: {body}");
+    let item = &body["run"]["items"][0];
+    assert!(item["report"]["passed"].as_bool().unwrap());
+    assert_eq!(item["report"]["final_text"], "sub-agent found answer 42");
+    assert!(
+        item["trace_run_id"].is_string(),
+        "eval item should link to replay trace: {item}"
+    );
+}
+
+#[tokio::test]
+async fn curate_items_cas_failure_does_not_pin_trace() {
+    let app =
+        build_test_app_with_config_store(Arc::new(CasConflictConfigStore::new("DS-CUR-CAS"))).await;
+    let run_id = "01HXCUR0000000000000000CAS";
+    app.trace_store
+        .append(
+            run_id,
+            &MetricsEvent::Inference(captured_inference_span(run_id, "the answer is 42", true)),
+        )
+        .unwrap();
+    let (status, _) = request(
+        &app.router,
+        "POST",
+        "/v1/eval/datasets",
+        Some(json!({ "id": "DS-CUR-CAS", "spec": {} })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, body) = request(
+        &app.router,
+        "POST",
+        "/v1/eval/datasets/DS-CUR-CAS/items",
+        Some(json!({
+            "from_run_id": run_id,
+            "expected": { "final_answer_contains": ["42"] },
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert!(
+        body["error"]
+            .as_str()
+            .unwrap_or("")
+            .contains("revision conflict"),
+        "body: {body}"
+    );
+    assert_eq!(
+        prune_all_unreferenced_traces(app.trace_store.as_ref()),
+        1,
+        "failed dataset CAS must not create trace retention references"
+    );
+}
+
+#[tokio::test]
+async fn parallel_tool_trace_curates_live_only_and_scripted_eval_fails_closed() {
     // The primary curation value for Live eval is the captured user
     // prompt + expectations. `provider_script` is an optional scripted
     // snapshot; when its schema cannot represent the trace, the server
@@ -542,6 +846,13 @@ async fn curate_items_defaults_to_live_only_when_provider_script_is_unsupported(
             &MetricsEvent::Inference(unsupported_provider_script_span(run_id)),
         )
         .unwrap();
+
+    let (status, bytes) =
+        request_bytes(&app.router, "GET", &format!("/v1/traces/{run_id}"), None).await;
+    assert_eq!(status, StatusCode::OK);
+    let trace_body = String::from_utf8(bytes).unwrap();
+    assert!(trace_body.contains("\"name\":\"search\""));
+    assert!(trace_body.contains("\"name\":\"write\""));
 
     let (status, _) = request(
         &app.router,
@@ -2893,6 +3204,52 @@ async fn import_traces_409s_on_stale_revision() {
 }
 
 #[tokio::test]
+async fn import_traces_cas_failure_does_not_pin_trace() {
+    let app =
+        build_test_app_with_config_store(Arc::new(CasConflictConfigStore::new("DS-IMP-CAS"))).await;
+    let run_id = "01HXIMP0000000000000000CAS";
+    seed_indexed_trace(
+        app.trace_store.as_ref(),
+        run_id,
+        "the answer is 42",
+        true,
+        1_700_000_400,
+    );
+    let (_, body) = request(
+        &app.router,
+        "POST",
+        "/v1/eval/datasets",
+        Some(json!({ "id": "DS-IMP-CAS", "spec": {} })),
+    )
+    .await;
+    let rev = body["meta"]["revision"].as_u64().unwrap();
+
+    let (status, body) = request(
+        &app.router,
+        "POST",
+        "/v1/eval/datasets/DS-IMP-CAS/import-traces",
+        Some(json!({
+            "expected_revision": rev,
+            "expected": { "final_answer_contains": ["42"] },
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert!(
+        body["error"]
+            .as_str()
+            .unwrap_or("")
+            .contains("revision conflict"),
+        "body: {body}"
+    );
+    assert_eq!(
+        prune_all_unreferenced_traces(app.trace_store.as_ref()),
+        1,
+        "failed dataset CAS must not create trace retention references"
+    );
+}
+
+#[tokio::test]
 async fn import_traces_400s_when_trace_lacks_user_and_skip_disabled() {
     let app = build_test_app().await;
     use awaken_ext_observability::trace_store::RunSummary;
@@ -3098,6 +3455,53 @@ async fn import_dialogue_stitches_runs_into_multiturn_fixture() {
         )
         .unwrap();
     assert_eq!(removed, 0, "dialogue source traces must be pinned");
+}
+
+#[tokio::test]
+async fn import_dialogue_cas_failure_does_not_pin_trace() {
+    let app =
+        build_test_app_with_config_store(Arc::new(CasConflictConfigStore::new("DS-DLG-CAS"))).await;
+    let run_id = "01HXDLG0000000000000000CAS";
+    app.trace_store
+        .append(
+            run_id,
+            &MetricsEvent::Inference(captured_inference_span(run_id, "answer", true)),
+        )
+        .unwrap();
+    let (_, body) = request(
+        &app.router,
+        "POST",
+        "/v1/eval/datasets",
+        Some(json!({ "id": "DS-DLG-CAS", "spec": {} })),
+    )
+    .await;
+    let rev = body["meta"]["revision"].as_u64().unwrap();
+
+    let (status, body) = request(
+        &app.router,
+        "POST",
+        "/v1/eval/datasets/DS-DLG-CAS/import-dialogue",
+        Some(json!({
+            "expected_revision": rev,
+            "run_ids": [run_id],
+            "fixture_id": "dialogue",
+            "expected": { "final_answer_contains": ["answer"] },
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert!(
+        body["error"]
+            .as_str()
+            .unwrap_or("")
+            .contains("revision conflict"),
+        "body: {body}"
+    );
+    assert_eq!(
+        prune_all_unreferenced_traces(app.trace_store.as_ref()),
+        1,
+        "failed dataset CAS must not create trace retention references"
+    );
 }
 
 #[tokio::test]

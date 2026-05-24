@@ -402,16 +402,11 @@ pub async fn curate_items(
     let value = record
         .to_value()
         .map_err(|err| ApiError::Internal(err.to_string()))?;
-    // Mark before the CAS write: if the dataset write succeeds, the
-    // source trace is already pinned against retention. A concurrent
-    // CAS failure may leave a harmless over-retention sentinel, but the
-    // opposite ordering can persist a fixture whose source trace is
-    // immediately pruneable if mark_referenced fails.
-    mark_dataset_trace_reference(trace_store.as_ref(), &source_run_id)?;
     store
         .put_if_revision(DATASETS_NAMESPACE, &id, &value, existing_revision)
         .await
         .map_err(map_storage_error)?;
+    mark_dataset_trace_reference(trace_store.as_ref(), &source_run_id)?;
 
     Ok((StatusCode::CREATED, Json(record)).into_response())
 }
@@ -561,13 +556,13 @@ pub async fn import_traces(
     let value = record
         .to_value()
         .map_err(|err| ApiError::Internal(err.to_string()))?;
-    for run_id in &imported_run_ids {
-        mark_dataset_trace_reference(trace_store.as_ref(), run_id)?;
-    }
     store
         .put_if_revision(DATASETS_NAMESPACE, &id, &value, existing_revision)
         .await
         .map_err(map_storage_error)?;
+    for run_id in &imported_run_ids {
+        mark_dataset_trace_reference(trace_store.as_ref(), run_id)?;
+    }
 
     Ok(Json(ImportTracesResponse {
         imported_count: imported,
@@ -729,13 +724,13 @@ pub async fn import_dialogue(
     let value = record
         .to_value()
         .map_err(|err| ApiError::Internal(err.to_string()))?;
-    for run_id in &body.run_ids {
-        mark_dataset_trace_reference(trace_store.as_ref(), run_id)?;
-    }
     store
         .put_if_revision(DATASETS_NAMESPACE, &id, &value, existing_revision)
         .await
         .map_err(map_storage_error)?;
+    for run_id in &body.run_ids {
+        mark_dataset_trace_reference(trace_store.as_ref(), run_id)?;
+    }
 
     Ok(Json(ImportDialogueResponse {
         fixture_id,
