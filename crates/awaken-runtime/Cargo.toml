@@ -32,7 +32,7 @@ jsonschema = { workspace = true }
 parking_lot = { workspace = true }
 metrics = { workspace = true }
 jsonwebtoken = { version = "10", default-features = false, features = ["use_pem", "rust_crypto"], optional = true }
-awaken-stores = { workspace = true }
+awaken-stores = { workspace = true, optional = true }
 
 [features]
 default = ["a2a", "handoff", "background", "credentials-google"]
@@ -40,7 +40,7 @@ a2a = []
 handoff = []
 background = []
 parallel-tools = []
-test-utils = []
+test-utils = ["dep:awaken-stores"]
 # Compile the Google OAuth (service-account JWT-Bearer) credential signer.
 # When disabled, providers configured with credentials_kind="service_account_json"
 # will fail at first mint with a clear error.

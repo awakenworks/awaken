@@ -50,7 +50,7 @@ pub enum BuildError {
     /// checkpoint/event commits.
     #[error(
         "ADR-0036 D8: `with_thread_run_store` requires a paired `with_commit_coordinator` \
-         (use awaken_stores::MemoryCommitCoordinator or awaken_stores::PgCommitCoordinator)"
+         supplied by the store/server integration"
     )]
     CommitCoordinatorRequired,
     #[cfg(feature = "a2a")]
@@ -175,12 +175,13 @@ impl AgentRuntimeBuilder {
         self
     }
 
-    /// ADR-0036 D8 convenience: install an in-memory `ThreadRunStore` together
+    /// ADR-0036 D8 test/development convenience: install an in-memory `ThreadRunStore` together
     /// with a `MemoryCommitCoordinator` that wraps the same handle, so the
     /// runtime tee and checkpoint writes share one transaction scope. Callers
     /// previously paired `with_thread_run_store(store.clone())` for tests; that
     /// shape silently produced a non-atomic mode and is now rejected at build
     /// time.
+    #[cfg(feature = "test-utils")]
     pub fn with_in_memory_thread_run_store(
         mut self,
         store: Arc<awaken_stores::InMemoryStore>,

@@ -61,6 +61,12 @@ impl awaken_contract::registry_spec::PluginConfigKey for CompactionConfigKey {
 pub struct CompactionBoundary {
     /// Summary text produced by the compaction pass.
     pub summary: String,
+    /// Background task id that produced the summary, when available.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task_id: Option<String>,
+    /// Stable message id that bounded the compacted range.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub boundary_message_id: Option<String>,
     /// Estimated tokens before compaction (in the compacted range).
     pub pre_tokens: usize,
     /// Estimated tokens after compaction (summary message tokens).

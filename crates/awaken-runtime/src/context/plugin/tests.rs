@@ -10,6 +10,8 @@ fn compaction_state_record_boundary() {
 
     state.reduce(CompactionAction::RecordBoundary(CompactionBoundary {
         summary: "User asked to implement feature X.".into(),
+        task_id: None,
+        boundary_message_id: None,
         pre_tokens: 5000,
         post_tokens: 200,
         timestamp_ms: 1234567890,
@@ -30,6 +32,8 @@ fn compaction_state_multiple_boundaries() {
     for i in 0..3 {
         state.reduce(CompactionAction::RecordBoundary(CompactionBoundary {
             summary: format!("summary {i}"),
+            task_id: None,
+            boundary_message_id: None,
             pre_tokens: 1000 * (i + 1),
             post_tokens: 100 * (i + 1),
             timestamp_ms: 1000 + i as u64,
@@ -46,6 +50,8 @@ fn compaction_state_clear() {
     let mut state = CompactionState {
         boundaries: vec![CompactionBoundary {
             summary: "old".into(),
+            task_id: None,
+            boundary_message_id: None,
             pre_tokens: 100,
             post_tokens: 10,
             timestamp_ms: 1,
@@ -78,12 +84,16 @@ fn compaction_state_serde_roundtrip() {
         boundaries: vec![
             CompactionBoundary {
                 summary: "first".into(),
+                task_id: None,
+                boundary_message_id: None,
                 pre_tokens: 5000,
                 post_tokens: 200,
                 timestamp_ms: 1000,
             },
             CompactionBoundary {
                 summary: "second".into(),
+                task_id: None,
+                boundary_message_id: None,
                 pre_tokens: 3000,
                 post_tokens: 150,
                 timestamp_ms: 2000,
@@ -121,6 +131,8 @@ fn compaction_plugin_state_via_store() {
     patch.update::<CompactionStateKey>(super::super::record_compaction_boundary(
         CompactionBoundary {
             summary: "test summary".into(),
+            task_id: None,
+            boundary_message_id: None,
             pre_tokens: 4000,
             post_tokens: 180,
             timestamp_ms: 9999,
@@ -137,6 +149,8 @@ fn compaction_plugin_state_via_store() {
 fn record_compaction_boundary_constructor() {
     let action = super::super::record_compaction_boundary(CompactionBoundary {
         summary: "s".into(),
+        task_id: None,
+        boundary_message_id: None,
         pre_tokens: 100,
         post_tokens: 10,
         timestamp_ms: 0,
@@ -150,6 +164,8 @@ fn compaction_state_record_then_clear_then_record() {
 
     state.reduce(CompactionAction::RecordBoundary(CompactionBoundary {
         summary: "first".into(),
+        task_id: None,
+        boundary_message_id: None,
         pre_tokens: 1000,
         post_tokens: 100,
         timestamp_ms: 1,
@@ -163,6 +179,8 @@ fn compaction_state_record_then_clear_then_record() {
 
     state.reduce(CompactionAction::RecordBoundary(CompactionBoundary {
         summary: "after clear".into(),
+        task_id: None,
+        boundary_message_id: None,
         pre_tokens: 2000,
         post_tokens: 150,
         timestamp_ms: 2,
@@ -183,6 +201,8 @@ fn compaction_state_key_apply() {
         &mut state,
         CompactionAction::RecordBoundary(CompactionBoundary {
             summary: "via apply".into(),
+            task_id: None,
+            boundary_message_id: None,
             pre_tokens: 500,
             post_tokens: 50,
             timestamp_ms: 42,
@@ -212,6 +232,8 @@ fn compaction_plugin_new_with_config() {
 fn compaction_boundary_equality() {
     let a = CompactionBoundary {
         summary: "s".into(),
+        task_id: None,
+        boundary_message_id: None,
         pre_tokens: 100,
         post_tokens: 10,
         timestamp_ms: 0,
@@ -224,6 +246,8 @@ fn compaction_boundary_equality() {
 fn compaction_boundary_serde_roundtrip() {
     let boundary = CompactionBoundary {
         summary: "test summary".into(),
+        task_id: None,
+        boundary_message_id: None,
         pre_tokens: 3000,
         post_tokens: 200,
         timestamp_ms: 1234567890,
@@ -269,6 +293,8 @@ fn compaction_state_boundary_ordering_preserved() {
     for i in 0..5 {
         state.reduce(CompactionAction::RecordBoundary(CompactionBoundary {
             summary: format!("boundary_{i}"),
+            task_id: None,
+            boundary_message_id: None,
             pre_tokens: 1000,
             post_tokens: 100,
             timestamp_ms: i as u64,
@@ -287,6 +313,8 @@ fn compaction_state_clear_twice_is_idempotent() {
     let mut state = CompactionState::default();
     state.reduce(CompactionAction::RecordBoundary(CompactionBoundary {
         summary: "s".into(),
+        task_id: None,
+        boundary_message_id: None,
         pre_tokens: 1,
         post_tokens: 1,
         timestamp_ms: 0,
@@ -332,6 +360,8 @@ fn compaction_state_pre_post_tokens_preserved() {
     let mut state = CompactionState::default();
     state.reduce(CompactionAction::RecordBoundary(CompactionBoundary {
         summary: "test".into(),
+        task_id: None,
+        boundary_message_id: None,
         pre_tokens: 10_000,
         post_tokens: 500,
         timestamp_ms: 99,
@@ -362,6 +392,8 @@ fn compaction_fires_at_threshold() {
     };
     let boundary_good = CompactionBoundary {
         summary: "good".into(),
+        task_id: None,
+        boundary_message_id: None,
         pre_tokens: 1000,
         post_tokens: 400, // 60% savings > 50% threshold
         timestamp_ms: 1,
@@ -374,6 +406,8 @@ fn compaction_fires_at_threshold() {
 
     let boundary_bad = CompactionBoundary {
         summary: "bad".into(),
+        task_id: None,
+        boundary_message_id: None,
         pre_tokens: 1000,
         post_tokens: 600, // 40% savings < 50% threshold
         timestamp_ms: 2,
@@ -392,6 +426,8 @@ fn compaction_state_tracks_across_multiple_rounds() {
     for round in 1..=5u64 {
         state.reduce(CompactionAction::RecordBoundary(CompactionBoundary {
             summary: format!("round {round}"),
+            task_id: None,
+            boundary_message_id: None,
             pre_tokens: 1000 * round as usize,
             post_tokens: 100 * round as usize,
             timestamp_ms: round * 1000,
@@ -442,6 +478,8 @@ fn compaction_with_tool_messages_records_correctly() {
     patch.update::<CompactionStateKey>(super::super::record_compaction_boundary(
             CompactionBoundary {
                 summary: "User asked to search files. Tool search returned 3 results. Assistant presented findings.".into(),
+                task_id: None,
+                boundary_message_id: None,
                 pre_tokens: 8000,
                 post_tokens: 200,
                 timestamp_ms: 1000,
@@ -613,6 +651,8 @@ fn record_boundary_does_not_touch_in_flight() {
     }));
     state.reduce(CompactionAction::RecordBoundary(CompactionBoundary {
         summary: "s".into(),
+        task_id: None,
+        boundary_message_id: None,
         pre_tokens: 10,
         post_tokens: 1,
         timestamp_ms: 2,
@@ -628,6 +668,8 @@ fn compaction_action_serde_roundtrip() {
     let actions = vec![
         CompactionAction::RecordBoundary(CompactionBoundary {
             summary: "s".into(),
+            task_id: None,
+            boundary_message_id: None,
             pre_tokens: 1,
             post_tokens: 1,
             timestamp_ms: 0,
