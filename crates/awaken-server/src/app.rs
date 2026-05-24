@@ -590,6 +590,11 @@ pub async fn serve(state: ServerState) -> std::io::Result<()> {
 
     let addr = state.config.address.clone();
     let timeout = std::time::Duration::from_secs(state.config.shutdown.timeout_secs);
+    let config_runtime_manager = state.config_runtime_manager.clone();
+    let app = build_service_router(state.clone())?;
+    let listener = tokio::net::TcpListener::bind(&addr).await?;
+    tracing::info!("listening on {addr}");
+
     let mailbox_lifecycle = match state.config.mailbox_lifecycle {
         MailboxLifecycleMode::Auto => {
             let cleanup_state = state.clone();
@@ -619,17 +624,22 @@ pub async fn serve(state: ServerState) -> std::io::Result<()> {
             crate::services::trace_retention::RetentionConfig::default(),
         )
     });
-    let protocol_relays = crate::protocol_replay_state::start_protocol_relays(&state)
-        .await
-        .map_err(|error| {
-            std::io::Error::other(format!("failed to start protocol relays: {error}"))
-        })?;
-
-    let listener = tokio::net::TcpListener::bind(&addr).await?;
-    tracing::info!("listening on {addr}");
-
-    let config_runtime_manager = state.config_runtime_manager.clone();
-    let app = build_service_router(state)?;
+    let protocol_relays = match crate::protocol_replay_state::start_protocol_relays(&state).await {
+        Ok(relays) => relays,
+        Err(error) => {
+            if let Some(mailbox_lifecycle) = mailbox_lifecycle
+                && let Err(shutdown_error) = mailbox_lifecycle.shutdown().await
+            {
+                tracing::warn!(
+                    error = %shutdown_error,
+                    "failed to stop mailbox lifecycle after protocol relay startup failure"
+                );
+            }
+            return Err(std::io::Error::other(format!(
+                "failed to start protocol relays: {error}"
+            )));
+        }
+    };
 
     let result = serve_with_shutdown(listener, app, timeout).await;
     if let Some(mailbox_lifecycle) = mailbox_lifecycle
