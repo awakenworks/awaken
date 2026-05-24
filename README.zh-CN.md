@@ -194,7 +194,7 @@ import { CopilotKit } from "@copilotkit/react-core";
 
 #### 管理控制台
 
-把 `ConfigStore` 接入 `AppState` 后，[`apps/admin-console`](./apps/admin-console/) 这个 SPA 就是同一套 API 的浏览器界面（通过 `VITE_BACKEND_URL` 读服务端地址）。React 19 + Vite，Awaken brand：全 JetBrains Mono、无彩灰阶、2px 直角；默认 light，topbar 上有 Light/Dark/System 三态切换（系统 `prefers-color-scheme: dark` 时也会自动转深色）。
+把 `ConfigStore` 接入 `AppState` 后，[`apps/admin-console`](./apps/admin-console/) 这个 SPA 就是同一套 API 的浏览器界面（通过 `VITE_BACKEND_URL` 读服务端地址）。React 19 + Vite，Awaken brand：全 JetBrains Mono、无彩灰阶、2px 直角；默认 light，topbar 上有 Light/Dark/System 三态切换（系统 `prefers-color-scheme: dark` 时也会自动转深色）。首页是「实时态」运维视图——**等待人审**（HITL）的数字会单独放大并以 warn 色调突出，配合 observability 注册表给出的滚动窗口聚合（推理次数、错误率、token、挂起/移交/委派事件）和 top-N 智能体/工具榜单，让运维一眼看到该介入的位置。
 
 ## 内置插件
 

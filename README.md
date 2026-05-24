@@ -191,18 +191,18 @@ import { CopilotKit } from "@copilotkit/react-core";
 
 #### Admin Console
 
-Wire a `ConfigStore` into `AppState` and the SPA in [`apps/admin-console`](./apps/admin-console/) gives you a browser UI for the same API (reads `VITE_BACKEND_URL` for the server base URL). It's a React 19 + Vite app on the Awaken brand: JetBrains Mono throughout, achromatic surfaces, sharp 2px corners; light by default with a Light/Dark/System cycle toggle in the topbar (also auto-switches to dark on `prefers-color-scheme: dark`).
+Wire a `ConfigStore` into `AppState` and the SPA in [`apps/admin-console`](./apps/admin-console/) gives you a browser UI for the same API (reads `VITE_BACKEND_URL` for the server base URL). It's a React 19 + Vite app on the Awaken brand: JetBrains Mono throughout, achromatic surfaces, sharp 2px corners; light by default with a Light/Dark/System cycle toggle in the topbar (also auto-switches to dark on `prefers-color-scheme: dark`). The dashboard surfaces live signal — **awaiting-decision** (HITL) gets warn-tinted hero treatment, plus rolling-window aggregates from the observability registry (inferences, errors, tokens, suspensions/handoffs/delegations) with top-N agents and tools — so an operator sees what needs attention in one glance.
 
 <table>
   <tr>
-    <td width="33%"><a href="./docs/assets/admin-console/01-dashboard.png"><img src="./docs/assets/admin-console/01-dashboard.png" alt="Dashboard with reference graph, health card, audit timeline, system info" /></a></td>
+    <td width="33%"><a href="./docs/assets/admin-console/01-dashboard.png"><img src="./docs/assets/admin-console/01-dashboard.png" alt="Dashboard — Live workload (awaiting decision, running, queued), Agent activity (inferences, errors, tokens, coordination, top agents and tools), Recent activity timeline, Health card, System metadata" /></a></td>
     <td width="33%"><a href="./docs/assets/admin-console/02-agent-editor.png"><img src="./docs/assets/admin-console/02-agent-editor.png" alt="Agent editor with tab strip, model + system prompt fields, and right-side draft sandbox" /></a></td>
-    <td width="33%"><a href="./docs/assets/admin-console/03-agents-list.png"><img src="./docs/assets/admin-console/03-agents-list.png" alt="Agents list with filter chips, plugin pills, and an Inferences (24h) column" /></a></td>
+    <td width="33%"><a href="./docs/assets/admin-console/03-agents-list.png"><img src="./docs/assets/admin-console/03-agents-list.png" alt="Agents list with filter chips, plugin pills, and an Inferences column (registry window)" /></a></td>
   </tr>
   <tr>
-    <td align="center"><sub><b>Dashboard</b><br/>Reference graph · Health · Activity · Entity counts</sub></td>
+    <td align="center"><sub><b>Dashboard</b><br/>Workload · Agent activity · Health · Recent audit</sub></td>
     <td align="center"><sub><b>Agent Editor</b><br/>Tabbed UI · Draft sandbox · Save</sub></td>
-    <td align="center"><sub><b>Agents</b><br/>Filter chips · Plugin pills · Inferences (24h)</sub></td>
+    <td align="center"><sub><b>Agents</b><br/>Filter chips · Plugin pills · Inferences (window)</sub></td>
   </tr>
   <tr>
     <td colspan="3"><a href="./docs/assets/admin-console/04-dark-dashboard.png"><img src="./docs/assets/admin-console/04-dark-dashboard.png" alt="Dashboard in dark mode — same content, achromatic canvas with off-white text, mono everywhere, 2px sharp corners" /></a></td>

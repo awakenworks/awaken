@@ -34,7 +34,6 @@ notice. This is enforced by code review, not by runtime check.
 | Sidebar nav counts | `/v1/config/{providers,mcp-servers,agents}` | Count omitted on error |
 | Topbar status pill | `/v1/capabilities` (probe) | Tone reflects error class |
 | Dashboard stat cards | `/v1/capabilities` + per-namespace lists | None render on error |
-| Reference graph | `/v1/config/{agents,models,providers}` | Empty state if any list fails |
 | Health card | `/v1/config/providers` + `/v1/config/mcp-servers` | Per-row error displayed |
 | Recent activity | `/v1/audit-log?limit=12` | "Audit log is disabled" notice on `503` |
 | System card | `/v1/system/info` | Card hidden on error |
@@ -63,10 +62,6 @@ notice. This is enforced by code review, not by runtime check.
 
 - Six stat cards (Agents/Skills/Models/Providers/MCP/Tools) backed by
   real counts from `/v1/capabilities` plus the relevant lists.
-- **Reference graph** (`components/ui/reference-graph.tsx`) — three-column
-  SVG: agents → models → providers. Edges resolve `agent.model_id` and
-  `model.provider_id` against the loaded lists. Dangling refs are silently
-  dropped (the graph is descriptive, not validating).
 - **Health card** — per-provider `has_api_key` + per-MCP `restart_policy`
   rendered as `Pill` tones.
 - **Activity timeline** — last 8 audit events, formatted with
@@ -79,10 +74,11 @@ notice. This is enforced by code review, not by runtime check.
 - `PageHeader` with eyebrow / count / description / "+ New Agent" CTA.
 - `FilterBar` chips: model · plugin · modified-range, plus a sort pill.
 - Plugin chips overflow at `+N` after 3 visible.
-- "Inferences (24h)" cell consumes `inference_count`, `error_count`,
-  `p95_inference_duration_ms` from `/v1/agents/runtime-stats`. When the
-  registry is unconfigured the column shows `n/a` and a banner explains
-  why.
+- "Inferences" cell consumes `inference_count`, `error_count`,
+  `p95_inference_duration_ms` from `/v1/agents/runtime-stats`. The
+  effective window is the `RuntimeStatsRegistry`'s configured window
+  (not necessarily 24h). When the registry is unconfigured the column
+  shows `n/a` and a banner explains why.
 
 ### Agent editor (`src/pages/agent-editor-page.tsx`)
 

@@ -58,9 +58,6 @@ Open the **Dashboard** (it's the default landing page). Key panels:
 - **Stat cards** — counts of agents, skills, models, providers, MCP
   servers, and published tools, taken from `/v1/capabilities`. Click a
   card to drill into the corresponding list.
-- **Reference graph** — visual map of which agents use which models, which
-  models use which providers. Useful before deleting a node: an agent
-  that points at a missing model is a configuration error.
 - **Health** — providers (key set / no key) and MCP servers (auto-restart
   / manual). This tells you which providers will fail at request time
   because no key is configured.
@@ -74,7 +71,8 @@ Open the **Dashboard** (it's the default landing page). Key panels:
 
 1. Click **Agents** in the sidebar.
 2. Use the **filter chips** to narrow by `model`, `plugin`, or `modified
-   range`. The "Inferences (24h)" column shows real call counts when the
+   range`. The "Inferences" column shows real call counts over the
+   `RuntimeStatsRegistry` window (configured on the server) when the
    observability registry is on (see [Enable runtime stats](#enable-runtime-stats)).
 3. Click a row to open the editor.
 4. The editor uses **visible tabs**:
@@ -208,7 +206,7 @@ let runtime = AgentRuntimeBuilder::default()
 ```
 
 Without this:
-- Agents list shows a banner and `n/a` cells in the "Inferences (24h)"
+- Agents list shows a banner and `n/a` cells in the "Inferences"
   column.
 - Per-agent dashboard cannot render its latency histogram.
 
