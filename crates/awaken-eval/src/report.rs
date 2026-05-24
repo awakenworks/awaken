@@ -460,13 +460,14 @@ pub fn diff_against_baseline(baseline: &[ReplayReport], new: &[ReplayReport]) ->
     DiffSummary { entries }
 }
 
-/// Pair eval-run items by `(fixture_id, cell)` for matrix-aware
-/// comparison, then produce a [`DiffSummary`]. Two cells of the same
-/// fixture become independent entries — a regression in
-/// `(alpha, claude-opus)` doesn't collide with `(alpha, gpt-4o)`. Used
-/// by the server's `compute_diff` when at least one item carries a
-/// matrix cell. CLI `awaken-eval check` keeps using the
-/// `ReplayReport`-based [`diff_against_baseline`] for its NDJSON flow.
+/// Pair eval-run items by `(fixture_id, cell, sample_index)` for
+/// matrix/sample-aware comparison, then produce a [`DiffSummary`]. Two
+/// cells or samples of the same fixture become independent entries — a
+/// regression in `(alpha, claude-opus, sample 1)` doesn't collide with
+/// `(alpha, gpt-4o, sample 0)`. Used by the server's `compute_diff`
+/// when at least one item carries a matrix cell or sample index. CLI
+/// `awaken-eval check` keeps using the `ReplayReport`-based
+/// [`diff_against_baseline`] for its NDJSON flow.
 pub fn diff_eval_items(
     baseline: &[crate::eval_run::EvalRunItem],
     new: &[crate::eval_run::EvalRunItem],

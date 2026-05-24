@@ -40,7 +40,9 @@ pub use eval_run::{
     EvalRun, EvalRunExecutionMode, EvalRunFilter, EvalRunItem, EvalRunStore, EvalRunStoreError,
     EvalRunSummary, FileEvalRunStore, MatrixCell, SampleAggregate, expand_cells, mint_run_id,
 };
-pub use expectation::{Expectation, Failure};
+pub use expectation::{
+    Expectation, Failure, validate_min_judge_score, validate_offline_expectation,
+};
 pub use fixture::load_directory;
 pub use fixture::{Fixture, FixtureError, MockResponse};
 pub use outcome::{ReplayOutcome, ReplayReport, ReplayRuntimeFailure};

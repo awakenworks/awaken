@@ -33,7 +33,8 @@ use serde::{Deserialize, Serialize};
 use crate::app::AppState;
 use crate::error::ApiError;
 use crate::services::eval_cell::{
-    LiveCellOptions, ResolvedCell, run_live_eval_cells, validate_judge_required_for_expectation,
+    DEFAULT_MAX_TOTAL_TOKENS, LiveCellOptions, ResolvedCell, run_live_eval_cells,
+    validate_judge_required_for_expectation,
 };
 use crate::services::eval_common::resolve_live_executor;
 
@@ -47,7 +48,6 @@ pub(crate) const ADHOC_DATASET_ID: &str = "_adhoc";
 // per-handler reads sit at the top of `start_online_eval`.
 
 const DEFAULT_MAX_WALLTIME_SECS: u64 = 60;
-const DEFAULT_MAX_TOTAL_TOKENS: u32 = 10_000;
 
 // ── Wire types ────────────────────────────────────────────────────────────
 

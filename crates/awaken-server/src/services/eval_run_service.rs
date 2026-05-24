@@ -1,26 +1,4 @@
 //! `/v1/eval/runs` — server-side execution of datasets (ADR-0032 D1+D7).
-//!
-//! ## Endpoints
-//!
-//!   POST `/v1/eval/runs { dataset_id, baseline_run_id? }`
-//!     Loads the dataset, drives every fixture through [`RuntimeReplayer`],
-//!     scores each outcome, persists an [`EvalRun`], returns it.
-//!
-//!   GET `/v1/eval/runs?dataset_id=&limit=` — list run summaries.
-//!   GET `/v1/eval/runs/:id` — fetch one run.
-//!   GET `/v1/eval/runs/:id?baseline=:baseline_id` — fetch + diff (D7).
-//!
-//! ## Notes
-//!
-//! - `RuntimeReplayer` builds a self-contained runtime with an
-//!   `InMemoryStore` — replays do not touch the server's thread store,
-//!   so eval runs can't pollute production data.
-//! - `mode="scripted"` treats `provider_script` as a deterministic LLM
-//!   adapter for regression replay; `mode="live"` evaluates fixture
-//!   prompts against real provider executors from the `models` axis.
-//! - Replay spans tee into the server's `TraceStore` via `TraceStoreSink`
-//!   when one is wired; `EvalRunItem.trace_run_id` then links each item
-//!   back to its observability trace.
 
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -47,11 +25,6 @@ use crate::error::ApiError;
 use crate::services::eval_common::{
     config_store_or_unavailable, map_storage_error, resolve_live_executor,
 };
-
-// `DATASETS_NAMESPACE` re-exported from `awaken_eval::dataset`.
-// Caps formerly defined here as `const`s now live on
-// `ServerConfig::eval_limits` (see `crate::app::EvalLimits`) so ops can
-// tune per deployment instead of forking the source.
 
 // ── Wire types ────────────────────────────────────────────────────────────
 
@@ -124,6 +97,13 @@ pub struct StartRunRequest {
     /// Invalid on Scripted runs (deterministic, no wall-clock risk).
     #[serde(default)]
     pub max_walltime_secs: Option<u64>,
+    /// Per-cell token budget in Live (matrix) mode. Defaults to the same
+    /// 10k cap as `/v1/eval/online`; pass an explicit value only when the
+    /// dataset needs a tighter or looser post-hoc token guard. Invalid on
+    /// Scripted runs because deterministic provider scripts don't spend
+    /// live provider tokens.
+    #[serde(default)]
+    pub max_total_tokens: Option<u32>,
 }
 
 fn execution_mode_from_request(body: &StartRunRequest) -> EvalRunExecutionMode {
@@ -172,7 +152,8 @@ pub struct JudgeRequest {
 // tune per deployment.
 
 pub(crate) use super::eval_cell::{
-    JudgeContext, LiveCellOptions, ResolvedCell, persisted_trace_run_id, run_live_eval_cells,
+    DEFAULT_MAX_TOTAL_TOKENS, JudgeContext, LiveCellOptions, ResolvedCell, live_run_sample_count,
+    persisted_trace_run_id, run_live_eval_cells, validate_baseline_sample_count,
     validate_judge_required_for_expectation,
 };
 
@@ -332,6 +313,11 @@ pub async fn start_eval_run(
             "max_walltime_secs requires mode=\"live\"; scripted replay ignores it".into(),
         ));
     }
+    if !is_live_mode(execution_mode) && body.max_total_tokens.is_some() {
+        return Err(ApiError::BadRequest(
+            "max_total_tokens requires mode=\"live\"; scripted replay ignores it".into(),
+        ));
+    }
     // Reject explicit zero walltime — would time out every Live cell on
     // the first poll. Mirrors `/v1/eval/online` so the two endpoints
     // agree. `None` still falls through to the 60s default below.
@@ -363,13 +349,6 @@ pub async fn start_eval_run(
             "samples must be >= 1 (omit the field for a single sample)".into(),
         ));
     }
-    let samples = body.samples.unwrap_or(1).max(1);
-    if samples > limits.max_samples_per_cell {
-        return Err(ApiError::BadRequest(format!(
-            "samples={samples} exceeds cap {}",
-            limits.max_samples_per_cell
-        )));
-    }
     // Flakiness sampling only makes sense in Live mode — scripted
     // replays are deterministic, so even `samples: 1` is a documented
     // Live-only field. Reject any explicit value in Scripted instead of
@@ -380,6 +359,13 @@ pub async fn start_eval_run(
         return Err(ApiError::BadRequest(
             "samples requires mode=\"live\"; scripted replays are deterministic".into(),
         ));
+    }
+    let samples = body.samples.unwrap_or(1).max(1);
+    if samples > limits.max_samples_per_cell {
+        return Err(ApiError::BadRequest(format!(
+            "samples={samples} exceeds cap {}",
+            limits.max_samples_per_cell
+        )));
     }
     // Judge top-level scope + revise cap. The per-fixture
     // `min_judge_score → rubric` check still runs below because it
@@ -412,6 +398,12 @@ pub async fn start_eval_run(
         .map_err(map_storage_error)?
         .ok_or_else(|| ApiError::NotFound(format!("dataset not found: {}", body.dataset_id)))?;
     let dataset_revision = extract_meta_revision(&raw).unwrap_or(0);
+    let record = validate_config_record::<DatasetSpec>(raw)
+        .map_err(|err| ApiError::BadRequest(format!("invalid dataset: {err}")))?;
+    record
+        .spec
+        .validate_for_write()
+        .map_err(|err| ApiError::BadRequest(format!("invalid dataset: {err}")))?;
     let preloaded_baseline = if let Some(ref baseline_id) = body.baseline_run_id {
         Some(load_and_validate_baseline(
             run_store.as_ref(),
@@ -419,12 +411,11 @@ pub async fn start_eval_run(
             &body.dataset_id,
             dataset_revision,
             execution_mode,
+            is_live_mode(execution_mode).then_some(samples),
         )?)
     } else {
         None
     };
-    let record = validate_config_record::<DatasetSpec>(raw)
-        .map_err(|err| ApiError::BadRequest(format!("invalid dataset: {err}")))?;
     let fixtures: Vec<Fixture> = record.spec.fixtures;
     if fixtures.is_empty() {
         return Err(ApiError::BadRequest(format!(
@@ -488,10 +479,8 @@ pub async fn start_eval_run(
     // every run and broke duration / list filtering / time-series.
     let started_at_secs = epoch_secs_now();
     let items: Vec<EvalRunItem> = if is_live_mode(execution_mode) {
-        let walltime = match body.max_walltime_secs.unwrap_or(0) {
-            0 => 60,
-            n => n,
-        };
+        let walltime = body.max_walltime_secs.unwrap_or(60);
+        let max_total_tokens = body.max_total_tokens.unwrap_or(DEFAULT_MAX_TOTAL_TOKENS);
         run_matrix_cells(
             &state,
             &fixtures,
@@ -500,6 +489,7 @@ pub async fn start_eval_run(
                 samples,
                 max_concurrent: limits.max_concurrent_matrix_cells,
                 max_walltime_secs: walltime,
+                max_total_tokens,
                 agent_base,
                 agent_overrides: body.agent_overrides.clone(),
                 judge,
@@ -582,6 +572,7 @@ pub async fn get_eval_run(
             &run.dataset_id,
             run.dataset_revision,
             run.execution_mode,
+            live_run_sample_count(&run)?,
         )?;
         Some(compute_diff_from_baseline(baseline, &run)?)
     } else {
@@ -598,15 +589,14 @@ pub async fn get_eval_run(
     .into_response())
 }
 
-/// Load + validate a baseline EvalRun against the new run's
-/// (dataset_id, revision). Extracted so the POST handler can preflight
-/// before any provider call, and the GET handler can lazy-load.
+/// Load + validate a baseline against the new/current run before diffing.
 fn load_and_validate_baseline(
     store: &dyn EvalRunStore,
     baseline_id: &str,
     new_run_dataset_id: &str,
     new_run_dataset_revision: u64,
     new_run_execution_mode: EvalRunExecutionMode,
+    new_run_samples: Option<u32>,
 ) -> Result<EvalRun, ApiError> {
     let baseline = store.read(baseline_id).map_err(|err| match err {
         EvalRunStoreError::NotFound(_) => {
@@ -642,14 +632,7 @@ fn load_and_validate_baseline(
             execution_mode_name(new_run_execution_mode),
         )));
     }
-    // Reject a baseline whose items collide on the matrix key BEFORE
-    // any provider call. `compute_diff_from_baseline` re-checks below,
-    // but it runs AFTER live replay and EvalRun persist — so without
-    // this preflight a duplicate-key baseline would still cost tokens
-    // and leave a half-finished new run in the store. The store-write
-    // paths normally reject duplicates upstream, but a corrupt on-disk
-    // record (or a future store impl with weaker guarantees) would
-    // otherwise slip past this gate.
+    validate_baseline_sample_count(&baseline, new_run_samples)?;
     awaken_eval::validate_unique_item_keys(&baseline.items)
         .map_err(|e| ApiError::BadRequest(format!("baseline run {}: {e}", baseline.id)))?;
     Ok(baseline)
@@ -659,25 +642,19 @@ fn compute_diff_from_baseline(
     baseline: EvalRun,
     new_run: &EvalRun,
 ) -> Result<DiffSummary, ApiError> {
-    // Reject duplicate keys BEFORE the diff. `diff_against_baseline` /
-    // `diff_eval_items` collect into BTreeMap; without this guard, two
-    // items with the same (fixture, cell, sample) triple would silently
-    // overwrite each other in the map and the returned DiffSummary would
-    // depend on Vec insertion order. The store-write paths already
-    // reject duplicates upstream — but a corrupt on-disk record or a
-    // future store impl with weaker guarantees would slip through, and
-    // "diff is wrong but plausible" is the worst possible failure mode
-    // for a regression gate. Baseline is already validated in
-    // `load_and_validate_baseline` (preflight) so we only re-check the
-    // newly-built `new_run` here.
+    // Reject duplicate keys before BTreeMap-based diffing can hide them.
     awaken_eval::validate_unique_item_keys(&new_run.items)
         .map_err(|e| ApiError::BadRequest(format!("current run {}: {e}", new_run.id)))?;
-    // Use matrix-aware pairing when either side carries a cell. Single
-    // unified call site — `diff_eval_items` handles the cell-less path
-    // identically to the report-based diff.
-    let has_matrix = baseline.items.iter().any(|i| i.cell.is_some())
-        || new_run.items.iter().any(|i| i.cell.is_some());
-    if has_matrix {
+    // Item-keyed pairing is required for matrix cells or samples.
+    let needs_item_keyed_diff = baseline
+        .items
+        .iter()
+        .any(|i| i.cell.is_some() || i.sample_index.is_some())
+        || new_run
+            .items
+            .iter()
+            .any(|i| i.cell.is_some() || i.sample_index.is_some());
+    if needs_item_keyed_diff {
         Ok(awaken_eval::diff_eval_items(
             &baseline.items,
             &new_run.items,
@@ -733,6 +710,7 @@ pub(crate) struct MatrixOptions {
     /// deadline, mirroring `/v1/eval/online`, so a stuck provider or
     /// judge can't pin the HTTP request slot indefinitely.
     pub max_walltime_secs: u64,
+    pub max_total_tokens: u32,
     pub agent_base: Option<awaken_contract::registry_spec::AgentSpec>,
     pub agent_overrides: Option<AgentSpecPatch>,
     pub judge: Option<JudgeContext>,
@@ -754,6 +732,7 @@ async fn run_matrix_cells(
         samples,
         max_concurrent,
         max_walltime_secs,
+        max_total_tokens,
         agent_base,
         agent_overrides,
         judge,
@@ -788,7 +767,7 @@ async fn run_matrix_cells(
             agent_base,
             agent_overrides,
             judge,
-            max_total_tokens: None,
+            max_total_tokens: Some(max_total_tokens),
             trace_sink,
             trace_store,
             task_context: "matrix cell",
