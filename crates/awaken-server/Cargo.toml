@@ -19,7 +19,7 @@ categories = [
 awaken-contract = { workspace = true }
 awaken-protocol-a2a = { workspace = true }
 awaken-tool-pattern = { workspace = true }
-awaken-runtime = { workspace = true, features = ["test-utils"] }
+awaken-runtime = { workspace = true }
 awaken-ext-mcp = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
