@@ -27,9 +27,10 @@ use axum::response::{IntoResponse, Response};
 use crate::app::AppState;
 use crate::error::ApiError;
 use crate::services::dataset_wire::{
-    AppendFixtureRequest, CreateDatasetRequest, CurateItemsRequest, DatasetSummaryWire, IdParam,
-    ImportDialogueRequest, ImportDialogueResponse, ImportTracesRequest, ImportTracesResponse,
-    ListDatasetsResponse, ListParams, ProviderScriptMode, PutDatasetRequest,
+    AppendFixtureRequest, CreateDatasetRequest, CurateItemsRequest, DatasetSummaryWire,
+    DeleteDatasetParams, IdParam, ImportDialogueRequest, ImportDialogueResponse,
+    ImportTracesRequest, ImportTracesResponse, ListDatasetsResponse, ListParams,
+    ProviderScriptMode, PutDatasetRequest,
 };
 use crate::services::eval_common::{
     config_store_or_unavailable, map_storage_error, map_trace_store_error,
@@ -308,18 +309,33 @@ pub async fn append_fixture(
 }
 
 /// `DELETE /v1/eval/datasets/:id` — remove the dataset. Idempotent.
+///
+/// With `?expected_revision=N` the delete is a compare-and-swap: the store
+/// only removes the record when its current `meta.revision` is `N`,
+/// surfacing `409 Conflict` otherwise. The trace → fixture rollback path
+/// uses this to drop an inline-created dataset atomically — if a
+/// concurrent operator curated a fixture into it between create and the
+/// failed curate, the revision has moved and the delete is rejected
+/// instead of destroying their work.
 #[tracing::instrument(skip_all, fields(id = %id))]
 pub async fn delete_dataset(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(id): Path<String>,
+    Query(params): Query<DeleteDatasetParams>,
 ) -> Result<Response, ApiError> {
     crate::config_routes::ensure_admin_auth(&state, &headers)?;
     let store = config_store_or_unavailable(&state)?;
-    store
-        .delete(DATASETS_NAMESPACE, &id)
-        .await
-        .map_err(map_storage_error)?;
+    match params.expected_revision {
+        Some(expected) => store
+            .delete_if_revision(DATASETS_NAMESPACE, &id, expected)
+            .await
+            .map_err(map_storage_error)?,
+        None => store
+            .delete(DATASETS_NAMESPACE, &id)
+            .await
+            .map_err(map_storage_error)?,
+    }
     Ok(StatusCode::NO_CONTENT.into_response())
 }
 

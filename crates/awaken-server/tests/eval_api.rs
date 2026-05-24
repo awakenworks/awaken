@@ -407,6 +407,75 @@ async fn dataset_create_get_list_delete_round_trip() {
     assert_eq!(status, StatusCode::NO_CONTENT, "delete is idempotent");
 }
 
+/// `DELETE ?expected_revision=N` is a compare-and-swap. The trace →
+/// fixture rollback relies on it: if a concurrent operator appended a
+/// fixture between the inline create and the failed curate, the revision
+/// has moved and the guarded delete must reject (409) rather than wipe
+/// their work. An unguarded delete (no query param) still removes
+/// unconditionally.
+#[tokio::test]
+async fn delete_dataset_guarded_by_expected_revision() {
+    let app = build_test_app().await;
+
+    // Inline-created dataset starts at revision 0 (mirrors the rollback
+    // path: SaveTraceAsFixtureModal creates an empty dataset, captures
+    // its revision, then tries to curate).
+    let (status, body) = request(
+        &app.router,
+        "POST",
+        "/v1/eval/datasets",
+        Some(json!({ "id": "DS-GUARD", "spec": { "fixtures": [] } })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "body: {body}");
+    assert_eq!(body["meta"]["revision"], 0);
+
+    // Simulate the concurrent write that the rollback must not destroy:
+    // another operator appends a fixture, bumping the revision to 1.
+    let (status, _) = request(
+        &app.router,
+        "POST",
+        "/v1/eval/datasets/DS-GUARD/fixtures",
+        Some(json!({ "fixture": sample_fixture("concurrent"), "expected_revision": 0 })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    // Rollback deletes against the *stale* revision it captured at create
+    // time (0). The dataset is now at revision 1 → 409, data preserved.
+    let (status, _) = request(
+        &app.router,
+        "DELETE",
+        "/v1/eval/datasets/DS-GUARD?expected_revision=0",
+        None,
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CONFLICT,
+        "stale revision must not delete"
+    );
+    let (status, body) = request(&app.router, "GET", "/v1/eval/datasets/DS-GUARD", None).await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "dataset survived the guarded delete"
+    );
+    assert_eq!(body["spec"]["fixtures"].as_array().unwrap().len(), 1);
+
+    // Guarded delete against the current revision (1) succeeds.
+    let (status, _) = request(
+        &app.router,
+        "DELETE",
+        "/v1/eval/datasets/DS-GUARD?expected_revision=1",
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let (status, _) = request(&app.router, "GET", "/v1/eval/datasets/DS-GUARD", None).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
 #[tokio::test]
 async fn dataset_create_400s_on_duplicate_fixture_id() {
     // Duplicate fixture ids would silently overwrite each other inside
