@@ -25,7 +25,7 @@ Re-resolution occurs at step boundaries only when `ActiveAgentIdKey` indicates t
 
 ### D4: No per-phase live config resolution
 
-A persisted `ConfigStore` may exist to hold serializable `AgentSpec` / `ModelBindingSpec` / `ProviderSpec` / `McpServerSpec` documents, but runtime execution does not query it directly at every boundary. Config changes are compiled into versioned registry snapshots; new runs see the latest published snapshot, while active runs and in-flight steps keep their pinned snapshot. Dynamic config changes still require either a handoff (agent switch) or a new run to observe different agent specs.
+A persisted `ConfigStore` may exist to hold serializable `AgentSpec` / `ModelSpec` / `ProviderSpec` / `McpServerSpec` documents under the `agents` / `models` / `providers` / `mcp-servers` namespace keys, but runtime execution does not query it directly at every boundary. `ModelSpec` is the unified model record — addressing fields (`provider_id`, `upstream_model`), intrinsic capability (`context_window`, `max_output_tokens`, `modalities`, `knowledge_cutoff`) and pricing all live on the same persisted document, so resolution and registry snapshots no longer need a separate runtime binding type. Config changes are compiled into versioned registry snapshots; new runs see the latest published snapshot, while active runs and in-flight steps keep their pinned snapshot. Dynamic config changes still require either a handoff (agent switch) or a new run to observe different agent specs.
 
 ### D5: Content-Addressed Identity on Resolved Entries (extension by ADR-0030)
 

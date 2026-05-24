@@ -7,7 +7,7 @@
 ## Context
 
 Awaken already has a serializable registry model (`AgentSpec`,
-`ModelBindingSpec`, `ProviderSpec`, `ToolSpec`, `SkillSpec`), a `ConfigStore`
+`ModelSpec`, `ProviderSpec`, `ToolSpec`, `SkillSpec`), a `ConfigStore`
 for admin-managed JSON records, and a runtime `RegistrySnapshot` with a
 monotonic snapshot version. The server can rebuild a `RegistrySet` from
 `ConfigStore` and replace the runtime registry handle.
@@ -273,7 +273,7 @@ record carries a `value_schema_version`; resource-specific codecs own any
 migration from older stored shapes into the current Rust type.
 
 For Awaken-owned published types such as `AgentSpec`, `SkillSpec`,
-`ModelBindingSpec`, and `ProviderSpec`:
+`ModelSpec`, and `ProviderSpec`:
 
 - adding fields requires `#[serde(default)]` or an equivalent defaulting codec,
 - deleting or renaming stored fields is forbidden unless a migration codec remains

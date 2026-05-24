@@ -32,8 +32,8 @@ Awaken 把**写一次的代码**和**持续调优的配置**分开。
 
 **配置层（声明式，运行时热替换）：**
 
-4. **Providers + Models** — 凭据、adapter，以及 agent 引用的 model binding。
-5. **Agents** — 系统提示词、model binding、允许/排除的工具集。LLM 用自然语言编排，没有 DAG。
+4. **Providers + Models** — 凭据、adapter，以及 agent 引用的 `ModelSpec`（含寻址、capabilities、定价）。
+5. **Agents** — 系统提示词、`model_id`、允许/排除的工具集。LLM 用自然语言编排，没有 DAG。
 6. **Skills** — 可发现的能力包，限定 agent 在特定任务下激活哪些工具和指令（`SkillSpec.allowed_tools`）。
 
 工具一次写好就基本稳定；模型、agent、skill 通过 `/v1/config/*` 或[管理控制台](https://awakenworks.github.io/awaken/zh-cn/reference/admin-console/)**在运行时**调优 —— Validate → Save → 预览对话 → 调整。这套反馈环本身**就是**优化流程。
@@ -93,10 +93,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         )
         .with_tool("echo", Arc::new(EchoTool))
         .with_provider("openai", Arc::new(GenaiExecutor::new()))
-        .with_model_binding("gpt-4o-mini", ModelBinding {
-            provider_id: "openai".into(),
-            upstream_model: "gpt-4o-mini".into(),
-        })
+        .with_model(ModelSpec::new("gpt-4o-mini", "openai", "gpt-4o-mini"))
         .build()?;
 
     let request = RunRequest::new("thread-1", vec![Message::user("用 echo 工具说一句 hello")])

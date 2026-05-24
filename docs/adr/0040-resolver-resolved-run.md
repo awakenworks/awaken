@@ -203,7 +203,7 @@ pub struct ResolvedRun<S> {
     pub agent_spec: AgentSpec,
     pub role: ExecutionRole,
     pub execution: ExecutionPlan,
-    pub model: ResolvedModelBinding,
+    pub model: ResolvedModel,
     pub tools: Vec<ResolvedTool>,
     pub overrides: Option<InferenceOverride>,
     pub backend_profile: BackendProfile,

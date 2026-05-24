@@ -48,13 +48,13 @@ registry ids:
 
 ```text
 AgentSpec.model_id
-  -> ModelBindingSpec { provider_id, upstream_model }
+  -> ModelSpec { provider_id, upstream_model }
   -> ProviderSpec { adapter, api_key, base_url, timeout_secs }
   -> LlmExecutor
 ```
 
 `AgentSpec.model_id` is not the upstream provider model name. It is the stable
-model binding id used by agents and clients. `ModelBindingSpec.upstream_model`
+model binding id used by agents and clients. `ModelSpec.upstream_model`
 is the string sent to the provider API.
 
 Config writes are compiled into a candidate registry snapshot, validated, and
@@ -227,7 +227,7 @@ for a specific agent.
 
 ## Compatibility rules
 
-- Keep `AgentSpec.id`, `ModelBindingSpec.id`, and `ProviderSpec.id` stable for
+- Keep `AgentSpec.id`, `ModelSpec.id`, and `ProviderSpec.id` stable for
   clients that reference them.
 - Use canonical fields: `model_id`, `provider_id`, `upstream_model`, and
   `fallback_upstream_models`. Legacy `model`, `provider`, and
@@ -236,7 +236,7 @@ for a specific agent.
   not re-resolve `AgentSpec.model_id` and cannot switch provider executors.
 - Query `/v1/config/{namespace}/$schema` before writing generated config, and
   use `/v1/capabilities` to inspect plugin `config_schemas`. `AgentSpec`,
-  `ModelBindingSpec`, and several section types reject unknown fields.
+  `ModelSpec`, and several section types reject unknown fields.
 - Additive section changes are compatible when the plugin is registered and the
   section value matches the schema. Invalid sections fail validation before the
   runtime snapshot is published.

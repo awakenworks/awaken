@@ -32,8 +32,8 @@ Awaken separates **code you write once** from **config you tune continuously**.
 
 **Config (declarative, hot-swappable):**
 
-4. **Providers + Models** — credentials, adapters, and the bindings agents reference.
-5. **Agents** — system prompt, model binding, allowed/excluded tools. The LLM orchestrates through natural language; there is no DAG.
+4. **Providers + Models** — credentials, adapters, and the `ModelSpec` entries agents reference (addressing + capabilities + pricing).
+5. **Agents** — system prompt, `model_id`, allowed/excluded tools. The LLM orchestrates through natural language; there is no DAG.
 6. **Skills** — discoverable packages that scope what tools and instructions an agent activates for a given task (`SkillSpec.allowed_tools`).
 
 Tools are written once and stay stable. Models, agents, and skills are tuned **at runtime** through `/v1/config/*` or the [Admin Console](https://awakenworks.github.io/awaken/reference/admin-console/) — Validate → Save → preview-chat → adjust. That feedback loop *is* the optimization workflow.
@@ -93,10 +93,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         )
         .with_tool("echo", Arc::new(EchoTool))
         .with_provider("openai", Arc::new(GenaiExecutor::new()))
-        .with_model_binding("gpt-4o-mini", ModelBinding {
-            provider_id: "openai".into(),
-            upstream_model: "gpt-4o-mini".into(),
-        })
+        .with_model(ModelSpec::new("gpt-4o-mini", "openai", "gpt-4o-mini"))
         .build()?;
 
     let request = RunRequest::new("thread-1", vec![Message::user("Say hello using the echo tool")])

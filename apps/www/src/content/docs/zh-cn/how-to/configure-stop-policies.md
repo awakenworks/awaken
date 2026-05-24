@@ -46,7 +46,7 @@ let policies: Vec<Arc<dyn StopPolicy>> = vec![
 use std::sync::Arc;
 use awaken::policies::StopConditionPlugin;
 use awaken::engine::GenaiExecutor;
-use awaken::registry::ModelBinding;
+use awaken::registry_spec::ModelSpec;
 use awaken::AgentRuntimeBuilder;
 
 let mut spec = spec;
@@ -56,10 +56,7 @@ let runtime = AgentRuntimeBuilder::new()
     .with_plugin("stop-condition", Arc::new(StopConditionPlugin::new(policies)))
     .with_agent_spec(spec)
     .with_provider("anthropic", Arc::new(GenaiExecutor::new()))
-    .with_model_binding("claude-sonnet", ModelBinding {
-        provider_id: "anthropic".into(),
-        upstream_model: "claude-sonnet-4-20250514".into(),
-    })
+    .with_model(ModelSpec::new("claude-sonnet", "anthropic", "claude-sonnet-4-20250514"))
     .build()?;
 ```
 
@@ -69,7 +66,7 @@ let runtime = AgentRuntimeBuilder::new()
 use std::sync::Arc;
 use awaken::policies::MaxRoundsPlugin;
 use awaken::engine::GenaiExecutor;
-use awaken::registry::ModelBinding;
+use awaken::registry_spec::ModelSpec;
 use awaken::AgentRuntimeBuilder;
 
 let mut spec = spec;
@@ -79,10 +76,7 @@ let runtime = AgentRuntimeBuilder::new()
     .with_plugin("stop-condition:max-rounds", Arc::new(MaxRoundsPlugin::new(10)))
     .with_agent_spec(spec)
     .with_provider("anthropic", Arc::new(GenaiExecutor::new()))
-    .with_model_binding("claude-sonnet", ModelBinding {
-        provider_id: "anthropic".into(),
-        upstream_model: "claude-sonnet-4-20250514".into(),
-    })
+    .with_model(ModelSpec::new("claude-sonnet", "anthropic", "claude-sonnet-4-20250514"))
     .build()?;
 ```
 

@@ -59,7 +59,7 @@ let handoff = HandoffPlugin::new(Default::default());
 ```rust
 use std::sync::Arc;
 use awaken::engine::GenaiExecutor;
-use awaken::registry::ModelBinding;
+use awaken::registry_spec::ModelSpec;
 use awaken::AgentRuntimeBuilder;
 
 let mut spec = spec;
@@ -71,10 +71,7 @@ let runtime = AgentRuntimeBuilder::new()
     .with_agent_spec(researcher)
     .with_agent_spec(writer)
     .with_provider("anthropic", Arc::new(GenaiExecutor::new()))
-    .with_model_binding("claude-sonnet", ModelBinding {
-        provider_id: "anthropic".into(),
-        upstream_model: "claude-sonnet-4-20250514".into(),
-    })
+    .with_model(ModelSpec::new("claude-sonnet", "anthropic", "claude-sonnet-4-20250514"))
     .build()?;
 ```
 

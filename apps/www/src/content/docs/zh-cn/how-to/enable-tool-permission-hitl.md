@@ -25,7 +25,7 @@ serde_json = "1"
 use std::sync::Arc;
 use awaken::engine::GenaiExecutor;
 use awaken::ext_permission::PermissionPlugin;
-use awaken::registry::ModelBinding;
+use awaken::registry_spec::ModelSpec;
 use awaken::registry_spec::AgentSpec;
 use awaken::{AgentRuntimeBuilder, Plugin};
 
@@ -37,13 +37,7 @@ agent_spec.plugin_ids.push("permission".into());
 
 let runtime = AgentRuntimeBuilder::new()
     .with_provider("openai", Arc::new(GenaiExecutor::new()))
-    .with_model_binding(
-        "gpt-4o-mini",
-        ModelBinding {
-            provider_id: "openai".into(),
-            upstream_model: "gpt-4o-mini".into(),
-        },
-    )
+    .with_model(ModelSpec::new("gpt-4o-mini", "openai", "gpt-4o-mini"))
     .with_agent_spec(agent_spec)
     .with_plugin("permission", Arc::new(PermissionPlugin) as Arc<dyn Plugin>)
     .build()

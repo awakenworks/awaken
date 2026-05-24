@@ -26,7 +26,7 @@ use std::sync::Arc;
 use serde_json::json;
 use awaken::engine::GenaiExecutor;
 use awaken::ext_reminder::ReminderPlugin;
-use awaken::registry::ModelBinding;
+use awaken::registry_spec::ModelSpec;
 use awaken::registry_spec::AgentSpec;
 use awaken::{AgentRuntimeBuilder, Plugin};
 
@@ -50,13 +50,7 @@ agent_spec.plugin_ids.push("reminder".into());
 
 let runtime = AgentRuntimeBuilder::new()
     .with_provider("anthropic", Arc::new(GenaiExecutor::new()))
-    .with_model_binding(
-        "claude-sonnet",
-        ModelBinding {
-            provider_id: "anthropic".into(),
-            upstream_model: "claude-3-7-sonnet-latest".into(),
-        },
-    )
+    .with_model(ModelSpec::new("claude-sonnet", "anthropic", "claude-3-7-sonnet-latest"))
     .with_agent_spec(agent_spec)
     .with_plugin("reminder", Arc::new(ReminderPlugin::new(vec![])) as Arc<dyn Plugin>)
     .build()

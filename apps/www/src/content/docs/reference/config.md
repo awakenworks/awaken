@@ -218,7 +218,7 @@ shape and legacy bare specs; `to_value()` always writes the envelope shape.
 | `validate_agent_spec(value)` | Decode an `AgentSpec` and reject unknown fields |
 | `validate_agent_spec_patch(value)` | Decode an `AgentSpecPatch` and reject unknown fields |
 | `validate_provider_spec(value)` | Decode a `ProviderSpec`, reject unknown write-surface fields, and reject empty `id` / `adapter` |
-| `validate_model_binding_spec(value)` | Decode a `ModelBindingSpec`, reject unknown fields, and reject empty `id` / `provider_id` / `upstream_model` |
+| `validate_model_spec(value)` | Decode a `ModelSpec`, reject unknown fields, and reject empty `id` / `provider_id` / `upstream_model` |
 | `decode_config_record<T>(value)` | Decode a `ConfigRecord<T>`, accepting legacy bare specs, without checking `user_overrides` |
 | `validate_config_record<T>(value)` | Decode a `ConfigRecord<T>` and validate `meta.user_overrides` against `T`'s patch type |
 | `effective_config_record(record)` | Apply `meta.user_overrides` to a single record |
@@ -228,7 +228,7 @@ shape and legacy bare specs; `to_value()` always writes the envelope shape.
 `UnknownFieldPolicy::Reject`; the exported constants
 `AGENT_SPEC_UNKNOWN_FIELD_POLICY`, `AGENT_SPEC_PATCH_UNKNOWN_FIELD_POLICY`,
 `PROVIDER_SPEC_UNKNOWN_FIELD_POLICY`, and
-`MODEL_BINDING_SPEC_UNKNOWN_FIELD_POLICY` make that behavior explicit for
+`MODEL_SPEC_UNKNOWN_FIELD_POLICY` make that behavior explicit for
 integrations. `ProviderSpec` deserialization remains lenient for read-time
 compatibility, but config write and validate surfaces use
 `validate_provider_spec(value)` to reject silently ignored fields.

@@ -74,17 +74,14 @@ let builder = AgentRuntimeBuilder::new()
 ```rust
 use std::sync::Arc;
 use awaken::engine::GenaiExecutor;
-use awaken::registry::ModelBinding;
+use awaken::registry_spec::ModelSpec;
 use awaken::AgentRuntimeBuilder;
 
 let builder = AgentRuntimeBuilder::new();
 
 let builder = builder
     .with_provider("anthropic", Arc::new(GenaiExecutor::new()))
-    .with_model_binding("claude-sonnet", ModelBinding {
-        provider_id: "anthropic".into(),
-        upstream_model: "claude-sonnet-4-20250514".into(),
-    });
+    .with_model(ModelSpec::new("claude-sonnet", "anthropic", "claude-sonnet-4-20250514"));
 ```
 
 4. Attach persistence.
@@ -105,17 +102,14 @@ let builder = builder.with_thread_run_store(store);
 ```rust
 use std::sync::Arc;
 use awaken::engine::MockLlmExecutor;
-use awaken::registry::ModelBinding;
+use awaken::registry_spec::ModelSpec;
 use awaken::{AgentRuntimeBuilder, AgentSpec};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let builder = AgentRuntimeBuilder::new()
         .with_agent_spec(AgentSpec::new("assistant").with_model_id("mock"))
         .with_provider("mock", Arc::new(MockLlmExecutor::new()))
-        .with_model_binding("mock", ModelBinding {
-            provider_id: "mock".into(),
-            upstream_model: "mock".into(),
-        });
+        .with_model(ModelSpec::new("mock", "mock", "mock"));
 
     let runtime = builder.build()?;
     let _runtime = runtime;
@@ -168,10 +162,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let runtime = AgentRuntimeBuilder::new()
         .with_agent_spec(AgentSpec::new("assistant").with_model_id("mock"))
         .with_provider("mock", Arc::new(MockLlmExecutor::new()))
-        .with_model_binding("mock", ModelBinding {
-            provider_id: "mock".into(),
-            upstream_model: "mock".into(),
-        })
+        .with_model(ModelSpec::new("mock", "mock", "mock"))
         .build()?;
     let user_message = Message::user("Hello");
 

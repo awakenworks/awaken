@@ -128,7 +128,7 @@ use serde_json::{json, Value};
 use awaken::{KeyScope, MergeStrategy, StateKey};
 use awaken::contract::tool::{Tool, ToolDescriptor, ToolResult, ToolOutput, ToolError, ToolCallContext};
 use awaken::engine::GenaiExecutor;
-use awaken::registry::ModelBinding;
+use awaken::registry_spec::ModelSpec;
 use awaken::registry_spec::AgentSpec;
 use awaken::AgentRuntimeBuilder;
 
@@ -170,10 +170,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_agent_spec(agent_spec)
         .with_tool("greet", Arc::new(GreetTool))
         .with_provider("openai", Arc::new(GenaiExecutor::new()))
-        .with_model_binding("gpt-4o-mini", ModelBinding {
-            provider_id: "openai".into(),
-            upstream_model: "gpt-4o-mini".into(),
-        })
+        .with_model(ModelSpec::new("gpt-4o-mini", "openai", "gpt-4o-mini"))
         .build()?;
 
     let _runtime = runtime;
@@ -192,7 +189,7 @@ use awaken::contract::message::Message;
 use awaken::contract::event_sink::VecEventSink;
 use awaken::contract::tool::{Tool, ToolDescriptor, ToolResult, ToolOutput, ToolError, ToolCallContext};
 use awaken::engine::GenaiExecutor;
-use awaken::registry::ModelBinding;
+use awaken::registry_spec::ModelSpec;
 use awaken::registry_spec::AgentSpec;
 use awaken::AgentRuntimeBuilder;
 use awaken::RunRequest;
@@ -231,10 +228,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_agent_spec(AgentSpec::new("assistant").with_model_id("gpt-4o-mini"))
         .with_tool("greet", Arc::new(GreetTool))
         .with_provider("openai", Arc::new(GenaiExecutor::new()))
-        .with_model_binding("gpt-4o-mini", ModelBinding {
-            provider_id: "openai".into(),
-            upstream_model: "gpt-4o-mini".into(),
-        })
+        .with_model(ModelSpec::new("gpt-4o-mini", "openai", "gpt-4o-mini"))
         .build()?;
 
     let request = RunRequest::new(

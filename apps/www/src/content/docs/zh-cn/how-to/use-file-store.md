@@ -44,16 +44,13 @@ let store = Arc::new(FileStore::new("./data"));
 use std::sync::Arc;
 use awaken::AgentRuntimeBuilder;
 use awaken::engine::GenaiExecutor;
-use awaken::registry::ModelBinding;
+use awaken::registry_spec::ModelSpec;
 
 let runtime = AgentRuntimeBuilder::new()
     .with_thread_run_store(store)
     .with_agent_spec(spec)
     .with_provider("anthropic", Arc::new(GenaiExecutor::new()))
-    .with_model_binding("claude-sonnet", ModelBinding {
-        provider_id: "anthropic".into(),
-        upstream_model: "claude-sonnet-4-20250514".into(),
-    })
+    .with_model(ModelSpec::new("claude-sonnet", "anthropic", "claude-sonnet-4-20250514"))
     .build()?;
 ```
 

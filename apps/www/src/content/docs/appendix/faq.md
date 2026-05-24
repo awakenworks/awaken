@@ -4,7 +4,7 @@ title: "FAQ"
 
 ## Which LLM providers are supported?
 
-Any provider compatible with `genai`. This includes OpenAI, Anthropic, DeepSeek, Google Gemini, Ollama, and others. Register a provider executor under a provider ID, bind a stable model ID through `ModelBinding { provider_id, upstream_model }`, and reference that stable ID from `AgentSpec.model_id`.
+Any provider compatible with `genai`. This includes OpenAI, Anthropic, DeepSeek, Google Gemini, Ollama, and others. Register a provider executor under a provider ID, register a `ModelSpec { id, provider_id, upstream_model, .. }` carrying optional capability fields (context window, max output, modalities, knowledge cutoff) and pricing, and reference that stable `id` from `AgentSpec.model_id`.
 
 ## How do I add a new storage backend?
 

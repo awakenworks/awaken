@@ -22,7 +22,7 @@ Server + storage surfaces
   thread/run persistence, profile storage
 ```
 
-**Contract layer** -- `awaken-contract` defines the shared types used everywhere: `AgentSpec`, `ModelBindingSpec`, `ProviderSpec`, `Tool`, `AgentEvent`, transport traits, and the typed state model. This is the vocabulary that the rest of the system speaks.
+**Contract layer** -- `awaken-contract` defines the shared types used everywhere: `AgentSpec`, `ModelSpec`, `ProviderSpec`, `Tool`, `AgentEvent`, transport traits, and the typed state model. This is the vocabulary that the rest of the system speaks.
 
 **Runtime core** -- `awaken-runtime` is the orchestration layer. It resolves agent IDs to `ResolvedExecution`, which is either a local `ResolvedAgent` or a non-local `ResolvedBackendAgent` backed by an `ExecutionBackend`. Local runs build an `ExecutionEnv` from plugins and execute through the loop runner plus phase engine; non-local runs delegate execution to the backend.
 

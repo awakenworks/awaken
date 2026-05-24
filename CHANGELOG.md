@@ -9,6 +9,55 @@ Development work lands here before the next versioned release.
 
 ### Changed
 
+- **BREAKING — `ModelBindingSpec` merged into unified `ModelSpec`** carrying
+  addressing, intrinsic capabilities, and pricing. The two-step
+  `AgentSpec.model_id -> ModelBindingSpec -> runtime ModelBinding` chain
+  collapses to a single `ModelSpec` that `ModelRegistry::get_model` returns
+  in full. New capability fields are all `Option`: `context_window`,
+  `max_output_tokens`, `modalities` (`{ input, output }` of `text` / `image`
+  / `audio` / `video` / `pdf`), `knowledge_cutoff` (ISO `YYYY-MM` or
+  `YYYY-MM-DD`).
+
+  At resolve time the agent's `ContextWindowPolicy` is clamped against the
+  model's capabilities via `effective_policy()`. Invariants enforced:
+  `max_output_tokens <= max_context_tokens`, and
+  `autocompact_threshold <= max_context_tokens - max_output_tokens` (or
+  dropped to `None` when no usable input budget remains).
+
+  `validate_model_spec` rejects `context_window: 0`, `max_output_tokens: 0`,
+  `max_output_tokens > context_window`, negative or non-finite prices,
+  duplicate modalities, and a `knowledge_cutoff` that is not a
+  calendar-valid ISO `YYYY-MM` / `YYYY-MM-DD` date (leap years honored;
+  `2026-02-31` and non-leap `2026-02-29` are rejected).
+  `validate_unique_model_ids(&[ModelSpec])` provides collection-level
+  uniqueness enforcement; runtime and server both wire it at write surfaces.
+
+  **Migration:**
+
+  | Old | New |
+  |---|---|
+  | `ModelBindingSpec` | `ModelSpec` |
+  | runtime `ModelBinding { provider_id, upstream_model }` | `ModelSpec` (full) |
+  | `with_model_binding(id, binding)` builder | `with_model(spec)` (id from `spec.id`) |
+  | `validate_model_binding_spec` | `validate_model_spec` |
+  | `MODEL_BINDING_SPEC_UNKNOWN_FIELD_POLICY` | `MODEL_SPEC_UNKNOWN_FIELD_POLICY` |
+  | `ProviderRemovalPolicy::CascadeUnusedModelBindings` | `CascadeUnusedModels` |
+  | struct field `cascade_unused_model_bindings_allowed` | `cascade_unused_models_allowed` |
+  | Rust internal field `model_bindings: Vec<…>` | `models: Vec<ModelSpec>` |
+  | admin TS interface `ModelBindingSpec` | `ModelSpec` (+ capability inputs) |
+
+  **Wire format note:** the ConfigStore namespace and HTTP JSON key for
+  model offerings has always been `models` (not `model_bindings`); only
+  Rust-internal field/variable names changed. Existing persisted config
+  documents and HTTP payloads continue to parse without conversion. New
+  capability/pricing fields are optional, so old documents lacking them
+  remain valid (with `effective_policy` pass-through behavior).
+
+  No backwards-compat shims for the Rust API surface. Admin-console form
+  now edits capability + pricing fields and mirrors `validate_model_spec`
+  client-side. A lefthook `check-legacy-model-binding` hook prevents
+  reintroduction of any deprecated symbol.
+
 - **AgentSpec catalog fields** — `allowed_tools` / `excluded_tools` are now
   strict literal-id lists, and two new fields `allowed_tool_patterns` /
   `excluded_tool_patterns` carry glob patterns (`*` is the only wildcard;

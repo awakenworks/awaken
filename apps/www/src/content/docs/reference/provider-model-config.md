@@ -8,7 +8,7 @@ Awaken keeps provider wiring and model selection separate. Local agent execution
 ```text
 AgentSpec.model_id
   -> ModelRegistry[model id]
-  -> ModelBinding { provider_id, upstream_model }
+  -> ModelSpec { provider_id, upstream_model, capabilities, pricing }
   -> ProviderRegistry[provider id]
   -> Arc<dyn LlmExecutor>
   -> InferenceRequest.upstream_model = upstream_model
@@ -21,16 +21,15 @@ Endpoint-backed agents skip this local provider/model chain. They are resolved a
 | Term | Type | Meaning |
 |---|---|---|
 | Agent model id | `AgentSpec.model_id` | Stable model registry id used by an agent, for example `"default"` or `"research"`. |
-| Runtime model binding | `ModelBinding` | Runtime mapping from model id to provider id and upstream model name. |
-| Config model binding | `ModelBindingSpec` | Serializable mapping stored in managed config. It is compiled into `ModelBinding`. |
+| Model spec | `ModelSpec` | Unified serializable + runtime type. Carries addressing (`id`, `provider_id`, `upstream_model`), intrinsic capabilities (`context_window`, `max_output_tokens`, `modalities`, `knowledge_cutoff`), and pricing. Stored in managed config and returned by `ModelRegistry::get_model`. |
 | Provider config | `ProviderSpec` | Serializable provider settings used by the server to construct an executor. |
 | Provider executor | `Arc<dyn LlmExecutor>` | Live provider client used to execute inference. |
-| Upstream model name | `ModelBinding.upstream_model`, `ModelBindingSpec.upstream_model`, `InferenceRequest.upstream_model` | The actual model string sent to the provider API. |
+| Upstream model name | `ModelSpec.upstream_model`, `InferenceRequest.upstream_model` | The actual model string sent to the provider API. |
 
 The important distinction is:
 
 - `AgentSpec.model_id` is a registry id.
-- `ModelBindingSpec.upstream_model`, `ModelBinding.upstream_model`, and `InferenceRequest.upstream_model` are upstream provider model names.
+- `ModelSpec.upstream_model` and `InferenceRequest.upstream_model` are upstream provider model names.
 
 ## Programmatic builder path
 
@@ -39,7 +38,7 @@ Use this path when the application owns provider construction in code.
 ```rust
 use std::sync::Arc;
 use awaken::engine::GenaiExecutor;
-use awaken::registry::ModelBinding;
+use awaken::registry_spec::ModelSpec;
 use awaken::{AgentRuntimeBuilder, AgentSpec};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -49,10 +48,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let runtime = AgentRuntimeBuilder::new()
         .with_provider("openai", Arc::new(GenaiExecutor::new()))
-        .with_model_binding("default", ModelBinding {
-            provider_id: "openai".into(),
-            upstream_model: "gpt-4o-mini".into(),
-        })
+        .with_model(ModelSpec::new("default", "openai", "gpt-4o-mini"))
         .with_agent_spec(agent)
         .build()?;
 
@@ -88,7 +84,7 @@ Managed config is stored by namespace:
 | Namespace | Serializable type |
 |---|---|
 | `providers` | `ProviderSpec` |
-| `models` | `ModelBindingSpec` |
+| `models` | `ModelSpec` |
 | `agents` | `AgentSpec` |
 | `mcp-servers` | `McpServerSpec` |
 
@@ -109,7 +105,13 @@ Example config documents:
 {
   "id": "default",
   "provider_id": "openai",
-  "upstream_model": "gpt-4o-mini"
+  "upstream_model": "gpt-4o-mini",
+  "context_window": 128000,
+  "max_output_tokens": 16384,
+  "modalities": { "input": ["text", "image"], "output": ["text"] },
+  "knowledge_cutoff": "2024-10",
+  "input_token_price_per_million_usd": 0.15,
+  "output_token_price_per_million_usd": 0.60
 }
 ```
 
@@ -125,7 +127,7 @@ Example config documents:
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `id` | `String` | required | Provider identifier referenced by `ModelBindingSpec.provider_id` |
+| `id` | `String` | required | Provider identifier referenced by `ModelSpec.provider_id` |
 | `adapter` | `String` | required | GenAI adapter kind (e.g. `"openai"`, `"anthropic"`, `"ollama"`) |
 | `api_key` | `Option<RedactedString>` | `None` | Wrapped in `RedactedString`; redacted in `Debug`/`Display`. Wire format is a plain JSON string. Empty-string input deserializes as `None` so a stored key is preserved when the field is omitted on update |
 | `base_url` | `Option<String>` | `None` | Override base URL for proxies or self-hosted deployments. Empty-string input deserializes as `None` |
@@ -135,8 +137,9 @@ Example config documents:
 `ProviderSpec` deserialization ignores unknown top-level fields for stored-config
 compatibility. Config write and validate surfaces call `validate_provider_spec`
 and reject unknown fields so new records cannot persist silently ignored
-settings. Use `validate_model_binding_spec` for the same canonical validation on
-model bindings.
+settings. Use `validate_model_spec` for the same canonical validation on
+model specs, and `validate_unique_model_ids` when validating a `Vec<ModelSpec>`
+collection before persisting.
 
 Example with custom headers:
 
@@ -158,12 +161,12 @@ The server compiles these documents into runtime registries:
 
 ```text
 ProviderSpec -> ProviderExecutorFactory -> Arc<dyn LlmExecutor>
-ModelBindingSpec    -> ModelBinding
+ModelSpec    -> ModelRegistry (stored as-is; no spec/runtime split)
 AgentSpec    -> AgentSpecRegistry
 ```
 
 Configuration documents use only canonical field names. Use `model_id` on
-agents, `provider_id` and `upstream_model` on model bindings, and
+agents, `provider_id` and `upstream_model` on model specs, and
 `fallback_upstream_models` in retry or inference overrides.
 
 The candidate registry set is validated before it replaces the active runtime snapshot. If validation fails, the config write is rolled back.
@@ -177,11 +180,17 @@ before upgrading:
 | Old field or shape | New canonical form |
 |---|---|
 | `AgentSpec.model` | `AgentSpec.model_id` |
-| `ModelBindingSpec.provider` | `ModelBindingSpec.provider_id` |
-| `ModelBindingSpec.model` | `ModelBindingSpec.upstream_model` |
+| `ModelBindingSpec` type | `ModelSpec` (unified; carries capabilities + pricing) |
+| `ModelBindingSpec.provider` | `ModelSpec.provider_id` |
+| `ModelBindingSpec.model` | `ModelSpec.upstream_model` |
+| Runtime `ModelBinding` (provider_id + upstream_model only) | `ModelSpec` (returned in full by `ModelRegistry::get_model`) |
+| `with_model_binding(id, binding)` builder | `with_model(spec)` (id from `spec.id`) |
+| `validate_model_binding_spec` | `validate_model_spec` |
+| `ProviderRemovalPolicy::CascadeUnusedModelBindings` | `CascadeUnusedModels` |
+| Rust-internal field `model_bindings: Vec<…>` | `models: Vec<ModelSpec>` (wire JSON key was already `models`) |
 | `InferenceOverride.model` | `InferenceOverride.upstream_model` |
 | `fallback_models` | `fallback_upstream_models` |
-| `AgentSystemConfig.models` as an object keyed by model id | `AgentSystemConfig.models` as a list of `ModelBindingSpec` objects with explicit `id` |
+| `AgentSystemConfig.models` as an object keyed by model id | `AgentSystemConfig.models` as a list of `ModelSpec` objects with explicit `id` |
 
 Upgrade check:
 
@@ -227,15 +236,15 @@ snapshot with the state compiled from `ConfigStore`.
 | `register_provider(id, executor)` | Add a new provider and publish a validated snapshot |
 | `replace_provider(id, executor)` | Replace an existing provider executor without rebuilding unrelated registries |
 | `preview_remove_provider(id)` | Return dependent model and agent ids without mutating the snapshot |
-| `remove_provider(id, policy)` | Remove a provider after checking dependent model bindings and agents |
+| `remove_provider(id, policy)` | Remove a provider after checking dependent models and agents |
 
 `ProviderRemovalPolicy::BlockIfReferenced` rejects removal while any model
-binding points at the provider. `ProviderRemovalPolicy::CascadeUnusedModelBindings`
-also removes model bindings that point at the provider, but only when no agent
-uses those bindings. `ProviderRemovalPreview` reports the provider id,
+references the provider. `ProviderRemovalPolicy::CascadeUnusedModels`
+also removes models that reference the provider, but only when no agent
+uses them. `ProviderRemovalPreview` reports the provider id,
 referencing `model_ids`, affected `agent_ids`, and whether each policy is
 currently allowed. On success, `ProviderRemovalImpact` reports the provider id
-and removed model binding ids; on dependency conflicts,
+and removed model ids; on dependency conflicts,
 `RegistryUpdateError::ProviderInUse` includes the referenced model and agent ids.
 
 Use `rebuild_agent_model_provider_registries(base, update)` when a config source
@@ -247,7 +256,7 @@ Diagnostics are available without publishing a snapshot:
 
 | Function | Reports |
 |---|---|
-| `diagnose_registry_set(registries)` | Missing model bindings, providers, plugins, and delegate agents |
+| `diagnose_registry_set(registries)` | Missing models, providers, plugins, and delegate agents |
 | `diagnose_registry_set_serializable(registries)` | Same diagnostics as stable payloads with `code`, `severity`, `resource`, optional `depends_on`, and `message` |
 | `validate_registry_set(registries)` | Same checks as an error result |
 | `diagnose_agent_spec(registries, spec)` | Problems for one agent against an existing registry set |

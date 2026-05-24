@@ -200,7 +200,7 @@ spec；`to_value()` 始终写出 envelope 形状。
 | `validate_agent_spec(value)` | 解码 `AgentSpec` 并拒绝未知字段 |
 | `validate_agent_spec_patch(value)` | 解码 `AgentSpecPatch` 并拒绝未知字段 |
 | `validate_provider_spec(value)` | 解码 `ProviderSpec`，拒绝写入面未知字段，并拒绝空 `id` / `adapter` |
-| `validate_model_binding_spec(value)` | 解码 `ModelBindingSpec`，拒绝未知字段，并拒绝空 `id` / `provider_id` / `upstream_model` |
+| `validate_model_spec(value)` | 解码 `ModelSpec`，拒绝未知字段，并拒绝空 `id` / `provider_id` / `upstream_model` |
 | `decode_config_record<T>(value)` | 解码 `ConfigRecord<T>`，接受旧的裸 spec，但不检查 `user_overrides` |
 | `validate_config_record<T>(value)` | 解码 `ConfigRecord<T>`，并按 `T` 的 patch 类型校验 `meta.user_overrides` |
 | `effective_config_record(record)` | 对单条记录应用 `meta.user_overrides` |
@@ -209,7 +209,7 @@ spec；`to_value()` 始终写出 envelope 形状。
 `AgentSpec`、`AgentSpecPatch`、provider 写入面和 model binding 写入面使用
 `UnknownFieldPolicy::Reject`；导出的 `AGENT_SPEC_UNKNOWN_FIELD_POLICY`、
 `AGENT_SPEC_PATCH_UNKNOWN_FIELD_POLICY`、`PROVIDER_SPEC_UNKNOWN_FIELD_POLICY`
-和 `MODEL_BINDING_SPEC_UNKNOWN_FIELD_POLICY` 常量让集成方可以显式读取该行为。
+和 `MODEL_SPEC_UNKNOWN_FIELD_POLICY` 常量让集成方可以显式读取该行为。
 `ProviderSpec` 反序列化本身仍为兼容性保留宽松读取；config 写入和 validate
 surface 使用 `validate_provider_spec(value)` 拒绝会被静默忽略的字段。
 

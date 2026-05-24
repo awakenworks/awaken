@@ -12,7 +12,7 @@ Local resolution is a pure function: `(RegistrySet, agent_id) -> ResolvedAgent`.
 ```mermaid
 flowchart LR
     subgraph Stage1["Stage 1: Lookup"]
-        A1[Fetch AgentSpec] --> A2[Resolve ModelBinding]
+        A1[Fetch AgentSpec] --> A2[Resolve ModelSpec]
         A2 --> A3[Get LlmExecutor]
         A3 --> A4{Retry config?}
         A4 -- yes --> A5[Wrap in RetryingExecutor]
@@ -47,9 +47,9 @@ The first stage fetches the raw data from registries:
 
 1. **AgentSpec** -- looked up from `AgentSpecRegistry` by `agent_id`. If direct local resolution is requested for a spec with `endpoint`, it fails with `RemoteAgentNotDirectlyRunnable`. `AgentRuntime` uses `resolve_execution()` for root runs, so endpoint-backed agents are resolved as `ResolvedExecution::NonLocal` when a backend factory exists.
 
-2. **ModelBinding** -- the spec's `model_id` field (a model registry ID like `"default"`) is resolved through `ModelRegistry` into a runtime `ModelBinding`, which maps it to a provider ID and an upstream API model name (for example, provider `"openai"`, upstream model `"gpt-4o"`). The server-side config API persists serializable `ModelBindingSpec` entries and converts them into `ModelBinding` during registry publication.
+2. **ModelSpec** -- the spec's `model_id` field (a model registry ID like `"default"`) is resolved through `ModelRegistry` into a `ModelSpec`, which carries the provider ID, upstream API model name (for example, provider `"openai"`, upstream model `"gpt-4o"`), plus optional intrinsic capabilities (context window, max output, modalities, knowledge cutoff) and pricing. The server-side config API persists `ModelSpec` directly; there is no separate spec-to-runtime conversion step.
 
-3. **LlmExecutor** -- the provider ID from the model binding is resolved through `ProviderRegistry` to get a live `LlmExecutor` instance.
+3. **LlmExecutor** -- the provider ID from the resolved `ModelSpec` is looked up through `ProviderRegistry` to get a live `LlmExecutor` instance.
 
 4. **Retry decoration** -- if the agent spec contains a `RetryConfigKey` section with `max_retries > 0` or non-empty `fallback_upstream_models`, the executor is wrapped in a `RetryingExecutor` decorator.
 
@@ -174,7 +174,7 @@ The builder (`AgentRuntimeBuilder`) is the standard way to construct an `AgentRu
 |---|---|---|
 | `MapAgentSpecRegistry` | `with_agent_spec()` / `with_agent_specs()` | Agent definitions |
 | `MapToolRegistry` | `with_tool()` | Global tools |
-| `MapModelRegistry` | `with_model_binding()` | Model ID to provider + model name mappings |
+| `MapModelRegistry` | `with_model()` | Model ID to `ModelSpec` (provider + upstream + capabilities + pricing) |
 | `MapProviderRegistry` | `with_provider()` | LLM executor instances |
 | `MapPluginSource` | `with_plugin()` | Plugin instances |
 

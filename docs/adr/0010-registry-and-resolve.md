@@ -39,7 +39,7 @@ No `Arc<dyn T>`, no trait objects. Pure data. Can be saved to JSON, loaded from 
 | Registry | Key | Value | Purpose |
 |----------|-----|-------|---------|
 | `ToolRegistry` | tool_id | `Arc<dyn Tool>` | Available tools |
-| `ModelRegistry` | model_id | `ModelBinding` | Provider id + upstream model name |
+| `ModelRegistry` | model_id | `ModelSpec` | Provider id, upstream model name, capability, pricing |
 | `ProviderRegistry` | provider_id | `Arc<dyn LlmExecutor>` | LLM API clients |
 | `AgentRegistry` | agent_id | `AgentSpec` | Agent definitions |
 | `PluginRegistry` | plugin_id | `Arc<dyn Plugin>` | All extensions: hooks, permissions, MCP, skills |
@@ -58,12 +58,21 @@ Each registry is a trait with `get(id) -> Option<&T>` and `ids() -> Vec<String>`
 
 **No separate BehaviorRegistry or ExtensionRegistry.** Behaviors, extensions, MCP bridges, skill runtimes, permission checkers — all are `Plugin`. A Plugin that contributes tools registers them in `ToolRegistry` during build. A Plugin that contributes hooks does so via its `register()` method. The `PluginRegistry` is the single source of all pluggable functionality.
 
-### D3: ModelBinding and provider resolution
+### D3: ModelSpec and provider resolution
 
 ```rust
-pub struct ModelBinding {
+pub struct ModelSpec {
+    pub id: String,
     pub provider_id: String,        // ProviderRegistry ID
     pub upstream_model: String,     // Actual model name for API call
+    // Intrinsic capabilities (all optional).
+    pub context_window: Option<u32>,
+    pub max_output_tokens: Option<u32>,
+    pub modalities: Modalities,
+    pub knowledge_cutoff: Option<String>,
+    // Per-million-token pricing in USD (all optional).
+    pub input_token_price_per_million_usd: Option<f64>,
+    pub output_token_price_per_million_usd: Option<f64>,
 }
 
 pub struct ProviderSpec {
@@ -76,7 +85,30 @@ pub struct ProviderSpec {
 }
 ```
 
-Resolution: `model_id → ModelBinding → provider_id → Arc<dyn LlmExecutor>`.
+Resolution: `model_id → ModelSpec → provider_id → Arc<dyn LlmExecutor>`.
+
+`ModelRegistry::get(id)` returns `ModelSpec` directly. Earlier revisions
+of this ADR split addressing (`provider_id`, `upstream_model`) into a
+separate runtime mirror type; that mirror is removed. Addressing,
+capability, and pricing now travel together through the same struct from
+config persistence to resolution.
+
+**Duplicate-id rejection.** A `RegistrySpec` carrying two `ModelSpec`
+entries with the same `id` is rejected by `validate_registry_spec` (in
+`awaken-contract`) and again by registry lifecycle (`apply` /
+`rebuild_agent_model_provider_registries` in `awaken-runtime`). The
+second check catches programmatic builder paths that bypass the spec
+validator.
+
+**Capability-aware context policy.** At resolve time, the agent's
+`ContextWindowPolicy` is folded against the resolved `ModelSpec` via
+`effective_policy(agent.context_policy, model)`. When `context_window`
+and/or `max_output_tokens` are set, the policy is clamped so
+`max_output_tokens ≤ max_context_tokens ≤ model.context_window`;
+`autocompact_threshold` is further clamped to the usable input budget
+(`max_context_tokens − max_output_tokens`) and dropped to `None` if no
+usable input budget remains. When the capability fields are `None` the
+policy passes through unchanged.
 
 **Spec invariants** (enforced at the type level rather than by convention):
 
@@ -198,7 +230,7 @@ A plugin that bridges MCP servers contributes tools to `ToolRegistry` and hooks 
 #[derive(Serialize, Deserialize)]
 pub struct AgentSystemConfig {
     #[serde(default)]
-    pub models: Vec<ModelBindingSpec>,
+    pub models: Vec<ModelSpec>,
     #[serde(default)]
     pub agents: Vec<AgentSpec>,
 }
@@ -206,7 +238,7 @@ pub struct AgentSystemConfig {
 
 Parse flow: `JSON/TOML → AgentSystemConfig + provider executors → build registries → resolve agents`.
 
-Providers and plugins are registered programmatically in this low-level helper because they hold trait object implementations. The managed server config path uses serializable `ProviderSpec`, `ModelBindingSpec`, and `AgentSpec` documents, then compiles them into the same runtime registries before resolution.
+Providers and plugins are registered programmatically in this low-level helper because they hold trait object implementations. The managed server config path uses serializable `ProviderSpec`, `ModelSpec`, and `AgentSpec` documents, then compiles them into the same runtime registries before resolution.
 
 ### D8: ~~run_agent_loop accepts ResolvedRun~~ (superseded by ADR-0011 D6)
 
@@ -254,7 +286,7 @@ attribution.
 - `MapXxxRegistry` implementations (5): implemented
 - `RegistrySet`: implemented
 - `AgentSpec`: implemented
-- `ModelBinding`: implemented
+- `ModelSpec` (unified addressing + capability + pricing): implemented
 - `resolve()` → `ResolvedRun` (internal): implemented
 - `RegistrySet` implements `AgentResolver`: implemented
 - `AgentRuntime::run(RunRequest)`: implemented

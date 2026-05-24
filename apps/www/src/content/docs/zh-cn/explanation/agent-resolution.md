@@ -12,7 +12,7 @@ description: "当 AgentRuntime 通过 run_to_completion(request) 或 run(request
 ```mermaid
 flowchart LR
     subgraph Stage1["Stage 1: Lookup"]
-        A1[Fetch AgentSpec] --> A2[Resolve ModelBinding]
+        A1[Fetch AgentSpec] --> A2[Resolve ModelSpec]
         A2 --> A3[Get LlmExecutor]
         A3 --> A4{Retry config?}
         A4 -- yes --> A5[Wrap in RetryingExecutor]
@@ -47,9 +47,9 @@ flowchart LR
 
 1. **AgentSpec** -- 通过 `agent_id` 从 `AgentSpecRegistry` 中查找。如果对带 `endpoint` 的规格请求直接本地解析，会以 `RemoteAgentNotDirectlyRunnable` 失败。`AgentRuntime` 的 root run 使用 `resolve_execution()`，因此在存在 backend factory 时，endpoint-backed agent 会被解析为 `ResolvedExecution::NonLocal`。
 
-2. **ModelBinding** -- 规格的 `model_id` 字段（模型注册表 ID，如 `"default"`）通过 `ModelRegistry` 解析为运行时 `ModelBinding`，将其映射到一个 provider ID 和上游 API 模型名（例如，provider `"openai"`，上游模型 `"gpt-4o"`）。服务端配置 API 持久化的是可序列化的 `ModelBindingSpec`，发布 registry 时会转换成 `ModelBinding`。
+2. **ModelSpec** -- 规格的 `model_id` 字段（模型注册表 ID，如 `"default"`）通过 `ModelRegistry` 解析为 `ModelSpec`，其中携带 provider ID、上游 API 模型名（例如 provider `"openai"`、上游模型 `"gpt-4o"`），以及可选的固有能力（上下文窗口、最大输出、modalities、知识截止）和定价。服务端配置 API 直接持久化 `ModelSpec`，发布 registry 时无需二次转换。
 
-3. **LlmExecutor** -- model binding 中的 provider ID 通过 `ProviderRegistry` 解析为一个活的 `LlmExecutor` 实例。
+3. **LlmExecutor** -- 解析得到的 `ModelSpec` 中的 provider ID 通过 `ProviderRegistry` 查到一个活的 `LlmExecutor` 实例。
 
 4. **重试装饰** -- 如果智能体规格包含 `RetryConfigKey` 配置段，且 `max_retries > 0` 或 `fallback_upstream_models` 非空，则执行器会被包装在 `RetryingExecutor` 装饰器中。
 
@@ -168,7 +168,7 @@ flowchart LR
 |---|---|---|
 | `MapAgentSpecRegistry` | `with_agent_spec()` / `with_agent_specs()` | 智能体定义 |
 | `MapToolRegistry` | `with_tool()` | 全局工具 |
-| `MapModelRegistry` | `with_model_binding()` | 模型 ID 到提供者 + 模型名称的映射 |
+| `MapModelRegistry` | `with_model()` | 模型 ID 到 `ModelSpec`（provider + 上游模型 + capabilities + 定价）|
 | `MapProviderRegistry` | `with_provider()` | LLM 执行器实例 |
 | `MapPluginSource` | `with_plugin()` | 插件实例 |
 

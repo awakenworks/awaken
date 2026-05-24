@@ -1,7 +1,6 @@
 use awaken::contract::message::Message;
 use awaken::engine::GenaiExecutor;
-use awaken::registry::ModelBinding;
-use awaken::registry_spec::AgentSpec;
+use awaken::registry_spec::{AgentSpec, ModelSpec};
 use awaken::{AgentRuntimeBuilder, RunRequest};
 use std::sync::Arc;
 
@@ -14,13 +13,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let rt = AgentRuntimeBuilder::new()
         .with_agent_spec(spec)
         .with_provider("openai", Arc::new(GenaiExecutor::new()))
-        .with_model_binding(
-            "gpt-4o-mini",
-            ModelBinding {
-                provider_id: "openai".into(),
-                upstream_model: "gpt-4o-mini".into(),
-            },
-        )
+        .with_model(ModelSpec::new("gpt-4o-mini", "openai", "gpt-4o-mini"))
         .build()?;
 
     let req = RunRequest::new("thread-1", vec![Message::user("Hello!")]).with_agent_id("assistant");
