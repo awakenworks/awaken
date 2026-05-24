@@ -49,6 +49,7 @@ use awaken_runtime::builder::AgentRuntimeBuilder;
 use awaken_runtime::engine::{LlmRetryPolicy, RetryConfigKey, ScriptedLlmExecutor};
 use awaken_runtime::registry::traits::ModelBinding;
 use awaken_runtime::{AgentRuntime, RunActivation};
+use awaken_stores::MemoryCommitCoordinator;
 use awaken_stores::memory::InMemoryStore;
 
 use crate::fixture::Fixture;
@@ -74,6 +75,16 @@ const SCRIPTED_UPSTREAM_MODEL_DEFAULT: &str = "scripted";
 const DEFAULT_AGENT_ID: &str = "default";
 /// Static system prompt the synthetic agent uses.
 const DEFAULT_SYSTEM_PROMPT: &str = "You are a test assistant.";
+
+fn with_eval_memory_store(
+    builder: AgentRuntimeBuilder,
+    store: Arc<InMemoryStore>,
+) -> AgentRuntimeBuilder {
+    let coordinator = MemoryCommitCoordinator::wrap(Arc::clone(&store));
+    builder
+        .with_thread_run_store(store)
+        .with_commit_coordinator(coordinator)
+}
 
 /// How the replay sources its LLM responses.
 ///
@@ -391,20 +402,22 @@ impl RuntimeReplayer {
         .expect("LlmRetryPolicy serialises into AgentSpec.sections[\"retry\"]");
 
         let runtime: Arc<AgentRuntime> = Arc::new(
-            AgentRuntimeBuilder::new()
-                .with_provider(SCRIPTED_PROVIDER_ID, executor.clone())
-                .with_model_binding(
-                    SCRIPTED_MODEL_ID,
-                    ModelBinding {
-                        provider_id: SCRIPTED_PROVIDER_ID.into(),
-                        upstream_model: upstream_model.clone(),
-                    },
-                )
-                .with_in_memory_thread_run_store(store.clone())
-                .with_agent_spec(agent_spec)
-                .with_plugin("observability", Arc::new(plugin))
-                .build()
-                .expect("scripted runtime builds"),
+            with_eval_memory_store(
+                AgentRuntimeBuilder::new()
+                    .with_provider(SCRIPTED_PROVIDER_ID, executor.clone())
+                    .with_model_binding(
+                        SCRIPTED_MODEL_ID,
+                        ModelBinding {
+                            provider_id: SCRIPTED_PROVIDER_ID.into(),
+                            upstream_model: upstream_model.clone(),
+                        },
+                    ),
+                store.clone(),
+            )
+            .with_agent_spec(agent_spec)
+            .with_plugin("observability", Arc::new(plugin))
+            .build()
+            .expect("scripted runtime builds"),
         );
 
         let thread_id = format!("eval-thread-{}", fixture.id);
@@ -535,20 +548,22 @@ impl RuntimeReplayer {
         agent_spec.max_rounds = agent_spec.max_rounds.max(max_rounds);
 
         let runtime: Arc<AgentRuntime> = Arc::new(
-            AgentRuntimeBuilder::new()
-                .with_provider(LIVE_PROVIDER_ID, executor)
-                .with_model_binding(
-                    LIVE_MODEL_ID,
-                    ModelBinding {
-                        provider_id: LIVE_PROVIDER_ID.into(),
-                        upstream_model,
-                    },
-                )
-                .with_in_memory_thread_run_store(store.clone())
-                .with_agent_spec(agent_spec)
-                .with_plugin("observability", Arc::new(plugin))
-                .build()
-                .expect("live runtime builds"),
+            with_eval_memory_store(
+                AgentRuntimeBuilder::new()
+                    .with_provider(LIVE_PROVIDER_ID, executor)
+                    .with_model_binding(
+                        LIVE_MODEL_ID,
+                        ModelBinding {
+                            provider_id: LIVE_PROVIDER_ID.into(),
+                            upstream_model,
+                        },
+                    ),
+                store.clone(),
+            )
+            .with_agent_spec(agent_spec)
+            .with_plugin("observability", Arc::new(plugin))
+            .build()
+            .expect("live runtime builds"),
         );
 
         let thread_id = format!("eval-thread-{}", fixture.id);
