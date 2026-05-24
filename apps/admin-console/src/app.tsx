@@ -87,6 +87,26 @@ const ToolEditorPage = lazy(async () => {
   return { default: module.ToolEditorPage };
 });
 
+const DatasetsPage = lazy(async () => {
+  const module = await import("./pages/datasets-page");
+  return { default: module.DatasetsPage };
+});
+
+const DatasetDetailPage = lazy(async () => {
+  const module = await import("./pages/dataset-detail-page");
+  return { default: module.DatasetDetailPage };
+});
+
+const EvalRunsPage = lazy(async () => {
+  const module = await import("./pages/eval-runs-page");
+  return { default: module.EvalRunsPage };
+});
+
+const EvalRunDetailPage = lazy(async () => {
+  const module = await import("./pages/eval-run-detail-page");
+  return { default: module.EvalRunDetailPage };
+});
+
 /// Routes are declared once and reused via the data router so that v7
 /// hooks like `useBlocker` work. `<Routes>` (kept exported for tests
 /// that prefer the legacy router) renders the same structure.
@@ -186,6 +206,38 @@ export function appRoutes() {
           element={
             <RouteLoader>
               <AssistantPage />
+            </RouteLoader>
+          }
+        />
+        <Route
+          path="datasets"
+          element={
+            <RouteLoader>
+              <DatasetsPage />
+            </RouteLoader>
+          }
+        />
+        <Route
+          path="datasets/:id"
+          element={
+            <RouteLoader>
+              <DatasetDetailPage />
+            </RouteLoader>
+          }
+        />
+        <Route
+          path="eval-runs"
+          element={
+            <RouteLoader>
+              <EvalRunsPage />
+            </RouteLoader>
+          }
+        />
+        <Route
+          path="eval-runs/:id"
+          element={
+            <RouteLoader>
+              <EvalRunDetailPage />
             </RouteLoader>
           }
         />

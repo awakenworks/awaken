@@ -27,7 +27,7 @@ export function AssistantPage() {
   const scrollRef = useRef<HTMLDivElement>(null);
   const [input, setInput] = useState("");
 
-  const { messages, sendMessage, status } = useChat({
+  const { messages, sendMessage, status, error } = useChat({
     transport: new DefaultChatTransport({
       api: `${BACKEND_URL}/v1/ai-sdk/agents/config-assistant/runs`,
     }),
@@ -36,6 +36,16 @@ export function AssistantPage() {
   useEffect(() => {
     scrollRef.current?.scrollTo(0, scrollRef.current.scrollHeight);
   }, [messages]);
+
+  // The AI SDK reports stream-level failures via `finishReason: "error"`
+  // inside the stream itself, not via the hook's `error` ref. Treat a
+  // finished run whose last message is still the user prompt as an error
+  // — that's the visible symptom of "agent not found" / dead-letter.
+  const streamErrored =
+    !!error ||
+    (status === "ready" &&
+      messages.length > 0 &&
+      messages[messages.length - 1]?.role === "user");
 
   const handleSubmit = (e: FormEvent) => {
     e.preventDefault();
@@ -111,6 +121,19 @@ export function AssistantPage() {
           <div className="flex justify-start">
             <div className="animate-pulse rounded-lg bg-surface px-4 py-2 text-sm text-fg-faint shadow">
               Thinking...
+            </div>
+          </div>
+        )}
+
+        {streamErrored && (
+          <div
+            role="alert"
+            className="rounded-lg border border-tone-error bg-surface px-4 py-3 text-sm text-tone-error shadow"
+          >
+            <div className="font-medium">Assistant call failed</div>
+            <div className="mt-1 text-xs text-fg-soft">
+              {error?.message ||
+                "The config-assistant agent isn't responding. The starter seed doesn't include it — create an agent with id 'config-assistant' on the Agents page, then retry."}
             </div>
           </div>
         )}

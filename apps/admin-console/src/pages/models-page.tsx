@@ -9,6 +9,7 @@ import {
 import { adminRoutes } from "@/lib/routes";
 import { useCrudPage } from "@/lib/use-crud-page";
 import { Field } from "@/components/form-components";
+import { ModelTestModal } from "@/components/model-test-modal";
 import { EmptyState } from "@/components/ui/empty-state";
 import { SkeletonRows } from "@/components/ui/skeleton";
 import {
@@ -75,6 +76,7 @@ export function ModelsPage() {
     auxiliaryQueryKey: MODEL_AUXILIARY_QUERY_KEY,
   });
   const [errors, setErrors] = useState<ModelFieldErrors>({});
+  const [testModelId, setTestModelId] = useState<string | null>(null);
 
   function validate(draft: ModelBindingSpec): ModelFieldErrors {
     const next: ModelFieldErrors = {};
@@ -317,6 +319,14 @@ export function ModelsPage() {
                       <div className="flex gap-4">
                         <button
                           type="button"
+                          onClick={() => setTestModelId(model.id)}
+                          data-testid={`test-model-${model.id}`}
+                          className="font-medium text-link transition hover:text-link-hover"
+                        >
+                          {t("modelTest.trigger")}
+                        </button>
+                        <button
+                          type="button"
                           onClick={() => startEditModel(model)}
                           className="font-medium text-fg transition hover:text-fg-strong"
                         >
@@ -348,6 +358,9 @@ export function ModelsPage() {
           </>
         )}
       </div>
+      {testModelId && (
+        <ModelTestModal modelId={testModelId} onClose={() => setTestModelId(null)} />
+      )}
     </div>
   );
 }
