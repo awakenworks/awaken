@@ -57,6 +57,8 @@ agent 可以通过 `delegates` 声明它允许委托的子 agent：
 
 `run_child_agent` 通过 `initial_state_seed: Option<PersistedState>` 接受父→子的初始状态注入，并通过 `BackendRunResult.state`（一个 `PersistedState`）把子的终态返回给父工具去解码并以 `StateCommand` 形式塞进 `ToolOutput`。子→父 state 走的是普通工具就在用的 `ToolOutput.command` 通路，没有单独的"sub-agent 导出"机制。
 
+state seeding **只对 Local backend 生效**，由 `BackendCapabilities::delegate_state_seed` 控制。非本地 backend（A2A 以及其他未实现 seed wire 协议的 backend）会以 `ExecutionBackendError` 拒绝带 seed 的 delegate 请求；子 run 的 `BackendRunResult.state` 仍然可读，用于回写父侧。
+
 ## Sub-Agent 模式
 
 ### 串行委托

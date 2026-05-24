@@ -64,6 +64,8 @@ When you are writing a custom `Tool` that needs to delegate to another agent —
 
 `run_child_agent` accepts `initial_state_seed: Option<PersistedState>` for parent → child seeding and returns the child's `BackendRunResult.state` (a `PersistedState`) for the parent tool to decode and surface as a `StateCommand` on its `ToolOutput`. State flows back through the same `ToolOutput.command` channel any other tool uses — there is no separate "sub-agent export" mechanism.
 
+State seeding is **Local-backend only** and gated by `BackendCapabilities::delegate_state_seed`. Non-local backends (A2A and any future backend that lacks a seed-passing wire protocol) reject seeded delegate requests with `ExecutionBackendError`; the child's `BackendRunResult.state` is still returned for read-back.
+
 ## Sub-Agent Patterns
 
 ### Sequential Delegation

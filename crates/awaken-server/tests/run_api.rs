@@ -123,16 +123,10 @@ struct StaticRemoteBackend;
 #[async_trait]
 impl AgentBackend for StaticRemoteBackend {
     fn capabilities(&self) -> awaken_runtime::BackendCapabilities {
-        awaken_runtime::BackendCapabilities {
-            cancellation: awaken_runtime::BackendCancellationCapability::RemoteAbort,
-            decisions: false,
-            overrides: false,
-            frontend_tools: false,
-            continuation: awaken_runtime::BackendContinuationCapability::None,
-            waits: awaken_runtime::BackendWaitCapability::None,
-            transcript: awaken_runtime::BackendTranscriptCapability::SinglePrompt,
-            output: awaken_runtime::BackendOutputCapability::TextAndArtifacts,
-        }
+        let mut caps = awaken_runtime::BackendCapabilities::remote_stateless_text();
+        caps.cancellation = awaken_runtime::BackendCancellationCapability::RemoteAbort;
+        caps.output = awaken_runtime::BackendOutputCapability::TextAndArtifacts;
+        caps
     }
 
     async fn execute_root(

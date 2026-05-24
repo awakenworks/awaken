@@ -2,6 +2,12 @@
 
 mod local;
 
+mod capabilities;
+pub use capabilities::{
+    BackendCancellationCapability, BackendCapabilities, BackendContinuationCapability,
+    BackendOutputCapability, BackendTranscriptCapability, BackendWaitCapability,
+    reject_unsupported_delegate,
+};
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -46,154 +52,6 @@ pub struct BackendParentContext {
 pub struct BackendControl {
     pub cancellation_token: Option<CancellationToken>,
     pub decision_rx: Option<mpsc::UnboundedReceiver<Vec<(String, ToolCallResume)>>>,
-}
-
-/// How a backend can be interrupted after execution starts.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum BackendCancellationCapability {
-    None,
-    CooperativeToken,
-    RemoteAbort,
-    CooperativeTokenAndRemoteAbort,
-}
-
-impl BackendCancellationCapability {
-    #[must_use]
-    pub const fn supports_cooperative_token(self) -> bool {
-        matches!(
-            self,
-            Self::CooperativeToken | Self::CooperativeTokenAndRemoteAbort
-        )
-    }
-
-    #[must_use]
-    pub const fn supports_remote_abort(self) -> bool {
-        matches!(
-            self,
-            Self::RemoteAbort | Self::CooperativeTokenAndRemoteAbort
-        )
-    }
-}
-
-/// How a backend maintains state across root turns.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum BackendContinuationCapability {
-    None,
-    InProcessState,
-    RemoteState,
-}
-
-/// Which interrupted states can be represented without flattening them to errors.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum BackendWaitCapability {
-    None,
-    Input,
-    Auth,
-    InputAndAuth,
-}
-
-/// What transcript contract the backend consumes.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum BackendTranscriptCapability {
-    FullTranscript,
-    IncrementalUserMessagesWithRemoteState,
-    SinglePrompt,
-}
-
-/// What output shape the backend preserves.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum BackendOutputCapability {
-    Text,
-    TextAndArtifacts,
-}
-
-/// Optional execution capabilities exposed by a backend implementation.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct BackendCapabilities {
-    pub cancellation: BackendCancellationCapability,
-    pub decisions: bool,
-    pub overrides: bool,
-    pub frontend_tools: bool,
-    pub continuation: BackendContinuationCapability,
-    pub waits: BackendWaitCapability,
-    pub transcript: BackendTranscriptCapability,
-    pub output: BackendOutputCapability,
-}
-
-impl BackendCapabilities {
-    #[must_use]
-    pub const fn full() -> Self {
-        Self {
-            cancellation: BackendCancellationCapability::CooperativeToken,
-            decisions: true,
-            overrides: true,
-            frontend_tools: true,
-            continuation: BackendContinuationCapability::InProcessState,
-            waits: BackendWaitCapability::InputAndAuth,
-            transcript: BackendTranscriptCapability::FullTranscript,
-            output: BackendOutputCapability::TextAndArtifacts,
-        }
-    }
-
-    #[must_use]
-    pub const fn remote_stateless_text() -> Self {
-        Self {
-            cancellation: BackendCancellationCapability::None,
-            decisions: false,
-            overrides: false,
-            frontend_tools: false,
-            continuation: BackendContinuationCapability::None,
-            waits: BackendWaitCapability::None,
-            transcript: BackendTranscriptCapability::SinglePrompt,
-            output: BackendOutputCapability::Text,
-        }
-    }
-
-    #[must_use]
-    pub fn unsupported_root_features(
-        &self,
-        request: &BackendRootRunRequest<'_>,
-    ) -> Vec<&'static str> {
-        let mut unsupported = Vec::new();
-        if (!request.decisions.is_empty() || request.control.decision_rx.is_some())
-            && !self.decisions
-        {
-            unsupported.push("decisions");
-        }
-        if request.overrides.is_some() && !self.overrides {
-            unsupported.push("overrides");
-        }
-        if !request.frontend_tools.is_empty() && !self.frontend_tools {
-            unsupported.push("frontend_tools");
-        }
-        if request.is_continuation && self.continuation == BackendContinuationCapability::None {
-            unsupported.push("continuation");
-        }
-        unsupported
-    }
-
-    #[must_use]
-    pub fn unsupported_delegate_features(
-        &self,
-        request: &BackendDelegateRunRequest<'_>,
-    ) -> Vec<&'static str> {
-        let mut unsupported = Vec::new();
-        if request.policy.persistence != BackendDelegatePersistence::Ephemeral {
-            unsupported.push("delegate_persistence");
-        }
-        if request.policy.continuation != BackendDelegateContinuation::Disabled
-            && self.continuation == BackendContinuationCapability::None
-        {
-            unsupported.push("continuation");
-        }
-        unsupported
-    }
-}
-
-impl Default for BackendCapabilities {
-    fn default() -> Self {
-        Self::full()
-    }
 }
 
 /// Root execution request shared by local and remote root execution.
@@ -259,7 +117,6 @@ pub struct BackendDelegateRunRequest<'a> {
     pub control: BackendControl,
     pub policy: BackendDelegatePolicy,
     /// Initial state to seed the child run with before the first step.
-    /// Persistent-keyed values that fail decoding cause the run to fail.
     pub state_seed: Option<PersistedState>,
 }
 
@@ -482,15 +339,7 @@ pub fn validate_delegate_execution_request(
     execution: &ResolvedExecution,
     request: &BackendDelegateRunRequest<'_>,
 ) -> Result<(), ExecutionBackendError> {
-    let unsupported = execution_capabilities(execution)?.unsupported_delegate_features(request);
-    if !unsupported.is_empty() {
-        return Err(ExecutionBackendError::ExecutionFailed(format!(
-            "agent '{}' backend does not support: {}",
-            request.agent_id,
-            unsupported.join(", ")
-        )));
-    }
-    Ok(())
+    reject_unsupported_delegate(&execution_capabilities(execution)?, request)
 }
 
 pub async fn execute_resolved_delegate_execution(

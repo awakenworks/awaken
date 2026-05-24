@@ -17,13 +17,15 @@ use awaken_contract::contract::tool::{
 use awaken_contract::state::{PersistedState, StateKey, StateKeyOptions};
 
 use awaken_runtime::backend::{
-    BackendControl, BackendDelegatePolicy, BackendParentContext, BackendRunStatus,
+    BackendCapabilities, BackendControl, BackendDelegatePolicy, BackendDelegateRunRequest,
+    BackendParentContext, BackendRunResult, BackendRunStatus, ExecutionBackend,
+    ExecutionBackendError,
 };
 use awaken_runtime::child_agent::{ChildAgentParams, run_child_agent};
 use awaken_runtime::loop_runner::build_agent_env;
 use awaken_runtime::plugins::{Plugin, PluginDescriptor, PluginRegistrar};
 use awaken_runtime::registry::{
-    AgentResolver, ExecutionResolver, ResolvedAgent, ResolvedExecution,
+    AgentResolver, ExecutionResolver, ResolvedAgent, ResolvedBackendAgent, ResolvedExecution,
 };
 use awaken_runtime::{RuntimeError, StateStore};
 
@@ -364,4 +366,116 @@ async fn unknown_seed_key_fails_the_child_run() {
 fn _doc_imports_compile() {
     let _: Option<&dyn AgentResolver> = None;
     let _: Option<&StateStore> = None;
+}
+
+/// Backend that advertises no `delegate_state_seed` capability and panics if
+/// `execute_delegate` is reached — the capability check is supposed to
+/// reject the request first.
+struct NoSeedBackend;
+
+#[async_trait]
+impl ExecutionBackend for NoSeedBackend {
+    fn capabilities(&self) -> BackendCapabilities {
+        BackendCapabilities::remote_stateless_text()
+    }
+
+    async fn execute_delegate(
+        &self,
+        _request: BackendDelegateRunRequest<'_>,
+    ) -> Result<BackendRunResult, ExecutionBackendError> {
+        panic!(
+            "execute_delegate must not be reached — validate_delegate_execution_request \
+             should reject the state-seeded request before dispatch"
+        );
+    }
+}
+
+struct NoSeedResolver {
+    backend: Arc<NoSeedBackend>,
+    agent_id: String,
+}
+
+impl AgentResolver for NoSeedResolver {
+    fn resolve(&self, _agent_id: &str) -> Result<ResolvedAgent, RuntimeError> {
+        Err(RuntimeError::ResolveFailed {
+            message: "no-seed backend is non-local; resolve_execution is the canonical path".into(),
+        })
+    }
+
+    fn agent_ids(&self) -> Vec<String> {
+        vec![self.agent_id.clone()]
+    }
+}
+
+impl ExecutionResolver for NoSeedResolver {
+    fn resolve_execution(&self, agent_id: &str) -> Result<ResolvedExecution, RuntimeError> {
+        if agent_id != self.agent_id {
+            return Err(RuntimeError::ResolveFailed {
+                message: format!("agent not found: {agent_id}"),
+            });
+        }
+        let spec = Arc::new(awaken_contract::registry_spec::AgentSpec {
+            id: self.agent_id.clone(),
+            ..Default::default()
+        });
+        Ok(ResolvedExecution::NonLocal(
+            ResolvedBackendAgent::with_backend(spec, self.backend.clone()),
+        ))
+    }
+}
+
+#[tokio::test]
+async fn seed_rejected_when_backend_lacks_capability() {
+    let resolver = NoSeedResolver {
+        backend: Arc::new(NoSeedBackend),
+        agent_id: "remote-child".into(),
+    };
+
+    let result = run_child_agent(ChildAgentParams {
+        resolver: &resolver,
+        agent_id: "remote-child",
+        messages: vec![Message::user("go")],
+        parent: BackendParentContext::default(),
+        initial_state_seed: Some(seed_with(1)),
+        sink: Arc::new(NullEventSink),
+        control: BackendControl::default(),
+        policy: BackendDelegatePolicy::default(),
+    })
+    .await;
+
+    let err = result.expect_err("seeded delegate against an unsupported backend must error");
+    let message = err.to_string();
+    assert!(
+        message.contains("delegate_state_seed"),
+        "error should name the unsupported capability, got: {message}"
+    );
+}
+
+#[tokio::test]
+async fn no_seed_against_no_seed_backend_still_dispatches() {
+    // Sanity check: capability rejection is scoped to *seeded* requests; an
+    // unsupported backend without a seed should NOT be pre-empted by the
+    // capability check (it'll fail later for its own reasons — here, the
+    // backend panics, proving dispatch was attempted).
+    let resolver = NoSeedResolver {
+        backend: Arc::new(NoSeedBackend),
+        agent_id: "remote-child".into(),
+    };
+
+    let dispatched = std::panic::AssertUnwindSafe(run_child_agent(ChildAgentParams {
+        resolver: &resolver,
+        agent_id: "remote-child",
+        messages: vec![Message::user("go")],
+        parent: BackendParentContext::default(),
+        initial_state_seed: None,
+        sink: Arc::new(NullEventSink),
+        control: BackendControl::default(),
+        policy: BackendDelegatePolicy::default(),
+    }));
+
+    let outcome = futures::FutureExt::catch_unwind(dispatched).await;
+    assert!(
+        outcome.is_err(),
+        "execute_delegate panic should reach the caller — capability check must not pre-empt unseeded requests",
+    );
 }

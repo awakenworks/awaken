@@ -1,17 +1,27 @@
 //! Plumbing for invoking a sub-agent run from inside a tool.
 //!
 //! [`run_child_agent`] is the single canonical entry point for spawning a
-//! child agent run. Routes transparently to local or remote (A2A) backends
-//! via [`ExecutionBackend`](crate::backend::ExecutionBackend), supports
-//! parent → child state seeding, and returns the full [`BackendRunResult`]
-//! so the calling tool can decode child output, propagate suspensions, or
-//! read the child's final persisted state.
+//! child agent run. Routes through the resolved backend
+//! ([`ExecutionBackend`](crate::backend::ExecutionBackend)) so local and
+//! remote (A2A) children share one call shape, and returns the full
+//! [`BackendRunResult`] so the calling tool can decode child output,
+//! propagate suspensions, or read the child's final persisted state.
 //!
 //! State exchange between parent and child is the caller's responsibility:
 //! - **Inbound**: build a [`PersistedState`] from parent state + tool args
 //!   and pass via `initial_state_seed`.
 //! - **Outbound**: read `BackendRunResult.state` after the call, then publish
 //!   to parent state via `ToolOutput.command`.
+//!
+//! Parent → child state seeding is **Local-backend-only**, gated by
+//! [`BackendCapabilities::delegate_state_seed`](crate::backend::BackendCapabilities).
+//! The in-process Local backend opts in and applies the seed before the
+//! child's first step. Every other backend (including A2A and any custom
+//! remote backend that does not implement a seed-passing wire protocol)
+//! leaves the bit `false`, and `run_child_agent` rejects seeded delegate
+//! requests against such backends with `ExecutionBackendError` rather than
+//! silently dropping the seed. If you need to ship data to a remote child,
+//! encode it into the prompt yourself.
 //!
 //! For tools that want to stream the child's tokens into their own output,
 //! wrap the activity sink with [`StreamingPassthroughSink`].

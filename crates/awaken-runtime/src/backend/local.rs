@@ -74,7 +74,11 @@ impl Default for LocalBackend {
 #[async_trait]
 impl ExecutionBackend for LocalBackend {
     fn capabilities(&self) -> BackendCapabilities {
-        BackendCapabilities::full()
+        // Local is the only backend that actually applies `state_seed`
+        // before kicking off the child loop — see `execute_delegate`.
+        let mut caps = BackendCapabilities::full();
+        caps.delegate_state_seed = true;
+        caps
     }
 
     async fn execute_delegate(

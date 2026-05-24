@@ -9,7 +9,9 @@ use std::sync::Arc;
 use awaken_contract::contract::event_sink::{EventSink, NullEventSink};
 use awaken_contract::contract::message::Message;
 use awaken_contract::contract::tool::{ToolCallContext, ToolError};
-use awaken_runtime::backend::{BackendControl, BackendDelegatePolicy, BackendParentContext};
+use awaken_runtime::backend::{
+    BackendControl, BackendDelegatePolicy, BackendParentContext, BackendRunStatus,
+};
 use awaken_runtime::child_agent::{ChildAgentParams, StreamingPassthroughSink, run_child_agent};
 use awaken_runtime::registry::{ExecutionResolver, ResolvedAgent, ResolvedExecution};
 use awaken_runtime::{AgentResolver, RuntimeError};
@@ -63,6 +65,18 @@ pub async fn run_streaming_subagent(
     })
     .await
     .map_err(|e| ToolError::ExecutionFailed(format!("sub-agent failed: {e}")))?;
+
+    // Only treat a `Completed` child as a successful return. Suspensions and
+    // waits cannot be re-driven through this synchronous helper (callers
+    // should use `run_child_agent` directly if they need that), and
+    // failed/cancelled/timed-out child runs must surface as errors instead
+    // of yielding an `Ok` with partial accumulated text.
+    if !matches!(result.status, BackendRunStatus::Completed) {
+        return Err(ToolError::ExecutionFailed(format!(
+            "sub-agent did not complete: {}",
+            result.status
+        )));
+    }
 
     let content = buffer.lock().await.clone();
 
@@ -195,6 +209,60 @@ mod tests {
             .unwrap();
 
         assert!(!result.content.is_empty());
+    }
+
+    /// LLM that always errors. Used to drive the child loop into
+    /// `TerminationReason::Error`, which maps to
+    /// `BackendRunStatus::Failed`.
+    struct AlwaysFailingLlm;
+
+    #[async_trait::async_trait]
+    impl awaken_contract::contract::executor::LlmExecutor for AlwaysFailingLlm {
+        async fn execute(
+            &self,
+            _request: awaken_contract::contract::executor::InferenceRequest,
+        ) -> Result<
+            awaken_contract::contract::inference::StreamResult,
+            awaken_contract::contract::executor::InferenceExecutionError,
+        > {
+            Err(
+                awaken_contract::contract::executor::InferenceExecutionError::Provider(
+                    "boom".into(),
+                ),
+            )
+        }
+
+        fn name(&self) -> &str {
+            "always-failing"
+        }
+    }
+
+    #[tokio::test]
+    async fn streaming_subagent_rejects_non_completed_child_status() {
+        // Child loop reaches a non-success terminal state (LLM error
+        // bubbles through the loop). Both the loop-error path and the
+        // new Ok-but-not-Completed guard funnel into ToolError —
+        // verify the helper never silently returns Ok with partial text.
+        let llm = Arc::new(AlwaysFailingLlm);
+        let agent = ResolvedAgent::new("sub-agent", "mock-model", "sys", llm);
+        let resolver = SingleAgentResolver { agent };
+        let ctx = make_ctx(None);
+
+        let err = run_streaming_subagent(&resolver, "sub-agent", "go", &ctx)
+            .await
+            .expect_err("non-success child must surface as ToolError, not Ok(content)");
+        match err {
+            ToolError::ExecutionFailed(msg) => {
+                let lower = msg.to_ascii_lowercase();
+                assert!(
+                    lower.contains("did not complete")
+                        || lower.contains("provider error")
+                        || lower.contains("sub-agent failed"),
+                    "error should surface the child failure, got: {msg}"
+                );
+            }
+            other => panic!("expected ExecutionFailed, got: {other:?}"),
+        }
     }
 
     #[tokio::test]
