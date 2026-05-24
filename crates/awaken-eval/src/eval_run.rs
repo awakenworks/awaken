@@ -317,15 +317,18 @@ impl From<&EvalRun> for EvalRunSummary {
 
 /// Persistence + query API for [`EvalRun`]s.
 ///
-/// Implementations MUST reject writes whose `items` carry duplicate
-/// `(fixture_id, cell, sample_index)` keys and must not return such runs
-/// from normal query paths ([`EvalRunStoreError::DuplicateItemKeys`]).
-/// The matrix diff path (`diff_against_baseline` / `diff_eval_items`)
-/// keys items on that triple and silently overwrites collisions in its
-/// `BTreeMap`; exposing a duplicate-key run turns every later baseline
-/// diff against that run into an order-dependent lie. The check belongs
-/// at the store boundary so dataset runs, online runs, and future entry
-/// points all share the same invariant — see
+/// Implementations MUST enforce write-once immutability by `run.id`
+/// globally (not only by the physical shard/path chosen for a given
+/// `started_at_secs`). They also MUST reject writes whose `items` carry
+/// duplicate `(fixture_id, cell, sample_index)` keys and must not return
+/// such runs from normal query paths
+/// ([`EvalRunStoreError::DuplicateItemKeys`]). The matrix diff path
+/// (`diff_against_baseline` / `diff_eval_items`) keys items on that
+/// triple and silently overwrites collisions in its `BTreeMap`; exposing
+/// a duplicate-key run turns every later baseline diff against that run
+/// into an order-dependent lie. The check belongs at the store boundary
+/// so dataset runs, online runs, and future entry points all share the
+/// same invariant — see
 /// [`crate::validate_unique_item_keys`].
 pub trait EvalRunStore: Send + Sync {
     fn write(&self, run: &EvalRun) -> Result<(), EvalRunStoreError>;
@@ -350,8 +353,11 @@ pub trait EvalRunStore: Send + Sync {
     fn prune(&self, older_than_secs: u64) -> Result<u64, EvalRunStoreError>;
 }
 
-/// Filesystem-backed [`EvalRunStore`]. Layout mirrors `FileTraceStore`:
-/// `{root}/eval_runs/{yyyy-mm}/{run_id}.json`.
+/// Filesystem-backed [`EvalRunStore`]. Data files mirror
+/// `FileTraceStore`: `{root}/eval_runs/{yyyy-mm}/{run_id}.json`.
+/// A stable `{root}/eval_runs/.ids/{run_id}` marker provides the
+/// cross-shard write-once guard when concurrent writers present the
+/// same id with different `started_at_secs` values.
 pub struct FileEvalRunStore {
     root: PathBuf,
 }
@@ -374,13 +380,53 @@ impl FileEvalRunStore {
         self.runs_root().join(format!("{year:04}-{month:02}"))
     }
 
+    fn id_registry_dir(&self) -> PathBuf {
+        self.runs_root().join(".ids")
+    }
+
+    fn id_marker_path(&self, run_id: &str) -> PathBuf {
+        self.id_registry_dir().join(run_id)
+    }
+
+    fn reserve_run_id(
+        &self,
+        run_id: &str,
+        final_path: &Path,
+    ) -> Result<PathBuf, EvalRunStoreError> {
+        let dir = self.id_registry_dir();
+        fs::create_dir_all(&dir)?;
+        let marker = self.id_marker_path(run_id);
+        use std::io::Write;
+        match fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&marker)
+        {
+            Ok(mut f) => {
+                // The marker is the cross-shard write-once guard; the
+                // content is only for operator debugging.
+                let _ = writeln!(f, "{}", final_path.display());
+                let _ = f.sync_all();
+                Ok(marker)
+            }
+            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {
+                Err(EvalRunStoreError::AlreadyExists(run_id.to_string()))
+            }
+            Err(err) => Err(EvalRunStoreError::Io(err)),
+        }
+    }
+
+    fn release_run_id_marker(&self, run_id: &str) {
+        let _ = fs::remove_file(self.id_marker_path(run_id));
+    }
+
     fn locate(&self, run_id: &str) -> Option<PathBuf> {
         validate_run_id(run_id).ok()?;
         let root = self.runs_root();
         let entries = fs::read_dir(&root).ok()?;
         for entry in entries.flatten() {
             let dir = entry.path();
-            if !dir.is_dir() {
+            if !dir.is_dir() || is_internal_dir(&dir) {
                 continue;
             }
             let candidate = dir.join(format!("{run_id}.json"));
@@ -397,6 +443,12 @@ fn validate_run_item_keys(run: &EvalRun) -> Result<(), EvalRunStoreError> {
         .map_err(|e| EvalRunStoreError::DuplicateItemKeys(run.id.clone(), e))
 }
 
+fn is_internal_dir(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.starts_with('.'))
+}
+
 impl EvalRunStore for FileEvalRunStore {
     fn write(&self, run: &EvalRun) -> Result<(), EvalRunStoreError> {
         validate_run_id(&run.id)?;
@@ -405,6 +457,9 @@ impl EvalRunStore for FileEvalRunStore {
         // clobber immutable storage regardless of what the new payload
         // contains.
         if self.locate(&run.id).is_some() {
+            return Err(EvalRunStoreError::AlreadyExists(run.id.clone()));
+        }
+        if self.id_marker_path(&run.id).exists() {
             return Err(EvalRunStoreError::AlreadyExists(run.id.clone()));
         }
         // Enforce the trait-level invariant at the store boundary so
@@ -433,21 +488,12 @@ impl EvalRunStore for FileEvalRunStore {
         fs::create_dir_all(&shard)?;
         let path = shard.join(format!("{}.json", run.id));
         let bytes = serde_json::to_vec_pretty(&persisted)?;
-        // Same-path atomic create-or-fail: open the FINAL path with
-        // O_EXCL (`create_new(true)`). If two writers race for the same
-        // (run_id, started_at_secs) target, only ONE open succeeds; the
-        // loser maps to AlreadyExists. The earlier rename(tmp, path)
-        // silently clobbered on Unix — we no longer trust that.
-        //
-        // Caveat: O_EXCL only guarantees atomicity on the SAME path. Two
-        // writers racing to write the same `run.id` with different
-        // `started_at_secs` would route to different shard paths and
-        // both could succeed. In practice run ids are minted as ULIDs
-        // (`mint_run_id`) — globally unique across processes, so this
-        // failure mode requires a caller deliberately reusing an id,
-        // which the trait already forbids ("write-once / immutable").
-        // The locate() check above is the best-effort same-id guard
-        // across shards; O_EXCL is the hard guarantee within a shard.
+        // Cross-shard atomic create-or-fail: reserve the run id in the
+        // stable `.ids/` registry before writing the sharded JSON. The
+        // final data file still uses O_EXCL, but the registry path is
+        // independent of `started_at_secs`, so two writers racing with
+        // the same `run.id` and different shard months cannot both win.
+        let marker = self.reserve_run_id(&run.id, &path)?;
         //
         // A crash between `open` and `write_all` leaves a 0-byte file
         // which `read` will fail on (serde_json on empty input). That
@@ -461,14 +507,21 @@ impl EvalRunStore for FileEvalRunStore {
             .open(&path)
         {
             Ok(mut f) => {
-                f.write_all(&bytes)?;
-                f.sync_all()?;
+                if let Err(err) = f.write_all(&bytes).and_then(|_| f.sync_all()) {
+                    let _ = fs::remove_file(&path);
+                    let _ = fs::remove_file(&marker);
+                    return Err(EvalRunStoreError::Io(err));
+                }
                 Ok(())
             }
             Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {
+                let _ = fs::remove_file(&marker);
                 Err(EvalRunStoreError::AlreadyExists(run.id.clone()))
             }
-            Err(err) => Err(EvalRunStoreError::Io(err)),
+            Err(err) => {
+                let _ = fs::remove_file(&marker);
+                Err(EvalRunStoreError::Io(err))
+            }
         }
     }
 
@@ -500,7 +553,7 @@ impl EvalRunStore for FileEvalRunStore {
         }
         for shard_entry in fs::read_dir(&root)? {
             let shard = shard_entry?.path();
-            if !shard.is_dir() {
+            if !shard.is_dir() || is_internal_dir(&shard) {
                 continue;
             }
             for run_entry in fs::read_dir(&shard)? {
@@ -579,7 +632,7 @@ impl EvalRunStore for FileEvalRunStore {
         }
         for shard_entry in fs::read_dir(&root)? {
             let shard = shard_entry?.path();
-            if !shard.is_dir() {
+            if !shard.is_dir() || is_internal_dir(&shard) {
                 continue;
             }
             let mut shard_empty_after = true;
@@ -603,6 +656,7 @@ impl EvalRunStore for FileEvalRunStore {
                 };
                 if run.started_at_secs < older_than_secs {
                     fs::remove_file(&path)?;
+                    self.release_run_id_marker(&run.id);
                     deleted += 1;
                 } else {
                     shard_empty_after = false;

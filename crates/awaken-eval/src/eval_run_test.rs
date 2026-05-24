@@ -143,6 +143,59 @@ fn file_store_write_is_write_once() {
 }
 
 #[test]
+fn file_store_write_once_is_global_across_started_at_shards() {
+    // Write-once is keyed by run_id, not by the derived shard path. Two
+    // writers racing with the same id but different started_at months
+    // must not both win by landing in different `{yyyy-mm}/` dirs.
+    let tmp = tempfile::tempdir().unwrap();
+    let store_a = FileEvalRunStore::new(tmp.path()).unwrap();
+    let store_b = FileEvalRunStore::new(tmp.path()).unwrap();
+    let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+    let run_a = sample_run("RUN-GLOBAL", "DS1", 1_700_000_000);
+    let run_b = sample_run("RUN-GLOBAL", "DS2", 1_720_000_000);
+
+    let barrier_a = barrier.clone();
+    let a = std::thread::spawn(move || {
+        barrier_a.wait();
+        store_a.write(&run_a)
+    });
+    let barrier_b = barrier;
+    let b = std::thread::spawn(move || {
+        barrier_b.wait();
+        store_b.write(&run_b)
+    });
+
+    let results = vec![a.join().unwrap(), b.join().unwrap()];
+    let successes = results.iter().filter(|result| result.is_ok()).count();
+    let already_exists = results
+        .iter()
+        .filter(|result| {
+            matches!(
+                result,
+                Err(EvalRunStoreError::AlreadyExists(id)) if id == "RUN-GLOBAL"
+            )
+        })
+        .count();
+    assert_eq!(successes, 1, "results: {results:?}");
+    assert_eq!(already_exists, 1, "results: {results:?}");
+
+    let runs_root = tmp.path().join("eval_runs");
+    let mut data_files = Vec::new();
+    for entry in std::fs::read_dir(&runs_root).unwrap() {
+        let dir = entry.unwrap().path();
+        if !dir.is_dir() || dir.file_name().and_then(|n| n.to_str()) == Some(".ids") {
+            continue;
+        }
+        let candidate = dir.join("RUN-GLOBAL.json");
+        if candidate.exists() {
+            data_files.push(candidate);
+        }
+    }
+    assert_eq!(data_files.len(), 1, "data files: {data_files:?}");
+    assert!(runs_root.join(".ids").join("RUN-GLOBAL").exists());
+}
+
+#[test]
 fn file_store_rejects_duplicate_item_keys() {
     // Regression: runs whose items collide on (fixture_id, cell,
     // sample_index) must never land on disk. `diff_eval_items` keys
