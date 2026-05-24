@@ -6079,6 +6079,102 @@ async fn recover_reconstructs_dispatch_for_prepared_run_missing_wal() {
 }
 
 #[tokio::test]
+async fn recover_reconstructs_dispatch_for_prepared_waiting_resume_missing_wal() {
+    let store = Arc::new(InMemoryStore::new());
+    let mailbox_store = make_store();
+    let runtime = Arc::new(RecordingStoreMailboxRuntime::new(store.clone()));
+    let mailbox = Arc::new(Mailbox::new(
+        runtime,
+        mailbox_store.clone(),
+        store.clone(),
+        "test-consumer".to_string(),
+        MailboxConfig::default(),
+    ));
+    let mut waiting = seeded_waiting_run("run-waiting-crash", "thread-waiting-crash", "agent");
+    waiting.waiting = Some(RunWaitingState {
+        reason: WaitingReason::UserInput,
+        ticket_ids: Vec::new(),
+        tickets: Vec::new(),
+        since_dispatch_id: None,
+        message: Some("waiting for user input".to_string()),
+    });
+    store.create_run(&waiting).await.expect("seed waiting run");
+
+    let mut request = RunActivation::new("thread-waiting-crash", vec![Message::user("resume")])
+        .with_agent_id("agent")
+        .with_continue_run_id("run-waiting-crash");
+    let (thread_id, messages) = validate_run_inputs(
+        request.thread_id().to_owned(),
+        request.messages().to_vec(),
+        false,
+    )
+    .expect("valid request");
+    mailbox
+        .prepare_run_for_dispatch(&mut request, &thread_id, &messages)
+        .await
+        .expect("prepare waiting resume");
+    let dispatch_id = request
+        .persistence
+        .dispatch_id_hint
+        .clone()
+        .expect("prepare assigns dispatch id");
+
+    let recovered = mailbox.recover().await.expect("recover waiting resume");
+    assert_eq!(recovered, 1);
+    let dispatch = mailbox_store
+        .load_dispatch(&dispatch_id)
+        .await
+        .expect("load reconstructed dispatch")
+        .expect("dispatch reconstructed");
+    assert_eq!(dispatch.run_id, "run-waiting-crash");
+    assert_eq!(dispatch.thread_id, "thread-waiting-crash");
+}
+
+#[tokio::test]
+async fn recover_prepared_runs_collects_before_enqueue_to_avoid_offset_skips() {
+    let store = Arc::new(InMemoryStore::new());
+    let mailbox_store = make_store();
+    let runtime = Arc::new(RecordingStoreMailboxRuntime::new(store.clone()));
+    let mailbox = Arc::new(Mailbox::new(
+        runtime,
+        mailbox_store.clone(),
+        store.clone(),
+        "test-consumer".to_string(),
+        MailboxConfig::default(),
+    ));
+    let thread_ids = (0..250)
+        .map(|idx| format!("thread-prepared-page-{idx}"))
+        .collect::<Vec<_>>();
+    for (idx, thread_id) in thread_ids.iter().enumerate() {
+        let mut run = make_run_record(
+            &format!("run-prepared-page-{idx}"),
+            thread_id,
+            RunStatus::Created,
+        );
+        run.dispatch_id = Some(format!("dispatch-prepared-page-{idx}"));
+        store.create_run(&run).await.expect("seed prepared run");
+    }
+
+    let recovered = mailbox
+        .recover_prepared_runs_missing_dispatch_wal(&thread_ids)
+        .await
+        .expect("recover prepared runs");
+    assert_eq!(recovered, thread_ids.len());
+
+    for idx in 0..thread_ids.len() {
+        let dispatch_id = format!("dispatch-prepared-page-{idx}");
+        assert!(
+            mailbox_store
+                .load_dispatch(&dispatch_id)
+                .await
+                .expect("load dispatch")
+                .is_some(),
+            "missing reconstructed dispatch {dispatch_id}"
+        );
+    }
+}
+
+#[tokio::test]
 async fn background_task_completion_should_enqueue_internal_wake_message() {
     let store = Arc::new(InMemoryStore::new());
     let mailbox_store = make_store();
