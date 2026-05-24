@@ -57,6 +57,27 @@ impl PostgresStore {
             schema_ready: Mutex::new(false),
         }
     }
+
+    pub(crate) fn transaction_scope_descriptor(&self) -> String {
+        let options = self.pool.connect_options();
+        let socket = options
+            .get_socket()
+            .map(|path| path.display().to_string())
+            .unwrap_or_default();
+        format!(
+            "pg::host={}::port={}::socket={}::user={}::database={}::options={}::threads={}::runs={}::messages={}::configs={}",
+            options.get_host(),
+            options.get_port(),
+            socket,
+            options.get_username(),
+            options.get_database().unwrap_or_default(),
+            options.get_options().unwrap_or_default(),
+            self.threads_table,
+            self.runs_table,
+            self.messages_table,
+            self.configs_table,
+        )
+    }
 }
 
 mod config;
