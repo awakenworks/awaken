@@ -7,11 +7,14 @@
 use std::sync::Arc;
 
 use awaken_contract::agent_spec_patch::AgentSpecPatch;
-use awaken_contract::registry_spec::ModelBindingSpec;
+use awaken_contract::contract::executor::LlmExecutor;
+use awaken_contract::registry_spec::{AgentSpec, ModelBindingSpec};
 use awaken_eval::{
-    Expectation, Failure, Fixture, LlmExecutorJudge, ReplayOutcome, ReplayReport, RuntimeReplayer,
-    score, score_with_judge,
+    EvalRunItem, Expectation, Failure, Fixture, LlmExecutorJudge, MatrixCell, ReplayOutcome,
+    ReplayReport, RuntimeReplayer, replay_all, score, score_with_judge,
 };
+use awaken_ext_observability::MetricsSink;
+use awaken_ext_observability::trace_store::TraceStore;
 
 use crate::error::ApiError;
 
@@ -30,6 +33,33 @@ pub(crate) struct JudgeContext {
 /// `None` when any required piece (judge, fixture threshold, retry budget)
 /// is missing — same gating in dataset matrix runs and online ad-hoc runs.
 pub(crate) type ReviseTuple = (Arc<dyn awaken_eval::judge::Judge>, Option<String>, f32, u32);
+
+/// One pre-resolved live matrix cell. Model/provider resolution happens
+/// before any replay starts so missing registry entries fail fast and
+/// sibling cells can share the same executor/billing metadata.
+#[derive(Clone)]
+pub(crate) struct ResolvedCell {
+    pub cell: MatrixCell,
+    pub executor: Arc<dyn LlmExecutor>,
+    pub upstream_model: String,
+    pub binding: ModelBindingSpec,
+}
+
+/// Tunables for [`run_live_eval_cells`]. Dataset matrix runs and ad-hoc
+/// online runs share the same replay/scoring/timeout semantics; keeping
+/// the knobs in one struct prevents the two handlers from drifting.
+pub(crate) struct LiveCellOptions {
+    pub samples: u32,
+    pub max_concurrent: usize,
+    pub max_walltime_secs: u64,
+    pub agent_base: Option<AgentSpec>,
+    pub agent_overrides: Option<AgentSpecPatch>,
+    pub judge: Option<JudgeContext>,
+    pub max_total_tokens: Option<u32>,
+    pub trace_sink: Option<Arc<dyn MetricsSink>>,
+    pub trace_store: Option<Arc<dyn TraceStore>>,
+    pub task_context: &'static str,
+}
 
 /// Build the per-cell revise tuple, applying the all-three-pieces gating
 /// rule both eval services share.
@@ -104,6 +134,167 @@ pub(crate) fn cost_usd_for(report: &ReplayReport, binding: &ModelBindingSpec) ->
         return None;
     }
     binding.compute_cost_usd(report.total_input_tokens, report.total_output_tokens)
+}
+
+/// Return the replay trace id only when it is actually readable from the
+/// configured TraceStore. `ReplayOutcome::trace_run_id()` is derived from
+/// in-memory metrics; without this guard an append/indexing failure in the
+/// tee sink would persist a dead `EvalRunItem.trace_run_id` pointer.
+pub(crate) fn persisted_trace_run_id(
+    trace_store: Option<&dyn TraceStore>,
+    outcome: &ReplayOutcome,
+) -> Option<String> {
+    let run_id = outcome.trace_run_id()?;
+    let Some(store) = trace_store else {
+        tracing::warn!(
+            run_id = %run_id,
+            "dropping eval trace_run_id because no TraceStore is configured"
+        );
+        return None;
+    };
+    match store.read(run_id) {
+        Ok(events) if !events.is_empty() => Some(run_id.to_string()),
+        Ok(_) => {
+            tracing::warn!(
+                run_id = %run_id,
+                "dropping eval trace_run_id because TraceStore returned no events"
+            );
+            None
+        }
+        Err(err) => {
+            tracing::warn!(
+                run_id = %run_id,
+                error = %err,
+                "dropping eval trace_run_id because TraceStore read failed"
+            );
+            None
+        }
+    }
+}
+
+/// Shared Live-mode cell runner used by dataset matrix evals and
+/// `/v1/eval/online`. The function owns the "one cell deadline split
+/// across replay and scoring" policy, per-cell judge failure promotion,
+/// trace link verification, and cost attribution.
+pub(crate) async fn run_live_eval_cells(
+    fixtures: &[Fixture],
+    resolved_cells: &[ResolvedCell],
+    options: LiveCellOptions,
+) -> Result<Vec<EvalRunItem>, ApiError> {
+    let LiveCellOptions {
+        samples,
+        max_concurrent,
+        max_walltime_secs,
+        agent_base,
+        agent_overrides,
+        judge,
+        max_total_tokens,
+        trace_sink,
+        trace_store,
+        task_context,
+    } = options;
+    let walltime = std::time::Duration::from_secs(max_walltime_secs);
+    let semaphore = Arc::new(tokio::sync::Semaphore::new(max_concurrent));
+    let mut handles = Vec::with_capacity(fixtures.len() * resolved_cells.len() * samples as usize);
+    let emit_sample_index = samples > 1;
+
+    for fixture in fixtures {
+        for resolved in resolved_cells {
+            for sample in 0..samples {
+                let fixture = fixture.clone();
+                let fixture_id = fixture.id.clone();
+                let cell = resolved.cell.clone();
+                let executor = resolved.executor.clone();
+                let upstream_model = resolved.upstream_model.clone();
+                let binding = resolved.binding.clone();
+                let overrides = agent_overrides.clone();
+                let base = agent_base.clone();
+                let trace_sink = trace_sink.clone();
+                let judge_for_task = judge.clone();
+                let revise_for_task = revise_tuple_for(judge.as_ref(), &fixture.expect);
+                let permit = semaphore.clone().acquire_owned().await.expect("semaphore");
+                handles.push(tokio::spawn(async move {
+                    let _permit = permit;
+                    let mut builder =
+                        RuntimeReplayer::new().with_live_executor(executor, upstream_model);
+                    if let Some(max) = max_total_tokens {
+                        builder = builder.with_max_total_tokens(max);
+                    }
+                    if let Some(b) = base {
+                        builder = builder.with_agent_base(b);
+                    }
+                    let replayer =
+                        apply_cell_decorators(builder, overrides, trace_sink, revise_for_task);
+                    let deadline = tokio::time::Instant::now() + walltime;
+                    let walltime_secs = walltime.as_secs();
+                    let outcome = match tokio::time::timeout_at(deadline, async {
+                        let outcomes =
+                            replay_all(&replayer, std::slice::from_ref(&fixture)).await;
+                        outcomes
+                            .into_iter()
+                            .next()
+                            .expect("one fixture → one outcome")
+                    })
+                    .await
+                    {
+                        Ok(o) => o,
+                        Err(_) => {
+                            let (o, f) = cell_timeout_outcome(
+                                fixture_id,
+                                walltime_secs,
+                                &fixture.expect,
+                            );
+                            return Ok::<_, ApiError>((fixture.id, cell, sample, o, f, binding));
+                        }
+                    };
+                    let (outcome, failures) = match tokio::time::timeout_at(
+                        deadline,
+                        score_outcome(&outcome, &fixture, judge_for_task.as_ref()),
+                    )
+                    .await
+                    {
+                        Ok(Ok(failures)) => (outcome, failures),
+                        Ok(Err(err)) => cell_error_outcome(
+                            outcome,
+                            format!("scoring failed: {err}"),
+                            &fixture.expect,
+                        ),
+                        Err(_) => cell_error_outcome(
+                            outcome,
+                            format!(
+                                "scoring timed out after {walltime_secs}s wall-clock (replay completed)"
+                            ),
+                            &fixture.expect,
+                        ),
+                    };
+                    Ok::<_, ApiError>((fixture.id, cell, sample, outcome, failures, binding))
+                }));
+            }
+        }
+    }
+
+    let mut items: Vec<EvalRunItem> = Vec::with_capacity(handles.len());
+    for handle in handles {
+        let task_result = handle
+            .await
+            .map_err(|err| ApiError::Internal(format!("{task_context} task panicked: {err}")))?;
+        let (fixture_id, cell, sample, outcome, failures, binding) = task_result?;
+        let mut report = ReplayReport::from_outcome(&outcome, failures);
+        report.cost_usd = cost_usd_for(&report, &binding);
+        items.push(EvalRunItem {
+            fixture_id,
+            cell: Some(cell),
+            report,
+            trace_run_id: persisted_trace_run_id(trace_store.as_deref(), &outcome),
+            sample_index: if emit_sample_index {
+                Some(sample)
+            } else {
+                None
+            },
+        });
+    }
+
+    Ok(items)
 }
 
 /// Synthetic outcome + failures for a cell whose wall-clock budget

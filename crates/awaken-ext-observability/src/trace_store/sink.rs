@@ -9,9 +9,9 @@
 //!
 //! Failures (e.g. transient disk I/O) are logged at `tracing::warn!`
 //! and swallowed: an eval replay must not abort because the trace
-//! sidecar had a hiccup. Production-grade durability lives in
-//! `PersistentSink::with_trace_store`; this adapter is for "best-effort
-//! append, never block the replay".
+//! sidecar had a hiccup. `on_run_end` writes the same run-summary index
+//! as [`crate::PersistentSink`] once at least one event exists, so
+//! replay traces are queryable via both `read(run_id)` and `list(...)`.
 
 use std::sync::Arc;
 
@@ -47,9 +47,37 @@ impl MetricsSink for TraceStoreSink {
         }
     }
 
-    fn on_run_end(&self, _metrics: &AgentMetrics) {
-        // No-op: TraceStore is event-stream only; AgentMetrics is the
-        // InMemorySink's concern.
+    fn on_run_end(&self, metrics: &AgentMetrics) {
+        let Some(run_id) = crate::persistent::run_id_from_metrics(metrics) else {
+            return;
+        };
+        match self.store.read(&run_id) {
+            Ok(events) if events.is_empty() => {
+                tracing::warn!(
+                    run_id = %run_id,
+                    "TraceStoreSink: skip index write because the trace has no persisted events"
+                );
+                return;
+            }
+            Ok(_) => {}
+            Err(err) => {
+                tracing::warn!(
+                    run_id = %run_id,
+                    error = %err,
+                    "TraceStoreSink: skip index write because the trace is not readable"
+                );
+                return;
+            }
+        }
+
+        let summary = crate::persistent::derive_run_summary(&run_id, metrics);
+        if let Err(err) = self.store.write_index_for_run(&run_id, &summary) {
+            tracing::warn!(
+                run_id = %run_id,
+                error = %err,
+                "TraceStoreSink: index write failed; replay trace may be absent from list results"
+            );
+        }
     }
 
     fn flush(&self) -> Result<(), SinkError> {
@@ -109,6 +137,28 @@ mod tests {
         sink.record(&MetricsEvent::Inference(span("RUN-A")));
         let events = store.read("RUN-A").unwrap();
         assert_eq!(events.len(), 1);
+    }
+
+    #[test]
+    fn on_run_end_writes_index_for_persisted_events() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store: Arc<dyn TraceStore> = Arc::new(FileTraceStore::new(tmp.path()).unwrap());
+        let sink = TraceStoreSink::new(store.clone());
+        let span = span("RUN-IDX");
+        sink.record(&MetricsEvent::Inference(span.clone()));
+        let metrics = AgentMetrics {
+            inferences: vec![span],
+            session_duration_ms: 1,
+            ..Default::default()
+        };
+
+        sink.on_run_end(&metrics);
+
+        let listed = store
+            .list(&crate::trace_store::TraceFilter::default())
+            .unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].run_id, "RUN-IDX");
     }
 
     #[test]

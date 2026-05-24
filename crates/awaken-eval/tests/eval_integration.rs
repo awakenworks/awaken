@@ -407,6 +407,13 @@ async fn runtime_replayer_tee_sink_routes_spans_to_trace_store() {
         !stored.is_empty(),
         "tee sink must have appended at least one event for {trace_run_id}"
     );
+    let listed = store
+        .list(&awaken_ext_observability::trace_store::TraceFilter::default())
+        .expect("trace index persisted");
+    assert!(
+        listed.iter().any(|summary| summary.run_id == trace_run_id),
+        "tee sink must index replay trace {trace_run_id} for list APIs"
+    );
 }
 
 #[tokio::test]

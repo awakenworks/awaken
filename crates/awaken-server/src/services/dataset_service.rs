@@ -15,14 +15,19 @@ use awaken_eval::fixture::DialogueTurn;
 use awaken_eval::{
     DATASETS_NAMESPACE, DatasetSpec, Expectation, Fixture, MockResponse, trace_to_provider_script,
 };
+use awaken_ext_observability::trace_store::{ReferenceKind, TraceStore};
 use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
-use serde::{Deserialize, Serialize};
 
 use crate::app::AppState;
 use crate::error::ApiError;
+use crate::services::dataset_wire::{
+    AppendFixtureRequest, CreateDatasetRequest, CurateItemsRequest, DatasetSummaryWire, IdParam,
+    ImportDialogueRequest, ImportDialogueResponse, ImportTracesRequest, ImportTracesResponse,
+    ListDatasetsResponse, ListParams, PutDatasetRequest,
+};
 use crate::services::eval_common::{
     config_store_or_unavailable, map_storage_error, map_trace_store_error,
 };
@@ -30,69 +35,22 @@ use crate::services::eval_common::{
 // `DATASETS_NAMESPACE` re-exported from `awaken_eval::dataset` is the
 // single source of truth — see the const's docstring there.
 
-// ── Wire types ────────────────────────────────────────────────────────────
-
-#[derive(Debug, Serialize)]
-pub struct DatasetSummaryWire {
-    pub id: String,
-    pub description: String,
-    pub fixture_count: usize,
-    pub revision: u64,
+fn require_non_empty_expected(expect: &Expectation) -> Result<(), ApiError> {
+    if expect.is_empty() {
+        return Err(ApiError::BadRequest(
+            "expected must contain at least one expectation criterion".into(),
+        ));
+    }
+    Ok(())
 }
 
-#[derive(Debug, Serialize)]
-pub struct ListDatasetsResponse {
-    pub datasets: Vec<DatasetSummaryWire>,
-}
-
-/// Body for `POST /v1/eval/datasets/:id/fixtures` — atomic single-fixture
-/// append with revision CAS. Avoids the "two operators each push a full
-/// dataset list" race that PUT has, where one operator's appends get
-/// silently dropped by the other's replace.
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct AppendFixtureRequest {
-    pub fixture: Fixture,
-    pub expected_revision: u64,
-}
-
-/// Body for `POST /v1/eval/datasets/:id/items { from_run_id, user_input }`.
-///
-/// `from_run_id` identifies a run in the [`TraceStore`]. `user_input` is
-/// optional: when omitted, the server falls back to the user message
-/// recovered from the trace's captured `request_messages` (requires the
-/// originating run to have had `ContentCapture::Enabled`). Explicit
-/// `user_input` always wins so operators can rephrase prompts.
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct CurateItemsRequest {
-    pub from_run_id: String,
-    #[serde(default)]
-    pub user_input: Option<String>,
-    /// Optional fixture id. Defaults to the run id so the curated
-    /// fixture's provenance is unambiguous in the dataset.
-    #[serde(default)]
-    pub fixture_id: Option<String>,
-    /// Optional description for the curated fixture; defaults to a
-    /// "curated from trace …" string.
-    #[serde(default)]
-    pub description: Option<String>,
-    /// Mirrors `Fixture::allow_unused_provider_script`. Default `false`.
-    #[serde(default)]
-    pub allow_unused_provider_script: bool,
-}
-
-#[derive(Debug, Deserialize, Default)]
-#[serde(deny_unknown_fields)]
-pub struct ListParams {
-    #[serde(default)]
-    pub offset: usize,
-    #[serde(default = "default_limit")]
-    pub limit: usize,
-}
-
-fn default_limit() -> usize {
-    100
+fn mark_dataset_trace_reference(
+    trace_store: &dyn TraceStore,
+    run_id: &str,
+) -> Result<(), ApiError> {
+    trace_store
+        .mark_referenced(run_id, ReferenceKind::Dataset)
+        .map_err(map_trace_store_error)
 }
 
 // Error mappers and store accessors live in `services::eval_common` so
@@ -166,22 +124,6 @@ pub async fn create_dataset(
     Ok((StatusCode::CREATED, Json(record)).into_response())
 }
 
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct CreateDatasetRequest {
-    /// Optional id. When omitted, falls back to `?id=` query param.
-    #[serde(default)]
-    pub id: Option<String>,
-    pub spec: DatasetSpec,
-}
-
-#[derive(Debug, Deserialize, Default)]
-#[serde(deny_unknown_fields)]
-pub struct IdParam {
-    #[serde(default)]
-    pub id: Option<String>,
-}
-
 /// `GET /v1/eval/datasets/:id` — fetch one dataset record.
 #[tracing::instrument(skip_all, fields(id = %id))]
 pub async fn get_dataset(
@@ -253,13 +195,6 @@ pub async fn put_dataset(
         .await
         .map_err(map_storage_error)?;
     Ok(Json(record).into_response())
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct PutDatasetRequest {
-    pub expected_revision: u64,
-    pub spec: DatasetSpec,
 }
 
 /// `POST /v1/eval/datasets/:id/fixtures` — atomically append a single
@@ -347,6 +282,7 @@ pub async fn curate_items(
     let trace_store = state
         .trace_store()
         .ok_or_else(|| ApiError::ServiceUnavailable("trace store not configured".into()))?;
+    require_non_empty_expected(&body.expect)?;
 
     let events = trace_store
         .read(&body.from_run_id)
@@ -379,19 +315,20 @@ pub async fn curate_items(
                     .into(),
             )
         })?;
+    let source_run_id = body.from_run_id.clone();
     let fixture = Fixture {
         id: fixture_id.clone(),
         description: Some(
             body.description
-                .unwrap_or_else(|| format!("Curated from trace {}", body.from_run_id)),
+                .unwrap_or_else(|| format!("Curated from trace {source_run_id}")),
         ),
         user_input,
         provider_script: conversion.provider_script,
-        source_run_id: Some(body.from_run_id),
+        source_run_id: Some(source_run_id.clone()),
         source_model_id: conversion.source_model_id,
         allow_unused_provider_script: body.allow_unused_provider_script,
         mock_response: MockResponse::default(),
-        expect: Expectation::default(),
+        expect: body.expect,
         continued_turns: vec![],
     };
     record.spec.fixtures.push(fixture);
@@ -402,6 +339,12 @@ pub async fn curate_items(
     let value = record
         .to_value()
         .map_err(|err| ApiError::Internal(err.to_string()))?;
+    // Mark before the CAS write: if the dataset write succeeds, the
+    // source trace is already pinned against retention. A concurrent
+    // CAS failure may leave a harmless over-retention sentinel, but the
+    // opposite ordering can persist a fixture whose source trace is
+    // immediately pruneable if mark_referenced fails.
+    mark_dataset_trace_reference(trace_store.as_ref(), &source_run_id)?;
     store
         .put_if_revision(DATASETS_NAMESPACE, &id, &value, existing_revision)
         .await
@@ -411,40 +354,6 @@ pub async fn curate_items(
 }
 
 // ── Bulk import from prod traces ─────────────────────────────────────────
-
-/// Body for [`import_traces`]. Defaults treat all axes as "no filter";
-/// the operator must opt into the slice of prod traffic they want
-/// promoted to fixtures so the endpoint doesn't accidentally dump the
-/// whole trace store on a single dataset.
-#[derive(Debug, Deserialize, Default)]
-#[serde(deny_unknown_fields)]
-pub struct ImportTracesRequest {
-    /// Required CAS guard, same shape as `AppendFixtureRequest`.
-    pub expected_revision: u64,
-    #[serde(default)]
-    pub agent_id: Option<String>,
-    /// Inclusive lower bound on the trace's `started_at` (epoch seconds).
-    #[serde(default)]
-    pub since_secs: Option<u64>,
-    /// Hard cap on traces fetched + considered for curation. Defaults
-    /// to 50 so a misconfigured filter can't accidentally walk the
-    /// whole store.
-    #[serde(default)]
-    pub max_count: Option<usize>,
-    /// When true, traces whose curation fails (no captured user_input,
-    /// malformed events) are silently skipped. Default false — curation
-    /// failures surface so the operator notices their capture policy
-    /// isn't enabled.
-    #[serde(default)]
-    pub skip_uncuratable: bool,
-}
-
-#[derive(Debug, Serialize)]
-pub struct ImportTracesResponse {
-    pub imported_count: usize,
-    pub skipped_count: usize,
-    pub dataset_revision: u64,
-}
 
 // `default_import_traces_max` lives on `ServerConfig::eval_limits`
 // — see the read inside `import_traces` below.
@@ -469,6 +378,7 @@ pub async fn import_traces(
     let trace_store = state
         .trace_store()
         .ok_or_else(|| ApiError::ServiceUnavailable("trace store not configured".into()))?;
+    require_non_empty_expected(&body.expect)?;
 
     // Load + CAS-check the dataset.
     let existing_value = store
@@ -509,6 +419,7 @@ pub async fn import_traces(
     // the dataset state catches duplicates against prior writes.
     let mut seen_ids: std::collections::HashSet<String> =
         record.spec.fixtures.iter().map(|f| f.id.clone()).collect();
+    let mut imported_run_ids: Vec<String> = Vec::new();
     let mut imported = 0usize;
     let mut skipped = 0usize;
     for summary in summaries {
@@ -556,10 +467,11 @@ pub async fn import_traces(
             source_model_id: conversion.source_model_id,
             allow_unused_provider_script: false,
             mock_response: MockResponse::default(),
-            expect: Expectation::default(),
+            expect: body.expect.clone(),
             continued_turns: vec![],
         });
-        seen_ids.insert(summary.run_id);
+        seen_ids.insert(summary.run_id.clone());
+        imported_run_ids.push(summary.run_id);
         imported += 1;
     }
     // Final belt-and-braces invariant check: the loop guards above
@@ -585,6 +497,9 @@ pub async fn import_traces(
     let value = record
         .to_value()
         .map_err(|err| ApiError::Internal(err.to_string()))?;
+    for run_id in &imported_run_ids {
+        mark_dataset_trace_reference(trace_store.as_ref(), run_id)?;
+    }
     store
         .put_if_revision(DATASETS_NAMESPACE, &id, &value, existing_revision)
         .await
@@ -599,29 +514,6 @@ pub async fn import_traces(
 }
 
 // ── Dialogue importer (POST /v1/eval/datasets/:id/import-dialogue) ──────
-
-/// Body for [`import_dialogue`]. Stitches multiple trace runs of the
-/// same conversation thread into one multi-turn fixture.
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ImportDialogueRequest {
-    pub expected_revision: u64,
-    /// Ordered list of run_ids to stitch — first run becomes turn 0
-    /// (sets `fixture.user_input` + `provider_script`); remainder
-    /// populate `continued_turns` in order.
-    pub run_ids: Vec<String>,
-    /// Optional fixture id. Defaults to `run_ids[0]` for provenance.
-    #[serde(default)]
-    pub fixture_id: Option<String>,
-    #[serde(default)]
-    pub description: Option<String>,
-}
-
-#[derive(Debug, Serialize)]
-pub struct ImportDialogueResponse {
-    pub fixture_id: String,
-    pub dataset_revision: u64,
-}
 
 /// `POST /v1/eval/datasets/:id/import-dialogue` — assemble one multi-turn
 /// dialogue fixture from N successive trace runs (same conversation
@@ -638,6 +530,7 @@ pub async fn import_dialogue(
     if body.run_ids.is_empty() {
         return Err(ApiError::BadRequest("run_ids must be non-empty".into()));
     }
+    require_non_empty_expected(&body.expect)?;
     let store = config_store_or_unavailable(&state)?;
     let trace_store = state
         .trace_store()
@@ -749,7 +642,7 @@ pub async fn import_dialogue(
         source_model_id,
         allow_unused_provider_script: false,
         mock_response: MockResponse::default(),
-        expect: Expectation::default(),
+        expect: body.expect,
         continued_turns,
     };
     record.spec.fixtures.push(fixture);
@@ -759,6 +652,9 @@ pub async fn import_dialogue(
     let value = record
         .to_value()
         .map_err(|err| ApiError::Internal(err.to_string()))?;
+    for run_id in &body.run_ids {
+        mark_dataset_trace_reference(trace_store.as_ref(), run_id)?;
+    }
     store
         .put_if_revision(DATASETS_NAMESPACE, &id, &value, existing_revision)
         .await

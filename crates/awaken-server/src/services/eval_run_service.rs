@@ -32,7 +32,7 @@ use awaken_eval::{
     mint_run_id, replay_all, score,
 };
 use awaken_ext_observability::MetricsSink;
-use awaken_ext_observability::trace_store::TraceStoreSink;
+use awaken_ext_observability::trace_store::{TraceStore, TraceStoreSink};
 use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::http::HeaderMap;
@@ -136,7 +136,7 @@ pub struct JudgeRequest {
 // tune per deployment.
 
 pub(crate) use super::eval_cell::{
-    JudgeContext, apply_cell_decorators, revise_tuple_for, score_outcome,
+    JudgeContext, LiveCellOptions, ResolvedCell, persisted_trace_run_id, run_live_eval_cells,
 };
 
 #[derive(Debug, Serialize)]
@@ -381,9 +381,10 @@ pub async fn start_eval_run(
         None
     };
 
-    let trace_sink: Option<Arc<dyn MetricsSink>> = state
-        .trace_store()
-        .map(|store| Arc::new(TraceStoreSink::new(store)) as Arc<dyn MetricsSink>);
+    let trace_store = state.trace_store();
+    let trace_sink: Option<Arc<dyn MetricsSink>> = trace_store
+        .as_ref()
+        .map(|store| Arc::new(TraceStoreSink::new(store.clone())) as Arc<dyn MetricsSink>);
     let agent_base = match &body.agent_id {
         Some(id) => Some(crate::services::eval_common::resolve_agent_spec(&state, id).await?),
         None => None,
@@ -411,10 +412,11 @@ pub async fn start_eval_run(
                 judge,
             },
             trace_sink,
+            trace_store.clone(),
         )
         .await?
     } else {
-        run_scripted_fixtures(&fixtures, trace_sink).await
+        run_scripted_fixtures(&fixtures, trace_sink, trace_store.clone()).await
     };
 
     let run = EvalRun {
@@ -593,6 +595,7 @@ fn compute_diff_from_baseline(
 async fn run_scripted_fixtures(
     fixtures: &[Fixture],
     trace_sink: Option<Arc<dyn MetricsSink>>,
+    trace_store: Option<Arc<dyn TraceStore>>,
 ) -> Vec<EvalRunItem> {
     let mut replayer = RuntimeReplayer::new();
     if let Some(sink) = trace_sink {
@@ -609,7 +612,7 @@ async fn run_scripted_fixtures(
                 fixture_id: fixture.id.clone(),
                 cell: None,
                 report,
-                trace_run_id: outcome.trace_run_id().map(str::to_string),
+                trace_run_id: persisted_trace_run_id(trace_store.as_deref(), outcome),
                 sample_index: None,
             }
         })
@@ -642,6 +645,7 @@ async fn run_matrix_cells(
     cells: &[MatrixCell],
     options: MatrixOptions,
     trace_sink: Option<Arc<dyn MetricsSink>>,
+    trace_store: Option<Arc<dyn TraceStore>>,
 ) -> Result<Vec<EvalRunItem>, ApiError> {
     let MatrixOptions {
         samples,
@@ -651,139 +655,41 @@ async fn run_matrix_cells(
         agent_overrides,
         judge,
     } = options;
-    let walltime = std::time::Duration::from_secs(max_walltime_secs);
-    use awaken_contract::contract::executor::LlmExecutor;
-    use awaken_contract::registry_spec::ModelBindingSpec;
 
     // Pre-resolve every model once — same executor reused across all
     // fixtures (and samples) of the same cell. Carry the binding spec
     // forward so we can compute cost_usd post-replay without a second
     // registry lookup.
-    let mut resolved: Vec<(MatrixCell, Arc<dyn LlmExecutor>, String, ModelBindingSpec)> =
-        Vec::with_capacity(cells.len());
+    let mut resolved: Vec<ResolvedCell> = Vec::with_capacity(cells.len());
     for cell in cells {
         let model_id = cell
             .model_id
             .as_deref()
             .expect("matrix expansion always sets model_id");
         let r = resolve_live_executor(state, model_id).await?;
-        resolved.push((cell.clone(), r.executor, r.upstream_model, r.binding));
-    }
-
-    let semaphore = Arc::new(tokio::sync::Semaphore::new(max_concurrent));
-    let mut handles = Vec::with_capacity(fixtures.len() * resolved.len() * samples as usize);
-    // Emit a sample_index only when samples > 1 so single-sample runs
-    // keep the same on-disk shape as before the flakiness feature
-    // landed (the field stays absent in JSON).
-    let emit_sample_index = samples > 1;
-    for fixture in fixtures {
-        for (cell, executor, upstream_model, binding) in &resolved {
-            for sample in 0..samples {
-                let fixture = fixture.clone();
-                let cell = cell.clone();
-                let executor = executor.clone();
-                let upstream_model = upstream_model.clone();
-                let binding = binding.clone();
-                let overrides = agent_overrides.clone();
-                let base = agent_base.clone();
-                let trace_sink = trace_sink.clone();
-                let judge_for_task = judge.clone();
-                let revise_for_task = revise_tuple_for(judge.as_ref(), &fixture.expect);
-                let fixture_id = fixture.id.clone();
-                let permit = semaphore.clone().acquire_owned().await.expect("semaphore");
-                handles.push(tokio::spawn(async move {
-                    let _permit = permit;
-                    let mut builder =
-                        RuntimeReplayer::new().with_live_executor(executor, upstream_model);
-                    if let Some(b) = base {
-                        builder = builder.with_agent_base(b);
-                    }
-                    let replayer =
-                        apply_cell_decorators(builder, overrides, trace_sink, revise_for_task);
-                    // Per-cell wall-clock cap covers replay + scoring +
-                    // judge as a SINGLE deadline (one `Instant::now() +
-                    // walltime`). The two halves are timed separately
-                    // so a timeout during scoring/judge — which runs
-                    // AFTER replay completed — falls back to
-                    // `cell_error_outcome(real_outcome, ...)` and keeps
-                    // the real `final_text` / tokens / trace link
-                    // instead of synthesizing an empty timeout outcome
-                    // that would blank the model's actual reply and
-                    // fabricate phantom deterministic failures.
-                    let deadline = tokio::time::Instant::now() + walltime;
-                    let walltime_secs = walltime.as_secs();
-                    let outcome = match tokio::time::timeout_at(deadline, async {
-                        let outcomes =
-                            replay_all(&replayer, std::slice::from_ref(&fixture)).await;
-                        outcomes
-                            .into_iter()
-                            .next()
-                            .expect("one fixture → one outcome")
-                    })
-                    .await
-                    {
-                        Ok(o) => o,
-                        Err(_) => {
-                            // Replay itself didn't finish → synthetic
-                            // timeout outcome is the truthful report.
-                            let (o, f) = super::eval_cell::cell_timeout_outcome(
-                                fixture_id,
-                                walltime_secs,
-                                &fixture.expect,
-                            );
-                            return Ok::<_, ApiError>((fixture, cell, sample, o, f, binding));
-                        }
-                    };
-                    let (outcome, failures) = match tokio::time::timeout_at(
-                        deadline,
-                        score_outcome(&outcome, &fixture, judge_for_task.as_ref()),
-                    )
-                    .await
-                    {
-                        Ok(Ok(failures)) => (outcome, failures),
-                        // Judge / scoring error on THIS cell becomes a
-                        // per-cell RuntimeError. Bubbling it would discard
-                        // every sibling cell's already-computed report — a
-                        // single misconfigured judge would void an entire
-                        // matrix run.
-                        Ok(Err(err)) => super::eval_cell::cell_error_outcome(
-                            outcome,
-                            format!("scoring failed: {err}"),
-                            &fixture.expect,
-                        ),
-                        Err(_) => super::eval_cell::cell_error_outcome(
-                            outcome,
-                            format!(
-                                "scoring timed out after {walltime_secs}s wall-clock (replay completed)"
-                            ),
-                            &fixture.expect,
-                        ),
-                    };
-                    Ok::<_, ApiError>((fixture, cell, sample, outcome, failures, binding))
-                }));
-            }
-        }
-    }
-
-    let mut items: Vec<EvalRunItem> = Vec::with_capacity(handles.len());
-    for handle in handles {
-        let task_result = handle
-            .await
-            .map_err(|err| ApiError::Internal(format!("matrix cell task panicked: {err}")))?;
-        let (fixture, cell, sample, outcome, failures, binding) = task_result?;
-        let mut report = ReplayReport::from_outcome(&outcome, failures);
-        report.cost_usd = super::eval_cell::cost_usd_for(&report, &binding);
-        items.push(EvalRunItem {
-            fixture_id: fixture.id,
-            cell: Some(cell),
-            report,
-            trace_run_id: outcome.trace_run_id().map(str::to_string),
-            sample_index: if emit_sample_index {
-                Some(sample)
-            } else {
-                None
-            },
+        resolved.push(ResolvedCell {
+            cell: cell.clone(),
+            executor: r.executor,
+            upstream_model: r.upstream_model,
+            binding: r.binding,
         });
     }
-    Ok(items)
+
+    run_live_eval_cells(
+        fixtures,
+        &resolved,
+        LiveCellOptions {
+            samples,
+            max_concurrent,
+            max_walltime_secs,
+            agent_base,
+            agent_overrides,
+            judge,
+            max_total_tokens: None,
+            trace_sink,
+            trace_store,
+            task_context: "matrix cell",
+        },
+    )
+    .await
 }

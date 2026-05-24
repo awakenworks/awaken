@@ -172,7 +172,7 @@ fields stay. A new `provider_script` array is preferred:
   ],
   "source_run_id": "01HXYZ...",         // optional, when curated from a trace
   "source_model_id": "claude-opus-4-7", // optional, mismatch guard
-  "expect": { "answer_contains": [...], "tool_sequence": [...] },
+  "expect": { "final_answer_contains": [...], "tool_sequence": [...] },
 
   "mock_response": "..."  // legacy, superseded; loader synthesises a
                           // single-element provider_script when only
@@ -189,7 +189,10 @@ of validation the legacy field is removed.
 `POST /v1/eval/datasets/:id/items` accepts:
 
 ```
-{ "from_run_id": "01HXYZ...", "expected": { "answer_contains": [...], ... } }
+{
+  "from_run_id": "01HXYZ...",
+  "expected": { "final_answer_contains": [...], ... }
+}
 ```
 
 The handler reads the trace from `TraceStore::read` (ADR-0030 D3),

@@ -90,6 +90,28 @@ pub enum CurateError {
     /// as a `ProviderScriptEvent::ToolCall` — the trace is malformed.
     #[error("inference span at step {step} captured an empty response_tool_calls list")]
     EmptyToolCalls { step: u32 },
+    /// The scripted executor can currently return only one tool call per
+    /// upstream turn. Refuse to silently drop parallel calls.
+    #[error(
+        "inference span at step {step} captured {count} tool calls; \
+         provider_script currently supports one tool call per turn"
+    )]
+    MultipleToolCalls { step: u32, count: usize },
+    /// A turn carried both tool calls and assistant content. That shape is
+    /// valid for some providers, but `ProviderScriptEvent::ToolCall`
+    /// cannot preserve the assistant text today.
+    #[error(
+        "inference span at step {step} captured assistant content alongside tool calls; \
+         provider_script cannot represent mixed content/tool-use turns"
+    )]
+    MixedToolCallContent { step: u32 },
+    /// A chat response included a content block the scripted executor
+    /// cannot replay as `ChatResponse { content: String }`.
+    #[error(
+        "inference span at step {step} captured unsupported {block_type} content; \
+         provider_script only supports text chat responses today"
+    )]
+    UnsupportedContentBlock { step: u32, block_type: String },
 }
 
 /// Walk the trace's events in order, reconstructing the scripted upstream.
@@ -180,15 +202,26 @@ fn inference_to_script(span: &GenAISpan) -> Result<ProviderScriptEvent, CurateEr
     if let Some(tool_calls_value) = &span.response_tool_calls {
         let tool_calls: Vec<ToolCall> = serde_json::from_value(tool_calls_value.clone())
             .map_err(|source| CurateError::ToolCallsDecode { step, source })?;
+        if tool_calls.is_empty() {
+            return Err(CurateError::EmptyToolCalls { step });
+        }
+        if tool_calls.len() > 1 {
+            return Err(CurateError::MultipleToolCalls {
+                step,
+                count: tool_calls.len(),
+            });
+        }
+        if let Some(content_value) = &span.response_content {
+            let blocks: Vec<ContentBlock> = serde_json::from_value(content_value.clone())
+                .map_err(|source| CurateError::ContentDecode { step, source })?;
+            if !blocks.is_empty() {
+                return Err(CurateError::MixedToolCallContent { step });
+            }
+        }
         let first = tool_calls
             .into_iter()
             .next()
-            .ok_or(CurateError::EmptyToolCalls { step })?;
-        // ProviderScriptEvent::ToolCall represents a single tool round.
-        // Multi-tool parallel turns are not yet modelled by the scripted
-        // executor (ADR-0032 follow-up #205); the converter takes the
-        // first call and ignores the rest. The lossy choice matches what
-        // the legacy fixtures already exercise.
+            .expect("non-empty checked above");
         return Ok(ProviderScriptEvent::ToolCall {
             id: first.id,
             name: first.name,
@@ -200,7 +233,7 @@ fn inference_to_script(span: &GenAISpan) -> Result<ProviderScriptEvent, CurateEr
     if let Some(content_value) = &span.response_content {
         let blocks: Vec<ContentBlock> = serde_json::from_value(content_value.clone())
             .map_err(|source| CurateError::ContentDecode { step, source })?;
-        let text = collect_text(&blocks);
+        let text = collect_text(step, &blocks)?;
         let finish_reason = finish_reason_from_span(span);
         return Ok(ProviderScriptEvent::ChatResponse {
             content: text,
@@ -224,17 +257,37 @@ fn build_tokens(span: &GenAISpan) -> TokenUsage {
 }
 
 /// Concatenate every `ContentBlock::Text` payload, in order. Non-text
-/// blocks (image, document, thinking) are dropped because
-/// `ProviderScriptEvent::ChatResponse::content` is a `String` — multi-modal
-/// replay isn't representable in the scripted executor today.
-fn collect_text(blocks: &[ContentBlock]) -> String {
+/// blocks are rejected instead of dropped: `ProviderScriptEvent::ChatResponse`
+/// is currently text-only, and silently curating a lossy script would
+/// make the resulting fixture pass/fail against behaviour it never
+/// actually captured.
+fn collect_text(step: u32, blocks: &[ContentBlock]) -> Result<String, CurateError> {
     let mut out = String::new();
     for block in blocks {
-        if let ContentBlock::Text { text, .. } = block {
-            out.push_str(text);
+        match block {
+            ContentBlock::Text { text, .. } => out.push_str(text),
+            other => {
+                return Err(CurateError::UnsupportedContentBlock {
+                    step,
+                    block_type: content_block_kind(other).to_string(),
+                });
+            }
         }
     }
-    out
+    Ok(out)
+}
+
+fn content_block_kind(block: &ContentBlock) -> &'static str {
+    match block {
+        ContentBlock::Text { .. } => "text",
+        ContentBlock::Image { .. } => "image",
+        ContentBlock::Document { .. } => "document",
+        ContentBlock::Audio { .. } => "audio",
+        ContentBlock::Video { .. } => "video",
+        ContentBlock::ToolUse { .. } => "tool_use",
+        ContentBlock::ToolResult { .. } => "tool_result",
+        ContentBlock::Thinking { .. } => "thinking",
+    }
 }
 
 fn finish_reason_from_span(span: &GenAISpan) -> StopReason {
@@ -487,21 +540,18 @@ mod tests {
     }
 
     #[test]
-    fn tool_call_takes_precedence_over_content_text_on_same_span() {
+    fn tool_call_with_content_is_an_error() {
         // A turn that recorded BOTH text and a tool call (e.g. an
-        // assistant that explains then calls) replays as the tool call —
-        // that's what gates the next turn. Text alongside tool calls is
-        // a future enhancement (see #205).
+        // assistant that explains then calls) is not faithfully
+        // representable by ProviderScriptEvent::ToolCall, which carries
+        // only the call. Refuse to drop the assistant text silently.
         let mut s = span("m", 0);
         s.response_content = Some(json!([{"type": "text", "text": "let me look that up"}]));
         s.response_tool_calls = Some(json!([
             {"id": "c1", "name": "search", "arguments": {}}
         ]));
-        let out = trace_to_provider_script(&[MetricsEvent::Inference(s)]).unwrap();
-        assert!(matches!(
-            &out.provider_script[0],
-            ProviderScriptEvent::ToolCall { name, .. } if name == "search"
-        ));
+        let err = trace_to_provider_script(&[MetricsEvent::Inference(s)]).unwrap_err();
+        assert!(matches!(err, CurateError::MixedToolCallContent { step: 0 }));
     }
 
     #[test]
@@ -515,6 +565,22 @@ mod tests {
         s.response_tool_calls = Some(json!([]));
         let err = trace_to_provider_script(&[MetricsEvent::Inference(s)]).unwrap_err();
         assert!(matches!(err, CurateError::EmptyToolCalls { step: 0 }));
+    }
+
+    #[test]
+    fn multiple_tool_calls_is_an_error() {
+        let mut s = span("m", 0);
+        s.finish_reasons = vec!["tool_use".into()];
+        s.response_content = None;
+        s.response_tool_calls = Some(json!([
+            {"id": "call-1", "name": "search", "arguments": {"q": "a"}},
+            {"id": "call-2", "name": "write", "arguments": {"text": "b"}}
+        ]));
+        let err = trace_to_provider_script(&[MetricsEvent::Inference(s)]).unwrap_err();
+        assert!(matches!(
+            err,
+            CurateError::MultipleToolCalls { step: 0, count: 2 }
+        ));
     }
 
     #[test]
@@ -588,18 +654,20 @@ mod tests {
     }
 
     #[test]
-    fn text_block_concatenation_preserves_order_and_drops_non_text() {
+    fn non_text_chat_content_is_an_error() {
         let mut s = span("m", 0);
         s.response_content = Some(json!([
             {"type": "text", "text": "part one "},
             {"type": "thinking", "thinking": "internal monologue", "signature": null},
             {"type": "text", "text": "part two"},
         ]));
-        let out = trace_to_provider_script(&[MetricsEvent::Inference(s)]).unwrap();
-        if let ProviderScriptEvent::ChatResponse { content, .. } = &out.provider_script[0] {
-            assert_eq!(content, "part one part two");
-        } else {
-            panic!("expected ChatResponse");
-        }
+        let err = trace_to_provider_script(&[MetricsEvent::Inference(s)]).unwrap_err();
+        assert!(matches!(
+            err,
+            CurateError::UnsupportedContentBlock {
+                step: 0,
+                block_type
+            } if block_type == "thinking"
+        ));
     }
 }

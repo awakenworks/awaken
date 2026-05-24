@@ -21,6 +21,7 @@ awaken-eval — offline fixture replay, baseline diff, trace curation
   replay   --fixtures <DIR>  --report <FILE>
   check    --baseline <FILE> --new <FILE>
   curate   --trace-root <DIR> --run-id <RUN> --out <FILE>
+           (--expect-final-contains <TEXT> | --expect-json <JSON>)
            [--user-input <TEXT>] [--allow-unused]
 Server-side dataset/run operations: POST /v1/eval/* — use curl or an HTTP client.
 ";
@@ -179,6 +180,8 @@ async fn curate_command(args: &[String]) -> Result<ExitCode, String> {
     let mut run_id: Option<String> = None;
     let mut user_input: Option<String> = None;
     let mut out: Option<PathBuf> = None;
+    let mut expect_json: Option<Expectation> = None;
+    let mut expect_final_contains: Vec<String> = Vec::new();
     let mut allow_unused = false;
     let mut iter = args.iter();
     while let Some(arg) = iter.next() {
@@ -197,6 +200,19 @@ async fn curate_command(args: &[String]) -> Result<ExitCode, String> {
             "--out" => {
                 out = Some(PathBuf::from(iter.next().ok_or("--out requires a value")?));
             }
+            "--expect-json" => {
+                let raw = iter.next().ok_or("--expect-json requires a value")?;
+                let parsed: Expectation = serde_json::from_str(raw)
+                    .map_err(|err| format!("--expect-json is not a valid Expectation: {err}"))?;
+                expect_json = Some(parsed);
+            }
+            "--expect-final-contains" => {
+                expect_final_contains.push(
+                    iter.next()
+                        .ok_or("--expect-final-contains requires a value")?
+                        .into(),
+                );
+            }
             "--allow-unused" => {
                 allow_unused = true;
             }
@@ -207,6 +223,14 @@ async fn curate_command(args: &[String]) -> Result<ExitCode, String> {
     let trace_root = trace_root.ok_or("--trace-root <DIR> is required")?;
     let run_id = run_id.ok_or("--run-id <RUN> is required")?;
     let out_path = out.ok_or("--out <FILE> is required")?;
+    let mut expect = expect_json.unwrap_or_default();
+    expect.final_answer_contains.extend(expect_final_contains);
+    if expect.is_empty() {
+        return Err(
+            "--expect-final-contains <TEXT> or non-empty --expect-json <JSON> is required"
+                .to_string(),
+        );
+    }
 
     let store = FileTraceStore::new(&trace_root)
         .map_err(|err| format!("opening trace store at {}: {err}", trace_root.display()))?;
@@ -229,9 +253,6 @@ async fn curate_command(args: &[String]) -> Result<ExitCode, String> {
         }
     };
 
-    // Operators add expectations by editing the JSON after curate emits
-    // the skeleton — there's nothing to score the fixture against until
-    // they do. `description` is left blank for the same reason.
     let fixture = Fixture {
         id: run_id.clone(),
         description: Some(format!("Curated from trace {run_id}")),
@@ -241,7 +262,7 @@ async fn curate_command(args: &[String]) -> Result<ExitCode, String> {
         source_model_id: conversion.source_model_id,
         allow_unused_provider_script: allow_unused,
         mock_response: Default::default(),
-        expect: Expectation::default(),
+        expect,
         continued_turns: vec![],
     };
 

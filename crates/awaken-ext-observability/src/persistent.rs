@@ -519,7 +519,7 @@ fn run_id_of(event: &MetricsEvent) -> String {
 /// inference) still has identity worth indexing — without this branch
 /// the run's events would land in `.ndjson` but `on_run_end` would skip
 /// `write_index_for_run` and `/v1/traces` could not surface the run.
-fn run_id_from_metrics(metrics: &AgentMetrics) -> Option<String> {
+pub(crate) fn run_id_from_metrics(metrics: &AgentMetrics) -> Option<String> {
     metrics
         .inferences
         .first()
@@ -590,7 +590,10 @@ fn run_had_error(metrics: &AgentMetrics) -> bool {
 /// happily recognises — would land at `UNIX_EPOCH` on the index and
 /// silently show `final_status = "ok"` even if it had a delegation
 /// failure or a background-task error.
-fn derive_run_summary(run_id: &str, metrics: &AgentMetrics) -> crate::trace_store::RunSummary {
+pub(crate) fn derive_run_summary(
+    run_id: &str,
+    metrics: &AgentMetrics,
+) -> crate::trace_store::RunSummary {
     use std::time::{Duration, UNIX_EPOCH};
 
     // `agent_id` falls back through every span kind that carries a

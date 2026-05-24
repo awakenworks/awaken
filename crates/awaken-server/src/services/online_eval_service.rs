@@ -21,10 +21,7 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use awaken_contract::agent_spec_patch::AgentSpecPatch;
-use awaken_eval::{
-    EvalRun, EvalRunItem, LlmExecutorJudge, MatrixCell, ReplayReport, RuntimeReplayer,
-    expand_cells, mint_run_id, replay_all,
-};
+use awaken_eval::{EvalRun, LlmExecutorJudge, expand_cells, mint_run_id};
 use awaken_eval::{Expectation, Fixture, MockResponse};
 use awaken_ext_observability::trace_store::TraceStoreSink;
 use axum::Json;
@@ -35,6 +32,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::app::AppState;
 use crate::error::ApiError;
+use crate::services::eval_cell::{LiveCellOptions, ResolvedCell, run_live_eval_cells};
 use crate::services::eval_common::resolve_live_executor;
 
 /// Sentinel dataset id for ad-hoc online eval runs. Lets `/v1/eval/runs`
@@ -216,19 +214,19 @@ pub async fn start_online_eval(
     // Pre-resolve every model so any 404 surfaces before we start
     // burning provider tokens. Carries the binding spec forward so we
     // can compute cost_usd post-replay.
-    let mut resolved: Vec<(
-        MatrixCell,
-        Arc<dyn awaken_contract::contract::executor::LlmExecutor>,
-        String,
-        awaken_contract::registry_spec::ModelBindingSpec,
-    )> = Vec::with_capacity(cells.len());
+    let mut resolved: Vec<ResolvedCell> = Vec::with_capacity(cells.len());
     for cell in cells {
         let model_id = cell
             .model_id
             .as_deref()
             .expect("expand_cells always sets model_id when models is non-empty");
         let r = resolve_live_executor(&state, model_id).await?;
-        resolved.push((cell, r.executor, r.upstream_model, r.binding));
+        resolved.push(ResolvedCell {
+            cell,
+            executor: r.executor,
+            upstream_model: r.upstream_model,
+            binding: r.binding,
+        });
     }
 
     // Resolve the judge executor (if configured) before any cell runs
@@ -237,7 +235,7 @@ pub async fn start_online_eval(
         // (cap already validated above; duplicate check here was
         // defensive and now unnecessary)
         let resolved = resolve_live_executor(&state, &jr.model_id).await?;
-        Some(crate::services::eval_run_service::JudgeContext {
+        Some(crate::services::eval_cell::JudgeContext {
             judge: LlmExecutorJudge::new(resolved.executor, resolved.upstream_model),
             rubric: jr.rubric.clone(),
             revise_max_retries: jr.revise_max_retries,
@@ -265,128 +263,28 @@ pub async fn start_online_eval(
     // recorded time matches when work actually began.
     let started_at_secs = epoch_secs_now();
     // Run cells × samples in parallel with bounded concurrency.
-    let trace_sink = state.trace_store().map(|store| {
-        Arc::new(TraceStoreSink::new(store)) as Arc<dyn awaken_ext_observability::MetricsSink>
+    let trace_store = state.trace_store();
+    let trace_sink = trace_store.as_ref().map(|store| {
+        Arc::new(TraceStoreSink::new(store.clone()))
+            as Arc<dyn awaken_ext_observability::MetricsSink>
     });
-    let semaphore = Arc::new(tokio::sync::Semaphore::new(
-        limits.max_concurrent_online_cells,
-    ));
-    let mut handles = Vec::with_capacity(total_units);
-    // Same convention as the dataset path: only emit `sample_index`
-    // when the caller actually asked for more than one sample, so
-    // single-sample runs keep their original on-disk shape.
-    let emit_sample_index = samples > 1;
-    for (cell, executor, upstream_model, binding) in resolved {
-        for sample in 0..samples {
-            let fixture = fixture.clone();
-            let executor = executor.clone();
-            let upstream_model = upstream_model.clone();
-            let binding = binding.clone();
-            let overrides = body.agent_overrides.clone();
-            let base = agent_base.clone();
-            let max_tokens = body.max_total_tokens;
-            let walltime = std::time::Duration::from_secs(body.max_walltime_secs);
-            let trace_sink = trace_sink.clone();
-            let cell = cell.clone();
-            let fixture_id = fixture.id.clone();
-            let judge_for_task = judge.clone();
-            let revise_for_task = crate::services::eval_run_service::revise_tuple_for(
-                judge.as_ref(),
-                &fixture.expect,
-            );
-            let permit = semaphore.clone().acquire_owned().await.expect("semaphore");
-            handles.push(tokio::spawn(async move {
-                let _permit = permit;
-                let mut builder = RuntimeReplayer::new()
-                    .with_live_executor(executor, upstream_model)
-                    .with_max_total_tokens(max_tokens);
-                if let Some(b) = base {
-                    builder = builder.with_agent_base(b);
-                }
-                let replayer = crate::services::eval_run_service::apply_cell_decorators(
-                    builder,
-                    overrides,
-                    trace_sink,
-                    revise_for_task,
-                );
-                // Per-cell wall-clock cap covers replay + scoring + judge
-                // as a SINGLE deadline split across two `timeout_at`
-                // calls — a scoring/judge timeout AFTER replay completed
-                // routes to `cell_error_outcome(real_outcome, …)` so the
-                // model's actual `final_text` / tokens / trace are
-                // preserved, rather than collapsing into an empty
-                // synthetic timeout outcome that would fabricate phantom
-                // `AnswerMissingPhrase` failures.
-                let deadline = tokio::time::Instant::now() + walltime;
-                let walltime_secs = walltime.as_secs();
-                let outcome = match tokio::time::timeout_at(deadline, async {
-                    let outcomes = replay_all(&replayer, std::slice::from_ref(&fixture)).await;
-                    outcomes
-                        .into_iter()
-                        .next()
-                        .expect("one fixture → one outcome")
-                })
-                .await
-                {
-                    Ok(o) => o,
-                    Err(_) => {
-                        let (o, f) = crate::services::eval_cell::cell_timeout_outcome(
-                            fixture_id,
-                            walltime_secs,
-                            &fixture.expect,
-                        );
-                        return Ok::<_, ApiError>((cell, sample, o, f, binding));
-                    }
-                };
-                let (outcome, failures) = match tokio::time::timeout_at(
-                    deadline,
-                    crate::services::eval_run_service::score_outcome(
-                        &outcome,
-                        &fixture,
-                        judge_for_task.as_ref(),
-                    ),
-                )
-                .await
-                {
-                    Ok(Ok(failures)) => (outcome, failures),
-                    Ok(Err(err)) => crate::services::eval_cell::cell_error_outcome(
-                        outcome,
-                        format!("scoring failed: {err}"),
-                        &fixture.expect,
-                    ),
-                    Err(_) => crate::services::eval_cell::cell_error_outcome(
-                        outcome,
-                        format!(
-                            "scoring timed out after {walltime_secs}s wall-clock (replay completed)"
-                        ),
-                        &fixture.expect,
-                    ),
-                };
-                Ok::<_, ApiError>((cell, sample, outcome, failures, binding))
-            }));
-        }
-    }
-
-    let mut items: Vec<EvalRunItem> = Vec::with_capacity(handles.len());
-    for handle in handles {
-        let task_result = handle
-            .await
-            .map_err(|err| ApiError::Internal(format!("online cell task panicked: {err}")))?;
-        let (cell, sample, outcome, failures, binding) = task_result?;
-        let mut report = ReplayReport::from_outcome(&outcome, failures);
-        report.cost_usd = crate::services::eval_cell::cost_usd_for(&report, &binding);
-        items.push(EvalRunItem {
-            fixture_id: fixture.id.clone(),
-            cell: Some(cell),
-            report,
-            trace_run_id: outcome.trace_run_id().map(str::to_string),
-            sample_index: if emit_sample_index {
-                Some(sample)
-            } else {
-                None
-            },
-        });
-    }
+    let items = run_live_eval_cells(
+        std::slice::from_ref(&fixture),
+        &resolved,
+        LiveCellOptions {
+            samples,
+            max_concurrent: limits.max_concurrent_online_cells,
+            max_walltime_secs: body.max_walltime_secs,
+            agent_base,
+            agent_overrides: body.agent_overrides.clone(),
+            judge,
+            max_total_tokens: Some(body.max_total_tokens),
+            trace_sink,
+            trace_store,
+            task_context: "online cell",
+        },
+    )
+    .await?;
 
     let run = EvalRun {
         id: mint_run_id(),

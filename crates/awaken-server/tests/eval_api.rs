@@ -442,7 +442,10 @@ async fn curate_items_appends_fixture_recovered_from_trace() {
         &app.router,
         "POST",
         "/v1/eval/datasets/DS-CUR/items",
-        Some(json!({ "from_run_id": run_id })),
+        Some(json!({
+            "from_run_id": run_id,
+            "expected": { "final_answer_contains": ["42"] },
+        })),
     )
     .await;
     assert_eq!(status, StatusCode::CREATED, "body: {body}");
@@ -451,6 +454,57 @@ async fn curate_items_appends_fixture_recovered_from_trace() {
     assert_eq!(added["id"], run_id);
     assert_eq!(added["user_input"], "auto prompt");
     assert_eq!(added["source_run_id"], run_id);
+    assert_eq!(added["expect"]["final_answer_contains"][0], "42");
+
+    let removed = app
+        .trace_store
+        .prune(
+            UNIX_EPOCH + std::time::Duration::from_secs(4_000_000_000),
+            &std::collections::HashSet::new(),
+        )
+        .unwrap();
+    assert_eq!(removed, 0, "curated source trace must be pinned");
+    assert!(
+        !app.trace_store.read(run_id).unwrap().is_empty(),
+        "source trace should survive retention after curation"
+    );
+}
+
+#[tokio::test]
+async fn curate_items_400s_on_empty_expected() {
+    let app = build_test_app().await;
+    let run_id = "01HXCUR0000000000000000003";
+    app.trace_store
+        .append(
+            run_id,
+            &MetricsEvent::Inference(captured_inference_span(run_id, "ok", true)),
+        )
+        .unwrap();
+
+    let (status, _) = request(
+        &app.router,
+        "POST",
+        "/v1/eval/datasets",
+        Some(json!({ "id": "DS-CUR3", "spec": {} })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, body) = request(
+        &app.router,
+        "POST",
+        "/v1/eval/datasets/DS-CUR3/items",
+        Some(json!({ "from_run_id": run_id, "expected": {} })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(
+        body["error"]
+            .as_str()
+            .unwrap_or("")
+            .contains("at least one expectation"),
+        "body: {body}"
+    );
 }
 
 #[tokio::test]
@@ -478,7 +532,10 @@ async fn curate_items_400s_when_trace_lacks_user_and_body_lacks_input() {
         &app.router,
         "POST",
         "/v1/eval/datasets/DS-CUR2/items",
-        Some(json!({ "from_run_id": run_id })),
+        Some(json!({
+            "from_run_id": run_id,
+            "expected": { "final_answer_contains": ["ok"] },
+        })),
     )
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
@@ -1791,13 +1848,29 @@ async fn import_traces_appends_curatable_traces_and_skips_existing() {
         &app.router,
         "POST",
         "/v1/eval/datasets/DS-IMP/import-traces",
-        Some(json!({ "expected_revision": rev })),
+        Some(json!({
+            "expected_revision": rev,
+            "expected": { "final_answer_contains": ["ok"] },
+        })),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "body: {body}");
     assert_eq!(body["imported_count"], 2);
     assert_eq!(body["skipped_count"], 0);
     let new_rev = body["dataset_revision"].as_u64().unwrap();
+    let (_, dataset) = request(&app.router, "GET", "/v1/eval/datasets/DS-IMP", None).await;
+    let fixtures = dataset["spec"]["fixtures"].as_array().unwrap();
+    assert_eq!(fixtures.len(), 2);
+    assert_eq!(fixtures[0]["expect"]["final_answer_contains"][0], "ok");
+
+    let removed = app
+        .trace_store
+        .prune(
+            UNIX_EPOCH + Duration::from_secs(4_000_000_000),
+            &std::collections::HashSet::new(),
+        )
+        .unwrap();
+    assert_eq!(removed, 0, "imported source traces must be pinned");
 
     // Second import with same traces — all skipped (no clobber), no
     // revision bump.
@@ -1805,7 +1878,10 @@ async fn import_traces_appends_curatable_traces_and_skips_existing() {
         &app.router,
         "POST",
         "/v1/eval/datasets/DS-IMP/import-traces",
-        Some(json!({ "expected_revision": new_rev })),
+        Some(json!({
+            "expected_revision": new_rev,
+            "expected": { "final_answer_contains": ["ok"] },
+        })),
     )
     .await;
     assert_eq!(status, StatusCode::OK);
@@ -1829,7 +1905,10 @@ async fn import_traces_409s_on_stale_revision() {
         &app.router,
         "POST",
         "/v1/eval/datasets/DS-IMP2/import-traces",
-        Some(json!({ "expected_revision": rev + 99 })),
+        Some(json!({
+            "expected_revision": rev + 99,
+            "expected": { "final_answer_contains": ["ok"] },
+        })),
     )
     .await;
     assert_eq!(status, StatusCode::CONFLICT);
@@ -1881,7 +1960,10 @@ async fn import_traces_400s_when_trace_lacks_user_and_skip_disabled() {
         &app.router,
         "POST",
         "/v1/eval/datasets/DS-IMP3/import-traces",
-        Some(json!({ "expected_revision": rev })),
+        Some(json!({
+            "expected_revision": rev,
+            "expected": { "final_answer_contains": ["ok"] },
+        })),
     )
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
@@ -1898,7 +1980,11 @@ async fn import_traces_400s_when_trace_lacks_user_and_skip_disabled() {
         &app.router,
         "POST",
         "/v1/eval/datasets/DS-IMP3/import-traces",
-        Some(json!({ "expected_revision": rev, "skip_uncuratable": true })),
+        Some(json!({
+            "expected_revision": rev,
+            "skip_uncuratable": true,
+            "expected": { "final_answer_contains": ["ok"] },
+        })),
     )
     .await;
     assert_eq!(status, StatusCode::OK);
@@ -2015,6 +2101,7 @@ async fn import_dialogue_stitches_runs_into_multiturn_fixture() {
                 "01HXDLG0000000000000000002",
             ],
             "fixture_id": "two-turn-dialogue",
+            "expected": { "final_answer_contains": ["second"] },
         })),
     )
     .await;
@@ -2029,6 +2116,16 @@ async fn import_dialogue_stitches_runs_into_multiturn_fixture() {
     let continued = fx["continued_turns"].as_array().unwrap();
     assert_eq!(continued.len(), 1, "second run becomes one continued turn");
     assert_eq!(continued[0]["user_input"], "auto prompt");
+    assert_eq!(fx["expect"]["final_answer_contains"][0], "second");
+
+    let removed = app
+        .trace_store
+        .prune(
+            UNIX_EPOCH + std::time::Duration::from_secs(4_000_000_000),
+            &std::collections::HashSet::new(),
+        )
+        .unwrap();
+    assert_eq!(removed, 0, "dialogue source traces must be pinned");
 }
 
 #[tokio::test]
@@ -2066,6 +2163,7 @@ async fn import_dialogue_400s_on_thread_id_mismatch() {
                 "01HXDLG0000000000000000011",
             ],
             "fixture_id": "mixed-threads",
+            "expected": { "final_answer_contains": ["answer"] },
         })),
     )
     .await;
@@ -2091,7 +2189,11 @@ async fn import_dialogue_400s_on_empty_run_ids() {
         &app.router,
         "POST",
         "/v1/eval/datasets/DS-DLG2/import-dialogue",
-        Some(json!({ "expected_revision": rev, "run_ids": [] })),
+        Some(json!({
+            "expected_revision": rev,
+            "run_ids": [],
+            "expected": { "final_answer_contains": ["answer"] },
+        })),
     )
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
@@ -2132,6 +2234,7 @@ async fn import_dialogue_409s_on_duplicate_fixture_id() {
             "expected_revision": rev,
             "run_ids": [run_id],
             "fixture_id": "already-here",
+            "expected": { "final_answer_contains": ["hi"] },
         })),
     )
     .await;
