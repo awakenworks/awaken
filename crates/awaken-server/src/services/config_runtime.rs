@@ -9,7 +9,7 @@ use awaken_contract::contract::config_store::{ConfigChangeNotifier, ConfigStore}
 use awaken_contract::contract::executor::LlmExecutor;
 use awaken_contract::contract::storage::StorageError;
 use awaken_contract::{
-    AgentSpec, ConfigRecord, McpRestartPolicy, McpServerSpec, McpTransportKind, ModelBindingSpec,
+    AgentSpec, ConfigRecord, McpRestartPolicy, McpServerSpec, McpTransportKind, ModelSpec,
     PeriodicRefresher, ProviderSpec, SkillSpecSink,
 };
 use awaken_ext_mcp::{
@@ -22,9 +22,7 @@ use awaken_runtime::registry::BackendRegistry;
 use awaken_runtime::registry::memory::{
     MapAgentSpecRegistry, MapModelRegistry, MapProviderRegistry,
 };
-use awaken_runtime::registry::{
-    AgentSpecRegistry, ModelBinding, PluginSource, RegistrySet, ToolRegistry,
-};
+use awaken_runtime::registry::{AgentSpecRegistry, PluginSource, RegistrySet, ToolRegistry};
 use genai::adapter::AdapterKind;
 use genai::resolver::{AuthData, Endpoint};
 use genai::{Client, ModelIden, ServiceTarget, WebConfig};
@@ -267,7 +265,7 @@ pub trait McpRegistryFactory: Send + Sync {
 }
 
 /// Resolves a per-agent [`SamplingHandler`] by walking the live runtime
-/// registry: `agent.model_id` → `ModelBinding` → provider →
+/// registry: `agent.model_id` → `ModelSpec` → provider →
 /// `LlmExecutor` → [`DefaultSamplingHandler`].
 ///
 /// Wired into [`DefaultMcpRegistryFactory`] so server-initiated
@@ -285,7 +283,7 @@ pub trait McpRegistryFactory: Send + Sync {
 /// `version` is the [`AgentRuntime::registry_version`] under which the
 /// `entries` were built. Each publish bumps the runtime's version (see
 /// `replace_registry_set`), so a version mismatch on lookup means the
-/// underlying `ModelBinding` / provider / `LlmExecutor` may have
+/// underlying `ModelSpec` / provider / `LlmExecutor` may have
 /// changed — wipe the cache before serving. Without this, a published
 /// config that changes (say) a model's `upstream_model` while leaving
 /// the agent spec's `model_id` intact would keep routing sampling
@@ -344,12 +342,10 @@ impl SamplingHandlerFactory for RegistryDrivenSamplingHandlerFactory {
         }
 
         let registries = snapshot.registries();
-        let binding = registries.models.get_model(&agent_spec.model_id)?;
-        let executor = registries.providers.get_provider(&binding.provider_id)?;
-        let handler: Arc<dyn SamplingHandler> = Arc::new(DefaultSamplingHandler::new(
-            executor,
-            binding.upstream_model,
-        ));
+        let model = registries.models.get_model(&agent_spec.model_id)?;
+        let executor = registries.providers.get_provider(&model.provider_id)?;
+        let handler: Arc<dyn SamplingHandler> =
+            Arc::new(DefaultSamplingHandler::new(executor, model.upstream_model));
 
         // Insert under the SNAPSHOT's version (the one the handler
         // was actually built from), not a freshly-read live version.
@@ -686,7 +682,7 @@ impl ConfigRuntimeManager {
     pub async fn bootstrap_if_empty(
         &self,
         providers: &[ProviderSpec],
-        models: &[ModelBindingSpec],
+        models: &[ModelSpec],
         agents: &[AgentSpec],
         mcp_servers: &[McpServerSpec],
     ) -> Result<bool, ConfigRuntimeError> {
@@ -1197,7 +1193,7 @@ impl ConfigRuntimeManager {
     fn compile_registry_set(
         &self,
         providers: &[ProviderSpec],
-        models: &[ModelBindingSpec],
+        models: &[ModelSpec],
         agents: &[AgentSpec],
         tool_specs: &[awaken_contract::ToolSpec],
         dynamic_tools: Option<Arc<dyn ToolRegistry>>,
@@ -1224,7 +1220,7 @@ impl ConfigRuntimeManager {
         let mut model_registry = MapModelRegistry::new();
         for model in models {
             model_registry
-                .register_model(model.id.clone(), ModelBinding::from(model))
+                .register_model(model.clone())
                 .map_err(|error| ConfigRuntimeError::InvalidConfig(error.to_string()))?;
         }
 
@@ -1770,7 +1766,7 @@ mod tests {
     /// R8 #2 / R10 #3 regression: sampling-factory cache must drop
     /// stale entries when the underlying [`AgentRuntime`]'s
     /// `RegistrySet` is replaced. The cache key
-    /// `(agent_id, model_id)` alone is not sufficient — model bindings
+    /// `(agent_id, model_id)` alone is not sufficient — `ModelSpec` entries
     /// can change underneath without the key changing. We tag entries
     /// with `registry_version()`; a mismatch wipes the cache so the
     /// next lookup walks the live registry.
@@ -1778,11 +1774,11 @@ mod tests {
     async fn registry_factory_cache_invalidates_on_registry_replace() {
         use awaken_contract::contract::executor::{InferenceExecutionError, InferenceRequest};
         use awaken_contract::contract::inference::{StreamResult, TokenUsage};
+        use awaken_runtime::registry::RegistrySet;
         use awaken_runtime::registry::memory::{
             MapAgentSpecRegistry, MapModelRegistry, MapPluginSource, MapProviderRegistry,
             MapToolRegistry,
         };
-        use awaken_runtime::registry::{ModelBinding, RegistrySet};
 
         // Two distinct executors so we can tell which one the cache
         // hands back. Mock returns its label in the response text so a
@@ -1824,13 +1820,11 @@ mod tests {
                 .unwrap();
             let mut models = MapModelRegistry::new();
             models
-                .register_model(
+                .register_model(ModelSpec::new(
                     "m",
-                    ModelBinding {
-                        provider_id: "p".into(),
-                        upstream_model: format!("upstream-{executor_label}"),
-                    },
-                )
+                    "p",
+                    format!("upstream-{executor_label}"),
+                ))
                 .unwrap();
             let mut providers = MapProviderRegistry::new();
             providers
@@ -1854,13 +1848,7 @@ mod tests {
         let runtime = Arc::new(
             awaken_runtime::AgentRuntimeBuilder::new()
                 .with_provider("p", Arc::new(LabelExecutor { label: "v1" }))
-                .with_model_binding(
-                    "m",
-                    ModelBinding {
-                        provider_id: "p".into(),
-                        upstream_model: "upstream-v1".into(),
-                    },
-                )
+                .with_model(ModelSpec::new("m", "p", "upstream-v1"))
                 .with_agent_spec(AgentSpec {
                     id: "alpha".into(),
                     model_id: "m".into(),
@@ -2447,7 +2435,7 @@ mod tests {
     #[tokio::test]
     async fn apply_seed_writes_builtin_envelope() {
         use awaken_contract::{
-            BuiltinSeedSet, BuiltinSpec, ConfigRecord, ModelBindingSpec, ProviderSpec, RecordSource,
+            BuiltinSeedSet, BuiltinSpec, ConfigRecord, ModelSpec, ProviderSpec, RecordSource,
         };
 
         let bin_version = "test-env-ver".to_owned();
@@ -2461,7 +2449,7 @@ mod tests {
                     adapter: "openai".into(),
                     ..Default::default()
                 }),
-                BuiltinSpec::Model(ModelBindingSpec::new("m1", "p1", "m1-model")),
+                BuiltinSpec::Model(ModelSpec::new("m1", "p1", "m1-model")),
                 BuiltinSpec::Agent(Box::new(AgentSpec {
                     id: "a1".into(),
                     model_id: "m1".into(),
@@ -2574,13 +2562,7 @@ mod tests {
         let runtime = Arc::new(
             awaken_runtime::builder::AgentRuntimeBuilder::new()
                 .with_provider("boot", Arc::new(Stub))
-                .with_model_binding(
-                    "boot",
-                    awaken_runtime::registry::traits::ModelBinding {
-                        provider_id: "boot".into(),
-                        upstream_model: "boot-model".into(),
-                    },
-                )
+                .with_model(ModelSpec::new("boot", "boot", "boot-model"))
                 .with_agent_spec(AgentSpec {
                     id: "boot".into(),
                     model_id: "boot".into(),
@@ -2694,7 +2676,7 @@ mod tests {
     #[tokio::test]
     async fn apply_seed_writes_builtin_records_to_store() {
         use awaken_contract::{
-            BuiltinSeedSet, BuiltinSpec, ConfigRecord, ModelBindingSpec, ProviderSpec, RecordSource,
+            BuiltinSeedSet, BuiltinSpec, ConfigRecord, ModelSpec, ProviderSpec, RecordSource,
         };
 
         let (manager, store) = make_manager_with_store().await;
@@ -2714,11 +2696,7 @@ mod tests {
                     adapter: "openai".into(),
                     ..Default::default()
                 }),
-                BuiltinSpec::Model(ModelBindingSpec::new(
-                    "seed-model",
-                    "seed-provider",
-                    "gpt-4o",
-                )),
+                BuiltinSpec::Model(ModelSpec::new("seed-model", "seed-provider", "gpt-4o")),
             ],
         };
 
@@ -2749,7 +2727,7 @@ mod tests {
 
     #[tokio::test]
     async fn apply_seed_idempotent() {
-        use awaken_contract::{BuiltinSeedSet, BuiltinSpec, ModelBindingSpec, ProviderSpec};
+        use awaken_contract::{BuiltinSeedSet, BuiltinSpec, ModelSpec, ProviderSpec};
 
         let (manager, _store) = make_manager_with_store().await;
 
@@ -2768,11 +2746,7 @@ mod tests {
                     adapter: "openai".into(),
                     ..Default::default()
                 }),
-                BuiltinSpec::Model(ModelBindingSpec::new(
-                    "idem-model",
-                    "idem-provider",
-                    "gpt-4o",
-                )),
+                BuiltinSpec::Model(ModelSpec::new("idem-model", "idem-provider", "gpt-4o")),
             ],
         };
 
@@ -2904,13 +2878,7 @@ mod tests {
         let runtime = Arc::new(
             awaken_runtime::builder::AgentRuntimeBuilder::new()
                 .with_provider("boot", Arc::new(Stub))
-                .with_model_binding(
-                    "boot",
-                    awaken_runtime::registry::traits::ModelBinding {
-                        provider_id: "boot".into(),
-                        upstream_model: "boot-model".into(),
-                    },
-                )
+                .with_model(ModelSpec::new("boot", "boot", "boot-model"))
                 .with_agent_spec(shared_discovered)
                 .with_agent_spec(remote_only)
                 .with_in_memory_thread_run_store(thread_store.clone())
@@ -2944,7 +2912,7 @@ mod tests {
                     adapter: "stub".into(),
                     ..Default::default()
                 }),
-                BuiltinSpec::Model(awaken_contract::ModelBindingSpec::new(
+                BuiltinSpec::Model(awaken_contract::ModelSpec::new(
                     "boot-model",
                     "boot-prov",
                     "gpt-4o",
@@ -3027,7 +2995,7 @@ mod tests {
                     adapter: "openai".into(),
                     ..Default::default()
                 }),
-                BuiltinSpec::Model(ModelBindingSpec::new("m", "p", "gpt-4o")),
+                BuiltinSpec::Model(ModelSpec::new("m", "p", "gpt-4o")),
                 BuiltinSpec::Agent(Box::new(AgentSpec {
                     id: "x".into(),
                     model_id: "m".into(),
@@ -3087,7 +3055,7 @@ mod tests {
                     adapter: "openai".into(),
                     ..Default::default()
                 }),
-                BuiltinSpec::Model(ModelBindingSpec::new("m", "p", "gpt-4o")),
+                BuiltinSpec::Model(ModelSpec::new("m", "p", "gpt-4o")),
                 BuiltinSpec::Agent(Box::new(AgentSpec {
                     id: "a".into(),
                     model_id: "m".into(),
@@ -3177,7 +3145,7 @@ mod tests {
                     adapter: "openai".into(),
                     ..Default::default()
                 }),
-                BuiltinSpec::Model(ModelBindingSpec::new("m", "p", "gpt-4o")),
+                BuiltinSpec::Model(ModelSpec::new("m", "p", "gpt-4o")),
                 BuiltinSpec::Agent(Box::new(AgentSpec {
                     id: "y".into(),
                     model_id: "m".into(),
@@ -3229,7 +3197,7 @@ mod tests {
                     adapter: "openai".into(),
                     ..Default::default()
                 }),
-                BuiltinSpec::Model(ModelBindingSpec::new("m", "p", "gpt-4o")),
+                BuiltinSpec::Model(ModelSpec::new("m", "p", "gpt-4o")),
             ],
         };
         manager.apply_seed(&seed).await.expect("apply_seed");
@@ -3287,7 +3255,7 @@ mod tests {
                     adapter: "openai".into(),
                     ..Default::default()
                 }),
-                BuiltinSpec::Model(ModelBindingSpec::new("m", "p", "gpt-4o")),
+                BuiltinSpec::Model(ModelSpec::new("m", "p", "gpt-4o")),
                 BuiltinSpec::Agent(Box::new(AgentSpec {
                     id: "a".into(),
                     model_id: "m".into(),
@@ -3318,7 +3286,7 @@ mod tests {
                     adapter: "openai".into(),
                     ..Default::default()
                 }),
-                BuiltinSpec::Model(ModelBindingSpec::new("m", "p", "gpt-4o")),
+                BuiltinSpec::Model(ModelSpec::new("m", "p", "gpt-4o")),
                 BuiltinSpec::Agent(Box::new(AgentSpec {
                     id: "a".into(),
                     model_id: "m".into(),
@@ -3392,9 +3360,7 @@ mod tests {
         use awaken_contract::contract::tool::{
             Tool, ToolCallContext, ToolDescriptor, ToolError, ToolOutput, ToolResult,
         };
-        use awaken_contract::{
-            BuiltinSeedSet, BuiltinSpec, ModelBindingSpec, ProviderSpec, ToolSpec,
-        };
+        use awaken_contract::{BuiltinSeedSet, BuiltinSpec, ModelSpec, ProviderSpec, ToolSpec};
         use awaken_stores::InMemoryStore;
         use serde_json::json;
 
@@ -3454,13 +3420,7 @@ mod tests {
         let runtime = Arc::new(
             awaken_runtime::builder::AgentRuntimeBuilder::new()
                 .with_provider("boot", Arc::new(Stub))
-                .with_model_binding(
-                    "boot",
-                    awaken_runtime::registry::traits::ModelBinding {
-                        provider_id: "boot".into(),
-                        upstream_model: "boot-model".into(),
-                    },
-                )
+                .with_model(ModelSpec::new("boot", "boot", "boot-model"))
                 .with_tool(
                     tool_id,
                     Arc::new(StubTool {
@@ -3487,7 +3447,7 @@ mod tests {
                     adapter: "openai".into(),
                     ..Default::default()
                 }),
-                BuiltinSpec::Model(ModelBindingSpec::new("test-model", "test-prov", "gpt-4o")),
+                BuiltinSpec::Model(ModelSpec::new("test-model", "test-prov", "gpt-4o")),
                 BuiltinSpec::Agent(Box::new(AgentSpec {
                     id: "agent-using-echo".into(),
                     model_id: "test-model".into(),

@@ -754,7 +754,7 @@ async fn run_matrix_cells(
     } = options;
 
     // Pre-resolve every model once — same executor reused across all
-    // fixtures (and samples) of the same cell. Carry the binding spec
+    // fixtures (and samples) of the same cell. Carry the model spec
     // forward so we can compute cost_usd post-replay without a second
     // registry lookup.
     let mut resolved: Vec<ResolvedCell> = Vec::with_capacity(cells.len());
@@ -768,7 +768,7 @@ async fn run_matrix_cells(
             cell: cell.clone(),
             executor: r.executor,
             upstream_model: r.upstream_model,
-            binding: r.binding,
+            spec: r.spec,
         });
     }
 

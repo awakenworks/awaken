@@ -7,11 +7,10 @@ use awaken_contract::contract::config_store::ConfigStore;
 use awaken_contract::contract::executor::{InferenceExecutionError, InferenceRequest, LlmExecutor};
 use awaken_contract::contract::inference::{StopReason, StreamResult, TokenUsage};
 use awaken_contract::{
-    AgentSpec, BuiltinSeedSet, BuiltinSpec, ConfigRecord, ModelBindingSpec, ProviderSpec,
-    RecordMeta, SkillSpec,
+    AgentSpec, BuiltinSeedSet, BuiltinSpec, ConfigRecord, ModelSpec, ProviderSpec, RecordMeta,
+    SkillSpec,
 };
 use awaken_runtime::builder::AgentRuntimeBuilder;
-use awaken_runtime::registry::traits::ModelBinding;
 use serde_json::{Value, json};
 use tokio::sync::Notify;
 
@@ -264,13 +263,7 @@ async fn build_state(
                 adapter: "stub".into(),
                 ..Default::default()
             }),
-            BuiltinSpec::model(ModelBindingSpec {
-                id: "bootstrap".into(),
-                provider_id: "bootstrap".into(),
-                upstream_model: "bootstrap-model".into(),
-                input_token_price_per_million_usd: None,
-                output_token_price_per_million_usd: None,
-            }),
+            BuiltinSpec::model(ModelSpec::new("bootstrap", "bootstrap", "bootstrap-model")),
             BuiltinSpec::agent(bootstrap_agent()),
         ],
     };
@@ -403,13 +396,7 @@ async fn service_requires_runtime_manager_for_mutations() {
     let runtime = Arc::new(
         AgentRuntimeBuilder::new()
             .with_provider("bootstrap", Arc::new(ImmediateExecutor))
-            .with_model_binding(
-                "bootstrap",
-                ModelBinding {
-                    provider_id: "bootstrap".into(),
-                    upstream_model: "bootstrap-model".into(),
-                },
-            )
+            .with_model(ModelSpec::new("bootstrap", "bootstrap", "bootstrap-model"))
             .with_agent_spec(bootstrap_agent())
             .with_in_memory_thread_run_store(thread_store.clone())
             .build()
@@ -743,7 +730,7 @@ async fn provider_removal_preview_collects_dependents_across_multiple_models() {
         "preview must collect dependents across all provider models in a single pass"
     );
     assert!(!preview.block_if_referenced_allowed);
-    assert!(!preview.cascade_unused_model_bindings_allowed);
+    assert!(!preview.cascade_unused_models_allowed);
 }
 
 #[tokio::test]
@@ -1167,13 +1154,7 @@ fn namespace_all_matches_builtin_spec_namespace() {
                 adapter: "openai".into(),
                 ..Default::default()
             }),
-            ConfigNamespace::Models => BuiltinSpec::Model(ModelBindingSpec {
-                id: "x".into(),
-                provider_id: "p".into(),
-                upstream_model: "m".into(),
-                input_token_price_per_million_usd: None,
-                output_token_price_per_million_usd: None,
-            }),
+            ConfigNamespace::Models => BuiltinSpec::Model(ModelSpec::new("x", "p", "m")),
             ConfigNamespace::McpServers => BuiltinSpec::McpServer(McpServerSpec {
                 id: "x".into(),
                 ..Default::default()
@@ -1733,13 +1714,11 @@ async fn build_test_service_with_tool(
                 adapter: "stub".into(),
                 ..Default::default()
             }),
-            BuiltinSpec::model(awaken_contract::ModelBindingSpec {
-                id: "bootstrap".into(),
-                provider_id: "bootstrap".into(),
-                upstream_model: "bootstrap-model".into(),
-                input_token_price_per_million_usd: None,
-                output_token_price_per_million_usd: None,
-            }),
+            BuiltinSpec::model(awaken_contract::ModelSpec::new(
+                "bootstrap",
+                "bootstrap",
+                "bootstrap-model",
+            )),
             BuiltinSpec::agent(bootstrap_agent()),
         ],
     };
@@ -2099,13 +2078,11 @@ async fn patch_tool_overrides_apply_failure_emits_apply_failed_audit_event() {
                 adapter: "stub".into(),
                 ..Default::default()
             }),
-            BuiltinSpec::model(awaken_contract::ModelBindingSpec {
-                id: "bootstrap".into(),
-                provider_id: "bootstrap".into(),
-                upstream_model: "bootstrap-model".into(),
-                input_token_price_per_million_usd: None,
-                output_token_price_per_million_usd: None,
-            }),
+            BuiltinSpec::model(awaken_contract::ModelSpec::new(
+                "bootstrap",
+                "bootstrap",
+                "bootstrap-model",
+            )),
             BuiltinSpec::agent(bootstrap_agent()),
         ],
     };

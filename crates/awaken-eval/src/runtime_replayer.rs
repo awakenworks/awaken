@@ -40,6 +40,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use async_trait::async_trait;
+use awaken_contract::ModelSpec;
 use awaken_contract::agent_spec_patch::{AgentSpecPatch, merge_agent_spec};
 use awaken_contract::contract::executor::LlmExecutor;
 use awaken_contract::contract::message::Message;
@@ -49,7 +50,6 @@ use awaken_ext_observability::{
 };
 use awaken_runtime::builder::AgentRuntimeBuilder;
 use awaken_runtime::engine::{LlmRetryPolicy, RetryConfigKey, ScriptedLlmExecutor};
-use awaken_runtime::registry::traits::ModelBinding;
 use awaken_runtime::{AgentRuntime, RunActivation};
 use awaken_stores::MemoryCommitCoordinator;
 use awaken_stores::memory::InMemoryStore;
@@ -62,9 +62,9 @@ use crate::replay::Replayer;
 const SCRIPTED_PROVIDER_ID: &str = "scripted";
 /// Identifier the live provider registers under.
 const LIVE_PROVIDER_ID: &str = "live";
-/// Identifier for the model binding the agent spec points at.
+/// Identifier for the `ModelSpec` the agent spec points at.
 const SCRIPTED_MODEL_ID: &str = "scripted-model";
-/// Identifier for the live model binding the agent spec points at when
+/// Identifier for the live `ModelSpec` the agent spec points at when
 /// `ReplayMode::Live`. The caller-supplied `upstream_model` is bound to
 /// the live provider under this id; agent overrides that try to set a
 /// different `model_id` are ignored (the live executor is the model under
@@ -421,13 +421,11 @@ impl RuntimeReplayer {
             with_eval_memory_store(
                 AgentRuntimeBuilder::new()
                     .with_provider(SCRIPTED_PROVIDER_ID, executor.clone())
-                    .with_model_binding(
+                    .with_model(ModelSpec::new(
                         SCRIPTED_MODEL_ID,
-                        ModelBinding {
-                            provider_id: SCRIPTED_PROVIDER_ID.into(),
-                            upstream_model: upstream_model.clone(),
-                        },
-                    ),
+                        SCRIPTED_PROVIDER_ID,
+                        upstream_model.clone(),
+                    )),
                 store.clone(),
             )
             .with_agent_spec(agent_spec)
@@ -568,13 +566,11 @@ impl RuntimeReplayer {
             with_eval_memory_store(
                 AgentRuntimeBuilder::new()
                     .with_provider(LIVE_PROVIDER_ID, executor)
-                    .with_model_binding(
+                    .with_model(ModelSpec::new(
                         LIVE_MODEL_ID,
-                        ModelBinding {
-                            provider_id: LIVE_PROVIDER_ID.into(),
-                            upstream_model,
-                        },
-                    ),
+                        LIVE_PROVIDER_ID,
+                        upstream_model,
+                    )),
                 store.clone(),
             )
             .with_agent_spec(agent_spec)

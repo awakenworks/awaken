@@ -26,6 +26,7 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use awaken_contract::ModelSpec;
 use awaken_contract::contract::executor::{InferenceExecutionError, InferenceRequest, LlmExecutor};
 use awaken_contract::contract::inference::{StopReason, StreamResult, TokenUsage};
 use awaken_contract::registry_spec::AgentSpec;
@@ -34,7 +35,6 @@ use awaken_ext_observability::{
     SinkError,
 };
 use awaken_runtime::builder::AgentRuntimeBuilder;
-use awaken_runtime::registry::traits::ModelBinding;
 use awaken_server::app::{AdminApiConfig, ServerConfig, ServerState};
 use awaken_server::routes::build_router;
 use awaken_stores::memory::InMemoryStore;
@@ -126,13 +126,7 @@ fn build_app(response: &str) -> (axum::Router, Arc<RuntimeStatsRegistry>) {
                     response: response.into(),
                 }),
             )
-            .with_model_binding(
-                "scripted-model",
-                ModelBinding {
-                    provider_id: "scripted".into(),
-                    upstream_model: "scripted".into(),
-                },
-            )
+            .with_model(ModelSpec::new("scripted-model", "scripted", "scripted"))
             .with_in_memory_thread_run_store(store.clone())
             .with_agent_spec(AgentSpec {
                 id: "default".into(),

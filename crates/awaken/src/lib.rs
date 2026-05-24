@@ -14,10 +14,7 @@
 //! let runtime = AgentRuntimeBuilder::new()
 //!     .with_agent_spec(AgentSpec::new("assistant").with_model_id("gpt-4o-mini"))
 //!     .with_provider("openai", Arc::new(GenaiExecutor::new()))
-//!     .with_model_binding("gpt-4o-mini", ModelBinding {
-//!         provider_id: "openai".into(),
-//!         upstream_model: "gpt-4o-mini".into(),
-//!     })
+//!     .with_model(ModelSpec::new("gpt-4o-mini", "openai", "gpt-4o-mini"))
 //!     .build()?;
 //!
 //! let request = RunRequest::new("thread-1", vec![Message::user("Hello")])
@@ -140,8 +137,8 @@ pub mod state {
 pub use awaken_contract::{
     AGENT_SPEC_PATCH_UNKNOWN_FIELD_POLICY, AGENT_SPEC_UNKNOWN_FIELD_POLICY, AgentSpec,
     AgentSpecPatch, ConfigRecord, ConfigRecordError, ConfigRecordMerge, ConfigValidationError,
-    EffectSpec, FailedScheduledActions, JsonValue, KeyScope,
-    MODEL_BINDING_SPEC_UNKNOWN_FIELD_POLICY, MergeStrategy, NoConfigPatch,
+    EffectSpec, FailedScheduledActions, JsonValue, KeyScope, MODEL_SPEC_UNKNOWN_FIELD_POLICY,
+    MergeStrategy, Modalities, Modality, ModelSpec, NoConfigPatch,
     PROVIDER_SPEC_UNKNOWN_FIELD_POLICY, PendingScheduledActions, PersistedState, Phase,
     PluginConfigKey, PreparedSkillSpecs, RecordMeta, RecordSource, RedactedString,
     SKILL_SPEC_UNKNOWN_FIELD_POLICY, ScheduledActionSpec, SkillArgumentSpec, SkillSpec,
@@ -150,8 +147,8 @@ pub use awaken_contract::{
     decode_config_record, effective_config_record, effective_visible_config_records,
     generate_tool_schema, merge_agent_spec, merge_skill_spec, sanitize_for_llm,
     validate_against_schema, validate_agent_spec, validate_agent_spec_patch,
-    validate_config_record, validate_config_record_overrides, validate_model_binding_spec,
-    validate_provider_spec, validate_skill_spec,
+    validate_config_record, validate_config_record_overrides, validate_model_spec,
+    validate_provider_spec, validate_skill_spec, validate_unique_model_ids,
 };
 
 // runtime types

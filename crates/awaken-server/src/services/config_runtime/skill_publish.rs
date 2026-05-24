@@ -80,10 +80,10 @@ impl ConfigRuntimeManager {
         check_catalog_errors(local_agents).map_err(ConfigRuntimeError::InvalidConfig)?;
         let mut diagnostics = Vec::new();
         for model_id in candidate.models.model_ids() {
-            let Some(binding) = candidate.models.get_model(&model_id) else {
+            let Some(model) = candidate.models.get_model(&model_id) else {
                 continue;
             };
-            let provider_id = binding.provider_id;
+            let provider_id = model.provider_id;
             if candidate.providers.get_provider(&provider_id).is_none() {
                 diagnostics.push(RegistryDiagnostic::ModelMissingProvider {
                     model_id,

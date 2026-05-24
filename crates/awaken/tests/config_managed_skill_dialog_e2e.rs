@@ -20,8 +20,7 @@ use awaken::{
     SkillSpecSink,
 };
 use awaken_contract::{
-    AgentSpec, BuiltinSeedSet, BuiltinSpec, ConfigRecord, ModelBindingSpec, ProviderSpec,
-    RecordMeta,
+    AgentSpec, BuiltinSeedSet, BuiltinSpec, ConfigRecord, ModelSpec, ProviderSpec, RecordMeta,
 };
 
 struct ScriptedLlm {
@@ -145,13 +144,7 @@ async fn build_dialog_harness(responses: Vec<StreamResult>) -> DialogHarness {
                     adapter: "scripted".into(),
                     ..Default::default()
                 }),
-                BuiltinSpec::model(ModelBindingSpec {
-                    id: "dialog-model".into(),
-                    provider_id: "scripted".into(),
-                    upstream_model: "dialog-model".into(),
-                    input_token_price_per_million_usd: None,
-                    output_token_price_per_million_usd: None,
-                }),
+                BuiltinSpec::model(ModelSpec::new("dialog-model", "scripted", "dialog-model")),
                 BuiltinSpec::agent(AgentSpec {
                     id: "assistant".into(),
                     model_id: "dialog-model".into(),

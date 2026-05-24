@@ -185,7 +185,7 @@ mod tests {
     };
     use awaken_contract::contract::inference::{StopReason, StreamResult, TokenUsage};
     use awaken_contract::{
-        AgentSpec, BuiltinSeedSet, BuiltinSpec, ConfigRecord, ModelBindingSpec, ProviderSpec,
+        AgentSpec, BuiltinSeedSet, BuiltinSpec, ConfigRecord, ModelSpec, ProviderSpec,
         RecordMeta, RegistryPublication,
     };
     use awaken_stores::{InMemoryStore, InMemoryVersionedRegistryStore};
@@ -233,13 +233,7 @@ mod tests {
         let runtime = Arc::new(
             awaken_runtime::builder::AgentRuntimeBuilder::new()
                 .with_provider("boot", Arc::new(StubExecutor))
-                .with_model_binding(
-                    "boot",
-                    awaken_runtime::registry::traits::ModelBinding {
-                        provider_id: "boot".into(),
-                        upstream_model: "boot-model".into(),
-                    },
-                )
+                .with_model(awaken_contract::ModelSpec::new("boot", "boot", "boot-model"))
                 .with_agent_spec(AgentSpec {
                     id: "boot".into(),
                     model_id: "boot".into(),
@@ -277,7 +271,7 @@ mod tests {
                     api_key: api_key.map(Into::into),
                     ..Default::default()
                 }),
-                BuiltinSpec::Model(ModelBindingSpec::new("model-1", "provider-1", "upstream")),
+                BuiltinSpec::Model(ModelSpec::new("model-1", "provider-1", "upstream")),
                 BuiltinSpec::Agent(Box::new(AgentSpec {
                     id: "agent-1".to_string(),
                     model_id: "model-1".to_string(),

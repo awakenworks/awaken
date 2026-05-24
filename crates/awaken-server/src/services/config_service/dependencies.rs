@@ -1,4 +1,4 @@
-use awaken_contract::{AgentSpec, ModelBindingSpec, SkillSpec, parse_skill_allowed_tool_token};
+use awaken_contract::{AgentSpec, ModelSpec, SkillSpec, parse_skill_allowed_tool_token};
 use awaken_tool_pattern::{parse_pattern, pattern_matches};
 use serde_json::Value;
 
@@ -23,7 +23,7 @@ impl ConfigService {
                 let models = self.store.list("models", 0, usize::MAX).await?;
                 let mut refs = Vec::new();
                 for (model_id, value) in models {
-                    let Some(model) = effective_visible_record::<ModelBindingSpec>(value)? else {
+                    let Some(model) = effective_visible_record::<ModelSpec>(value)? else {
                         continue;
                     };
                     if model.provider_id == id {

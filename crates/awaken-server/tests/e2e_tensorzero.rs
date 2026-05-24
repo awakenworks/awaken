@@ -29,10 +29,10 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use awaken_contract::ModelSpec;
 use awaken_contract::registry_spec::{AgentSpec, ProviderSpec};
 use awaken_runtime::builder::AgentRuntimeBuilder;
 use awaken_runtime::credentials::{AwakenCredentialBroker, CredentialBroker};
-use awaken_runtime::registry::traits::ModelBinding;
 use awaken_server::app::{ServerConfig, ServerState};
 use awaken_server::routes::build_router;
 use awaken_server::services::config_runtime::build_genai_provider_executor_with_broker;
@@ -486,13 +486,11 @@ async fn tz_router_provider_compiles_smoke() {
     let runtime = Arc::new(
         AgentRuntimeBuilder::new()
             .with_provider("tz", executor)
-            .with_model_binding(
+            .with_model(ModelSpec::new(
                 "tz_chat",
-                ModelBinding {
-                    provider_id: "tz".into(),
-                    upstream_model: "tensorzero::function_name::agent_chat".into(),
-                },
-            )
+                "tz",
+                "tensorzero::function_name::agent_chat",
+            ))
             .with_in_memory_thread_run_store(store.clone())
             .with_agent_spec(AgentSpec {
                 id: "default".into(),
@@ -795,13 +793,11 @@ mod helper_tests {
         let store = Arc::new(InMemoryStore::new());
         let runtime = AgentRuntimeBuilder::new()
             .with_provider("tz", executor)
-            .with_model_binding(
+            .with_model(ModelSpec::new(
                 "tz_chat",
-                ModelBinding {
-                    provider_id: "tz".into(),
-                    upstream_model: "tensorzero::function_name::agent_chat".into(),
-                },
-            )
+                "tz",
+                "tensorzero::function_name::agent_chat",
+            ))
             .with_in_memory_thread_run_store(store.clone())
             .with_agent_spec(AgentSpec {
                 id: "default".into(),

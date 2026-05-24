@@ -17,6 +17,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use async_trait::async_trait;
+use awaken_contract::ModelSpec;
 use awaken_contract::contract::content::ContentBlock;
 use awaken_contract::contract::executor::{InferenceExecutionError, InferenceRequest, LlmExecutor};
 use awaken_contract::contract::inference::{StopReason, StreamResult, TokenUsage};
@@ -33,7 +34,6 @@ use awaken_runtime::extensions::background::{
     BackgroundTaskManager, BackgroundTaskPlugin, TaskParentContext,
     TaskResult as BackgroundTaskResult, TaskStatus,
 };
-use awaken_runtime::registry::traits::ModelBinding;
 use awaken_server::app::{ServerConfig, ServerState};
 use awaken_server::mailbox::{Mailbox, MailboxConfig};
 use awaken_server::routes::build_router;
@@ -302,20 +302,12 @@ async fn a2a_loopback_remote_self_cancel_cascades_background_children() {
         AgentRuntimeBuilder::new()
             .with_provider("orchestrator", orchestrator_executor)
             .with_provider("worker", worker_executor)
-            .with_model_binding(
+            .with_model(ModelSpec::new(
                 "orchestrator-model",
-                ModelBinding {
-                    provider_id: "orchestrator".into(),
-                    upstream_model: "mock-orchestrator".into(),
-                },
-            )
-            .with_model_binding(
-                "worker-model",
-                ModelBinding {
-                    provider_id: "worker".into(),
-                    upstream_model: "mock-worker".into(),
-                },
-            )
+                "orchestrator",
+                "mock-orchestrator",
+            ))
+            .with_model(ModelSpec::new("worker-model", "worker", "mock-worker"))
             .with_tool(
                 "spawn_bg_child",
                 Arc::new(SpawnBackgroundChildTool {
@@ -482,13 +474,7 @@ async fn a2a_dual_server_remote_self_cancel_cascades_background_children() {
                     ],
                 )])),
             )
-            .with_model_binding(
-                "worker-model",
-                ModelBinding {
-                    provider_id: "worker".into(),
-                    upstream_model: "mock-worker".into(),
-                },
-            )
+            .with_model(ModelSpec::new("worker-model", "worker", "mock-worker"))
             .with_tool(
                 "spawn_bg_child",
                 Arc::new(SpawnBackgroundChildTool {
@@ -551,20 +537,16 @@ async fn a2a_dual_server_remote_self_cancel_cascades_background_children() {
                     ScriptedLlm::text_response("observed remote cancellation"),
                 ])),
             )
-            .with_model_binding(
+            .with_model(ModelSpec::new(
                 "orchestrator-model",
-                ModelBinding {
-                    provider_id: "orchestrator".into(),
-                    upstream_model: "mock-orchestrator".into(),
-                },
-            )
-            .with_model_binding(
+                "orchestrator",
+                "mock-orchestrator",
+            ))
+            .with_model(ModelSpec::new(
                 "worker-remote-model",
-                ModelBinding {
-                    provider_id: "orchestrator".into(),
-                    upstream_model: "mock-worker-remote".into(),
-                },
-            )
+                "orchestrator",
+                "mock-worker-remote",
+            ))
             .with_agent_spec(AgentSpec {
                 id: "orchestrator".into(),
                 model_id: "orchestrator-model".into(),
@@ -816,13 +798,7 @@ async fn a2a_loopback_orchestrator_delegates_to_worker() {
     let runtime = Arc::new(
         AgentRuntimeBuilder::new()
             .with_provider("default", executor)
-            .with_model_binding(
-                "default",
-                ModelBinding {
-                    provider_id: "default".into(),
-                    upstream_model: model_name,
-                },
-            )
+            .with_model(ModelSpec::new("default", "default", model_name))
             .with_agent_spec(orchestrator_spec)
             .with_agent_spec(worker_local)
             .with_agent_spec(worker_remote)

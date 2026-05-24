@@ -25,7 +25,7 @@ use awaken_contract::contract::inference::ContextWindowPolicy;
 use awaken_contract::contract::storage::ThreadRunStore;
 use awaken_contract::contract::tool::Tool;
 use awaken_contract::registry_spec::{
-    AgentSpec, McpServerSpec, McpTransportKind, ModelBindingSpec, ProviderSpec,
+    AgentSpec, McpServerSpec, McpTransportKind, ModelSpec, ProviderSpec,
 };
 use awaken_contract::{BuiltinSeedSet, BuiltinSpec};
 use awaken_ext_deferred_tools::DeferredToolsPlugin;
@@ -831,8 +831,7 @@ Deterministic compatibility directives:\n\
     let provider_factory = Arc::new(StarterProviderFactory::new(Arc::clone(&credential_broker)))
         as Arc<dyn ProviderExecutorFactory>;
     let default_provider = build_default_provider_spec(&args.model);
-    let default_model =
-        ModelBindingSpec::new(DEFAULT_MODEL_ID, DEFAULT_PROVIDER_ID, args.model.clone());
+    let default_model = ModelSpec::new(DEFAULT_MODEL_ID, DEFAULT_PROVIDER_ID, args.model.clone());
     // -- MCP managed defaults --
 
     let managed_mcp_servers = if let Some(ref cmd_str) = args.mcp_server_cmd {

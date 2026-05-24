@@ -475,6 +475,7 @@ mod tests {
 
     use crate::protocols::acp::types as wire_types;
     use async_trait::async_trait;
+    use awaken_contract::ModelSpec;
     use awaken_contract::contract::executor::{InferenceExecutionError, InferenceRequest};
     use awaken_contract::contract::inference::{
         StopReason as RuntimeStopReason, StreamResult, TokenUsage,
@@ -482,7 +483,6 @@ mod tests {
     use awaken_contract::contract::message::ToolCall as RuntimeToolCall;
     use awaken_contract::contract::tool::{FrontEndTool, ToolDescriptor};
     use awaken_runtime::builder::AgentRuntimeBuilder;
-    use awaken_runtime::registry::traits::ModelBinding;
     use tokio::io::{AsyncReadExt, AsyncWriteExt, BufReader, split};
     use tokio::time::{Duration, timeout};
 
@@ -546,13 +546,7 @@ mod tests {
         let frontend_tool = ToolDescriptor::new("ask_user", "ask_user", "Ask the user a question");
 
         let builder = AgentRuntimeBuilder::new()
-            .with_model_binding(
-                "test-model",
-                ModelBinding {
-                    provider_id: "mock".into(),
-                    upstream_model: "mock-model".into(),
-                },
-            )
+            .with_model(ModelSpec::new("test-model", "mock", "mock-model"))
             .with_provider(
                 "mock",
                 Arc::new(FrontendToolMockExecutor {

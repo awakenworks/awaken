@@ -5,7 +5,7 @@ use awaken_contract::contract::versioned_registry::VersionedRecord;
 use awaken_contract::skill_spec::SkillSpec;
 use awaken_contract::tool_spec::ToolSpec;
 use awaken_contract::{
-    AgentSpec, ModelBindingSpec, PinnedRegistryEntry, PinnedRegistryManifest, ProviderSpec,
+    AgentSpec, ModelSpec, PinnedRegistryEntry, PinnedRegistryManifest, ProviderSpec,
     REGISTRY_KIND_AGENT, REGISTRY_KIND_MODEL, REGISTRY_KIND_PLUGIN_CONFIG, REGISTRY_KIND_PROVIDER,
     REGISTRY_KIND_SKILL, REGISTRY_KIND_TOOL, RegistryGraphValidationError,
     RegistryGraphValidationRequest, RegistryGraphValidator, StandardRegistryGraphValidator,
@@ -38,7 +38,7 @@ pub struct FrozenAgentRegistry {
     pub manifest: PinnedRegistryManifest,
     pub agents: Arc<PinnedAgentSpecRegistry>,
     /// Pinned model bindings reachable from the manifest (ADR-0035 D8).
-    pub models: Arc<PinnedSpecMap<ModelBindingSpec>>,
+    pub models: Arc<PinnedSpecMap<ModelSpec>>,
     /// Pinned provider specs reachable from the manifest.
     pub providers: Arc<PinnedSpecMap<ProviderSpec>>,
     /// Pinned skill specs reachable from the manifest.
@@ -166,7 +166,7 @@ impl FrozenAgentRegistryMaterializer {
         };
         let agents = self.load_pinned_agents(&scope_id, &report.entries).await?;
         let models = self
-            .load_pinned_kind::<ModelBindingSpec>(
+            .load_pinned_kind::<ModelSpec>(
                 &scope_id,
                 &report.entries,
                 REGISTRY_KIND_MODEL,
@@ -362,7 +362,7 @@ fn selector_scope_id(selector: &VersionSelector) -> String {
 mod tests {
     use super::*;
     use awaken_contract::contract::versioned_registry::PublishOutcome;
-    use awaken_contract::{ModelBindingSpec, ProviderSpec, VersionRef};
+    use awaken_contract::{ModelSpec, ProviderSpec, VersionRef};
     use awaken_runtime::registry::AgentSpecRegistry;
     use awaken_stores::InMemoryVersionedRegistryStore;
     use serde_json::{Value, json};
@@ -512,7 +512,7 @@ mod tests {
         id: &str,
         provider_id: &str,
     ) -> PinnedRegistryEntry {
-        let spec = ModelBindingSpec::new(id, provider_id, "upstream");
+        let spec = ModelSpec::new(id, provider_id, "upstream");
         publish(store, "model", id, serde_json::to_value(spec).unwrap()).await
     }
 

@@ -5,7 +5,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use awaken_contract::contract::executor::{InferenceExecutionError, InferenceRequest, LlmExecutor};
 use awaken_contract::contract::inference::{StopReason, StreamResult, TokenUsage};
-use awaken_contract::registry_spec::{AgentSpec, ModelBindingSpec, ProviderSpec};
+use awaken_contract::registry_spec::{AgentSpec, ModelSpec, ProviderSpec};
 use awaken_contract::{BuiltinSeedSet, BuiltinSpec};
 use awaken_ext_observability::RuntimeStatsRegistry;
 use awaken_runtime::builder::AgentRuntimeBuilder;
@@ -95,13 +95,7 @@ async fn build_secure_admin_router() -> axum::Router {
                 adapter: "stub".into(),
                 ..Default::default()
             }),
-            BuiltinSpec::model(ModelBindingSpec {
-                id: "bootstrap".into(),
-                provider_id: "bootstrap".into(),
-                upstream_model: "bootstrap-model".into(),
-                input_token_price_per_million_usd: None,
-                output_token_price_per_million_usd: None,
-            }),
+            BuiltinSpec::model(ModelSpec::new("bootstrap", "bootstrap", "bootstrap-model")),
             BuiltinSpec::agent(bootstrap_agent()),
         ],
     };

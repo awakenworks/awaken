@@ -1,6 +1,7 @@
 #![allow(missing_docs)]
 
 use async_trait::async_trait;
+use awaken::ModelSpec;
 use awaken::contract::content::ContentBlock;
 use awaken::contract::executor::{InferenceExecutionError, InferenceRequest, LlmExecutor};
 use awaken::contract::inference::{StopReason, StreamResult};
@@ -9,7 +10,6 @@ use awaken::contract::message::{Message, ToolCall};
 use awaken::contract::tool::{
     Tool, ToolCallContext, ToolDescriptor, ToolError, ToolOutput, ToolResult,
 };
-use awaken::registry::ModelBinding;
 use awaken::registry_spec::AgentSpec;
 use awaken::{AgentRuntimeBuilder, RunActivation};
 use serde_json::{Value, json};
@@ -110,13 +110,7 @@ async fn readme_quickstart_runs_end_to_end_without_streaming_events() {
             }),
         )
         .with_provider("openai", provider.clone())
-        .with_model_binding(
-            "gpt-4o-mini",
-            ModelBinding {
-                provider_id: "openai".into(),
-                upstream_model: "gpt-4o-mini".into(),
-            },
-        )
+        .with_model(ModelSpec::new("gpt-4o-mini", "openai", "gpt-4o-mini"))
         .build()
         .expect("quickstart runtime should build");
 

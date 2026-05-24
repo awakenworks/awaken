@@ -1,6 +1,6 @@
 use awaken_contract::{
-    AgentSpec, ConfigRecord, ConfigRevisionRef, McpServerSpec, ModelBindingSpec, ProviderSpec,
-    SkillSpec, ToolSpec,
+    AgentSpec, ConfigRecord, ConfigRevisionRef, McpServerSpec, ModelSpec, ProviderSpec, SkillSpec,
+    ToolSpec, validate_unique_model_ids,
 };
 use serde_json::Value;
 
@@ -11,7 +11,7 @@ use super::{
 
 pub(crate) struct ManagedConfigSnapshot {
     pub(crate) providers: Vec<ProviderSpec>,
-    pub(crate) models: Vec<ModelBindingSpec>,
+    pub(crate) models: Vec<ModelSpec>,
     pub(crate) agents: Vec<AgentSpec>,
     pub(crate) mcp_servers: Vec<McpServerSpec>,
     pub(crate) tools: Vec<ToolSpec>,
@@ -46,9 +46,13 @@ impl ConfigRuntimeManager {
         source_config_revisions.extend(config_revision_refs(NS_TOOLS, &tool_values)?);
         source_config_revisions.extend(config_revision_refs(NS_SKILLS, &skill_values)?);
 
+        let models: Vec<ModelSpec> = deserialize_namespace(&model_values)?;
+        validate_unique_model_ids(&models)
+            .map_err(|error| ConfigRuntimeError::InvalidConfig(error.to_string()))?;
+
         Ok(ManagedConfigSnapshot {
             providers: deserialize_namespace(&provider_values)?,
-            models: deserialize_namespace(&model_values)?,
+            models,
             agents: deserialize_namespace(&agent_values)?,
             mcp_servers: deserialize_namespace(&mcp_values)?,
             tools: deserialize_namespace(&tool_values)?,
@@ -84,6 +88,7 @@ fn config_revision_refs(
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use awaken_contract::contract::storage::StorageError;
     use awaken_contract::{AgentSpec, ConfigRecord, RecordMeta};
     use serde_json::json;
@@ -214,6 +219,58 @@ mod tests {
                 ConfigRuntimeError::Storage(StorageError::Serialization(_))
             ),
             "expected Storage(Serialization(_)), got: {err:?}"
+        );
+    }
+
+    /// Direct-write bypass: HTTP `PUT /v1/config/models/{id}` enforces that
+    /// the namespace key equals the payload `id`, but `ConfigStore::put` is
+    /// public, so seed code, alternative store backends, or future writers
+    /// can land two `NS_MODELS` entries with distinct namespace keys whose
+    /// payloads carry the same `id`. `load_managed_config` must catch that
+    /// regardless of namespace-key dedup at the HTTP layer.
+    #[tokio::test]
+    async fn load_managed_config_rejects_duplicate_model_ids_in_store() {
+        let (manager, store) = super::super::tests::make_manager_with_store().await;
+
+        let make_entry = |store_key: &str, model_id: &str| {
+            let spec = awaken_contract::ModelSpec::new(model_id, "boot", "boot-model");
+            let record = ConfigRecord {
+                spec,
+                meta: RecordMeta::new_user(),
+            };
+            let value = record.to_value().expect("envelope serialization");
+            (store_key.to_string(), value)
+        };
+
+        // Two distinct namespace keys, identical payload `id` — the
+        // bypass scenario the HTTP layer cannot see.
+        let (key_a, value_a) = make_entry("store-key-a", "dup-id");
+        let (key_b, value_b) = make_entry("store-key-b", "dup-id");
+        store
+            .put(NS_MODELS, &key_a, &value_a)
+            .await
+            .expect("seed first entry");
+        store
+            .put(NS_MODELS, &key_b, &value_b)
+            .await
+            .expect("seed second entry");
+
+        let err = match manager.load_managed_config().await {
+            Err(error) => error,
+            Ok(_) => panic!("expected duplicate model id rejection, got Ok"),
+        };
+        let msg = err.to_string();
+        assert!(
+            matches!(err, ConfigRuntimeError::InvalidConfig(_)),
+            "expected InvalidConfig, got: {err:?}"
+        );
+        assert!(
+            msg.contains("duplicate model id"),
+            "expected 'duplicate model id' in message, got: {msg}"
+        );
+        assert!(
+            msg.contains("'dup-id'"),
+            "expected duplicated id in message, got: {msg}"
         );
     }
 }

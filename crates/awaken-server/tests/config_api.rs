@@ -16,7 +16,7 @@ use awaken_contract::contract::tool::{
     Tool, ToolCallContext, ToolDescriptor, ToolError, ToolOutput, ToolResult,
 };
 use awaken_contract::{
-    AgentSpec, BuiltinSeedSet, BuiltinSpec, McpServerSpec, ModelBindingSpec, PreparedSkillSpecs,
+    AgentSpec, BuiltinSeedSet, BuiltinSpec, McpServerSpec, ModelSpec, PreparedSkillSpecs,
     ProviderSpec, SkillSpec, SkillSpecSink,
 };
 #[cfg(feature = "permission")]
@@ -631,13 +631,7 @@ async fn make_runtime_manager_custom(
                 adapter: "stub".into(),
                 ..Default::default()
             }),
-            BuiltinSpec::model(ModelBindingSpec {
-                id: "bootstrap".into(),
-                provider_id: "bootstrap".into(),
-                upstream_model: "bootstrap-model".into(),
-                input_token_price_per_million_usd: None,
-                output_token_price_per_million_usd: None,
-            }),
+            BuiltinSpec::model(ModelSpec::new("bootstrap", "bootstrap", "bootstrap-model")),
             BuiltinSpec::agent(agent_spec("bootstrap", "bootstrap")),
         ],
     };
@@ -2423,13 +2417,7 @@ async fn change_listener_coalesces_event_bursts_within_min_apply_interval() {
                 adapter: "stub".into(),
                 ..Default::default()
             }),
-            BuiltinSpec::model(ModelBindingSpec {
-                id: "bootstrap".into(),
-                provider_id: "bootstrap".into(),
-                upstream_model: "bootstrap-model".into(),
-                input_token_price_per_million_usd: None,
-                output_token_price_per_million_usd: None,
-            }),
+            BuiltinSpec::model(ModelSpec::new("bootstrap", "bootstrap", "bootstrap-model")),
             BuiltinSpec::agent(agent_spec("bootstrap", "bootstrap")),
         ],
     };
@@ -2553,9 +2541,8 @@ async fn mcp_status_routes_absent_without_config_module() {
     // endpoints are absent instead of carrying handler-local fallbacks.
     let store = Arc::new(InMemoryStore::new());
     let thread_store = store.clone();
-    use awaken_contract::AgentSpec;
+    use awaken_contract::{AgentSpec, ModelSpec};
     use awaken_runtime::builder::AgentRuntimeBuilder;
-    use awaken_runtime::registry::traits::ModelBinding;
 
     struct StubExecutor;
     #[async_trait]
@@ -2590,13 +2577,7 @@ async fn mcp_status_routes_absent_without_config_module() {
     let runtime = Arc::new(
         AgentRuntimeBuilder::new()
             .with_provider("boot", Arc::new(StubExecutor))
-            .with_model_binding(
-                "boot",
-                ModelBinding {
-                    provider_id: "boot".into(),
-                    upstream_model: "m".into(),
-                },
-            )
+            .with_model(ModelSpec::new("boot", "boot", "m"))
             .with_agent_spec(bootstrap_agent)
             .with_in_memory_thread_run_store(thread_store.clone())
             .build()
@@ -3467,13 +3448,7 @@ async fn audit_event_emitted_for_patch_and_delete() {
                 adapter: "stub".into(),
                 ..Default::default()
             }),
-            BuiltinSpec::model(ModelBindingSpec {
-                id: "bootstrap".into(),
-                provider_id: "bootstrap".into(),
-                upstream_model: "bootstrap-model".into(),
-                input_token_price_per_million_usd: None,
-                output_token_price_per_million_usd: None,
-            }),
+            BuiltinSpec::model(ModelSpec::new("bootstrap", "bootstrap", "bootstrap-model")),
             BuiltinSpec::agent(agent_spec("bootstrap", "bootstrap")),
         ],
     };
@@ -3820,13 +3795,7 @@ async fn make_permission_preview_runtime() -> (
                 adapter: "stub".into(),
                 ..Default::default()
             }),
-            BuiltinSpec::model(ModelBindingSpec {
-                id: "bootstrap".into(),
-                provider_id: "bootstrap".into(),
-                upstream_model: "bootstrap-model".into(),
-                input_token_price_per_million_usd: None,
-                output_token_price_per_million_usd: None,
-            }),
+            BuiltinSpec::model(ModelSpec::new("bootstrap", "bootstrap", "bootstrap-model")),
             BuiltinSpec::agent(agent_spec("bootstrap", "bootstrap")),
         ],
     };
@@ -4497,4 +4466,95 @@ async fn put_agent_spec_round_trips_pattern_fields() {
         final_got["excluded_tool_patterns"],
         json!(["dangerous-*", "legacy-*"])
     );
+}
+
+// ── S2 wire test: models namespace + duplicate-id defense ───────────────
+
+#[tokio::test]
+async fn config_models_namespace_round_trip_with_capability_fields() {
+    let app = make_app().await;
+
+    let (status, _) = request_json(
+        &app.router,
+        Method::POST,
+        "/v1/config/providers",
+        Some(json!({"id":"prov","adapter":"stub"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, created) = request_json(
+        &app.router,
+        Method::POST,
+        "/v1/config/models",
+        Some(json!({
+            "id": "m1",
+            "provider_id": "prov",
+            "upstream_model": "gpt-4o",
+            "context_window": 128_000,
+            "max_output_tokens": 16_384,
+            "modalities": {"input": ["text", "image"], "output": ["text"]},
+            "knowledge_cutoff": "2026-01"
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "body: {created}");
+
+    let (status, got) = request_json(&app.router, Method::GET, "/v1/config/models/m1", None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(got["context_window"], 128_000);
+    assert_eq!(got["max_output_tokens"], 16_384);
+    assert_eq!(got["knowledge_cutoff"], "2026-01");
+    assert_eq!(got["modalities"]["input"], json!(["text", "image"]));
+    assert_eq!(got["modalities"]["output"], json!(["text"]));
+
+    // GET /v1/capabilities must also surface the full ModelSpec — admin UI
+    // dropdowns and external dashboards read this endpoint and the TS type
+    // is declared as `ModelSpec[]`.
+    let (status, capabilities) =
+        request_json(&app.router, Method::GET, "/v1/capabilities", None).await;
+    assert_eq!(status, StatusCode::OK);
+    let models = capabilities["models"]
+        .as_array()
+        .expect("capabilities.models must be an array");
+    let entry = models
+        .iter()
+        .find(|m| m["id"] == "m1")
+        .expect("capabilities.models must include the registered model");
+    assert_eq!(entry["provider_id"], "prov");
+    assert_eq!(entry["upstream_model"], "gpt-4o");
+    assert_eq!(entry["context_window"], 128_000);
+    assert_eq!(entry["max_output_tokens"], 16_384);
+    assert_eq!(entry["knowledge_cutoff"], "2026-01");
+    assert_eq!(entry["modalities"]["input"], json!(["text", "image"]));
+    assert_eq!(entry["modalities"]["output"], json!(["text"]));
+}
+
+#[tokio::test]
+async fn config_models_namespace_rejects_duplicate_id_via_namespace_keying() {
+    let app = make_app().await;
+
+    let (status, _) = request_json(
+        &app.router,
+        Method::POST,
+        "/v1/config/providers",
+        Some(json!({"id":"prov","adapter":"stub"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let body = json!({"id":"dup","provider_id":"prov","upstream_model":"gpt-4o"});
+
+    let (status, _) = request_json(
+        &app.router,
+        Method::POST,
+        "/v1/config/models",
+        Some(body.clone()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, conflict) =
+        request_json(&app.router, Method::POST, "/v1/config/models", Some(body)).await;
+    assert_eq!(status, StatusCode::CONFLICT, "body: {conflict}");
 }

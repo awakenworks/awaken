@@ -9,15 +9,15 @@
 //! feature flag is active.
 
 // ── Building agents ──
-pub use crate::registry::traits::ModelBinding;
 pub use crate::{AgentRuntime, AgentRuntimeBuilder, BuildError, RunRequest, RuntimeError};
 pub use crate::{
-    AgentSpec, AgentSpecPatch, ConfigRecord, PluginConfigKey, PreparedSkillSpecs,
-    SkillArgumentSpec, SkillSpec, SkillSpecContext, SkillSpecPatch, SkillSpecSink,
+    AgentSpec, AgentSpecPatch, ConfigRecord, Modalities, Modality, ModelSpec, PluginConfigKey,
+    PreparedSkillSpecs, SkillArgumentSpec, SkillSpec, SkillSpecContext, SkillSpecPatch,
+    SkillSpecSink,
 };
 pub use crate::{
     decode_config_record, effective_config_record, validate_agent_spec, validate_agent_spec_patch,
-    validate_config_record, validate_config_record_overrides, validate_model_binding_spec,
+    validate_config_record, validate_config_record_overrides, validate_model_spec,
     validate_provider_spec, validate_skill_spec,
 };
 pub use awaken_runtime::engine::MockProviderProfile;

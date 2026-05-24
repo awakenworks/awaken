@@ -5,6 +5,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Duration;
 
 use async_trait::async_trait;
+use awaken_contract::ModelSpec;
 use awaken_contract::contract::event_sink::NullEventSink;
 use awaken_contract::contract::executor::{InferenceExecutionError, InferenceRequest, LlmExecutor};
 use awaken_contract::contract::identity::{RunIdentity, RunOrigin};
@@ -23,7 +24,6 @@ use awaken_protocol_a2a::{
 };
 use awaken_runtime::builder::AgentRuntimeBuilder;
 use awaken_runtime::extensions::a2a::A2aBackendFactory;
-use awaken_runtime::registry::traits::ModelBinding;
 use awaken_runtime::{AgentRuntime, BackendAbortRequest, ExecutionBackendFactory, RunActivation};
 use awaken_server::app::{ServerConfig, ServerState};
 use awaken_server::routes::build_router;
@@ -368,13 +368,7 @@ fn make_gateway_app_with_options(
     let store = Arc::new(InMemoryStore::new());
     let runtime = Arc::new(
         AgentRuntimeBuilder::new()
-            .with_model_binding(
-                "test-model",
-                ModelBinding {
-                    provider_id: "mock".into(),
-                    upstream_model: "mock-model".into(),
-                },
-            )
+            .with_model(ModelSpec::new("test-model", "mock", "mock-model"))
             .with_provider("mock", Arc::new(ImmediateExecutor))
             .with_agent_spec(AgentSpec {
                 id: "remote-agent".into(),
@@ -421,13 +415,7 @@ fn make_delegate_gateway_app(mock_base_url: &str) -> TestApp {
     let store = Arc::new(InMemoryStore::new());
     let runtime = Arc::new(
         AgentRuntimeBuilder::new()
-            .with_model_binding(
-                "test-model",
-                ModelBinding {
-                    provider_id: "mock".into(),
-                    upstream_model: "mock-model".into(),
-                },
-            )
+            .with_model(ModelSpec::new("test-model", "mock", "mock-model"))
             .with_provider(
                 "mock",
                 Arc::new(DelegatingExecutor {

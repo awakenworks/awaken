@@ -2,6 +2,7 @@
 //! A2A HTTP integration tests for the current A2A v1.0 surface.
 
 use async_trait::async_trait;
+use awaken_contract::ModelSpec;
 use awaken_contract::contract::executor::{InferenceExecutionError, InferenceRequest, LlmExecutor};
 use awaken_contract::contract::inference::{StopReason, StreamResult, TokenUsage};
 use awaken_contract::contract::lifecycle::RunStatus;
@@ -20,7 +21,6 @@ use awaken_runtime::extensions::background::{
     BackgroundTaskManager, BackgroundTaskPlugin, TaskParentContext,
     TaskResult as BackgroundTaskResult, TaskStatus,
 };
-use awaken_runtime::registry::traits::ModelBinding;
 use awaken_server::app::{ServerConfig, ServerState};
 use awaken_server::routes::build_router;
 use awaken_stores::memory::InMemoryStore;
@@ -174,13 +174,7 @@ where
     E: LlmExecutor + 'static,
 {
     let mut builder = AgentRuntimeBuilder::new()
-        .with_model_binding(
-            "test-model",
-            ModelBinding {
-                provider_id: "mock".into(),
-                upstream_model: "mock-model".into(),
-            },
-        )
+        .with_model(ModelSpec::new("test-model", "mock", "mock-model"))
         .with_provider("mock", executor);
 
     for agent_id in agent_ids {
@@ -246,13 +240,7 @@ fn build_background_cancel_fixture()
     let store = Arc::new(InMemoryStore::new());
     let runtime = Arc::new(
         AgentRuntimeBuilder::new()
-            .with_model_binding(
-                "test-model",
-                ModelBinding {
-                    provider_id: "mock".into(),
-                    upstream_model: "mock-model".into(),
-                },
-            )
+            .with_model(ModelSpec::new("test-model", "mock", "mock-model"))
             .with_provider("mock", executor)
             .with_agent_spec(AgentSpec {
                 id: "alpha".into(),
@@ -1642,20 +1630,8 @@ fn build_multi_agent_app() -> (axum::Router, Arc<InMemoryStore>) {
         label: "beta-out",
     });
     let builder = AgentRuntimeBuilder::new()
-        .with_model_binding(
-            "model-alpha",
-            ModelBinding {
-                provider_id: "alpha-provider".into(),
-                upstream_model: "alpha-model".into(),
-            },
-        )
-        .with_model_binding(
-            "model-beta",
-            ModelBinding {
-                provider_id: "beta-provider".into(),
-                upstream_model: "beta-model".into(),
-            },
-        )
+        .with_model(ModelSpec::new("model-alpha", "alpha-provider", "alpha-model"))
+        .with_model(ModelSpec::new("model-beta", "beta-provider", "beta-model"))
         .with_provider("alpha-provider", alpha)
         .with_provider("beta-provider", beta)
         .with_agent_spec(AgentSpec {

@@ -226,8 +226,8 @@ pub struct ReplayReport {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub runtime_failure: Option<ReplayRuntimeFailure>,
     /// Cost of the replay in USD. Computed server-side from the
-    /// resolved `ModelBindingSpec` pricing × token counts; left `None`
-    /// when the binding has no pricing or the run was scripted. Drift
+    /// resolved `ModelSpec` pricing × token counts; left `None`
+    /// when the spec has no pricing or the run was scripted. Drift
     /// detection treats this as an observable so a silent price bump
     /// surfaces in regression diffs.
     #[serde(default, skip_serializing_if = "Option::is_none")]

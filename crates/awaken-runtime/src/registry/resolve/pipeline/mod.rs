@@ -530,7 +530,7 @@ impl RegistrySetResolver {
 
         if let Some(model) = self.registries.models.get_model(&agent.model_id) {
             let provider_id = model.provider_id.clone();
-            let model_spec = ModelBindingSpec::new(
+            let model_spec = ModelSpec::new(
                 agent.model_id.clone(),
                 provider_id.clone(),
                 model.upstream_model,

@@ -12,10 +12,9 @@ use awaken_contract::contract::message::{Message, MessageMetadata};
 #[cfg(feature = "nats")]
 use awaken_contract::contract::storage::RunRecord;
 use awaken_contract::contract::storage::{RunStore, ThreadRunStore, ThreadStore};
-use awaken_contract::{AgentSpec, BuiltinSeedSet, BuiltinSpec, ModelBindingSpec, ProviderSpec};
+use awaken_contract::{AgentSpec, BuiltinSeedSet, BuiltinSpec, ModelSpec, ProviderSpec};
 use awaken_runtime::AgentRuntime;
 use awaken_runtime::builder::AgentRuntimeBuilder;
-use awaken_runtime::registry::traits::ModelBinding;
 use awaken_server::app::{ServerConfig, ServerState};
 use awaken_server::mailbox::{Mailbox, MailboxConfig};
 use awaken_server::routes::build_router;
@@ -86,14 +85,8 @@ fn bootstrap_provider() -> ProviderSpec {
     }
 }
 
-fn bootstrap_model() -> ModelBindingSpec {
-    ModelBindingSpec {
-        id: "bootstrap".into(),
-        provider_id: "bootstrap".into(),
-        upstream_model: "bootstrap-model".into(),
-        input_token_price_per_million_usd: None,
-        output_token_price_per_million_usd: None,
-    }
+fn bootstrap_model() -> ModelSpec {
+    ModelSpec::new("bootstrap", "bootstrap", "bootstrap-model")
 }
 
 fn bootstrap_agent() -> AgentSpec {
@@ -191,13 +184,7 @@ where
     let runtime = Arc::new(
         AgentRuntimeBuilder::new()
             .with_provider("mock", Arc::new(ImmediateExecutor))
-            .with_model_binding(
-                "test-model",
-                ModelBinding {
-                    provider_id: "mock".into(),
-                    upstream_model: "mock-model".into(),
-                },
-            )
+            .with_model(ModelSpec::new("test-model", "mock", "mock-model"))
             .with_agent_spec(AgentSpec {
                 id: "test-agent".into(),
                 model_id: "test-model".into(),

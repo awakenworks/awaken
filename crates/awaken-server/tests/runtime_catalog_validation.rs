@@ -9,10 +9,9 @@
 use std::sync::Arc;
 
 use awaken_contract::contract::config_store::ConfigStore;
-use awaken_contract::{AgentSpec, BuiltinSeedSet, BuiltinSpec, ModelBindingSpec, ProviderSpec};
+use awaken_contract::{AgentSpec, BuiltinSeedSet, BuiltinSpec, ModelSpec, ProviderSpec};
 use awaken_runtime::AgentRuntime;
 use awaken_runtime::builder::AgentRuntimeBuilder;
-use awaken_runtime::registry::traits::ModelBinding;
 use awaken_server::services::config_runtime::ConfigRuntimeManager;
 use awaken_stores::{InMemoryStore, MemoryCommitCoordinator};
 use serde_json::json;
@@ -46,13 +45,7 @@ async fn make_manager() -> (ConfigRuntimeManager, Arc<dyn ConfigStore>) {
     let runtime: Arc<AgentRuntime> = Arc::new(
         AgentRuntimeBuilder::new()
             .with_provider("boot", Arc::new(StubExec))
-            .with_model_binding(
-                "boot",
-                ModelBinding {
-                    provider_id: "boot".into(),
-                    upstream_model: "boot-model".into(),
-                },
-            )
+            .with_model(ModelSpec::new("boot", "boot", "boot-model"))
             .with_agent_spec(AgentSpec {
                 id: "boot".into(),
                 model_id: "boot".into(),
@@ -75,13 +68,7 @@ async fn make_manager() -> (ConfigRuntimeManager, Arc<dyn ConfigStore>) {
                 adapter: "openai".into(),
                 ..Default::default()
             }),
-            BuiltinSpec::Model(ModelBindingSpec {
-                id: "m".into(),
-                provider_id: "p".into(),
-                upstream_model: "gpt-4o".into(),
-                input_token_price_per_million_usd: None,
-                output_token_price_per_million_usd: None,
-            }),
+            BuiltinSpec::Model(ModelSpec::new("m", "p", "gpt-4o")),
         ],
     };
     manager.apply_seed(&seed).await.expect("seed");

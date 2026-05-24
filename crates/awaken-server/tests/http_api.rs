@@ -265,6 +265,7 @@ fn run_status_transitions() {
 
 mod integration {
     use async_trait::async_trait;
+    use awaken_contract::ModelSpec;
     use awaken_contract::contract::event_store::{EventReader, EventScope};
     use awaken_contract::contract::executor::{InferenceExecutionError, InferenceRequest};
     use awaken_contract::contract::inference::{StopReason, StreamResult, TokenUsage};
@@ -280,7 +281,6 @@ mod integration {
     use awaken_contract::registry_spec::AgentSpec;
     use awaken_contract::thread::Thread;
     use awaken_runtime::builder::AgentRuntimeBuilder;
-    use awaken_runtime::registry::traits::ModelBinding;
     use awaken_server::app::{ServerConfig, ServerState};
     use awaken_server::routes::build_router;
     use awaken_stores::{InMemoryEventStore, memory::InMemoryStore};
@@ -386,13 +386,7 @@ mod integration {
         let event_store = Arc::new(InMemoryEventStore::new());
         let runtime = Arc::new(
             AgentRuntimeBuilder::new()
-                .with_model_binding(
-                    "test-model",
-                    ModelBinding {
-                        provider_id: "mock".into(),
-                        upstream_model: "mock-model".into(),
-                    },
-                )
+                .with_model(ModelSpec::new("test-model", "mock", "mock-model"))
                 .with_provider("mock", Arc::new(ImmediateExecutor))
                 .with_agent_spec(AgentSpec {
                     id: "test-agent".into(),

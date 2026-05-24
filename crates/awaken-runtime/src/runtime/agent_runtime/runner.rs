@@ -896,7 +896,9 @@ mod tests {
     #[cfg(feature = "a2a")]
     use crate::registry::snapshot::RegistryHandle;
     #[cfg(feature = "a2a")]
-    use crate::registry::traits::{BackendRegistry, ModelBinding, RegistrySet};
+    use crate::registry::traits::{BackendRegistry, RegistrySet};
+    #[cfg(feature = "a2a")]
+    use awaken_contract::registry_spec::ModelSpec;
     use crate::registry::{AgentResolver, ResolvedAgent};
     use crate::state::{KeyScope, StateCommand, StateKey, StateKeyOptions};
     use crate::{PhaseContext, PhaseHook, RunActivation, ToolPolicyHook};
@@ -1104,13 +1106,7 @@ mod tests {
     ) -> AgentRuntime {
         let mut models = MapModelRegistry::new();
         models
-            .register_model(
-                "test-model",
-                ModelBinding {
-                    provider_id: "mock".into(),
-                    upstream_model: "mock-model".into(),
-                },
-            )
+            .register_model(ModelSpec::new("test-model", "mock", "mock-model"))
             .unwrap();
 
         let mut providers = MapProviderRegistry::new();

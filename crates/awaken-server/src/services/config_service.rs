@@ -4,7 +4,7 @@ use awaken_contract::AuditAction;
 use awaken_contract::contract::config_store::ConfigStore;
 use awaken_contract::contract::storage::StorageError;
 use awaken_contract::{
-    AgentSpec, ConfigRecord, McpServerSpec, ModelBindingSpec, ProviderSpec, SkillSpec, ToolSpec,
+    AgentSpec, ConfigRecord, McpServerSpec, ModelSpec, ProviderSpec, SkillSpec, ToolSpec,
 };
 use axum::http::HeaderMap;
 use serde_json::{Value, json};
@@ -87,7 +87,7 @@ impl ConfigNamespace {
     pub fn schema_json(self) -> Result<Value, ConfigServiceError> {
         let schema = match self {
             Self::Agents => schemars::schema_for!(AgentSpec),
-            Self::Models => schemars::schema_for!(ModelBindingSpec),
+            Self::Models => schemars::schema_for!(ModelSpec),
             Self::Providers => schemars::schema_for!(ProviderSpec),
             Self::McpServers => schemars::schema_for!(McpServerSpec),
             Self::Skills => schemars::schema_for!(SkillSpec),
@@ -267,20 +267,23 @@ impl ConfigService {
             })
             .collect::<Vec<_>>();
 
+        // Capabilities exposes the full `ModelSpec` shape so consumers
+        // (admin UI dropdowns, agent editor, external dashboards) can read
+        // capability + pricing fields without a second fetch. Round-trips
+        // are tested in `crates/awaken-server/tests/config_api.rs`.
+        //
+        // Serialization failure surfaces as an error rather than silently
+        // dropping the model — a partial catalog would hide the problem.
         let models = registries
             .models
             .model_ids()
             .into_iter()
-            .filter_map(|id| {
-                registries.models.get_model(&id).map(|model| {
-                    json!({
-                        "id": id,
-                        "provider_id": model.provider_id,
-                        "upstream_model": model.upstream_model,
-                    })
-                })
-            })
-            .collect::<Vec<_>>();
+            .filter_map(|id| registries.models.get_model(&id))
+            .map(|model| serde_json::to_value(&model))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| {
+                ConfigServiceError::Apply(format!("failed to serialize model spec: {error}"))
+            })?;
 
         let providers = registries
             .providers

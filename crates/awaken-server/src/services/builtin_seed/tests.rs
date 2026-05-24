@@ -3,7 +3,7 @@
 
 use super::*;
 use awaken_contract::config_record::ConfigRecord;
-use awaken_contract::{AgentSpec, McpServerSpec, ModelBindingSpec, ProviderSpec, SkillSpec};
+use awaken_contract::{AgentSpec, McpServerSpec, ModelSpec, ProviderSpec, SkillSpec};
 use awaken_stores::memory::InMemoryStore;
 
 // ── spec constructors ────────────────────────────────────────────────────
@@ -25,14 +25,8 @@ fn provider_spec(id: &str) -> ProviderSpec {
     }
 }
 
-fn model_spec(id: &str) -> ModelBindingSpec {
-    ModelBindingSpec {
-        id: id.to_owned(),
-        provider_id: "openai".to_owned(),
-        upstream_model: "gpt-4o".to_owned(),
-        input_token_price_per_million_usd: None,
-        output_token_price_per_million_usd: None,
-    }
+fn model_spec(id: &str) -> ModelSpec {
+    ModelSpec::new(id, "openai", "gpt-4o")
 }
 
 fn mcp_spec(id: &str) -> McpServerSpec {

@@ -6,11 +6,11 @@
 //! "resume pending run" path which returns an empty stream.
 
 use async_trait::async_trait;
+use awaken_contract::ModelSpec;
 use awaken_contract::contract::executor::{InferenceExecutionError, InferenceRequest};
 use awaken_contract::contract::inference::{StopReason, StreamResult, TokenUsage};
 use awaken_contract::registry_spec::AgentSpec;
 use awaken_runtime::builder::AgentRuntimeBuilder;
-use awaken_runtime::registry::traits::ModelBinding;
 use awaken_server::app::{ServerConfig, ServerState};
 use awaken_server::routes::build_router;
 use awaken_stores::memory::InMemoryStore;
@@ -51,13 +51,7 @@ fn make_app() -> axum::Router {
     let store = Arc::new(InMemoryStore::new());
     let runtime = Arc::new(
         AgentRuntimeBuilder::new()
-            .with_model_binding(
-                "test-model",
-                ModelBinding {
-                    provider_id: "mock".into(),
-                    upstream_model: "mock-model".into(),
-                },
-            )
+            .with_model(ModelSpec::new("test-model", "mock", "mock-model"))
             .with_provider("mock", Arc::new(EchoExecutor))
             .with_in_memory_thread_run_store(store.clone())
             .with_agent_spec(AgentSpec {

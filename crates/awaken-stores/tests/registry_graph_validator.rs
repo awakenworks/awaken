@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use awaken_contract::contract::versioned_registry::PublishOutcome;
 use awaken_contract::{
-    AgentSpec, ModelBindingSpec, PinnedRegistryEntry, ProviderSpec, RegistryGraphValidationError,
+    AgentSpec, ModelSpec, PinnedRegistryEntry, ProviderSpec, RegistryGraphValidationError,
     RegistryGraphValidationRequest, RegistryGraphValidator, StandardRegistryGraphValidator,
     VersionRef, VersionSelector, VersionedRegistryStore,
 };
@@ -199,7 +199,7 @@ async fn publish_model(
     id: &str,
     provider_id: &str,
 ) -> PinnedRegistryEntry {
-    let spec = ModelBindingSpec::new(id, provider_id, "upstream");
+    let spec = ModelSpec::new(id, provider_id, "upstream");
     publish(store, "model", id, serde_json::to_value(spec).unwrap()).await
 }
 

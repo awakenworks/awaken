@@ -3,11 +3,11 @@
 use std::collections::HashMap;
 
 use awaken_contract::contract::storage::PinnedRegistryEntry;
-use awaken_contract::registry_spec::{AgentSpec, ModelBindingSpec};
+use awaken_contract::registry_spec::{AgentSpec, ModelSpec};
 use thiserror::Error;
 
 use super::memory::MapAgentSpecRegistry;
-use super::traits::{AgentSpecRegistry, ModelBinding, ModelRegistry};
+use super::traits::{AgentSpecRegistry, ModelRegistry};
 
 /// Errors returned while building a pinned agent registry.
 ///
@@ -210,9 +210,9 @@ impl<T> Default for PinnedSpecMap<T> {
     }
 }
 
-impl ModelRegistry for PinnedSpecMap<ModelBindingSpec> {
-    fn get_model(&self, id: &str) -> Option<ModelBinding> {
-        self.get(id).map(ModelBinding::from)
+impl ModelRegistry for PinnedSpecMap<ModelSpec> {
+    fn get_model(&self, id: &str) -> Option<ModelSpec> {
+        self.get(id).cloned()
     }
     fn model_ids(&self) -> Vec<String> {
         self.ids()
@@ -368,24 +368,18 @@ mod tests {
 
     #[test]
     fn pinned_spec_map_implements_model_registry_when_holding_model_specs() {
-        let mut map: PinnedSpecMap<ModelBindingSpec> = PinnedSpecMap::new("model");
+        let mut map: PinnedSpecMap<ModelSpec> = PinnedSpecMap::new("model");
         let mut model_pin = pin("model-1", 4);
         model_pin.kind = "model".to_string();
         map.insert(
             "model-1".to_string(),
-            ModelBindingSpec {
-                id: "model-1".into(),
-                provider_id: "openai".into(),
-                upstream_model: "gpt-4o".into(),
-                input_token_price_per_million_usd: None,
-                output_token_price_per_million_usd: None,
-            },
+            ModelSpec::new("model-1", "openai", "gpt-4o"),
             model_pin,
         )
         .unwrap();
-        let binding = ModelRegistry::get_model(&map, "model-1").expect("binding");
-        assert_eq!(binding.provider_id, "openai");
-        assert_eq!(binding.upstream_model, "gpt-4o");
+        let spec = ModelRegistry::get_model(&map, "model-1").expect("model spec");
+        assert_eq!(spec.provider_id, "openai");
+        assert_eq!(spec.upstream_model, "gpt-4o");
         assert_eq!(ModelRegistry::model_ids(&map), vec!["model-1".to_string()]);
     }
 

@@ -5,13 +5,13 @@
 //! adapted to awaken's encoder infrastructure.
 
 use async_trait::async_trait;
+use awaken_contract::ModelSpec;
 use awaken_contract::contract::event::AgentEvent;
 use awaken_contract::contract::executor::{InferenceExecutionError, InferenceRequest};
 use awaken_contract::contract::inference::{StopReason, StreamResult, TokenUsage};
 use awaken_contract::contract::transport::Transcoder;
 use awaken_contract::registry_spec::AgentSpec;
 use awaken_runtime::builder::AgentRuntimeBuilder;
-use awaken_runtime::registry::traits::ModelBinding;
 use awaken_server::app::{ServerConfig, ServerState};
 use awaken_server::protocols::{
     acp::encoder::AcpEncoder, ag_ui::encoder::AgUiEncoder, ai_sdk_v6::encoder::AiSdkEncoder,
@@ -60,13 +60,7 @@ fn make_app() -> axum::Router {
     let coordinator = MemoryCommitCoordinator::wrap(Arc::clone(&store));
     let runtime = {
         let builder = AgentRuntimeBuilder::new()
-            .with_model_binding(
-                "test-model",
-                ModelBinding {
-                    provider_id: "mock".into(),
-                    upstream_model: "mock-model".into(),
-                },
-            )
+            .with_model(ModelSpec::new("test-model", "mock", "mock-model"))
             .with_provider("mock", Arc::new(ImmediateExecutor))
             .with_thread_run_store(
                 Arc::clone(&store) as Arc<dyn awaken_contract::contract::storage::ThreadRunStore>

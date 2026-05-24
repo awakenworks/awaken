@@ -929,11 +929,8 @@ mod tests {
             InferenceExecutionError, InferenceRequest, LlmExecutor,
         };
         use awaken_contract::contract::inference::{StopReason, StreamResult, TokenUsage};
-        use awaken_contract::{
-            AgentSpec, BuiltinSeedSet, BuiltinSpec, ModelBindingSpec, ProviderSpec,
-        };
+        use awaken_contract::{AgentSpec, BuiltinSeedSet, BuiltinSpec, ModelSpec, ProviderSpec};
         use awaken_runtime::builder::AgentRuntimeBuilder;
-        use awaken_runtime::registry::traits::ModelBinding;
         use axum::body::Body;
         use axum::http::{Request, StatusCode};
         use http_body_util::BodyExt;
@@ -1023,11 +1020,7 @@ mod tests {
                         adapter: "stub".into(),
                         ..Default::default()
                     }),
-                    BuiltinSpec::model(ModelBindingSpec::new(
-                        "bootstrap",
-                        "bootstrap",
-                        "bootstrap-model",
-                    )),
+                    BuiltinSpec::model(ModelSpec::new("bootstrap", "bootstrap", "bootstrap-model")),
                     BuiltinSpec::agent(bootstrap_agent()),
                 ],
             };
@@ -1244,7 +1237,7 @@ mod tests {
             assert_eq!(body["model_ids"], serde_json::json!(["model-preview"]));
             assert_eq!(body["agent_ids"], serde_json::json!(["agent-preview"]));
             assert_eq!(body["block_if_referenced_allowed"], false);
-            assert_eq!(body["cascade_unused_model_bindings_allowed"], false);
+            assert_eq!(body["cascade_unused_models_allowed"], false);
         }
 
         #[tokio::test]
@@ -1396,13 +1389,7 @@ mod tests {
             let runtime = Arc::new(
                 AgentRuntimeBuilder::new()
                     .with_provider("bootstrap", Arc::new(ImmediateExecutor))
-                    .with_model_binding(
-                        "bootstrap",
-                        ModelBinding {
-                            provider_id: "bootstrap".into(),
-                            upstream_model: "bootstrap-model".into(),
-                        },
-                    )
+                    .with_model(ModelSpec::new("bootstrap", "bootstrap", "bootstrap-model"))
                     .with_agent_spec(bootstrap_agent())
                     .with_in_memory_thread_run_store(thread_store.clone())
                     .build()
@@ -1525,11 +1512,7 @@ mod tests {
                         adapter: "stub".into(),
                         ..Default::default()
                     }),
-                    BuiltinSpec::model(ModelBindingSpec::new(
-                        "bootstrap",
-                        "bootstrap",
-                        "bootstrap-model",
-                    )),
+                    BuiltinSpec::model(ModelSpec::new("bootstrap", "bootstrap", "bootstrap-model")),
                     BuiltinSpec::agent(bootstrap_agent()),
                     BuiltinSpec::tool(ToolSpec {
                         id: id.into(),

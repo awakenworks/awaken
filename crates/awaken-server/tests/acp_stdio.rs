@@ -6,6 +6,7 @@ use std::sync::{
 
 use agent_client_protocol::{self as acp, Agent as _};
 use async_trait::async_trait;
+use awaken_contract::ModelSpec;
 use awaken_contract::contract::content::ContentBlock as RuntimeContentBlock;
 use awaken_contract::contract::executor::{InferenceExecutionError, InferenceRequest};
 use awaken_contract::contract::inference::{
@@ -18,7 +19,6 @@ use awaken_contract::contract::tool::{
 use awaken_contract::registry_spec::AgentSpec;
 use awaken_ext_permission::PermissionPlugin;
 use awaken_runtime::builder::AgentRuntimeBuilder;
-use awaken_runtime::registry::traits::ModelBinding;
 use awaken_server::protocols::acp::stdio::serve_stdio_io;
 use serde_json::{Value, json};
 use tokio::io::{BufReader, split};
@@ -153,13 +153,7 @@ impl Tool for GetWeatherTool {
 
 fn echo_runtime() -> Arc<awaken_runtime::AgentRuntime> {
     let builder = AgentRuntimeBuilder::new()
-        .with_model_binding(
-            "test-model",
-            ModelBinding {
-                provider_id: "mock".into(),
-                upstream_model: "mock-model".into(),
-            },
-        )
+        .with_model(ModelSpec::new("test-model", "mock", "mock-model"))
         .with_provider("mock", Arc::new(EchoExecutor))
         .with_agent_spec(AgentSpec {
             id: "echo".into(),
@@ -176,13 +170,7 @@ fn permission_runtime() -> Arc<awaken_runtime::AgentRuntime> {
     sections.insert("permission".to_string(), json!({"default_behavior": "ask"}));
 
     let builder = AgentRuntimeBuilder::new()
-        .with_model_binding(
-            "test-model",
-            ModelBinding {
-                provider_id: "mock".into(),
-                upstream_model: "mock-model".into(),
-            },
-        )
+        .with_model(ModelSpec::new("test-model", "mock", "mock-model"))
         .with_provider(
             "mock",
             Arc::new(ToolCallMockExecutor {

@@ -7,7 +7,7 @@
 //!    `user_input` directly. Operators can test "this prompt × these
 //!    models" without persisting a regression suite first.
 //! 2. **Live execution by default**: every cell drives a real provider
-//!    executor resolved from `model_bindings/{model_id}` →
+//!    executor resolved from `models/{model_id}` →
 //!    `providers/{provider_id}`. No scripted upstream.
 //! 3. **Matrix shape**: `models: Vec<String>` is the model axis. The
 //!    response carries `items.len() == models.len()`, one per cell.
@@ -217,7 +217,7 @@ pub async fn start_online_eval(
     };
 
     // Pre-resolve every model so any 404 surfaces before we start
-    // burning provider tokens. Carries the binding spec forward so we
+    // burning provider tokens. Carries the model spec forward so we
     // can compute cost_usd post-replay.
     let mut resolved: Vec<ResolvedCell> = Vec::with_capacity(cells.len());
     for cell in cells {
@@ -230,7 +230,7 @@ pub async fn start_online_eval(
             cell,
             executor: r.executor,
             upstream_model: r.upstream_model,
-            binding: r.binding,
+            spec: r.spec,
         });
     }
 

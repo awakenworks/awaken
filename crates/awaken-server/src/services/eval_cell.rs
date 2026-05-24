@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 use awaken_contract::agent_spec_patch::AgentSpecPatch;
 use awaken_contract::contract::executor::LlmExecutor;
-use awaken_contract::registry_spec::{AgentSpec, ModelBindingSpec};
+use awaken_contract::registry_spec::{AgentSpec, ModelSpec};
 use awaken_eval::{
     EvalRun, EvalRunExecutionMode, EvalRunItem, Expectation, Failure, Fixture, LlmExecutorJudge,
     MatrixCell, ReplayOutcome, ReplayReport, RuntimeReplayer, replay_all, score, score_with_judge,
@@ -49,7 +49,7 @@ pub(crate) struct ResolvedCell {
     pub cell: MatrixCell,
     pub executor: Arc<dyn LlmExecutor>,
     pub upstream_model: String,
-    pub binding: ModelBindingSpec,
+    pub spec: ModelSpec,
 }
 
 /// Tunables for [`run_live_eval_cells`]. Dataset matrix runs and ad-hoc
@@ -232,11 +232,11 @@ pub(crate) fn validate_judge_required_for_expectation(
 /// = Some(0.0)`, silently presenting "$0" cost for runs that genuinely
 /// burned tokens. Returning `None` makes the cost-missing case explicit
 /// to downstream consumers (admin UI, baseline diff, billing exports).
-pub(crate) fn cost_usd_for(report: &ReplayReport, binding: &ModelBindingSpec) -> Option<f64> {
+pub(crate) fn cost_usd_for(report: &ReplayReport, spec: &ModelSpec) -> Option<f64> {
     if report.total_input_tokens == 0 && report.total_output_tokens == 0 {
         return None;
     }
-    binding.compute_cost_usd(report.total_input_tokens, report.total_output_tokens)
+    spec.compute_cost_usd(report.total_input_tokens, report.total_output_tokens)
 }
 
 /// Return the replay trace id only when it is actually readable from the
@@ -309,7 +309,7 @@ pub(crate) async fn run_live_eval_cells(
                 let cell = resolved.cell.clone();
                 let executor = resolved.executor.clone();
                 let upstream_model = resolved.upstream_model.clone();
-                let binding = resolved.binding.clone();
+                let spec = resolved.spec.clone();
                 let overrides = agent_overrides.clone();
                 let base = agent_base.clone();
                 let trace_sink = trace_sink.clone();
@@ -354,7 +354,7 @@ pub(crate) async fn run_live_eval_cells(
                                 walltime_secs,
                                 &fixture.expect,
                             );
-                            return Ok::<_, ApiError>((fixture.id, cell, sample, o, f, binding));
+                            return Ok::<_, ApiError>((fixture.id, cell, sample, o, f, spec));
                         }
                     };
                     let (outcome, failures) = match tokio::time::timeout_at(
@@ -388,7 +388,7 @@ pub(crate) async fn run_live_eval_cells(
                             &fixture.expect,
                         ),
                     };
-                    Ok::<_, ApiError>((fixture.id, cell, sample, outcome, failures, binding))
+                    Ok::<_, ApiError>((fixture.id, cell, sample, outcome, failures, spec))
                 }));
             }
         }
@@ -399,9 +399,9 @@ pub(crate) async fn run_live_eval_cells(
         let task_result = handle
             .await
             .map_err(|err| ApiError::Internal(format!("{task_context} task panicked: {err}")))?;
-        let (fixture_id, cell, sample, outcome, failures, binding) = task_result?;
+        let (fixture_id, cell, sample, outcome, failures, spec) = task_result?;
         let mut report = ReplayReport::from_outcome(&outcome, failures);
-        report.cost_usd = cost_usd_for(&report, &binding);
+        report.cost_usd = cost_usd_for(&report, &spec);
         items.push(EvalRunItem {
             fixture_id,
             cell: Some(cell),

@@ -5,7 +5,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use awaken_contract::contract::executor::{InferenceExecutionError, InferenceRequest, LlmExecutor};
 use awaken_contract::contract::inference::{StopReason, StreamResult, TokenUsage};
-use awaken_contract::{AgentSpec, BuiltinSeedSet, BuiltinSpec, ModelBindingSpec, ProviderSpec};
+use awaken_contract::{AgentSpec, BuiltinSeedSet, BuiltinSpec, ModelSpec, ProviderSpec};
 use awaken_runtime::builder::AgentRuntimeBuilder;
 use awaken_server::app::{ServerConfig, ServerState};
 use awaken_server::mailbox::{Mailbox, MailboxConfig};
@@ -92,13 +92,7 @@ async fn build_test_app_with_audit(token: Option<&str>) -> axum::Router {
                 adapter: "stub".into(),
                 ..Default::default()
             }),
-            BuiltinSpec::model(ModelBindingSpec {
-                id: "bootstrap".into(),
-                provider_id: "bootstrap".into(),
-                upstream_model: "bootstrap-model".into(),
-                input_token_price_per_million_usd: None,
-                output_token_price_per_million_usd: None,
-            }),
+            BuiltinSpec::model(ModelSpec::new("bootstrap", "bootstrap", "bootstrap-model")),
             BuiltinSpec::agent(bootstrap_agent()),
         ],
     };
@@ -153,13 +147,7 @@ async fn build_test_app_without_audit() -> axum::Router {
                 adapter: "stub".into(),
                 ..Default::default()
             }),
-            BuiltinSpec::model(ModelBindingSpec {
-                id: "bootstrap".into(),
-                provider_id: "bootstrap".into(),
-                upstream_model: "bootstrap-model".into(),
-                input_token_price_per_million_usd: None,
-                output_token_price_per_million_usd: None,
-            }),
+            BuiltinSpec::model(ModelSpec::new("bootstrap", "bootstrap", "bootstrap-model")),
             BuiltinSpec::agent(bootstrap_agent()),
         ],
     };
@@ -416,13 +404,7 @@ async fn seed_apply_event_visible_via_http_query() {
                 adapter: "stub".into(),
                 ..Default::default()
             }),
-            BuiltinSpec::model(ModelBindingSpec {
-                id: "bootstrap".into(),
-                provider_id: "bootstrap".into(),
-                upstream_model: "bootstrap-model".into(),
-                input_token_price_per_million_usd: None,
-                output_token_price_per_million_usd: None,
-            }),
+            BuiltinSpec::model(ModelSpec::new("bootstrap", "bootstrap", "bootstrap-model")),
             BuiltinSpec::agent(bootstrap_agent()),
         ],
     };

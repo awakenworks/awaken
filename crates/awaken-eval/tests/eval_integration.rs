@@ -764,7 +764,7 @@ mod revise_mode {
 async fn metrics_demo_exercises_all_indicators_together() {
     use awaken_contract::contract::executor::LlmExecutor;
     use awaken_contract::contract::inference::TokenUsage;
-    use awaken_contract::registry_spec::ModelBindingSpec;
+    use awaken_contract::registry_spec::ModelSpec;
     use awaken_eval::judge::Judge;
     use awaken_eval::test_support::{ExplodingJudge, ScriptedExecutor, ScriptedJudge};
     use awaken_eval::{EvalRun, EvalRunItem, MatrixCell, ReplayReport, RuntimeReplayer};
@@ -782,13 +782,11 @@ async fn metrics_demo_exercises_all_indicators_together() {
         ended_at_secs: 1_700_000_010,
     };
 
-    // Priced binding — exercises cost_usd.
-    let binding = ModelBindingSpec {
-        id: "demo".into(),
-        provider_id: "anthropic".into(),
-        upstream_model: "claude-opus-4-7".into(),
+    // Priced spec — exercises cost_usd.
+    let spec = ModelSpec {
         input_token_price_per_million_usd: Some(3.0),
         output_token_price_per_million_usd: Some(15.0),
+        ..ModelSpec::new("demo", "anthropic", "claude-opus-4-7")
     };
 
     let cell = MatrixCell {
@@ -851,9 +849,9 @@ async fn metrics_demo_exercises_all_indicators_together() {
         .await
         .unwrap();
         let mut report = ReplayReport::from_outcome(&outcome, failures);
-        // Exercise cost: cost_usd = binding.compute_cost_usd(input, output)
+        // Exercise cost: cost_usd = spec.compute_cost_usd(input, output)
         report.cost_usd =
-            binding.compute_cost_usd(report.total_input_tokens, report.total_output_tokens);
+            spec.compute_cost_usd(report.total_input_tokens, report.total_output_tokens);
 
         run.items.push(EvalRunItem {
             fixture_id: "demo".into(), // share fixture_id across samples for the aggregator

@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use awaken_contract::contract::config_store::ConfigStore;
-use awaken_contract::{AgentSpec, ModelBindingSpec, ProviderSpec};
+use awaken_contract::{AgentSpec, ModelSpec, ProviderSpec};
 use awaken_stores::InMemoryStore;
 
 #[cfg(feature = "file")]
@@ -16,13 +16,7 @@ async fn exercise_store(store: Arc<dyn ConfigStore>) {
         timeout_secs: 120,
         ..ProviderSpec::default()
     };
-    let model = ModelBindingSpec {
-        id: "gpt-4o-mini".into(),
-        provider_id: "openai".into(),
-        upstream_model: "gpt-4o-mini".into(),
-        input_token_price_per_million_usd: None,
-        output_token_price_per_million_usd: None,
-    };
+    let model = ModelSpec::new("gpt-4o-mini", "openai", "gpt-4o-mini");
     let agent = AgentSpec {
         id: "assistant".into(),
         model_id: "gpt-4o-mini".into(),
@@ -50,7 +44,7 @@ async fn exercise_store(store: Arc<dyn ConfigStore>) {
     assert!(store.exists("providers", "openai").await.unwrap());
 
     let model_value = store.get("models", "gpt-4o-mini").await.unwrap().unwrap();
-    let model_read: ModelBindingSpec = serde_json::from_value(model_value).unwrap();
+    let model_read: ModelSpec = serde_json::from_value(model_value).unwrap();
     assert_eq!(model_read.provider_id, "openai");
 
     let agent_value = store.get("agents", "assistant").await.unwrap().unwrap();

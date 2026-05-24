@@ -1,9 +1,9 @@
 #![allow(missing_docs)]
 
+use awaken::ModelSpec;
 use awaken::contract::lifecycle::TerminationReason;
 use awaken::contract::message::Message;
 use awaken::engine::GenaiExecutor;
-use awaken::registry::ModelBinding;
 use awaken::registry_spec::AgentSpec;
 use awaken::{AgentRuntimeBuilder, RunActivation};
 use std::sync::Arc;
@@ -62,13 +62,7 @@ async fn readme_live_provider_smoke_test() {
     let runtime = AgentRuntimeBuilder::new()
         .with_agent_spec(agent_spec)
         .with_provider("live-provider", Arc::new(executor))
-        .with_model_binding(
-            "live-model",
-            ModelBinding {
-                provider_id: "live-provider".into(),
-                upstream_model: model,
-            },
-        )
+        .with_model(ModelSpec::new("live-model", "live-provider", model))
         .build()
         .expect("live runtime should build");
 

@@ -8,7 +8,7 @@ use futures::future::BoxFuture;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::registry_spec::{AgentSpec, ModelBindingSpec};
+use crate::registry_spec::{AgentSpec, ModelSpec};
 
 use super::versioned_registry::{
     PinnedRegistryEntry, PinnedRegistryManifest, VersionRef, VersionedRecord,
@@ -367,18 +367,18 @@ impl StandardRegistryGraphValidator {
         record: &VersionedRecord<serde_json::Value>,
     ) -> Result<Vec<PinnedRegistryEntry>, RegistryGraphValidationError> {
         let spec =
-            serde_json::from_value::<ModelBindingSpec>(record.value.clone()).map_err(|error| {
+            serde_json::from_value::<ModelSpec>(record.value.clone()).map_err(|error| {
                 RegistryGraphValidationError::InvalidReference {
                     kind: entry.kind.clone(),
                     id: entry.id.clone(),
-                    reason: format!("invalid ModelBindingSpec: {error}"),
+                    reason: format!("invalid ModelSpec: {error}"),
                 }
             })?;
         if spec.id != entry.id {
             return Err(RegistryGraphValidationError::InvalidReference {
                 kind: entry.kind.clone(),
                 id: entry.id.clone(),
-                reason: format!("ModelBindingSpec.id {} does not match registry id", spec.id),
+                reason: format!("ModelSpec.id {} does not match registry id", spec.id),
             });
         }
         Ok(vec![

@@ -6,7 +6,7 @@
 //!   compatible chat endpoint. Useful when a separate grading function is
 //!   already deployed there.
 //! * [`LlmExecutorJudge`] — wraps any [`awaken_contract::contract::executor::LlmExecutor`]
-//!   so server runs can grade with the same registered model bindings they
+//!   so server runs can grade with the same registered `ModelSpec` entries they
 //!   already use for replay.
 //!
 //! Both share the parse helpers (`parse_score_payload` etc) so swapping
@@ -271,7 +271,7 @@ impl Judge for TensorZeroJudge {
 
 /// [`Judge`] implementation backed by an arbitrary
 /// [`awaken_contract::contract::executor::LlmExecutor`]. Lets the server
-/// reuse the same registered model bindings (and their cost tracking) for
+/// reuse the same registered `ModelSpec` entries (and their cost tracking) for
 /// grading that it already uses for replay — no separate gateway needed.
 #[derive(Clone)]
 pub struct LlmExecutorJudge {

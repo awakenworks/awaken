@@ -4,6 +4,7 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use awaken_contract::ModelSpec;
 use awaken_contract::contract::executor::{InferenceExecutionError, InferenceRequest, LlmExecutor};
 use awaken_contract::contract::inference::{StopReason, StreamResult, TokenUsage};
 use awaken_contract::registry_spec::AgentSpec;
@@ -12,7 +13,6 @@ use awaken_ext_observability::{
     ToolSpan,
 };
 use awaken_runtime::builder::AgentRuntimeBuilder;
-use awaken_runtime::registry::traits::ModelBinding;
 use awaken_server::app::{AdminApiConfig, ServerConfig, ServerState};
 use awaken_server::routes::build_router;
 use awaken_stores::memory::InMemoryStore;
@@ -54,13 +54,7 @@ fn build_app(runtime_stats: Option<Arc<RuntimeStatsRegistry>>) -> axum::Router {
         AgentRuntimeBuilder::new()
             .with_in_memory_thread_run_store(store.clone())
             .with_provider("mock", Arc::new(StubExecutor))
-            .with_model_binding(
-                "test-model",
-                ModelBinding {
-                    provider_id: "mock".into(),
-                    upstream_model: "mock".into(),
-                },
-            )
+            .with_model(ModelSpec::new("test-model", "mock", "mock"))
             .with_agent_spec(AgentSpec {
                 id: "default".into(),
                 model_id: "test-model".into(),

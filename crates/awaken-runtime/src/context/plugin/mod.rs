@@ -5,6 +5,7 @@ mod context_transform;
 
 pub use compaction::{
     CONTEXT_COMPACTION_PLUGIN_ID, CompactionAction, CompactionBoundary, CompactionConfig,
-    CompactionConfigKey, CompactionInFlight, CompactionPlugin, CompactionState, CompactionStateKey,
+    CompactionConfigKey, CompactionFailure, CompactionInFlight, CompactionPlugin, CompactionState,
+    CompactionStateKey,
 };
 pub use context_transform::{CONTEXT_TRANSFORM_PLUGIN_ID, ContextTransformPlugin};

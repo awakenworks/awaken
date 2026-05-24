@@ -4,6 +4,7 @@
 //! from HTTP request through agent runtime execution to SSE event stream output.
 
 use async_trait::async_trait;
+use awaken_contract::ModelSpec;
 use awaken_contract::contract::content::ContentBlock;
 use awaken_contract::contract::executor::{InferenceExecutionError, InferenceRequest, LlmExecutor};
 use awaken_contract::contract::inference::{StopReason, StreamResult, TokenUsage};
@@ -13,7 +14,6 @@ use awaken_contract::contract::tool::{
 };
 use awaken_contract::registry_spec::AgentSpec;
 use awaken_runtime::builder::AgentRuntimeBuilder;
-use awaken_runtime::registry::traits::ModelBinding;
 use awaken_server::app::{ServerConfig, ServerState};
 use awaken_server::routes::build_router;
 use awaken_stores::memory::InMemoryStore;
@@ -178,13 +178,7 @@ struct TestApp {
 fn make_ag_ui_app(llm: Arc<dyn LlmExecutor>, tools: Vec<(String, Arc<dyn Tool>)>) -> TestApp {
     let store = Arc::new(InMemoryStore::new());
     let mut builder = AgentRuntimeBuilder::new()
-        .with_model_binding(
-            "test-model",
-            ModelBinding {
-                provider_id: "mock".into(),
-                upstream_model: "mock-model".into(),
-            },
-        )
+        .with_model(ModelSpec::new("test-model", "mock", "mock-model"))
         .with_provider("mock", llm)
         .with_agent_spec(AgentSpec {
             id: "test-agent".into(),
@@ -981,13 +975,7 @@ async fn multiple_sequential_runs_on_same_thread() {
     let store = Arc::new(InMemoryStore::new());
     let runtime = Arc::new(
         AgentRuntimeBuilder::new()
-            .with_model_binding(
-                "test-model",
-                ModelBinding {
-                    provider_id: "mock".into(),
-                    upstream_model: "mock-model".into(),
-                },
-            )
+            .with_model(ModelSpec::new("test-model", "mock", "mock-model"))
             .with_provider("mock", llm)
             .with_agent_spec(AgentSpec {
                 id: "test-agent".into(),

@@ -1,8 +1,8 @@
-//! Construct `AgentSpec` + `ProviderSpec` + `ModelBindingSpec` — verifies
+//! Construct `AgentSpec` + `ProviderSpec` + `ModelSpec` — verifies
 //! the config-plane shapes docs cite in `reference/config` and
 //! `reference/provider-model-config` still match the crate.
 
-use awaken::registry_spec::{AgentSpec, ModelBindingSpec, ProviderSpec};
+use awaken::registry_spec::{AgentSpec, ModelSpec, ProviderSpec};
 
 fn main() {
     let _provider = ProviderSpec {
@@ -12,9 +12,10 @@ fn main() {
     };
 
     /* Use the constructor instead of a struct literal so future fields
-     * (pricing, etc.) don't force every example to recompile. The
-     * constructor sets all optional fields to their canonical defaults. */
-    let _binding = ModelBindingSpec::new("gpt-4o-mini", "openai", "gpt-4o-mini");
+     * (pricing, capabilities) don't force every example to recompile.
+     * The constructor sets all optional fields to their canonical
+     * defaults. */
+    let _model = ModelSpec::new("gpt-4o-mini", "openai", "gpt-4o-mini");
 
     let _agent = AgentSpec {
         id: "assistant".into(),

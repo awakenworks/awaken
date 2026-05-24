@@ -62,7 +62,7 @@ impl ConfigService {
                 enforce_agent_spec_catalog(&spec)?;
             }
             ConfigNamespace::Models => {
-                awaken_contract::validate_model_binding_spec(body.clone())
+                awaken_contract::validate_model_spec(body.clone())
                     .map_err(|e| ConfigServiceError::InvalidPayload(e.to_string()))?;
             }
             ConfigNamespace::Providers => {

@@ -73,13 +73,11 @@ fn make_snapshot_with_tools(
 
     let mut models = MapModelRegistry::new();
     models
-        .register_model(
+        .register_model(awaken_contract::ModelSpec::new(
             "default",
-            awaken_runtime::registry::ModelBinding {
-                provider_id: "provider".into(),
-                upstream_model: "test-model".into(),
-            },
-        )
+            "provider",
+            "test-model",
+        ))
         .expect("register model");
 
     let registries = RegistrySet {

@@ -8,6 +8,7 @@
 //! read-only (list, get).
 
 use async_trait::async_trait;
+use awaken_contract::ModelSpec;
 use awaken_contract::contract::content::extract_text;
 use awaken_contract::contract::executor::{InferenceExecutionError, InferenceRequest};
 use awaken_contract::contract::inference::{StopReason, StreamResult, TokenUsage};
@@ -21,7 +22,6 @@ use awaken_runtime::extensions::a2a::{
     AgentBackend, AgentBackendError, AgentBackendFactory, AgentBackendFactoryError,
     DelegateRunResult, DelegateRunStatus,
 };
-use awaken_runtime::registry::traits::ModelBinding;
 use awaken_server::app::{ServerConfig, ServerState};
 use awaken_server::routes::build_router;
 use awaken_stores::memory::InMemoryStore;
@@ -289,13 +289,7 @@ fn make_test_app_with_executor(
     let store = Arc::new(InMemoryStore::new());
     let runtime = Arc::new(
         AgentRuntimeBuilder::new()
-            .with_model_binding(
-                "test-model",
-                ModelBinding {
-                    provider_id: "mock".into(),
-                    upstream_model: "mock-model".into(),
-                },
-            )
+            .with_model(ModelSpec::new("test-model", "mock", "mock-model"))
             .with_provider("mock", executor)
             .with_agent_spec(AgentSpec {
                 id: "test-agent".into(),
@@ -315,13 +309,7 @@ fn make_test_app_with_remote_root_agent() -> TestApp {
     let store = Arc::new(InMemoryStore::new());
     let runtime = Arc::new(
         AgentRuntimeBuilder::new()
-            .with_model_binding(
-                "test-model",
-                ModelBinding {
-                    provider_id: "mock".into(),
-                    upstream_model: "mock-model".into(),
-                },
-            )
+            .with_model(ModelSpec::new("test-model", "mock", "mock-model"))
             .with_provider("mock", Arc::new(ImmediateExecutor))
             .with_agent_spec(AgentSpec {
                 id: "remote-agent".into(),
@@ -877,13 +865,7 @@ async fn ai_sdk_agent_preview_requires_admin_token_when_configured() {
     let store = Arc::new(InMemoryStore::new());
     let runtime = Arc::new(
         AgentRuntimeBuilder::new()
-            .with_model_binding(
-                "test-model",
-                ModelBinding {
-                    provider_id: "mock".into(),
-                    upstream_model: "mock-model".into(),
-                },
-            )
+            .with_model(ModelSpec::new("test-model", "mock", "mock-model"))
             .with_provider("mock", Arc::new(ImmediateExecutor))
             .with_agent_spec(AgentSpec {
                 id: "test-agent".into(),

@@ -10,7 +10,7 @@ use std::sync::Arc;
 use awaken_contract::contract::config_store::ConfigStore;
 use awaken_contract::contract::executor::LlmExecutor;
 use awaken_contract::contract::storage::StorageError;
-use awaken_contract::registry_spec::{AgentSpec, ModelBindingSpec, ProviderSpec};
+use awaken_contract::registry_spec::{AgentSpec, ModelSpec, ProviderSpec};
 use awaken_ext_observability::trace_store::TraceStoreError;
 
 use crate::app::EvalRoutesState;
@@ -29,7 +29,7 @@ pub(crate) fn eval_config_store(state: &EvalRoutesState) -> Arc<dyn ConfigStore>
 /// dataset run endpoint when fixtures execute against real providers.
 ///
 /// Composition:
-///   1. Read `model_bindings/{model_id}` → `ModelBindingSpec`
+///   1. Read `models/{model_id}` → `ModelSpec`
 ///   2. Read `providers/{provider_id}` → `ProviderSpec`
 ///   3. `build_genai_provider_executor_with_broker(spec, broker)`
 ///
@@ -41,31 +41,31 @@ pub(crate) async fn resolve_live_executor(
 ) -> Result<ResolvedLiveExecutor, ApiError> {
     let store = eval_config_store(state);
 
-    let binding_value = store
+    let model_value = store
         .get("models", model_id)
         .await
         .map_err(map_storage_error)?
         .ok_or_else(|| {
             ApiError::NotFound(format!(
-                "model binding not found: models/{model_id} (register via /v1/config/models)"
+                "model not found: models/{model_id} (register via /v1/config/models)"
             ))
         })?;
     // ConfigStore may store either a bare-spec or the ConfigRecord
     // envelope; awaken_contract::config_record::ConfigRecord::from_value
     // handles both shapes transparently.
-    let binding_record =
-        awaken_contract::config_record::ConfigRecord::<ModelBindingSpec>::from_value(binding_value)
-            .map_err(|err| ApiError::Internal(format!("decoding model binding: {err}")))?;
-    let binding = binding_record.spec;
+    let model_record =
+        awaken_contract::config_record::ConfigRecord::<ModelSpec>::from_value(model_value)
+            .map_err(|err| ApiError::Internal(format!("decoding model spec: {err}")))?;
+    let spec = model_record.spec;
 
     let provider_value = store
-        .get("providers", &binding.provider_id)
+        .get("providers", &spec.provider_id)
         .await
         .map_err(map_storage_error)?
         .ok_or_else(|| {
             ApiError::NotFound(format!(
                 "provider not found: providers/{} (referenced by model {model_id})",
-                binding.provider_id
+                spec.provider_id
             ))
         })?;
     let provider_record =
@@ -77,19 +77,19 @@ pub(crate) async fn resolve_live_executor(
         build_genai_provider_executor_with_broker(&provider, state.run.credential_broker.clone())
             .map_err(|err| ApiError::Internal(format!("building provider executor: {err}")))?;
     Ok(ResolvedLiveExecutor {
-        upstream_model: binding.upstream_model.clone(),
-        binding,
+        upstream_model: spec.upstream_model.clone(),
+        spec,
         executor,
     })
 }
 
 /// Result of [`resolve_live_executor`]. Carries the executor *plus* the
-/// resolved [`ModelBindingSpec`] so callers can read pricing (and other
-/// future binding metadata) without a second registry lookup.
+/// resolved [`ModelSpec`] so callers can read pricing (and other future
+/// model metadata) without a second registry lookup.
 pub(crate) struct ResolvedLiveExecutor {
     pub executor: Arc<dyn LlmExecutor>,
     pub upstream_model: String,
-    pub binding: ModelBindingSpec,
+    pub spec: ModelSpec,
 }
 
 /// Resolve `agent_id` against the registry to its persisted
