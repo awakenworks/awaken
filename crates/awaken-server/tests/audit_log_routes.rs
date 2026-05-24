@@ -21,6 +21,8 @@ use http_body_util::BodyExt;
 use serde_json::{Value, json};
 use tower::ServiceExt;
 
+const ADMIN_TOKEN: &str = "audit-admin-token";
+
 struct ImmediateExecutor;
 
 #[async_trait]
@@ -123,9 +125,7 @@ async fn build_test_app_with_audit(token: Option<&str>) -> axum::Router {
     .with_config_runtime_manager(manager)
     .with_audit_log(audit_logger);
 
-    if let Some(tok) = token {
-        state = state.with_admin_api_bearer_token(tok);
-    }
+    state = state.with_admin_api_bearer_token(token.unwrap_or(ADMIN_TOKEN));
 
     build_router(&state)
 }
@@ -182,13 +182,14 @@ async fn build_test_app_without_audit() -> axum::Router {
         ServerConfig::default(),
     )
     .with_config_store(config_store)
-    .with_config_runtime_manager(manager);
+    .with_config_runtime_manager(manager)
+    .with_admin_api_bearer_token(ADMIN_TOKEN);
     // No audit_log attached.
     build_router(&state)
 }
 
 async fn get_audit_log(app: &axum::Router, qs: &str) -> (StatusCode, Value) {
-    get_audit_log_with_token(app, qs, None).await
+    get_audit_log_with_token(app, qs, Some(ADMIN_TOKEN)).await
 }
 
 async fn get_audit_log_with_token(
@@ -218,6 +219,7 @@ async fn create_config(app: &axum::Router, namespace: &str, body: &Value) -> Sta
         .method("POST")
         .uri(format!("/v1/config/{namespace}"))
         .header("content-type", "application/json")
+        .header("authorization", format!("Bearer {ADMIN_TOKEN}"))
         .body(Body::from(serde_json::to_vec(body).unwrap()))
         .unwrap();
     app.clone().oneshot(req).await.unwrap().status()
@@ -349,7 +351,7 @@ async fn cursor_pagination_across_many_entries() {
 #[tokio::test]
 async fn unauthorized_without_token_returns_401() {
     let app = build_test_app_with_audit(Some("secret-token")).await;
-    let (status, _body) = get_audit_log(&app, "").await;
+    let (status, _body) = get_audit_log_with_token(&app, "", None).await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
 }
 
@@ -444,7 +446,8 @@ async fn seed_apply_event_visible_via_http_query() {
     )
     .with_config_store(config_store)
     .with_config_runtime_manager(manager)
-    .with_audit_log(audit_logger);
+    .with_audit_log(audit_logger)
+    .with_admin_api_bearer_token(ADMIN_TOKEN);
 
     let app = build_router(&state);
 
