@@ -2710,7 +2710,7 @@ mod tests {
                     max_rounds: 1,
                     ..Default::default()
                 })
-                .with_thread_run_store(thread_store)
+                .with_in_memory_thread_run_store(thread_store.clone())
                 .build()
                 .expect("build runtime"),
         );
@@ -3034,7 +3034,7 @@ mod tests {
                 )
                 .with_agent_spec(shared_discovered)
                 .with_agent_spec(remote_only)
-                .with_thread_run_store(thread_store)
+                .with_in_memory_thread_run_store(thread_store.clone())
                 .build()
                 .expect("build runtime"),
         );
@@ -3589,7 +3589,7 @@ mod tests {
                         description: tool_description.to_owned(),
                     }),
                 )
-                .with_thread_run_store(thread_store)
+                .with_in_memory_thread_run_store(thread_store.clone())
                 .build()
                 .expect("build runtime"),
         );
