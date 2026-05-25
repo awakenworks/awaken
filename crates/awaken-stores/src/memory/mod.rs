@@ -7,11 +7,13 @@ use awaken_contract::contract::config_store::{
     ConfigChangeEvent, ConfigChangeKind, ConfigChangeNotifier, ConfigChangeSubscriber, ConfigStore,
     extract_meta_revision,
 };
-use awaken_contract::contract::message::{Message, PendingMessageRecord};
+use awaken_contract::contract::message::{
+    Message, PendingMessageRecord, strip_unpaired_tool_calls_from_view,
+};
 use awaken_contract::contract::profile_store::{ProfileEntry, ProfileOwner, ProfileStore};
 use awaken_contract::contract::storage::{
     MessagePage, MessageQuery, RunPage, RunQuery, RunRecord, RunStore, StorageError, ThreadPage,
-    ThreadQuery, ThreadRunStore, ThreadStore, checkpoint_parent_thread_id,
+    ThreadQuery, ThreadRunStore, ThreadStore, checkpoint_parent_thread_id, message_append,
     paginate_message_records, paginate_threads,
 };
 use awaken_contract::thread::{Thread, normalize_lineage_id};
@@ -259,7 +261,10 @@ impl ThreadStore for InMemoryStore {
 
     async fn load_messages(&self, thread_id: &str) -> Result<Option<Vec<Message>>, StorageError> {
         let guard = self.messages.read().await;
-        Ok(guard.get(thread_id).cloned())
+        Ok(guard.get(thread_id).cloned().map(|mut messages| {
+            strip_unpaired_tool_calls_from_view(&mut messages);
+            messages
+        }))
     }
 
     async fn list_message_records(
@@ -271,6 +276,8 @@ impl ThreadStore for InMemoryStore {
         let Some(messages) = guard.get(thread_id) else {
             return Ok(MessagePage::empty());
         };
+        let mut messages = messages.clone();
+        strip_unpaired_tool_calls_from_view(&mut messages);
         let records = messages
             .iter()
             .cloned()
@@ -473,7 +480,7 @@ impl ThreadRunStore for InMemoryStore {
             return Err(StorageError::VersionConflict { expected, actual });
         }
         let committed = msg_guard.entry(thread_id.to_owned()).or_default();
-        committed.extend(messages.iter().cloned());
+        message_append::merge_checkpoint_append_messages(committed, messages);
         let new_version = committed.len() as u64;
         let mut thread = existing_thread.unwrap_or_else(|| Thread::with_id(thread_id));
         thread.touch(now);

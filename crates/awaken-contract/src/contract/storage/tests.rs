@@ -2,6 +2,24 @@ use super::*;
 use std::collections::HashMap;
 use std::sync::RwLock;
 
+#[test]
+fn merge_checkpoint_append_messages_replaces_same_id_projection() {
+    let mut existing = vec![
+        Message::user("first").with_id("msg-1".to_string()),
+        Message::assistant("old").with_id("msg-2".to_string()),
+    ];
+    let delta = vec![
+        Message::assistant("new").with_id("msg-2".to_string()),
+        Message::user("tail").with_id("msg-3".to_string()),
+    ];
+
+    message_append::merge_checkpoint_append_messages(&mut existing, &delta);
+
+    assert_eq!(existing.len(), 3);
+    assert_eq!(existing[1].text(), "new");
+    assert_eq!(existing[2].text(), "tail");
+}
+
 // ── Mock ThreadStore ──
 
 #[derive(Debug, Default)]

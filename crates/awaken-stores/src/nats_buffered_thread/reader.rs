@@ -2,7 +2,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use awaken_contract::contract::message::Message;
+use awaken_contract::contract::message::{Message, strip_unpaired_tool_calls_from_view};
 use awaken_contract::contract::storage::{
     RunPage, RunQuery, RunRecord, StorageError, ThreadPage, ThreadQuery, ThreadRunStore,
     paginate_threads,
@@ -112,7 +112,9 @@ pub async fn load_messages<T: ThreadRunStore + Send + Sync + 'static>(
     }
 
     if let Some(latest_entry) = read_committed_wal_entry(store, &meta).await? {
-        return Ok(Some(latest_entry.messages));
+        let mut messages = latest_entry.messages;
+        strip_unpaired_tool_calls_from_view(&mut messages);
+        return Ok(Some(messages));
     }
 
     store.inner.load_messages(thread_id).await

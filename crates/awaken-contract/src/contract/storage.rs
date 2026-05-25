@@ -13,10 +13,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use thiserror::Error;
 
+pub mod message_append;
+
 const MESSAGE_CURSOR_PREFIX: &str = "msg_";
 const THREAD_CURSOR_PREFIX: &str = "thr_";
-
-// ── errors ──────────────────────────────────────────────────────────
 
 /// Errors returned by storage operations.
 #[derive(Debug, Error)]
@@ -1200,7 +1200,7 @@ pub trait ThreadRunStore: ThreadStore + RunStore + Send + Sync {
             return Err(StorageError::VersionConflict { expected, actual });
         }
         let mut merged = existing;
-        merged.extend(messages.iter().cloned());
+        message_append::merge_checkpoint_append_messages(&mut merged, messages);
         let new_version = merged.len() as u64;
         self.checkpoint(thread_id, &merged, run).await?;
         Ok(new_version)

@@ -105,13 +105,47 @@ impl MessageRecord {
     }
 }
 
+/// Build the read-time message view used for committed thread history.
+///
+/// A cancelled or superseded run can leave an assistant message with tool calls
+/// that never received a `tool` result. Committed history is append-oriented, so
+/// stores expose those removals as a view filter rather than rewriting message
+/// bodies in place.
+pub fn strip_unpaired_tool_calls_from_view(messages: &mut [Message]) {
+    use std::collections::HashSet;
+
+    let answered: HashSet<String> = messages
+        .iter()
+        .filter(|message| message.role == Role::Tool)
+        .filter_map(|message| message.tool_call_id.clone())
+        .collect();
+
+    for message in messages.iter_mut() {
+        if message.role != Role::Assistant {
+            continue;
+        }
+        if let Some(ref mut calls) = message.tool_calls {
+            calls.retain(|call| answered.contains(&call.id));
+            if calls.is_empty() {
+                message.tool_calls = None;
+            }
+        }
+    }
+}
+
+/// Return `messages` after applying the committed-history read view filter.
+pub fn strip_unpaired_tool_calls_from_owned_view(mut messages: Vec<Message>) -> Vec<Message> {
+    strip_unpaired_tool_calls_from_view(&mut messages);
+    messages
+}
+
 /// Generate a time-ordered UUID v7 message identifier.
 pub fn gen_message_id() -> String {
     uuid::Uuid::now_v7().to_string()
 }
 
 /// A message in the conversation.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Message {
     /// Stable message identifier (UUID v7, auto-generated).
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -320,7 +354,7 @@ impl Message {
 }
 
 /// A tool call requested by the LLM.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ToolCall {
     /// Unique identifier for this tool call.
     pub id: String,
@@ -683,6 +717,26 @@ mod tests {
         assert_eq!(record.produced_by_run_id.as_deref(), Some("run-1"));
         assert_eq!(record.step_index, Some(3));
         assert_eq!(record.tool_call_id.as_deref(), Some("call-1"));
+    }
+
+    #[test]
+    fn strip_unpaired_tool_calls_from_view_keeps_answered_calls_only() {
+        let mut assistant = Message::assistant("tools");
+        assistant.tool_calls = Some(vec![
+            ToolCall::new("answered", "search", json!({})),
+            ToolCall::new("orphaned", "dangerous", json!({})),
+        ]);
+        let mut messages = vec![
+            Message::user("question"),
+            assistant,
+            Message::tool("answered", "result"),
+        ];
+
+        strip_unpaired_tool_calls_from_view(&mut messages);
+
+        let calls = messages[1].tool_calls.as_ref().unwrap();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].id, "answered");
     }
 
     #[test]

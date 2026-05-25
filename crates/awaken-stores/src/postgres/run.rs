@@ -2,7 +2,7 @@ use async_trait::async_trait;
 use awaken_contract::contract::message::Message;
 use awaken_contract::contract::storage::{
     RunPage, RunQuery, RunRecord, RunStore, StorageError, ThreadRunStore,
-    checkpoint_parent_thread_id,
+    checkpoint_parent_thread_id, message_append,
 };
 use awaken_contract::thread::Thread;
 use sqlx::Row;
@@ -262,7 +262,7 @@ impl PostgresStore {
             return Err(StorageError::VersionConflict { expected, actual });
         }
         let mut merged = existing;
-        merged.extend(messages.iter().cloned());
+        message_append::merge_checkpoint_append_messages(&mut merged, messages);
         let new_version = merged.len() as u64;
         self.checkpoint_in_tx(tx, thread_id, &merged, run).await?;
         Ok(new_version)

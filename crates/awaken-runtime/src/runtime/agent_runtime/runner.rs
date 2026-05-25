@@ -12,7 +12,9 @@ use crate::run::{RunActivation, RunInbox, ThreadContextSnapshot, attach_registry
 use awaken_contract::contract::active_agent::ActiveAgentIdKey;
 use awaken_contract::contract::event_sink::EventSink;
 use awaken_contract::contract::identity::{RunIdentity, RunOrigin};
-use awaken_contract::contract::message::{Message, Role, Visibility};
+use awaken_contract::contract::message::{
+    Message, Role, Visibility, strip_unpaired_tool_calls_from_view,
+};
 use awaken_contract::contract::run::{RunInput, RunKind, RunResolutionScope};
 use awaken_contract::contract::storage::RunRecord;
 use awaken_contract::contract::suspension::ToolCallStatus;
@@ -777,27 +779,7 @@ fn active_agent_from_state(state: &PersistedState) -> Option<String> {
 /// `Tool` role response. These "orphaned" calls confuse LLMs on the next
 /// turn. This function strips unanswered calls from all assistant messages.
 fn strip_unpaired_tool_calls(messages: &mut Vec<Message>) {
-    use std::collections::HashSet;
-
-    // Collect all tool call IDs that have a Tool-role response.
-    let answered: HashSet<String> = messages
-        .iter()
-        .filter(|m| m.role == Role::Tool)
-        .filter_map(|m| m.tool_call_id.clone())
-        .collect();
-
-    // Strip unanswered tool calls from all assistant messages.
-    for msg in messages.iter_mut() {
-        if msg.role != Role::Assistant {
-            continue;
-        }
-        if let Some(ref mut calls) = msg.tool_calls {
-            calls.retain(|c| answered.contains(&c.id));
-            if calls.is_empty() {
-                msg.tool_calls = None;
-            }
-        }
-    }
+    strip_unpaired_tool_calls_from_view(messages);
 
     // Remove trailing empty assistant messages (no text, no tool calls).
     while let Some(last) = messages.last() {

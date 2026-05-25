@@ -215,6 +215,94 @@ fn materialize_checkpoint_append_preserves_concurrent_committed_messages() {
     assert_eq!(output.message_ids, vec!["m-assistant"]);
 }
 
+#[test]
+fn materialize_checkpoint_append_preserves_committed_output_metadata() {
+    let input = Message::user("first").with_id("m-input".into());
+    let assistant = Message::assistant("done").with_id("m-assistant".into());
+    let mut committed_assistant = assistant.clone();
+    committed_assistant.mark_produced_by("run-1", Some(0));
+    let previous = RunRecord {
+        run_id: "run-1".into(),
+        thread_id: "thread-1".into(),
+        agent_id: "agent".into(),
+        output: Some(RunMessageOutput {
+            thread_id: "thread-1".into(),
+            range: MessageSeqRange::new(2, 2),
+            message_ids: vec!["m-assistant".into()],
+        }),
+        ..Default::default()
+    };
+    let identity = RunIdentity::new(
+        "thread-1".into(),
+        None,
+        "run-1".into(),
+        None,
+        "agent".into(),
+        awaken_contract::contract::identity::RunOrigin::User,
+    );
+
+    let (delta, output) = materialize_checkpoint_append(
+        &[Arc::new(input.clone()), Arc::new(assistant)],
+        &[input, committed_assistant],
+        Some(&previous),
+        &identity,
+        2,
+        1,
+    );
+
+    assert!(
+        delta.is_empty(),
+        "unmarked in-memory output must not replace committed producer metadata"
+    );
+    let output = output.expect("existing output relation remains recorded");
+    assert_eq!(output.range, MessageSeqRange::new(2, 2));
+    assert_eq!(output.message_ids, vec!["m-assistant"]);
+}
+
+#[test]
+fn materialize_checkpoint_append_backfills_previous_output_metadata() {
+    let input = Message::user("first").with_id("m-input".into());
+    let assistant = Message::assistant("done").with_id("m-assistant".into());
+    let previous = RunRecord {
+        run_id: "run-1".into(),
+        thread_id: "thread-1".into(),
+        agent_id: "agent".into(),
+        output: Some(RunMessageOutput {
+            thread_id: "thread-1".into(),
+            range: MessageSeqRange::new(2, 2),
+            message_ids: vec!["m-assistant".into()],
+        }),
+        ..Default::default()
+    };
+    let identity = RunIdentity::new(
+        "thread-1".into(),
+        None,
+        "run-1".into(),
+        None,
+        "agent".into(),
+        awaken_contract::contract::identity::RunOrigin::User,
+    );
+
+    let (delta, output) = materialize_checkpoint_append(
+        &[Arc::new(input.clone()), Arc::new(assistant)],
+        &[
+            input,
+            Message::assistant("done").with_id("m-assistant".into()),
+        ],
+        Some(&previous),
+        &identity,
+        2,
+        1,
+    );
+
+    assert_eq!(delta.len(), 1);
+    assert_eq!(delta[0].id.as_deref(), Some("m-assistant"));
+    assert_eq!(delta[0].produced_by_run_id(), Some("run-1"));
+    let output = output.expect("existing output relation remains recorded");
+    assert_eq!(output.range, MessageSeqRange::new(2, 2));
+    assert_eq!(output.message_ids, vec!["m-assistant"]);
+}
+
 #[tokio::test]
 async fn persist_checkpoint_preserves_existing_registry_manifest() {
     let state_store = store_with_loop_state();
