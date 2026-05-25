@@ -400,6 +400,27 @@ pub enum CommitError {
     ScopeMismatch(String),
 }
 
+impl CommitError {
+    /// Reclassify a wrapped store-level [`StorageError::VersionConflict`] from
+    /// an append commit into the message-level [`CommitError::MessageVersionConflict`]
+    /// carrying `thread_id`, so the append retry path can distinguish a stale
+    /// version (reload-merge-retry) from other store-write failures (abort).
+    /// Other errors pass through unchanged (ADR-0042 A).
+    #[must_use]
+    pub fn reclassify_append_conflict(self, thread_id: &str) -> Self {
+        match self {
+            CommitError::StoreWrite(StorageError::VersionConflict { expected, actual }) => {
+                CommitError::MessageVersionConflict {
+                    thread_id: thread_id.to_string(),
+                    expected,
+                    actual,
+                }
+            }
+            other => other,
+        }
+    }
+}
+
 // ── coordinator trait ────────────────────────────────────────────────
 
 /// Cross-store atomic commit boundary (ADR-0036 D2).

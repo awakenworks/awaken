@@ -5,7 +5,9 @@ use awaken_contract::contract::commit_coordinator::CanonicalEventStager;
 use awaken_contract::contract::event_store::{
     CanonicalEventDraft, CanonicalEventKind, EventReader, EventScope, EventVisibility,
 };
-use awaken_contract::contract::storage::{PinnedRegistryEntry, PinnedRegistryManifest, RunStore};
+use awaken_contract::contract::storage::{
+    PinnedRegistryEntry, PinnedRegistryManifest, RunStore, ThreadRunStore, ThreadStore,
+};
 use awaken_contract::contract::suspension::ToolCallResumeMode;
 use awaken_stores::{
     InMemoryEventStore, InMemoryOutboxStore, InMemoryStore, MemoryCommitCoordinator,
@@ -167,6 +169,52 @@ fn materialize_message_log_preserves_output_across_same_run_resume() {
     assert_eq!(msgs[3].produced_by_run_id(), Some("run-1"));
 }
 
+#[test]
+fn materialize_checkpoint_append_preserves_concurrent_committed_messages() {
+    let input = Message::user("first").with_id("m-input".into());
+    let queued = Message::user("queued while running").with_id("m-queued".into());
+    let assistant = Message::assistant("done").with_id("m-assistant".into());
+    let messages = vec![Arc::new(input.clone()), Arc::new(assistant)];
+    let previous = RunRecord {
+        run_id: "run-1".into(),
+        thread_id: "thread-1".into(),
+        agent_id: "agent".into(),
+        input: Some(RunMessageInput {
+            thread_id: "thread-1".into(),
+            range: MessageSeqRange::new(1, 1),
+            trigger_message_ids: vec!["m-input".into()],
+            selected_message_ids: Vec::new(),
+            context_policy: None,
+            compacted_snapshot_id: None,
+        }),
+        ..Default::default()
+    };
+    let identity = RunIdentity::new(
+        "thread-1".into(),
+        None,
+        "run-1".into(),
+        None,
+        "agent".into(),
+        awaken_contract::contract::identity::RunOrigin::User,
+    );
+
+    let (delta, output) = materialize_checkpoint_append(
+        &messages,
+        &[input, queued],
+        Some(&previous),
+        &identity,
+        1,
+        1,
+    );
+
+    assert_eq!(delta.len(), 1);
+    assert_eq!(delta[0].id.as_deref(), Some("m-assistant"));
+    assert_eq!(delta[0].produced_by_run_id(), Some("run-1"));
+    let output = output.expect("assistant output is recorded");
+    assert_eq!(output.range, MessageSeqRange::new(3, 3));
+    assert_eq!(output.message_ids, vec!["m-assistant"]);
+}
+
 #[tokio::test]
 async fn persist_checkpoint_preserves_existing_registry_manifest() {
     let state_store = store_with_loop_state();
@@ -259,6 +307,113 @@ async fn persist_checkpoint_preserves_existing_registry_manifest() {
     assert_eq!(loaded.registry_manifest, Some(manifest));
     assert_eq!(loaded.input_tokens, 2);
     assert_eq!(loaded.output_tokens, 3);
+}
+
+#[tokio::test]
+async fn persist_checkpoint_appends_delta_after_concurrent_committed_message() {
+    let state_store = store_with_loop_state();
+    commit_update::<RunLifecycle>(
+        &state_store,
+        RunLifecycleUpdate::Start {
+            run_id: "run-1".into(),
+            updated_at: 1_000,
+        },
+    )
+    .expect("lifecycle starts");
+    commit_update::<RunLifecycle>(
+        &state_store,
+        RunLifecycleUpdate::StepCompleted { updated_at: 1_500 },
+    )
+    .expect("step completes");
+
+    let checkpoint_store = Arc::new(InMemoryStore::new());
+    let coordinator = MemoryCommitCoordinator::wrap(Arc::clone(&checkpoint_store));
+    let input = Message::user("first").with_id("m-input".into());
+    let queued = Message::user("queued while running").with_id("m-queued".into());
+    let assistant = Message::assistant("done").with_id("m-assistant".into());
+    let previous = RunRecord {
+        run_id: "run-1".into(),
+        thread_id: "thread-1".into(),
+        agent_id: "agent".into(),
+        input: Some(RunMessageInput {
+            thread_id: "thread-1".into(),
+            range: MessageSeqRange::new(1, 1),
+            trigger_message_ids: vec!["m-input".into()],
+            selected_message_ids: Vec::new(),
+            context_policy: None,
+            compacted_snapshot_id: None,
+        }),
+        status: RunStatus::Created,
+        ..Default::default()
+    };
+    checkpoint_store
+        .checkpoint_append("thread-1", std::slice::from_ref(&input), Some(0), &previous)
+        .await
+        .expect("seed input");
+    checkpoint_store
+        .checkpoint_append(
+            "thread-1",
+            std::slice::from_ref(&queued),
+            Some(1),
+            &RunRecord {
+                run_id: "run-queued".into(),
+                thread_id: "thread-1".into(),
+                agent_id: "agent".into(),
+                status: RunStatus::Created,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("concurrent append");
+
+    let identity = RunIdentity::new(
+        "thread-1".into(),
+        None,
+        "run-1".into(),
+        None,
+        "agent".into(),
+        awaken_contract::contract::identity::RunOrigin::User,
+    );
+    let messages = vec![Arc::new(input), Arc::new(assistant)];
+
+    persist_checkpoint(CheckpointPersist {
+        store: &state_store,
+        checkpoint_store: Some(&*checkpoint_store),
+        commit: crate::loop_runner::CommitWiring::new(Some(&*coordinator), None),
+        messages: &messages,
+        input_message_count: 1,
+        run_identity: &identity,
+        run_created_at: 1_000,
+        total_input_tokens: 2,
+        total_output_tokens: 3,
+        termination_reason: None,
+        final_output: None,
+        error_payload: None,
+        thread_ctx: None,
+    })
+    .await
+    .expect("checkpoint persists");
+
+    let committed = checkpoint_store
+        .load_messages("thread-1")
+        .await
+        .expect("load messages")
+        .expect("messages exist");
+    let ids: Vec<_> = committed
+        .iter()
+        .map(|message| message.id.as_deref().unwrap_or_default())
+        .collect();
+    assert_eq!(ids, vec!["m-input", "m-queued", "m-assistant"]);
+    assert_eq!(committed[2].produced_by_run_id(), Some("run-1"));
+
+    let loaded = checkpoint_store
+        .load_run("run-1")
+        .await
+        .expect("load run")
+        .expect("run exists");
+    let output = loaded.output.expect("output persisted");
+    assert_eq!(output.range, MessageSeqRange::new(3, 3));
+    assert_eq!(output.message_ids, vec!["m-assistant"]);
 }
 
 #[tokio::test]

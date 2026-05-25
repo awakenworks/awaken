@@ -2522,6 +2522,91 @@ async fn concurrent_same_thread_submits_do_not_lose_messages() {
     }
 }
 
+/// Cross-instance lost-update race (ADR-0042 A / D5): two independent `Mailbox`
+/// instances share one store. Their striped append locks are per-instance, so
+/// the in-process lock cannot serialize them — only the version-guarded
+/// committed append plus reload-merge retry can prevent a dropped message. The
+/// old whole-list overwrite loses updates here; the append path must not.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn cross_instance_concurrent_submits_do_not_lose_messages() {
+    const CONCURRENCY: usize = 32;
+
+    let store = make_store();
+    let run_store = Arc::new(InMemoryStore::new());
+    let make_mailbox = || {
+        let runtime: Arc<dyn RunDispatchExecutor> = Arc::new(NoopMailboxRuntime);
+        Arc::new(Mailbox::new(
+            runtime,
+            store.clone(),
+            run_store.clone(),
+            "cross-consumer".to_string(),
+            MailboxConfig::default(),
+        ))
+    };
+    let mailbox_a = make_mailbox();
+    let mailbox_b = make_mailbox();
+
+    let thread_id = "thread-cross-instance";
+    let mut handles = Vec::with_capacity(CONCURRENCY);
+    for i in 0..CONCURRENCY {
+        // Alternate instances so half the writers hold a different striped lock.
+        let mb = if i % 2 == 0 {
+            Arc::clone(&mailbox_a)
+        } else {
+            Arc::clone(&mailbox_b)
+        };
+        let tid = thread_id.to_string();
+        handles.push(tokio::spawn(async move {
+            let mut request = RunActivation::new(&tid, vec![Message::user(format!("msg-{i}"))])
+                .with_agent_id("agent");
+            let (validated_thread_id, messages) = validate_run_inputs(
+                request.thread_id().to_owned(),
+                request.messages().to_vec(),
+                false,
+            )
+            .expect("input should validate");
+            mb.prepare_run_for_dispatch(&mut request, &validated_thread_id, &messages)
+                .await
+                .expect("prepare run")
+        }));
+    }
+    let mut run_ids = Vec::with_capacity(CONCURRENCY);
+    for handle in handles {
+        run_ids.push(handle.await.expect("prepare task should not panic"));
+    }
+
+    let final_messages = run_store
+        .load_messages(thread_id)
+        .await
+        .unwrap()
+        .unwrap_or_default();
+    assert_eq!(
+        final_messages.len(),
+        CONCURRENCY,
+        "cross-instance lost-update dropped {} message(s)",
+        CONCURRENCY.saturating_sub(final_messages.len())
+    );
+
+    for run_id in &run_ids {
+        let run = run_store
+            .load_run(run_id)
+            .await
+            .unwrap()
+            .expect("run record exists");
+        let snapshot = run.activation.expect("activation snapshot");
+        for message_id in &snapshot.input.trigger_message_ids {
+            assert!(
+                run_store
+                    .load_message_record(thread_id, message_id)
+                    .await
+                    .unwrap()
+                    .is_some(),
+                "message '{message_id}' not found for run '{run_id}' (cross-instance lost-update)"
+            );
+        }
+    }
+}
+
 #[tokio::test]
 async fn start_lifecycle_ready_serializes_concurrent_recovery() {
     let store = Arc::new(RecoverFlakyMailboxStore::new(0));

@@ -12,8 +12,9 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use awaken_contract::contract::commit_coordinator::{
     CheckpointCommitOutcome, CheckpointCommitPlan, CommitCoordinator, CommitError,
-    TransactionScopeId,
+    MessageWriteMode, TransactionScopeId,
 };
+use awaken_contract::contract::storage::StorageError;
 
 use crate::postgres::PostgresStore;
 use crate::postgres_outbox::enqueue_outbox_in_transaction;
@@ -102,9 +103,34 @@ impl CommitCoordinator for PgCommitCoordinator {
             additional_outbox_ids.push(result.message.outbox_id);
         }
 
-        self.store
-            .checkpoint_in_tx(&mut tx, &plan.thread_id, &plan.messages, &plan.run)
-            .await?;
+        match plan.message_mode {
+            MessageWriteMode::Overwrite => {
+                self.store
+                    .checkpoint_in_tx(&mut tx, &plan.thread_id, &plan.messages, &plan.run)
+                    .await?;
+            }
+            MessageWriteMode::Append => {
+                self.store
+                    .checkpoint_append_in_tx(
+                        &mut tx,
+                        &plan.thread_id,
+                        &plan.messages,
+                        plan.expected_message_version,
+                        &plan.run,
+                    )
+                    .await
+                    .map_err(|error| match error {
+                        StorageError::VersionConflict { expected, actual } => {
+                            CommitError::MessageVersionConflict {
+                                thread_id: plan.thread_id.clone(),
+                                expected,
+                                actual,
+                            }
+                        }
+                        other => CommitError::StoreWrite(other),
+                    })?;
+            }
+        }
 
         tx.commit()
             .await

@@ -10,7 +10,8 @@ use awaken_contract::contract::mailbox::{
     LiveRunTarget, RunDispatch, RunDispatchResult, RunDispatchStatus,
 };
 use awaken_contract::contract::message::Message;
-use awaken_contract::contract::storage::RunRecord;
+use awaken_contract::contract::run::RunInputSnapshot;
+use awaken_contract::contract::storage::{MessageSeqRange, RunMessageInput, RunRecord};
 use awaken_contract::contract::tool_intercept::RunMode;
 use awaken_contract::now_ms;
 use awaken_runtime::RunActivation;
@@ -98,6 +99,33 @@ pub(super) fn validate_run_inputs(
         }
     };
     Ok((thread_id, messages))
+}
+
+/// Build the run input snapshot and its `RunMessageInput` projection for a run
+/// whose committed message log ends at `last_seq` and was triggered by
+/// `trigger_message_ids`. The range spans the whole committed log (`1..=last_seq`).
+pub(super) fn build_run_input(
+    thread_id: &str,
+    last_seq: u64,
+    trigger_message_ids: &[String],
+) -> (RunInputSnapshot, Option<RunMessageInput>) {
+    let input_snapshot = RunInputSnapshot {
+        thread_id: thread_id.to_string(),
+        range: MessageSeqRange::new(1, last_seq),
+        trigger_message_ids: trigger_message_ids.to_vec(),
+        selected_message_ids: Vec::new(),
+        context_policy: None,
+        compacted_snapshot_id: None,
+    };
+    let input = Some(RunMessageInput {
+        thread_id: input_snapshot.thread_id.clone(),
+        range: input_snapshot.range,
+        trigger_message_ids: input_snapshot.trigger_message_ids.clone(),
+        selected_message_ids: input_snapshot.selected_message_ids.clone(),
+        context_policy: input_snapshot.context_policy.clone(),
+        compacted_snapshot_id: input_snapshot.compacted_snapshot_id.clone(),
+    });
+    (input_snapshot, input)
 }
 
 pub(super) fn normalize_message_ids(messages: &[Message]) -> Vec<Message> {

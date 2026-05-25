@@ -17,7 +17,7 @@ use awaken_contract::contract::mailbox::{RunDispatch, RunDispatchStatus};
 use awaken_contract::contract::message::Message;
 use awaken_contract::contract::run::{RunInput, RunInputSnapshot, RunKind, RunResolutionScope};
 use awaken_contract::contract::storage::{
-    MessageSeqRange, PinnedRegistryManifest, RunMessageInput, RunRecord, RunRequestSnapshot,
+    MessageSeqRange, PinnedRegistryManifest, RunRecord, RunRequestSnapshot,
 };
 use awaken_contract::contract::tool_intercept::RunMode;
 use awaken_contract::now_ms;
@@ -28,7 +28,7 @@ use crate::transport::channel_sink::ReconnectableEventSink;
 use super::{
     ACTIVE_RUN_CONFLICT_MESSAGE, INLINE_CLAIM_GUARD_MS, LegacyRunRequestSnapshotAdapter,
     LegacyRunSnapshotExtras, Mailbox, MailboxDispatchStatus, MailboxError, MailboxSubmitResult,
-    MailboxWorkerStatus, ThreadContext, legacy_input_snapshot, lock_thread_append,
+    MailboxWorkerStatus, ThreadContext, build_run_input, legacy_input_snapshot, lock_thread_append,
     normalize_mailbox_run_mode, normalize_message_ids, record_mailbox_operation_result,
     result_label, validate_run_inputs,
 };
@@ -387,40 +387,18 @@ impl Mailbox {
         let dispatch_id = self.ensure_dispatch_id_hint(request);
 
         let normalized_messages = normalize_message_ids(messages);
-        let existing_messages = self
-            .run_store
-            .load_messages(thread_id)
-            .await?
-            .unwrap_or_default();
-        let previous_run = self.run_store.latest_run(thread_id).await?;
-        let mut appended_messages = existing_messages;
-        let first_new_seq = appended_messages.len() as u64 + 1;
-        appended_messages.extend(normalized_messages.iter().cloned());
-        let last_new_seq = appended_messages.len() as u64;
         let input_message_ids = normalized_messages
             .iter()
             .filter_map(|message| message.id.clone())
             .collect::<Vec<_>>();
-        let input_range = MessageSeqRange::new(1, appended_messages.len() as u64);
-        let input_snapshot = RunInputSnapshot {
-            thread_id: thread_id.to_string(),
-            range: input_range,
-            trigger_message_ids: input_message_ids,
-            selected_message_ids: Vec::new(),
-            context_policy: None,
-            compacted_snapshot_id: None,
-        };
-        let input = Some(RunMessageInput {
-            thread_id: input_snapshot.thread_id.clone(),
-            range: input_snapshot.range,
-            trigger_message_ids: input_snapshot.trigger_message_ids.clone(),
-            selected_message_ids: input_snapshot.selected_message_ids.clone(),
-            context_policy: input_snapshot.context_policy.clone(),
-            compacted_snapshot_id: input_snapshot.compacted_snapshot_id.clone(),
-        });
+        let previous_run = self.run_store.latest_run(thread_id).await?;
 
+        // Build the message-count-independent run record template and pinned
+        // manifest once. The existing-run vs new-run decision is stable across
+        // append retries: a version-conflicting append never commits the run,
+        // so `load_run(run_id)` is invariant under retry.
         let existing_run = self.run_store.load_run(&run_id).await?;
-        if let Some(mut existing) = existing_run {
+        let (mut record, manifest) = if let Some(mut existing) = existing_run {
             if existing.thread_id != thread_id {
                 return Err(MailboxError::Validation(format!(
                     "run_id '{run_id}' belongs to thread '{}', not '{thread_id}'",
@@ -435,7 +413,7 @@ impl Mailbox {
             if request.intent.agent_id.is_none() {
                 request.intent.agent_id = Some(existing.agent_id.clone());
             }
-            let registry_manifest = if let Some(manifest) = existing.registry_manifest.clone() {
+            let manifest = if let Some(manifest) = existing.registry_manifest.clone() {
                 request.resolution_scope = RunResolutionScope::Pinned(manifest.clone());
                 manifest
             } else {
@@ -444,90 +422,112 @@ impl Mailbox {
                 request.resolution_scope = RunResolutionScope::Pinned(manifest.clone());
                 manifest
             };
-            existing.activation = Some(request.snapshot(input_snapshot.clone(), registry_manifest));
             existing.request = None;
-            existing.input = input;
             existing.dispatch_id = Some(dispatch_id);
-            existing.updated_at = now_ms() / 1000;
-            self.commit_run_checkpoint(thread_id, &appended_messages, &existing)
-                .await?;
-            self.record_thread_message_checkpoint_events(
-                thread_id,
-                &run_id,
-                &appended_messages,
-                first_new_seq,
-                last_new_seq,
-            )
-            .await;
-            self.refresh_worker_checkpoint_cache(thread_id, &appended_messages, &existing)
+            (existing, manifest)
+        } else {
+            let inferred_agent_id = request
+                .intent
+                .agent_id
+                .clone()
+                .or_else(|| {
+                    previous_run.as_ref().and_then(|run| {
+                        (run.status != RunStatus::Created && !run.agent_id.trim().is_empty())
+                            .then(|| run.agent_id.clone())
+                    })
+                })
+                .unwrap_or_else(|| "default".to_string());
+            let inherited_state = previous_run
+                .as_ref()
+                .filter(|run| run.status != RunStatus::Created)
+                .and_then(|run| run.state.clone());
+            if request.intent.agent_id.is_none() {
+                request.intent.agent_id = Some(inferred_agent_id.clone());
+            }
+            let manifest = self.resolve_replayable_manifest(request).await?;
+            request.resolution_scope = RunResolutionScope::Pinned(manifest.clone());
+            let now = now_ms() / 1000;
+            let record = RunRecord {
+                run_id: run_id.clone(),
+                thread_id: thread_id.to_string(),
+                agent_id: inferred_agent_id,
+                parent_run_id: request.trace.parent_run_id.clone(),
+                registry_manifest: Some(manifest.clone()),
+                activation: None,
+                request: None,
+                input: None,
+                output: None,
+                status: RunStatus::Created,
+                termination_reason: None,
+                final_output: None,
+                error_payload: None,
+                dispatch_id: Some(dispatch_id),
+                session_id: None,
+                transport_request_id: request.trace.transport_request_id.clone(),
+                waiting: None,
+                outcome: None,
+                created_at: now,
+                started_at: None,
+                finished_at: None,
+                updated_at: now,
+                steps: 0,
+                input_tokens: 0,
+                output_tokens: 0,
+                state: inherited_state,
+            };
+            (record, manifest)
+        };
+
+        // Append-only committed write with reload-merge retry (ADR-0042 A). The
+        // committed message count is the version guard; commit the delta plus
+        // the run atomically. A stale version means another writer appended
+        // first — reload, recompute the range, and retry.
+        const MAX_APPEND_ATTEMPTS: usize = 8;
+        for _ in 0..MAX_APPEND_ATTEMPTS {
+            let existing_messages = self
+                .run_store
+                .load_messages(thread_id)
+                .await?
+                .unwrap_or_default();
+            let expected_version = existing_messages.len() as u64;
+            let first_new_seq = expected_version + 1;
+            let last_new_seq = expected_version + normalized_messages.len() as u64;
+            let (input_snapshot, input) =
+                build_run_input(thread_id, last_new_seq, &input_message_ids);
+            record.activation = Some(request.snapshot(input_snapshot, manifest.clone()));
+            record.input = input;
+            record.updated_at = now_ms() / 1000;
+
+            if self
+                .commit_run_append(
+                    thread_id,
+                    &normalized_messages,
+                    Some(expected_version),
+                    &record,
+                )
+                .await?
+            {
+                // The CAS guarantees nothing was appended since the read, so the
+                // committed log is exactly `existing_messages ++ delta`.
+                let mut appended_messages = existing_messages;
+                appended_messages.extend(normalized_messages.iter().cloned());
+                self.record_thread_message_checkpoint_events(
+                    thread_id,
+                    &run_id,
+                    &appended_messages,
+                    first_new_seq,
+                    last_new_seq,
+                )
                 .await;
-            return Ok(run_id);
+                self.refresh_worker_checkpoint_cache(thread_id, &appended_messages, &record)
+                    .await;
+                return Ok(run_id);
+            }
         }
 
-        let inferred_agent_id = request
-            .intent
-            .agent_id
-            .clone()
-            .or_else(|| {
-                previous_run.as_ref().and_then(|run| {
-                    (run.status != RunStatus::Created && !run.agent_id.trim().is_empty())
-                        .then(|| run.agent_id.clone())
-                })
-            })
-            .unwrap_or_else(|| "default".to_string());
-        let inherited_state = previous_run
-            .as_ref()
-            .filter(|run| run.status != RunStatus::Created)
-            .and_then(|run| run.state.clone());
-        if request.intent.agent_id.is_none() {
-            request.intent.agent_id = Some(inferred_agent_id.clone());
-        }
-        let registry_manifest = self.resolve_replayable_manifest(request).await?;
-        request.resolution_scope = RunResolutionScope::Pinned(registry_manifest.clone());
-        let activation = Some(request.snapshot(input_snapshot, registry_manifest.clone()));
-        let registry_manifest = Some(registry_manifest);
-        let now = now_ms() / 1000;
-        let record = RunRecord {
-            run_id: run_id.clone(),
-            thread_id: thread_id.to_string(),
-            agent_id: inferred_agent_id,
-            parent_run_id: request.trace.parent_run_id.clone(),
-            registry_manifest,
-            activation,
-            request: None,
-            input,
-            output: None,
-            status: RunStatus::Created,
-            termination_reason: None,
-            final_output: None,
-            error_payload: None,
-            dispatch_id: Some(dispatch_id),
-            session_id: None,
-            transport_request_id: request.trace.transport_request_id.clone(),
-            waiting: None,
-            outcome: None,
-            created_at: now,
-            started_at: None,
-            finished_at: None,
-            updated_at: now,
-            steps: 0,
-            input_tokens: 0,
-            output_tokens: 0,
-            state: inherited_state,
-        };
-        self.commit_run_checkpoint(thread_id, &appended_messages, &record)
-            .await?;
-        self.record_thread_message_checkpoint_events(
-            thread_id,
-            &run_id,
-            &appended_messages,
-            first_new_seq,
-            last_new_seq,
-        )
-        .await;
-        self.refresh_worker_checkpoint_cache(thread_id, &appended_messages, &record)
-            .await;
-        Ok(run_id)
+        Err(MailboxError::Internal(format!(
+            "committed append exhausted {MAX_APPEND_ATTEMPTS} retries under version conflict for thread '{thread_id}'"
+        )))
     }
 
     async fn resolve_replayable_manifest(

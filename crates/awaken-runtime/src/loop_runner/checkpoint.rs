@@ -1,11 +1,14 @@
 //! Step completion, checkpointing, state snapshots, and termination checks.
 
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use crate::EventBuffer;
 use crate::hooks::PhaseContext;
 use crate::phase::{ExecutionEnv, PhaseRuntime};
-use awaken_contract::contract::commit_coordinator::{CheckpointCommitPlan, CommitCoordinator};
+use awaken_contract::contract::commit_coordinator::{
+    CheckpointCommitPlan, CommitCoordinator, CommitError,
+};
 use awaken_contract::contract::event::AgentEvent;
 use awaken_contract::contract::event_sink::EventSink;
 use awaken_contract::contract::identity::RunIdentity;
@@ -208,14 +211,13 @@ pub(super) async fn persist_checkpoint(
     } else {
         previous.as_ref().and_then(|record| record.finished_at)
     };
-    let (msgs, input, output) = materialize_message_log(
+    let input = materialize_input(
         messages,
         previous.as_ref(),
-        run_identity,
-        lifecycle.step_count,
+        &run_identity.thread_id,
         input_message_count,
     );
-    let record = RunRecord {
+    let base_record = RunRecord {
         run_id: run_identity.run_id.clone(),
         thread_id: run_identity.thread_id.clone(),
         agent_id: run_identity.agent_id.clone(),
@@ -229,7 +231,7 @@ pub(super) async fn persist_checkpoint(
             .and_then(|record| record.activation.clone()),
         request: previous.as_ref().and_then(|record| record.request.clone()),
         input,
-        output,
+        output: previous.as_ref().and_then(|record| record.output.clone()),
         status: lifecycle.status,
         termination_reason,
         final_output,
@@ -265,18 +267,150 @@ pub(super) async fn persist_checkpoint(
         .event_buffer
         .map(|buf| buf.drain())
         .unwrap_or_default();
-    let plan = CheckpointCommitPlan::checkpoint_only(run_identity.thread_id.clone(), msgs, record)
-        .with_canonical_drafts(canonical_drafts);
-    coordinator
-        .commit_checkpoint(plan)
-        .await
-        .map_err(|e| AgentLoopError::StorageError(e.to_string()))?;
-    // `storage` is read at function start for `load_run`; the checkpoint
-    // write itself goes through the coordinator above.
-    let _ = storage;
-    Ok(())
+    const MAX_APPEND_ATTEMPTS: usize = 8;
+    for _ in 0..MAX_APPEND_ATTEMPTS {
+        let committed_messages = storage
+            .load_messages(&run_identity.thread_id)
+            .await
+            .map_err(|e| AgentLoopError::StorageError(e.to_string()))?
+            .unwrap_or_default();
+        let expected_version = committed_messages.len() as u64;
+        let (delta, output) = materialize_checkpoint_append(
+            messages,
+            &committed_messages,
+            previous.as_ref(),
+            run_identity,
+            lifecycle.step_count,
+            input_message_count,
+        );
+        let mut record = base_record.clone();
+        record.output = output;
+        let plan = CheckpointCommitPlan::append(
+            run_identity.thread_id.clone(),
+            delta,
+            Some(expected_version),
+            record,
+        )
+        .with_canonical_drafts(canonical_drafts.clone());
+        match coordinator.commit_checkpoint(plan).await {
+            Ok(_) => {
+                // `storage` is read at function start for `load_run`; the checkpoint
+                // write itself goes through the coordinator above.
+                let _ = storage;
+                return Ok(());
+            }
+            Err(CommitError::MessageVersionConflict { .. }) => continue,
+            Err(error) => return Err(AgentLoopError::StorageError(error.to_string())),
+        }
+    }
+    Err(AgentLoopError::StorageError(format!(
+        "committed append exhausted {MAX_APPEND_ATTEMPTS} retries under version conflict for thread '{}'",
+        run_identity.thread_id
+    )))
 }
 
+fn materialize_input(
+    messages: &[Arc<Message>],
+    previous: Option<&RunRecord>,
+    thread_id: &str,
+    input_message_count: usize,
+) -> Option<RunMessageInput> {
+    previous
+        .and_then(|record| record.input.clone())
+        .or_else(|| infer_input_from_legacy_request(previous, thread_id, messages.len()))
+        .or_else(|| infer_input_from_initial_messages(thread_id, input_message_count))
+}
+
+fn materialize_checkpoint_append(
+    messages: &[Arc<Message>],
+    committed_messages: &[Message],
+    previous: Option<&RunRecord>,
+    run_identity: &RunIdentity,
+    step_count: u32,
+    input_message_count: usize,
+) -> (Vec<Message>, Option<RunMessageOutput>) {
+    let committed_seq_by_id: HashMap<String, u64> = committed_messages
+        .iter()
+        .enumerate()
+        .filter_map(|(index, message)| message.id.as_ref().map(|id| (id.clone(), index as u64 + 1)))
+        .collect();
+    let previous_output_ids: HashSet<String> = previous
+        .and_then(|record| record.output.as_ref())
+        .map(|output| output.message_ids.iter().cloned().collect())
+        .unwrap_or_default();
+
+    let step_index = step_count.checked_sub(1);
+    let mut output_message_ids = previous
+        .and_then(|record| record.output.as_ref())
+        .map(|output| output.message_ids.clone())
+        .unwrap_or_default();
+    let mut output_from_seq = previous
+        .and_then(|record| record.output.as_ref())
+        .and_then(|output| output.range)
+        .map(|range| range.from_seq);
+    let mut output_to_seq = previous
+        .and_then(|record| record.output.as_ref())
+        .and_then(|output| output.range)
+        .map(|range| range.to_seq);
+
+    let mut delta = Vec::new();
+    let mut next_append_seq = committed_messages.len() as u64 + 1;
+    let mut has_new_output = false;
+    for (index, message) in messages.iter().enumerate() {
+        let mut message = (**message).clone();
+        let committed_seq = message
+            .id
+            .as_ref()
+            .and_then(|id| committed_seq_by_id.get(id))
+            .copied();
+        let seq = committed_seq.unwrap_or(next_append_seq);
+        let already_recorded_output = message.produced_by_run_id()
+            == Some(run_identity.run_id.as_str())
+            || message
+                .id
+                .as_ref()
+                .is_some_and(|id| previous_output_ids.contains(id));
+        let new_output = committed_seq.is_none()
+            && index >= input_message_count
+            && is_run_output_message(&message);
+
+        if already_recorded_output || new_output {
+            if new_output {
+                message.mark_produced_by(&run_identity.run_id, step_index);
+                has_new_output = true;
+            }
+            output_from_seq = Some(output_from_seq.map_or(seq, |from| from.min(seq)));
+            output_to_seq = Some(output_to_seq.map_or(seq, |to| to.max(seq)));
+            if let Some(id) = message.id.clone()
+                && !output_message_ids.iter().any(|existing| existing == &id)
+            {
+                output_message_ids.push(id);
+            }
+        }
+
+        if committed_seq.is_none() {
+            delta.push(message);
+            next_append_seq += 1;
+        }
+    }
+
+    let output = if output_from_seq.is_none() || (!has_new_output && output_message_ids.is_empty())
+    {
+        previous.and_then(|record| record.output.clone())
+    } else {
+        Some(RunMessageOutput {
+            thread_id: run_identity.thread_id.clone(),
+            range: output_from_seq
+                .zip(output_to_seq)
+                .and_then(|(from, to)| MessageSeqRange::new(from, to)),
+            message_ids: output_message_ids,
+        })
+    };
+
+    (delta, output)
+}
+
+#[cfg(test)]
 fn materialize_message_log(
     messages: &[Arc<Message>],
     previous: Option<&RunRecord>,
@@ -399,6 +533,7 @@ fn is_run_output_message(message: &Message) -> bool {
     matches!(message.role, Role::Assistant | Role::Tool)
 }
 
+#[cfg(test)]
 fn first_existing_produced_seq(messages: &[Message], run_id: &str) -> Option<u64> {
     messages
         .iter()

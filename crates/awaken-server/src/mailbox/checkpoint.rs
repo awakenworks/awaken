@@ -1,10 +1,11 @@
-use awaken_contract::contract::commit_coordinator::CheckpointCommitPlan;
+use awaken_contract::contract::commit_coordinator::{CheckpointCommitPlan, CommitError};
 use awaken_contract::contract::message::Message;
 use awaken_contract::contract::storage::RunRecord;
 
 use super::{Mailbox, MailboxError};
 
 impl Mailbox {
+    #[cfg(test)]
     pub(super) async fn commit_run_checkpoint(
         &self,
         thread_id: &str,
@@ -25,6 +26,34 @@ impl Mailbox {
             .await
             .map_err(|error| MailboxError::Internal(format!("commit checkpoint: {error}")))?;
         Ok(())
+    }
+
+    /// Commit `delta` as a version-guarded committed append plus the run record
+    /// in one transaction (ADR-0042 A). `expected_version` is the committed
+    /// message count the caller observed. Returns `Ok(true)` on commit and
+    /// `Ok(false)` on a stale-version conflict — the caller reloads, re-merges
+    /// its delta, recomputes the run input range, and retries. Any other commit
+    /// failure is surfaced as an error.
+    pub(super) async fn commit_run_append(
+        &self,
+        thread_id: &str,
+        delta: &[Message],
+        expected_version: Option<u64>,
+        run: &RunRecord,
+    ) -> Result<bool, MailboxError> {
+        let plan = CheckpointCommitPlan::append(
+            thread_id.to_string(),
+            delta.to_vec(),
+            expected_version,
+            run.clone(),
+        );
+        match self.coordinator.commit_checkpoint(plan).await {
+            Ok(_) => Ok(true),
+            Err(CommitError::MessageVersionConflict { .. }) => Ok(false),
+            Err(error) => Err(MailboxError::Internal(format!(
+                "commit checkpoint: {error}"
+            ))),
+        }
     }
 
     pub(super) async fn refresh_worker_checkpoint_cache(
@@ -54,7 +83,7 @@ mod tests {
     };
     use awaken_contract::contract::event_sink::EventSink;
     use awaken_contract::contract::lifecycle::RunStatus;
-    use awaken_contract::contract::storage::{RunStore, ThreadRunStore};
+    use awaken_contract::contract::storage::{RunStore, ThreadRunStore, ThreadStore};
     use awaken_runtime::RunActivation;
     use awaken_runtime::loop_runner::{AgentLoopError, AgentRunResult};
     use awaken_stores::{InMemoryMailboxStore, InMemoryStore};
@@ -360,6 +389,60 @@ mod tests {
             }
             other => panic!("expected MailboxError::Internal, got {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn mailbox_empty_append_updates_run_without_rewriting_messages() {
+        let store = Arc::new(InMemoryStore::new());
+        let mailbox = Mailbox::new(
+            Arc::new(ExecutorWithoutCoordinator),
+            Arc::new(InMemoryMailboxStore::new()),
+            store.clone() as Arc<dyn ThreadRunStore>,
+            "empty-append-test".to_string(),
+            MailboxConfig::default(),
+        );
+        let initial_run = RunRecord {
+            run_id: "run-1".to_string(),
+            thread_id: "thread-1".to_string(),
+            agent_id: "agent".to_string(),
+            status: RunStatus::Created,
+            ..RunRecord::default()
+        };
+        let messages = vec![
+            Message::user("first").with_id("msg-1".to_string()),
+            Message::user("queued").with_id("msg-2".to_string()),
+        ];
+        store
+            .checkpoint_append("thread-1", &messages, Some(0), &initial_run)
+            .await
+            .expect("seed committed messages");
+
+        let updated_run = RunRecord {
+            status: RunStatus::Done,
+            ..initial_run
+        };
+        let committed = mailbox
+            .commit_run_append("thread-1", &[], Some(2), &updated_run)
+            .await
+            .expect("empty append commits");
+
+        assert!(committed);
+        let loaded_messages = store
+            .load_messages("thread-1")
+            .await
+            .expect("load messages")
+            .expect("messages exist");
+        let ids: Vec<_> = loaded_messages
+            .iter()
+            .map(|message| message.id.as_deref().unwrap_or_default())
+            .collect();
+        assert_eq!(ids, vec!["msg-1", "msg-2"]);
+        let loaded_run = store
+            .load_run("run-1")
+            .await
+            .expect("load run")
+            .expect("run exists");
+        assert_eq!(loaded_run.status, RunStatus::Done);
     }
 
     // ─────────────────────────────────────────────────────────────────
