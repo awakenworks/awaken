@@ -4,6 +4,7 @@ use awaken_contract::contract::mailbox::{MailboxInterruptDetails, RunDispatchSta
 use awaken_contract::contract::storage::StorageError;
 
 use super::{NatsMailboxStore, claim_guard, codec, keys, kv_helpers, ops_query, ops_write};
+use crate::mailbox_state;
 
 enum SupersedeOutcome {
     Superseded(Box<awaken_contract::contract::mailbox::RunDispatch>),
@@ -148,11 +149,7 @@ async fn supersede(
         if dispatch.dispatch_epoch >= new_epoch {
             return Ok(SupersedeOutcome::NotQueued);
         }
-        dispatch.status = RunDispatchStatus::Superseded;
-        dispatch.dispatch_epoch = new_epoch;
-        dispatch.completed_at = Some(now);
-        dispatch.updated_at = now;
-        ops_write::clear_claim_fields(&mut dispatch);
+        mailbox_state::mark_superseded_at_epoch(&mut dispatch, now, new_epoch, None);
         let bytes = codec::encode(&dispatch)?;
         if let Ok(revision) = store
             .kv_dispatch

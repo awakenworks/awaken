@@ -6,6 +6,7 @@ use awaken_contract::contract::storage::StorageError;
 use super::{
     NatsMailboxStore, claim_guard, codec, keys, kv_helpers, metrics, ops_query, ops_write,
 };
+use crate::mailbox_state;
 
 pub async fn reclaim_expired_leases(
     store: &NatsMailboxStore,
@@ -65,13 +66,12 @@ async fn reclaim_one(
         let old_claim_token = dispatch.claim_token.clone();
         let thread_epoch = ops_write::current_thread_epoch(store, &dispatch.thread_id).await?;
         if dispatch.dispatch_epoch < thread_epoch {
-            dispatch.status = RunDispatchStatus::Superseded;
-            dispatch.dispatch_epoch = thread_epoch;
-            dispatch.last_error =
-                Some("claimed dispatch lease expired after interrupt".to_string());
-            dispatch.completed_at = Some(now);
-            dispatch.updated_at = now;
-            ops_write::clear_claim_fields(&mut dispatch);
+            mailbox_state::mark_superseded_at_epoch(
+                &mut dispatch,
+                now,
+                thread_epoch,
+                Some(mailbox_state::REASON_CLAIMED_LEASE_EXPIRED_AFTER_INTERRUPT),
+            );
             let bytes = codec::encode(&dispatch)?;
             if let Ok(revision) = store
                 .kv_dispatch
@@ -102,18 +102,7 @@ async fn reclaim_one(
             }
             continue;
         }
-        dispatch.attempt_count = dispatch.attempt_count.saturating_add(1);
-        dispatch.available_at = now;
-        dispatch.updated_at = now;
-        if dispatch.attempt_count >= dispatch.max_attempts {
-            dispatch.status = RunDispatchStatus::DeadLetter;
-            dispatch.last_error = Some("lease expired; max attempts reached".to_string());
-            dispatch.completed_at = Some(now);
-            ops_write::clear_claim_fields(&mut dispatch);
-        } else {
-            dispatch.status = RunDispatchStatus::Queued;
-            ops_write::clear_claim_fields(&mut dispatch);
-        }
+        mailbox_state::mark_expired_lease(&mut dispatch, now);
         let bytes = codec::encode(&dispatch)?;
         if let Ok(revision) = store
             .kv_dispatch

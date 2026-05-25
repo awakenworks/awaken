@@ -14,6 +14,8 @@ use awaken_contract::contract::storage::StorageError;
 use tokio::sync::{RwLock, mpsc, oneshot};
 use uuid::Uuid;
 
+use crate::mailbox_state;
+
 /// Per-thread dispatch epoch for interrupt semantics.
 struct MailboxState {
     current_dispatch_epoch: u64,
@@ -59,24 +61,6 @@ impl InMemoryMailboxStore {
             .get(thread_id)
             .map(|state| state.current_dispatch_epoch)
             .unwrap_or(0)
-    }
-
-    fn mark_superseded(dispatch: &mut RunDispatch, now: u64, reason: Option<&str>) {
-        dispatch.status = RunDispatchStatus::Superseded;
-        dispatch.completed_at = Some(now);
-        dispatch.updated_at = now;
-        if let Some(reason) = reason {
-            dispatch.last_error = Some(reason.to_string());
-        }
-        dispatch.claim_token = None;
-        dispatch.claimed_by = None;
-        dispatch.lease_until = None;
-    }
-
-    fn clear_claim_fields(dispatch: &mut RunDispatch) {
-        dispatch.claim_token = None;
-        dispatch.claimed_by = None;
-        dispatch.lease_until = None;
     }
 
     fn live_key_for_thread(thread_id: &str) -> String {
@@ -202,10 +186,10 @@ impl MailboxStore for InMemoryMailboxStore {
                 && dispatch.dispatch_epoch < current_epoch
             {
                 dispatch.dispatch_epoch = current_epoch;
-                Self::mark_superseded(
+                mailbox_state::mark_superseded(
                     dispatch,
                     now,
-                    Some("queued dispatch superseded by newer dispatch epoch"),
+                    Some(mailbox_state::REASON_QUEUED_SUPERSEDED_BY_EPOCH),
                 );
             }
         }
@@ -280,10 +264,10 @@ impl MailboxStore for InMemoryMailboxStore {
             && dispatch.dispatch_epoch < current_epoch
         {
             dispatch.dispatch_epoch = current_epoch;
-            Self::mark_superseded(
+            mailbox_state::mark_superseded(
                 dispatch,
                 now,
-                Some("queued dispatch superseded by newer dispatch epoch"),
+                Some(mailbox_state::REASON_QUEUED_SUPERSEDED_BY_EPOCH),
             );
             return Ok(None);
         }
@@ -336,10 +320,10 @@ impl MailboxStore for InMemoryMailboxStore {
         if dispatch.dispatch_epoch < current_epoch {
             let stale_epoch = dispatch.dispatch_epoch;
             dispatch.dispatch_epoch = current_epoch;
-            Self::mark_superseded(
+            mailbox_state::mark_superseded(
                 dispatch,
                 now,
-                Some("claimed dispatch superseded by newer dispatch epoch"),
+                Some(mailbox_state::REASON_CLAIMED_SUPERSEDED_BY_EPOCH),
             );
             return Err(StorageError::VersionConflict {
                 expected: stale_epoch,
@@ -347,10 +331,7 @@ impl MailboxStore for InMemoryMailboxStore {
             });
         }
 
-        dispatch.status = RunDispatchStatus::Acked;
-        dispatch.completed_at = Some(now);
-        dispatch.updated_at = now;
-        Self::clear_claim_fields(dispatch);
+        mailbox_state::mark_acked(dispatch, now);
         Ok(())
     }
 
@@ -382,10 +363,10 @@ impl MailboxStore for InMemoryMailboxStore {
         if dispatch.dispatch_epoch < current_epoch {
             let stale_epoch = dispatch.dispatch_epoch;
             dispatch.dispatch_epoch = current_epoch;
-            Self::mark_superseded(
+            mailbox_state::mark_superseded(
                 dispatch,
                 now,
-                Some("claimed dispatch superseded before runtime start"),
+                Some(mailbox_state::REASON_CLAIMED_SUPERSEDED_BEFORE_START),
             );
             return Err(StorageError::VersionConflict {
                 expected: stale_epoch,
@@ -431,10 +412,10 @@ impl MailboxStore for InMemoryMailboxStore {
         if dispatch.dispatch_epoch < current_epoch {
             let stale_epoch = dispatch.dispatch_epoch;
             dispatch.dispatch_epoch = current_epoch;
-            Self::mark_superseded(
+            mailbox_state::mark_superseded(
                 dispatch,
                 now,
-                Some("claimed dispatch superseded before run result"),
+                Some(mailbox_state::REASON_CLAIMED_SUPERSEDED_BEFORE_RESULT),
             );
             return Err(StorageError::VersionConflict {
                 expected: stale_epoch,
@@ -479,10 +460,10 @@ impl MailboxStore for InMemoryMailboxStore {
         if dispatch.dispatch_epoch < current_epoch {
             let stale_epoch = dispatch.dispatch_epoch;
             dispatch.dispatch_epoch = current_epoch;
-            Self::mark_superseded(
+            mailbox_state::mark_superseded(
                 dispatch,
                 now,
-                Some("claimed dispatch superseded before nack"),
+                Some(mailbox_state::REASON_CLAIMED_SUPERSEDED_BEFORE_NACK),
             );
             return Err(StorageError::VersionConflict {
                 expected: stale_epoch,
@@ -490,18 +471,7 @@ impl MailboxStore for InMemoryMailboxStore {
             });
         }
 
-        dispatch.attempt_count += 1;
-        dispatch.last_error = Some(error.to_string());
-        dispatch.updated_at = now;
-        Self::clear_claim_fields(dispatch);
-
-        if dispatch.attempt_count >= dispatch.max_attempts {
-            dispatch.status = RunDispatchStatus::DeadLetter;
-            dispatch.completed_at = Some(now);
-        } else {
-            dispatch.status = RunDispatchStatus::Queued;
-            dispatch.available_at = retry_at;
-        }
+        mailbox_state::mark_nack_result(dispatch, now, retry_at, error);
 
         Ok(())
     }
@@ -532,10 +502,10 @@ impl MailboxStore for InMemoryMailboxStore {
         if dispatch.dispatch_epoch < current_epoch {
             let stale_epoch = dispatch.dispatch_epoch;
             dispatch.dispatch_epoch = current_epoch;
-            Self::mark_superseded(
+            mailbox_state::mark_superseded(
                 dispatch,
                 now,
-                Some("claimed dispatch superseded before dead letter"),
+                Some(mailbox_state::REASON_CLAIMED_SUPERSEDED_BEFORE_DEAD_LETTER),
             );
             return Err(StorageError::VersionConflict {
                 expected: stale_epoch,
@@ -543,11 +513,7 @@ impl MailboxStore for InMemoryMailboxStore {
             });
         }
 
-        dispatch.status = RunDispatchStatus::DeadLetter;
-        dispatch.last_error = Some(error.to_string());
-        dispatch.completed_at = Some(now);
-        dispatch.updated_at = now;
-        Self::clear_claim_fields(dispatch);
+        mailbox_state::mark_dead_letter(dispatch, now, error);
         Ok(())
     }
 
@@ -563,10 +529,7 @@ impl MailboxStore for InMemoryMailboxStore {
             _ => return Ok(None),
         };
 
-        dispatch.status = RunDispatchStatus::Cancelled;
-        dispatch.completed_at = Some(now);
-        dispatch.updated_at = now;
-        Self::clear_claim_fields(dispatch);
+        mailbox_state::mark_cancelled(dispatch, now);
         Ok(Some(dispatch.clone()))
     }
 
@@ -594,10 +557,10 @@ impl MailboxStore for InMemoryMailboxStore {
         };
         if dispatch.dispatch_epoch < current_epoch {
             dispatch.dispatch_epoch = current_epoch;
-            Self::mark_superseded(
+            mailbox_state::mark_superseded(
                 dispatch,
                 now,
-                Some("claimed dispatch superseded during lease renewal"),
+                Some(mailbox_state::REASON_CLAIMED_SUPERSEDED_DURING_LEASE_RENEWAL),
             );
             return Ok(false);
         }
@@ -639,10 +602,10 @@ impl MailboxStore for InMemoryMailboxStore {
             }
             match dispatch.status {
                 RunDispatchStatus::Queued if dispatch.dispatch_epoch <= old_dispatch_epoch => {
-                    Self::mark_superseded(
+                    mailbox_state::mark_superseded(
                         dispatch,
                         now,
-                        Some("queued dispatch superseded by interrupt"),
+                        Some(mailbox_state::REASON_QUEUED_SUPERSEDED_BY_INTERRUPT),
                     );
                     superseded_count += 1;
                     superseded_dispatches.push(dispatch.clone());
@@ -692,7 +655,7 @@ impl MailboxStore for InMemoryMailboxStore {
             Self::current_epoch_from_state(&state, &dispatch.thread_id)
         };
         dispatch.dispatch_epoch = dispatch.dispatch_epoch.max(current_epoch);
-        Self::mark_superseded(dispatch, now, Some(reason));
+        mailbox_state::mark_superseded(dispatch, now, Some(reason));
         Ok(Some(dispatch.clone()))
     }
 
@@ -791,23 +754,14 @@ impl MailboxStore for InMemoryMailboxStore {
             let current_epoch = Self::current_epoch_from_state(&state, &dispatch.thread_id);
             if dispatch.dispatch_epoch < current_epoch {
                 dispatch.dispatch_epoch = current_epoch;
-                Self::mark_superseded(
+                mailbox_state::mark_superseded(
                     dispatch,
                     now,
-                    Some("claimed dispatch lease expired after interrupt"),
+                    Some(mailbox_state::REASON_CLAIMED_LEASE_EXPIRED_AFTER_INTERRUPT),
                 );
                 continue;
             }
-            dispatch.attempt_count += 1;
-            dispatch.updated_at = now;
-
-            if dispatch.attempt_count >= dispatch.max_attempts {
-                dispatch.status = RunDispatchStatus::DeadLetter;
-                dispatch.completed_at = Some(now);
-            } else {
-                dispatch.status = RunDispatchStatus::Queued;
-            }
-            Self::clear_claim_fields(dispatch);
+            mailbox_state::mark_expired_lease(dispatch, now);
             reclaimed.push(dispatch.clone());
         }
 

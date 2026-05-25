@@ -6,6 +6,7 @@ use awaken_contract::contract::storage::StorageError;
 use super::{
     NatsMailboxStore, claim_guard, codec, keys, kv_helpers, metrics, ops_query, ops_write,
 };
+use crate::mailbox_state;
 
 enum AvailableAtPolicy {
     Ignore,
@@ -85,11 +86,7 @@ async fn claim_dispatch_inner(
         // KV read here is strongly consistent and rejects it.
         let thread_epoch = ops_write::current_thread_epoch(store, &dispatch.thread_id).await?;
         if dispatch.dispatch_epoch < thread_epoch {
-            dispatch.status = RunDispatchStatus::Superseded;
-            dispatch.dispatch_epoch = thread_epoch;
-            dispatch.completed_at = Some(now);
-            dispatch.updated_at = now;
-            ops_write::clear_claim_fields(&mut dispatch);
+            mailbox_state::mark_superseded_at_epoch(&mut dispatch, now, thread_epoch, None);
             let bytes = codec::encode(&dispatch)?;
             if let Ok(revision) = store
                 .kv_dispatch

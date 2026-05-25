@@ -14,6 +14,8 @@ use rusqlite::{Connection, Row, params};
 use tokio::sync::Mutex;
 use uuid::Uuid;
 
+use crate::mailbox_state;
+
 // ── SqliteMailboxStore ─────────────────────────────────────────────
 
 /// SQLite-backed persistent mailbox store.
@@ -329,7 +331,7 @@ fn supersede_stale_queued_for_thread(
            AND dispatch_epoch < ?6",
         params![
             current_epoch as i64,
-            "queued dispatch superseded by newer dispatch epoch",
+            mailbox_state::REASON_QUEUED_SUPERSEDED_BY_EPOCH,
             now as i64,
             now as i64,
             thread_id,
@@ -572,7 +574,7 @@ impl MailboxStore for SqliteMailboxStore {
                    AND status = 'Queued'",
                 params![
                     current_epoch_for_conn(&conn, &dispatch.thread_id)? as i64,
-                    "queued dispatch superseded by newer dispatch epoch",
+                    mailbox_state::REASON_QUEUED_SUPERSEDED_BY_EPOCH,
                     now as i64,
                     now as i64,
                     dispatch_id
@@ -661,7 +663,7 @@ impl MailboxStore for SqliteMailboxStore {
             &dispatch,
             claim_token,
             now,
-            "claimed dispatch superseded before ack",
+            mailbox_state::REASON_CLAIMED_SUPERSEDED_BEFORE_ACK,
         )? {
             return Err(StorageError::VersionConflict {
                 expected: dispatch.dispatch_epoch,
@@ -715,7 +717,7 @@ impl MailboxStore for SqliteMailboxStore {
             &dispatch,
             claim_token,
             now,
-            "claimed dispatch superseded before runtime start",
+            mailbox_state::REASON_CLAIMED_SUPERSEDED_BEFORE_START,
         )? {
             return Err(StorageError::VersionConflict {
                 expected: dispatch.dispatch_epoch,
@@ -775,7 +777,7 @@ impl MailboxStore for SqliteMailboxStore {
             &dispatch,
             claim_token,
             now,
-            "claimed dispatch superseded before run result",
+            mailbox_state::REASON_CLAIMED_SUPERSEDED_BEFORE_RESULT,
         )? {
             return Err(StorageError::VersionConflict {
                 expected: dispatch.dispatch_epoch,
@@ -840,7 +842,7 @@ impl MailboxStore for SqliteMailboxStore {
             &dispatch,
             claim_token,
             now,
-            "claimed dispatch superseded before nack",
+            mailbox_state::REASON_CLAIMED_SUPERSEDED_BEFORE_NACK,
         )? {
             return Err(StorageError::VersionConflict {
                 expected: dispatch.dispatch_epoch,
@@ -927,7 +929,7 @@ impl MailboxStore for SqliteMailboxStore {
             &dispatch,
             claim_token,
             now,
-            "claimed dispatch superseded before dead letter",
+            mailbox_state::REASON_CLAIMED_SUPERSEDED_BEFORE_DEAD_LETTER,
         )? {
             return Err(StorageError::VersionConflict {
                 expected: dispatch.dispatch_epoch,
@@ -1022,7 +1024,7 @@ impl MailboxStore for SqliteMailboxStore {
             &dispatch,
             claim_token,
             now,
-            "claimed dispatch superseded during lease renewal",
+            mailbox_state::REASON_CLAIMED_SUPERSEDED_DURING_LEASE_RENEWAL,
         )? {
             return Ok(false);
         }
@@ -1107,7 +1109,7 @@ impl MailboxStore for SqliteMailboxStore {
                    AND status = 'Queued'
                    AND dispatch_epoch < ?5",
                 params![
-                    "queued dispatch superseded by interrupt",
+                    mailbox_state::REASON_QUEUED_SUPERSEDED_BY_INTERRUPT,
                     now as i64,
                     now as i64,
                     thread_id,
@@ -1118,13 +1120,11 @@ impl MailboxStore for SqliteMailboxStore {
         let mut superseded_dispatches = superseded_candidates
             .into_iter()
             .map(|mut dispatch| {
-                dispatch.status = RunDispatchStatus::Superseded;
-                dispatch.last_error = Some("queued dispatch superseded by interrupt".to_string());
-                dispatch.claim_token = None;
-                dispatch.claimed_by = None;
-                dispatch.lease_until = None;
-                dispatch.completed_at = Some(now);
-                dispatch.updated_at = now;
+                mailbox_state::mark_superseded(
+                    &mut dispatch,
+                    now,
+                    Some(mailbox_state::REASON_QUEUED_SUPERSEDED_BY_INTERRUPT),
+                );
                 dispatch
             })
             .collect::<Vec<_>>();
@@ -1356,7 +1356,7 @@ impl MailboxStore for SqliteMailboxStore {
                 dispatch,
                 claim_token,
                 now,
-                "claimed dispatch lease expired after interrupt",
+                mailbox_state::REASON_CLAIMED_LEASE_EXPIRED_AFTER_INTERRUPT,
             )? {
                 continue;
             }

@@ -7,6 +7,7 @@ use awaken_contract::contract::mailbox::{RunDispatch, RunDispatchResult, RunDisp
 use awaken_contract::contract::storage::StorageError;
 
 use super::{NatsMailboxStore, claim_guard, codec, keys, kv_helpers, metrics};
+use crate::mailbox_state;
 
 const DEDUPE_ORPHAN_GRACE_MS: u64 = 5_000;
 
@@ -537,11 +538,12 @@ pub async fn extend_lease(
         }
         let thread_epoch = current_thread_epoch(store, &dispatch.thread_id).await?;
         if dispatch.dispatch_epoch < thread_epoch {
-            dispatch.status = RunDispatchStatus::Superseded;
-            dispatch.dispatch_epoch = thread_epoch;
-            dispatch.completed_at = Some(now);
-            dispatch.updated_at = now;
-            clear_claim_fields(&mut dispatch);
+            mailbox_state::mark_superseded_at_epoch(
+                &mut dispatch,
+                now,
+                thread_epoch,
+                Some(mailbox_state::REASON_CLAIMED_SUPERSEDED_DURING_LEASE_RENEWAL),
+            );
             let bytes = codec::encode(&dispatch)?;
             if let Ok(revision) = store
                 .kv_dispatch
@@ -632,13 +634,12 @@ where
             if dispatch.dispatch_epoch < thread_epoch {
                 let stale_epoch = dispatch.dispatch_epoch;
                 let old_claim_token = dispatch.claim_token.clone();
-                dispatch.status = RunDispatchStatus::Superseded;
-                dispatch.dispatch_epoch = thread_epoch;
-                dispatch.last_error =
-                    Some("claimed dispatch superseded by newer dispatch epoch".to_string());
-                dispatch.completed_at = Some(now);
-                dispatch.updated_at = now;
-                clear_claim_fields(&mut dispatch);
+                mailbox_state::mark_superseded_at_epoch(
+                    &mut dispatch,
+                    now,
+                    thread_epoch,
+                    Some(mailbox_state::REASON_CLAIMED_SUPERSEDED_BY_EPOCH),
+                );
                 let bytes = codec::encode(&dispatch)?;
                 if let Ok(revision) = store
                     .kv_dispatch
@@ -690,12 +691,6 @@ where
     Err(StorageError::Io("CAS exhausted retries".to_string()))
 }
 
-pub(super) fn clear_claim_fields(dispatch: &mut RunDispatch) {
-    dispatch.claim_token = None;
-    dispatch.claimed_by = None;
-    dispatch.lease_until = None;
-}
-
 pub async fn ack(
     store: &NatsMailboxStore,
     dispatch_id: &str,
@@ -714,10 +709,7 @@ pub async fn ack(
                 "claim_token mismatch for {dispatch_id}"
             )));
         }
-        d.status = RunDispatchStatus::Acked;
-        d.completed_at = Some(now);
-        d.updated_at = now;
-        clear_claim_fields(d);
+        mailbox_state::mark_acked(d, now);
         Ok(())
     })
     .await?;
@@ -761,19 +753,7 @@ pub async fn nack(
                 "claim_token mismatch for {dispatch_id}"
             )));
         }
-        d.attempt_count += 1;
-        d.last_error = Some(error.to_string());
-        d.updated_at = now;
-        d.claim_token = None;
-        d.claimed_by = None;
-        d.lease_until = None;
-        if d.attempt_count >= d.max_attempts {
-            d.status = RunDispatchStatus::DeadLetter;
-            d.completed_at = Some(now);
-        } else {
-            d.status = RunDispatchStatus::Queued;
-            d.available_at = retry_at;
-        }
+        mailbox_state::mark_nack_result(d, now, retry_at, error);
         Ok(())
     })
     .await?;
@@ -820,11 +800,7 @@ pub async fn dead_letter(
                 "claim_token mismatch for {dispatch_id}"
             )));
         }
-        d.status = RunDispatchStatus::DeadLetter;
-        d.last_error = Some(error.to_string());
-        d.completed_at = Some(now);
-        d.updated_at = now;
-        clear_claim_fields(d);
+        mailbox_state::mark_dead_letter(d, now, error);
         Ok(())
     })
     .await?;
@@ -878,12 +854,8 @@ pub async fn supersede_claimed(
         }
         let thread_epoch = current_thread_epoch(store, &dispatch.thread_id).await?;
         let old_claim_token = dispatch.claim_token.clone();
-        dispatch.status = RunDispatchStatus::Superseded;
         dispatch.dispatch_epoch = dispatch.dispatch_epoch.max(thread_epoch);
-        dispatch.last_error = Some(reason.to_string());
-        dispatch.completed_at = Some(now);
-        dispatch.updated_at = now;
-        clear_claim_fields(&mut dispatch);
+        mailbox_state::mark_superseded(&mut dispatch, now, Some(reason));
         let bytes = codec::encode(&dispatch)?;
         if let Ok(revision) = store
             .kv_dispatch
@@ -928,10 +900,7 @@ pub async fn cancel(
                 d.status
             )));
         }
-        d.status = RunDispatchStatus::Cancelled;
-        d.completed_at = Some(now);
-        d.updated_at = now;
-        clear_claim_fields(d);
+        mailbox_state::mark_cancelled(d, now);
         Ok(())
     })
     .await

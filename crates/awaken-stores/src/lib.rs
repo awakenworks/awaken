@@ -13,6 +13,7 @@
 //! [`MailboxStore`](awaken_contract::contract::mailbox::MailboxStore).
 
 mod commit_batch;
+mod mailbox_state;
 pub mod memory;
 pub mod memory_commit_coordinator;
 pub mod memory_event_store;
