@@ -211,7 +211,7 @@ pub struct TraceRoutesState {
 impl ServerState {
     #[must_use]
     pub fn from_modules(run: RunModuleState, server_config: super::ServerConfig) -> Self {
-        Self {
+        let state = Self {
             run,
             config: None,
             events: None,
@@ -227,7 +227,14 @@ impl ServerState {
                 started_at: Instant::now(),
             },
             server_config,
-        }
+        };
+        crate::protocol_replay_state::register_a2a_push_webhook_relay_for_buffers(
+            &state.protocol.replay_buffers,
+            Arc::new(awaken_stores::InMemoryOutboxStore::new()),
+            crate::protocol_replay_state::A2aPushWebhookRelayConfig::default(),
+        )
+        .expect("default A2A push webhook relay config is valid");
+        state
     }
 
     #[must_use]

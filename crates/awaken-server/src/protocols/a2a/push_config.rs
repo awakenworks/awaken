@@ -1,7 +1,5 @@
 use awaken_contract::thread::Thread;
-use awaken_protocol_a2a::{
-    ListPushNotificationConfigsResponse, PushNotificationConfig, StreamResponse,
-};
+use awaken_protocol_a2a::{ListPushNotificationConfigsResponse, PushNotificationConfig};
 use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
@@ -15,13 +13,14 @@ use super::common::{
     persist_thread_metadata, trim_to_option,
 };
 use super::error::A2aError;
+use super::push_outbox::enqueue_push_notification;
 use super::stream_projector::{InitialStreamEvent, TaskStreamProjector};
 use super::task::{
     ensure_task_visible, load_task_snapshot, resolve_task, submitted_task, task_context_id,
 };
 use super::types::{
-    A2A_NOTIFICATION_TOKEN_HEADER, BLOCKING_POLL_INTERVAL, DEFAULT_PAGE_SIZE, ListPushConfigsQuery,
-    MAX_PAGE_SIZE, PUSH_CONFIGS_METADATA_KEY, StoredPushConfigs, TaskSnapshot,
+    BLOCKING_POLL_INTERVAL, DEFAULT_PAGE_SIZE, ListPushConfigsQuery, MAX_PAGE_SIZE,
+    PUSH_CONFIGS_METADATA_KEY, StoredPushConfigs, TaskSnapshot,
 };
 
 pub(super) async fn a2a_create_push_config_default(
@@ -381,7 +380,12 @@ async fn drive_push_notification(
     tenant: Option<String>,
     config: PushNotificationConfig,
 ) -> Result<(), A2aError> {
-    let client = reqwest::Client::new();
+    let outbox = crate::protocol_replay_state::a2a_push_webhook_outbox_for_buffers(
+        &st.protocol.replay_buffers,
+    )
+    .ok_or_else(|| {
+        A2aError::Internal("A2A push notification outbox relay is not configured".to_string())
+    })?;
     let config_id = config.id.clone().unwrap_or_default();
     let mut projector = TaskStreamProjector::new(InitialStreamEvent::StatusUpdate);
 
@@ -408,7 +412,20 @@ async fn drive_push_notification(
             });
 
         for response in projector.project(&snapshot) {
-            post_push_notification(&client, &config, &response).await;
+            enqueue_push_notification(outbox.as_ref(), &config, &response)
+                .await
+                .map_err(|error| A2aError::Internal(error.to_string()))?;
+            if let Err(error) =
+                crate::protocol_replay_state::tick_a2a_push_webhook_outbox_for_buffers(
+                    &st.protocol.replay_buffers,
+                )
+                .await
+            {
+                tracing::warn!(
+                    error = %error,
+                    "A2A push notification outbox relay tick failed"
+                );
+            }
         }
 
         if snapshot.task.status.state.is_terminal() || snapshot.task.status.state.is_interrupted() {
@@ -419,36 +436,4 @@ async fn drive_push_notification(
     }
 
     Ok(())
-}
-
-async fn post_push_notification(
-    client: &reqwest::Client,
-    config: &PushNotificationConfig,
-    payload: &StreamResponse,
-) {
-    let mut request = client.post(&config.url).json(payload);
-    if let Some(token) = config.token.as_deref() {
-        request = request.header(A2A_NOTIFICATION_TOKEN_HEADER, token);
-    }
-    if let Some(authentication) = config.authentication.as_ref() {
-        let credentials = authentication.credentials.as_deref().unwrap_or_default();
-        request = request.header(
-            reqwest::header::AUTHORIZATION,
-            format!("{} {}", authentication.scheme, credentials).trim(),
-        );
-    }
-
-    match request.send().await {
-        Ok(response) if response.status().is_success() => {}
-        Ok(response) => {
-            tracing::warn!(
-                status = %response.status(),
-                url = %config.url,
-                "A2A push notification webhook returned non-success status"
-            );
-        }
-        Err(err) => {
-            tracing::warn!(error = %err, url = %config.url, "A2A push notification webhook failed");
-        }
-    }
 }

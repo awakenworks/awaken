@@ -114,9 +114,9 @@ pub use contract::protocol_replay_log::{
 
 // ── outbox ──
 pub use contract::outbox::{
-    OUTBOX_LANE_CANONICAL, OUTBOX_LANE_PROTOCOL_REPLAY, OUTBOX_TARGET_PROTOCOL_FANOUT,
-    OUTBOX_TARGET_PROTOCOL_PROJECTOR, OutboxEnqueueResult, OutboxError, OutboxMessage,
-    OutboxMessageDraft, OutboxNackOutcome, OutboxStatus, OutboxStore,
+    OUTBOX_LANE_CANONICAL, OUTBOX_LANE_PROTOCOL_REPLAY, OUTBOX_TARGET_A2A_WEBHOOK,
+    OUTBOX_TARGET_PROTOCOL_FANOUT, OUTBOX_TARGET_PROTOCOL_PROJECTOR, OutboxEnqueueResult,
+    OutboxError, OutboxMessage, OutboxMessageDraft, OutboxNackOutcome, OutboxStatus, OutboxStore,
 };
 
 // ── mailbox ──

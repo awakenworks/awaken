@@ -6,6 +6,7 @@ mod conversion;
 mod error;
 mod message;
 mod push_config;
+pub(crate) mod push_outbox;
 mod stream_projector;
 mod task;
 mod types;

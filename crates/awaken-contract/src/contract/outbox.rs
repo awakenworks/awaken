@@ -9,6 +9,7 @@ pub const OUTBOX_LANE_CANONICAL: &str = "canonical";
 pub const OUTBOX_LANE_PROTOCOL_REPLAY: &str = "protocol_replay";
 pub const OUTBOX_TARGET_PROTOCOL_PROJECTOR: &str = "protocol_projector";
 pub const OUTBOX_TARGET_PROTOCOL_FANOUT: &str = "protocol_fanout";
+pub const OUTBOX_TARGET_A2A_WEBHOOK: &str = "a2a_webhook";
 
 #[derive(Debug, Error, Clone, PartialEq, Eq)]
 pub enum OutboxError {
