@@ -264,6 +264,12 @@ fn build_plugin_chain(
     // Runtime-required default plugins
     let mut plugins = inject_default_plugins(plugins, spec.max_rounds);
 
+    if let Some(cutoff) = model.knowledge_cutoff.as_ref() {
+        plugins.push(Arc::new(crate::context::KnowledgeCutoffPlugin::new(
+            cutoff.clone(),
+        )));
+    }
+
     // Conditional plugins (only when context_policy is set)
     if let Some(ref policy) = spec.context_policy {
         let effective = crate::context::effective_policy(policy, model);
