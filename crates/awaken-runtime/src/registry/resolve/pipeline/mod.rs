@@ -229,6 +229,7 @@ fn resolve_model_and_executor(
             } else {
                 executor
             };
+            let executor = crate::engine::ModalityGuardExecutor::wrap(executor, &model);
 
             let upstream_model = model.upstream_model.clone();
             return Ok((executor, upstream_model, model));

@@ -65,6 +65,7 @@ pub fn build_pool_executor(
         } else {
             provider_executor
         };
+        let executor = crate::engine::ModalityGuardExecutor::wrap(executor, &model);
 
         router_members.push(RouterMember {
             model_id: member.model_id.clone(),

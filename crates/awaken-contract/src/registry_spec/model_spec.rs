@@ -65,14 +65,11 @@ pub struct ModelSpec {
     /// Input/output modalities supported by the model.
     ///
     /// **Semantics:** an empty `Modalities` (or `default()`) means the model's
-    /// modality set is unspecified — runtime treats it as catalog metadata only
-    /// and performs no modality enforcement. Explicit empty arrays carry the
-    /// same meaning as omission. To advertise a text-only model, set
-    /// `input: vec![Modality::Text]` explicitly.
-    ///
-    /// Note: this PR uses modalities for catalog/UI purposes; runtime request
-    /// gating against `input` is intentionally NOT implemented (would belong
-    /// in a separate request-validation pass).
+    /// modality set is unspecified, so runtime stays permissive. Explicit
+    /// empty arrays carry the same meaning as omission. When `input` is
+    /// non-empty, runtime rejects requests containing unsupported input
+    /// modalities before calling the provider. To advertise a text-only model,
+    /// set `input: vec![Modality::Text]` explicitly.
     #[serde(default, skip_serializing_if = "Modalities::is_empty")]
     pub modalities: Modalities,
     /// ISO date string (e.g. "2026-01") for the model's training cutoff.
