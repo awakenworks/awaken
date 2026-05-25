@@ -281,7 +281,7 @@ mod integration {
     use awaken_contract::registry_spec::AgentSpec;
     use awaken_contract::thread::Thread;
     use awaken_runtime::builder::AgentRuntimeBuilder;
-    use awaken_server::app::{ServerConfig, ServerState};
+    use awaken_server::app::{EventModuleState, ServerConfig, ServerState};
     use awaken_server::routes::build_router;
     use awaken_stores::{InMemoryEventStore, memory::InMemoryStore};
     use axum::body::to_bytes;
@@ -410,14 +410,16 @@ mod integration {
             "test".to_string(),
             awaken_server::mailbox::MailboxConfig::default(),
         ));
-        let state = ServerState::new(
+        let mut state = ServerState::new(
             runtime.clone(),
             mailbox,
             store.clone(),
             runtime.resolver_arc(),
             ServerConfig::default(),
-        )
-        .with_event_store(event_store.clone());
+        );
+        state.events = Some(EventModuleState {
+            event_store: event_store.clone(),
+        });
         TestApp {
             router: build_router(&state),
             store,

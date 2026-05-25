@@ -7,7 +7,7 @@ use awaken_contract::contract::executor::{InferenceExecutionError, InferenceRequ
 use awaken_contract::contract::inference::{StopReason, StreamResult, TokenUsage};
 use awaken_contract::{AgentSpec, BuiltinSeedSet, BuiltinSpec, ModelSpec, ProviderSpec};
 use awaken_runtime::builder::AgentRuntimeBuilder;
-use awaken_server::app::{ServerConfig, ServerState};
+use awaken_server::app::{ConfigModuleState, ServerConfig, ServerState};
 use awaken_server::mailbox::{Mailbox, MailboxConfig};
 use awaken_server::routes::build_router;
 use awaken_server::services::audit_log::AuditLogger;
@@ -108,17 +108,15 @@ async fn build_test_app() -> axum::Router {
         "restore-test".into(),
         MailboxConfig::default(),
     ));
-    let state = ServerState::new(
+    let mut state = ServerState::new(
         runtime,
         mailbox,
         thread_store,
         resolver,
         ServerConfig::default(),
-    )
-    .with_admin_api_bearer_token(ADMIN_TOKEN)
-    .with_config_store(config_store)
-    .with_config_runtime_manager(manager)
-    .with_audit_log(audit_logger);
+    );
+    state.admin.admin_api_config.bearer_token = Some(ADMIN_TOKEN.into());
+    state.config = Some(ConfigModuleState::new(config_store, manager).with_audit_log(audit_logger));
 
     build_router(&state)
 }
@@ -401,17 +399,15 @@ async fn restore_restart_event_returns_422() {
         "restart-restore-test".into(),
         MailboxConfig::default(),
     ));
-    let state = ServerState::new(
+    let mut state = ServerState::new(
         runtime,
         mailbox,
         thread_store,
         resolver,
         ServerConfig::default(),
-    )
-    .with_admin_api_bearer_token(ADMIN_TOKEN)
-    .with_config_store(config_store)
-    .with_config_runtime_manager(manager)
-    .with_audit_log(audit_logger);
+    );
+    state.admin.admin_api_config.bearer_token = Some(ADMIN_TOKEN.into());
+    state.config = Some(ConfigModuleState::new(config_store, manager).with_audit_log(audit_logger));
     let app = build_router(&state);
 
     let (status, body) = post_json(
@@ -711,17 +707,15 @@ async fn restore_rejects_seed_apply_event() {
         "seed-restore-test".into(),
         MailboxConfig::default(),
     ));
-    let state = ServerState::new(
+    let mut state = ServerState::new(
         runtime,
         mailbox,
         thread_store,
         resolver,
         ServerConfig::default(),
-    )
-    .with_admin_api_bearer_token(ADMIN_TOKEN)
-    .with_config_store(config_store)
-    .with_config_runtime_manager(manager)
-    .with_audit_log(audit_logger);
+    );
+    state.admin.admin_api_config.bearer_token = Some(ADMIN_TOKEN.into());
+    state.config = Some(ConfigModuleState::new(config_store, manager).with_audit_log(audit_logger));
     let app = build_router(&state);
 
     // POST restore with the SeedApply event ULID.

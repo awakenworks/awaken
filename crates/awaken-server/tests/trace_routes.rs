@@ -10,7 +10,7 @@ use awaken_ext_observability::trace_store::file::FileTraceStore;
 use awaken_ext_observability::trace_store::{RunSummary, TraceStore};
 use awaken_ext_observability::{GenAISpan, MetricsEvent, SpanContext};
 use awaken_runtime::builder::AgentRuntimeBuilder;
-use awaken_server::app::{AdminApiConfig, ServerConfig, ServerState};
+use awaken_server::app::{AdminApiConfig, ServerConfig, ServerState, TraceModuleState};
 use awaken_server::mailbox::{Mailbox, MailboxConfig};
 use awaken_server::routes::build_router;
 use awaken_stores::InMemoryStore;
@@ -126,17 +126,17 @@ async fn build_test_app(token: Option<&str>, store: Arc<dyn TraceStore>) -> axum
             address: "127.0.0.1:0".to_string(),
             ..ServerConfig::default()
         },
-    )
-    .with_trace_store(store)
+    );
+    state.trace = Some(TraceModuleState { trace_store: store });
     // F20 made trace routes opt-in; tests in this file exercise the
     // routes themselves, so they enable them explicitly.
-    .with_admin_api_config(AdminApiConfig {
+    state.admin.admin_api_config = AdminApiConfig {
         expose_trace_routes: true,
         ..AdminApiConfig::default()
-    });
+    };
 
     if let Some(tok) = token {
-        state = state.with_admin_api_bearer_token(tok);
+        state.admin.admin_api_config.bearer_token = Some(tok.into());
     }
 
     build_router(&state)
@@ -429,20 +429,20 @@ async fn trace_routes_absent_without_trace_store() {
         "trace-no-store".into(),
         MailboxConfig::default(),
     ));
-    let state = ServerState::new(
+    let mut state = ServerState::new(
         runtime,
         mailbox,
         thread_store,
         resolver,
         ServerConfig::default(),
-    )
+    );
     // ADR-0041 mounts optional module routes only when their concrete module
     // state exists; enabling the surface without a TraceStore still leaves the
     // trace router absent.
-    .with_admin_api_config(AdminApiConfig {
+    state.admin.admin_api_config = AdminApiConfig {
         expose_trace_routes: true,
         ..AdminApiConfig::default()
-    });
+    };
     // No trace store, no bearer token needed for this surface.
     let app = build_router(&state);
 
@@ -474,14 +474,16 @@ async fn default_admin_api_config_omits_trace_routes() {
         "trace-default-off".into(),
         MailboxConfig::default(),
     ));
-    let state = ServerState::new(
+    let mut state = ServerState::new(
         runtime,
         mailbox,
         thread_store,
         resolver,
         ServerConfig::default(),
-    )
-    .with_trace_store(store as Arc<dyn TraceStore>);
+    );
+    state.trace = Some(TraceModuleState {
+        trace_store: store as Arc<dyn TraceStore>,
+    });
     let app = build_router(&state);
     let (status, _) = get(&app, "/v1/traces", None).await;
     assert_eq!(
@@ -511,18 +513,20 @@ async fn expose_trace_routes_false_returns_404() {
         "trace-disabled".into(),
         MailboxConfig::default(),
     ));
-    let state = ServerState::new(
+    let mut state = ServerState::new(
         runtime,
         mailbox,
         thread_store,
         resolver,
         ServerConfig::default(),
-    )
-    .with_trace_store(store as Arc<dyn TraceStore>)
-    .with_admin_api_config(AdminApiConfig {
+    );
+    state.trace = Some(TraceModuleState {
+        trace_store: store as Arc<dyn TraceStore>,
+    });
+    state.admin.admin_api_config = AdminApiConfig {
         expose_trace_routes: false,
         ..AdminApiConfig::default()
-    });
+    };
 
     let app = build_router(&state);
     let (status, _) = get(&app, "/v1/traces", None).await;

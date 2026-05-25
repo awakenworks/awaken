@@ -2,7 +2,6 @@ use super::*;
 
 fn state_for_admin_surface_test(address: &str, admin_api_config: AdminApiConfig) -> ServerState {
     use crate::mailbox::{Mailbox, MailboxConfig};
-    use awaken_runtime::AgentRuntime;
     use awaken_stores::{InMemoryMailboxStore, InMemoryStore};
 
     struct StubResolver;
@@ -17,7 +16,11 @@ fn state_for_admin_surface_test(address: &str, admin_api_config: AdminApiConfig)
         }
     }
 
-    let runtime = Arc::new(AgentRuntime::new(Arc::new(StubResolver)));
+    let runtime = Arc::new(
+        awaken_runtime::builder::AgentRuntimeBuilder::new()
+            .build_unchecked()
+            .expect("build configurable runtime"),
+    );
     let store = Arc::new(InMemoryStore::new());
     let mailbox_store = Arc::new(InMemoryMailboxStore::new());
     let mailbox = Arc::new(Mailbox::new(
@@ -33,15 +36,15 @@ fn state_for_admin_surface_test(address: &str, admin_api_config: AdminApiConfig)
         ..ServerConfig::default()
     };
 
-    ServerState::new(
+    let mut state = ServerState::new(
         runtime,
         mailbox,
         store.clone() as Arc<dyn ThreadRunStore>,
         Arc::new(StubResolver),
         config,
-    )
-    .with_config_store(store as Arc<dyn ConfigStore>)
-    .with_admin_api_config(admin_api_config)
+    );
+    state.admin.admin_api_config = admin_api_config;
+    state
 }
 
 #[test]
@@ -80,6 +83,62 @@ fn server_config_debug_does_not_leak_a2a_extended_card_bearer_token() {
 }
 
 #[test]
+#[allow(deprecated)]
+fn app_state_alias_remains_usable() {
+    let state: AppState = state_for_admin_surface_test("127.0.0.1:0", AdminApiConfig::default());
+    assert_eq!(state.server_config.address, "127.0.0.1:0");
+}
+
+#[test]
+fn server_state_compat_builders_update_module_state() {
+    let started_at = std::time::Instant::now();
+    let stats = Arc::new(RuntimeStatsRegistry::new());
+    let state = state_for_admin_surface_test("127.0.0.1:0", AdminApiConfig::default())
+        .with_admin_api_bearer_token("admin-token")
+        .with_admin_cors_allowed_origins(vec!["https://console.example".to_string()])
+        .with_audit_log_config(AuditLogConfig {
+            enabled: false,
+            retention_days: 7,
+            sweep_interval_secs: 60,
+        })
+        .with_runtime_stats(stats.clone())
+        .with_started_at(started_at);
+
+    let admin = state.admin_api_config();
+    assert_eq!(
+        admin
+            .bearer_token
+            .as_ref()
+            .map(|token| token.expose_secret()),
+        Some("admin-token")
+    );
+    assert_eq!(
+        admin.cors_allowed_origins,
+        vec!["https://console.example".to_string()]
+    );
+    assert_eq!(state.audit_log_config().retention_days, 7);
+    assert_eq!(state.started_at(), started_at);
+    assert!(Arc::ptr_eq(&state.runtime_stats().unwrap(), &stats));
+}
+
+#[tokio::test]
+async fn server_state_config_compat_builders_mount_config_module() {
+    use awaken_contract::contract::config_store::ConfigStore;
+    use awaken_stores::InMemoryStore;
+
+    let store = Arc::new(InMemoryStore::new()) as Arc<dyn ConfigStore>;
+    let state = state_for_admin_surface_test("127.0.0.1:0", AdminApiConfig::default())
+        .with_config_store(store)
+        .with_audit_log_from_config();
+
+    assert!(state.config_module().is_some());
+    assert!(
+        state.audit_log().is_some(),
+        "with_audit_log_from_config should attach a logger once config is mounted"
+    );
+}
+
+#[test]
 fn validate_admin_surface_rejects_trace_routes_without_token_on_non_loopback() {
     // Regression for issue 1 residual: even with config routes off, an
     // exposed trace store on a non-loopback bind without a bearer token
@@ -108,7 +167,7 @@ fn validate_admin_surface_rejects_trace_routes_without_token_on_non_loopback() {
     std::fs::create_dir_all(&dir).unwrap();
     let trace_store: Arc<dyn TraceStore> =
         Arc::new(awaken_ext_observability::trace_store::file::FileTraceStore::new(&dir).unwrap());
-    state = state.with_trace_store(trace_store);
+    state.trace = Some(TraceModuleState { trace_store });
 
     let err = validate_admin_surface(&state).unwrap_err();
     assert_eq!(err.kind(), std::io::ErrorKind::PermissionDenied);
@@ -148,9 +207,8 @@ fn build_service_router_rejects_non_loopback_admin_surface_without_token() {
 #[test]
 fn build_service_router_rejects_runtime_stats_admin_surface_without_token() {
     let mut state = state_for_admin_surface_test("0.0.0.0:3000", AdminApiConfig::default());
-    state.config_store = None;
-    state.config_runtime_manager = None;
-    let state = state.with_runtime_stats(Arc::new(RuntimeStatsRegistry::new()));
+    state.config = None;
+    state.run.runtime_stats = Some(Arc::new(RuntimeStatsRegistry::new()));
 
     let error = build_service_router(state).unwrap_err();
     assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
@@ -163,11 +221,7 @@ fn build_service_router_rejects_runtime_stats_admin_surface_without_token() {
 #[test]
 fn build_service_router_rejects_audit_log_admin_surface_without_token() {
     let mut state = state_for_admin_surface_test("0.0.0.0:3000", AdminApiConfig::default());
-    state.config_store = None;
-    state.config_runtime_manager = None;
-    let state = state.with_audit_log(Arc::new(AuditLogger::new(Arc::new(
-        awaken_stores::InMemoryStore::new(),
-    ))));
+    state.config = None;
 
     let error = build_service_router(state).unwrap_err();
     assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
@@ -179,17 +233,8 @@ fn build_service_router_rejects_audit_log_admin_surface_without_token() {
 
 #[test]
 fn build_service_router_rejects_skill_catalog_admin_surface_without_token() {
-    struct EmptySkillCatalog;
-    impl SkillCatalogProvider for EmptySkillCatalog {
-        fn list_skills(&self) -> Vec<SkillCatalogEntry> {
-            Vec::new()
-        }
-    }
-
     let mut state = state_for_admin_surface_test("0.0.0.0:3000", AdminApiConfig::default());
-    state.config_store = None;
-    state.config_runtime_manager = None;
-    state.skill_catalog_provider = Some(Arc::new(EmptySkillCatalog));
+    state.config = None;
 
     let error = build_service_router(state).unwrap_err();
     assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
@@ -211,6 +256,76 @@ fn build_service_router_allows_non_loopback_admin_surface_with_token() {
 
     let _ =
         build_service_router(state).expect("bearer token must allow non-loopback admin surface");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn route_layer_auth_uses_env_overlay_bearer_token() {
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use tower::ServiceExt;
+
+    with_admin_bearer_token_env_override("env-admin-token", async {
+        let state = state_for_admin_surface_test("127.0.0.1:0", AdminApiConfig::default());
+        assert!(
+            state.admin.admin_api_config.bearer_token.is_none(),
+            "test must prove route-layer auth uses effective env overlay, not raw module state"
+        );
+
+        let router =
+            build_service_router(state).expect("env bearer token must satisfy startup auth");
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/system/info")
+                    .header("authorization", "Bearer env-admin-token")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+
+        assert_ne!(
+            response.status(),
+            StatusCode::UNAUTHORIZED,
+            "valid env bearer token must pass route-layer middleware"
+        )
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn route_layer_auth_rejects_missing_or_wrong_env_overlay_token() {
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use tower::ServiceExt;
+
+    with_admin_bearer_token_env_override("env-admin-token", async {
+        let state = state_for_admin_surface_test("127.0.0.1:0", AdminApiConfig::default());
+        let router =
+            build_service_router(state).expect("env bearer token must satisfy startup auth");
+
+        for (label, authorization) in [
+            ("missing", None),
+            ("wrong", Some("Bearer wrong-token")),
+            ("non-bearer", Some("Basic env-admin-token")),
+        ] {
+            let mut builder = Request::builder().uri("/v1/system/info");
+            if let Some(value) = authorization {
+                builder = builder.header("authorization", value);
+            }
+            let response = router
+                .clone()
+                .oneshot(builder.body(Body::empty()).expect("request"))
+                .await
+                .expect("response");
+            assert_eq!(
+                response.status(),
+                StatusCode::UNAUTHORIZED,
+                "{label} auth must be rejected by route-layer middleware"
+            );
+        }
+    })
+    .await;
 }
 
 #[test]
@@ -421,13 +536,12 @@ fn sweep_interval_small_nonzero_is_respected() {
     assert_eq!(duration, std::time::Duration::from_secs(5));
 }
 
-// ── with_audit_log_from_config reuses pre-set logger ───────────────────
+// ── ConfigModuleState carries pre-set audit logger ──────────────────────
 
 #[tokio::test]
-async fn with_audit_log_from_config_reuses_preset_logger() {
+async fn config_module_state_reuses_preset_logger() {
     use crate::mailbox::{Mailbox, MailboxConfig};
     use awaken_contract::contract::config_store::ConfigStore;
-    use awaken_runtime::AgentRuntime;
     use awaken_stores::{InMemoryMailboxStore, InMemoryStore};
 
     struct StubResolver;
@@ -442,7 +556,11 @@ async fn with_audit_log_from_config_reuses_preset_logger() {
         }
     }
 
-    let runtime = Arc::new(AgentRuntime::new(Arc::new(StubResolver)));
+    let runtime = Arc::new(
+        awaken_runtime::builder::AgentRuntimeBuilder::new()
+            .build_unchecked()
+            .expect("build configurable runtime"),
+    );
     let store = Arc::new(InMemoryStore::new());
     let mailbox_store = Arc::new(InMemoryMailboxStore::new());
     let mailbox = Arc::new(Mailbox::new(
@@ -456,23 +574,30 @@ async fn with_audit_log_from_config_reuses_preset_logger() {
     let preset_logger = Arc::new(AuditLogger::new(store.clone() as Arc<dyn ConfigStore>));
     let preset_ptr = Arc::as_ptr(&preset_logger);
 
-    let state = ServerState::new(
+    let mut state = ServerState::new(
         runtime,
         mailbox,
         store.clone() as Arc<dyn awaken_contract::contract::storage::ThreadRunStore>,
         Arc::new(StubResolver),
         ServerConfig::default(),
-    )
-    .with_config_store(store as Arc<dyn ConfigStore>)
-    .with_audit_log(preset_logger)
-    .with_audit_log_from_config();
+    );
+    let config_store = store as Arc<dyn ConfigStore>;
+    let manager = Arc::new(
+        crate::services::config_runtime::ConfigRuntimeManager::new(
+            state.run.runtime.clone(),
+            config_store.clone(),
+        )
+        .expect("config runtime manager"),
+    );
+    state.config =
+        Some(ConfigModuleState::new(config_store, manager).with_audit_log(preset_logger));
 
     let stored = state
         .audit_log()
-        .expect("audit_log must be Some after with_audit_log_from_config");
+        .expect("audit_log must be Some when mounted on ConfigModuleState");
     assert_eq!(
         Arc::as_ptr(&stored),
         preset_ptr,
-        "with_audit_log_from_config must reuse the pre-set AuditLogger instance"
+        "ConfigModuleState must expose the pre-set AuditLogger instance"
     );
 }

@@ -150,18 +150,18 @@ fn build_app(response: &str) -> (axum::Router, Arc<RuntimeStatsRegistry>) {
         awaken_server::mailbox::MailboxConfig::default(),
     ));
 
-    let state = ServerState::new(
+    let mut state = ServerState::new(
         runtime.clone(),
         mailbox,
         store.clone(),
         runtime.resolver_arc(),
         ServerConfig::default(),
-    )
-    .with_admin_api_config(AdminApiConfig {
+    );
+    state.admin.admin_api_config = AdminApiConfig {
         bearer_token: Some(ADMIN_TOKEN.into()),
         ..Default::default()
-    })
-    .with_runtime_stats(Arc::clone(&registry));
+    };
+    state.run.runtime_stats = Some(Arc::clone(&registry));
 
     let app = build_router(&state);
     (app, registry)

@@ -265,14 +265,14 @@ fn make_test_app_with_runtime(
         "test".to_string(),
         awaken_server::mailbox::MailboxConfig::default(),
     ));
-    let state = ServerState::new(
+    let mut state = ServerState::new(
         runtime.clone(),
         mailbox,
         store.clone(),
         runtime.resolver_arc(),
         ServerConfig::default(),
-    )
-    .with_admin_api_bearer_token(TEST_ADMIN_TOKEN);
+    );
+    state.admin.admin_api_config.bearer_token = Some(TEST_ADMIN_TOKEN.into());
     TestApp {
         router: build_router(&state),
         store,
@@ -889,14 +889,14 @@ async fn ai_sdk_agent_preview_requires_admin_token_when_configured() {
         "test".to_string(),
         awaken_server::mailbox::MailboxConfig::default(),
     ));
-    let state = ServerState::new(
+    let mut state = ServerState::new(
         runtime.clone(),
         mailbox,
         store.clone(),
         runtime.resolver_arc(),
         ServerConfig::default(),
-    )
-    .with_admin_api_bearer_token("expected-token");
+    );
+    state.admin.admin_api_config.bearer_token = Some("expected-token".into());
     let router = build_router(&state);
 
     // No Authorization header → 401.

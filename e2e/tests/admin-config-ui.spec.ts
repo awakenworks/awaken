@@ -149,6 +149,59 @@ test.describe('admin config UI', () => {
     expect(pluginSchemas['ext-deferred-tools']).toContain('deferred_tools');
   });
 
+  test('provider UI consumes redacted API key contract across edit save', async ({
+    page,
+    request,
+  }) => {
+    const providerId = `ui-provider-redacted-${suffix()}`;
+
+    await createProviderViaUi(page, providerId, {
+      adapter: 'openai',
+      baseUrl: 'https://example.invalid/v1',
+      apiKey: 'redaction-test-token',
+      timeoutSecs: 7,
+    });
+    await expect(
+      page
+        .locator('tr')
+        .filter({ has: page.getByText(providerId, { exact: true }) })
+        .getByText('Stored', { exact: true }),
+    ).toBeVisible();
+
+    const providerResponse = await request.get(
+      `${BACKEND_URL}/v1/config/providers/${encodeURIComponent(providerId)}`,
+      { headers: { Authorization: `Bearer ${TEST_ADMIN_TOKEN}` } },
+    );
+    expect(providerResponse.ok()).toBeTruthy();
+    const provider = await providerResponse.json();
+    expect(provider.has_api_key).toBe(true);
+    expect(provider.api_key).toBeUndefined();
+
+    await page
+      .locator('tr')
+      .filter({ has: page.getByText(providerId, { exact: true }) })
+      .getByRole('button', { name: 'Edit' })
+      .click();
+    await expect(page.getByText('Existing credential is preserved.')).toBeVisible();
+    await page.getByLabel('Timeout (seconds)').fill('8');
+    await page.getByRole('button', { name: 'Save' }).click();
+    await expect(
+      page.getByRole('alert').filter({
+        hasText: new RegExp(`Provider\\s+"${providerId}"\\s+saved`),
+      }),
+    ).toBeVisible();
+
+    const updatedResponse = await request.get(
+      `${BACKEND_URL}/v1/config/providers/${encodeURIComponent(providerId)}`,
+      { headers: { Authorization: `Bearer ${TEST_ADMIN_TOKEN}` } },
+    );
+    expect(updatedResponse.ok()).toBeTruthy();
+    const updated = await updatedResponse.json();
+    expect(updated.timeout_secs).toBe(8);
+    expect(updated.has_api_key).toBe(true);
+    expect(updated.api_key).toBeUndefined();
+  });
+
   test('saves plugin config from the page and applies it to runtime runs', async ({
     page,
     request,

@@ -277,15 +277,17 @@ async fn build_state(
         "config-service-test".into(),
         MailboxConfig::default(),
     ));
-    let state = ServerState::new(
+    let mut state = ServerState::new(
         runtime,
         mailbox,
         thread_store,
         resolver,
         ServerConfig::default(),
-    )
-    .with_config_store(config_store)
-    .with_config_runtime_manager(manager.clone());
+    );
+    state.config = Some(crate::app::ConfigModuleState::new(
+        config_store,
+        manager.clone(),
+    ));
 
     (state, manager)
 }
@@ -415,8 +417,7 @@ async fn service_requires_runtime_manager_for_mutations() {
         thread_store,
         runtime.resolver_arc(),
         ServerConfig::default(),
-    )
-    .with_config_store(Arc::new(awaken_stores::InMemoryStore::new()));
+    );
 
     let error = match ConfigService::new(&state) {
         Ok(service) => service
@@ -1074,15 +1075,17 @@ async fn delete_rollback_re_emits_envelope() {
         "rollback-test".into(),
         crate::mailbox::MailboxConfig::default(),
     ));
-    let state_failing = crate::app::ServerState::new(
+    let mut state_failing = crate::app::ServerState::new(
         runtime_failing.clone(),
         mailbox_failing,
         thread_store,
         runtime_failing.resolver_arc(),
         crate::app::ServerConfig::default(),
-    )
-    .with_config_store(config_store.clone())
-    .with_config_runtime_manager(manager_failing);
+    );
+    state_failing.config = Some(crate::app::ConfigModuleState::new(
+        config_store.clone(),
+        manager_failing,
+    ));
 
     // Step 4: attempt DELETE via the failing service — apply_locked will fail.
     let service_failing = ConfigService::new(&state_failing).expect("failing config service");
@@ -1242,7 +1245,8 @@ mod audit_integration {
         let config_store = Arc::new(awaken_stores::InMemoryStore::new());
         let (state, _manager) = build_state(config_store.clone()).await;
         let audit_logger = Arc::new(AuditLogger::new(config_store.clone()));
-        let state = state.with_audit_log(audit_logger.clone());
+        let mut state = state;
+        state.config.as_mut().expect("config module").audit_log = Some(audit_logger.clone());
 
         let service = ConfigService::new(&state).expect("service");
         service
@@ -1267,7 +1271,8 @@ mod audit_integration {
         let config_store = Arc::new(awaken_stores::InMemoryStore::new());
         let (state, _manager) = build_state(config_store.clone()).await;
         let audit_logger = Arc::new(AuditLogger::new(config_store.clone()));
-        let state = state.with_audit_log(audit_logger.clone());
+        let mut state = state;
+        state.config.as_mut().expect("config module").audit_log = Some(audit_logger.clone());
 
         let service = ConfigService::new(&state).expect("service");
         service
@@ -1307,7 +1312,8 @@ mod audit_integration {
         let config_store = Arc::new(awaken_stores::InMemoryStore::new());
         let (state, _manager) = build_state(config_store.clone()).await;
         let audit_logger = Arc::new(AuditLogger::new(config_store.clone()));
-        let state = state.with_audit_log(audit_logger.clone());
+        let mut state = state;
+        state.config.as_mut().expect("config module").audit_log = Some(audit_logger.clone());
 
         let service = ConfigService::new(&state).expect("service");
         service
@@ -1354,7 +1360,8 @@ mod audit_integration {
         let config_store = Arc::new(awaken_stores::InMemoryStore::new());
         let (state, _manager) = build_state(config_store.clone()).await;
         let audit_logger = Arc::new(AuditLogger::new(config_store.clone()));
-        let state = state.with_audit_log(audit_logger.clone());
+        let mut state = state;
+        state.config.as_mut().expect("config module").audit_log = Some(audit_logger.clone());
 
         let service = ConfigService::new(&state).expect("service");
         service
@@ -1585,7 +1592,8 @@ async fn audit_payload_is_bare_spec_not_envelope() {
     let config_store = Arc::new(awaken_stores::InMemoryStore::new());
     let (state, _manager) = build_state(config_store.clone()).await;
     let audit_logger = Arc::new(AuditLogger::new(config_store.clone()));
-    let state = state.with_audit_log(audit_logger.clone());
+    let mut state = state;
+    state.config.as_mut().expect("config module").audit_log = Some(audit_logger.clone());
 
     let service = ConfigService::new(&state).expect("service");
     service
@@ -1756,16 +1764,17 @@ async fn build_test_service_with_tool(
         "tool-override-test".into(),
         crate::mailbox::MailboxConfig::default(),
     ));
-    let state = ServerState::new(
+    let mut state = ServerState::new(
         runtime,
         mailbox,
         thread_store,
         resolver,
         crate::app::ServerConfig::default(),
-    )
-    .with_config_store(config_store)
-    .with_config_runtime_manager(manager)
-    .with_audit_log(audit_logger.clone());
+    );
+    state.config = Some(
+        crate::app::ConfigModuleState::new(config_store, manager)
+            .with_audit_log(audit_logger.clone()),
+    );
 
     // SAFETY: state is owned for the duration of the test; the 'static bound is
     // satisfied by leaking the Box – acceptable in tests only.
@@ -2136,16 +2145,17 @@ async fn patch_tool_overrides_apply_failure_emits_apply_failed_audit_event() {
         "apply-failed-test".into(),
         crate::mailbox::MailboxConfig::default(),
     ));
-    let state = ServerState::new(
+    let mut state = ServerState::new(
         runtime_failing.clone(),
         mailbox,
         thread_store,
         runtime_failing.resolver_arc(),
         crate::app::ServerConfig::default(),
-    )
-    .with_config_store(config_store.clone())
-    .with_config_runtime_manager(manager_failing)
-    .with_audit_log(audit_logger.clone());
+    );
+    state.config = Some(
+        crate::app::ConfigModuleState::new(config_store.clone(), manager_failing)
+            .with_audit_log(audit_logger.clone()),
+    );
 
     let state: &'static ServerState = Box::leak(Box::new(state));
     let service = ConfigService::new(state).expect("failing config service");

@@ -21,16 +21,44 @@ pub struct RunModuleState {
     pub runtime: Arc<AgentRuntime>,
     pub mailbox: Arc<Mailbox>,
     pub resolver: Arc<dyn AgentResolver>,
+    pub store: Arc<dyn ThreadRunStore>,
     pub credential_broker: Arc<dyn CredentialBroker>,
     pub runtime_stats: Option<Arc<RuntimeStatsRegistry>>,
 }
 
 impl RunModuleState {
-    /// Borrow the thread/run store through the mailbox's coordinator
-    /// (ADR-0038 D7 single source of truth). Reads go directly; writes
-    /// must be routed through `mailbox.coordinator()`.
+    pub fn new(
+        runtime: Arc<AgentRuntime>,
+        mailbox: Arc<Mailbox>,
+        store: Arc<dyn ThreadRunStore>,
+        resolver: Arc<dyn AgentResolver>,
+    ) -> Self {
+        Self {
+            runtime,
+            mailbox,
+            resolver,
+            store,
+            credential_broker: Arc::new(awaken_runtime::credentials::AwakenCredentialBroker::new()),
+            runtime_stats: None,
+        }
+    }
+
+    #[must_use]
+    pub fn with_credential_broker(mut self, broker: Arc<dyn CredentialBroker>) -> Self {
+        self.credential_broker = broker;
+        self
+    }
+
+    #[must_use]
+    pub fn with_runtime_stats(mut self, registry: Arc<RuntimeStatsRegistry>) -> Self {
+        self.runtime_stats = Some(registry);
+        self
+    }
+
+    /// Borrow the thread/run store for read paths. Writes must be routed
+    /// through `mailbox.coordinator()`.
     pub fn store(&self) -> &Arc<dyn ThreadRunStore> {
-        self.mailbox.thread_run_store()
+        &self.store
     }
 }
 
@@ -40,6 +68,32 @@ pub struct ConfigModuleState {
     pub runtime_manager: Arc<crate::services::config_runtime::ConfigRuntimeManager>,
     pub audit_log: Option<Arc<AuditLogger>>,
     pub skill_catalog_provider: Option<Arc<dyn SkillCatalogProvider>>,
+}
+
+impl ConfigModuleState {
+    pub fn new(
+        config_store: Arc<dyn ConfigStore>,
+        runtime_manager: Arc<crate::services::config_runtime::ConfigRuntimeManager>,
+    ) -> Self {
+        Self {
+            config_store,
+            runtime_manager,
+            audit_log: None,
+            skill_catalog_provider: None,
+        }
+    }
+
+    #[must_use]
+    pub fn with_audit_log(mut self, audit_log: Arc<AuditLogger>) -> Self {
+        self.audit_log = Some(audit_log);
+        self
+    }
+
+    #[must_use]
+    pub fn with_skill_catalog_provider(mut self, provider: Arc<dyn SkillCatalogProvider>) -> Self {
+        self.skill_catalog_provider = Some(provider);
+        self
+    }
 }
 
 #[derive(Clone)]
@@ -155,61 +209,92 @@ pub struct TraceRoutesState {
 }
 
 impl ServerState {
-    pub fn run_module(&self) -> RunModuleState {
-        RunModuleState {
-            runtime: Arc::clone(&self.runtime),
-            mailbox: Arc::clone(&self.mailbox),
-            resolver: Arc::clone(&self.resolver),
-            credential_broker: Arc::clone(&self.credential_broker),
-            runtime_stats: self.runtime_stats.clone(),
+    #[must_use]
+    pub fn from_modules(run: RunModuleState, server_config: super::ServerConfig) -> Self {
+        Self {
+            run,
+            config: None,
+            events: None,
+            eval: None,
+            trace: None,
+            protocol: ProtocolModuleState {
+                replay_buffers: Arc::new(parking_lot::Mutex::new(std::collections::HashMap::new())),
+                mcp_http: Arc::new(crate::protocols::mcp::http::McpHttpState::new()),
+            },
+            admin: AdminModuleState {
+                admin_api_config: super::AdminApiConfig::default(),
+                audit_log_config: super::AuditLogConfig::default(),
+                started_at: Instant::now(),
+            },
+            server_config,
         }
+    }
+
+    #[must_use]
+    pub fn with_config(mut self, config: ConfigModuleState) -> Self {
+        self.config = Some(config);
+        self
+    }
+
+    #[must_use]
+    pub fn with_events(mut self, events: EventModuleState) -> Self {
+        self.events = Some(events);
+        self
+    }
+
+    #[must_use]
+    pub fn with_eval(mut self, eval: EvalModuleState) -> Self {
+        self.eval = Some(eval);
+        self
+    }
+
+    #[must_use]
+    pub fn with_trace(mut self, trace: TraceModuleState) -> Self {
+        self.trace = Some(trace);
+        self
+    }
+
+    #[must_use]
+    pub fn with_protocol(mut self, protocol: ProtocolModuleState) -> Self {
+        self.protocol = protocol;
+        self
+    }
+
+    #[must_use]
+    pub fn with_admin(mut self, admin: AdminModuleState) -> Self {
+        self.admin = admin;
+        self
+    }
+
+    pub fn run_module(&self) -> RunModuleState {
+        self.run.clone()
     }
 
     pub fn config_module(&self) -> Option<ConfigModuleState> {
-        Some(ConfigModuleState {
-            config_store: Arc::clone(self.config_store.as_ref()?),
-            runtime_manager: Arc::clone(self.config_runtime_manager.as_ref()?),
-            audit_log: self.audit_log.clone(),
-            skill_catalog_provider: self.skill_catalog_provider.clone(),
-        })
+        self.config.clone()
     }
 
     pub fn event_module(&self) -> Option<EventModuleState> {
-        self.event_store
-            .as_ref()
-            .map(|event_store| EventModuleState {
-                event_store: Arc::clone(event_store),
-            })
+        self.events.clone()
     }
 
     pub fn eval_module(&self) -> Option<EvalModuleState> {
-        self.eval_run_store
-            .as_ref()
-            .map(|eval_run_store| EvalModuleState {
-                eval_run_store: Arc::clone(eval_run_store),
-            })
+        self.eval.clone()
     }
 
     pub fn trace_module(&self) -> Option<TraceModuleState> {
-        self.trace_store
-            .as_ref()
-            .map(|trace_store| TraceModuleState {
-                trace_store: Arc::clone(trace_store),
-            })
+        self.trace.clone()
     }
 
     pub fn protocol_module(&self) -> ProtocolModuleState {
-        ProtocolModuleState {
-            replay_buffers: Arc::clone(&self.replay_buffers),
-            mcp_http: Arc::clone(&self.mcp_http),
-        }
+        self.protocol.clone()
     }
 
     pub fn admin_module(&self) -> AdminModuleState {
         AdminModuleState {
-            admin_api_config: self.admin_api_config(),
-            audit_log_config: self.audit_log_config(),
-            started_at: self.started_at(),
+            admin_api_config: super::admin_api_config(self),
+            audit_log_config: self.admin.audit_log_config,
+            started_at: self.admin.started_at,
         }
     }
 
@@ -234,7 +319,7 @@ impl ServerState {
         RunRoutesState {
             run: self.run_module(),
             events: self.event_module(),
-            sse_buffer_size: self.config.sse_buffer_size,
+            sse_buffer_size: self.server_config.sse_buffer_size,
         }
     }
 
@@ -261,7 +346,7 @@ impl ServerState {
             run: self.run_module(),
             trace: self.trace_module(),
             events: self.event_module(),
-            limits: self.config.eval_limits.clone(),
+            limits: self.server_config.eval_limits.clone(),
         })
     }
 
@@ -270,9 +355,12 @@ impl ServerState {
             admin: self.admin_module(),
             run: self.run_module(),
             protocol: self.protocol_module(),
-            sse_buffer_size: self.config.sse_buffer_size,
-            replay_buffer_capacity: self.config.replay_buffer_capacity,
-            a2a_extended_card_bearer_token: self.config.a2a_extended_card_bearer_token.clone(),
+            sse_buffer_size: self.server_config.sse_buffer_size,
+            replay_buffer_capacity: self.server_config.replay_buffer_capacity,
+            a2a_extended_card_bearer_token: self
+                .server_config
+                .a2a_extended_card_bearer_token
+                .clone(),
         }
     }
 
@@ -280,7 +368,7 @@ impl ServerState {
         SystemRoutesState {
             admin: self.admin_module(),
             mounted_modules: self.mounted_modules(),
-            config_store_enabled: self.config_store.is_some(),
+            config_store_enabled: self.config.is_some(),
             audit_log_enabled: self.audit_log().is_some(),
             runtime_stats_enabled: self.runtime_stats().is_some(),
         }

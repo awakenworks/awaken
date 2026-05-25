@@ -301,17 +301,17 @@ mod tests {
             "test".to_string(),
             MailboxConfig::default(),
         ));
-        let state = ServerState::new(
+        let mut state = ServerState::new(
             runtime,
             mailbox,
             store,
             Arc::new(StubResolver),
             ServerConfig::default(),
         );
-        match event_store {
-            Some(store) => state.with_event_store(store),
-            None => state,
+        if let Some(store) = event_store {
+            state.events = Some(crate::app::EventModuleState { event_store: store });
         }
+        state
     }
 
     async fn append_event(store: &InMemoryEventStore, thread_id: &str, kind: &str) -> EventCursor {

@@ -79,13 +79,13 @@ fn build_app(runtime_stats: Option<Arc<RuntimeStatsRegistry>>) -> axum::Router {
         store.clone(),
         runtime.resolver_arc(),
         ServerConfig::default(),
-    )
-    .with_admin_api_config(AdminApiConfig {
+    );
+    state.admin.admin_api_config = AdminApiConfig {
         bearer_token: Some(ADMIN_TOKEN.into()),
         ..Default::default()
-    });
+    };
     if let Some(reg) = runtime_stats {
-        state = state.with_runtime_stats(reg);
+        state.run.runtime_stats = Some(reg);
     }
     build_router(&state)
 }

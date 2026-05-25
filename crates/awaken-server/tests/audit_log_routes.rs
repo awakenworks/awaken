@@ -7,7 +7,7 @@ use awaken_contract::contract::executor::{InferenceExecutionError, InferenceRequ
 use awaken_contract::contract::inference::{StopReason, StreamResult, TokenUsage};
 use awaken_contract::{AgentSpec, BuiltinSeedSet, BuiltinSpec, ModelSpec, ProviderSpec};
 use awaken_runtime::builder::AgentRuntimeBuilder;
-use awaken_server::app::{ServerConfig, ServerState};
+use awaken_server::app::{ConfigModuleState, ServerConfig, ServerState};
 use awaken_server::mailbox::{Mailbox, MailboxConfig};
 use awaken_server::routes::build_router;
 use awaken_server::services::audit_log::AuditLogger;
@@ -114,12 +114,9 @@ async fn build_test_app_with_audit(token: Option<&str>) -> axum::Router {
         thread_store,
         resolver,
         ServerConfig::default(),
-    )
-    .with_config_store(config_store)
-    .with_config_runtime_manager(manager)
-    .with_audit_log(audit_logger);
-
-    state = state.with_admin_api_bearer_token(token.unwrap_or(ADMIN_TOKEN));
+    );
+    state.config = Some(ConfigModuleState::new(config_store, manager).with_audit_log(audit_logger));
+    state.admin.admin_api_config.bearer_token = Some(token.unwrap_or(ADMIN_TOKEN).into());
 
     build_router(&state)
 }
@@ -162,16 +159,15 @@ async fn build_test_app_without_audit() -> axum::Router {
         "audit-test-no-log".into(),
         MailboxConfig::default(),
     ));
-    let state = ServerState::new(
+    let mut state = ServerState::new(
         runtime,
         mailbox,
         thread_store,
         resolver,
         ServerConfig::default(),
-    )
-    .with_config_store(config_store)
-    .with_config_runtime_manager(manager)
-    .with_admin_api_bearer_token(ADMIN_TOKEN);
+    );
+    state.config = Some(ConfigModuleState::new(config_store, manager));
+    state.admin.admin_api_config.bearer_token = Some(ADMIN_TOKEN.into());
     // No audit_log attached.
     build_router(&state)
 }
@@ -419,17 +415,15 @@ async fn seed_apply_event_visible_via_http_query() {
         "seed-audit-test".into(),
         MailboxConfig::default(),
     ));
-    let state = ServerState::new(
+    let mut state = ServerState::new(
         runtime,
         mailbox,
         thread_store,
         resolver,
         ServerConfig::default(),
-    )
-    .with_config_store(config_store)
-    .with_config_runtime_manager(manager)
-    .with_audit_log(audit_logger)
-    .with_admin_api_bearer_token(ADMIN_TOKEN);
+    );
+    state.config = Some(ConfigModuleState::new(config_store, manager).with_audit_log(audit_logger));
+    state.admin.admin_api_config.bearer_token = Some(ADMIN_TOKEN.into());
 
     let app = build_router(&state);
 

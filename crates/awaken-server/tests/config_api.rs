@@ -30,8 +30,8 @@ use awaken_runtime::engine::RetryConfigKey;
 use awaken_runtime::registry::ToolRegistry;
 use awaken_runtime::registry::memory::MapToolRegistry;
 use awaken_server::app::{
-    AdminApiConfig, ServerConfig, ServerState, SkillCatalogArgument, SkillCatalogContext,
-    SkillCatalogEntry, SkillCatalogProvider,
+    AdminApiConfig, ConfigModuleState, ServerConfig, ServerState, SkillCatalogArgument,
+    SkillCatalogContext, SkillCatalogEntry, SkillCatalogProvider,
 };
 use awaken_server::mailbox::{Mailbox, MailboxConfig};
 use awaken_server::routes::build_router;
@@ -43,7 +43,7 @@ use awaken_stores::InMemoryStore;
 use axum::body::{Body, to_bytes};
 use axum::http::{Method, Request, StatusCode};
 use serde_json::{Value, json};
-use tokio::sync::broadcast;
+use tokio::sync::{Barrier, broadcast};
 use tower::ServiceExt;
 
 const ADMIN_TOKEN: &str = "admin-token";
@@ -263,6 +263,7 @@ struct TrackingManagedMcpRegistryState {
     start_calls: AtomicUsize,
     stop_calls: AtomicUsize,
     close_calls: AtomicUsize,
+    fail_close: AtomicBool,
 }
 
 struct TrackingManagedMcpRegistry {
@@ -303,6 +304,11 @@ impl ManagedMcpRegistry for TrackingManagedMcpRegistry {
     async fn close(&self) -> Result<(), ConfigRuntimeError> {
         self.state.close_calls.fetch_add(1, Ordering::Relaxed);
         self.stop_periodic_refresh().await;
+        if self.state.fail_close.load(Ordering::Relaxed) {
+            return Err(ConfigRuntimeError::ChangeListener(
+                "injected MCP registry close failure".into(),
+            ));
+        }
         Ok(())
     }
 
@@ -664,16 +670,15 @@ async fn make_app_without_skill_sink() -> TestApp {
         "config-api-test".into(),
         MailboxConfig::default(),
     ));
-    let state = ServerState::new(
+    let mut state = ServerState::new(
         runtime.clone(),
         mailbox,
         store.clone(),
         runtime.resolver_arc(),
         ServerConfig::default(),
-    )
-    .with_config_store(config_store)
-    .with_config_runtime_manager(manager.clone())
-    .with_admin_api_bearer_token(ADMIN_TOKEN);
+    );
+    state.config = Some(ConfigModuleState::new(config_store, manager.clone()));
+    state.admin.admin_api_config.bearer_token = Some(ADMIN_TOKEN.into());
 
     TestApp {
         router: build_router(&state),
@@ -732,16 +737,17 @@ async fn make_app_with_skill_catalog_config_and_admin(
         store.clone(),
         runtime.resolver_arc(),
         config,
-    )
-    .with_config_store(config_store)
-    .with_config_runtime_manager(manager.clone());
-    state = if let Some(admin_config) = admin_config {
-        state.with_admin_api_config(admin_config)
+    );
+    state.config = Some(ConfigModuleState::new(config_store, manager.clone()));
+    if let Some(admin_config) = admin_config {
+        state.admin.admin_api_config = admin_config;
     } else {
-        state.with_admin_api_bearer_token(ADMIN_TOKEN)
-    };
-    if let Some(provider) = skill_catalog_provider {
-        state = state.with_skill_catalog_provider(provider);
+        state.admin.admin_api_config.bearer_token = Some(ADMIN_TOKEN.into());
+    }
+    if let Some(provider) = skill_catalog_provider
+        && let Some(config) = &mut state.config
+    {
+        config.skill_catalog_provider = Some(provider);
     }
 
     TestApp {
@@ -1217,6 +1223,101 @@ async fn skills_config_create_fails_without_skill_sink_and_rolls_back() {
 }
 
 #[tokio::test]
+async fn config_apply_failure_rolls_back_create_and_update_without_runtime_swap() {
+    let app = make_app().await;
+    let before_snapshot = app.runtime.registry_snapshot().expect("registry snapshot");
+    let before_version = before_snapshot.version();
+    let before_agents = before_snapshot.registries().agents.agent_ids();
+    drop(before_snapshot);
+
+    let (status, body) = request_json(
+        &app.router,
+        Method::POST,
+        "/v1/config/providers",
+        Some(json!({
+            "id": "bad-provider-create",
+            "adapter": "unsupported-provider"
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "body={body}");
+    assert!(
+        body["error"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("unsupported provider adapter"),
+        "unexpected error body: {body}"
+    );
+    assert!(
+        ConfigStore::get(app.store.as_ref(), "providers", "bad-provider-create")
+            .await
+            .expect("read rolled-back provider")
+            .is_none(),
+        "failed create apply must remove the staged provider record"
+    );
+
+    let (status, created) = request_json(
+        &app.router,
+        Method::POST,
+        "/v1/config/providers",
+        Some(json!({
+            "id": "provider-rollback",
+            "adapter": "stub"
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "body={created}");
+
+    let (status, body) = request_json(
+        &app.router,
+        Method::PUT,
+        "/v1/config/providers/provider-rollback",
+        Some(json!({
+            "id": "provider-rollback",
+            "adapter": "unsupported-provider"
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "body={body}");
+    assert!(
+        body["error"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("unsupported provider adapter"),
+        "unexpected error body: {body}"
+    );
+
+    let (status, restored) = request_json(
+        &app.router,
+        Method::GET,
+        "/v1/config/providers/provider-rollback",
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "body={restored}");
+    assert_eq!(
+        restored["adapter"],
+        json!("stub"),
+        "failed update apply must restore the previous provider record"
+    );
+
+    let after_snapshot = app.runtime.registry_snapshot().expect("registry snapshot");
+    assert!(
+        after_snapshot.version() >= before_version,
+        "successful intermediate create may advance the version"
+    );
+    assert_eq!(
+        before_agents,
+        after_snapshot.registries().agents.agent_ids(),
+        "failed provider applies must not swap the live agent registry"
+    );
+    assert!(
+        app.runtime.resolver().resolve("bootstrap").is_ok(),
+        "bootstrap agent must remain resolvable after failed applies"
+    );
+}
+
+#[tokio::test]
 async fn provider_service_account_shaped_secret_is_never_returned_by_admin_api() {
     let app = make_app().await;
     let service_account_json = r#"{
@@ -1546,16 +1647,15 @@ async fn documented_config_driven_agent_tuning_publishes_sections_and_retry() {
         "config-doc-scenario-test".into(),
         MailboxConfig::default(),
     ));
-    let state = ServerState::new(
+    let mut state = ServerState::new(
         runtime.clone(),
         mailbox,
         store,
         runtime.resolver_arc(),
         ServerConfig::default(),
-    )
-    .with_config_store(config_store)
-    .with_config_runtime_manager(manager)
-    .with_admin_api_bearer_token(ADMIN_TOKEN);
+    );
+    state.config = Some(ConfigModuleState::new(config_store, manager));
+    state.admin.admin_api_config.bearer_token = Some(ADMIN_TOKEN.into());
     let router = build_router(&state);
 
     let (status, _) = request_json(
@@ -2292,6 +2392,61 @@ async fn replacing_mcp_registry_closes_previous_registry() {
 }
 
 #[tokio::test]
+async fn replacing_mcp_registry_close_failure_does_not_roll_back_new_runtime() {
+    let factory = Arc::new(TrackingMcpRegistryFactory::default());
+    let (runtime, store, manager) = make_runtime_manager_with_options(
+        None,
+        factory.clone() as Arc<dyn McpRegistryFactory>,
+        Some(Duration::from_secs(5)),
+    )
+    .await;
+
+    ConfigStore::put(
+        store.as_ref(),
+        "mcp-servers",
+        "first",
+        &json!({
+            "id": "first",
+            "transport": "stdio",
+            "command": "first-mcp"
+        }),
+    )
+    .await
+    .expect("write first managed mcp server");
+    manager.apply().await.expect("apply first mcp registry");
+    let first_state = factory.single_state();
+    first_state.fail_close.store(true, Ordering::Relaxed);
+
+    ConfigStore::put(
+        store.as_ref(),
+        "mcp-servers",
+        "second",
+        &json!({
+            "id": "second",
+            "transport": "stdio",
+            "command": "second-mcp"
+        }),
+    )
+    .await
+    .expect("write second managed mcp server");
+
+    manager
+        .apply()
+        .await
+        .expect("previous close failure is advisory after publish");
+
+    assert_eq!(first_state.close_calls.load(Ordering::Relaxed), 1);
+    let resolved = runtime
+        .resolver()
+        .resolve("bootstrap")
+        .expect("bootstrap agent resolves after replacement");
+    assert!(
+        resolved.tools.contains_key("mcp__second__ping"),
+        "new MCP registry must remain published even if closing the old registry fails"
+    );
+}
+
+#[tokio::test]
 async fn shutdown_closes_active_mcp_registry() {
     let factory = Arc::new(TrackingMcpRegistryFactory::default());
     let (_runtime, store, manager) = make_runtime_manager_with_options(
@@ -2342,6 +2497,64 @@ async fn apply_returns_monotonically_advancing_version() {
     assert!(
         second > first,
         "apply() must always publish and advance the registry version, got {first} then {second}"
+    );
+}
+
+#[tokio::test]
+async fn concurrent_apply_calls_are_serialized_and_publish_unique_versions() {
+    let (runtime, store, manager) = make_runtime_manager(None).await;
+    ConfigStore::put(
+        store.as_ref(),
+        "providers",
+        "distributed-apply-provider",
+        &json!({
+            "id": "distributed-apply-provider",
+            "adapter": "stub"
+        }),
+    )
+    .await
+    .expect("write provider before concurrent applies");
+
+    let workers = 8;
+    let barrier = Arc::new(Barrier::new(workers));
+    let handles = (0..workers)
+        .map(|_| {
+            let manager = manager.clone();
+            let barrier = barrier.clone();
+            tokio::spawn(async move {
+                barrier.wait().await;
+                manager.apply().await
+            })
+        })
+        .collect::<Vec<_>>();
+
+    let mut versions = Vec::with_capacity(workers);
+    for result in futures::future::join_all(handles).await {
+        versions.push(
+            result
+                .expect("apply task must not panic")
+                .expect("concurrent apply must succeed"),
+        );
+    }
+    versions.sort_unstable();
+    let mut unique_versions = versions.clone();
+    unique_versions.dedup();
+
+    assert_eq!(
+        unique_versions.len(),
+        workers,
+        "apply lock must serialize publishes into unique versions: {versions:?}"
+    );
+    assert!(
+        versions.windows(2).all(|window| window[0] < window[1]),
+        "versions must be strictly increasing: {versions:?}"
+    );
+
+    let snapshot = runtime.registry_snapshot().expect("registry snapshot");
+    assert_eq!(
+        snapshot.version(),
+        *versions.last().expect("at least one version"),
+        "live registry must expose the last serialized apply"
     );
 }
 
@@ -2591,14 +2804,14 @@ async fn mcp_status_routes_absent_without_config_module() {
         MailboxConfig::default(),
     ));
     // No config module attached → config-backed MCP admin endpoints are absent.
-    let state = awaken_server::app::ServerState::new(
+    let mut state = awaken_server::app::ServerState::new(
         runtime.clone(),
         mailbox,
         thread_store as Arc<dyn awaken_contract::contract::storage::ThreadRunStore>,
         runtime.resolver_arc(),
         ServerConfig::default(),
-    )
-    .with_admin_api_bearer_token(ADMIN_TOKEN);
+    );
+    state.admin.admin_api_config.bearer_token = Some(ADMIN_TOKEN.into());
     let router = build_router(&state);
 
     let (status, _body) = request_json(
@@ -2723,16 +2936,15 @@ async fn mcp_status_route_surfaces_session_reconnect_init_fields() {
         "mcp-status-fields-test".into(),
         MailboxConfig::default(),
     ));
-    let state = ServerState::new(
+    let mut state = ServerState::new(
         runtime.clone(),
         mailbox,
         store.clone(),
         runtime.resolver_arc(),
         ServerConfig::default(),
-    )
-    .with_config_store(config_store)
-    .with_config_runtime_manager(manager.clone())
-    .with_admin_api_bearer_token(ADMIN_TOKEN);
+    );
+    state.config = Some(ConfigModuleState::new(config_store, manager.clone()));
+    state.admin.admin_api_config.bearer_token = Some(ADMIN_TOKEN.into());
     let router = build_router(&state);
 
     // Register an MCP server so the factory's `connect` is called and
@@ -3465,17 +3677,18 @@ async fn audit_event_emitted_for_patch_and_delete() {
         "override-audit-test".into(),
         MailboxConfig::default(),
     ));
-    let state = awaken_server::app::ServerState::new(
+    let mut state = awaken_server::app::ServerState::new(
         runtime.clone(),
         mailbox,
         thread_store,
         runtime.resolver_arc(),
         ServerConfig::default(),
-    )
-    .with_config_store(config_store.clone() as Arc<dyn ConfigStore>)
-    .with_config_runtime_manager(manager)
-    .with_audit_log(audit_logger.clone())
-    .with_admin_api_bearer_token(ADMIN_TOKEN);
+    );
+    state.config = Some(
+        ConfigModuleState::new(config_store.clone() as Arc<dyn ConfigStore>, manager)
+            .with_audit_log(audit_logger.clone()),
+    );
+    state.admin.admin_api_config.bearer_token = Some(ADMIN_TOKEN.into());
 
     let headers = axum::http::HeaderMap::new();
 
@@ -3715,16 +3928,15 @@ async fn make_permission_preview_app() -> axum::Router {
         "permission-preview-test".into(),
         MailboxConfig::default(),
     ));
-    let state = ServerState::new(
+    let mut state = ServerState::new(
         runtime.clone(),
         mailbox,
         store,
         runtime.resolver_arc(),
         ServerConfig::default(),
-    )
-    .with_config_store(config_store)
-    .with_config_runtime_manager(manager)
-    .with_admin_api_bearer_token(ADMIN_TOKEN);
+    );
+    state.config = Some(ConfigModuleState::new(config_store, manager));
+    state.admin.admin_api_config.bearer_token = Some(ADMIN_TOKEN.into());
     build_router(&state)
 }
 

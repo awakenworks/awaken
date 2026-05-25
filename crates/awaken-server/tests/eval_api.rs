@@ -28,7 +28,10 @@ use awaken_eval::{
 use awaken_ext_observability::trace_store::{TraceStore, file::FileTraceStore};
 use awaken_ext_observability::{DelegationSpan, GenAISpan, MetricsEvent, SpanContext};
 use awaken_runtime::builder::AgentRuntimeBuilder;
-use awaken_server::app::{AdminApiConfig, ServerConfig, ServerState};
+use awaken_server::app::{
+    AdminApiConfig, ConfigModuleState, EvalModuleState, EventModuleState, ServerConfig,
+    ServerState, TraceModuleState,
+};
 use awaken_server::mailbox::{Mailbox, MailboxConfig};
 use awaken_server::routes::build_router;
 use awaken_server::services::config_runtime::ConfigRuntimeManager;
@@ -93,7 +96,7 @@ async fn build_test_app_without_run_store() -> axum::Router {
             .expect("config runtime manager"),
     );
 
-    let state = ServerState::new(
+    let mut state = ServerState::new(
         runtime,
         mailbox,
         thread_store,
@@ -102,14 +105,13 @@ async fn build_test_app_without_run_store() -> axum::Router {
             address: "127.0.0.1:0".to_string(),
             ..ServerConfig::default()
         },
-    )
-    .with_config_store(config_store)
-    .with_config_runtime_manager(config_runtime_manager)
-    .with_admin_api_config(AdminApiConfig {
+    );
+    state.config = Some(ConfigModuleState::new(config_store, config_runtime_manager));
+    state.admin.admin_api_config = AdminApiConfig {
         expose_config_routes: true,
+        bearer_token: Some(BEARER.into()),
         ..AdminApiConfig::default()
-    })
-    .with_admin_api_bearer_token(BEARER);
+    };
     build_router(&state)
 }
 
@@ -145,7 +147,7 @@ async fn build_test_app_with_config_store(config_store: Arc<dyn ConfigStore>) ->
             .expect("config runtime manager"),
     );
 
-    let state = ServerState::new(
+    let mut state = ServerState::new(
         runtime,
         mailbox,
         thread_store,
@@ -154,18 +156,26 @@ async fn build_test_app_with_config_store(config_store: Arc<dyn ConfigStore>) ->
             address: "127.0.0.1:0".to_string(),
             ..ServerConfig::default()
         },
-    )
-    .with_config_store(config_store.clone())
-    .with_config_runtime_manager(config_runtime_manager)
-    .with_trace_store(trace_store.clone() as Arc<dyn TraceStore>)
-    .with_eval_run_store(eval_run_store.clone() as Arc<dyn EvalRunStore>)
-    .with_event_store(event_store.clone())
-    .with_admin_api_config(AdminApiConfig {
+    );
+    state.config = Some(ConfigModuleState::new(
+        config_store.clone(),
+        config_runtime_manager,
+    ));
+    state.trace = Some(TraceModuleState {
+        trace_store: trace_store.clone() as Arc<dyn TraceStore>,
+    });
+    state.eval = Some(EvalModuleState {
+        eval_run_store: eval_run_store.clone() as Arc<dyn EvalRunStore>,
+    });
+    state.events = Some(EventModuleState {
+        event_store: event_store.clone(),
+    });
+    state.admin.admin_api_config = AdminApiConfig {
         expose_config_routes: true,
         expose_trace_routes: true,
+        bearer_token: Some(BEARER.into()),
         ..AdminApiConfig::default()
-    })
-    .with_admin_api_bearer_token(BEARER);
+    };
 
     TestApp {
         router: build_router(&state),

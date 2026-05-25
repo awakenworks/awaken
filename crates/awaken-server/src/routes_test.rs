@@ -459,14 +459,15 @@ mod health_integration {
             "test".to_string(),
             MailboxConfig::default(),
         ));
-        ServerState::new(
+        let mut state = ServerState::new(
             runtime,
             mailbox,
             store.clone(),
             Arc::new(StubResolver),
             ServerConfig::default(),
-        )
-        .with_admin_api_bearer_token("test-admin-token")
+        );
+        state.admin.admin_api_config.bearer_token = Some("test-admin-token".into());
+        state
     }
 
     #[tokio::test]
@@ -474,10 +475,11 @@ mod health_integration {
         use crate::app::AdminApiConfig;
         use axum::http::StatusCode;
 
-        let state = make_app_state().with_admin_api_config(AdminApiConfig {
+        let mut state = make_app_state();
+        state.admin.admin_api_config = AdminApiConfig {
             expose_config_routes: false,
             ..AdminApiConfig::default()
-        });
+        };
         let app = build_router(&state);
 
         let req = axum::http::Request::builder()
@@ -497,12 +499,12 @@ mod health_integration {
         use crate::app::AdminApiConfig;
         use axum::http::StatusCode;
 
-        let state = make_app_state()
-            .with_admin_api_config(AdminApiConfig {
-                expose_config_routes: false,
-                ..AdminApiConfig::default()
-            })
-            .with_admin_api_bearer_token("test-admin-token");
+        let mut state = make_app_state();
+        state.admin.admin_api_config = AdminApiConfig {
+            expose_config_routes: false,
+            bearer_token: Some("test-admin-token".into()),
+            ..AdminApiConfig::default()
+        };
         let app = build_router(&state);
 
         for uri in [
@@ -537,10 +539,11 @@ mod health_integration {
         use axum::http::{StatusCode, header};
 
         let token = RedactedString::new("admin-token");
-        let state = make_app_state().with_admin_api_config(AdminApiConfig {
+        let mut state = make_app_state();
+        state.admin.admin_api_config = AdminApiConfig {
             bearer_token: Some(token),
             ..AdminApiConfig::default()
-        });
+        };
         let app = build_router(&state);
 
         let req = axum::http::Request::builder()

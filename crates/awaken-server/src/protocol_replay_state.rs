@@ -168,9 +168,9 @@ pub fn with_protocol_replay_log(
 ) -> ServerState {
     let mut registry = registry().lock();
     prune(&mut registry);
-    let weak = Arc::downgrade(&state.replay_buffers);
+    let weak = Arc::downgrade(&state.protocol.replay_buffers);
     registry
-        .entry(key(&state.replay_buffers))
+        .entry(key(&state.protocol.replay_buffers))
         .and_modify(|attachment| attachment.log = Some(log.clone()))
         .or_insert_with(|| ProtocolReplayAttachment {
             replay_buffers: weak,
@@ -182,7 +182,7 @@ pub fn with_protocol_replay_log(
 }
 
 pub fn protocol_replay_log(state: &ServerState) -> Option<Arc<dyn ProtocolReplayLog>> {
-    protocol_replay_log_for_buffers(&state.replay_buffers)
+    protocol_replay_log_for_buffers(&state.protocol.replay_buffers)
 }
 
 pub fn protocol_replay_log_for_buffers(
@@ -205,9 +205,9 @@ pub fn with_protocol_projector_relay(
     config.relay.validate()?;
     let mut registry = registry().lock();
     prune(&mut registry);
-    let weak = Arc::downgrade(&state.replay_buffers);
+    let weak = Arc::downgrade(&state.protocol.replay_buffers);
     registry
-        .entry(key(&state.replay_buffers))
+        .entry(key(&state.protocol.replay_buffers))
         .and_modify(|attachment| {
             attachment.projector_relay = Some(ProtocolProjectorRelayAttachment {
                 outbox: outbox.clone(),
@@ -240,9 +240,9 @@ pub fn with_protocol_fanout_relay(
     config.relay.validate()?;
     let mut registry = registry().lock();
     prune(&mut registry);
-    let weak = Arc::downgrade(&state.replay_buffers);
+    let weak = Arc::downgrade(&state.protocol.replay_buffers);
     registry
-        .entry(key(&state.replay_buffers))
+        .entry(key(&state.protocol.replay_buffers))
         .and_modify(|attachment| {
             attachment.fanout_relay = Some(ProtocolFanoutRelayAttachment {
                 outbox: outbox.clone(),
@@ -290,7 +290,7 @@ pub(crate) fn start_protocol_projector_relay(
         let mut registry = registry().lock();
         prune(&mut registry);
         registry
-            .get(&key(&state.replay_buffers))
+            .get(&key(&state.protocol.replay_buffers))
             .and_then(|attachment| attachment.projector_relay.clone())
     };
     let Some(attachment) = attachment else {
@@ -323,7 +323,7 @@ pub(crate) fn start_protocol_fanout_relay(
         let mut registry = registry().lock();
         prune(&mut registry);
         registry
-            .get(&key(&state.replay_buffers))
+            .get(&key(&state.protocol.replay_buffers))
             .and_then(|attachment| attachment.fanout_relay.clone())
     };
     let Some(attachment) = attachment else {

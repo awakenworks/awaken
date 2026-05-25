@@ -9,7 +9,7 @@ use awaken_contract::contract::config_store::ConfigStore;
 use awaken_contract::contract::event_store::EventStore;
 use awaken_contract::contract::storage::ThreadRunStore;
 use awaken_ext_observability::RuntimeStatsRegistry;
-use awaken_runtime::credentials::{AwakenCredentialBroker, CredentialBroker};
+use awaken_runtime::credentials::CredentialBroker;
 use awaken_runtime::{AgentResolver, AgentRuntime};
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
@@ -212,7 +212,37 @@ const fn default_max_concurrent() -> usize {
 
 pub const ADMIN_API_BEARER_TOKEN_ENV: &str = "AWAKEN_ADMIN_API_BEARER_TOKEN";
 const ADMIN_CORS_ALLOWED_ORIGINS_ENV: &str = "AWAKEN_ADMIN_CORS_ALLOWED_ORIGINS";
+
+#[cfg(test)]
+tokio::task_local! {
+    static ADMIN_BEARER_TOKEN_OVERRIDE: Option<String>;
+}
+
+#[cfg(test)]
+async fn with_admin_bearer_token_env_override<F, T>(value: impl Into<String>, future: F) -> T
+where
+    F: std::future::Future<Output = T>,
+{
+    ADMIN_BEARER_TOKEN_OVERRIDE
+        .scope(Some(value.into()), future)
+        .await
+}
+
+#[cfg(test)]
+fn test_admin_bearer_token_override() -> Option<String> {
+    ADMIN_BEARER_TOKEN_OVERRIDE
+        .try_with(Clone::clone)
+        .unwrap_or_default()
+}
+
 fn admin_api_bearer_token_from_env() -> Option<RedactedString> {
+    #[cfg(test)]
+    if let Some(value) = test_admin_bearer_token_override() {
+        return Some(value.trim().to_string())
+            .filter(|value| !value.is_empty())
+            .map(RedactedString::from);
+    }
+
     std::env::var(ADMIN_API_BEARER_TOKEN_ENV)
         .ok()
         .map(|value| value.trim().to_string())
@@ -242,7 +272,7 @@ fn default_admin_cors_allowed_origins() -> Vec<String> {
 }
 
 pub(crate) fn admin_api_config(state: &ServerState) -> AdminApiConfig {
-    let mut config = state.admin_api_config.clone();
+    let mut config = state.admin.admin_api_config.clone();
 
     if let Some(token) = admin_api_bearer_token_from_env() {
         config.bearer_token = Some(token);
@@ -275,25 +305,14 @@ impl Default for ServerConfig {
 
 #[derive(Clone)]
 pub struct ServerState {
-    pub runtime: Arc<AgentRuntime>,
-    pub mailbox: Arc<Mailbox>,
-    pub store: Arc<dyn ThreadRunStore>,
-    pub resolver: Arc<dyn AgentResolver>,
-    pub config: ServerConfig,
-    pub config_store: Option<Arc<dyn ConfigStore>>,
-    pub config_runtime_manager: Option<Arc<crate::services::config_runtime::ConfigRuntimeManager>>,
-    pub skill_catalog_provider: Option<Arc<dyn SkillCatalogProvider>>,
-    pub replay_buffers: ReplayBufferMap,
-    pub mcp_http: Arc<crate::protocols::mcp::http::McpHttpState>,
-    pub(crate) admin_api_config: AdminApiConfig,
-    pub(crate) audit_log_config: AuditLogConfig,
-    pub(crate) runtime_stats: Option<Arc<RuntimeStatsRegistry>>,
-    pub(crate) audit_log: Option<Arc<AuditLogger>>,
-    pub(crate) trace_store: Option<Arc<dyn TraceStore>>,
-    pub(crate) event_store: Option<Arc<dyn EventStore>>,
-    pub(crate) eval_run_store: Option<Arc<dyn awaken_eval::EvalRunStore>>,
-    pub(crate) started_at: Instant,
-    pub(crate) credential_broker: Arc<dyn CredentialBroker>,
+    pub run: RunModuleState,
+    pub config: Option<ConfigModuleState>,
+    pub events: Option<EventModuleState>,
+    pub eval: Option<EvalModuleState>,
+    pub trace: Option<TraceModuleState>,
+    pub protocol: ProtocolModuleState,
+    pub admin: AdminModuleState,
+    pub server_config: ServerConfig,
 }
 
 #[deprecated(note = "use ServerState")]
@@ -307,80 +326,99 @@ impl ServerState {
         resolver: Arc<dyn AgentResolver>,
         config: ServerConfig,
     ) -> Self {
-        Self {
-            runtime,
-            mailbox,
-            store,
-            resolver,
+        Self::from_modules(
+            RunModuleState::new(runtime, mailbox, store, resolver),
             config,
-            config_store: None,
-            config_runtime_manager: None,
-            skill_catalog_provider: None,
-            replay_buffers: Arc::new(Mutex::new(HashMap::new())),
-            mcp_http: Arc::new(crate::protocols::mcp::http::McpHttpState::new()),
-            admin_api_config: AdminApiConfig::default(),
-            audit_log_config: AuditLogConfig::default(),
-            runtime_stats: None,
-            audit_log: None,
-            trace_store: None,
-            event_store: None,
-            eval_run_store: None,
-            started_at: Instant::now(),
-            credential_broker: Arc::new(AwakenCredentialBroker::new()),
-        }
+        )
     }
 
-    pub fn with_credential_broker(
-        mut self,
-        broker: Arc<dyn awaken_runtime::credentials::CredentialBroker>,
-    ) -> Self {
-        self.credential_broker = broker;
+    #[must_use]
+    pub fn with_credential_broker(mut self, broker: Arc<dyn CredentialBroker>) -> Self {
+        self.run = self.run.with_credential_broker(broker);
         self
     }
 
     pub fn credential_broker(&self) -> Arc<dyn CredentialBroker> {
-        self.credential_broker.clone()
+        self.run.credential_broker.clone()
     }
 
     #[must_use]
     pub fn with_runtime_stats(mut self, registry: Arc<RuntimeStatsRegistry>) -> Self {
-        self.runtime_stats = Some(registry);
+        self.run = self.run.with_runtime_stats(registry);
         self
     }
 
     pub fn runtime_stats(&self) -> Option<Arc<RuntimeStatsRegistry>> {
-        self.runtime_stats.clone()
+        self.run.runtime_stats.clone()
     }
 
-    pub fn with_config_store(mut self, store: Arc<dyn ConfigStore>) -> Self {
-        self.config_store = Some(store);
-        self
+    #[must_use]
+    pub fn with_config_store(self, store: Arc<dyn ConfigStore>) -> Self {
+        let manager = Arc::new(
+            crate::services::config_runtime::ConfigRuntimeManager::new(
+                self.run.runtime.clone(),
+                store.clone(),
+            )
+            .expect("ServerState::with_config_store requires a configurable runtime"),
+        );
+        self.with_config_parts(store, manager)
     }
 
+    #[must_use]
     pub fn with_config_runtime_manager(
         mut self,
         manager: Arc<crate::services::config_runtime::ConfigRuntimeManager>,
     ) -> Self {
-        self.config_runtime_manager = Some(manager);
+        self.config
+            .as_mut()
+            .expect(
+                "ServerState::with_config_runtime_manager requires a mounted config module; \
+                 call with_config_store first",
+            )
+            .runtime_manager = manager;
         self
     }
 
+    #[must_use]
     pub fn with_skill_catalog_provider(mut self, provider: Arc<dyn SkillCatalogProvider>) -> Self {
-        self.skill_catalog_provider = Some(provider);
+        self.config
+            .as_mut()
+            .expect(
+                "ServerState::with_skill_catalog_provider requires a mounted config module; \
+                 call with_config_store or with_config_runtime_manager first",
+            )
+            .skill_catalog_provider = Some(provider);
         self
     }
 
+    fn with_config_parts(
+        mut self,
+        store: Arc<dyn ConfigStore>,
+        manager: Arc<crate::services::config_runtime::ConfigRuntimeManager>,
+    ) -> Self {
+        let mut next = ConfigModuleState::new(store, manager);
+        if let Some(existing) = self.config.take() {
+            next.audit_log = existing.audit_log;
+            next.skill_catalog_provider = existing.skill_catalog_provider;
+        }
+        self.config = Some(next);
+        self
+    }
+
+    #[must_use]
     pub fn with_admin_api_config(mut self, config: AdminApiConfig) -> Self {
-        self.admin_api_config = config;
+        self.admin.admin_api_config = config;
         self
     }
 
+    #[must_use]
     pub fn with_admin_api_bearer_token(self, token: impl Into<RedactedString>) -> Self {
         let mut config = admin_api_config(&self);
         config.bearer_token = Some(token.into());
         self.with_admin_api_config(config)
     }
 
+    #[must_use]
     pub fn with_admin_cors_allowed_origins(self, origins: Vec<String>) -> Self {
         let mut config = admin_api_config(&self);
         config.cors_allowed_origins = origins;
@@ -393,88 +431,62 @@ impl ServerState {
 
     #[must_use]
     pub fn with_audit_log_config(mut self, config: AuditLogConfig) -> Self {
-        self.audit_log_config = config;
+        self.admin.audit_log_config = config;
         self
     }
 
     pub fn audit_log_config(&self) -> AuditLogConfig {
-        self.audit_log_config
+        self.admin.audit_log_config
     }
 
     #[must_use]
     pub fn with_audit_log(mut self, logger: Arc<AuditLogger>) -> Self {
-        self.audit_log = Some(logger);
+        self.config
+            .as_mut()
+            .expect(
+                "ServerState::with_audit_log requires a mounted config module; \
+                 call with_config_store or with_config_runtime_manager first",
+            )
+            .audit_log = Some(logger);
         self
     }
 
     pub fn audit_log(&self) -> Option<Arc<AuditLogger>> {
-        self.audit_log.clone()
-    }
-
-    #[must_use]
-    pub fn with_trace_store(mut self, store: Arc<dyn TraceStore>) -> Self {
-        self.trace_store = Some(store);
-        self
-    }
-
-    pub fn trace_store(&self) -> Option<Arc<dyn TraceStore>> {
-        self.trace_store.clone()
-    }
-
-    #[must_use]
-    pub fn with_event_store(mut self, store: Arc<dyn EventStore>) -> Self {
-        self.event_store = Some(store);
-        self
-    }
-
-    pub fn event_store(&self) -> Option<Arc<dyn EventStore>> {
-        self.event_store.clone()
-    }
-
-    #[must_use]
-    pub fn with_eval_run_store(mut self, store: Arc<dyn awaken_eval::EvalRunStore>) -> Self {
-        self.eval_run_store = Some(store);
-        self
-    }
-
-    pub fn eval_run_store(&self) -> Option<Arc<dyn awaken_eval::EvalRunStore>> {
-        self.eval_run_store.clone()
+        self.config
+            .as_ref()
+            .and_then(|config| config.audit_log.clone())
     }
 
     #[must_use]
     pub fn with_audit_log_from_config(mut self) -> Self {
-        let audit_config = self.audit_log_config();
-        if !audit_config.enabled {
+        if !self.audit_log_config().enabled {
             return self;
         }
-
-        let logger = match self.audit_log() {
+        let Some(config) = self.config.as_mut() else {
+            return self;
+        };
+        let logger = match config.audit_log.clone() {
             Some(existing) => existing,
             None => {
-                let Some(store) = self.config_store.clone() else {
-                    return self;
-                };
-                let new_logger = Arc::new(AuditLogger::new(store));
-                self.audit_log = Some(new_logger.clone());
+                let new_logger = Arc::new(AuditLogger::new(config.config_store.clone()));
+                config.audit_log = Some(new_logger.clone());
                 new_logger
             }
         };
 
         let logger_for_sweeper = logger.clone();
-        let retention_days = audit_config.retention_days;
-        let sweep_interval = effective_sweep_interval(audit_config.sweep_interval_secs);
-        // Spawn retention sweeper (fire-and-forget; leaked on shutdown, acceptable for v1).
+        let retention_days = self.admin.audit_log_config.retention_days;
+        let sweep_interval =
+            effective_sweep_interval(self.admin.audit_log_config.sweep_interval_secs);
         tokio::spawn(async move {
-            let interval = sweep_interval;
             loop {
-                tokio::time::sleep(interval).await;
+                tokio::time::sleep(sweep_interval).await;
                 let cutoff = chrono::Utc::now() - chrono::Duration::days(retention_days as i64);
                 match logger_for_sweeper.prune_before(cutoff).await {
-                    Ok(pruned) => {
-                        if pruned > 0 {
-                            tracing::info!(pruned, "audit retention sweep complete");
-                        }
+                    Ok(pruned) if pruned > 0 => {
+                        tracing::info!(pruned, "audit retention sweep complete");
                     }
+                    Ok(_) => {}
                     Err(error) => {
                         tracing::warn!(error = %error, "audit retention sweep failed");
                     }
@@ -484,36 +496,76 @@ impl ServerState {
         self
     }
 
+    pub fn trace_store(&self) -> Option<Arc<dyn TraceStore>> {
+        self.trace
+            .as_ref()
+            .map(|trace| Arc::clone(&trace.trace_store))
+    }
+
+    #[must_use]
+    pub fn with_trace_store(mut self, store: Arc<dyn TraceStore>) -> Self {
+        self.trace = Some(TraceModuleState { trace_store: store });
+        self
+    }
+
+    pub fn event_store(&self) -> Option<Arc<dyn EventStore>> {
+        self.events
+            .as_ref()
+            .map(|events| Arc::clone(&events.event_store))
+    }
+
+    #[must_use]
+    pub fn with_event_store(mut self, store: Arc<dyn EventStore>) -> Self {
+        self.events = Some(EventModuleState { event_store: store });
+        self
+    }
+
+    pub fn eval_run_store(&self) -> Option<Arc<dyn awaken_eval::EvalRunStore>> {
+        self.eval
+            .as_ref()
+            .map(|eval| Arc::clone(&eval.eval_run_store))
+    }
+
+    #[must_use]
+    pub fn with_eval_run_store(mut self, store: Arc<dyn awaken_eval::EvalRunStore>) -> Self {
+        self.eval = Some(EvalModuleState {
+            eval_run_store: store,
+        });
+        self
+    }
+
     pub fn started_at(&self) -> Instant {
-        self.started_at
+        self.admin.started_at
     }
 
     #[must_use]
     pub fn with_started_at(mut self, started_at: Instant) -> Self {
-        self.started_at = started_at;
+        self.admin.started_at = started_at;
         self
     }
 
     pub fn insert_replay_buffer(&self, key: String, buffer: Arc<EventReplayBuffer>) {
-        self.replay_buffers
+        self.protocol
+            .replay_buffers
             .lock()
             .insert(key, (buffer, Instant::now()));
     }
 
     pub fn get_replay_buffer(&self, key: &str) -> Option<Arc<EventReplayBuffer>> {
-        self.replay_buffers
+        self.protocol
+            .replay_buffers
             .lock()
             .get(key)
             .map(|(buf, _)| Arc::clone(buf))
     }
 
     pub fn remove_replay_buffer(&self, key: &str) {
-        self.replay_buffers.lock().remove(key);
+        self.protocol.replay_buffers.lock().remove(key);
     }
 
     pub fn purge_stale_replay_buffers(&self, max_age: std::time::Duration) {
         let now = Instant::now();
-        let mut buffers = self.replay_buffers.lock();
+        let mut buffers = self.protocol.replay_buffers.lock();
         let before = buffers.len();
         buffers.retain(|_key, (_buf, created_at)| {
             let age = now.duration_since(*created_at);
@@ -589,18 +641,22 @@ pub async fn serve_with_shutdown(
 pub async fn serve(state: ServerState) -> std::io::Result<()> {
     crate::metrics::install_recorder();
 
-    let addr = state.config.address.clone();
-    let timeout = std::time::Duration::from_secs(state.config.shutdown.timeout_secs);
-    let config_runtime_manager = state.config_runtime_manager.clone();
+    let addr = state.server_config.address.clone();
+    let timeout = std::time::Duration::from_secs(state.server_config.shutdown.timeout_secs);
+    let config_runtime_manager = state
+        .config
+        .as_ref()
+        .map(|config| Arc::clone(&config.runtime_manager));
     let app = build_service_router(state.clone())?;
     let listener = tokio::net::TcpListener::bind(&addr).await?;
     tracing::info!("listening on {addr}");
 
-    let mailbox_lifecycle = match state.config.mailbox_lifecycle {
+    let mailbox_lifecycle = match state.server_config.mailbox_lifecycle {
         MailboxLifecycleMode::Auto => {
             let cleanup_state = state.clone();
             Some(
                 state
+                    .run
                     .mailbox
                     .start_lifecycle_ready(MailboxLifecycleConfig {
                         maintenance_callback: Some(Arc::new(move || {
@@ -659,7 +715,7 @@ pub async fn serve(state: ServerState) -> std::io::Result<()> {
 
 pub fn build_service_router(state: ServerState) -> std::io::Result<axum::Router> {
     validate_admin_surface(&state)?;
-    let max_concurrent = state.config.max_concurrent_requests;
+    let max_concurrent = state.server_config.max_concurrent_requests;
     let admin_cors = admin_cors_layer(&state)?;
     Ok(crate::routes::build_router(&state)
         .layer(tower::limit::ConcurrencyLimitLayer::new(max_concurrent))
@@ -667,7 +723,7 @@ pub fn build_service_router(state: ServerState) -> std::io::Result<axum::Router>
 }
 
 pub fn validate_admin_surface(state: &ServerState) -> std::io::Result<()> {
-    crate::eval_limits::validate_eval_limits(&state.config.eval_limits)?;
+    crate::eval_limits::validate_eval_limits(&state.server_config.eval_limits)?;
     let admin = admin_api_config(state);
     let any_admin_route_exposed =
         admin.expose_config_routes || admin.expose_trace_routes || admin.expose_eval_routes;

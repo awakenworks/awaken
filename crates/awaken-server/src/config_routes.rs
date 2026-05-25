@@ -920,7 +920,7 @@ mod tests {
     // ── delete 409 / force integration tests ──────────────────────────────
 
     mod delete_integration {
-        use crate::app::{ServerConfig, ServerState};
+        use crate::app::{ConfigModuleState, ServerConfig, ServerState};
         use crate::mailbox::{Mailbox, MailboxConfig};
         use crate::routes::build_router;
         use crate::services::config_runtime::{ConfigRuntimeManager, ProviderExecutorFactory};
@@ -1034,16 +1034,15 @@ mod tests {
                 "route-test".into(),
                 MailboxConfig::default(),
             ));
-            let state = ServerState::new(
+            let mut state = ServerState::new(
                 runtime,
                 mailbox,
                 thread_store,
                 resolver,
                 ServerConfig::default(),
-            )
-            .with_config_store(config_store)
-            .with_config_runtime_manager(manager)
-            .with_admin_api_bearer_token(TEST_ADMIN_TOKEN);
+            );
+            state.config = Some(ConfigModuleState::new(config_store, manager));
+            state.admin.admin_api_config.bearer_token = Some(TEST_ADMIN_TOKEN.into());
             build_authorized_test_router(&state)
         }
         async fn create_record(app: &axum::Router, namespace: &str, body: &str) -> StatusCode {
@@ -1421,16 +1420,15 @@ mod tests {
                 "route-test-2".into(),
                 MailboxConfig::default(),
             ));
-            let state = ServerState::new(
+            let mut state = ServerState::new(
                 runtime,
                 mailbox,
                 thread_store,
                 resolver,
                 ServerConfig::default(),
-            )
-            .with_config_store(config_store)
-            .with_config_runtime_manager(manager)
-            .with_admin_api_bearer_token(TEST_ADMIN_TOKEN);
+            );
+            state.config = Some(ConfigModuleState::new(config_store, manager));
+            state.admin.admin_api_config.bearer_token = Some(TEST_ADMIN_TOKEN.into());
             let app = build_authorized_test_router(&state);
 
             let (status, body) = test_provider(&app, "prov-openai").await;
@@ -1533,16 +1531,15 @@ mod tests {
                 "route-test-tool".into(),
                 MailboxConfig::default(),
             ));
-            let state = ServerState::new(
+            let mut state = ServerState::new(
                 runtime,
                 mailbox,
                 thread_store,
                 resolver,
                 ServerConfig::default(),
-            )
-            .with_config_store(config_store)
-            .with_config_runtime_manager(manager)
-            .with_admin_api_bearer_token(TEST_ADMIN_TOKEN);
+            );
+            state.config = Some(ConfigModuleState::new(config_store, manager));
+            state.admin.admin_api_config.bearer_token = Some(TEST_ADMIN_TOKEN.into());
 
             build_authorized_test_router(&state)
         }

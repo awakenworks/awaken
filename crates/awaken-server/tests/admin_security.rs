@@ -9,7 +9,7 @@ use awaken_contract::registry_spec::{AgentSpec, ModelSpec, ProviderSpec};
 use awaken_contract::{BuiltinSeedSet, BuiltinSpec};
 use awaken_ext_observability::RuntimeStatsRegistry;
 use awaken_runtime::builder::AgentRuntimeBuilder;
-use awaken_server::app::{AdminApiConfig, ServerConfig, ServerState};
+use awaken_server::app::{AdminApiConfig, ConfigModuleState, ServerConfig, ServerState};
 use awaken_server::mailbox::{Mailbox, MailboxConfig};
 use awaken_server::routes::build_router;
 use awaken_server::services::audit_log::AuditLogger;
@@ -110,21 +110,19 @@ async fn build_secure_admin_router() -> axum::Router {
         "admin-security-test".into(),
         MailboxConfig::default(),
     ));
-    let state = ServerState::new(
+    let mut state = ServerState::new(
         runtime,
         mailbox,
         thread_store,
         resolver,
         ServerConfig::default(),
-    )
-    .with_config_store(config_store)
-    .with_config_runtime_manager(manager)
-    .with_audit_log(audit_logger)
-    .with_runtime_stats(Arc::new(RuntimeStatsRegistry::new()))
-    .with_admin_api_config(AdminApiConfig {
+    );
+    state.config = Some(ConfigModuleState::new(config_store, manager).with_audit_log(audit_logger));
+    state.run.runtime_stats = Some(Arc::new(RuntimeStatsRegistry::new()));
+    state.admin.admin_api_config = AdminApiConfig {
         bearer_token: Some(ADMIN_TOKEN.into()),
         ..Default::default()
-    });
+    };
 
     build_router(&state)
 }
@@ -157,6 +155,47 @@ async fn request(
         .expect("body");
     let body = String::from_utf8_lossy(&bytes).into_owned();
     (status, body)
+}
+
+fn http_contract_shape(value: Value) -> Value {
+    match value {
+        Value::Null => json!("<null>"),
+        Value::Bool(_) => json!("<bool>"),
+        Value::Number(number) if number.is_u64() => json!("<u64>"),
+        Value::Number(number) if number.is_i64() => json!("<i64>"),
+        Value::Number(_) => json!("<number>"),
+        Value::String(_) => json!("<string>"),
+        Value::Array(items) => Value::Array(items.into_iter().map(http_contract_shape).collect()),
+        Value::Object(object) => Value::Object(
+            object
+                .into_iter()
+                .map(|(key, value)| (key, http_contract_shape(value)))
+                .collect(),
+        ),
+    }
+}
+
+async fn get_json_contract_shape(app: &axum::Router, uri: &str) -> Value {
+    let header = format!("Bearer {ADMIN_TOKEN}");
+    let (status, body) = request(app, Method::GET, uri, None, &[header]).await;
+    assert_eq!(status, StatusCode::OK, "GET {uri} failed: {body}");
+    http_contract_shape(serde_json::from_str(&body).expect("json response"))
+}
+
+async fn json_contract_shape(
+    app: &axum::Router,
+    method: Method,
+    uri: &str,
+    body: Option<Value>,
+    expected_status: StatusCode,
+) -> Value {
+    let header = format!("Bearer {ADMIN_TOKEN}");
+    let (status, response_body) = request(app, method.clone(), uri, body, &[header]).await;
+    assert_eq!(
+        status, expected_status,
+        "{method} {uri} returned {status}: {response_body}"
+    );
+    http_contract_shape(serde_json::from_str(&response_body).expect("json response"))
 }
 
 #[tokio::test]
@@ -206,6 +245,218 @@ async fn admin_routes_reject_missing_wrong_and_ambiguous_authorization_before_ha
             );
         }
     }
+}
+
+#[tokio::test]
+async fn unauthorized_admin_mutation_does_not_execute_handler_side_effects() {
+    let app = build_secure_admin_router().await;
+
+    let (status, body) = request(
+        &app,
+        Method::POST,
+        "/v1/config/providers",
+        Some(json!({
+            "id": "unauthorized-provider",
+            "adapter": "stub"
+        })),
+        &[],
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "body={body}");
+
+    let header = format!("Bearer {ADMIN_TOKEN}");
+    let (status, body) = request(
+        &app,
+        Method::GET,
+        "/v1/config/providers/unauthorized-provider",
+        None,
+        &[header],
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::NOT_FOUND,
+        "unauthorized mutation must not create a provider: {body}"
+    );
+}
+
+#[tokio::test]
+async fn admin_http_contract_snapshot_covers_frontend_route_shapes() {
+    let app = build_secure_admin_router().await;
+
+    let snapshots = [
+        (
+            "/v1/system/info",
+            json!({
+                "audit_log_enabled": "<bool>",
+                "config_store_enabled": "<bool>",
+                "runtime_stats_enabled": "<bool>",
+                "uptime_seconds": "<u64>",
+                "version": "<string>",
+            }),
+        ),
+        (
+            "/v1/system/modules",
+            json!({
+                "modules": [
+                    "<string>",
+                    "<string>",
+                    "<string>",
+                    "<string>"
+                ],
+            }),
+        ),
+        (
+            "/v1/config/providers",
+            json!({
+                "items": [{
+                    "adapter": "<string>",
+                    "id": "<string>",
+                    "timeout_secs": "<u64>"
+                }],
+                "limit": "<u64>",
+                "namespace": "<string>",
+                "offset": "<u64>"
+            }),
+        ),
+        (
+            "/v1/config/models",
+            json!({
+                "items": [{
+                    "id": "<string>",
+                    "provider_id": "<string>",
+                    "upstream_model": "<string>"
+                }],
+                "limit": "<u64>",
+                "namespace": "<string>",
+                "offset": "<u64>"
+            }),
+        ),
+        (
+            "/v1/config/agents",
+            json!({
+                "items": [{
+                    "allowed_tool_patterns": ["<string>"],
+                    "allowed_tools": "<null>",
+                    "id": "<string>",
+                    "max_continuation_retries": "<u64>",
+                    "max_rounds": "<u64>",
+                    "model_id": "<string>",
+                    "plugin_ids": [],
+                    "system_prompt": "<string>"
+                }],
+                "limit": "<u64>",
+                "namespace": "<string>",
+                "offset": "<u64>"
+            }),
+        ),
+    ];
+
+    for (uri, expected) in snapshots {
+        let actual = get_json_contract_shape(&app, uri).await;
+        assert_eq!(actual, expected, "HTTP contract shape changed for {uri}");
+    }
+}
+
+#[tokio::test]
+async fn admin_http_contract_snapshot_covers_mutation_error_and_audit_shapes() {
+    let app = build_secure_admin_router().await;
+
+    let created = json_contract_shape(
+        &app,
+        Method::POST,
+        "/v1/config/providers",
+        Some(json!({
+            "id": "frontend-secret-provider",
+            "adapter": "stub",
+            "api_key": "redaction-test-token"
+        })),
+        StatusCode::CREATED,
+    )
+    .await;
+    assert_eq!(
+        created,
+        json!({
+            "adapter": "<string>",
+            "has_api_key": "<bool>",
+            "id": "<string>"
+        })
+    );
+
+    let fetched =
+        get_json_contract_shape(&app, "/v1/config/providers/frontend-secret-provider").await;
+    assert_eq!(fetched, created);
+
+    let duplicate = json_contract_shape(
+        &app,
+        Method::POST,
+        "/v1/config/providers",
+        Some(json!({
+            "id": "frontend-secret-provider",
+            "adapter": "stub"
+        })),
+        StatusCode::CONFLICT,
+    )
+    .await;
+    assert_eq!(
+        duplicate,
+        json!({
+            "error": "<string>"
+        })
+    );
+
+    let audit = get_json_contract_shape(&app, "/v1/audit-log").await;
+    assert_eq!(
+        audit,
+        json!({
+            "items": [{
+                "action": "<string>",
+                "actor": "<string>",
+                "after": {
+                    "adapter": "<string>",
+                    "api_key": "<string>",
+                    "id": "<string>"
+                },
+                "id": "<string>",
+                "resource": "<string>",
+                "ts": "<string>"
+            }, {
+                "action": "<string>",
+                "actor": "<string>",
+                "after": {
+                    "bucket": "<string>",
+                    "count": "<u64>",
+                    "sample": ["<string>", "<string>", "<string>"],
+                    "truncated": "<bool>"
+                },
+                "id": "<string>",
+                "resource": "<string>",
+                "ts": "<string>"
+            }],
+            "next_cursor": "<null>"
+        })
+    );
+
+    let header = format!("Bearer {ADMIN_TOKEN}");
+    let (status, body) = request(
+        &app,
+        Method::GET,
+        "/v1/config/providers/frontend-secret-provider",
+        None,
+        std::slice::from_ref(&header),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        !body.contains("redaction-test-token"),
+        "admin config response must redact provider secret material: {body}"
+    );
+    let (status, body) = request(&app, Method::GET, "/v1/audit-log", None, &[header]).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        !body.contains("redaction-test-token"),
+        "audit response must redact provider secret material: {body}"
+    );
 }
 
 #[tokio::test]

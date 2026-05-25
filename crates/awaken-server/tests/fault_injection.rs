@@ -13,8 +13,13 @@ use awaken_contract::contract::mailbox::{
     MailboxInterrupt, MailboxInterruptDetails, MailboxStore, RunDispatch, RunDispatchResult,
     RunDispatchStatus,
 };
-use awaken_contract::contract::storage::StorageError;
-use awaken_stores::InMemoryMailboxStore;
+use awaken_contract::contract::storage::{
+    RunRecord, RunStore, RunWaitingState, StorageError, WaitingReason,
+};
+use awaken_contract::{AgentSpec, ModelSpec};
+use awaken_runtime::builder::AgentRuntimeBuilder;
+use awaken_server::mailbox::{Mailbox, MailboxConfig};
+use awaken_stores::{InMemoryMailboxStore, InMemoryStore};
 use tokio::sync::mpsc;
 
 // ============================================================================
@@ -278,6 +283,52 @@ async fn enqueue_failure_propagates_error() {
         StorageError::Io(msg) => assert!(msg.contains("injected enqueue failure")),
         other => panic!("expected Io error, got: {other:?}"),
     }
+}
+
+#[tokio::test]
+async fn mailbox_recovery_propagates_orphaned_background_enqueue_failure() {
+    let run_store = Arc::new(InMemoryStore::new());
+    run_store
+        .create_run(&background_waiting_run(
+            "run-bg-recover-fail",
+            "thread-bg-recover-fail",
+        ))
+        .await
+        .expect("seed background wait");
+
+    let mailbox_store = Arc::new(FailingMailboxStore::new());
+    mailbox_store.fail_enqueue.store(true, Ordering::SeqCst);
+    let runtime = Arc::new(
+        AgentRuntimeBuilder::new()
+            .with_provider("provider", Arc::new(ImmediateLlm))
+            .with_model(ModelSpec::new("model", "provider", "model"))
+            .with_agent_spec(AgentSpec {
+                id: "agent".to_string(),
+                model_id: "model".to_string(),
+                system_prompt: "test".to_string(),
+                max_rounds: 1,
+                ..Default::default()
+            })
+            .with_in_memory_thread_run_store(run_store.clone())
+            .build()
+            .expect("runtime"),
+    );
+    let mailbox = Arc::new(Mailbox::new(
+        runtime,
+        mailbox_store,
+        run_store,
+        "fault-injection-consumer".to_string(),
+        MailboxConfig::default(),
+    ));
+
+    let error = mailbox
+        .recover()
+        .await
+        .expect_err("startup recovery must fail closed when wake enqueue fails");
+    assert!(
+        error.to_string().contains("injected enqueue failure"),
+        "unexpected recovery error: {error}"
+    );
 }
 
 // ============================================================================

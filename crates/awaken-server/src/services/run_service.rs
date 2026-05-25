@@ -39,9 +39,9 @@ pub async fn runs_summary(store: &dyn RunStore) -> Result<RunsSummary, StorageEr
 /// router stays under its file-length budget and the count-storage
 /// logic is co-located with the rest of run-service.
 pub async fn runs_summary_handler(
-    axum::extract::State(st): axum::extract::State<crate::app::ServerState>,
+    axum::extract::State(st): axum::extract::State<crate::app::RunModuleState>,
 ) -> Result<axum::Json<serde_json::Value>, crate::error::ApiError> {
-    let summary = runs_summary(st.store.as_ref())
+    let summary = runs_summary(st.store().as_ref())
         .await
         .map_err(|e| crate::error::ApiError::Internal(e.to_string()))?;
     Ok(axum::Json(
@@ -51,7 +51,7 @@ pub async fn runs_summary_handler(
 
 /// `/v1/runs/summary` router fragment. Merged into the main router so
 /// `routes.rs` only adds one line for the new endpoint.
-pub fn summary_routes() -> axum::Router<crate::app::ServerState> {
+pub fn summary_routes() -> axum::Router<crate::app::RunModuleState> {
     axum::Router::new().route("/v1/runs/summary", axum::routing::get(runs_summary_handler))
 }
 
