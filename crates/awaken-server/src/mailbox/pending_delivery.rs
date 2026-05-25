@@ -65,6 +65,7 @@ impl Mailbox {
             .await?)
     }
 
+    #[cfg(test)]
     pub(crate) async fn freeze_pending(
         &self,
         thread_id: &str,
