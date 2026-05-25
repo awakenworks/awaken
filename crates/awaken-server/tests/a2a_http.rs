@@ -1503,3 +1503,363 @@ async fn invalid_inbound_message_role_is_rejected() {
         Some("message.role")
     );
 }
+
+// `thread_has_prior_context` previously only checked messages, so a thread
+// that had a stored A2A task binding (metadata) but no messages yet would
+// still fall through to the public agent. Verify the route now refuses.
+#[tokio::test]
+async fn send_message_rejects_ambiguous_agent_for_thread_with_task_binding_only() {
+    let (app, store) = build_test_fixture(
+        &["alpha"],
+        Arc::new(ImmediateExecutor),
+        ServerConfig::default(),
+    );
+
+    let context_id = "thread-task-binding-only";
+    let mut thread = Thread::with_id(context_id);
+    thread.metadata.custom.insert(
+        "a2a.taskBindings".to_string(),
+        json!({"tasks": {"task-1": {"thread_id": context_id, "start_message_id": "msg-0"}}}),
+    );
+    store.save_thread(&thread).await.unwrap();
+
+    let (status, body) = request_json(
+        &app,
+        "POST",
+        "/v1/a2a/message:send",
+        &[("content-type", "application/json")],
+        Some(json!({
+            "message": {
+                "contextId": context_id,
+                "messageId": "msg-ambiguous-binding",
+                "role": "ROLE_USER",
+                "parts": [{"text": "follow up"}]
+            }
+        })),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::BAD_REQUEST, "body: {body}");
+    assert_eq!(body["error"]["status"].as_str(), Some("INVALID_ARGUMENT"));
+}
+
+// When a thread already holds prior messages but no run/dispatch from which
+// to read agent_id, the previous behaviour silently fell back to the public
+// agent — silently switching the conversation onto a different binding.
+// Verify the route now refuses and returns an explicit error.
+#[tokio::test]
+async fn send_message_rejects_ambiguous_agent_for_existing_thread_with_messages() {
+    let (app, store) = build_test_fixture(
+        &["alpha"],
+        Arc::new(ImmediateExecutor),
+        ServerConfig::default(),
+    );
+
+    let context_id = "thread-ambiguous-agent";
+    let thread = Thread::with_id(context_id);
+    store.save_thread(&thread).await.unwrap();
+    store
+        .save_messages(context_id, &[Message::user("hello there")])
+        .await
+        .unwrap();
+
+    let (status, body) = request_json(
+        &app,
+        "POST",
+        "/v1/a2a/message:send",
+        &[("content-type", "application/json")],
+        Some(json!({
+            "message": {
+                "contextId": context_id,
+                "messageId": "msg-ambiguous",
+                "role": "ROLE_USER",
+                "parts": [{"text": "follow up"}]
+            }
+        })),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::BAD_REQUEST, "body: {body}");
+    assert_eq!(body["error"]["status"].as_str(), Some("INVALID_ARGUMENT"));
+    assert_eq!(
+        body["error"]["details"][0]["fieldViolations"][0]["field"].as_str(),
+        Some("agent")
+    );
+}
+
+// ── Multi-agent / multi-model thread switching ────────────────────
+
+/// Executor that prefixes its response with a distinct marker, so the
+/// test can prove which provider (and therefore which agent) executed
+/// each turn. Capturing the marker in the assistant message text lets
+/// us verify both the per-run agent_id binding AND the per-agent model
+/// routing.
+struct LabelledExecutor {
+    name: &'static str,
+    label: &'static str,
+}
+
+#[async_trait]
+impl LlmExecutor for LabelledExecutor {
+    async fn execute(
+        &self,
+        request: InferenceRequest,
+    ) -> Result<StreamResult, InferenceExecutionError> {
+        let last_user = request
+            .messages
+            .iter()
+            .rev()
+            .find_map(|m| {
+                if m.role == awaken_contract::contract::message::Role::User {
+                    Some(m.text())
+                } else {
+                    None
+                }
+            })
+            .unwrap_or_default();
+        Ok(StreamResult {
+            content: vec![awaken_contract::contract::content::ContentBlock::text(
+                format!("{}: {last_user}", self.label),
+            )],
+            tool_calls: vec![],
+            usage: Some(TokenUsage::default()),
+            stop_reason: Some(StopReason::EndTurn),
+            has_incomplete_tool_calls: false,
+        })
+    }
+    fn name(&self) -> &str {
+        self.name
+    }
+}
+
+fn build_multi_agent_app() -> (axum::Router, Arc<InMemoryStore>) {
+    let alpha = Arc::new(LabelledExecutor {
+        name: "alpha",
+        label: "alpha-out",
+    });
+    let beta = Arc::new(LabelledExecutor {
+        name: "beta",
+        label: "beta-out",
+    });
+    let builder = AgentRuntimeBuilder::new()
+        .with_model_binding(
+            "model-alpha",
+            ModelBinding {
+                provider_id: "alpha-provider".into(),
+                upstream_model: "alpha-model".into(),
+            },
+        )
+        .with_model_binding(
+            "model-beta",
+            ModelBinding {
+                provider_id: "beta-provider".into(),
+                upstream_model: "beta-model".into(),
+            },
+        )
+        .with_provider("alpha-provider", alpha)
+        .with_provider("beta-provider", beta)
+        .with_agent_spec(AgentSpec {
+            id: "agent-alpha".into(),
+            model_id: "model-alpha".into(),
+            system_prompt: "alpha".into(),
+            max_rounds: 1,
+            ..Default::default()
+        })
+        .with_agent_spec(AgentSpec {
+            id: "agent-beta".into(),
+            model_id: "model-beta".into(),
+            system_prompt: "beta".into(),
+            max_rounds: 1,
+            ..Default::default()
+        });
+    let store = Arc::new(InMemoryStore::new());
+    let runtime = Arc::new(
+        builder
+            .with_in_memory_thread_run_store(store.clone())
+            .build()
+            .expect("build runtime"),
+    );
+    let mailbox_store = Arc::new(awaken_stores::InMemoryMailboxStore::new());
+    let mailbox = Arc::new(awaken_server::mailbox::Mailbox::new(
+        runtime.clone(),
+        mailbox_store,
+        store.clone(),
+        "test".to_string(),
+        awaken_server::mailbox::MailboxConfig::default(),
+    ));
+    let state = ServerState::new(
+        runtime.clone(),
+        mailbox,
+        store.clone(),
+        runtime.resolver_arc(),
+        ServerConfig::default(),
+    );
+    (build_router(&state), store)
+}
+
+/// Drive the same A2A thread through three turns alternating between
+/// two agents bound to different model_ids and provider executors.
+/// Asserts:
+///   1. Each turn lands on the agent named in the URL path, overriding
+///      `latest_run` inference.
+///   2. The model used per turn matches the per-agent registry binding
+///      (visible through the executor-injected marker in the assistant
+///      reply text).
+///   3. Thread state persists across switches (history accumulates from
+///      every agent's contributions, and run records carry the right
+///      agent_id per run).
+#[tokio::test]
+async fn message_send_can_switch_agent_and_model_on_same_thread() {
+    use awaken_contract::contract::storage::{RunQuery, RunStore};
+
+    let (app, store) = build_multi_agent_app();
+    let context_id = "thread-multi-agent";
+
+    let turns = [
+        (
+            "task-alpha-1",
+            "/v1/a2a/agent-alpha/message:send",
+            "msg-alpha-1",
+            "ping one",
+            "agent-alpha",
+            "model-alpha",
+            "alpha-out: ping one",
+        ),
+        (
+            "task-beta-1",
+            "/v1/a2a/agent-beta/message:send",
+            "msg-beta-1",
+            "ping two",
+            "agent-beta",
+            "model-beta",
+            "beta-out: ping two",
+        ),
+        (
+            "task-alpha-2",
+            "/v1/a2a/agent-alpha/message:send",
+            "msg-alpha-2",
+            "ping three",
+            "agent-alpha",
+            "model-alpha",
+            "alpha-out: ping three",
+        ),
+    ];
+
+    for (task_id, uri, message_id, text, expected_agent, expected_model, expected_reply) in turns {
+        let (status, body) = request_json(
+            &app,
+            "POST",
+            uri,
+            &[("content-type", "application/json")],
+            Some(send_message_payload(task_id, context_id, message_id, text)),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{uri} body: {body}");
+
+        let run = store
+            .load_run(task_id)
+            .await
+            .expect("load run")
+            .expect("run record exists");
+        assert_eq!(run.agent_id, expected_agent, "wrong agent for {task_id}");
+        assert_eq!(run.thread_id, context_id);
+
+        // The activation snapshot must survive checkpoint write-back;
+        // previously a stale ThreadContext cache miss dropped it on the
+        // second-and-later run in the same thread (P2-R8b).
+        let activation = run
+            .activation
+            .as_ref()
+            .unwrap_or_else(|| panic!("activation must persist on run {task_id}"));
+        assert!(
+            activation
+                .resolution_scope
+                .entries
+                .iter()
+                .any(|entry| entry.kind == "agent" && entry.id == expected_agent),
+            "pinned manifest must include the active agent {expected_agent}"
+        );
+        // Model binding correctness is also proven by the labelled-
+        // executor reply marker asserted below.
+        let _ = expected_model;
+
+        // The reply text must come from THIS agent's labelled executor,
+        // proving that the path-agent override actually routed model
+        // selection, not just the run record's metadata.
+        let messages = store
+            .load_messages(context_id)
+            .await
+            .expect("load messages")
+            .unwrap_or_default();
+        assert!(
+            messages.iter().any(|m| {
+                m.role == awaken_contract::contract::message::Role::Assistant
+                    && m.text() == expected_reply
+            }),
+            "missing reply '{expected_reply}' for {task_id}; got history: {:?}",
+            messages
+                .iter()
+                .map(|m| (m.role, m.text()))
+                .collect::<Vec<_>>()
+        );
+    }
+
+    // All three runs are durable under the same thread, each tagged
+    // with the agent that the path-tenant override selected for that
+    // turn (per-loop assertions above verified each individually;
+    // re-confirm via list_runs that they all live under the same
+    // thread without dropping any).
+    let page = store
+        .list_runs(&RunQuery {
+            thread_id: Some(context_id.into()),
+            limit: 10,
+            ..Default::default()
+        })
+        .await
+        .expect("list runs");
+    let mut agents: std::collections::BTreeMap<&str, usize> = std::collections::BTreeMap::new();
+    for run in &page.items {
+        *agents.entry(run.agent_id.as_str()).or_insert(0) += 1;
+    }
+    assert_eq!(
+        agents.get("agent-alpha").copied().unwrap_or(0),
+        2,
+        "expected two agent-alpha runs in {:?}",
+        page.items.iter().map(|r| &r.agent_id).collect::<Vec<_>>()
+    );
+    assert_eq!(
+        agents.get("agent-beta").copied().unwrap_or(0),
+        1,
+        "expected one agent-beta run in {:?}",
+        page.items.iter().map(|r| &r.agent_id).collect::<Vec<_>>()
+    );
+
+    // A follow-up turn without a path agent must inherit the most
+    // recently dispatched agent for the thread. The store tracks
+    // insertion order as a tie-break (P2-R8a), so even though all three
+    // turns above landed in the same wall-clock second the inferred
+    // latest run is deterministically `agent-alpha` (turn 3).
+    let (status, body) = request_json(
+        &app,
+        "POST",
+        "/v1/a2a/message:send",
+        &[("content-type", "application/json")],
+        Some(send_message_payload(
+            "task-inferred",
+            context_id,
+            "msg-inferred",
+            "ping four",
+        )),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "body: {body}");
+    let inferred = store
+        .load_run("task-inferred")
+        .await
+        .expect("load")
+        .expect("exists");
+    assert_eq!(
+        inferred.agent_id, "agent-alpha",
+        "no-tenant follow-up must reuse the most recent turn's agent"
+    );
+}

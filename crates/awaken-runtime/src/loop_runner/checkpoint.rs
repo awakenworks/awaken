@@ -161,13 +161,20 @@ pub(super) async fn persist_checkpoint(
     let state = store
         .export_persisted()
         .map_err(AgentLoopError::PhaseError)?;
-    let previous = if let Some(ctx) = thread_ctx {
-        ctx.run_cache.get(&run_identity.run_id).cloned()
-    } else {
-        storage
+    // The pre-warmed `ThreadContext` only seeds `run_cache` with whatever
+    // `latest_run` returned at claim time, which is not necessarily the
+    // run we are about to checkpoint (e.g. a second dispatch in a thread
+    // where the previous run already completed). Treat the cache as a
+    // hot-path optimisation only and fall back to a durable read on miss
+    // — otherwise the new record loses carry-forward fields like
+    // `activation`, `request`, `registry_manifest`.
+    let previous = match thread_ctx.and_then(|ctx| ctx.run_cache.get(&run_identity.run_id).cloned())
+    {
+        Some(record) => Some(record),
+        None => storage
             .load_run(&run_identity.run_id)
             .await
-            .map_err(|e| AgentLoopError::StorageError(e.to_string()))?
+            .map_err(|e| AgentLoopError::StorageError(e.to_string()))?,
     };
     let created_at = previous
         .as_ref()
