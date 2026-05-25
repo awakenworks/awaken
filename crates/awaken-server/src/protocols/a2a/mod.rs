@@ -6,6 +6,7 @@ mod conversion;
 mod error;
 mod message;
 mod push_config;
+mod stream_projector;
 mod task;
 mod types;
 

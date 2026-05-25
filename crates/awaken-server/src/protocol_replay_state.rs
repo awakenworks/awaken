@@ -296,7 +296,7 @@ pub(crate) fn start_protocol_projector_relay(
     let Some(attachment) = attachment else {
         return Ok(None);
     };
-    let handler = Arc::new(CanonicalOutboxProtocolProjector::new(
+    let handler = Arc::new(CanonicalOutboxProtocolProjector::new_all_protocols(
         attachment.event_lookup,
         attachment.replay_writer,
     ));

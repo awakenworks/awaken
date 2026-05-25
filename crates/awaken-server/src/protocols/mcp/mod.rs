@@ -18,6 +18,7 @@ use mcp::server::{McpServer, McpServerChannels, McpServerConfig};
 use awaken_runtime::AgentRuntime;
 
 use self::adapter::AgentMcpTool;
+use crate::mailbox::Mailbox;
 
 /// Build an [`McpServerConfig`] that exposes all known agents as MCP tools.
 ///
@@ -28,6 +29,22 @@ use self::adapter::AgentMcpTool;
 /// through it during execution.
 pub fn build_mcp_server_config(
     runtime: &Arc<AgentRuntime>,
+    outbound_tx: Option<tokio::sync::mpsc::Sender<mcp::protocol::ServerOutbound>>,
+) -> McpServerConfig {
+    build_mcp_server_config_inner(runtime, None, outbound_tx)
+}
+
+pub fn build_mcp_server_config_with_mailbox(
+    runtime: &Arc<AgentRuntime>,
+    mailbox: Arc<Mailbox>,
+    outbound_tx: Option<tokio::sync::mpsc::Sender<mcp::protocol::ServerOutbound>>,
+) -> McpServerConfig {
+    build_mcp_server_config_inner(runtime, Some(mailbox), outbound_tx)
+}
+
+fn build_mcp_server_config_inner(
+    runtime: &Arc<AgentRuntime>,
+    mailbox: Option<Arc<Mailbox>>,
     outbound_tx: Option<tokio::sync::mpsc::Sender<mcp::protocol::ServerOutbound>>,
 ) -> McpServerConfig {
     let resolver = runtime.resolver();
@@ -54,7 +71,15 @@ pub fn build_mcp_server_config(
             Err(_) => format!("Awaken agent: {agent_id}"),
         };
 
-        let mut tool = AgentMcpTool::new(agent_id.clone(), description, Arc::clone(runtime));
+        let mut tool = match mailbox.as_ref() {
+            Some(mailbox) => AgentMcpTool::new_with_mailbox(
+                agent_id.clone(),
+                description,
+                Arc::clone(runtime),
+                Arc::clone(mailbox),
+            ),
+            None => AgentMcpTool::new(agent_id.clone(), description, Arc::clone(runtime)),
+        };
         if let Some(ref tx) = outbound_tx {
             tool = tool.with_outbound(tx.clone());
         }
@@ -70,13 +95,27 @@ pub fn build_mcp_server_config(
 /// (HTTP or Stdio). Tools will send progress/log notifications through the
 /// server's outbound channel.
 pub fn create_mcp_server(runtime: &Arc<AgentRuntime>) -> (Arc<McpServer>, McpServerChannels) {
+    create_mcp_server_inner(runtime, None)
+}
+
+pub fn create_mcp_server_with_mailbox(
+    runtime: &Arc<AgentRuntime>,
+    mailbox: Arc<Mailbox>,
+) -> (Arc<McpServer>, McpServerChannels) {
+    create_mcp_server_inner(runtime, Some(mailbox))
+}
+
+fn create_mcp_server_inner(
+    runtime: &Arc<AgentRuntime>,
+    mailbox: Option<Arc<Mailbox>>,
+) -> (Arc<McpServer>, McpServerChannels) {
     // First pass: create config without outbound_tx to get the channels.
     // We need the outbound_tx from the server, but the server needs the config.
     // Solution: create a forwarding channel.
     let (notify_tx, mut notify_rx) =
         tokio::sync::mpsc::channel::<mcp::protocol::ServerOutbound>(256);
 
-    let config = build_mcp_server_config(runtime, Some(notify_tx));
+    let config = build_mcp_server_config_inner(runtime, mailbox, Some(notify_tx));
     let (server, channels) = McpServer::new(config);
 
     // Spawn a task that forwards tool notifications to the server's outbound channel.

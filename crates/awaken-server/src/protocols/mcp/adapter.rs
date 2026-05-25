@@ -20,7 +20,22 @@ use awaken_contract::contract::tool_intercept::AdapterKind;
 use awaken_runtime::{AgentRuntime, RunActivation};
 
 use super::JSON_RPC_VERSION;
+use crate::mailbox::Mailbox;
 use crate::transport::channel_sink::ChannelEventSink;
+
+enum McpEventReceiver {
+    Bounded(mpsc::Receiver<AgentEvent>),
+    Unbounded(mpsc::UnboundedReceiver<AgentEvent>),
+}
+
+impl McpEventReceiver {
+    async fn recv(&mut self) -> Option<AgentEvent> {
+        match self {
+            Self::Bounded(rx) => rx.recv().await,
+            Self::Unbounded(rx) => rx.recv().await,
+        }
+    }
+}
 
 /// An MCP tool backed by an Awaken agent.
 ///
@@ -33,6 +48,7 @@ pub struct AgentMcpTool {
     agent_id: String,
     description: String,
     runtime: Arc<AgentRuntime>,
+    mailbox: Option<Arc<Mailbox>>,
     outbound_tx: Option<mpsc::Sender<ServerOutbound>>,
 }
 
@@ -42,6 +58,22 @@ impl AgentMcpTool {
             agent_id,
             description,
             runtime,
+            mailbox: None,
+            outbound_tx: None,
+        }
+    }
+
+    pub fn new_with_mailbox(
+        agent_id: String,
+        description: String,
+        runtime: Arc<AgentRuntime>,
+        mailbox: Arc<Mailbox>,
+    ) -> Self {
+        Self {
+            agent_id,
+            description,
+            runtime,
+            mailbox: Some(mailbox),
             outbound_tx: None,
         }
     }
@@ -105,14 +137,21 @@ impl McpTool for AgentMcpTool {
                 .with_origin(RunRequestOrigin::Mcp)
                 .with_adapter(AdapterKind::Mcp);
 
-            let (event_tx, mut event_rx) = mpsc::unbounded_channel();
-            let sink = Arc::new(ChannelEventSink::new(event_tx));
-
             self.send_log("info", "starting agent run").await;
 
-            let runtime = Arc::clone(&self.runtime);
-            // TODO(ADR-0034 #23): route through Mailbox+DurableEventSink+ProtocolReplayLog.
-            let run_handle = tokio::spawn(async move { runtime.run(request, sink).await });
+            let (mut event_rx, run_handle) = if let Some(mailbox) = self.mailbox.as_ref() {
+                let (_submission, event_rx) = mailbox
+                    .submit(request)
+                    .await
+                    .map_err(|error| format!("agent run failed: {error}"))?;
+                (McpEventReceiver::Bounded(event_rx), None)
+            } else {
+                let (event_tx, event_rx) = mpsc::unbounded_channel();
+                let sink = Arc::new(ChannelEventSink::new(event_tx));
+                let runtime = Arc::clone(&self.runtime);
+                let run_handle = tokio::spawn(async move { runtime.run(request, sink).await });
+                (McpEventReceiver::Unbounded(event_rx), Some(run_handle))
+            };
 
             // Collect text deltas and emit logs from agent events.
             let mut assistant_text = String::new();
@@ -155,21 +194,24 @@ impl McpTool for AgentMcpTool {
                 }
             }
 
-            // Await the run to propagate panics.
-            match run_handle.await {
-                Ok(Ok(_)) => {
-                    self.send_log("notice", "completed").await;
-                }
-                Ok(Err(e)) => {
-                    self.send_log("error", &format!("agent run failed: {e}"))
-                        .await;
-                    if assistant_text.is_empty() {
-                        return Err(format!("agent run failed: {e}"));
+            if let Some(run_handle) = run_handle {
+                match run_handle.await {
+                    Ok(Ok(_)) => {
+                        self.send_log("notice", "completed").await;
+                    }
+                    Ok(Err(e)) => {
+                        self.send_log("error", &format!("agent run failed: {e}"))
+                            .await;
+                        if assistant_text.is_empty() {
+                            return Err(format!("agent run failed: {e}"));
+                        }
+                    }
+                    Err(e) => {
+                        return Err(format!("agent task panicked: {e}"));
                     }
                 }
-                Err(e) => {
-                    return Err(format!("agent task panicked: {e}"));
-                }
+            } else {
+                self.send_log("notice", "completed").await;
             }
 
             if assistant_text.is_empty() {

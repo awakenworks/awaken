@@ -22,6 +22,7 @@ use super::types::Role;
 /// Build AG-UI routes.
 pub fn ag_ui_routes() -> Router<ProtocolRoutesState> {
     Router::new()
+        .merge(super::replay::ag_ui_replay_routes())
         .route("/v1/ag-ui/run", post(ag_ui_run))
         .route(
             "/v1/ag-ui/threads/:thread_id/runs",
@@ -309,7 +310,6 @@ async fn ag_ui_run_inner(
         .map_err(map_mailbox_error)?;
 
     let encoder = AgUiEncoder::new();
-    // TODO(ADR-0034 #24): add ProtocolReplayLog projector + resume endpoint.
     let sse_rx = wire_sse_relay(event_rx, encoder, st.sse_buffer_size, None);
 
     Ok(sse_response(sse_body_stream(sse_rx)))

@@ -190,6 +190,47 @@ async fn ai_sdk_projector_writes_byte_stable_replay_rows() {
 }
 
 #[tokio::test]
+async fn ag_ui_projector_writes_protocol_replay_rows() {
+    let replay_log = Arc::new(InMemoryProtocolReplayLog::new());
+    let projector = AgUiProtocolProjector::new(replay_log.clone());
+    let event = canonical_event(&AgentEvent::RunStart {
+        thread_id: "thread-proto".into(),
+        run_id: "run-proto".into(),
+        parent_run_id: None,
+        identity: None,
+    })
+    .await;
+
+    let records = projector.project_event(&event).await.unwrap();
+
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].protocol, AG_UI_PROTOCOL);
+    assert_eq!(records[0].protocol_version, AG_UI_PROTOCOL_VERSION);
+    assert_eq!(records[0].source_event_ids[0], event.event_id);
+    assert_eq!(records[0].wire_event_type, "RUN_STARTED");
+    assert!(
+        std::str::from_utf8(&records[0].wire_payload_bytes)
+            .unwrap()
+            .contains(r#""type":"RUN_STARTED""#)
+    );
+
+    let page = replay_log
+        .list_replay(
+            ProtocolStreamKey::new(
+                "thread:thread-proto",
+                AG_UI_PROTOCOL,
+                AG_UI_PROTOCOL_VERSION,
+            )
+            .unwrap(),
+            None,
+            10,
+        )
+        .await
+        .unwrap();
+    assert_eq!(page.records, records);
+}
+
+#[tokio::test]
 async fn ai_sdk_projector_is_idempotent_for_same_wire_event_ids() {
     let replay_log = Arc::new(InMemoryProtocolReplayLog::new());
     let projector = AiSdkProtocolProjector::new(replay_log);
@@ -370,6 +411,59 @@ async fn canonical_outbox_relay_projects_agent_events_and_acks() {
         .unwrap();
     assert_eq!(page.records.len(), 2);
     assert_eq!(page.records[0].source_event_ids[0], event.event_id);
+}
+
+#[tokio::test]
+async fn canonical_outbox_projector_can_project_all_protocols() {
+    let event_store = Arc::new(InMemoryEventStore::new());
+    let replay_log = Arc::new(InMemoryProtocolReplayLog::new());
+    let event = append_canonical_event(
+        &event_store,
+        &AgentEvent::RunStart {
+            thread_id: "thread-proto".into(),
+            run_id: "run-proto".into(),
+            parent_run_id: None,
+            identity: None,
+        },
+    )
+    .await;
+    let handler =
+        CanonicalOutboxProtocolProjector::new_all_protocols(event_store, replay_log.clone());
+
+    let records = handler
+        .project_outbox_message(&outbox_message_for(&event))
+        .await
+        .unwrap();
+
+    assert_eq!(records.len(), 3);
+    let ai_sdk = replay_log
+        .list_replay(
+            ProtocolStreamKey::new(
+                "thread:thread-proto",
+                AI_SDK_PROTOCOL,
+                AI_SDK_PROTOCOL_VERSION,
+            )
+            .unwrap(),
+            None,
+            10,
+        )
+        .await
+        .unwrap();
+    let ag_ui = replay_log
+        .list_replay(
+            ProtocolStreamKey::new(
+                "thread:thread-proto",
+                AG_UI_PROTOCOL,
+                AG_UI_PROTOCOL_VERSION,
+            )
+            .unwrap(),
+            None,
+            10,
+        )
+        .await
+        .unwrap();
+    assert_eq!(ai_sdk.records.len(), 2);
+    assert_eq!(ag_ui.records.len(), 1);
 }
 
 #[tokio::test]

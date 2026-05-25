@@ -1,7 +1,6 @@
 use awaken_contract::thread::Thread;
 use awaken_protocol_a2a::{
-    Artifact, ListPushNotificationConfigsResponse, PushNotificationConfig, StreamResponse,
-    TaskArtifactUpdateEvent, TaskStatus, TaskStatusUpdateEvent,
+    ListPushNotificationConfigsResponse, PushNotificationConfig, StreamResponse,
 };
 use axum::Json;
 use axum::extract::{Path, Query, State};
@@ -16,6 +15,7 @@ use super::common::{
     persist_thread_metadata, trim_to_option,
 };
 use super::error::A2aError;
+use super::stream_projector::{InitialStreamEvent, TaskStreamProjector};
 use super::task::{
     ensure_task_visible, load_task_snapshot, resolve_task, submitted_task, task_context_id,
 };
@@ -375,8 +375,6 @@ pub(super) fn spawn_push_notification_driver(
     });
 }
 
-// TODO(ADR-0034 #26): replace direct reqwest delivery with OutboxStore enqueue
-// (lane=protocol_replay, target=webhook) and an OutboxRelay webhook consumer.
 async fn drive_push_notification(
     st: ProtocolRoutesState,
     task_id: String,
@@ -385,9 +383,7 @@ async fn drive_push_notification(
 ) -> Result<(), A2aError> {
     let client = reqwest::Client::new();
     let config_id = config.id.clone().unwrap_or_default();
-    let mut delivered_initial = false;
-    let mut last_status: Option<TaskStatus> = None;
-    let mut last_artifacts: Vec<Artifact> = Vec::new();
+    let mut projector = TaskStreamProjector::new(InitialStreamEvent::StatusUpdate);
 
     loop {
         if find_push_notification_config(&st, &task_id, tenant.as_deref(), &config_id)
@@ -411,65 +407,8 @@ async fn drive_push_notification(
                 current_agent_id: tenant.clone(),
             });
 
-        if !delivered_initial {
-            post_push_notification(
-                &client,
-                &config,
-                &StreamResponse {
-                    status_update: Some(TaskStatusUpdateEvent {
-                        task_id: snapshot.task.id.clone(),
-                        context_id: snapshot.task.context_id.clone(),
-                        status: snapshot.task.status.clone(),
-                        metadata: None,
-                    }),
-                    ..Default::default()
-                },
-            )
-            .await;
-            delivered_initial = true;
-            last_status = Some(snapshot.task.status.clone());
-            last_artifacts = snapshot.task.artifacts.clone();
-        } else {
-            if last_status.as_ref() != Some(&snapshot.task.status) {
-                post_push_notification(
-                    &client,
-                    &config,
-                    &StreamResponse {
-                        status_update: Some(TaskStatusUpdateEvent {
-                            task_id: snapshot.task.id.clone(),
-                            context_id: snapshot.task.context_id.clone(),
-                            status: snapshot.task.status.clone(),
-                            metadata: None,
-                        }),
-                        ..Default::default()
-                    },
-                )
-                .await;
-                last_status = Some(snapshot.task.status.clone());
-            }
-
-            if snapshot.task.artifacts != last_artifacts {
-                let total = snapshot.task.artifacts.len();
-                for (index, artifact) in snapshot.task.artifacts.iter().cloned().enumerate() {
-                    post_push_notification(
-                        &client,
-                        &config,
-                        &StreamResponse {
-                            artifact_update: Some(TaskArtifactUpdateEvent {
-                                task_id: snapshot.task.id.clone(),
-                                context_id: snapshot.task.context_id.clone(),
-                                artifact,
-                                append: Some(false),
-                                last_chunk: Some(index + 1 == total),
-                                metadata: None,
-                            }),
-                            ..Default::default()
-                        },
-                    )
-                    .await;
-                }
-                last_artifacts = snapshot.task.artifacts.clone();
-            }
+        for response in projector.project(&snapshot) {
+            post_push_notification(&client, &config, &response).await;
         }
 
         if snapshot.task.status.state.is_terminal() || snapshot.task.status.state.is_interrupted() {

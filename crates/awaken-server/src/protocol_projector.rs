@@ -2,6 +2,7 @@
 
 use std::{
     collections::{BTreeMap, VecDeque},
+    marker::PhantomData,
     sync::Arc,
 };
 
@@ -24,11 +25,15 @@ use serde_json::Value;
 use thiserror::Error;
 
 use crate::outbox_relay::{OutboxRelayError, OutboxRelayHandler};
+use crate::protocols::ag_ui::encoder::AgUiEncoder;
 use crate::protocols::ai_sdk_v6::encoder::AiSdkEncoder;
 
 pub const AI_SDK_PROTOCOL: &str = "ai-sdk";
 pub const AI_SDK_PROTOCOL_VERSION: &str = "v6-ui-message-stream";
 pub const AI_SDK_PROJECTOR_VERSION: &str = "awaken-ai-sdk-v1";
+pub const AG_UI_PROTOCOL: &str = "ag-ui";
+pub const AG_UI_PROTOCOL_VERSION: &str = "v1-events";
+pub const AG_UI_PROJECTOR_VERSION: &str = "awaken-ag-ui-v1";
 const PROJECTION_CACHE_LIMIT: usize = 4_096;
 
 #[derive(Debug, Error)]
@@ -49,21 +54,40 @@ pub enum ProtocolProjectorError {
     Replay(#[from] ProtocolReplayError),
 }
 
-pub struct AiSdkProtocolProjector {
-    writer: Arc<dyn ProtocolReplayWriter>,
-    state: Mutex<AiSdkProjectionState>,
+#[derive(Debug, Clone, Copy)]
+struct ProtocolProjectionSpec {
+    protocol: &'static str,
+    protocol_version: &'static str,
+    projector_version: &'static str,
 }
 
-impl AiSdkProtocolProjector {
+pub struct AgentEventProtocolProjector<E>
+where
+    E: Transcoder<Input = AgentEvent> + Default + Send + 'static,
+    E::Output: Serialize,
+{
+    writer: Arc<dyn ProtocolReplayWriter>,
+    spec: ProtocolProjectionSpec,
+    state: Mutex<ProtocolProjectionState<E>>,
+    _encoder: PhantomData<E>,
+}
+
+impl<E> AgentEventProtocolProjector<E>
+where
+    E: Transcoder<Input = AgentEvent> + Default + Send + 'static,
+    E::Output: Serialize,
+{
     #[must_use]
-    pub fn new(writer: Arc<dyn ProtocolReplayWriter>) -> Self {
+    fn new(writer: Arc<dyn ProtocolReplayWriter>, spec: ProtocolProjectionSpec) -> Self {
         Self {
             writer,
-            state: Mutex::new(AiSdkProjectionState::default()),
+            spec,
+            state: Mutex::new(ProtocolProjectionState::default()),
+            _encoder: PhantomData,
         }
     }
 
-    pub async fn project_event(
+    async fn project_event(
         &self,
         event: &CanonicalEvent,
     ) -> Result<Vec<ProtocolReplayRecord>, ProtocolProjectorError> {
@@ -90,7 +114,9 @@ impl AiSdkProtocolProjector {
                 let drafts = outputs
                     .iter()
                     .enumerate()
-                    .map(|(index, output)| replay_draft(event, &stream_id, index, output))
+                    .map(|(index, output)| {
+                        replay_draft(self.spec, event, &stream_id, index, output)
+                    })
                     .collect::<Result<Vec<_>, _>>()?;
                 state
                     .cache
@@ -111,9 +137,77 @@ impl AiSdkProtocolProjector {
     }
 }
 
+pub struct AiSdkProtocolProjector {
+    inner: AgentEventProtocolProjector<AiSdkEncoder>,
+}
+
+impl AiSdkProtocolProjector {
+    #[must_use]
+    pub fn new(writer: Arc<dyn ProtocolReplayWriter>) -> Self {
+        Self {
+            inner: AgentEventProtocolProjector::new(writer, ai_sdk_spec()),
+        }
+    }
+
+    pub async fn project_event(
+        &self,
+        event: &CanonicalEvent,
+    ) -> Result<Vec<ProtocolReplayRecord>, ProtocolProjectorError> {
+        self.inner.project_event(event).await
+    }
+}
+
+pub struct AgUiProtocolProjector {
+    inner: AgentEventProtocolProjector<AgUiEncoder>,
+}
+
+impl AgUiProtocolProjector {
+    #[must_use]
+    pub fn new(writer: Arc<dyn ProtocolReplayWriter>) -> Self {
+        Self {
+            inner: AgentEventProtocolProjector::new(writer, ag_ui_spec()),
+        }
+    }
+
+    pub async fn project_event(
+        &self,
+        event: &CanonicalEvent,
+    ) -> Result<Vec<ProtocolReplayRecord>, ProtocolProjectorError> {
+        self.inner.project_event(event).await
+    }
+}
+
+#[async_trait]
+pub trait CanonicalEventProtocolProjector: Send + Sync {
+    async fn project_event(
+        &self,
+        event: &CanonicalEvent,
+    ) -> Result<Vec<ProtocolReplayRecord>, ProtocolProjectorError>;
+}
+
+#[async_trait]
+impl CanonicalEventProtocolProjector for AiSdkProtocolProjector {
+    async fn project_event(
+        &self,
+        event: &CanonicalEvent,
+    ) -> Result<Vec<ProtocolReplayRecord>, ProtocolProjectorError> {
+        self.project_event(event).await
+    }
+}
+
+#[async_trait]
+impl CanonicalEventProtocolProjector for AgUiProtocolProjector {
+    async fn project_event(
+        &self,
+        event: &CanonicalEvent,
+    ) -> Result<Vec<ProtocolReplayRecord>, ProtocolProjectorError> {
+        self.project_event(event).await
+    }
+}
+
 pub struct CanonicalOutboxProtocolProjector {
     event_lookup: Arc<dyn EventLookup>,
-    projector: Arc<AiSdkProtocolProjector>,
+    projectors: Vec<Arc<dyn CanonicalEventProtocolProjector>>,
 }
 
 impl CanonicalOutboxProtocolProjector {
@@ -129,13 +223,35 @@ impl CanonicalOutboxProtocolProjector {
     }
 
     #[must_use]
+    pub fn new_all_protocols(
+        event_lookup: Arc<dyn EventLookup>,
+        replay_writer: Arc<dyn ProtocolReplayWriter>,
+    ) -> Self {
+        Self::from_projectors(
+            event_lookup,
+            vec![
+                Arc::new(AiSdkProtocolProjector::new(replay_writer.clone())),
+                Arc::new(AgUiProtocolProjector::new(replay_writer)),
+            ],
+        )
+    }
+
+    #[must_use]
     pub fn from_projector(
         event_lookup: Arc<dyn EventLookup>,
-        projector: Arc<AiSdkProtocolProjector>,
+        projector: Arc<dyn CanonicalEventProtocolProjector>,
+    ) -> Self {
+        Self::from_projectors(event_lookup, vec![projector])
+    }
+
+    #[must_use]
+    pub fn from_projectors(
+        event_lookup: Arc<dyn EventLookup>,
+        projectors: Vec<Arc<dyn CanonicalEventProtocolProjector>>,
     ) -> Self {
         Self {
             event_lookup,
-            projector,
+            projectors,
         }
     }
 
@@ -146,7 +262,11 @@ impl CanonicalOutboxProtocolProjector {
         validate_canonical_projector_message(message)?;
         let event_id = outbox_event_id(message)?;
         let event = self.event_lookup.load_event(&event_id).await?;
-        self.projector.project_event(&event).await
+        let mut records = Vec::new();
+        for projector in &self.projectors {
+            records.extend(projector.project_event(&event).await?);
+        }
+        Ok(records)
     }
 }
 
@@ -161,8 +281,12 @@ impl OutboxRelayHandler for CanonicalOutboxProtocolProjector {
 }
 
 #[derive(Debug, Default)]
-struct AiSdkProjectionState {
-    encoders: BTreeMap<String, AiSdkEncoder>,
+struct ProtocolProjectionState<E>
+where
+    E: Transcoder<Input = AgentEvent> + Default + Send + 'static,
+    E::Output: Serialize,
+{
+    encoders: BTreeMap<String, E>,
     cache: ProjectionCache,
 }
 
@@ -254,6 +378,7 @@ fn thread_stream_id(event: &CanonicalEvent) -> Result<String, ProtocolProjectorE
 }
 
 fn replay_draft<T: Serialize>(
+    spec: ProtocolProjectionSpec,
     event: &CanonicalEvent,
     stream_id: &str,
     index: usize,
@@ -269,9 +394,9 @@ fn replay_draft<T: Serialize>(
         .unwrap_or("unknown");
     let mut draft = ProtocolReplayDraft::new(
         stream_id.to_string(),
-        AI_SDK_PROTOCOL,
-        AI_SDK_PROTOCOL_VERSION,
-        AI_SDK_PROJECTOR_VERSION,
+        spec.protocol,
+        spec.protocol_version,
+        spec.projector_version,
         format!("{}:{index}", event.event_id.as_str()),
         wire_event_type,
         wire_payload_bytes,
@@ -286,6 +411,22 @@ fn replay_draft<T: Serialize>(
         })
         .collect();
     Ok(draft)
+}
+
+fn ai_sdk_spec() -> ProtocolProjectionSpec {
+    ProtocolProjectionSpec {
+        protocol: AI_SDK_PROTOCOL,
+        protocol_version: AI_SDK_PROTOCOL_VERSION,
+        projector_version: AI_SDK_PROJECTOR_VERSION,
+    }
+}
+
+fn ag_ui_spec() -> ProtocolProjectionSpec {
+    ProtocolProjectionSpec {
+        protocol: AG_UI_PROTOCOL,
+        protocol_version: AG_UI_PROTOCOL_VERSION,
+        projector_version: AG_UI_PROJECTOR_VERSION,
+    }
 }
 
 #[cfg(test)]

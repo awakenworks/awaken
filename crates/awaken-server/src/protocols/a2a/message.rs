@@ -1,8 +1,5 @@
 use awaken_contract::contract::message::Message as AwakenMessage;
-use awaken_protocol_a2a::{
-    Artifact, MessageRole, SendMessageRequest, SendMessageResponse, StreamResponse,
-    TaskArtifactUpdateEvent, TaskStatus, TaskStatusUpdateEvent,
-};
+use awaken_protocol_a2a::{MessageRole, SendMessageRequest, SendMessageResponse, StreamResponse};
 use awaken_runtime::RunActivation;
 use axum::Json;
 use axum::extract::{Path, State};
@@ -24,6 +21,7 @@ use super::push_config::{
     load_push_notification_configs, normalize_push_config, spawn_push_notification_driver,
     upsert_push_notification_config_for_thread,
 };
+use super::stream_projector::{InitialStreamEvent, TaskStreamProjector};
 use super::task::{
     load_task_snapshot, record_task_binding, resolve_task, run_is_a2a_resumable, submitted_task,
     task_context_id, wait_for_task,
@@ -220,7 +218,6 @@ async fn stream_message(
     ))
 }
 
-// TODO(ADR-0034 #25): replace store-snapshot polling with a projector that writes ProtocolReplayLog rows.
 fn stream_task_response(
     st: ProtocolRoutesState,
     task_id: String,
@@ -230,9 +227,7 @@ fn stream_task_response(
     let (tx, rx) = mpsc::channel::<Bytes>(st.sse_buffer_size);
 
     tokio::spawn(async move {
-        let mut sent_initial = false;
-        let mut last_status: Option<TaskStatus> = None;
-        let mut last_artifacts: Vec<Artifact> = Vec::new();
+        let mut projector = TaskStreamProjector::new(InitialStreamEvent::TaskSnapshot);
 
         loop {
             let snapshot = match load_task_snapshot(
@@ -262,68 +257,9 @@ fn stream_task_response(
                 }
             };
 
-            if !sent_initial {
-                if send_stream_response(
-                    &tx,
-                    StreamResponse {
-                        task: Some(snapshot.task.clone()),
-                        ..Default::default()
-                    },
-                )
-                .await
-                .is_err()
-                {
-                    break;
-                }
-                last_status = Some(snapshot.task.status.clone());
-                last_artifacts = snapshot.task.artifacts.clone();
-                sent_initial = true;
-            } else {
-                if last_status.as_ref() != Some(&snapshot.task.status) {
-                    if send_stream_response(
-                        &tx,
-                        StreamResponse {
-                            status_update: Some(TaskStatusUpdateEvent {
-                                task_id: snapshot.task.id.clone(),
-                                context_id: snapshot.task.context_id.clone(),
-                                status: snapshot.task.status.clone(),
-                                metadata: None,
-                            }),
-                            ..Default::default()
-                        },
-                    )
-                    .await
-                    .is_err()
-                    {
-                        break;
-                    }
-                    last_status = Some(snapshot.task.status.clone());
-                }
-
-                if snapshot.task.artifacts != last_artifacts {
-                    let total = snapshot.task.artifacts.len();
-                    for (index, artifact) in snapshot.task.artifacts.iter().cloned().enumerate() {
-                        if send_stream_response(
-                            &tx,
-                            StreamResponse {
-                                artifact_update: Some(TaskArtifactUpdateEvent {
-                                    task_id: snapshot.task.id.clone(),
-                                    context_id: snapshot.task.context_id.clone(),
-                                    artifact,
-                                    append: Some(false),
-                                    last_chunk: Some(index + 1 == total),
-                                    metadata: None,
-                                }),
-                                ..Default::default()
-                            },
-                        )
-                        .await
-                        .is_err()
-                        {
-                            return;
-                        }
-                    }
-                    last_artifacts = snapshot.task.artifacts.clone();
+            for response in projector.project(&snapshot) {
+                if send_stream_response(&tx, response).await.is_err() {
+                    return;
                 }
             }
 

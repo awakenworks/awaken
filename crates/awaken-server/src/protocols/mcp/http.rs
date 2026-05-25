@@ -1,9 +1,4 @@
-//! MCP HTTP transport: Axum routes for MCP Streamable HTTP.
-//!
-//! Implements the MCP Streamable HTTP transport specification:
-//! - `POST /v1/mcp` — accepts a JSON-RPC request/notification/response.
-//! - `GET  /v1/mcp` — optional SSE endpoint for server-initiated messages.
-//! - `DELETE /v1/mcp` — optional explicit session termination.
+//! MCP Streamable HTTP routes for JSON-RPC POST, SSE GET, and session DELETE.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -76,8 +71,11 @@ struct McpHttpSession {
 }
 
 impl McpHttpSession {
-    fn new(runtime: &Arc<awaken_runtime::AgentRuntime>) -> Arc<Self> {
-        let (server, mut channels) = super::create_mcp_server(runtime);
+    fn new(
+        runtime: &Arc<awaken_runtime::AgentRuntime>,
+        mailbox: Arc<crate::mailbox::Mailbox>,
+    ) -> Arc<Self> {
+        let (server, mut channels) = super::create_mcp_server_with_mailbox(runtime, mailbox);
         let session = Arc::new(Self {
             id: Uuid::new_v4().to_string(),
             server,
@@ -321,7 +319,7 @@ async fn handle_request_post(
             ));
         }
 
-        let session = McpHttpSession::new(&st.run.runtime);
+        let session = McpHttpSession::new(&st.run.runtime, Arc::clone(&st.run.mailbox));
         let response = session.dispatch_json_request(request).await?;
         if response.is_success() {
             if let Some(version) = response_protocol_version(&response) {
@@ -825,8 +823,8 @@ mod tests {
 
     #[tokio::test]
     async fn sse_prime_frame_contains_empty_data_event() {
-        let runtime = Arc::new(AgentRuntime::new(Arc::new(StubResolver)));
-        let session = McpHttpSession::new(&runtime);
+        let state = make_app_state();
+        let session = McpHttpSession::new(&state.run.runtime, Arc::clone(&state.run.mailbox));
         let frame = session.prime_sse_frame();
         let text = std::str::from_utf8(&frame).unwrap();
         assert!(text.contains("data:\n\n"));
