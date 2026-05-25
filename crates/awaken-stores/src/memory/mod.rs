@@ -285,6 +285,33 @@ impl ThreadStore for InMemoryStore {
         Ok(())
     }
 
+    /// Atomic append: holds the messages write lock across the whole
+    /// read-modify-write, so concurrent writers (including separate `Mailbox`
+    /// instances sharing this store) never lose an append. Overrides the
+    /// non-atomic default `load → extend → save` (ADR-0042 D4/D5).
+    async fn append_message_records(
+        &self,
+        thread_id: &str,
+        messages: &[Message],
+    ) -> Result<Vec<awaken_contract::contract::message::MessageRecord>, StorageError> {
+        let mut guard = self.messages.write().await;
+        let existing = guard.entry(thread_id.to_owned()).or_default();
+        let start_seq = existing.len() as u64 + 1;
+        existing.extend(messages.iter().cloned());
+        Ok(messages
+            .iter()
+            .cloned()
+            .enumerate()
+            .map(|(index, message)| {
+                awaken_contract::contract::message::MessageRecord::from_message(
+                    thread_id.to_owned(),
+                    start_seq + index as u64,
+                    message,
+                )
+            })
+            .collect())
+    }
+
     async fn delete_messages(&self, thread_id: &str) -> Result<(), StorageError> {
         let threads = self.threads.read().await;
         if !threads.contains_key(thread_id) {

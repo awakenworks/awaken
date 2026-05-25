@@ -1082,3 +1082,47 @@ async fn update_thread_metadata_not_found() {
         .unwrap_err();
     assert!(matches!(err, StorageError::NotFound(_)));
 }
+
+// ADR-0042 D4/D5: concurrent writers (e.g. separate Mailbox instances sharing
+// one store) must not lose appends. The atomic `append_message_records`
+// override holds the messages write lock across the whole read-modify-write.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn append_message_records_is_atomic_under_concurrency() {
+    const WRITERS: usize = 64;
+    let store = Arc::new(InMemoryStore::new());
+    let thread_id = "thread-atomic-append";
+
+    let mut handles = Vec::with_capacity(WRITERS);
+    for i in 0..WRITERS {
+        let store = Arc::clone(&store);
+        handles.push(tokio::spawn(async move {
+            store
+                .append_message_records(thread_id, &[Message::user(format!("m-{i}"))])
+                .await
+                .expect("append should succeed")
+        }));
+    }
+    let mut seqs = Vec::with_capacity(WRITERS);
+    for handle in handles {
+        let records = handle.await.expect("writer task should not panic");
+        assert_eq!(records.len(), 1);
+        seqs.push(records[0].seq);
+    }
+
+    // No lost update: every concurrent append survived.
+    let stored = store
+        .load_messages(thread_id)
+        .await
+        .unwrap()
+        .unwrap_or_default();
+    assert_eq!(
+        stored.len(),
+        WRITERS,
+        "atomic append must not lose messages"
+    );
+
+    // Every position assigned exactly once: seqs are unique and contiguous.
+    seqs.sort_unstable();
+    let expected: Vec<u64> = (1..=WRITERS as u64).collect();
+    assert_eq!(seqs, expected, "seqs must be unique and contiguous 1..=N");
+}
