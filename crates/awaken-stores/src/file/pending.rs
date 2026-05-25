@@ -160,9 +160,10 @@ impl PendingMessageStore for FileStore {
             }
         }
         if pending.len() != ordered_pending_ids.len() {
-            return Err(StorageError::Validation(format!(
-                "reorder for thread '{thread_id}' must include all pending ids"
-            )));
+            return Err(StorageError::VersionConflict {
+                expected: ordered_pending_ids.len() as u64,
+                actual: pending.len() as u64,
+            });
         }
         let mut by_id = pending
             .iter()

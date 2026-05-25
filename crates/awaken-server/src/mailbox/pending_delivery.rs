@@ -145,7 +145,7 @@ impl Mailbox {
                 }
             }
         };
-        store
+        let appended = store
             .append_pending_message_records(
                 thread_id,
                 normalized_messages,
@@ -156,17 +156,56 @@ impl Mailbox {
                 },
             )
             .await?;
+        let appended_pending_ids = appended
+            .iter()
+            .map(|record| record.pending_id.clone())
+            .collect::<Vec<_>>();
 
-        match self
+        let freeze_result = self
             .prepare_pending_boundary_for_run(
                 request, thread_id, boundary, run_id, record, manifest,
             )
-            .await?
-        {
-            Some(run_id) => Ok(Some(run_id)),
-            None => Err(MailboxError::Internal(format!(
-                "pending {boundary:?} freeze found no eligible messages for thread '{thread_id}'"
-            ))),
+            .await;
+        match freeze_result {
+            Ok(Some(run_id)) => Ok(Some(run_id)),
+            Ok(None) => {
+                self.cleanup_appended_pending_messages(store, thread_id, &appended_pending_ids)
+                    .await;
+                Err(MailboxError::Internal(format!(
+                    "pending {boundary:?} freeze found no eligible messages for thread '{thread_id}'"
+                )))
+            }
+            Err(error) => {
+                self.cleanup_appended_pending_messages(store, thread_id, &appended_pending_ids)
+                    .await;
+                Err(error)
+            }
+        }
+    }
+
+    async fn cleanup_appended_pending_messages(
+        &self,
+        store: &Arc<dyn awaken_stores::PendingThreadRunStore>,
+        thread_id: &str,
+        pending_ids: &[String],
+    ) {
+        for pending_id in pending_ids {
+            match store
+                .retract_pending_message_record(thread_id, pending_id)
+                .await
+            {
+                Ok(_) => {}
+                Err(StorageError::NotFound(_)) => {}
+                Err(StorageError::Validation(message)) if message.contains("already consumed") => {}
+                Err(error) => {
+                    tracing::warn!(
+                        thread_id,
+                        pending_id,
+                        error = %error,
+                        "failed to clean up pending message after freeze failure"
+                    );
+                }
+            }
         }
     }
 
@@ -499,6 +538,43 @@ mod tests {
         assert!(
             thread_store
                 .load_pending_message_records("thread-freeze")
+                .await
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    async fn cleanup_appended_pending_messages_retracts_unfrozen_append() {
+        let thread_store = Arc::new(InMemoryStore::new());
+        let mailbox = Mailbox::new_with_pending_thread_run_store(
+            Arc::new(NoopExecutor),
+            Arc::new(InMemoryMailboxStore::new()),
+            thread_store.clone(),
+            "consumer".to_string(),
+            MailboxConfig::default(),
+        );
+        let delivered = mailbox
+            .deliver(
+                "thread-cleanup",
+                &[Message::user("queued").with_id("pending-cleanup".to_string())],
+                DeliveryMode::new_run(DeliveryGranularity::Batch),
+            )
+            .await
+            .unwrap();
+        let pending_ids = delivered
+            .iter()
+            .map(|record| record.pending_id.clone())
+            .collect::<Vec<_>>();
+        let store = mailbox.pending_thread_run_store.as_ref().unwrap();
+
+        mailbox
+            .cleanup_appended_pending_messages(store, "thread-cleanup", &pending_ids)
+            .await;
+
+        assert!(
+            thread_store
+                .load_pending_message_records("thread-cleanup")
                 .await
                 .unwrap()
                 .is_empty()

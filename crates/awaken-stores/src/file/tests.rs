@@ -384,6 +384,37 @@ async fn file_store_pending_append_assigns_id_and_rejects_duplicates() {
 }
 
 #[tokio::test]
+async fn file_store_pending_reorder_stale_order_reports_version_conflict() {
+    let td = TempDir::new().unwrap();
+    let store = FileStore::new(td.path());
+    let mode = DeliveryMode::new_run(DeliveryGranularity::Batch);
+    store
+        .append_pending_message_records(
+            "t-pending-reorder-conflict",
+            &[
+                Message::user("first").with_id("pending-1".to_string()),
+                Message::user("second").with_id("pending-2".to_string()),
+            ],
+            mode,
+        )
+        .await
+        .unwrap();
+
+    let err = store
+        .reorder_pending_message_records("t-pending-reorder-conflict", &["pending-2".to_string()])
+        .await
+        .unwrap_err();
+
+    assert!(matches!(
+        err,
+        StorageError::VersionConflict {
+            expected: 1,
+            actual: 2
+        }
+    ));
+}
+
+#[tokio::test]
 async fn file_store_delete_messages_missing_thread_returns_not_found() {
     let td = TempDir::new().unwrap();
     let store = FileStore::new(td.path());

@@ -249,6 +249,36 @@ async fn pending_reorder_error_keeps_existing_order() {
 }
 
 #[tokio::test]
+async fn pending_reorder_stale_order_reports_version_conflict() {
+    let store = InMemoryStore::new();
+    let mode = DeliveryMode::new_run(DeliveryGranularity::Batch);
+    store
+        .append_pending_message_records(
+            "thread-reorder-conflict",
+            &[
+                Message::user("first").with_id("pending-1".to_string()),
+                Message::user("second").with_id("pending-2".to_string()),
+            ],
+            mode,
+        )
+        .await
+        .unwrap();
+
+    let err = store
+        .reorder_pending_message_records("thread-reorder-conflict", &["pending-2".to_string()])
+        .await
+        .unwrap_err();
+
+    assert!(matches!(
+        err,
+        StorageError::VersionConflict {
+            expected: 1,
+            actual: 2
+        }
+    ));
+}
+
+#[tokio::test]
 async fn pending_edit_rejects_message_id_change() {
     let store = InMemoryStore::new();
     store
