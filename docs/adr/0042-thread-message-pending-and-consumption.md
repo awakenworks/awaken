@@ -44,7 +44,8 @@ semantics.
 Model a thread's messages as two zones split by a consumption watermark, drive
 consumption through a single policy-parameterized boundary, and reuse the
 existing mailbox fencing and commit primitives. The dispatch mailbox remains the
-scheduling layer and is not changed into a message store.
+scheduling layer and is not changed into a message store. Pending is a state in
+the thread message lifecycle, not a mailbox payload.
 
 ### D1 — Two zones split by a consumption watermark
 
@@ -57,6 +58,14 @@ scheduling layer and is not changed into a message store.
   reads messages into a prompt. `seq` is a per-thread monotonic order assigned at
   consumption time (the existing `MessageSeqRange` / `RunInputSnapshot.range`
   remain the reference shape).
+
+Pending and committed are owned by the same thread message backend. A physical
+implementation may use one `thread_messages` table with
+`state = pending | committed | retracted`, or separate pending/committed tables,
+but both states must share the same backend transaction boundary. Mailbox must
+not accept an arbitrary independent pending-message store; the pending capability
+is attached to the thread/run store, e.g. `PendingThreadRunStore =
+ThreadRunStore + PendingMessageStore`.
 
 ### D2 — Mutability is consumption-gated
 
@@ -101,9 +110,20 @@ the natural-completion decision point (`OnNaturalEnd`), and the post-terminal
 scheduler (`NewRun`). At each, under the per-thread fence it selects pending whose
 `boundary` matches, takes `One` or all per `granularity`, appends them to the
 committed log with assigned `seq`, advances `consumed_seq`, and removes them from
-pending — in one `CommitCoordinator::commit_checkpoint` transaction with the run
-record and canonical events. Consumption count decouples from dispatch count: one
-run may drain pending over several turns.
+pending — in one transaction with the run record / input snapshot and canonical
+events. Consumption count decouples from dispatch count: one run may drain
+pending over several turns.
+
+The transaction is the correctness boundary. It covers all of:
+
+- selecting eligible pending entries;
+- assigning committed `seq`;
+- marking/removing pending entries as consumed;
+- writing the committed message projection;
+- writing the `RunRecord.input` / `RunActivationSnapshot` that references only
+  committed messages;
+- publishing canonical events / outbox entries when the backend participates in
+  the commit coordinator.
 
 Active-run semantics differ by boundary:
 
@@ -128,6 +148,20 @@ resumable waiting run is continued, otherwise a fresh `run_id`.
 Fallthrough cascade: `Interrupt → NextStep → OnNaturalEnd → NewRun`. If a run
 ends abnormally (cancel / error) before an `OnNaturalEnd` message is consumed,
 that message falls through to `NewRun`, so it is neither lost nor stuck.
+
+Boundary injection points are deliberately separate:
+
+| boundary | injection point | owner |
+| --- | --- | --- |
+| `Interrupt` | after mailbox interrupt/cancel wins the thread fence, before starting the replacement run | mailbox |
+| `NextStep` | after a loop step checkpoint and before the next inference round reads context | loop runner |
+| `OnNaturalEnd` | after a natural-end step result and before emitting terminal run completion | loop runner |
+| `NewRun` | when preparing a queued/background dispatch, or when the post-terminal scheduler claims the next dispatch | mailbox |
+
+The existing in-process inbox drain is only a live notification mechanism for
+step-time events; it is not the durable `NextStep` consumption model. `NextStep`
+must freeze durable pending entries at the step boundary before prompt
+construction continues.
 
 ### D5 — Distributed single-writer via existing fences
 
@@ -161,13 +195,22 @@ existing thread continues that conversation, an omitted one is generated (a new
 conversation), and a different existing thread routes through the existing
 child-run / lineage semantics (`parent_thread_id`).
 
+`deliver` and dispatch creation do not make the dispatch row the message owner.
+The durable requirement is: pending persisted implies a consume opportunity is
+created either in the same transaction or by a recovery-safe `ensure_dispatch`
+rule. If a dispatch insert/notification is lost, recovery scans pending
+non-empty threads and re-enqueues consumption. `freeze`, by contrast, must be a
+single transaction; it cannot rely on later compensation after pending has been
+consumed.
+
 ### D8 — Mailbox stays the scheduling layer
 
 `RunDispatch` still represents a unit of work (claim / lease / epoch / retry /
 dead-letter) and does not carry message bodies. Pending retraction reuses the
-existing `cancel` (which already applies only to `Queued` dispatches); pending
-bodies live in the run activation snapshot (ADR-0039) or a pending-flagged
-message entry, reusing existing tables.
+existing `cancel` (which already applies only to `Queued` dispatches) only for
+the scheduling work item; the pending message body remains in the thread message
+backend. Run activation snapshots (ADR-0039) reference committed messages after
+freeze and must not become the source of truth for unconsumed pending bodies.
 
 ## Consequences
 
@@ -213,7 +256,8 @@ Increment A (no new table): introduce `deliver` + the pending log; make the
 committed write conditional (row lock / transaction / cursor CAS) with
 reload-merge retry; remove the eager whole-list overwrite from
 `prepare_run_for_dispatch`. Closes the lost-update and finalization-overlap races
-across instances. The in-process striped lock remains as a fast path.
+across instances. The in-process striped lock remains as a fast path. Pending is
+introduced as a thread/run-store capability, not as a second mailbox-owned store.
 
 Increment B: introduce `DeliveryMode` (boundary × granularity) and the boundary
 `freeze` calls (`NewRun` and `NextStep` first, then `OnNaturalEnd` reusing the
@@ -222,7 +266,10 @@ wake, and recovery wake into the single scheduling rule; wire `cancel` / edit on
 pending.
 
 Increment C (optional): move the committed projection to per-row append-only
-storage with stored `seq` and visibility, removing whole-list reload-merge.
+storage with stored `seq` and visibility, removing whole-list reload-merge. The
+preferred physical model is one `thread_messages` lifecycle table with
+`state = pending | committed | retracted`; separate pending/committed tables are
+acceptable only when they are updated by the same backend transaction.
 
 ## Alternatives considered
 
