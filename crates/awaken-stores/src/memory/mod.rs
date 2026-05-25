@@ -429,6 +429,53 @@ impl ThreadRunStore for InMemoryStore {
             .insert(run.run_id.clone(), self.next_run_seq());
         Ok(())
     }
+
+    /// Atomic, version-guarded committed append: holds the thread/message/run
+    /// write locks across the read-check-append-write so concurrent writers
+    /// (including separate `Mailbox` instances sharing this store) never lose
+    /// an append (ADR-0042 D5). A stale `expected_version` leaves all state
+    /// untouched.
+    async fn checkpoint_append(
+        &self,
+        thread_id: &str,
+        messages: &[Message],
+        expected_version: Option<u64>,
+        run: &RunRecord,
+    ) -> Result<u64, StorageError> {
+        let now = current_millis();
+        let mut thread_guard = self.threads.write().await;
+        let existing_thread = thread_guard.get(thread_id).cloned();
+        validate_thread_hierarchy_map(
+            &thread_guard,
+            thread_id,
+            checkpoint_parent_thread_id(existing_thread.as_ref(), run),
+        )?;
+        let mut msg_guard = self.messages.write().await;
+        let mut run_guard = self.runs.write().await;
+        let actual = msg_guard
+            .get(thread_id)
+            .map(|messages| messages.len() as u64)
+            .unwrap_or(0);
+        if let Some(expected) = expected_version
+            && expected != actual
+        {
+            return Err(StorageError::VersionConflict { expected, actual });
+        }
+        let committed = msg_guard.entry(thread_id.to_owned()).or_default();
+        committed.extend(messages.iter().cloned());
+        let new_version = committed.len() as u64;
+        let mut thread = existing_thread.unwrap_or_else(|| Thread::with_id(thread_id));
+        thread.touch(now);
+        thread.apply_run_projection(run);
+        thread.normalize_lineage();
+        thread_guard.insert(thread_id.to_owned(), thread);
+        run_guard.insert(run.run_id.clone(), run.clone());
+        self.run_insertion
+            .write()
+            .await
+            .insert(run.run_id.clone(), self.next_run_seq());
+        Ok(new_version)
+    }
 }
 
 // ── ProfileStore ────────────────────────────────────────────────────

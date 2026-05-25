@@ -1126,3 +1126,48 @@ async fn append_message_records_is_atomic_under_concurrency() {
     let expected: Vec<u64> = (1..=WRITERS as u64).collect();
     assert_eq!(seqs, expected, "seqs must be unique and contiguous 1..=N");
 }
+
+// ADR-0042 D4/D5: the committed append must be atomic too. Unconditional
+// `checkpoint_append` from concurrent writers sharing one store must not lose
+// any append — the override holds the message lock across check+append+write.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn checkpoint_append_is_atomic_under_concurrency() {
+    const WRITERS: usize = 64;
+    let store = Arc::new(InMemoryStore::new());
+    let thread_id = "thread-atomic-checkpoint-append";
+
+    let mut handles = Vec::with_capacity(WRITERS);
+    for i in 0..WRITERS {
+        let store = Arc::clone(&store);
+        handles.push(tokio::spawn(async move {
+            let run = make_run(&format!("run-{i}"), thread_id, 1);
+            store
+                .checkpoint_append(thread_id, &[Message::user(format!("m-{i}"))], None, &run)
+                .await
+                .expect("checkpoint_append should succeed")
+        }));
+    }
+    let mut versions = Vec::with_capacity(WRITERS);
+    for handle in handles {
+        versions.push(handle.await.expect("writer task should not panic"));
+    }
+
+    let stored = store
+        .load_messages(thread_id)
+        .await
+        .unwrap()
+        .unwrap_or_default();
+    assert_eq!(
+        stored.len(),
+        WRITERS,
+        "atomic checkpoint_append must not lose messages"
+    );
+
+    // Returned versions are the unique, contiguous committed counts 1..=N.
+    versions.sort_unstable();
+    let expected: Vec<u64> = (1..=WRITERS as u64).collect();
+    assert_eq!(
+        versions, expected,
+        "returned versions must be unique and contiguous 1..=N"
+    );
+}
