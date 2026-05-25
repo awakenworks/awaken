@@ -678,6 +678,9 @@ pub struct Mailbox {
     server_event_origin: String,
     lifecycle_tasks: Arc<StdMutex<Option<MailboxLifecycleTasks>>>,
     lifecycle_start_lock: Arc<Mutex<()>>,
+    /// Striped per-thread locks serializing the message-append
+    /// read-modify-write in `prepare_run_for_dispatch` (see `lock_thread_append`).
+    thread_append_locks: Box<[Mutex<()>]>,
 }
 
 impl Mailbox {
@@ -738,8 +741,14 @@ impl Mailbox {
             server_event_origin: "mailbox".to_string(),
             lifecycle_tasks: Arc::new(StdMutex::new(None)),
             lifecycle_start_lock: Arc::new(Mutex::new(())),
+            thread_append_locks: (0..Self::THREAD_APPEND_STRIPES)
+                .map(|_| Mutex::new(()))
+                .collect(),
         })
     }
+
+    /// Number of stripes for `lock_thread_append` (defined in `submit`).
+    const THREAD_APPEND_STRIPES: usize = 256;
 
     /// Default bounded channel capacity for the runtime->SSE relay.
     const EVENT_CHANNEL_CAPACITY: usize = 256;

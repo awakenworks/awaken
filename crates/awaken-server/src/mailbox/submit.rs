@@ -28,8 +28,9 @@ use crate::transport::channel_sink::ReconnectableEventSink;
 use super::{
     ACTIVE_RUN_CONFLICT_MESSAGE, INLINE_CLAIM_GUARD_MS, LegacyRunRequestSnapshotAdapter,
     LegacyRunSnapshotExtras, Mailbox, MailboxDispatchStatus, MailboxError, MailboxSubmitResult,
-    MailboxWorkerStatus, ThreadContext, legacy_input_snapshot, normalize_mailbox_run_mode,
-    normalize_message_ids, record_mailbox_operation_result, result_label, validate_run_inputs,
+    MailboxWorkerStatus, ThreadContext, legacy_input_snapshot, lock_thread_append,
+    normalize_mailbox_run_mode, normalize_message_ids, record_mailbox_operation_result,
+    result_label, validate_run_inputs,
 };
 
 impl Mailbox {
@@ -125,11 +126,9 @@ impl Mailbox {
         let dispatch_id = dispatch.dispatch_id.clone();
         let thread_id = dispatch.thread_id.clone();
 
-        // WAL: persist after the prepared checkpoint; startup recovery
-        // reconciles the crash window before this enqueue.
-        // Set available_at slightly in the future to prevent sweep from grabbing
-        // the dispatch during the inline claim window. If the process crashes before
-        // the claim completes, sweep will reclaim the dispatch after the guard period.
+        // WAL: persist after the prepared checkpoint; startup recovery reconciles
+        // the crash window. available_at is set slightly ahead so the sweep does not
+        // grab the dispatch during the inline claim window (reclaimed after the guard).
         let mut wal_dispatch = dispatch;
         wal_dispatch.available_at = now_ms() + INLINE_CLAIM_GUARD_MS;
         self.enqueue_dispatch_for_request(&request, &wal_dispatch)
@@ -365,6 +364,7 @@ impl Mailbox {
         thread_id: &str,
         messages: &[Message],
     ) -> Result<String, MailboxError> {
+        let _append_guard = lock_thread_append(&self.thread_append_locks, thread_id).await;
         if request.resume_run_id().is_none()
             && request.persistence.run_id_hint.is_none()
             && let Some(waiting_run_id) = self.reusable_waiting_run_id(thread_id).await

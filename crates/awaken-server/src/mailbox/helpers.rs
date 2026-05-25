@@ -3,7 +3,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use parking_lot::Mutex as SyncMutex;
-use tokio::sync::RwLock;
+use tokio::sync::{Mutex, MutexGuard, RwLock};
 
 use awaken_contract::contract::identity::RunOrigin;
 use awaken_contract::contract::mailbox::{
@@ -38,6 +38,21 @@ pub(super) async fn revert_claiming_to_idle(
             w.status = MailboxWorkerStatus::Idle;
         }
     }
+}
+
+/// Acquire the striped per-thread append lock serializing the non-atomic
+/// `load_messages → append → checkpoint` read-modify-write. Held across that
+/// span so concurrent same-thread submits cannot clobber each other via the
+/// whole-list (last-writer-wins) checkpoint. Same `thread_id` always maps to
+/// the same stripe; different threads run in parallel.
+pub(super) async fn lock_thread_append<'a>(
+    locks: &'a [Mutex<()>],
+    thread_id: &str,
+) -> MutexGuard<'a, ()> {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    thread_id.hash(&mut hasher);
+    locks[(hasher.finish() as usize) % locks.len()].lock().await
 }
 
 // ── Free functions ───────────────────────────────────────────────────
