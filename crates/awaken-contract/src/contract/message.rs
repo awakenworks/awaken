@@ -5,6 +5,13 @@ use serde_json::Value;
 
 use super::content::ContentBlock;
 
+mod delivery;
+
+pub use delivery::{
+    DeliveryBoundary, DeliveryGranularity, DeliveryMode, PendingMessageRecord,
+    select_pending_for_freeze,
+};
+
 /// Message role.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
