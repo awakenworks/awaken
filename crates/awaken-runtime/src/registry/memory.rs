@@ -18,6 +18,7 @@ use super::traits::BackendRegistry;
 use super::traits::{
     AgentSpecRegistry, ModelRegistry, PluginSource, ProviderRegistry, ToolRegistry,
 };
+use crate::registry::model_capabilities::{ModelCapabilityPatch, normalize_capability_model_name};
 use awaken_contract::registry_spec::{AgentSpec, ModelPoolSpec, ModelSpec};
 use awaken_contract::{validate_model_pool_spec_struct, validate_model_spec_struct};
 
@@ -100,6 +101,7 @@ pub struct MapProviderRegistry {
     providers: MapRegistry<Arc<dyn LlmExecutor>>,
     signatures: HashMap<String, String>,
     capability_sources: HashMap<String, String>,
+    model_capabilities: HashMap<(String, String), ModelCapabilityPatch>,
 }
 
 impl Default for MapProviderRegistry {
@@ -114,6 +116,7 @@ impl MapProviderRegistry {
             providers: MapRegistry::new(),
             signatures: HashMap::new(),
             capability_sources: HashMap::new(),
+            model_capabilities: HashMap::new(),
         }
     }
 
@@ -254,6 +257,22 @@ impl MapProviderRegistry {
         Ok(())
     }
 
+    pub fn register_provider_model_capabilities(
+        &mut self,
+        provider_id: impl Into<String>,
+        capabilities: HashMap<String, ModelCapabilityPatch>,
+    ) {
+        let provider_id = provider_id.into();
+        self.model_capabilities
+            .retain(|(id, _), _| id != &provider_id);
+        for (model, patch) in capabilities {
+            self.model_capabilities.insert(
+                (provider_id.clone(), normalize_capability_model_name(&model)),
+                patch,
+            );
+        }
+    }
+
     pub fn replace_provider(
         &mut self,
         id: impl Into<String>,
@@ -263,12 +282,16 @@ impl MapProviderRegistry {
         self.signatures
             .insert(id.clone(), executor.name().to_string());
         self.capability_sources.remove(&id);
+        self.model_capabilities
+            .retain(|(provider_id, _), _| provider_id != &id);
         self.providers.replace(id, executor)
     }
 
     pub fn remove_provider(&mut self, id: &str) -> Option<Arc<dyn LlmExecutor>> {
         self.signatures.remove(id);
         self.capability_sources.remove(id);
+        self.model_capabilities
+            .retain(|(provider_id, _), _| provider_id != id);
         self.providers.remove(id)
     }
 }
@@ -364,6 +387,19 @@ impl ProviderRegistry for MapProviderRegistry {
     fn provider_capability_source(&self, id: &str) -> Option<String> {
         self.capability_sources.get(id).cloned()
     }
+
+    fn provider_model_capability(
+        &self,
+        provider_id: &str,
+        upstream_model: &str,
+    ) -> Option<ModelCapabilityPatch> {
+        self.model_capabilities
+            .get(&(
+                provider_id.to_string(),
+                normalize_capability_model_name(upstream_model),
+            ))
+            .cloned()
+    }
 }
 
 impl AgentSpecRegistry for MapAgentSpecRegistry {
@@ -430,6 +466,30 @@ mod tests {
             got, spec,
             "registry must return the full ModelSpec unchanged"
         );
+    }
+
+    #[test]
+    fn map_provider_registry_returns_discovered_model_capabilities() {
+        let mut registry = MapProviderRegistry::new();
+        registry.register_provider_model_capabilities(
+            "p",
+            HashMap::from([(
+                "models/GPT-4O".to_string(),
+                ModelCapabilityPatch {
+                    context_window: Some(128_000),
+                    max_output_tokens: Some(16_384),
+                    modalities: None,
+                    knowledge_cutoff: None,
+                },
+            )]),
+        );
+
+        let patch = registry
+            .provider_model_capability("p", "gpt-4o")
+            .expect("capability patch");
+
+        assert_eq!(patch.context_window, Some(128_000));
+        assert_eq!(patch.max_output_tokens, Some(16_384));
     }
 
     #[test]
