@@ -295,9 +295,66 @@ fn materialize_checkpoint_append_backfills_previous_output_metadata() {
         1,
     );
 
-    assert_eq!(delta.len(), 1);
-    assert_eq!(delta[0].id.as_deref(), Some("m-assistant"));
-    assert_eq!(delta[0].produced_by_run_id(), Some("run-1"));
+    assert!(
+        delta.is_empty(),
+        "append mode must not rewrite already-committed output metadata"
+    );
+    let output = output.expect("existing output relation remains recorded");
+    assert_eq!(output.range, MessageSeqRange::new(2, 2));
+    assert_eq!(output.message_ids, vec!["m-assistant"]);
+}
+
+#[test]
+fn materialize_checkpoint_append_does_not_duplicate_committed_message_updates() {
+    let input = Message::user("first").with_id("m-input".into());
+    let committed_assistant = Message::assistant("done").with_id("m-assistant".into());
+    let mut runtime_assistant = committed_assistant.clone();
+    runtime_assistant.metadata = Some(awaken_contract::contract::message::MessageMetadata {
+        run_id: Some("run-1".into()),
+        step_index: Some(0),
+        ..Default::default()
+    });
+    let previous = RunRecord {
+        run_id: "run-1".into(),
+        thread_id: "thread-1".into(),
+        agent_id: "agent".into(),
+        input: Some(RunMessageInput {
+            thread_id: "thread-1".into(),
+            range: MessageSeqRange::new(1, 1),
+            trigger_message_ids: vec!["m-input".into()],
+            selected_message_ids: Vec::new(),
+            context_policy: None,
+            compacted_snapshot_id: None,
+        }),
+        output: Some(RunMessageOutput {
+            thread_id: "thread-1".into(),
+            range: MessageSeqRange::new(2, 2),
+            message_ids: vec!["m-assistant".into()],
+        }),
+        ..Default::default()
+    };
+    let identity = RunIdentity::new(
+        "thread-1".into(),
+        None,
+        "run-1".into(),
+        None,
+        "agent".into(),
+        awaken_contract::contract::identity::RunOrigin::User,
+    );
+
+    let (delta, output) = materialize_checkpoint_append(
+        &[Arc::new(input.clone()), Arc::new(runtime_assistant)],
+        &[input, committed_assistant],
+        Some(&previous),
+        &identity,
+        1,
+        1,
+    );
+
+    assert!(
+        delta.is_empty(),
+        "committed message id already exists; view/metadata changes are not append deltas"
+    );
     let output = output.expect("existing output relation remains recorded");
     assert_eq!(output.range, MessageSeqRange::new(2, 2));
     assert_eq!(output.message_ids, vec!["m-assistant"]);

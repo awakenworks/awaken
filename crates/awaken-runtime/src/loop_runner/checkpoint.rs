@@ -408,13 +408,9 @@ fn materialize_checkpoint_append(
             }
         }
 
-        if committed_seq.is_none()
-            || committed.is_some_and(|(_, committed_message)| committed_message != &message)
-        {
+        if committed_seq.is_none() {
             delta.push(message);
-            if committed_seq.is_none() {
-                next_append_seq += 1;
-            }
+            next_append_seq += 1;
         }
     }
 

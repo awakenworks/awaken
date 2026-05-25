@@ -156,40 +156,21 @@ pub fn select_pending_for_freeze(
     pending: &[PendingMessageRecord],
     boundary: DeliveryBoundary,
 ) -> Vec<usize> {
-    let Some(first) = pending
-        .iter()
-        .position(|entry| entry.delivery_mode.boundary.eligible_at(boundary))
-    else {
-        return Vec::new();
-    };
     let mut selected = Vec::new();
-    let mut barrier_index = None;
-    for (index, entry) in pending.iter().enumerate().skip(first) {
+    for (index, entry) in pending.iter().enumerate() {
         if !entry.delivery_mode.boundary.eligible_at(boundary) {
-            continue;
-        }
-        if index != first && entry.delivery_mode.barrier {
-            selected.push(index);
-            barrier_index = Some(index);
             break;
         }
-        if index != first && entry.delivery_mode.granularity == DeliveryGranularity::One {
+        if !selected.is_empty() && entry.delivery_mode.granularity == DeliveryGranularity::One {
             break;
         }
         selected.push(index);
-        if entry.delivery_mode.barrier {
-            barrier_index = Some(index);
-            break;
-        }
-        if entry.delivery_mode.granularity == DeliveryGranularity::One {
+        if entry.delivery_mode.barrier
+            || entry.delivery_mode.granularity == DeliveryGranularity::One
+        {
             break;
         }
     }
-
-    if let Some(barrier_index) = barrier_index {
-        return (0..=barrier_index).collect();
-    }
-
     selected
 }
 
@@ -302,7 +283,7 @@ mod tests {
     }
 
     #[test]
-    fn freeze_selection_barrier_flushes_prior_pending() {
+    fn freeze_selection_barrier_does_not_flush_ineligible_prior_pending() {
         let pending = vec![
             pending("a", 1, DeliveryBoundary::NewRun, DeliveryGranularity::Batch),
             pending_with_barrier(
@@ -318,6 +299,35 @@ mod tests {
                 DeliveryGranularity::Batch,
             ),
         ];
+        assert_eq!(
+            select_pending_for_freeze(&pending, DeliveryBoundary::NextStep),
+            Vec::<usize>::new()
+        );
+    }
+
+    #[test]
+    fn freeze_selection_barrier_stops_batch_before_later_messages() {
+        let pending = vec![
+            pending(
+                "a",
+                1,
+                DeliveryBoundary::NextStep,
+                DeliveryGranularity::Batch,
+            ),
+            pending_with_barrier(
+                "barrier",
+                2,
+                DeliveryBoundary::NextStep,
+                DeliveryGranularity::Batch,
+            ),
+            pending(
+                "c",
+                3,
+                DeliveryBoundary::NextStep,
+                DeliveryGranularity::Batch,
+            ),
+        ];
+
         assert_eq!(
             select_pending_for_freeze(&pending, DeliveryBoundary::NextStep),
             vec![0, 1]
