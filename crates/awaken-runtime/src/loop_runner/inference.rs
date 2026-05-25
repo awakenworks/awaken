@@ -1,8 +1,8 @@
 //! LLM inference execution.
-
-use std::time::Duration;
-
+use super::{AgentLoopError, now_ms};
 use crate::cancellation::CancellationToken;
+use crate::engine::retry::LlmRetryPolicy;
+use crate::registry::ResolvedAgent;
 use awaken_contract::contract::content::ContentBlock;
 use awaken_contract::contract::event::AgentEvent;
 use awaken_contract::contract::event_sink::EventSink;
@@ -14,11 +14,7 @@ use awaken_contract::contract::inference::{StopReason, StreamResult, TokenUsage}
 use awaken_contract::contract::message::{Message, ToolCall};
 use awaken_contract::contract::stream_checkpoint::{StreamCheckpoint, StreamCheckpointStore};
 use futures::StreamExt;
-
-use super::{AgentLoopError, now_ms};
-use crate::engine::retry::LlmRetryPolicy;
-use crate::registry::ResolvedAgent;
-
+use std::time::Duration;
 /// Identifies a run for stream-checkpoint purposes. Passed into
 /// `execute_streaming` by the caller that actually knows the run
 /// identity (the loop runner's step driver); tests that don't care
@@ -28,12 +24,10 @@ pub(super) struct CheckpointHandle<'a> {
     pub run_id: &'a str,
     pub thread_id: &'a str,
 }
-
 /// Minimum delta interval between checkpoint flushes. Prevents one
 /// flush per tokenized chunk at the cost of losing up to this many
 /// deltas on a hard crash.
 const CHECKPOINT_FLUSH_DELTAS: usize = 4;
-
 /// Write the current accumulator state to the checkpoint store. Logs and
 /// suppresses backend errors — a failing checkpoint store must never
 /// disrupt the in-flight stream.
@@ -60,13 +54,11 @@ async fn flush_checkpoint(
         );
     }
 }
-
 /// Continuation prompt injected after a mid-stream interruption to nudge
 /// the model to pick up where its partial response left off. Intentionally
 /// short — long prompts dilute the assistant prefix context.
 const CONTINUATION_PROMPT: &str =
     "Your previous response was interrupted mid-stream. Continue from where you left off.";
-
 /// Execute LLM inference with streaming, emitting delta events via sink.
 ///
 /// Consumes the token stream from `execute_stream()`, forwards deltas to
@@ -96,7 +88,6 @@ pub(super) async fn execute_streaming(
     let idle_timeout = idle_timeout_for(&request, &policy);
     let max_retries = policy.max_stream_retries;
     let mut attempt: u32 = 0;
-
     // Cross-process resume: if a checkpoint exists for this run id,
     // synthesize a `DriveOutcome::Interrupted` and feed it through the
     // same recovery dispatch the in-process retry loop uses. This means
@@ -131,7 +122,6 @@ pub(super) async fn execute_streaming(
             snapshot,
         });
     }
-
     loop {
         // Consume the synthetic resume outcome on the first iteration,
         // then fall through to driving real streams on subsequent ones.
@@ -151,7 +141,6 @@ pub(super) async fn execute_streaming(
                 .await
             }
         };
-
         match outcome {
             DriveOutcome::Completed(result) | DriveOutcome::Cancelled(result) => {
                 // On clean completion delete the checkpoint — it has been
@@ -181,7 +170,6 @@ pub(super) async fn execute_streaming(
                         },
                     ));
                 }
-
                 match apply_recovery_plan(&mut request, sink, &cause, &snapshot).await {
                     RecoveryOutcome::SynthesizedToolUse { result, hint } => {
                         if let Some(handle) = checkpoint.as_ref() {
@@ -216,7 +204,6 @@ pub(super) async fn execute_streaming(
         }
     }
 }
-
 /// Best-effort checkpoint read. Logs and swallows backend errors so a
 /// failing store can never block forward progress.
 async fn read_checkpoint(handle: &CheckpointHandle<'_>) -> Option<StreamCheckpoint> {
@@ -242,7 +229,6 @@ async fn read_checkpoint(handle: &CheckpointHandle<'_>) -> Option<StreamCheckpoi
         }
     }
 }
-
 /// Result of driving a single stream attempt to completion.
 enum DriveOutcome {
     /// Stream finished naturally.
@@ -259,7 +245,6 @@ enum DriveOutcome {
     /// error, sink emit failed, etc.).
     Error(AgentLoopError),
 }
-
 enum RecoveryOutcome {
     /// R2 path: return the synthesized tool-use stream result directly to
     /// the caller without another inference round-trip. The in-flight
@@ -273,7 +258,6 @@ enum RecoveryOutcome {
     /// (R4); control flow loops back and opens a fresh stream.
     RetryAfterPlan,
 }
-
 async fn apply_recovery_plan(
     request: &mut InferenceRequest,
     sink: &dyn EventSink,
@@ -370,7 +354,7 @@ async fn drive_one_stream(
     checkpoint: Option<&CheckpointHandle<'_>>,
 ) -> DriveOutcome {
     let upstream_model = request.upstream_model.clone();
-    let mut token_stream = match agent.llm_executor.execute_stream(request).await {
+    let mut token_stream = match agent.llm_executor.execute_stream(request.clone()).await {
         Ok(s) => s,
         Err(err) => {
             // `err` here comes from the executor (including `RetryingExecutor`)
@@ -407,6 +391,11 @@ async fn drive_one_stream(
                     flush_checkpoint(&acc, &upstream_model, handle).await;
                 }
                 let snapshot = acc.interrupt_snapshot();
+                let err = InferenceExecutionError::StreamInterrupted {
+                    cause: InterruptCause::IdleStall,
+                    snapshot: Box::new(snapshot.clone()),
+                };
+                agent.llm_executor.record_stream_failure(&request, &err);
                 return DriveOutcome::Interrupted {
                     cause: InterruptCause::IdleStall,
                     snapshot,
@@ -435,9 +424,19 @@ async fn drive_one_stream(
                             bytes_received = snapshot.bytes_received,
                             "mid-stream error captured, entering recovery"
                         );
+                        let observed = InferenceExecutionError::StreamInterrupted {
+                            cause: cause.clone(),
+                            snapshot: Box::new(snapshot.clone()),
+                        };
+                        agent
+                            .llm_executor
+                            .record_stream_failure(&request, &observed);
                         return DriveOutcome::Interrupted { cause, snapshot };
                     }
-                    None => return DriveOutcome::Error(AgentLoopError::from(err)),
+                    None => {
+                        agent.llm_executor.record_stream_failure(&request, &err);
+                        return DriveOutcome::Error(AgentLoopError::from(err));
+                    }
                 }
             }
         };
@@ -507,6 +506,7 @@ async fn drive_one_stream(
     if acc.cancelled {
         DriveOutcome::Cancelled(result)
     } else {
+        agent.llm_executor.record_stream_success(&request);
         DriveOutcome::Completed(result)
     }
 }

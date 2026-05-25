@@ -251,7 +251,7 @@ providers，并在返回前验证候选注册表。
 
 ## 推理覆盖
 
-`InferenceOverride.upstream_model` 使用当前已解析 provider 的上游模型名。它不会重新解析 `AgentSpec.model_id`，也不会切换 provider executor。
+`InferenceOverride.upstream_model` 使用当前已解析 provider 的上游模型名。它不会重新解析 `AgentSpec.model_id`，也不会切换 provider executor；对于 model pool backed agent 会被拒绝，因为 pool 会在内部选择成员。
 
 执行时，override 会应用到 `InferenceRequest.upstream_model`；executor 应把这个字段作为上游模型的唯一来源。其余 override 字段保留生成参数。
 

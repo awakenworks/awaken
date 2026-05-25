@@ -179,7 +179,7 @@ Common keys:
 
 | Key | Consumer | Notes |
 |---|---|---|
-| `retry` | Resolver | Retry and same-provider fallback upstream models. |
+| `retry` | Resolver | Retry/backoff policy for the selected model or pool member. |
 | `permission` | Permission plugin | Default allow/ask/deny behavior plus ordered tool rules. |
 | `reminder` | Reminder plugin | Tool/output matching rules that inject system or conversation context. |
 | `generative-ui` | Generative UI plugin | A2UI catalog id, examples, or full prompt instructions. |
@@ -231,7 +231,8 @@ for a specific agent.
 - Use canonical fields: `model_id`, `provider_id`, and `upstream_model`.
   Legacy `model` and `provider` fields are not managed config fields.
 - Treat `InferenceOverride.upstream_model` as a same-provider override. It does
-  not re-resolve `AgentSpec.model_id` and cannot switch provider executors.
+  not re-resolve `AgentSpec.model_id`, cannot switch provider executors, and
+  is rejected for model-pool-backed agents.
 - Query `/v1/config/{namespace}/$schema` before writing generated config, and
   use `/v1/capabilities` to inspect plugin `config_schemas`. `AgentSpec`,
   `ModelSpec`, and several section types reject unknown fields.

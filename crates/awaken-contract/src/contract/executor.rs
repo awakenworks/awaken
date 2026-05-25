@@ -9,15 +9,16 @@ use super::tool::ToolDescriptor;
 use async_trait::async_trait;
 use thiserror::Error;
 
+mod routing_key;
+pub use routing_key::InferenceRoutingKey;
+
 /// A provider-neutral LLM inference request.
 #[derive(Debug, Clone)]
 pub struct InferenceRequest {
     /// Effective upstream model name sent to the resolved provider executor.
     pub upstream_model: String,
-    /// Stable routing key for executors that need session affinity. The agent
-    /// loop sets this to the thread id so model pools can preserve prompt-cache
-    /// affinity within one conversation.
-    pub routing_key: Option<String>,
+    /// Stable routing identifiers for executors that need session affinity.
+    pub routing_key: Option<InferenceRoutingKey>,
     /// Messages to send.
     pub messages: Vec<Message>,
     /// Available tools.
@@ -358,6 +359,19 @@ pub trait LlmExecutor: Send + Sync {
             Ok(Box::pin(futures::stream::iter(events)) as InferenceStream)
         })
     }
+
+    /// Whether `InferenceOverride.upstream_model` may replace the request's
+    /// upstream model for this executor. Pool executors return `false` because
+    /// they choose a concrete member internally.
+    fn supports_upstream_model_override(&self) -> bool {
+        true
+    }
+
+    /// Observe a stream that reached a terminal event or drained cleanly.
+    fn record_stream_success(&self, _request: &InferenceRequest) {}
+
+    /// Observe a stream failure that happened after `execute_stream` returned.
+    fn record_stream_failure(&self, _request: &InferenceRequest, _err: &InferenceExecutionError) {}
 
     /// Provider name for logging/debugging.
     fn name(&self) -> &str;

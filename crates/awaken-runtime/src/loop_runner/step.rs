@@ -1,28 +1,4 @@
 //! Single step execution: inference, tool execution, and tool result processing.
-
-use std::sync::Arc;
-
-use crate::cancellation::CancellationToken;
-use crate::context::{TruncationState, continuation_message, should_retry};
-use crate::hooks::PhaseContext;
-use crate::phase::PhaseRuntime;
-use crate::registry::ResolvedAgent;
-use crate::state::StateCommand;
-use awaken_contract::contract::event::AgentEvent;
-use awaken_contract::contract::event_sink::EventSink;
-use awaken_contract::contract::executor::InferenceRequest;
-use awaken_contract::contract::identity::RunIdentity;
-use awaken_contract::contract::inference::{
-    InferenceOverride, LLMResponse, StopReason, StreamResult,
-};
-use awaken_contract::contract::lifecycle::TerminationReason;
-use awaken_contract::contract::message::{Message, ToolCall};
-use awaken_contract::contract::storage::ThreadRunStore;
-use awaken_contract::contract::suspension::{SuspendTicket, ToolCallOutcome, ToolCallStatus};
-use awaken_contract::contract::tool::{ToolCallContext, ToolResult};
-use awaken_contract::contract::tool_intercept::ToolInterceptPayload;
-use awaken_contract::model::Phase;
-
 use super::actions::{
     apply_context_messages, apply_tool_filter_payloads, merge_override_payloads,
     resolve_intercept_payloads, take_context_messages,
@@ -35,9 +11,28 @@ use crate::agent::state::{
     InferenceOverrideState, InferenceOverrideStateAction, RunLifecycle, RunLifecycleUpdate,
     ToolCallState, ToolCallStates, ToolCallStatesUpdate, ToolFilterState, ToolFilterStateAction,
 };
-
+use crate::cancellation::CancellationToken;
+use crate::context::{TruncationState, continuation_message, should_retry};
+use crate::hooks::PhaseContext;
+use crate::phase::PhaseRuntime;
+use crate::registry::ResolvedAgent;
+use crate::state::StateCommand;
+use awaken_contract::contract::event::AgentEvent;
+use awaken_contract::contract::event_sink::EventSink;
+use awaken_contract::contract::executor::{InferenceRequest, InferenceRoutingKey};
+use awaken_contract::contract::identity::RunIdentity;
+use awaken_contract::contract::inference::{
+    InferenceOverride, LLMResponse, StopReason, StreamResult,
+};
+use awaken_contract::contract::lifecycle::TerminationReason;
+use awaken_contract::contract::message::{Message, ToolCall};
+use awaken_contract::contract::storage::ThreadRunStore;
+use awaken_contract::contract::suspension::{SuspendTicket, ToolCallOutcome, ToolCallStatus};
+use awaken_contract::contract::tool::{ToolCallContext, ToolResult};
+use awaken_contract::contract::tool_intercept::ToolInterceptPayload;
+use awaken_contract::model::Phase;
+use std::sync::Arc;
 const INTERRUPTED_TOOL_MESSAGE: &str = "[Tool execution was interrupted]";
-
 /// Format a user-visible note that surfaces a cancelled parallel tool
 /// call after mid-stream recovery. Centralized so telemetry and docs can
 /// reason about the exact wording.
@@ -296,7 +291,7 @@ async fn recover_truncation(
         let upstream_model = effective_upstream_model(ctx.agent, overrides.as_ref())?;
         let cont_request = InferenceRequest {
             upstream_model,
-            routing_key: Some(ctx.run_identity.thread_id.clone()),
+            routing_key: Some(InferenceRoutingKey::from_run_identity(ctx.run_identity)),
             messages: cont_messages,
             tools: ctx.agent.tool_descriptors(),
             system: vec![],
@@ -336,6 +331,11 @@ fn effective_upstream_model(
     if upstream_model.trim().is_empty() {
         return Err(AgentLoopError::InferenceFailed(
             "inference override upstream_model cannot be empty".into(),
+        ));
+    }
+    if !agent.llm_executor.supports_upstream_model_override() {
+        return Err(AgentLoopError::InferenceFailed(
+            "inference override upstream_model is not supported for model pools".into(),
         ));
     }
     Ok(upstream_model.clone())
@@ -527,7 +527,7 @@ async fn run_inference_phase(
     let request_upstream_model = effective_upstream_model(ctx.agent, overrides.as_ref())?;
     let request = InferenceRequest {
         upstream_model: request_upstream_model.clone(),
-        routing_key: Some(ctx.run_identity.thread_id.clone()),
+        routing_key: Some(InferenceRoutingKey::from_run_identity(ctx.run_identity)),
         messages: request_messages,
         tools,
         system: vec![],

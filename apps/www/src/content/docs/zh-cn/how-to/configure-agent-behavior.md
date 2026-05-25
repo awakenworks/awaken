@@ -147,7 +147,7 @@ curl -sS -X PUT http://localhost:3000/v1/config/agents/research-assistant \
 
 | Key | 消费方 | 说明 |
 |---|---|---|
-| `retry` | Resolver | 重试和同 provider 内的 fallback upstream models。 |
+| `retry` | Resolver | 所选模型或 pool member 的 retry/backoff 策略。 |
 | `permission` | Permission plugin | 默认 allow/ask/deny 行为和有序工具规则。 |
 | `reminder` | Reminder plugin | 按工具和输出匹配并注入 system 或 conversation context 的规则。 |
 | `generative-ui` | Generative UI plugin | A2UI catalog id、examples 或完整 prompt instructions。 |
@@ -171,7 +171,7 @@ curl -sS -X PUT http://localhost:3000/v1/config/agents/research-assistant \
 3. 用 `system_prompt`、`max_rounds`、`max_continuation_retries`、`reasoning_effort` 和 `context_policy` 调整整体循环行为。
 4. 用 `allowed_tools` 和 `excluded_tools` 限制可见工具。
 5. 用 `permission` 规则处理运行时 allow/ask/deny 决策。
-6. 用 `retry` fallback upstream models 增强同 provider 内的韧性。
+6. 用 `model-pools` 配置 fallback 成员；用 `retry` 调整每个成员的重试策略。
 7. 只有需要对应行为时，才添加 `reminder`、`generative-ui`、`deferred_tools` 和 `compaction` section。
 8. 通过 `/v1/config/*` 发布配置；写入成功后，新建 run 才会使用新的 snapshot。
 
@@ -179,7 +179,7 @@ curl -sS -X PUT http://localhost:3000/v1/config/agents/research-assistant \
 
 - 对外保持 `AgentSpec.id`、`ModelSpec.id` 和 `ProviderSpec.id` 稳定。
 - 使用 canonical 字段：`model_id`、`provider_id`、`upstream_model`。旧的 `model`、`provider` 不是托管配置字段。
-- 将 `InferenceOverride.upstream_model` 视为同 provider 内的覆盖。它不会重新解析 `AgentSpec.model_id`，也不能切换 provider executor。
+- 将 `InferenceOverride.upstream_model` 视为同 provider 内的覆盖。它不会重新解析 `AgentSpec.model_id`，也不能切换 provider executor；model pool backed agent 会拒绝这个覆盖。
 - 生成配置前查询 `/v1/config/{namespace}/$schema`，并通过 `/v1/capabilities` 查看插件 `config_schemas`。`AgentSpec`、`ModelSpec` 和多个 section 类型会拒绝未知字段。
 - 只要插件已注册且 section value 匹配 schema，新增 section 属于兼容变更。不合法 section 会在 runtime snapshot 发布前失败。
 - 移除 plugin id 但保留对应 section 不会激活该插件；未被消费的 section key 会作为可能的拼写错误记录日志。

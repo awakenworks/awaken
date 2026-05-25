@@ -84,7 +84,7 @@ Everything below lives in config and reloads on the next run:
 | `context_policy` | `AgentSpec.context_policy` | Context window shaping + compaction |
 | Permission rules | `sections.permission.rules` | Per-tool allow/ask/deny on name + args |
 | Reminder rules | `sections.reminder.rules` | Inject system/conversation messages on tool patterns |
-| Retry / fallback models | `sections.retry` | Same-provider model fallbacks |
+| Retry policy | `sections.retry` | Backoff and retry limits |
 | Deferred tool gating | `sections.deferred_tools` | Which tools stay eager vs load on demand |
 | Compaction summarizer | `sections.compaction` | Summarizer prompt + model + threshold |
 | Generative UI catalog | `sections.generative-ui` | A2UI catalog id + examples |

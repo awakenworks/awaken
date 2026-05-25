@@ -20,7 +20,7 @@
 
 use awaken_contract::contract::executor::InferenceExecutionError;
 use awaken_contract::registry_spec::{
-    HomeStrategy, PoolMemberRole, PoolRoutingPolicy, PoolSwitchPolicy,
+    HomeStrategy, PoolMemberRole, PoolRoutingPolicy, PoolSwitchPolicy, StickyScope,
 };
 
 /// A resolved pool member as the router sees it: addressing plus selection
@@ -72,6 +72,14 @@ impl PoolRouter {
         &self.switch
     }
 
+    pub fn sticky_scope(&self) -> StickyScope {
+        self.routing.sticky_scope
+    }
+
+    pub fn home_strategy(&self) -> HomeStrategy {
+        self.routing.home
+    }
+
     /// Choose the home member for `routing_key`.
     ///
     /// Among `Member`-role entries, the highest weighted-rendezvous score for
@@ -81,6 +89,20 @@ impl PoolRouter {
     /// it rather than route to a `FailoverOnly` member as the cache-affinity
     /// home).
     pub fn select_home(&self, routing_key: &str, healthy: &HealthMask) -> usize {
+        self.select_home_with_sequence(routing_key, healthy, None)
+    }
+
+    pub fn select_home_with_sequence(
+        &self,
+        routing_key: &str,
+        healthy: &HealthMask,
+        sequence: Option<u64>,
+    ) -> usize {
+        if matches!(self.routing.home, HomeStrategy::RoundRobin) {
+            return self
+                .round_robin_home(healthy, sequence.unwrap_or(0))
+                .unwrap_or(0);
+        }
         let eligible = |idx: usize| self.members[idx].role == PoolMemberRole::Member;
         // Prefer healthy home-eligible members; fall back to any home-eligible.
         self.best_by_score(routing_key, |idx| {
@@ -88,6 +110,39 @@ impl PoolRouter {
         })
         .or_else(|| self.best_by_score(routing_key, eligible))
         .unwrap_or(0)
+    }
+
+    fn round_robin_home(&self, healthy: &HealthMask, sequence: u64) -> Option<usize> {
+        let choose = |require_healthy: bool| {
+            let total_weight: u64 = self
+                .members
+                .iter()
+                .enumerate()
+                .filter(|(idx, member)| {
+                    member.role == PoolMemberRole::Member
+                        && (!require_healthy || Self::is_healthy(healthy, *idx))
+                })
+                .map(|(_, member)| u64::from(member.weight.max(1)))
+                .sum();
+            if total_weight == 0 {
+                return None;
+            }
+            let mut slot = sequence % total_weight;
+            for (idx, member) in self.members.iter().enumerate() {
+                if member.role != PoolMemberRole::Member
+                    || (require_healthy && !Self::is_healthy(healthy, idx))
+                {
+                    continue;
+                }
+                let weight = u64::from(member.weight.max(1));
+                if slot < weight {
+                    return Some(idx);
+                }
+                slot -= weight;
+            }
+            None
+        };
+        choose(true).or_else(|| choose(false))
     }
 
     /// Choose a failover target distinct from `current_idx`, among healthy
@@ -119,6 +174,7 @@ impl PoolRouter {
             }
             InferenceExecutionError::Unauthorized(_)
             | InferenceExecutionError::ModelNotFound(_) => self.switch.on_permanent,
+            InferenceExecutionError::StreamInterrupted { .. } => self.switch.on_circuit_open,
             _ => false,
         }
     }
@@ -215,6 +271,10 @@ mod tests {
         PoolRouter::new(members, PoolRoutingPolicy::default(), switch)
     }
 
+    fn router_with_routing(members: Vec<RouterMember>, routing: PoolRoutingPolicy) -> PoolRouter {
+        PoolRouter::new(members, routing, PoolSwitchPolicy::default())
+    }
+
     // ── switch decision ──
 
     #[test]
@@ -304,6 +364,46 @@ mod tests {
             seen.insert(r.select_home(&format!("agent-{i}"), &healthy));
         }
         assert_eq!(seen.len(), 2, "both members should receive some agents");
+    }
+
+    #[test]
+    fn round_robin_home_advances_by_session_sequence() {
+        let r = router_with_routing(
+            vec![
+                member("a", PoolMemberRole::Member, 1),
+                member("b", PoolMemberRole::Member, 1),
+                member("c", PoolMemberRole::Member, 1),
+            ],
+            PoolRoutingPolicy {
+                home: HomeStrategy::RoundRobin,
+                ..PoolRoutingPolicy::default()
+            },
+        );
+        let healthy = [true, true, true];
+        let homes: Vec<_> = (0..6)
+            .map(|i| r.select_home_with_sequence("same-key", &healthy, Some(i)))
+            .collect();
+        assert_eq!(homes, vec![0, 1, 2, 0, 1, 2]);
+    }
+
+    #[test]
+    fn round_robin_home_skips_unhealthy_and_respects_weights() {
+        let r = router_with_routing(
+            vec![
+                member("a", PoolMemberRole::Member, 2),
+                member("b", PoolMemberRole::Member, 1),
+                member("c", PoolMemberRole::Member, 1),
+            ],
+            PoolRoutingPolicy {
+                home: HomeStrategy::RoundRobin,
+                ..PoolRoutingPolicy::default()
+            },
+        );
+        let healthy = [true, false, true];
+        let homes: Vec<_> = (0..6)
+            .map(|i| r.select_home_with_sequence("same-key", &healthy, Some(i)))
+            .collect();
+        assert_eq!(homes, vec![0, 0, 2, 0, 0, 2]);
     }
 
     #[test]

@@ -76,7 +76,7 @@ data that can be validated and changed at runtime.
 | Provider endpoint and OpenAI-compatible routing | `/v1/config/providers` (`adapter`, `base_url`, auth, timeout) |
 | Context budget and prompt caching | `AgentSpec.context_policy` |
 | Reasoning effort | `AgentSpec.reasoning_effort` |
-| Retry and fallback models | `AgentSpec.sections["retry"]` |
+| Retry policy | `AgentSpec.sections["retry"]` |
 | System reminders and prompt context injection | `AgentSpec.sections["reminder"]`, read through `ReminderConfigKey` |
 | Generative UI prompt guidance | `AgentSpec.sections["generative-ui"]`, read through `A2uiPromptConfigKey` |
 | Permission policy | `AgentSpec.sections["permission"]` |

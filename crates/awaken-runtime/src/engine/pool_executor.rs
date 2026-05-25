@@ -3,8 +3,8 @@
 //!
 //! Resolution builds a `PoolExecutor` over the pool's member models, each
 //! paired with its own resolved provider executor. Each inference request can
-//! carry a routing key (the agent loop uses the thread id), so the
-//! [`PoolRouter`] deterministically pins a conversation to one member
+//! carry routing keys (the agent loop supplies thread and run ids), so the
+//! [`PoolRouter`] pins the configured sticky scope to one member
 //! (prompt-cache affinity); a shared
 //! [`CircuitBreaker`] keyed by member model id carries failure memory across
 //! sessions, so while a member is unhealthy every session avoids it and
@@ -24,15 +24,19 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use async_trait::async_trait;
 use awaken_contract::contract::executor::{
     InferenceExecutionError, InferenceRequest, InferenceStream, LlmExecutor,
 };
 use awaken_contract::contract::inference::StreamResult;
+use awaken_contract::registry_spec::HomeStrategy;
 
 use super::circuit_breaker::CircuitBreaker;
 use super::pool_router::PoolRouter;
+
+const MAX_POOL_SESSION_STATES: usize = 4096;
 
 /// A resolved pool member paired with its concrete provider executor.
 pub struct PoolMemberExecutor {
@@ -53,6 +57,7 @@ pub struct PoolExecutor {
     router: PoolRouter,
     breaker: Arc<CircuitBreaker>,
     sessions: parking_lot::RwLock<HashMap<String, PoolSessionState>>,
+    home_sequence: AtomicU64,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -84,6 +89,7 @@ impl PoolExecutor {
             router,
             breaker,
             sessions: parking_lot::RwLock::new(HashMap::new()),
+            home_sequence: AtomicU64::new(0),
         }
     }
 
@@ -109,12 +115,25 @@ impl PoolExecutor {
     }
 
     fn session_key(&self, request: &InferenceRequest) -> String {
-        request
+        let key = request
             .routing_key
             .as_ref()
-            .filter(|key| !key.trim().is_empty())
-            .cloned()
-            .unwrap_or_else(|| self.fallback_home_key.clone())
+            .and_then(|key| key.for_scope(self.router.sticky_scope()));
+        key.unwrap_or_else(|| self.fallback_home_key.clone())
+    }
+
+    fn ensure_session_capacity(sessions: &mut HashMap<String, PoolSessionState>, current: &str) {
+        if sessions.len() < MAX_POOL_SESSION_STATES || sessions.contains_key(current) {
+            return;
+        }
+        if let Some(victim) = sessions.keys().find(|key| key.as_str() != current).cloned() {
+            sessions.remove(&victim);
+        }
+    }
+
+    fn home_sequence_for_new_session(&self) -> Option<u64> {
+        matches!(self.router.home_strategy(), HomeStrategy::RoundRobin)
+            .then(|| self.home_sequence.fetch_add(1, Ordering::Relaxed))
     }
 
     /// Resolve the active member for this session: home on first use, then a
@@ -122,10 +141,15 @@ impl PoolExecutor {
     fn select_active(&self, session_key: &str) -> usize {
         let health = self.health_mask();
         let mut sessions = self.sessions.write();
+        Self::ensure_session_capacity(&mut sessions, session_key);
         let state = sessions.entry(session_key.to_string()).or_default();
         match state.active {
             None => {
-                let home = self.router.select_home(session_key, &health);
+                let home = self.router.select_home_with_sequence(
+                    session_key,
+                    &health,
+                    self.home_sequence_for_new_session(),
+                );
                 state.active = Some(home);
                 home
             }
@@ -175,10 +199,30 @@ impl PoolExecutor {
         let next = self.router.select_failover(session_key, current, &mask)?;
         self.record_switch(current, next, "error-driven");
         let mut sessions = self.sessions.write();
+        Self::ensure_session_capacity(&mut sessions, session_key);
         let state = sessions.entry(session_key.to_string()).or_default();
         state.switch_count += 1;
         state.active = Some(next);
         Some(next)
+    }
+
+    fn reset_switch_budget(&self, session_key: &str) {
+        if let Some(state) = self.sessions.write().get_mut(session_key) {
+            state.switch_count = 0;
+        }
+    }
+
+    fn record_stream_member_failure(
+        &self,
+        request: &InferenceRequest,
+        err: &InferenceExecutionError,
+    ) {
+        let session_key = self.session_key(request);
+        let current = self.select_active(&session_key);
+        self.record_failure(current, err);
+        let mut tried = vec![false; self.members.len()];
+        tried[current] = true;
+        let _ = self.next_on_error(&session_key, current, err, &tried);
     }
 
     fn record_switch(&self, from: usize, to: usize, reason: &str) {
@@ -219,6 +263,7 @@ impl LlmExecutor for PoolExecutor {
             match self.members[idx].executor.execute(req).await {
                 Ok(result) => {
                     self.breaker.record_success(&self.members[idx].model_id);
+                    self.reset_switch_budget(&session_key);
                     return Ok(result);
                 }
                 Err(err) => {
@@ -251,7 +296,6 @@ impl LlmExecutor for PoolExecutor {
                 let req = self.request_for(idx, &request);
                 match self.members[idx].executor.execute_stream(req).await {
                     Ok(stream) => {
-                        self.breaker.record_success(&self.members[idx].model_id);
                         return Ok(stream);
                     }
                     Err(err) => {
@@ -269,437 +313,23 @@ impl LlmExecutor for PoolExecutor {
     fn name(&self) -> &str {
         &self.pool_id
     }
+
+    fn supports_upstream_model_override(&self) -> bool {
+        false
+    }
+
+    fn record_stream_success(&self, request: &InferenceRequest) {
+        let session_key = self.session_key(request);
+        let idx = self.select_active(&session_key);
+        self.breaker.record_success(&self.members[idx].model_id);
+        self.reset_switch_budget(&session_key);
+    }
+
+    fn record_stream_failure(&self, request: &InferenceRequest, err: &InferenceExecutionError) {
+        self.record_stream_member_failure(request, err);
+    }
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::engine::circuit_breaker::CircuitBreakerConfig;
-    use crate::engine::pool_router::RouterMember;
-    use awaken_contract::contract::content::ContentBlock;
-    use awaken_contract::contract::inference::StopReason;
-    use awaken_contract::contract::message::Message;
-    use awaken_contract::registry_spec::{PoolMemberRole, PoolRoutingPolicy, PoolSwitchPolicy};
-    use std::sync::atomic::{AtomicU32, Ordering};
-
-    fn ok_result() -> StreamResult {
-        StreamResult {
-            content: vec![ContentBlock::text("ok")],
-            tool_calls: vec![],
-            usage: None,
-            stop_reason: Some(StopReason::EndTurn),
-            has_incomplete_tool_calls: false,
-        }
-    }
-
-    fn request() -> InferenceRequest {
-        InferenceRequest {
-            upstream_model: "pool-incoming".into(),
-            routing_key: None,
-            messages: vec![Message::user("hi")],
-            tools: vec![],
-            system: vec![],
-            overrides: None,
-            enable_prompt_cache: false,
-        }
-    }
-
-    fn request_for_thread(thread_id: &str) -> InferenceRequest {
-        InferenceRequest {
-            routing_key: Some(thread_id.to_string()),
-            ..request()
-        }
-    }
-
-    enum Behavior {
-        AlwaysOk,
-        AlwaysErr(InferenceExecutionError),
-        FailTransientThenOk { fails: u32 },
-    }
-
-    struct StubExecutor {
-        id: String,
-        behavior: Behavior,
-        calls: AtomicU32,
-    }
-
-    impl StubExecutor {
-        fn new(id: &str, behavior: Behavior) -> Arc<Self> {
-            Arc::new(Self {
-                id: id.to_string(),
-                behavior,
-                calls: AtomicU32::new(0),
-            })
-        }
-
-        fn call_count(&self) -> u32 {
-            self.calls.load(Ordering::SeqCst)
-        }
-    }
-
-    #[async_trait]
-    impl LlmExecutor for StubExecutor {
-        async fn execute(
-            &self,
-            _request: InferenceRequest,
-        ) -> Result<StreamResult, InferenceExecutionError> {
-            let n = self.calls.fetch_add(1, Ordering::SeqCst);
-            match &self.behavior {
-                Behavior::AlwaysOk => Ok(ok_result()),
-                Behavior::AlwaysErr(err) => Err(err.clone()),
-                Behavior::FailTransientThenOk { fails } => {
-                    if n < *fails {
-                        Err(InferenceExecutionError::Provider("transient".into()))
-                    } else {
-                        Ok(ok_result())
-                    }
-                }
-            }
-        }
-
-        fn name(&self) -> &str {
-            &self.id
-        }
-    }
-
-    fn router_over(ids: &[String], switch: PoolSwitchPolicy) -> PoolRouter {
-        let members = ids
-            .iter()
-            .map(|id| RouterMember {
-                model_id: id.clone(),
-                role: PoolMemberRole::Member,
-                weight: 1,
-            })
-            .collect();
-        PoolRouter::new(members, PoolRoutingPolicy::default(), switch)
-    }
-
-    fn ids(n: usize) -> Vec<String> {
-        (0..n).map(|i| format!("m{i}")).collect()
-    }
-
-    /// Deterministic home index for `home_key` over `n` members.
-    fn home_of(home_key: &str, n: usize) -> usize {
-        router_over(&ids(n), PoolSwitchPolicy::default()).select_home(home_key, &vec![true; n])
-    }
-
-    /// Build a pool of `n` members where the home member runs `home_behavior`
-    /// and every other member always succeeds. Returns the executor, the stub
-    /// handles, and the home index.
-    fn pool_home_fails(
-        home_key: &str,
-        n: usize,
-        home_behavior: Behavior,
-        switch: PoolSwitchPolicy,
-        breaker: Arc<CircuitBreaker>,
-    ) -> (PoolExecutor, Vec<Arc<StubExecutor>>, usize) {
-        let member_ids = ids(n);
-        let home = home_of(home_key, n);
-        let mut home_behavior = Some(home_behavior);
-        let mut stubs = Vec::new();
-        let mut member_execs = Vec::new();
-        for (i, id) in member_ids.iter().enumerate() {
-            let behavior = if i == home {
-                home_behavior.take().unwrap()
-            } else {
-                Behavior::AlwaysOk
-            };
-            let stub = StubExecutor::new(id, behavior);
-            stubs.push(stub.clone());
-            member_execs.push(PoolMemberExecutor {
-                model_id: id.clone(),
-                upstream_model: format!("{id}-upstream"),
-                executor: stub as Arc<dyn LlmExecutor>,
-            });
-        }
-        let router = router_over(&member_ids, switch);
-        let pool = PoolExecutor::new("pool", home_key, member_execs, router, breaker);
-        (pool, stubs, home)
-    }
-
-    /// Build a pool where every member runs the supplied behavior.
-    fn pool_all(
-        home_key: &str,
-        behaviors: Vec<Behavior>,
-        switch: PoolSwitchPolicy,
-        breaker: Arc<CircuitBreaker>,
-    ) -> (PoolExecutor, Vec<Arc<StubExecutor>>) {
-        let member_ids = ids(behaviors.len());
-        let mut stubs = Vec::new();
-        let mut member_execs = Vec::new();
-        for (id, behavior) in member_ids.iter().zip(behaviors) {
-            let stub = StubExecutor::new(id, behavior);
-            stubs.push(stub.clone());
-            member_execs.push(PoolMemberExecutor {
-                model_id: id.clone(),
-                upstream_model: format!("{id}-upstream"),
-                executor: stub as Arc<dyn LlmExecutor>,
-            });
-        }
-        let router = router_over(&member_ids, switch);
-        let pool = PoolExecutor::new("pool", home_key, member_execs, router, breaker);
-        (pool, stubs)
-    }
-
-    fn breaker() -> Arc<CircuitBreaker> {
-        Arc::new(CircuitBreaker::new(CircuitBreakerConfig::default()))
-    }
-
-    fn breaker_threshold(n: u32) -> Arc<CircuitBreaker> {
-        Arc::new(CircuitBreaker::new(CircuitBreakerConfig {
-            failure_threshold: n,
-            ..CircuitBreakerConfig::default()
-        }))
-    }
-
-    #[tokio::test]
-    async fn routes_home_and_succeeds() {
-        let (pool, stubs, home) = pool_home_fails(
-            "agent-x",
-            2,
-            Behavior::AlwaysOk,
-            PoolSwitchPolicy::default(),
-            breaker(),
-        );
-        assert!(pool.execute(request()).await.is_ok());
-        assert_eq!(stubs[home].call_count(), 1);
-        let others: u32 = stubs
-            .iter()
-            .enumerate()
-            .filter(|(i, _)| *i != home)
-            .map(|(_, s)| s.call_count())
-            .sum();
-        assert_eq!(others, 0, "only the home member runs");
-    }
-
-    #[tokio::test]
-    async fn same_thread_reuses_same_member_for_cache_affinity() {
-        let thread_id = "thread-cache-affinity";
-        let (pool, stubs) = pool_all(
-            "agent-x",
-            vec![Behavior::AlwaysOk, Behavior::AlwaysOk, Behavior::AlwaysOk],
-            PoolSwitchPolicy::default(),
-            breaker(),
-        );
-        let home = home_of(thread_id, stubs.len());
-
-        assert!(pool.execute(request_for_thread(thread_id)).await.is_ok());
-        assert!(pool.execute(request_for_thread(thread_id)).await.is_ok());
-
-        assert_eq!(
-            stubs[home].call_count(),
-            2,
-            "same thread must stay on its selected home member"
-        );
-        let other_calls: u32 = stubs
-            .iter()
-            .enumerate()
-            .filter(|(i, _)| *i != home)
-            .map(|(_, stub)| stub.call_count())
-            .sum();
-        assert_eq!(other_calls, 0);
-    }
-
-    #[tokio::test]
-    async fn different_threads_keep_independent_sticky_members() {
-        let (pool, stubs) = pool_all(
-            "agent-x",
-            vec![Behavior::AlwaysOk, Behavior::AlwaysOk],
-            PoolSwitchPolicy::default(),
-            breaker(),
-        );
-        let left = (0..200)
-            .map(|i| format!("thread-left-{i}"))
-            .find(|key| home_of(key, stubs.len()) == 0)
-            .expect("left-home key");
-        let right = (0..200)
-            .map(|i| format!("thread-right-{i}"))
-            .find(|key| home_of(key, stubs.len()) == 1)
-            .expect("right-home key");
-
-        assert!(pool.execute(request_for_thread(&left)).await.is_ok());
-        assert!(pool.execute(request_for_thread(&left)).await.is_ok());
-        assert!(pool.execute(request_for_thread(&right)).await.is_ok());
-        assert!(pool.execute(request_for_thread(&right)).await.is_ok());
-
-        assert_eq!(stubs[0].call_count(), 2);
-        assert_eq!(stubs[1].call_count(), 2);
-    }
-
-    #[tokio::test]
-    async fn same_thread_stays_on_failover_member_after_switch() {
-        let thread_id = "thread-failover-sticky";
-        let (pool, stubs, home) = pool_home_fails(
-            thread_id,
-            2,
-            Behavior::AlwaysErr(InferenceExecutionError::rate_limited("429")),
-            PoolSwitchPolicy::default(),
-            breaker(),
-        );
-        let failover = 1 - home;
-
-        assert!(pool.execute(request_for_thread(thread_id)).await.is_ok());
-        assert_eq!(stubs[home].call_count(), 1);
-        assert_eq!(stubs[failover].call_count(), 1);
-
-        assert!(pool.execute(request_for_thread(thread_id)).await.is_ok());
-        assert_eq!(
-            stubs[home].call_count(),
-            1,
-            "thread should not return to quota-limited home after switching"
-        );
-        assert_eq!(stubs[failover].call_count(), 2);
-    }
-
-    #[tokio::test]
-    async fn switches_to_other_member_on_quota() {
-        let (pool, stubs, home) = pool_home_fails(
-            "agent-x",
-            2,
-            Behavior::AlwaysErr(InferenceExecutionError::rate_limited("429")),
-            PoolSwitchPolicy::default(),
-            breaker(),
-        );
-        assert!(
-            pool.execute(request()).await.is_ok(),
-            "should switch off the quota-limited home member"
-        );
-        let others: u32 = stubs
-            .iter()
-            .enumerate()
-            .filter(|(i, _)| *i != home)
-            .map(|(_, s)| s.call_count())
-            .sum();
-        assert!(others >= 1, "a fallback member served the request");
-    }
-
-    #[tokio::test]
-    async fn switches_on_permanent_error() {
-        let (pool, stubs, home) = pool_home_fails(
-            "agent-x",
-            2,
-            Behavior::AlwaysErr(InferenceExecutionError::Unauthorized("401".into())),
-            PoolSwitchPolicy::default(),
-            breaker(),
-        );
-        assert!(pool.execute(request()).await.is_ok());
-        let others: u32 = stubs
-            .iter()
-            .enumerate()
-            .filter(|(i, _)| *i != home)
-            .map(|(_, s)| s.call_count())
-            .sum();
-        assert!(others >= 1);
-    }
-
-    #[tokio::test]
-    async fn does_not_switch_on_transient_error() {
-        let cb = breaker();
-        let (pool, stubs, home) = pool_home_fails(
-            "agent-x",
-            2,
-            Behavior::AlwaysErr(InferenceExecutionError::Provider("blip".into())),
-            PoolSwitchPolicy::default(),
-            cb.clone(),
-        );
-        let err = pool
-            .execute(request())
-            .await
-            .expect_err("transient propagates");
-        assert!(matches!(err, InferenceExecutionError::Provider(_)));
-        let others: u32 = stubs
-            .iter()
-            .enumerate()
-            .filter(|(i, _)| *i != home)
-            .map(|(_, s)| s.call_count())
-            .sum();
-        assert_eq!(others, 0, "transient must not switch members in-call");
-        let _ = cb;
-    }
-
-    #[tokio::test]
-    async fn does_not_switch_on_request_level_error() {
-        let (pool, stubs, home) = pool_home_fails(
-            "agent-x",
-            2,
-            Behavior::AlwaysErr(InferenceExecutionError::ContextOverflow("big".into())),
-            PoolSwitchPolicy::default(),
-            breaker(),
-        );
-        let err = pool
-            .execute(request())
-            .await
-            .expect_err("request-level error propagates");
-        assert!(matches!(err, InferenceExecutionError::ContextOverflow(_)));
-        let others: u32 = stubs
-            .iter()
-            .enumerate()
-            .filter(|(i, _)| *i != home)
-            .map(|(_, s)| s.call_count())
-            .sum();
-        assert_eq!(others, 0);
-    }
-
-    #[tokio::test]
-    async fn rehomes_after_member_breaker_opens() {
-        // Threshold 1: one transient failure opens the home member's breaker.
-        let (pool, stubs, home) = pool_home_fails(
-            "agent-x",
-            2,
-            Behavior::FailTransientThenOk { fails: 1 },
-            PoolSwitchPolicy::default(),
-            breaker_threshold(1),
-        );
-        // First call: home fails transiently and opens its breaker.
-        assert!(pool.execute(request()).await.is_err());
-        // Second call: home is unhealthy, so the session fails over to the peer.
-        assert!(pool.execute(request()).await.is_ok());
-        let others: u32 = stubs
-            .iter()
-            .enumerate()
-            .filter(|(i, _)| *i != home)
-            .map(|(_, s)| s.call_count())
-            .sum();
-        assert!(others >= 1, "second call should route to a healthy peer");
-    }
-
-    #[tokio::test]
-    async fn respects_max_switches_per_session() {
-        let switch = PoolSwitchPolicy {
-            max_switches_per_session: Some(1),
-            ..PoolSwitchPolicy::default()
-        };
-        let (pool, stubs) = pool_all(
-            "agent-x",
-            vec![
-                Behavior::AlwaysErr(InferenceExecutionError::rate_limited("429")),
-                Behavior::AlwaysErr(InferenceExecutionError::rate_limited("429")),
-                Behavior::AlwaysErr(InferenceExecutionError::rate_limited("429")),
-            ],
-            switch,
-            breaker(),
-        );
-        assert!(pool.execute(request()).await.is_err());
-        let total: u32 = stubs.iter().map(|s| s.call_count()).sum();
-        assert_eq!(total, 2, "home + exactly one switch");
-    }
-
-    #[tokio::test]
-    async fn execute_stream_switches_on_quota() {
-        let (pool, stubs, home) = pool_home_fails(
-            "agent-x",
-            2,
-            Behavior::AlwaysErr(InferenceExecutionError::overloaded("529")),
-            PoolSwitchPolicy::default(),
-            breaker(),
-        );
-        assert!(pool.execute_stream(request()).await.is_ok());
-        let others: u32 = stubs
-            .iter()
-            .enumerate()
-            .filter(|(i, _)| *i != home)
-            .map(|(_, s)| s.call_count())
-            .sum();
-        assert!(others >= 1);
-    }
-}
+#[path = "pool_executor_tests.rs"]
+mod pool_executor_tests;

@@ -70,7 +70,7 @@ deferred-tool 策略都应是可校验、可运行时变更的数据。
 | provider 端点与 OpenAI 兼容路由 | `/v1/config/providers`（`adapter`、`base_url`、认证、超时） |
 | 上下文预算与 prompt cache | `AgentSpec.context_policy` |
 | reasoning effort | `AgentSpec.reasoning_effort` |
-| 重试与 fallback models | `AgentSpec.sections["retry"]` |
+| 重试策略 | `AgentSpec.sections["retry"]` |
 | system reminder 与 prompt 上下文注入 | `AgentSpec.sections["reminder"]`，通过 `ReminderConfigKey` 读取 |
 | Generative UI prompt 指令 | `AgentSpec.sections["generative-ui"]`，通过 `A2uiPromptConfigKey` 读取 |
 | permission 策略 | `AgentSpec.sections["permission"]` |

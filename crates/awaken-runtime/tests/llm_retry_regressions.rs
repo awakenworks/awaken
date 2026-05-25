@@ -43,6 +43,7 @@ impl LlmExecutor for AlwaysUnauthorized {
 fn request() -> InferenceRequest {
     InferenceRequest {
         upstream_model: "primary-model".into(),
+        routing_key: None,
         messages: vec![Message::user("hello")],
         tools: Vec::new(),
         system: Vec::new(),

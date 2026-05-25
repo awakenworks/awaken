@@ -262,7 +262,7 @@ Diagnostics are available without publishing a snapshot:
 
 ## Inference overrides
 
-`InferenceOverride.upstream_model` uses an upstream model name for the already resolved provider. It does not re-resolve `AgentSpec.model_id` and does not switch provider executors.
+`InferenceOverride.upstream_model` uses an upstream model name for the already resolved provider. It does not re-resolve `AgentSpec.model_id`, does not switch provider executors, and is rejected for model-pool-backed agents because the pool chooses its member internally.
 
 At execution time the override is applied to `InferenceRequest.upstream_model`; executors should treat that field as the single source of truth for the upstream model. Remaining override fields carry generation parameters.
 

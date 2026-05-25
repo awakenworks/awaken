@@ -49,43 +49,50 @@ duplicate members, positive weights, and at least one home-eligible member.
 answers three pure questions, with member health passed in as a mask:
 
 - **Home** — weighted-rendezvous (HRW) hash of the routing key (the thread id
-  for agent-loop requests, with agent id as a fallback outside a run) over
-  healthy home-eligible members. Stable per conversation (cache affinity) and
-  spread across the pool; degrades gracefully as members change.
+  or run id for agent-loop requests, with agent id as a fallback outside a run)
+  over healthy home-eligible members. `RoundRobin` uses a per-pool sequence for
+  new sessions. Stable routing preserves cache affinity for deterministic
+  homes, and both strategies avoid unhealthy members when alternatives exist.
 - **Failover** — the best-scoring healthy member other than the current one.
 - **Switch** — whether an `InferenceExecutionError` warrants leaving the
-  current member (quota / permanent), per `PoolSwitchPolicy`.
+  current member (quota / permanent / stream interruption), per
+  `PoolSwitchPolicy`.
 
 ### D3: `PoolExecutor` presents the model contract
 
 `PoolExecutor` implements `LlmExecutor`, so streaming, retry, and
 context-window clamp treat a pool identically to a model. Resolution builds one
 over the members, each paired with its resolved provider executor. Agent-loop
-requests carry the thread identifier in the request `routing_key`, and routing
-is **sticky per thread**: a home is chosen on first use and held; a switch only
-happens when:
+requests carry both thread and run identifiers in the request `routing_key`;
+`sticky_scope` chooses which one keys pool session state. A home is chosen on
+first use and held; a switch only happens when:
 
 - the active member returns a **quota** (`RateLimited`/`Overloaded`, gated by an
   optional retry-after threshold) or **permanent** (`Unauthorized`/
   `ModelNotFound`) error — an in-call switch to another member; or
 - the active member's circuit breaker has **opened** (sustained transient
-  failure = "long-term failure") — a later call re-homes off it.
+  failure = "long-term failure") — a later call re-homes off it; or
+- a stream opens but then fails mid-stream — the pool records member failure
+  and moves the next recovery attempt to another healthy member when policy
+  allows.
 
 Transient single failures are returned to the caller (absorbed by the member's
 own retry policy); request-level errors (`ContextOverflow`, `InvalidRequest`,
 `ContentFiltered`) and `Cancelled` never switch, since they fail identically on
-every member. A shared `CircuitBreaker` keyed by member model id carries health
-across sessions: while a member is unhealthy every session avoids it, and
-sessions return once it heals — giving thread-like stickiness without persisted
-per-thread state. `max_switches_per_session` bounds churn.
+every member. A shared `CircuitBreaker` keyed by pool definition and member
+model id carries health across sessions for one published pool shape: while a
+member is unhealthy every session avoids it, and sessions return once it heals.
+Successful requests reset the per-session switch budget;
+`max_switches_per_session` bounds churn between successes.
 
 ### D4: Capability reconciliation
 
 The pool resolves to a synthetic `ModelSpec` whose `context_window` and
-`max_output_tokens` are the **minimum known bound** across members (unknown
-members ignored), so the context-window clamp is safe regardless of which
-member serves. Modalities, knowledge cutoff, and pricing are left unset — they
-have no runtime effect today and cannot be soundly attributed to one member.
+`max_output_tokens` are the **minimum declared bound** only when every member
+declares the bound. If any member is unknown, the pool bound is unknown too,
+because routing may select that member. Modalities, knowledge cutoff, and
+pricing are left unset — they have no runtime effect today and cannot be
+soundly attributed to one member.
 
 ### D5: Resolution via the model registry
 
@@ -116,12 +123,11 @@ serves models and pools from one id namespace exactly as the live
 
 Replay determinism rests on two properties rather than a recorded member log:
 the pinned manifest freezes the pool and member specs, and home selection is a
-stable hash of the thread id — so a resumed run resolves the identical pool
-configuration and homes to the same member for that conversation. The
+stable hash of the configured sticky scope — so a resumed run resolves the
+identical pool configuration and homes to the same member for that scope. The
 per-session circuit breaker is process-local, so after a restart a
 previously-avoided member is re-probed (desirable: health is re-evaluated).
-Completed turns replay their recorded
-outputs and do not re-invoke routing.
+Completed turns replay their recorded outputs and do not re-invoke routing.
 
 ### Follow-ups
 
@@ -131,7 +137,3 @@ outputs and do not re-invoke routing.
 - **Eval-grade replay**: for byte-identical eval reproduction across differing
   breaker state, record per-session routing decisions (home + switches) as an
   event and replay them; not required for durable resume correctness.
-- **`RoundRobin` home strategy** currently scores like `Deterministic` in the
-  pure router (no shared cursor); true round-robin needs session-spanning
-  state and is deferred. `Deterministic` (the default) is the cache-optimal
-  strategy and the intended primary path.

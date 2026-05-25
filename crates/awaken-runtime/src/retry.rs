@@ -3,9 +3,8 @@
 //! A small generic helper used by subsystems (credential broker, future
 //! MCP retry, etc.) that need *one*-shot retry-with-backoff semantics
 //! around an async operation. The full LLM-side retry coordinator lives
-//! in [`crate::engine::retry`] — that one also handles fallback model
-//! rotation, circuit breaking, and stream resume, none of which apply
-//! here.
+//! in [`crate::engine::retry`] — that one also handles LLM circuit
+//! breaking and stream resume, none of which apply here.
 //!
 //! Contract:
 //! - `is_retryable(&err)` returning false short-circuits on the current
