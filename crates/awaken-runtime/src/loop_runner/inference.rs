@@ -1158,13 +1158,13 @@ mod tests {
             .unwrap_err();
 
         match err {
-            AgentLoopError::InferenceFailed(msg) => {
+            AgentLoopError::Inference(e) => {
                 assert!(
-                    msg.contains("stream interrupted"),
-                    "expected stream-interrupt message, got: {msg}"
+                    e.to_string().contains("stream interrupted"),
+                    "expected stream-interrupt message, got: {e}"
                 );
             }
-            other => panic!("expected InferenceFailed, got: {other:?}"),
+            other => panic!("expected Inference, got: {other:?}"),
         }
     }
 
@@ -1269,13 +1269,13 @@ mod tests {
             .unwrap_err();
 
         match err {
-            AgentLoopError::InferenceFailed(msg) => {
+            AgentLoopError::Inference(e) => {
                 assert!(
-                    msg.contains("stream interrupted"),
-                    "expected stream-interrupt message, got: {msg}"
+                    e.to_string().contains("stream interrupted"),
+                    "expected stream-interrupt message, got: {e}"
                 );
             }
-            other => panic!("expected InferenceFailed, got: {other:?}"),
+            other => panic!("expected Inference, got: {other:?}"),
         }
 
         let events = sink.take();
@@ -1298,7 +1298,7 @@ mod tests {
             .await
             .unwrap_err();
 
-        assert!(matches!(err, AgentLoopError::InferenceFailed(_)));
+        assert!(matches!(err, AgentLoopError::Inference(_)));
 
         // At least 3 TextDelta events should have been emitted before the
         // first error. Retries under the R1 recovery plan may emit more
@@ -1368,10 +1368,10 @@ mod tests {
             .unwrap_err();
 
         match err {
-            AgentLoopError::InferenceFailed(msg) => {
-                assert!(msg.contains("stream creation failed"));
+            AgentLoopError::Inference(e) => {
+                assert!(e.to_string().contains("stream creation failed"));
             }
-            other => panic!("expected InferenceFailed, got: {other:?}"),
+            other => panic!("expected Inference, got: {other:?}"),
         }
     }
 
@@ -1395,13 +1395,13 @@ mod tests {
             .unwrap_err();
 
         match err {
-            AgentLoopError::InferenceFailed(msg) => {
+            AgentLoopError::Inference(e) => {
                 assert!(
-                    msg.contains("stream interrupted"),
-                    "expected stream-interrupt message, got: {msg}"
+                    e.to_string().contains("stream interrupted"),
+                    "expected stream-interrupt message, got: {e}"
                 );
             }
-            other => panic!("expected InferenceFailed, got: {other:?}"),
+            other => panic!("expected Inference, got: {other:?}"),
         }
     }
 
@@ -1421,15 +1421,15 @@ mod tests {
             .unwrap_err();
 
         match err {
-            AgentLoopError::InferenceFailed(msg) => {
+            AgentLoopError::Inference(e) => {
                 assert!(
-                    msg.contains("stream interrupted"),
-                    "expected stream-interrupt message, got: {msg}"
+                    e.to_string().contains("stream interrupted"),
+                    "expected stream-interrupt message, got: {e}"
                 );
                 // original classifier info is preserved in snapshot cause (connection reset for mapped Timeout).
                 let _ = "30s exceeded"; // keep literal for test discoverability
             }
-            other => panic!("expected InferenceFailed, got: {other:?}"),
+            other => panic!("expected Inference, got: {other:?}"),
         }
     }
 
@@ -1537,13 +1537,13 @@ mod tests {
             .unwrap_err();
 
         match err {
-            AgentLoopError::InferenceFailed(msg) => {
+            AgentLoopError::Inference(e) => {
                 assert!(
-                    msg.contains("stream interrupted"),
-                    "expected stream-interrupt message, got: {msg}"
+                    e.to_string().contains("stream interrupted"),
+                    "expected stream-interrupt message, got: {e}"
                 );
             }
-            other => panic!("expected InferenceFailed, got: {other:?}"),
+            other => panic!("expected Inference, got: {other:?}"),
         }
 
         // Events before the error should still have been emitted, and
@@ -1795,13 +1795,13 @@ mod tests {
             "expected 1 initial + 2 retries = 3 attempts"
         );
         match err {
-            AgentLoopError::InferenceFailed(msg) => {
+            AgentLoopError::Inference(e) => {
                 assert!(
-                    msg.contains("stream interrupted"),
-                    "expected stream-interrupt message, got: {msg}"
+                    e.to_string().contains("stream interrupted"),
+                    "expected stream-interrupt message, got: {e}"
                 );
             }
-            other => panic!("expected InferenceFailed, got: {other:?}"),
+            other => panic!("expected Inference, got: {other:?}"),
         }
     }
 
@@ -2335,13 +2335,13 @@ mod tests {
         let (result, ()) = tokio::join!(exec_fut, drive);
         let err = result.expect_err("cancellation must abort the retry loop");
         match err {
-            AgentLoopError::InferenceFailed(msg) => {
+            AgentLoopError::Inference(e) => {
                 assert!(
-                    msg.contains("cancelled"),
-                    "expected cancellation message, got: {msg}"
+                    e.to_string().contains("cancelled"),
+                    "expected cancellation message, got: {e}"
                 );
             }
-            other => panic!("expected InferenceFailed(cancelled), got: {other:?}"),
+            other => panic!("expected Inference(cancelled), got: {other:?}"),
         }
         // Only the first attempt should have run.
         assert_eq!(exec.attempts(), 1, "retry must not proceed after cancel");

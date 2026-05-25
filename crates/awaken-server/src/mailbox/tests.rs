@@ -170,6 +170,7 @@ struct RecoverFlakyMailboxStore {
     reclaim_failures_remaining: AtomicUsize,
     reclaim_calls: AtomicUsize,
     dead_letter_calls: AtomicUsize,
+    dead_letter_failures_remaining: AtomicUsize,
 }
 
 impl RecoverFlakyMailboxStore {
@@ -179,7 +180,16 @@ impl RecoverFlakyMailboxStore {
             reclaim_failures_remaining: AtomicUsize::new(reclaim_failures),
             reclaim_calls: AtomicUsize::new(0),
             dead_letter_calls: AtomicUsize::new(0),
+            dead_letter_failures_remaining: AtomicUsize::new(0),
         }
+    }
+
+    /// Inject `n` transient `dead_letter` failures before it succeeds, to
+    /// exercise recovery of a dispatch left Claimed by a flaky store.
+    fn with_dead_letter_failures(dead_letter_failures: usize) -> Self {
+        let mut store = Self::new(0);
+        store.dead_letter_failures_remaining = AtomicUsize::new(dead_letter_failures);
+        store
     }
 
     fn reclaim_calls(&self) -> usize {
@@ -276,6 +286,15 @@ impl MailboxStore for RecoverFlakyMailboxStore {
         now: u64,
     ) -> Result<(), StorageError> {
         self.dead_letter_calls.fetch_add(1, Ordering::SeqCst);
+        let remaining = self.dead_letter_failures_remaining.load(Ordering::SeqCst);
+        if remaining > 0
+            && self
+                .dead_letter_failures_remaining
+                .compare_exchange(remaining, remaining - 1, Ordering::SeqCst, Ordering::SeqCst)
+                .is_ok()
+        {
+            return Err(StorageError::Io("injected dead_letter failure".into()));
+        }
         self.inner
             .dead_letter(dispatch_id, claim_token, error, now)
             .await
@@ -1212,6 +1231,78 @@ impl RunDispatchExecutor for TransientFailingMailboxRuntime {
     }
 }
 
+/// Runtime stub that fails every run with a structured `InferenceExecutionError`
+/// (the P0 path). `retryable` selects a transient (429) vs permanent (403/quota)
+/// fault; `run_count` records how many times the runtime was actually entered,
+/// so tests can prove a permanent fault dead-letters after exactly one run
+/// instead of looping through `max_attempts`.
+#[derive(Default)]
+struct InferenceFailingMailboxRuntime {
+    retryable: bool,
+    run_count: AtomicUsize,
+}
+
+impl InferenceFailingMailboxRuntime {
+    fn permanent() -> Self {
+        Self {
+            retryable: false,
+            run_count: AtomicUsize::new(0),
+        }
+    }
+
+    fn transient() -> Self {
+        Self {
+            retryable: true,
+            run_count: AtomicUsize::new(0),
+        }
+    }
+
+    fn run_count(&self) -> usize {
+        self.run_count.load(Ordering::SeqCst)
+    }
+}
+
+#[async_trait::async_trait]
+impl RunDispatchExecutor for InferenceFailingMailboxRuntime {
+    async fn run(
+        &self,
+        _request: RunActivation,
+        _sink: Arc<dyn EventSink>,
+    ) -> Result<AgentRunResult, AgentLoopError> {
+        self.run_count.fetch_add(1, Ordering::SeqCst);
+        let error = if self.retryable {
+            awaken_contract::contract::executor::InferenceExecutionError::rate_limited(
+                "429 too many requests",
+            )
+        } else {
+            awaken_contract::contract::executor::InferenceExecutionError::Unauthorized(
+                "403 pre_consume_token_quota_failed".to_string(),
+            )
+        };
+        Err(AgentLoopError::from(error))
+    }
+
+    fn cancel(&self, _id: &str) -> bool {
+        false
+    }
+
+    async fn cancel_and_wait_by_thread(&self, _thread_id: &str) -> bool {
+        false
+    }
+
+    fn send_decision(&self, _id: &str, _tool_call_id: String, _resume: ToolCallResume) -> bool {
+        false
+    }
+
+    fn send_messages(&self, _id: &str, _messages: Vec<Message>) -> bool {
+        false
+    }
+
+    fn live_registry_set(&self) -> Option<awaken_runtime::registry::RegistrySet> {
+        Some(empty_live_registry_set())
+    }
+}
+
 struct RecordedMailboxRequest {
     run_mode: RunMode,
     adapter: AdapterKind,
@@ -1816,6 +1907,540 @@ async fn start_lifecycle_ready_retries_startup_recovery_until_ready() {
     .await;
     assert_eq!(recovered.status, RunDispatchStatus::DeadLetter);
     handle.shutdown().await.expect("shutdown lifecycle");
+}
+
+/// P1a: when a run's activation messages have been garbage-collected but the
+/// run record survives, `reconstruct_run_request` fails. The dispatch must
+/// dead-letter exactly once, never enter the runtime, and the terminal row
+/// must not be re-claimed on a subsequent dispatch poll (no double-poll /
+/// duplicate `permanent_error` + `dead_letter` noise).
+#[tokio::test]
+async fn reconstruct_failure_dead_letters_once_without_repolling() {
+    let store = make_store();
+    let run_store = Arc::new(InMemoryStore::new());
+    let runtime = Arc::new(CountingMailboxRuntime::default());
+    let mailbox = Arc::new(Mailbox::new(
+        Arc::clone(&runtime) as Arc<dyn RunDispatchExecutor>,
+        store.clone(),
+        run_store.clone(),
+        "p1a-consumer".to_string(),
+        MailboxConfig::default(),
+    ));
+
+    let dispatch = prepare_queued_dispatch(&mailbox, "thread-gc", "hi").await;
+    let dispatch_id = dispatch.dispatch_id.clone();
+    let thread_id = dispatch.thread_id.clone();
+    store.enqueue(&dispatch).await.expect("enqueue dispatch");
+
+    // Simulate durable corruption: the run record survives but its activation
+    // messages were garbage-collected from the thread store.
+    run_store
+        .save_messages(&thread_id, &[])
+        .await
+        .expect("wipe messages to simulate GC");
+
+    // Drive one claim+execute cycle (claims the queued row and spawns
+    // run_claimed_dispatch, which hits the reconstruct failure).
+    mailbox.get_or_create_worker(&thread_id).await;
+    mailbox.try_dispatch_next(&thread_id).await;
+
+    let dead = wait_for_dispatch(&store, &dispatch_id, |d| {
+        d.status == RunDispatchStatus::DeadLetter
+    })
+    .await;
+    assert_eq!(dead.status, RunDispatchStatus::DeadLetter);
+    assert!(
+        dead.last_error
+            .as_deref()
+            .is_some_and(|e| e.contains("not found")),
+        "expected missing-message error, got: {:?}",
+        dead.last_error
+    );
+    // Reconstruct failure must short-circuit before the runtime is entered.
+    assert_eq!(
+        runtime.run_count(),
+        0,
+        "runtime must not run on reconstruct failure"
+    );
+
+    // No double-poll: a subsequent dispatch poll must not re-claim the
+    // terminal row. attempt_count and run_count stay frozen.
+    let attempts_after_dead_letter = dead.attempt_count;
+    mailbox.try_dispatch_next(&thread_id).await;
+    sleep(Duration::from_millis(50)).await;
+    let after = store
+        .load_dispatch(&dispatch_id)
+        .await
+        .unwrap()
+        .expect("dispatch remains inspectable");
+    assert_eq!(
+        after.status,
+        RunDispatchStatus::DeadLetter,
+        "dead-lettered row must stay terminal"
+    );
+    assert_eq!(
+        after.attempt_count, attempts_after_dead_letter,
+        "terminal row must not be re-claimed / re-attempted"
+    );
+    assert_eq!(
+        runtime.run_count(),
+        0,
+        "terminal row must not be re-executed"
+    );
+}
+
+/// P1b: a terminal (Done) run must never be re-dispatched by startup
+/// recovery, even when it still carries a stale `dispatch_id` reference.
+/// Recovery's re-dispatch paths filter to `Created`/`Waiting` and exclude
+/// terminal runs, so no phantom dispatch is enqueued for a completed run.
+/// (Scheduled actions are phase-scoped in-run state and cannot outlive a run
+/// as a dispatch, so there is no terminal-run dispatch leak to clean up.)
+#[tokio::test]
+async fn terminal_run_is_not_redispatched_by_recovery() {
+    let store = make_store();
+    let run_store = Arc::new(InMemoryStore::new());
+    let runtime = Arc::new(CountingMailboxRuntime::default());
+    let mailbox = Arc::new(Mailbox::new(
+        Arc::clone(&runtime) as Arc<dyn RunDispatchExecutor>,
+        store.clone(),
+        run_store.clone(),
+        "p1b-consumer".to_string(),
+        MailboxConfig::default(),
+    ));
+
+    // A completed run that still references the dispatch it ran under.
+    let mut run = seeded_waiting_run("run-done", "thread-done", "agent");
+    run.status = RunStatus::Done;
+    run.termination_reason = Some(TerminationReason::NaturalEnd);
+    run.waiting = None;
+    run.dispatch_id = Some("stale-dispatch-id".to_string());
+    run.finished_at = Some(2);
+    run_store.create_run(&run).await.expect("seed terminal run");
+
+    let recovered = mailbox.recover().await.expect("recover should succeed");
+    assert_eq!(
+        recovered, 0,
+        "terminal run must not produce any recovery dispatch"
+    );
+
+    // No phantom dispatch was enqueued for the terminal run's thread.
+    let dispatches = store
+        .list_dispatches("thread-done", None, 10, 0)
+        .await
+        .expect("list dispatches");
+    assert!(
+        dispatches.is_empty(),
+        "terminal run must not be re-dispatched, found: {dispatches:?}"
+    );
+    assert_eq!(
+        runtime.run_count(),
+        0,
+        "terminal run must not be executed by recovery"
+    );
+}
+
+/// P3: the framework-managed GC maintenance tick auto-vacuums terminal
+/// dispatches older than `gc_ttl`. This is the built-in auto-vacuum the
+/// mailbox already runs on `gc_interval` — no external task or manual
+/// `UPDATE run_dispatches` surgery is required for long sessions.
+#[tokio::test]
+async fn run_gc_auto_vacuums_old_terminal_dispatches() {
+    let store = make_store();
+    let run_store = Arc::new(InMemoryStore::new());
+    let runtime: Arc<dyn RunDispatchExecutor> = Arc::new(NoopMailboxRuntime);
+    let mailbox = Arc::new(Mailbox::new(
+        runtime,
+        store.clone(),
+        run_store.clone(),
+        "p3-gc-consumer".to_string(),
+        MailboxConfig {
+            gc_ttl: Duration::ZERO,
+            ..MailboxConfig::default()
+        },
+    ));
+
+    // Drive a dispatch to a terminal (Acked) state with a past completed_at.
+    let mut dispatch = prepare_queued_dispatch(&mailbox, "thread-gc-vacuum", "done").await;
+    dispatch.available_at = 1000;
+    let dispatch_id = dispatch.dispatch_id.clone();
+    store.enqueue(&dispatch).await.expect("enqueue dispatch");
+    let claimed = store
+        .claim("thread-gc-vacuum", "p3-gc-consumer", 30_000, 1000, 1)
+        .await
+        .expect("claim dispatch");
+    let token = claimed[0]
+        .claim_token
+        .as_deref()
+        .expect("claim token")
+        .to_string();
+    store.ack(&dispatch_id, &token, 2000).await.expect("ack");
+    assert_eq!(
+        store
+            .load_dispatch(&dispatch_id)
+            .await
+            .unwrap()
+            .expect("acked dispatch is inspectable")
+            .status,
+        RunDispatchStatus::Acked
+    );
+
+    // The GC maintenance tick purges the aged terminal row.
+    mailbox.run_gc().await;
+
+    assert!(
+        store.load_dispatch(&dispatch_id).await.unwrap().is_none(),
+        "run_gc must auto-vacuum terminal dispatches older than gc_ttl"
+    );
+}
+
+/// P0 end-to-end: a permanent LLM fault (403 / exhausted quota) surfaced by
+/// the runtime dead-letters the dispatch after exactly ONE run, instead of
+/// burning the full max_attempts budget — the campaign's 5-retry loop.
+#[tokio::test]
+async fn permanent_inference_error_dead_letters_after_single_run() {
+    let store = make_store();
+    let run_store = Arc::new(InMemoryStore::new());
+    let runtime = Arc::new(InferenceFailingMailboxRuntime::permanent());
+    let mailbox = Arc::new(Mailbox::new(
+        Arc::clone(&runtime) as Arc<dyn RunDispatchExecutor>,
+        store.clone(),
+        run_store.clone(),
+        "p0-permanent-consumer".to_string(),
+        MailboxConfig {
+            default_max_attempts: 5,
+            ..MailboxConfig::default()
+        },
+    ));
+
+    let dispatch = prepare_queued_dispatch(&mailbox, "thread-perm", "go").await;
+    let dispatch_id = dispatch.dispatch_id.clone();
+    let thread_id = dispatch.thread_id.clone();
+    store.enqueue(&dispatch).await.expect("enqueue dispatch");
+
+    mailbox.get_or_create_worker(&thread_id).await;
+    mailbox.try_dispatch_next(&thread_id).await;
+
+    let dead = wait_for_dispatch(&store, &dispatch_id, |d| {
+        d.status == RunDispatchStatus::DeadLetter
+    })
+    .await;
+    assert_eq!(dead.status, RunDispatchStatus::DeadLetter);
+    assert!(
+        dead.last_error
+            .as_deref()
+            .is_some_and(|e| e.contains("unauthorized")),
+        "expected unauthorized error, got: {:?}",
+        dead.last_error
+    );
+    // The decisive assertion: the runtime ran exactly once. A pre-fix build
+    // nacked and re-ran up to max_attempts (5) before dead-lettering.
+    assert_eq!(
+        runtime.run_count(),
+        1,
+        "permanent fault must not be retried"
+    );
+    assert!(
+        dead.attempt_count < 5,
+        "permanent fault must not exhaust the retry budget, attempt_count={}",
+        dead.attempt_count
+    );
+}
+
+/// P0 end-to-end: a transient LLM fault (429) nacks the dispatch back to the
+/// queue for retry with backoff rather than dead-lettering on the first
+/// attempt — the retry path the fix must preserve.
+#[tokio::test]
+async fn transient_inference_error_nacks_for_retry() {
+    let store = make_store();
+    let run_store = Arc::new(InMemoryStore::new());
+    let runtime = Arc::new(InferenceFailingMailboxRuntime::transient());
+    let mailbox = Arc::new(Mailbox::new(
+        Arc::clone(&runtime) as Arc<dyn RunDispatchExecutor>,
+        store.clone(),
+        run_store.clone(),
+        "p0-transient-consumer".to_string(),
+        MailboxConfig {
+            default_max_attempts: 5,
+            // Large backoff so the re-queued dispatch is not re-claimed during
+            // assertions — keeps attempt_count/run_count stable.
+            default_retry_delay_ms: 600_000,
+            max_retry_delay_ms: 600_000,
+            ..MailboxConfig::default()
+        },
+    ));
+
+    let dispatch = prepare_queued_dispatch(&mailbox, "thread-transient", "go").await;
+    let dispatch_id = dispatch.dispatch_id.clone();
+    let thread_id = dispatch.thread_id.clone();
+    store.enqueue(&dispatch).await.expect("enqueue dispatch");
+
+    mailbox.get_or_create_worker(&thread_id).await;
+    mailbox.try_dispatch_next(&thread_id).await;
+
+    // Nacked back to Queued (eligible later, after backoff) with one attempt
+    // recorded — not dead-lettered.
+    let requeued = wait_for_dispatch(&store, &dispatch_id, |d| {
+        d.status == RunDispatchStatus::Queued && d.attempt_count == 1
+    })
+    .await;
+    assert_eq!(requeued.status, RunDispatchStatus::Queued);
+    assert_eq!(requeued.attempt_count, 1);
+    assert_eq!(
+        runtime.run_count(),
+        1,
+        "transient fault runs once then re-queues"
+    );
+    assert!(
+        requeued
+            .last_error
+            .as_deref()
+            .is_some_and(|e| e.contains("rate limited")),
+        "expected rate-limit error, got: {:?}",
+        requeued.last_error
+    );
+}
+
+/// P1a (variant): reconstruct also fails fast when the run record itself is
+/// missing (not just its messages) — a single dead-letter, runtime never
+/// entered.
+#[tokio::test]
+async fn reconstruct_failure_missing_run_dead_letters_once() {
+    let store = make_store();
+    let run_store = Arc::new(InMemoryStore::new());
+    let runtime = Arc::new(CountingMailboxRuntime::default());
+    let mailbox = Arc::new(Mailbox::new(
+        Arc::clone(&runtime) as Arc<dyn RunDispatchExecutor>,
+        store.clone(),
+        run_store.clone(),
+        "p1a-missing-run-consumer".to_string(),
+        MailboxConfig::default(),
+    ));
+
+    let mut dispatch = prepare_queued_dispatch(&mailbox, "thread-missing-run", "hi").await;
+    // Point the dispatch at a run that was never persisted.
+    dispatch.run_id = "nonexistent-run".to_string();
+    let dispatch_id = dispatch.dispatch_id.clone();
+    let thread_id = dispatch.thread_id.clone();
+    store.enqueue(&dispatch).await.expect("enqueue dispatch");
+
+    mailbox.get_or_create_worker(&thread_id).await;
+    mailbox.try_dispatch_next(&thread_id).await;
+
+    let dead = wait_for_dispatch(&store, &dispatch_id, |d| {
+        d.status == RunDispatchStatus::DeadLetter
+    })
+    .await;
+    assert_eq!(dead.status, RunDispatchStatus::DeadLetter);
+    assert!(
+        dead.last_error
+            .as_deref()
+            .is_some_and(|e| e.contains("not found")),
+        "expected run-not-found error, got: {:?}",
+        dead.last_error
+    );
+    assert_eq!(
+        runtime.run_count(),
+        0,
+        "missing run must not enter the runtime"
+    );
+}
+
+/// P3: the periodic sweep maintenance tick reclaims a Claimed dispatch whose
+/// lease expired (consumer crashed) and the work runs to completion — a stuck
+/// Claimed row never strands work, with no manual intervention.
+#[tokio::test]
+async fn run_sweep_reclaims_expired_lease_and_completes_work() {
+    let store = make_store();
+    let run_store = Arc::new(InMemoryStore::new());
+    let runtime = Arc::new(CountingMailboxRuntime::default());
+    let mailbox = Arc::new(Mailbox::new(
+        Arc::clone(&runtime) as Arc<dyn RunDispatchExecutor>,
+        store.clone(),
+        run_store.clone(),
+        "p3-sweep-consumer".to_string(),
+        MailboxConfig::default(),
+    ));
+
+    let mut dispatch = prepare_queued_dispatch(&mailbox, "thread-sweep-reclaim", "x").await;
+    dispatch.available_at = 1000;
+    let dispatch_id = dispatch.dispatch_id.clone();
+    store.enqueue(&dispatch).await.expect("enqueue dispatch");
+    // A consumer claims then "crashes": short lease far in the past.
+    store
+        .claim("thread-sweep-reclaim", "crashed-consumer", 100, 1000, 1)
+        .await
+        .expect("claim dispatch");
+    assert_eq!(
+        store
+            .load_dispatch(&dispatch_id)
+            .await
+            .unwrap()
+            .expect("claimed dispatch is inspectable")
+            .status,
+        RunDispatchStatus::Claimed
+    );
+
+    // The sweep tick reclaims the expired lease and re-dispatches the work.
+    mailbox.run_sweep().await;
+
+    let done = wait_for_dispatch(&store, &dispatch_id, |d| {
+        d.status == RunDispatchStatus::Acked
+    })
+    .await;
+    assert_eq!(done.status, RunDispatchStatus::Acked);
+    assert_eq!(
+        done.attempt_count, 1,
+        "reclaim records exactly one recovery attempt"
+    );
+    assert!(
+        runtime.run_count() >= 1,
+        "reclaimed work must actually execute"
+    );
+}
+
+/// P0 reliability/load: a quota storm — many concurrent dispatches across many
+/// threads all hitting a permanent 403/quota fault — drains to terminal with
+/// BOUNDED work. The decisive property: total runtime invocations == number of
+/// dispatches (O(N)), not N * max_attempts (O(5N)) as the pre-fix retry loop
+/// produced. Models the campaign's 459+ Queued backlog under quota exhaustion.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn quota_storm_drains_with_bounded_work() {
+    const DISPATCHES: usize = 50;
+
+    let store = make_store();
+    let run_store = Arc::new(InMemoryStore::new());
+    let runtime = Arc::new(InferenceFailingMailboxRuntime::permanent());
+    let mailbox = Arc::new(Mailbox::new(
+        Arc::clone(&runtime) as Arc<dyn RunDispatchExecutor>,
+        store.clone(),
+        run_store.clone(),
+        "quota-storm-consumer".to_string(),
+        MailboxConfig {
+            default_max_attempts: 5,
+            ..MailboxConfig::default()
+        },
+    ));
+
+    // One dispatch per thread, all enqueued and kicked.
+    let mut dispatch_ids = Vec::with_capacity(DISPATCHES);
+    for i in 0..DISPATCHES {
+        let thread_id = format!("storm-thread-{i}");
+        let dispatch = prepare_queued_dispatch(&mailbox, &thread_id, "go").await;
+        dispatch_ids.push(dispatch.dispatch_id.clone());
+        store.enqueue(&dispatch).await.expect("enqueue dispatch");
+        mailbox.get_or_create_worker(&thread_id).await;
+        mailbox.try_dispatch_next(&thread_id).await;
+    }
+
+    // Every dispatch must reach DeadLetter (the storm fully drains).
+    for dispatch_id in &dispatch_ids {
+        let dead = wait_for_dispatch(&store, dispatch_id, |d| {
+            d.status == RunDispatchStatus::DeadLetter
+        })
+        .await;
+        assert_eq!(dead.status, RunDispatchStatus::DeadLetter);
+    }
+
+    // Bounded work: each dispatch ran exactly once. A pre-fix build would have
+    // run up to DISPATCHES * 5 times before dead-lettering.
+    assert_eq!(
+        runtime.run_count(),
+        DISPATCHES,
+        "permanent quota storm must do O(N) work, not O(N * max_attempts)"
+    );
+
+    // No backlog stranded: nothing left Queued or Claimed anywhere.
+    for i in 0..DISPATCHES {
+        let thread_id = format!("storm-thread-{i}");
+        let pending = store
+            .list_dispatches(
+                &thread_id,
+                Some(&[RunDispatchStatus::Queued, RunDispatchStatus::Claimed]),
+                10,
+                0,
+            )
+            .await
+            .expect("list pending dispatches");
+        assert!(
+            pending.is_empty(),
+            "thread {thread_id} left a pending dispatch: {pending:?}"
+        );
+    }
+}
+
+/// P0 reliability under store faults: a transient `dead_letter()` failure while
+/// terminalizing a permanent inference error must not lose or strand the
+/// dispatch. It is left Claimed (recoverable); once the lease expires the sweep
+/// reclaims it and the re-dispatch dead-letters it for real.
+#[tokio::test]
+async fn permanent_error_recovers_from_transient_dead_letter_fault() {
+    let store = Arc::new(RecoverFlakyMailboxStore::with_dead_letter_failures(1));
+    let run_store = Arc::new(InMemoryStore::new());
+    let runtime = Arc::new(InferenceFailingMailboxRuntime::permanent());
+    let mailbox = Arc::new(Mailbox::new(
+        Arc::clone(&runtime) as Arc<dyn RunDispatchExecutor>,
+        store.clone(),
+        run_store.clone(),
+        "dl-fault-consumer".to_string(),
+        MailboxConfig {
+            default_max_attempts: 5,
+            // Lease long enough that the first run completes before it can be
+            // reclaimed, yet short enough for the test to drive recovery.
+            lease_ms: 300,
+            ..MailboxConfig::default()
+        },
+    ));
+
+    let dispatch = prepare_queued_dispatch(&mailbox, "thread-dl-fault", "go").await;
+    let dispatch_id = dispatch.dispatch_id.clone();
+    let thread_id = dispatch.thread_id.clone();
+    store.enqueue(&dispatch).await.expect("enqueue dispatch");
+
+    mailbox.get_or_create_worker(&thread_id).await;
+    mailbox.try_dispatch_next(&thread_id).await;
+
+    // The first dead_letter is injected-to-fail, leaving the dispatch Claimed.
+    // Once its lease expires the sweep reclaims it and the re-dispatch
+    // terminalizes it for real.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let current = store
+            .load_dispatch(&dispatch_id)
+            .await
+            .unwrap()
+            .expect("dispatch is inspectable");
+        if current.status == RunDispatchStatus::DeadLetter {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "dispatch never recovered to DeadLetter (stuck at {:?})",
+            current.status
+        );
+        sleep(Duration::from_millis(50)).await;
+        mailbox.run_sweep().await;
+    }
+
+    let dead = store
+        .load_dispatch(&dispatch_id)
+        .await
+        .unwrap()
+        .expect("dispatch is inspectable");
+    assert_eq!(dead.status, RunDispatchStatus::DeadLetter);
+    assert!(
+        dead.last_error
+            .as_deref()
+            .is_some_and(|e| e.contains("unauthorized")),
+        "expected unauthorized error, got: {:?}",
+        dead.last_error
+    );
+    // The injected fault forced exactly one recovery cycle: the run executed
+    // twice (the failed-dead_letter attempt and the successful one).
+    assert_eq!(
+        runtime.run_count(),
+        2,
+        "one injected dead_letter fault should force exactly one recovery cycle"
+    );
 }
 
 #[tokio::test]
@@ -3053,6 +3678,121 @@ fn classify_error_inference_failed_is_transient() {
 }
 
 #[test]
+fn classify_error_permanent_inference_error_is_permanent() {
+    use awaken_contract::contract::executor::InferenceExecutionError;
+    use awaken_runtime::loop_runner::AgentLoopError;
+    // HTTP 401/403 (bad credentials / exhausted token quota) is permanent:
+    // retrying just burns the full max_attempts budget. Must dead-letter,
+    // not nack. Constructed via the real `From` seam every production
+    // inference failure flows through (inference.rs drive_one_stream).
+    let result = Err(AgentLoopError::from(InferenceExecutionError::Unauthorized(
+        "403 pre_consume_token_quota_failed".to_string(),
+    )));
+    assert!(matches!(
+        classify_error(&result),
+        MailboxRunOutcome::PermanentError(_)
+    ));
+}
+
+#[test]
+fn classify_error_context_overflow_is_permanent() {
+    use awaken_contract::contract::executor::InferenceExecutionError;
+    use awaken_runtime::loop_runner::AgentLoopError;
+    // A prompt that exceeds the context window fails identically on every
+    // retry — permanent.
+    let result = Err(AgentLoopError::from(
+        InferenceExecutionError::ContextOverflow("prompt is too long".to_string()),
+    ));
+    assert!(matches!(
+        classify_error(&result),
+        MailboxRunOutcome::PermanentError(_)
+    ));
+}
+
+#[test]
+fn classify_error_model_not_found_is_permanent() {
+    use awaken_contract::contract::executor::InferenceExecutionError;
+    use awaken_runtime::loop_runner::AgentLoopError;
+    let result = Err(AgentLoopError::from(
+        InferenceExecutionError::ModelNotFound("404 unknown model".to_string()),
+    ));
+    assert!(matches!(
+        classify_error(&result),
+        MailboxRunOutcome::PermanentError(_)
+    ));
+}
+
+#[test]
+fn classify_error_transient_inference_error_is_transient() {
+    use awaken_contract::contract::executor::InferenceExecutionError;
+    use awaken_runtime::loop_runner::AgentLoopError;
+    // HTTP 429 / 5xx / network are transient: retry with backoff. Guards
+    // against over-correcting the permanent-classification fix.
+    let rate_limited = Err(AgentLoopError::from(InferenceExecutionError::rate_limited(
+        "429 too many requests",
+    )));
+    assert!(matches!(
+        classify_error(&rate_limited),
+        MailboxRunOutcome::TransientError(_)
+    ));
+    let provider = Err(AgentLoopError::from(InferenceExecutionError::Provider(
+        "502 bad gateway".to_string(),
+    )));
+    assert!(matches!(
+        classify_error(&provider),
+        MailboxRunOutcome::TransientError(_)
+    ));
+}
+
+/// Exhaustive contract test: every `InferenceExecutionError` variant must
+/// classify in agreement with `is_retryable()` — transient variants nack
+/// (retry), everything else dead-letters. Guards against a future variant
+/// silently defaulting to the wrong recoverability class.
+#[test]
+fn classify_error_covers_all_inference_variants() {
+    use awaken_contract::contract::executor::InferenceExecutionError as IE;
+    use awaken_runtime::loop_runner::AgentLoopError;
+
+    // (variant, expected_permanent). `expected_permanent` mirrors the
+    // documented recoverability classes on `InferenceExecutionError`.
+    let cases: Vec<(IE, bool)> = vec![
+        (IE::Provider("502".to_string()), false),
+        (IE::rate_limited("429"), false),
+        (IE::overloaded("529"), false),
+        (IE::Timeout("idle stall".to_string()), false),
+        (IE::Unauthorized("403 quota".to_string()), true),
+        (IE::ContextOverflow("prompt too long".to_string()), true),
+        (IE::InvalidRequest("422".to_string()), true),
+        (IE::ModelNotFound("404".to_string()), true),
+        (IE::ContentFiltered("policy".to_string()), true),
+        (IE::AllModelsUnavailable, true),
+        (IE::Cancelled, true),
+    ];
+
+    for (variant, expected_permanent) in cases {
+        // Classification must track is_retryable: transient == retryable.
+        assert_eq!(
+            variant.is_retryable(),
+            !expected_permanent,
+            "is_retryable disagrees with expected class for {variant:?}"
+        );
+        let result = Err(AgentLoopError::from(variant));
+        let outcome = classify_error(&result);
+        if expected_permanent {
+            assert!(
+                matches!(outcome, MailboxRunOutcome::PermanentError(_)),
+                "expected PermanentError, got {outcome:?}"
+            );
+        } else {
+            assert!(
+                matches!(outcome, MailboxRunOutcome::TransientError(_)),
+                "expected TransientError, got {outcome:?}"
+            );
+        }
+    }
+}
+
+#[test]
 fn classify_error_phase_error_is_completed() {
     use awaken_runtime::loop_runner::AgentLoopError;
     let result = Err(AgentLoopError::PhaseError(
@@ -3075,6 +3815,51 @@ fn classify_error_invalid_resume_is_completed() {
         classify_error(&result),
         MailboxRunOutcome::Completed
     ));
+}
+
+// Property: classification depends solely on the `InferenceExecutionError`
+// variant — it always agrees with `is_retryable()` regardless of the message
+// payload, `retry_after`, or which variant. Generalizes the exhaustive variant
+// test and guards future variants from silently defaulting to the wrong class.
+proptest::proptest! {
+    #[test]
+    fn classify_error_always_agrees_with_is_retryable(
+        msg in ".*",
+        retry_ms in proptest::option::of(0u64..10_000u64),
+        variant in 0u8..11u8,
+    ) {
+        use awaken_runtime::loop_runner::AgentLoopError;
+        let retry_after = retry_ms.map(std::time::Duration::from_millis);
+        let err = match variant {
+            0 => InferenceExecutionError::Provider(msg.clone()),
+            1 => InferenceExecutionError::RateLimited { message: msg.clone(), retry_after },
+            2 => InferenceExecutionError::Overloaded { message: msg.clone(), retry_after },
+            3 => InferenceExecutionError::Timeout(msg.clone()),
+            4 => InferenceExecutionError::ContextOverflow(msg.clone()),
+            5 => InferenceExecutionError::InvalidRequest(msg.clone()),
+            6 => InferenceExecutionError::Unauthorized(msg.clone()),
+            7 => InferenceExecutionError::ModelNotFound(msg.clone()),
+            8 => InferenceExecutionError::ContentFiltered(msg.clone()),
+            9 => InferenceExecutionError::AllModelsUnavailable,
+            _ => InferenceExecutionError::Cancelled,
+        };
+        let retryable = err.is_retryable();
+        let outcome = classify_error(&Err(AgentLoopError::from(err)));
+        match outcome {
+            MailboxRunOutcome::TransientError(_) => {
+                proptest::prop_assert!(retryable, "transient outcome for a non-retryable error");
+            }
+            MailboxRunOutcome::PermanentError(_) => {
+                proptest::prop_assert!(!retryable, "permanent outcome for a retryable error");
+            }
+            MailboxRunOutcome::Completed => {
+                proptest::prop_assert!(
+                    false,
+                    "an inference error must never classify as Completed"
+                );
+            }
+        }
+    }
 }
 
 // ── validate_run_inputs additional tests ──────────────────────────

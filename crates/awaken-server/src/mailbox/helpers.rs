@@ -324,6 +324,22 @@ pub(super) fn classify_error(
                     }
                 }
                 AgentLoopError::StorageError(_) => MailboxRunOutcome::TransientError(e.to_string()),
+                // Structured inference failures carry their recoverability
+                // class. Permanent faults (401/403 bad creds or exhausted
+                // quota, context overflow, model-not-found, content filtered)
+                // fail identically on every retry — dead-letter immediately
+                // instead of burning the whole max_attempts budget. Transient
+                // faults (429, 5xx, timeout, network, stream interrupt) retry.
+                AgentLoopError::Inference(inference_err) => {
+                    if inference_err.is_retryable() {
+                        MailboxRunOutcome::TransientError(e.to_string())
+                    } else {
+                        MailboxRunOutcome::PermanentError(e.to_string())
+                    }
+                }
+                // Bare-string inference failures (tool-executor faults, config
+                // validation) lack structured classification; treat as
+                // transient to preserve prior behavior.
                 AgentLoopError::InferenceFailed(_) => {
                     MailboxRunOutcome::TransientError(e.to_string())
                 }

@@ -67,6 +67,7 @@ agent-client-protocol = "0.10.4"
 jsonschema = "0.45"
 parking_lot = "0.12"
 proptest = "1"
+criterion = { version = "0.5", features = ["async_tokio"] }
 secrecy = { version = "0.10", features = ["serde"] }
 subtle = "2.6"
 tokio-util = { version = "0.7", features = ["compat"] }

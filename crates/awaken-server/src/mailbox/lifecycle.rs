@@ -467,7 +467,7 @@ impl Mailbox {
         }
     }
 
-    async fn run_gc(&self) {
+    pub(super) async fn run_gc(&self) {
         let now = now_ms();
         let gc_ttl_ms = self.config.gc_ttl.as_millis() as u64;
         let older_than = now.saturating_sub(gc_ttl_ms);
