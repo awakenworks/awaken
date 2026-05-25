@@ -1,6 +1,6 @@
 # ADR-0035: Published Versioned Registry and Runtime Pinning
 
-- **Status**: Proposed
+- **Status**: Accepted
 - **Date**: 2026-05-21
 - **Depends on**: ADR-0010, ADR-0014, ADR-0018, ADR-0019, ADR-0025, ADR-0028, ADR-0034
 

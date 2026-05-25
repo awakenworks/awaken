@@ -96,7 +96,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_model(ModelSpec::new("gpt-4o-mini", "openai", "gpt-4o-mini"))
         .build()?;
 
-    let request = RunRequest::new("thread-1", vec![Message::user("Say hello using the echo tool")])
+    let request = RunActivation::new("thread-1", vec![Message::user("Say hello using the echo tool")])
         .with_agent_id("assistant");
 
     let result = runtime.run_to_completion(request).await?;
@@ -127,7 +127,7 @@ the wire:
   PostgreSQL implementations ship in `awaken-stores`).
 - `Mailbox` — durable run queue that decouples HTTP requests from agent
   execution (also pluggable: memory / SQLite / NATS).
-- `AppState` — the dependency bundle every route handler reads from.
+- `ServerState` — the dependency bundle every route handler reads from.
 
 ```rust,no_run
 use awaken::prelude::*;
@@ -142,7 +142,7 @@ let mailbox = Arc::new(Mailbox::new(
     "default-consumer".into(),
     MailboxConfig::default(),
 ));
-let state = AppState::new(
+let state = ServerState::new(
     runtime.clone(),
     mailbox,
     store,

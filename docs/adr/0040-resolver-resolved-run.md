@@ -1,6 +1,6 @@
 # ADR-0040: `Resolver` + `ResolvedRun` + Typed Backend Capabilities
 
-- **Status**: 🚧 Proposed
+- **Status**: Accepted
 - **Date**: 2026-05-22
 - **Depends on**: ADR-0010, ADR-0035, ADR-0039
 - **Updates**: ADR-0010 D4/D8/D9, ADR-0011 D2/D6, ADR-0035 runtime pinning

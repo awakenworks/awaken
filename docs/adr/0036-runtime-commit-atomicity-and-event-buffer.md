@@ -1,6 +1,6 @@
 # ADR-0036: Runtime Commit Atomicity and Event Buffer
 
-- **Status**: 🚧 Proposed
+- **Status**: Accepted
 - **Date**: 2026-05-21
 - **Depends on**: ADR-0012, ADR-0018, ADR-0030, ADR-0034
 

@@ -1,6 +1,6 @@
 # ADR-0041: `ServerState` Modules — Replacing the `AppState` Service Locator
 
-- **Status**: 🚧 Proposed
+- **Status**: Accepted
 - **Date**: 2026-05-22
 - **Depends on**: ADR-0038, ADR-0039, ADR-0040
 - **Updates**: ADR-0023 server composition, ADR-0034 server event wiring
@@ -245,12 +245,13 @@ Deployments that need capability discovery expose an admin-protected
 that previously probed optional handlers by expecting 503 should switch to
 that endpoint or deployment configuration.
 
-### D5: `AppState` is removed, not aliased
+### D5: `AppState` is a deprecated compatibility alias only
 
-`AppState` is not type-aliased to `ServerState`; an alias would preserve
-only the name while silently breaking all old constructor and `with_*`
-methods. 0.6.0 is source-breaking and requires callers to construct
-`ServerState` explicitly:
+0.6.0 requires new code to construct `ServerState` explicitly. The public
+`AppState` name remains only as a `#[deprecated]` type alias to avoid a
+needless source break for route tests and callers that use the type name but
+not the old service-locator setters. The alias does not preserve the old
+`AppState::with_*` model; those setters are removed.
 
 ```rust
 impl ServerState {

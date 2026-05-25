@@ -1,6 +1,6 @@
 # ADR-0039: `RunActivation` — Replacing the `RunRequest` God-Struct
 
-- **Status**: 🚧 Proposed
+- **Status**: Accepted
 - **Date**: 2026-05-22
 - **Depends on**: ADR-0011, ADR-0038
 - **Updates**: ADR-0011 D3/D6, ADR-0022 D3

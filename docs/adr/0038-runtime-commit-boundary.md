@@ -1,6 +1,6 @@
 # ADR-0038: Runtime Commit Boundary — Single Durable Write Entry
 
-- **Status**: 🚧 Proposed
+- **Status**: Accepted
 - **Date**: 2026-05-22
 - **Depends on**: ADR-0034, ADR-0036
 - **Updates**: ADR-0034 D7/D9, ADR-0036 D8/D9

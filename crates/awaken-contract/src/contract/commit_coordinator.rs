@@ -10,6 +10,15 @@
 //! receives drafts from the reshaped `DurableEventSink`, and the
 //! `LoopRunner` drains the staged drafts into a `CheckpointCommitPlan`
 //! at checkpoint cadence.
+//!
+//! This boundary is deliberately limited to runtime checkpoints:
+//! thread messages, run records, canonical event appends, and outbox rows
+//! carried by the checkpoint plan. `ConfigStore` writes are outside this
+//! coordinator and therefore are not atomic with checkpoints or audit
+//! events. Mailbox dispatch result updates are also a separate, idempotent
+//! state machine; callers should treat dispatch completion and final
+//! `ThreadRunStore` run projection as eventually reconciled rather than a
+//! single coordinator transaction.
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -437,6 +446,12 @@ impl CommitError {
 /// must return an error at construction (or expose enough surface for
 /// the `RuntimeBuilder` to reject it at `build()` time). The runtime
 /// does not retry across coordinators.
+///
+/// Out of scope: configuration writes and mailbox dispatch lifecycle
+/// mutations. Those stores have their own concurrency contracts. When a
+/// workflow needs checkpoint durability, it must express the write through a
+/// [`CheckpointCommitPlan`]; otherwise it is intentionally outside this
+/// transaction boundary.
 #[async_trait]
 pub trait CommitCoordinator: Send + Sync {
     /// Return the transaction scope identifier shared by the underlying
