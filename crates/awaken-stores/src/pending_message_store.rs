@@ -2,7 +2,7 @@ use async_trait::async_trait;
 use awaken_contract::contract::message::{
     DeliveryBoundary, DeliveryMode, Message, MessageRecord, PendingMessageRecord,
 };
-use awaken_contract::contract::storage::{RunRecord, StorageError};
+use awaken_contract::contract::storage::{RunRecord, StorageError, ThreadRunStore};
 
 /// Store-local extension for delivered-but-unconsumed thread messages.
 #[async_trait]
@@ -54,3 +54,13 @@ pub trait PendingMessageStore: Send + Sync {
         run: &RunRecord,
     ) -> Result<Vec<MessageRecord>, StorageError>;
 }
+
+/// Thread/run store that owns the pending partition for the same backend.
+///
+/// ADR-0042 freeze operations consume pending messages and write committed
+/// messages plus the run record in one backend boundary, so mailbox wiring
+/// should depend on this combined capability instead of a separate pending
+/// store handle.
+pub trait PendingThreadRunStore: ThreadRunStore + PendingMessageStore {}
+
+impl<T> PendingThreadRunStore for T where T: ThreadRunStore + PendingMessageStore {}

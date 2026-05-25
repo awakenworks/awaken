@@ -1,27 +1,53 @@
 use std::sync::Arc;
 
+use awaken_contract::contract::mailbox::MailboxStore;
 use awaken_contract::contract::message::{
-    DeliveryBoundary, DeliveryMode, Message, MessageRecord, PendingMessageRecord,
+    DeliveryBoundary, DeliveryGranularity, DeliveryMode, Message, MessageRecord,
+    PendingMessageRecord, select_pending_for_freeze,
 };
+use awaken_contract::contract::storage::{
+    PinnedRegistryManifest, RunRecord, StorageError, ThreadRunStore,
+};
+use awaken_contract::contract::tool_intercept::RunMode;
+use awaken_contract::now_ms;
+use awaken_runtime::RunActivation;
 
 use super::Mailbox;
-use super::MailboxError;
-use super::helpers::normalize_message_ids;
+use super::helpers::{build_run_input, normalize_message_ids};
+use super::{IntoDispatchExecutor, MailboxConfig, MailboxError};
+
+const MAX_PENDING_FREEZE_ATTEMPTS: usize = 8;
 
 impl Mailbox {
-    /// Attach the durable pending-message store used by ADR-0042 delivery.
+    /// Construct a mailbox whose pending partition is owned by the same
+    /// thread/run backend as committed messages and run records.
     #[must_use]
-    pub fn with_pending_message_store(
-        mut self,
-        store: Arc<dyn awaken_stores::PendingMessageStore>,
-    ) -> Self {
-        self.pending_message_store = Some(store);
-        self
+    pub fn new_with_pending_thread_run_store<T>(
+        executor: impl IntoDispatchExecutor,
+        store: Arc<dyn MailboxStore>,
+        thread_run_store: Arc<T>,
+        consumer_id: String,
+        config: MailboxConfig,
+    ) -> Self
+    where
+        T: awaken_stores::PendingThreadRunStore + 'static,
+    {
+        let pending_thread_run_store =
+            Arc::clone(&thread_run_store) as Arc<dyn awaken_stores::PendingThreadRunStore>;
+        let thread_run_store = thread_run_store as Arc<dyn ThreadRunStore>;
+        let mut mailbox = Self::new(executor, store, thread_run_store, consumer_id, config);
+        mailbox.pending_thread_run_store = Some(pending_thread_run_store);
+        mailbox
     }
 
-    #[must_use]
-    pub fn pending_message_store(&self) -> Option<&Arc<dyn awaken_stores::PendingMessageStore>> {
-        self.pending_message_store.as_ref()
+    fn pending_thread_run_store(
+        &self,
+    ) -> Result<&Arc<dyn awaken_stores::PendingThreadRunStore>, MailboxError> {
+        self.pending_thread_run_store.as_ref().ok_or_else(|| {
+            MailboxError::Internal(
+                "pending thread-run store is not configured for this mailbox".to_string(),
+            )
+        })
     }
 
     pub async fn deliver(
@@ -30,11 +56,7 @@ impl Mailbox {
         messages: &[Message],
         delivery_mode: DeliveryMode,
     ) -> Result<Vec<PendingMessageRecord>, MailboxError> {
-        let Some(store) = self.pending_message_store.as_ref() else {
-            return Err(MailboxError::Internal(
-                "pending message store is not configured".to_string(),
-            ));
-        };
+        let store = self.pending_thread_run_store()?;
         let normalized = normalize_message_ids(messages);
         Ok(store
             .append_pending_message_records(thread_id, &normalized, delivery_mode)
@@ -47,14 +69,99 @@ impl Mailbox {
         boundary: DeliveryBoundary,
         expected_message_version: Option<u64>,
     ) -> Result<Vec<MessageRecord>, MailboxError> {
-        let Some(store) = self.pending_message_store.as_ref() else {
-            return Err(MailboxError::Internal(
-                "pending message store is not configured".to_string(),
-            ));
-        };
+        let store = self.pending_thread_run_store()?;
         Ok(store
             .freeze_pending_message_records(thread_id, boundary, expected_message_version)
             .await?)
+    }
+
+    pub(super) async fn prepare_pending_new_run_for_dispatch(
+        &self,
+        request: &RunActivation,
+        thread_id: &str,
+        normalized_messages: &[Message],
+        run_id: &str,
+        record: &mut RunRecord,
+        manifest: &PinnedRegistryManifest,
+    ) -> Result<Option<String>, MailboxError> {
+        let Some(store) = self.pending_thread_run_store.as_ref() else {
+            return Ok(None);
+        };
+        if normalized_messages.is_empty() || request.trace.run_mode != RunMode::Scheduled {
+            return Ok(None);
+        }
+        store
+            .append_pending_message_records(
+                thread_id,
+                normalized_messages,
+                DeliveryMode::new_run(DeliveryGranularity::Batch),
+            )
+            .await?;
+
+        for _ in 0..MAX_PENDING_FREEZE_ATTEMPTS {
+            let existing_messages = store.load_messages(thread_id).await?.unwrap_or_default();
+            let expected_version = existing_messages.len() as u64;
+            let pending = store.load_pending_message_records(thread_id).await?;
+            let selected_indexes = select_pending_for_freeze(&pending, DeliveryBoundary::NewRun);
+            if selected_indexes.is_empty() {
+                return Err(MailboxError::Internal(format!(
+                    "pending NewRun freeze found no eligible messages for thread '{thread_id}'"
+                )));
+            }
+            let mut selected_pending_ids = Vec::with_capacity(selected_indexes.len());
+            let mut trigger_message_ids = Vec::with_capacity(selected_indexes.len());
+            for index in selected_indexes {
+                let record = &pending[index];
+                selected_pending_ids.push(record.pending_id.clone());
+                let Some(message_id) = record.message.id.clone() else {
+                    return Err(MailboxError::Internal(format!(
+                        "pending message '{}' has no message id",
+                        record.pending_id
+                    )));
+                };
+                trigger_message_ids.push(message_id);
+            }
+
+            let first_new_seq = expected_version + 1;
+            let last_new_seq = expected_version + selected_pending_ids.len() as u64;
+            let (input_snapshot, input) =
+                build_run_input(thread_id, last_new_seq, &trigger_message_ids);
+            record.activation = Some(request.snapshot(input_snapshot, manifest.clone()));
+            record.input = input;
+            record.updated_at = now_ms() / 1000;
+
+            let frozen = match store
+                .freeze_pending_message_records_with_run(
+                    thread_id,
+                    DeliveryBoundary::NewRun,
+                    Some(expected_version),
+                    &selected_pending_ids,
+                    record,
+                )
+                .await
+            {
+                Ok(frozen) => frozen,
+                Err(StorageError::VersionConflict { .. }) => continue,
+                Err(error) => return Err(error.into()),
+            };
+            let mut appended_messages = existing_messages;
+            appended_messages.extend(frozen.iter().map(|record| record.message.clone()));
+            self.record_thread_message_checkpoint_events(
+                thread_id,
+                run_id,
+                &appended_messages,
+                first_new_seq,
+                last_new_seq,
+            )
+            .await;
+            self.refresh_worker_checkpoint_cache(thread_id, &appended_messages, record)
+                .await;
+            return Ok(Some(run_id.to_string()));
+        }
+
+        Err(MailboxError::Internal(format!(
+            "pending NewRun freeze exhausted {MAX_PENDING_FREEZE_ATTEMPTS} retries under version conflict for thread '{thread_id}'"
+        )))
     }
 }
 
@@ -63,7 +170,9 @@ mod tests {
     use super::*;
     use async_trait::async_trait;
     use awaken_contract::contract::event_sink::EventSink;
+    use awaken_contract::contract::lifecycle::TerminationReason;
     use awaken_contract::contract::message::{DeliveryGranularity, Message};
+    use awaken_contract::contract::storage::{RunStore, ThreadStore};
     use awaken_contract::contract::suspension::ToolCallResume;
     use awaken_runtime::RunActivation;
     use awaken_runtime::loop_runner::{AgentLoopError, AgentRunResult};
@@ -77,10 +186,18 @@ mod tests {
     impl RunDispatchExecutor for NoopExecutor {
         async fn run(
             &self,
-            _activation: RunActivation,
+            activation: RunActivation,
             _sink: Arc<dyn EventSink>,
         ) -> Result<AgentRunResult, AgentLoopError> {
-            unreachable!("deliver test does not execute runs")
+            Ok(AgentRunResult {
+                run_id: activation
+                    .run_id_hint()
+                    .unwrap_or("pending-test-run")
+                    .to_string(),
+                response: "ok".to_string(),
+                termination: TerminationReason::NaturalEnd,
+                steps: 1,
+            })
         }
 
         fn cancel(&self, _id: &str) -> bool {
@@ -99,14 +216,13 @@ mod tests {
     #[tokio::test]
     async fn deliver_appends_normalized_messages_to_pending_store() {
         let thread_store = Arc::new(InMemoryStore::new());
-        let mailbox = Mailbox::new(
+        let mailbox = Mailbox::new_with_pending_thread_run_store(
             Arc::new(NoopExecutor),
             Arc::new(InMemoryMailboxStore::new()),
             thread_store.clone(),
             "consumer".to_string(),
             MailboxConfig::default(),
-        )
-        .with_pending_message_store(thread_store.clone() as Arc<dyn PendingMessageStore>);
+        );
 
         let delivered = mailbox
             .deliver(
@@ -131,14 +247,13 @@ mod tests {
     #[tokio::test]
     async fn freeze_pending_commits_delivered_messages() {
         let thread_store = Arc::new(InMemoryStore::new());
-        let mailbox = Mailbox::new(
+        let mailbox = Mailbox::new_with_pending_thread_run_store(
             Arc::new(NoopExecutor),
             Arc::new(InMemoryMailboxStore::new()),
             thread_store.clone(),
             "consumer".to_string(),
             MailboxConfig::default(),
-        )
-        .with_pending_message_store(thread_store.clone() as Arc<dyn PendingMessageStore>);
+        );
 
         mailbox
             .deliver(
@@ -164,5 +279,90 @@ mod tests {
                 .unwrap()
                 .is_empty()
         );
+    }
+
+    #[tokio::test]
+    async fn submit_background_consumes_messages_through_pending_store() {
+        let thread_store = Arc::new(InMemoryStore::new());
+        let mailbox = Arc::new(Mailbox::new_with_pending_thread_run_store(
+            Arc::new(NoopExecutor),
+            Arc::new(InMemoryMailboxStore::new()),
+            thread_store.clone(),
+            "consumer".to_string(),
+            MailboxConfig::default(),
+        ));
+
+        let result = mailbox
+            .submit_background(RunActivation::new(
+                "thread-submit-pending",
+                vec![Message::user("queued")],
+            ))
+            .await
+            .unwrap();
+
+        let committed = thread_store
+            .load_messages("thread-submit-pending")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(committed.len(), 1);
+        assert_eq!(committed[0].text(), "queued");
+        assert!(
+            thread_store
+                .load_pending_message_records("thread-submit-pending")
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        let run = thread_store
+            .load_run(&result.run_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(run.input.unwrap().range.unwrap().to_seq, 1);
+        assert_eq!(run.activation.unwrap().input.trigger_message_ids.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn submit_background_batches_existing_new_run_pending_messages() {
+        let thread_store = Arc::new(InMemoryStore::new());
+        let mailbox = Arc::new(Mailbox::new_with_pending_thread_run_store(
+            Arc::new(NoopExecutor),
+            Arc::new(InMemoryMailboxStore::new()),
+            thread_store.clone(),
+            "consumer".to_string(),
+            MailboxConfig::default(),
+        ));
+        mailbox
+            .deliver(
+                "thread-submit-batch",
+                &[Message::user("earlier")],
+                DeliveryMode::new_run(DeliveryGranularity::Batch),
+            )
+            .await
+            .unwrap();
+
+        let result = mailbox
+            .submit_background(RunActivation::new(
+                "thread-submit-batch",
+                vec![Message::user("later")],
+            ))
+            .await
+            .unwrap();
+
+        let committed = thread_store
+            .load_messages("thread-submit-batch")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(committed.len(), 2);
+        assert_eq!(committed[0].text(), "earlier");
+        assert_eq!(committed[1].text(), "later");
+        let run = thread_store
+            .load_run(&result.run_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(run.activation.unwrap().input.trigger_message_ids.len(), 2);
     }
 }

@@ -670,7 +670,7 @@ pub struct Mailbox {
     /// Projection of `coordinator.thread_run_store()` cached for repeated
     /// read access; never diverges from the coordinator by construction.
     run_store: Arc<dyn ThreadRunStore>,
-    pending_message_store: Option<Arc<dyn awaken_stores::PendingMessageStore>>,
+    pending_thread_run_store: Option<Arc<dyn awaken_stores::PendingThreadRunStore>>,
     consumer_id: String,
     workers: RwLock<HashMap<String, Arc<SyncMutex<MailboxWorker>>>>,
     config: MailboxConfig,
@@ -734,7 +734,7 @@ impl Mailbox {
             store,
             coordinator,
             run_store,
-            pending_message_store: None,
+            pending_thread_run_store: None,
             consumer_id,
             workers: RwLock::new(HashMap::new()),
             config,

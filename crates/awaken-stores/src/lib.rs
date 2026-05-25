@@ -94,7 +94,7 @@ pub use memory_mailbox::InMemoryMailboxStore;
 pub use memory_outbox::InMemoryOutboxStore;
 pub use memory_protocol_replay_log::InMemoryProtocolReplayLog;
 pub use memory_versioned_registry::InMemoryVersionedRegistryStore;
-pub use pending_message_store::PendingMessageStore;
+pub use pending_message_store::{PendingMessageStore, PendingThreadRunStore};
 
 #[cfg(feature = "file")]
 pub use file::FileStore;

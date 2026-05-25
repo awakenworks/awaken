@@ -293,28 +293,9 @@ impl Mailbox {
     /// Try to steer the currently active run first, then fall back to the
     /// durable mailbox queue when live delivery is unavailable.
     ///
-    /// # Delivery semantics
-    ///
-    /// **At-least-once** across the live + durable paths. The owning
-    /// node's forwarder acks a live command only after `InboxSender::
-    /// try_send` has returned success, so `Delivered` means the run has
-    /// the message. However — and this is the distributed edge case —
-    /// there is still a window where:
-    ///
-    /// 1. The forwarder hands the message to the run (`try_send` ok).
-    /// 2. The ack publish to the producer's reply subject drops or
-    ///    times out (network blip, broker partition).
-    /// 3. Producer observes `NoSubscriber` and falls back to
-    ///    [`Mailbox::submit_background`], which enqueues a fresh
-    ///    durable dispatch carrying the same messages.
-    /// 4. When the current run ends, the queued dispatch executes and
-    ///    the user-visible message history contains duplicates.
-    ///
-    /// `RunActivation` does not expose dispatch-level dedupe. Callers that need
-    /// exactly-once effects must drive idempotency at the application layer
-    /// (e.g., unique
-    ///   message IDs normalized via `normalize_message_ids`; agent
-    ///   state that rejects redundant inputs).
+    /// Delivery remains at-least-once: a live ack can be lost after `try_send`
+    /// succeeds, forcing a durable fallback with the same message. Callers
+    /// that need exactly-once effects must provide application idempotency.
     #[tracing::instrument(skip(self, request), fields(thread_id = %request.thread_id()))]
     pub async fn submit_live_then_queue(
         self: &Arc<Self>,
@@ -478,10 +459,21 @@ impl Mailbox {
             (record, manifest)
         };
 
-        // Append-only committed write with reload-merge retry (ADR-0042 A). The
-        // committed message count is the version guard; commit the delta plus
-        // the run atomically. A stale version means another writer appended
-        // first — reload, recompute the range, and retry.
+        if let Some(run_id) = self
+            .prepare_pending_new_run_for_dispatch(
+                request,
+                thread_id,
+                &normalized_messages,
+                &run_id,
+                &mut record,
+                &manifest,
+            )
+            .await?
+        {
+            return Ok(run_id);
+        }
+
+        // Append-only committed write with reload-merge retry (ADR-0042 A).
         const MAX_APPEND_ATTEMPTS: usize = 8;
         for _ in 0..MAX_APPEND_ATTEMPTS {
             let existing_messages = self
