@@ -82,6 +82,7 @@ async fn apply_pending_boundary(
 pub(super) async fn run_agent_loop_impl(
     params: AgentLoopParams<'_>,
     thread_ctx: Option<crate::ThreadContextSnapshot>,
+    pending_boundary: Option<Arc<dyn PendingBoundaryHandler>>,
 ) -> Result<AgentRunResult, AgentLoopError> {
     let AgentLoopParams {
         resolver,
@@ -97,7 +98,6 @@ pub(super) async fn run_agent_loop_impl(
         overrides: initial_overrides,
         frontend_tools,
         mut inbox,
-        pending_boundary,
         is_continuation,
         initial_state_seed,
     } = params;

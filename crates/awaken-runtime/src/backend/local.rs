@@ -197,7 +197,7 @@ impl LocalBackend {
                 .map_err(ExecutionBackendError::Loop)?;
         }
 
-        let result = crate::loop_runner::run_agent_loop_with_thread_context(
+        let result = crate::loop_runner::run_agent_loop_with_pending_boundary(
             AgentLoopParams {
                 resolver: request.resolver,
                 agent_id: request.agent_id,
@@ -209,7 +209,6 @@ impl LocalBackend {
                 run_identity,
                 cancellation_token: request.control.cancellation_token,
                 decision_rx: request.control.decision_rx,
-                pending_boundary: request.control.pending_boundary,
                 overrides: request.overrides,
                 frontend_tools: request.frontend_tools,
                 inbox: request.inbox,
@@ -217,6 +216,7 @@ impl LocalBackend {
                 initial_state_seed: None,
             },
             thread_ctx,
+            request.control.pending_boundary,
         )
         .await
         .map_err(ExecutionBackendError::Loop)?;
@@ -370,7 +370,6 @@ impl LocalBackend {
             overrides: None,
             frontend_tools: Vec::new(),
             inbox: Some(inbox_receiver),
-            pending_boundary: None,
             is_continuation: false,
             initial_state_seed: request.state_seed,
         })
