@@ -204,7 +204,7 @@ impl InterruptSnapshot {
 /// - **Permanent** (not retryable, do NOT count toward circuit breaker):
 ///   `ContextOverflow`, `InvalidRequest`, `Unauthorized`, `ModelNotFound`,
 ///   `ContentFiltered`.
-/// - **Fail-fast**: `AllModelsUnavailable`, `Cancelled`.
+/// - **Fail-fast**: `AllModelsUnavailable`, `PoolAttemptsExhausted`, `Cancelled`.
 ///
 /// Use [`InferenceExecutionError::is_retryable`] and
 /// [`InferenceExecutionError::counts_toward_circuit_breaker`] for policy
@@ -242,8 +242,10 @@ pub enum InferenceExecutionError {
     ModelNotFound(String),
     #[error("content filtered: {0}")]
     ContentFiltered(String),
-    #[error("all models unavailable (circuit breakers open)")]
+    #[error("all models unavailable")]
     AllModelsUnavailable,
+    #[error("pool attempts exhausted")]
+    PoolAttemptsExhausted,
     #[error("cancelled")]
     Cancelled,
 }
@@ -600,7 +602,11 @@ mod tests {
         );
         assert_eq!(
             InferenceExecutionError::AllModelsUnavailable.to_string(),
-            "all models unavailable (circuit breakers open)"
+            "all models unavailable"
+        );
+        assert_eq!(
+            InferenceExecutionError::PoolAttemptsExhausted.to_string(),
+            "pool attempts exhausted"
         );
         assert_eq!(InferenceExecutionError::Cancelled.to_string(), "cancelled");
 
@@ -653,6 +659,7 @@ mod tests {
 
         // Fail-fast / lifecycle
         assert!(!AllModelsUnavailable.is_retryable());
+        assert!(!PoolAttemptsExhausted.is_retryable());
         assert!(!Cancelled.is_retryable());
     }
 

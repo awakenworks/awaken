@@ -36,20 +36,27 @@ pub fn build_pool_executor(
     let mut router_members = Vec::with_capacity(pool.members.len());
     let mut member_execs = Vec::with_capacity(pool.members.len());
     let mut member_specs = Vec::with_capacity(pool.members.len());
+    let mut provider_signatures = Vec::with_capacity(pool.members.len());
 
     for member in &pool.members {
         let model = registries
             .models
             .get_model(&member.model_id)
             .ok_or_else(|| ResolveError::ModelNotFound(member.model_id.clone()))?;
-        let executor = registries
+        let provider_signature = registries
+            .providers
+            .provider_signature(&model.provider_id)
+            .unwrap_or_else(|| model.provider_id.clone());
+        let provider_executor = registries
             .providers
             .get_provider(&model.provider_id)
             .ok_or_else(|| ResolveError::ProviderNotFound(model.provider_id.clone()))?;
+        let provider_signature = format!("{provider_signature}:{}", provider_executor.name());
         let executor = if policy.max_retries > 0 {
-            Arc::new(RetryingExecutor::new(executor, policy.clone())) as Arc<dyn LlmExecutor>
+            Arc::new(RetryingExecutor::new(provider_executor, policy.clone()))
+                as Arc<dyn LlmExecutor>
         } else {
-            executor
+            provider_executor
         };
 
         router_members.push(RouterMember {
@@ -63,11 +70,12 @@ pub fn build_pool_executor(
             executor,
         });
         member_specs.push(model);
+        provider_signatures.push(provider_signature);
     }
 
     let reconciled = reconcile_pool_capabilities(&pool.id, &member_specs);
     let router = PoolRouter::new(router_members, pool.routing.clone(), pool.switch.clone());
-    let breaker = pool_breaker(&pool_breaker_key(pool, &member_specs));
+    let breaker = pool_breaker(&pool_breaker_key(pool, &member_specs, &provider_signatures));
     let upstream_stand_in = reconciled.upstream_model.clone();
     let executor: Arc<dyn LlmExecutor> = Arc::new(PoolExecutor::new(
         pool.id.clone(),
@@ -93,15 +101,23 @@ fn pool_breaker(key: &str) -> Arc<CircuitBreaker> {
         .clone()
 }
 
-fn pool_breaker_key(pool: &ModelPoolSpec, members: &[ModelSpec]) -> String {
+fn pool_breaker_key(
+    pool: &ModelPoolSpec,
+    members: &[ModelSpec],
+    provider_signatures: &[String],
+) -> String {
     let mut input = serde_json::to_string(pool).unwrap_or_else(|_| pool.id.clone());
-    for model in members {
+    for (idx, model) in members.iter().enumerate() {
         input.push('\n');
         input.push_str(&model.id);
         input.push('\t');
         input.push_str(&model.provider_id);
         input.push('\t');
         input.push_str(&model.upstream_model);
+        input.push('\t');
+        if let Some(signature) = provider_signatures.get(idx) {
+            input.push_str(signature);
+        }
     }
     format!("{}:{:016x}", pool.id, fnv1a(input.as_bytes()))
 }
@@ -207,10 +223,11 @@ mod tests {
             model_with("a", Some(1000), Some(500)),
             model_with("b", Some(1000), Some(500)),
         ];
-        let first = pool_breaker_key(&pool, &members);
+        let signatures = vec!["provider-a".into(), "provider-b".into()];
+        let first = pool_breaker_key(&pool, &members, &signatures);
 
         pool.members[1].model_id = "c".into();
-        let changed_pool = pool_breaker_key(&pool, &members);
+        let changed_pool = pool_breaker_key(&pool, &members, &signatures);
         assert_ne!(first, changed_pool);
 
         let mut changed_member = [
@@ -220,7 +237,22 @@ mod tests {
         changed_member[1].upstream_model = "other".into();
         assert_ne!(
             first,
-            pool_breaker_key(&ModelPoolSpec::new("pool", ["a", "b"]), &changed_member)
+            pool_breaker_key(
+                &ModelPoolSpec::new("pool", ["a", "b"]),
+                &changed_member,
+                &signatures
+            )
+        );
+    }
+
+    #[test]
+    fn breaker_key_changes_when_provider_signature_changes() {
+        let pool = ModelPoolSpec::new("pool", ["a"]);
+        let members = [model_with("a", Some(1000), Some(500))];
+
+        assert_ne!(
+            pool_breaker_key(&pool, &members, &["endpoint-a".into()]),
+            pool_breaker_key(&pool, &members, &["endpoint-b".into()])
         );
     }
 }

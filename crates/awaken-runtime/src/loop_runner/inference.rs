@@ -1,7 +1,6 @@
 //! LLM inference execution.
 use super::{AgentLoopError, now_ms};
 use crate::cancellation::CancellationToken;
-use crate::engine::retry::LlmRetryPolicy;
 use crate::registry::ResolvedAgent;
 use awaken_contract::contract::content::ContentBlock;
 use awaken_contract::contract::event::AgentEvent;
@@ -15,6 +14,8 @@ use awaken_contract::contract::message::{Message, ToolCall};
 use awaken_contract::contract::stream_checkpoint::{StreamCheckpoint, StreamCheckpointStore};
 use futures::StreamExt;
 use std::time::Duration;
+
+use super::stream_policy::{idle_timeout_for, stream_retry_backoff, stream_retry_policy_for};
 /// Identifies a run for stream-checkpoint purposes. Passed into
 /// `execute_streaming` by the caller that actually knows the run
 /// identity (the loop runner's step driver); tests that don't care
@@ -84,6 +85,7 @@ pub(super) async fn execute_streaming(
     total_output_tokens: &mut u64,
     checkpoint: Option<CheckpointHandle<'_>>,
 ) -> Result<(StreamResult, Option<InFlightTool>), AgentLoopError> {
+    super::logical_inference::ensure_logical_inference_id(&mut request);
     let policy = stream_retry_policy_for(agent);
     let idle_timeout = idle_timeout_for(&request, &policy);
     let max_retries = policy.max_stream_retries;
@@ -650,55 +652,13 @@ fn interpret_transport_message(msg: &str) -> InterruptCause {
     }
 }
 
-/// Fetch the active retry policy. Falls back to defaults for agents that
-/// do not configure one. The agent-level override plumbing lives in
-/// `engine::retry::RetryConfigKey`; for now, treat missing config as
-/// "use defaults".
-fn stream_retry_policy_for(_agent: &ResolvedAgent) -> LlmRetryPolicy {
-    LlmRetryPolicy::default()
-}
-
-/// Model-aware idle-stall threshold. Thinking / reasoning models receive
-/// a 2× window to accommodate long silent reasoning phases.
-fn idle_timeout_for(request: &InferenceRequest, policy: &LlmRetryPolicy) -> Duration {
-    let base = Duration::from_secs(policy.stream_idle_timeout_secs);
-    let model = request.upstream_model.as_str();
-    let name_hits = model.contains("thinking")
-        || model.contains("reasoning")
-        || model.starts_with("o1")
-        || model.starts_with("o3")
-        || model.starts_with("o4");
-    let options_hits = request
-        .overrides
-        .as_ref()
-        .and_then(|o| o.reasoning_effort.as_ref())
-        .is_some();
-    if name_hits || options_hits {
-        base * 2
-    } else {
-        base
-    }
-}
-
-fn stream_retry_backoff(cause: &InterruptCause, attempt: u32, policy: &LlmRetryPolicy) -> Duration {
-    // Mid-stream retries use the normal backoff; Overloaded-style
-    // surges propagate through `RetryingExecutor` on stream open, not
-    // here. For idle stalls, use a short delay to probe quickly.
-    match cause {
-        InterruptCause::IdleStall => Duration::from_millis(200),
-        _ => policy.delay_before_retry(
-            &InferenceExecutionError::Provider("mid-stream".into()),
-            attempt,
-        ),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::sync::Arc;
 
     use crate::cancellation::CancellationToken;
+    use crate::engine::retry::LlmRetryPolicy;
     use crate::registry::ResolvedAgent;
     use async_trait::async_trait;
     use awaken_contract::contract::content::ContentBlock;

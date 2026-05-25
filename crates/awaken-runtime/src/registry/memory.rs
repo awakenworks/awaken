@@ -90,11 +90,35 @@ impl<V: Clone> MapRegistry<V> {
 // ---------------------------------------------------------------------------
 
 pub type MapToolRegistry = MapRegistry<Arc<dyn Tool>>;
-pub type MapProviderRegistry = MapRegistry<Arc<dyn LlmExecutor>>;
 pub type MapAgentSpecRegistry = MapRegistry<AgentSpec>;
 pub type MapPluginSource = MapRegistry<Arc<dyn Plugin>>;
 #[cfg(feature = "a2a")]
 pub type MapBackendRegistry = MapRegistry<Arc<dyn ExecutionBackendFactory>>;
+
+/// In-memory provider registry plus optional definition signatures.
+pub struct MapProviderRegistry {
+    providers: MapRegistry<Arc<dyn LlmExecutor>>,
+    signatures: HashMap<String, String>,
+}
+
+impl Default for MapProviderRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl MapProviderRegistry {
+    pub fn new() -> Self {
+        Self {
+            providers: MapRegistry::new(),
+            signatures: HashMap::new(),
+        }
+    }
+
+    pub fn contains_key(&self, id: &str) -> bool {
+        self.providers.contains_key(id)
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Convenience register methods (preserve original call-site signatures)
@@ -197,9 +221,22 @@ impl MapProviderRegistry {
         id: impl Into<String>,
         executor: Arc<dyn LlmExecutor>,
     ) -> Result<(), BuildError> {
-        self.register(id, executor, |msg| {
+        let signature = executor.name().to_string();
+        self.register_provider_with_signature(id, executor, signature)
+    }
+
+    pub fn register_provider_with_signature(
+        &mut self,
+        id: impl Into<String>,
+        executor: Arc<dyn LlmExecutor>,
+        signature: impl Into<String>,
+    ) -> Result<(), BuildError> {
+        let id = id.into();
+        self.providers.register(id.clone(), executor, |msg| {
             BuildError::ProviderRegistryConflict(format!("provider {msg}"))
-        })
+        })?;
+        self.signatures.insert(id, signature.into());
+        Ok(())
     }
 
     pub fn replace_provider(
@@ -207,11 +244,15 @@ impl MapProviderRegistry {
         id: impl Into<String>,
         executor: Arc<dyn LlmExecutor>,
     ) -> Option<Arc<dyn LlmExecutor>> {
-        self.replace(id, executor)
+        let id = id.into();
+        self.signatures
+            .insert(id.clone(), executor.name().to_string());
+        self.providers.replace(id, executor)
     }
 
     pub fn remove_provider(&mut self, id: &str) -> Option<Arc<dyn LlmExecutor>> {
-        self.remove(id)
+        self.signatures.remove(id);
+        self.providers.remove(id)
     }
 }
 
@@ -292,11 +333,15 @@ impl ModelRegistry for MapModelRegistry {
 
 impl ProviderRegistry for MapProviderRegistry {
     fn get_provider(&self, id: &str) -> Option<Arc<dyn LlmExecutor>> {
-        self.get_cloned(id)
+        self.providers.get_cloned(id)
     }
 
     fn provider_ids(&self) -> Vec<String> {
-        self.ids()
+        self.providers.ids()
+    }
+
+    fn provider_signature(&self, id: &str) -> Option<String> {
+        self.signatures.get(id).cloned()
     }
 }
 

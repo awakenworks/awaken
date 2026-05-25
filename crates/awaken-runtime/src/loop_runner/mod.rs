@@ -8,12 +8,14 @@ mod checkpoint;
 #[cfg(feature = "background")]
 mod compaction;
 mod inference;
+mod logical_inference;
 mod orchestrator;
 #[cfg(feature = "parallel-tools")]
 pub mod parallel_merge;
 mod resume;
 mod setup;
 mod step;
+mod stream_policy;
 
 #[cfg(test)]
 mod tests;

@@ -122,8 +122,11 @@ pub struct PoolSwitchPolicy {
     /// Switch on permanent member errors (unauthorized, model-not-found).
     #[serde(default = "default_true")]
     pub on_permanent: bool,
-    /// Cap on member switches within one session. `None` is unbounded (still
-    /// bounded by the number of members).
+    /// Cap on consecutive member switches within one failure incident for a
+    /// session. A successful request or cleanly drained stream resets this
+    /// budget so long-lived threads can recover from future independent
+    /// incidents. `None` is unbounded (still bounded by the number of members
+    /// for any single call).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_switches_per_session: Option<u32>,
 }

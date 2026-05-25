@@ -10,6 +10,10 @@ pub struct InferenceRoutingKey {
     pub run_id: Option<String>,
     /// Fallback key for callers that do not have runtime identity.
     pub fallback: Option<String>,
+    /// Stable id for retries belonging to one logical inference. Pool
+    /// executors use this to keep streaming recovery from retrying a member
+    /// that already failed within the same assistant response.
+    pub logical_inference_id: Option<String>,
 }
 
 impl InferenceRoutingKey {
@@ -18,6 +22,7 @@ impl InferenceRoutingKey {
             thread_id: non_empty(identity.thread_id.as_str()),
             run_id: non_empty(identity.run_id.as_str()),
             fallback: None,
+            logical_inference_id: None,
         }
     }
 
