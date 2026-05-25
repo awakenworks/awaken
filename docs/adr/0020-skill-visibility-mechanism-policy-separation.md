@@ -17,8 +17,8 @@ before every inference turn. There is no mechanism to:
 The permission system (`awaken-ext-permission`) already demonstrates a clean
 mechanism-policy separation: `PermissionPolicy` (thread-scoped) + `PermissionOverrides`
 (run-scoped) → `evaluate_tool_permission()` → Allow/Deny/Ask. The deferred-tools
-extension follows the same pattern: `DeferralState` + `DeferralPolicy` trait →
-Eager/Deferred.
+extension follows the same pattern with a `DeferralState` mechanism and declarative
+config classification (`resolve_mode`) → Eager/Deferred.
 
 Skill visibility should follow this established pattern rather than introducing
 ad-hoc filtering logic.
@@ -58,19 +58,18 @@ SkillVisibilityAction:
 Run-scoped (`KeyScope::Run`) with commutative merge (set-last-write-wins per skill ID).
 This mirrors `PermissionOverrides` scoping — visibility does not leak across runs.
 
-### D3: `SkillVisibilityPolicy` trait for initial visibility decisions
+### D3: Declarative initial visibility, seeded at run start
 
-```rust
-pub trait SkillVisibilityPolicy: Send + Sync {
-    fn evaluate(&self, meta: &SkillMeta) -> SkillVisibility;
-}
-```
+Initial visibility is a declarative decision derived from skill metadata — not a
+user-pluggable policy trait. A skill starts `Hidden` when `model_invocable ==
+false` or `paths` is non-empty (conditional skills start hidden, promoted on file
+match); otherwise `Visible`.
 
-Default implementation: `Visible` unless `model_invocable == false` or `paths` is
-non-empty (conditional skills start hidden, promoted on file match).
-
-Policy is evaluated once at run start to seed `SkillVisibilityState`. Subsequent
-changes come through actions (tools, plugins, hooks).
+`SkillDiscoveryPlugin::on_activate` evaluates this against the registry snapshot
+and seeds `SkillVisibilityState` via `SkillVisibilityAction::SetBatch` at run
+start. Subsequent changes come through actions (tools, plugins, config). This
+mirrors `awaken-ext-permission`, where policy is declarative rule data rather than
+a code trait.
 
 ### D4: Catalog rendering filters by visibility state
 
@@ -98,8 +97,9 @@ directory (FsSkill only).
 
 - **Catalog noise reduction**: Skills with `disable-model-invocation` or unfulfilled
   `paths` patterns no longer consume context budget.
-- **Extensibility**: New visibility policies (e.g. Bayesian skill recommendation) can
-  be plugged in without changing the catalog rendering mechanism.
+- **Extensibility**: The mechanism (state key + `SkillVisibilityAction`) is the
+  extension surface — tools, plugins, and config drive visibility changes at
+  runtime without changing the catalog rendering mechanism.
 - **Consistency**: Follows the same mechanism-policy pattern as permission and
   deferred-tools, reducing cognitive load for contributors.
 - **Backward compatibility**: All new frontmatter fields are optional; removing
