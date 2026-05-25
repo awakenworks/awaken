@@ -14,6 +14,7 @@ use serde_json::Value;
 use tokio::sync::mpsc;
 
 use awaken_contract::contract::event::AgentEvent;
+use awaken_contract::contract::lifecycle::TerminationReason;
 use awaken_contract::contract::message::Message;
 use awaken_contract::contract::storage::RunRequestOrigin;
 use awaken_contract::contract::tool_intercept::AdapterKind;
@@ -102,6 +103,29 @@ impl AgentMcpTool {
     }
 }
 
+fn terminal_failure_for_mcp(
+    termination: Option<&TerminationReason>,
+    stream_error: Option<&str>,
+    requires_terminal_event: bool,
+) -> Option<String> {
+    if let Some(error) = stream_error {
+        return Some(format!("agent run failed: {error}"));
+    }
+    match termination {
+        Some(TerminationReason::NaturalEnd)
+        | Some(TerminationReason::BehaviorRequested)
+        | Some(TerminationReason::Stopped(_)) => None,
+        Some(TerminationReason::Cancelled) => Some("agent run cancelled".to_string()),
+        Some(TerminationReason::Blocked(reason)) => Some(format!("agent run blocked: {reason}")),
+        Some(TerminationReason::Suspended) => Some("agent run suspended".to_string()),
+        Some(TerminationReason::Error(reason)) => Some(format!("agent run failed: {reason}")),
+        None if requires_terminal_event => {
+            Some("agent run ended without terminal status".to_string())
+        }
+        None => None,
+    }
+}
+
 impl McpTool for AgentMcpTool {
     fn definition(&self) -> McpToolDefinition {
         McpToolDefinition::new(&self.agent_id)
@@ -139,25 +163,38 @@ impl McpTool for AgentMcpTool {
 
             self.send_log("info", "starting agent run").await;
 
-            let (mut event_rx, run_handle) = if let Some(mailbox) = self.mailbox.as_ref() {
-                let (_submission, event_rx) = mailbox
-                    .submit(request)
-                    .await
-                    .map_err(|error| format!("agent run failed: {error}"))?;
-                (McpEventReceiver::Bounded(event_rx), None)
-            } else {
-                let (event_tx, event_rx) = mpsc::unbounded_channel();
-                let sink = Arc::new(ChannelEventSink::new(event_tx));
-                let runtime = Arc::clone(&self.runtime);
-                let run_handle = tokio::spawn(async move { runtime.run(request, sink).await });
-                (McpEventReceiver::Unbounded(event_rx), Some(run_handle))
-            };
+            let (mut event_rx, run_handle, requires_terminal_event) =
+                if let Some(mailbox) = self.mailbox.as_ref() {
+                    let (_submission, event_rx) = mailbox
+                        .submit(request)
+                        .await
+                        .map_err(|error| format!("agent run failed: {error}"))?;
+                    (McpEventReceiver::Bounded(event_rx), None, true)
+                } else {
+                    let (event_tx, event_rx) = mpsc::unbounded_channel();
+                    let sink = Arc::new(ChannelEventSink::new(event_tx));
+                    let runtime = Arc::clone(&self.runtime);
+                    let run_handle = tokio::spawn(async move { runtime.run(request, sink).await });
+                    (
+                        McpEventReceiver::Unbounded(event_rx),
+                        Some(run_handle),
+                        false,
+                    )
+                };
 
             // Collect text deltas and emit logs from agent events.
             let mut assistant_text = String::new();
             let mut step_count: u32 = 0;
+            let mut terminal: Option<TerminationReason> = None;
+            let mut stream_error: Option<String> = None;
             while let Some(event) = event_rx.recv().await {
                 match &event {
+                    AgentEvent::RunFinish { termination, .. } => {
+                        terminal = Some(termination.clone());
+                    }
+                    AgentEvent::Error { message, .. } => {
+                        stream_error = Some(message.clone());
+                    }
                     AgentEvent::TextDelta { delta } => {
                         assistant_text.push_str(delta);
                     }
@@ -202,15 +239,21 @@ impl McpTool for AgentMcpTool {
                     Ok(Err(e)) => {
                         self.send_log("error", &format!("agent run failed: {e}"))
                             .await;
-                        if assistant_text.is_empty() {
-                            return Err(format!("agent run failed: {e}"));
-                        }
+                        return Err(format!("agent run failed: {e}"));
                     }
                     Err(e) => {
                         return Err(format!("agent task panicked: {e}"));
                     }
                 }
             } else {
+                if let Some(error) = terminal_failure_for_mcp(
+                    terminal.as_ref(),
+                    stream_error.as_deref(),
+                    requires_terminal_event,
+                ) {
+                    self.send_log("error", &error).await;
+                    return Err(error);
+                }
                 self.send_log("notice", "completed").await;
             }
 
@@ -259,6 +302,30 @@ mod tests {
         let schema = &def.input_schema;
         assert_eq!(schema["type"], "object");
         assert!(schema["properties"]["message"].is_object());
+    }
+
+    #[test]
+    fn mailbox_terminal_failure_rejects_missing_terminal_status() {
+        let error = terminal_failure_for_mcp(None, None, true).unwrap();
+        assert!(error.contains("terminal status"));
+    }
+
+    #[test]
+    fn mailbox_terminal_failure_rejects_failed_run_finish() {
+        let error = terminal_failure_for_mcp(
+            Some(&TerminationReason::Error("provider failed".to_string())),
+            None,
+            true,
+        )
+        .unwrap();
+        assert!(error.contains("provider failed"));
+    }
+
+    #[test]
+    fn mailbox_terminal_failure_allows_successful_run_finish() {
+        assert!(
+            terminal_failure_for_mcp(Some(&TerminationReason::NaturalEnd), None, true).is_none()
+        );
     }
 
     #[tokio::test]
