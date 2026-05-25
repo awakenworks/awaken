@@ -4,55 +4,6 @@ use crate::config::*;
 use crate::policy::*;
 use crate::state::*;
 
-fn make_config() -> DeferredToolsConfig {
-    DeferredToolsConfig {
-        enabled: Some(true),
-        rules: vec![DeferralRule {
-            tool: "Bash".into(),
-            mode: ToolLoadMode::Eager,
-        }],
-        ..Default::default()
-    }
-}
-
-#[test]
-fn config_only_initial_classification() {
-    let policy = ConfigOnlyPolicy;
-    let stats = ToolUsageStatsValue::default();
-    let state = DeferralStateValue::default();
-    let tool_ids = vec![
-        "Bash".to_string(),
-        "mcp__query".to_string(),
-        "Read".to_string(),
-    ];
-    let decisions = policy.evaluate(&stats, &state, &make_config(), &tool_ids);
-    assert_eq!(decisions.len(), 3);
-    assert_eq!(
-        decisions
-            .iter()
-            .find(|d| d.tool_id == "Bash")
-            .unwrap()
-            .target_mode,
-        ToolLoadMode::Eager
-    );
-    assert_eq!(
-        decisions
-            .iter()
-            .find(|d| d.tool_id == "mcp__query")
-            .unwrap()
-            .target_mode,
-        ToolLoadMode::Deferred
-    );
-    assert_eq!(
-        decisions
-            .iter()
-            .find(|d| d.tool_id == "Read")
-            .unwrap()
-            .target_mode,
-        ToolLoadMode::Deferred
-    );
-}
-
 // --- DiscBetaEvaluator tests ---
 
 fn make_disc_beta_config() -> DeferredToolsConfig {
@@ -235,53 +186,17 @@ fn disc_beta_respects_defer_after_threshold() {
 }
 
 // ---------------------------------------------------------------------------
-// Bug reproduction: ConfigOnlyPolicy re-defers runtime-promoted tools
+// Runtime promote survival
 // ---------------------------------------------------------------------------
 //
 // When ToolSearch (or skill activation) promotes a deferred tool at runtime,
-// the next BeforeInference hook runs ConfigOnlyPolicy which re-evaluates
-// all tools against static config rules. Since config still says the tool
-// should be Deferred, ConfigOnlyPolicy emits a Defer decision that
-// immediately reverses the promote — the tool is only visible for 1 turn.
+// BeforeInference must NOT re-classify tools from static config (which would
+// immediately reverse the promote). Only DiscBeta may re-defer, and only for
+// genuinely idle tools.
 
-/// Simulates the OLD (buggy) BeforeInference hook that re-ran ConfigOnlyPolicy
-/// every turn, overriding runtime promotes.
-fn simulate_before_inference_old(
-    state: &DeferralStateValue,
-    config: &DeferredToolsConfig,
-    policy: &dyn DeferralPolicy,
-    disc_beta: &DiscBetaStateValue,
-    usage_stats: &ToolUsageStatsValue,
-) -> DeferralStateValue {
-    let tool_ids: Vec<String> = state.modes.keys().cloned().collect();
-    let decisions = policy.evaluate(usage_stats, state, config, &tool_ids);
-
-    let mut effective = state.clone();
-    for decision in &decisions {
-        let current = state
-            .modes
-            .get(&decision.tool_id)
-            .copied()
-            .unwrap_or(ToolLoadMode::Eager);
-        if current != decision.target_mode {
-            effective
-                .modes
-                .insert(decision.tool_id.clone(), decision.target_mode);
-        }
-    }
-
-    let re_defer_ids =
-        DiscBetaEvaluator::tools_to_defer(disc_beta, &effective, config, usage_stats.total_turns);
-    for id in re_defer_ids {
-        effective.modes.insert(id, ToolLoadMode::Deferred);
-    }
-
-    effective
-}
-
-/// Simulates the FIXED BeforeInference hook: no ConfigOnlyPolicy re-evaluation,
-/// only DiscBeta re-defer for idle tools.
-fn simulate_before_inference_fixed(
+/// Simulates the BeforeInference hook: no config re-classification, only
+/// DiscBeta re-defer for idle tools.
+fn simulate_before_inference(
     state: &DeferralStateValue,
     config: &DeferredToolsConfig,
     disc_beta: &DiscBetaStateValue,
@@ -298,43 +213,9 @@ fn simulate_before_inference_fixed(
     effective
 }
 
-/// Demonstrates the bug: ConfigOnlyPolicy re-defers a runtime-promoted tool
-/// after just 1 turn.
+/// A runtime-promoted tool survives BeforeInference (not re-deferred from config).
 #[test]
-fn config_only_policy_re_defers_promoted_tool_old_behavior() {
-    let config = DeferredToolsConfig {
-        enabled: Some(true),
-        rules: vec![],
-        ..Default::default()
-    };
-    let policy = ConfigOnlyPolicy;
-    let disc_beta = DiscBetaStateValue::default();
-    let stats = ToolUsageStatsValue::default();
-
-    let mut state = DeferralStateValue::default();
-    state
-        .modes
-        .insert("mcp__query".into(), ToolLoadMode::Deferred);
-
-    // ToolSearch promotes mcp__query.
-    DeferralState::apply(
-        &mut state,
-        DeferralStateAction::Promote("mcp__query".into()),
-    );
-    assert_eq!(state.modes["mcp__query"], ToolLoadMode::Eager);
-
-    // OLD hook: ConfigOnlyPolicy overrides the promote.
-    let effective = simulate_before_inference_old(&state, &config, &policy, &disc_beta, &stats);
-    assert_eq!(
-        effective.modes["mcp__query"],
-        ToolLoadMode::Deferred,
-        "OLD behavior: ConfigOnlyPolicy re-deferred a runtime-promoted tool"
-    );
-}
-
-/// Verifies the fix: runtime-promoted tool survives BeforeInference.
-#[test]
-fn promoted_tool_survives_before_inference_after_fix() {
+fn promoted_tool_survives_before_inference() {
     let config = DeferredToolsConfig {
         enabled: Some(true),
         rules: vec![],
@@ -354,16 +235,15 @@ fn promoted_tool_survives_before_inference_after_fix() {
         DeferralStateAction::Promote("mcp__query".into()),
     );
 
-    // FIXED hook: no ConfigOnlyPolicy, only DiscBeta.
-    let effective = simulate_before_inference_fixed(&state, &config, &disc_beta, &stats);
+    let effective = simulate_before_inference(&state, &config, &disc_beta, &stats);
     assert_eq!(
         effective.modes["mcp__query"],
         ToolLoadMode::Eager,
-        "FIXED: promoted tool should survive BeforeInference"
+        "promoted tool should survive BeforeInference"
     );
 }
 
-/// Verifies DiscBeta can still re-defer an idle promoted tool after the fix.
+/// DiscBeta can still re-defer an idle promoted tool.
 #[test]
 fn disc_beta_still_re_defers_idle_promoted_tool() {
     let config = DeferredToolsConfig {
@@ -399,7 +279,7 @@ fn disc_beta_still_re_defers_idle_promoted_tool() {
         ..Default::default()
     };
 
-    let effective = simulate_before_inference_fixed(&state, &config, &disc_beta, &stats);
+    let effective = simulate_before_inference(&state, &config, &disc_beta, &stats);
     assert_eq!(
         effective.modes["mcp__query"],
         ToolLoadMode::Deferred,

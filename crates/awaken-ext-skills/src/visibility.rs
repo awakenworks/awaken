@@ -114,47 +114,38 @@ impl StateKey for SkillVisibilityStateKey {
 }
 
 // ---------------------------------------------------------------------------
-// Policy trait
+// Default visibility policy
 // ---------------------------------------------------------------------------
 
-/// Policy that decides the initial visibility for each skill at run start.
+/// Default per-skill visibility decision (ADR-0020).
 ///
-/// Implementations can incorporate config rules, feature flags, or dynamic
-/// criteria.  The default implementation uses `SkillMeta` fields only.
-pub trait SkillVisibilityPolicy: Send + Sync {
-    /// Evaluate visibility for a single skill.
-    fn evaluate(&self, meta: &SkillMeta) -> SkillVisibility;
-
-    /// Batch-evaluate all skills and return actions to seed the visibility state.
-    fn seed(&self, metas: &[&SkillMeta]) -> Vec<(String, SkillVisibility)> {
-        metas
-            .iter()
-            .map(|m| (m.id.clone(), self.evaluate(m)))
-            .collect()
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Default policy
-// ---------------------------------------------------------------------------
-
-/// Default policy based on `SkillMeta` fields.
-///
-/// A skill is `Hidden` if:
+/// Visibility is **declarative** — derived from skill metadata, not a
+/// user-pluggable strategy (mirroring `awaken-ext-permission`, where policy is
+/// declarative rule data). A skill starts `Hidden` if:
 /// - `model_invocable` is `false` (frontmatter `disable-model-invocation: true`), OR
-/// - `paths` is non-empty (conditional skill — starts hidden until file match).
+/// - `paths` is non-empty (conditional skill — hidden until a file match promotes it).
 ///
-/// Otherwise it is `Visible`.
+/// Otherwise it is `Visible`. Seeded once at run start; later changes flow
+/// through `SkillVisibilityAction` (tool-, plugin-, or config-driven).
 #[derive(Debug, Clone, Default)]
-pub struct DefaultSkillVisibilityPolicy;
+pub(crate) struct DefaultSkillVisibilityPolicy;
 
-impl SkillVisibilityPolicy for DefaultSkillVisibilityPolicy {
-    fn evaluate(&self, meta: &SkillMeta) -> SkillVisibility {
+impl DefaultSkillVisibilityPolicy {
+    /// Evaluate visibility for a single skill from its metadata.
+    pub(crate) fn evaluate(&self, meta: &SkillMeta) -> SkillVisibility {
         if !meta.model_invocable || !meta.paths.is_empty() {
             SkillVisibility::Hidden
         } else {
             SkillVisibility::Visible
         }
+    }
+
+    /// Batch-evaluate all skills to seed the visibility state at run start.
+    pub(crate) fn seed(&self, metas: &[&SkillMeta]) -> Vec<(String, SkillVisibility)> {
+        metas
+            .iter()
+            .map(|m| (m.id.clone(), self.evaluate(m)))
+            .collect()
     }
 }
 

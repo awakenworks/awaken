@@ -1,6 +1,9 @@
 pub mod config;
 pub mod plugin;
-pub mod policy;
+// Internal: initial tool classification is declarative (`config.resolve_mode`);
+// this module holds the live re-deferral mechanism (`DiscBetaEvaluator`) and is
+// not a user-pluggable policy surface.
+mod policy;
 pub mod state;
 pub mod tool_search;
 

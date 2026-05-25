@@ -53,8 +53,7 @@ pub use skill_md::SkillArgumentDef;
 pub use state::{SkillRenderedActivation, SkillState, SkillStateUpdate, SkillStateValue};
 pub use tools::{LoadSkillResourceTool, SkillActivateTool, SkillScriptTool};
 pub use visibility::{
-    DefaultSkillVisibilityPolicy, SkillVisibility, SkillVisibilityAction, SkillVisibilityPolicy,
-    SkillVisibilityStateKey, SkillVisibilityStateValue,
+    SkillVisibility, SkillVisibilityAction, SkillVisibilityStateKey, SkillVisibilityStateValue,
 };
 
 #[cfg(feature = "mcp")]

@@ -1,46 +1,13 @@
 //! Deferral policy — separated from mechanism.
+//!
+//! Initial tool classification is declarative and resolved directly from config
+//! (`DeferredToolsConfig::resolve_mode`), consistent with the config-driven
+//! policy model used elsewhere (e.g. `awaken-ext-permission`) — there is no
+//! pluggable policy trait. The only live runtime policy is `DiscBetaEvaluator`,
+//! which may re-defer idle tools mid-session.
 
 use crate::config::{DeferredToolsConfig, ToolLoadMode};
-use crate::state::{DeferralStateValue, DiscBetaStateValue, ToolUsageStatsValue};
-
-/// A decision about what mode a tool should be in.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DeferralDecision {
-    pub tool_id: String,
-    pub target_mode: ToolLoadMode,
-}
-
-/// Policy for initial tool classification (session start).
-pub trait DeferralPolicy: Send + Sync {
-    fn evaluate(
-        &self,
-        stats: &ToolUsageStatsValue,
-        current_state: &DeferralStateValue,
-        config: &DeferredToolsConfig,
-        tool_ids: &[String],
-    ) -> Vec<DeferralDecision>;
-}
-
-/// Applies config rules only, with no dynamic adjustment based on usage.
-pub struct ConfigOnlyPolicy;
-
-impl DeferralPolicy for ConfigOnlyPolicy {
-    fn evaluate(
-        &self,
-        _stats: &ToolUsageStatsValue,
-        _current_state: &DeferralStateValue,
-        config: &DeferredToolsConfig,
-        tool_ids: &[String],
-    ) -> Vec<DeferralDecision> {
-        tool_ids
-            .iter()
-            .map(|id| DeferralDecision {
-                tool_id: id.clone(),
-                target_mode: config.resolve_mode(id),
-            })
-            .collect()
-    }
-}
+use crate::state::{DeferralStateValue, DiscBetaStateValue};
 
 /// DiscBeta-based evaluator for mid-session dynamic re-defer.
 ///

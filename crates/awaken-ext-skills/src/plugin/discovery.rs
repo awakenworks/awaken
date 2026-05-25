@@ -17,8 +17,8 @@ use crate::registry::SkillRegistry;
 use crate::skill::SkillMeta;
 use crate::state::SkillState;
 use crate::visibility::{
-    DefaultSkillVisibilityPolicy, SkillVisibility, SkillVisibilityAction, SkillVisibilityPolicy,
-    SkillVisibilityStateKey, SkillVisibilityStateValue,
+    DefaultSkillVisibilityPolicy, SkillVisibility, SkillVisibilityAction, SkillVisibilityStateKey,
+    SkillVisibilityStateValue,
 };
 
 /// Injects a skills catalog into the LLM context so the model can discover and activate skills.
