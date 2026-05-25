@@ -23,7 +23,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use awaken_contract::contract::commit_coordinator::{
     CheckpointCommitOutcome, CheckpointCommitPlan, CommitCoordinator, CommitError,
-    TransactionScopeId,
+    MessageWriteMode, TransactionScopeId,
 };
 use awaken_contract::contract::message::Message;
 use awaken_contract::contract::storage::{RunRecord, ThreadRunStore};
@@ -144,10 +144,25 @@ impl CommitCoordinator for MemoryCommitCoordinator {
         let thread_run = self.thread_run.clone();
         let plan_ref = &plan;
         let write_thread_run = || async move {
-            match thread_run
-                .checkpoint(&plan_ref.thread_id, &plan_ref.messages, &plan_ref.run)
-                .await
-            {
+            let result = match plan_ref.message_mode {
+                MessageWriteMode::Overwrite =>
+                {
+                    #[allow(deprecated)]
+                    thread_run
+                        .checkpoint(&plan_ref.thread_id, &plan_ref.messages, &plan_ref.run)
+                        .await
+                }
+                MessageWriteMode::Append => thread_run
+                    .checkpoint_append(
+                        &plan_ref.thread_id,
+                        &plan_ref.messages,
+                        plan_ref.expected_message_version,
+                        &plan_ref.run,
+                    )
+                    .await
+                    .map(|_| ()),
+            };
+            match result {
                 Ok(()) => Ok(()),
                 Err(error) => {
                     restore_thread_run_state(&thread_run, thread_run_snapshot).await;
@@ -156,7 +171,13 @@ impl CommitCoordinator for MemoryCommitCoordinator {
             }
         };
 
-        run_commit_batch(&plan, &self.events, &self.outbox, write_thread_run).await
+        let outcome = run_commit_batch(&plan, &self.events, &self.outbox, write_thread_run).await;
+        match plan.message_mode {
+            MessageWriteMode::Append => {
+                outcome.map_err(|error| error.reclassify_append_conflict(&plan.thread_id))
+            }
+            MessageWriteMode::Overwrite => outcome,
+        }
     }
 }
 
@@ -244,6 +265,69 @@ mod tests {
         assert!(thread.is_some());
         let count = events.count(EventScope::run("r-2")).await.unwrap();
         assert_eq!(count, 2);
+    }
+
+    #[tokio::test]
+    async fn commit_append_plan_advances_committed_messages() {
+        use awaken_contract::contract::message::Message;
+        let (coord, thread_run, _events, _outbox) = build_coordinator();
+
+        let plan = CheckpointCommitPlan::append(
+            "t-ap",
+            vec![Message::user("a")],
+            Some(0),
+            run_record("t-ap", "r-1"),
+        );
+        coord.commit_checkpoint(plan).await.unwrap();
+
+        let plan = CheckpointCommitPlan::append(
+            "t-ap",
+            vec![Message::user("b"), Message::user("c")],
+            Some(1),
+            run_record("t-ap", "r-2"),
+        );
+        coord.commit_checkpoint(plan).await.unwrap();
+
+        let msgs = thread_run.load_messages("t-ap").await.unwrap().unwrap();
+        assert_eq!(msgs.len(), 3, "append plans accumulate, not overwrite");
+    }
+
+    #[tokio::test]
+    async fn commit_append_plan_stale_version_yields_message_conflict() {
+        use awaken_contract::contract::message::Message;
+        let (coord, thread_run, _events, _outbox) = build_coordinator();
+
+        let plan = CheckpointCommitPlan::append(
+            "t-c",
+            vec![Message::user("a"), Message::user("b")],
+            Some(0),
+            run_record("t-c", "r-1"),
+        );
+        coord.commit_checkpoint(plan).await.unwrap();
+
+        // Committed length is 2, so expecting 0 must reclassify to a
+        // message-level conflict carrying the thread id.
+        let plan = CheckpointCommitPlan::append(
+            "t-c",
+            vec![Message::user("c")],
+            Some(0),
+            run_record("t-c", "r-2"),
+        );
+        let err = coord.commit_checkpoint(plan).await.unwrap_err();
+        match err {
+            CommitError::MessageVersionConflict {
+                thread_id,
+                expected,
+                actual,
+            } => {
+                assert_eq!(thread_id, "t-c");
+                assert_eq!(expected, 0);
+                assert_eq!(actual, 2);
+            }
+            other => panic!("expected MessageVersionConflict, got {other:?}"),
+        }
+        let msgs = thread_run.load_messages("t-c").await.unwrap().unwrap();
+        assert_eq!(msgs.len(), 2, "a conflicting append leaves state untouched");
     }
 
     #[tokio::test]

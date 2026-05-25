@@ -18,7 +18,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use awaken_contract::contract::commit_coordinator::{
     CheckpointCommitOutcome, CheckpointCommitPlan, CommitCoordinator, CommitError,
-    TransactionScopeId,
+    MessageWriteMode, TransactionScopeId,
 };
 use awaken_contract::contract::storage::ThreadRunStore;
 use tokio::sync::Mutex;
@@ -114,12 +114,33 @@ impl CommitCoordinator for FileCommitCoordinator {
         let thread_run = self.thread_run.clone();
         let plan_ref = &plan;
         let write_thread_run = || async move {
-            thread_run
-                .checkpoint(&plan_ref.thread_id, &plan_ref.messages, &plan_ref.run)
-                .await
+            match plan_ref.message_mode {
+                MessageWriteMode::Overwrite =>
+                {
+                    #[allow(deprecated)]
+                    thread_run
+                        .checkpoint(&plan_ref.thread_id, &plan_ref.messages, &plan_ref.run)
+                        .await
+                }
+                MessageWriteMode::Append => thread_run
+                    .checkpoint_append(
+                        &plan_ref.thread_id,
+                        &plan_ref.messages,
+                        plan_ref.expected_message_version,
+                        &plan_ref.run,
+                    )
+                    .await
+                    .map(|_| ()),
+            }
         };
 
-        run_commit_batch(&plan, &self.events, &self.outbox, write_thread_run).await
+        let outcome = run_commit_batch(&plan, &self.events, &self.outbox, write_thread_run).await;
+        match plan.message_mode {
+            MessageWriteMode::Append => {
+                outcome.map_err(|error| error.reclassify_append_conflict(&plan.thread_id))
+            }
+            MessageWriteMode::Overwrite => outcome,
+        }
     }
 }
 

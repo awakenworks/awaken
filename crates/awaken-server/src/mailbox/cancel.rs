@@ -384,15 +384,26 @@ impl Mailbox {
         dispatch: &RunDispatch,
         run: &RunRecord,
     ) -> Result<(), MailboxError> {
-        let messages = self
-            .run_store
-            .load_messages(&dispatch.thread_id)
-            .await?
-            .unwrap_or_default();
-        self.commit_run_checkpoint(&dispatch.thread_id, &messages, run)
-            .await?;
-        self.refresh_worker_checkpoint_cache(&dispatch.thread_id, &messages, run)
-            .await;
-        Ok(())
+        const MAX_APPEND_ATTEMPTS: usize = 8;
+        for _ in 0..MAX_APPEND_ATTEMPTS {
+            let messages = self
+                .run_store
+                .load_messages(&dispatch.thread_id)
+                .await?
+                .unwrap_or_default();
+            let expected_version = messages.len() as u64;
+            if self
+                .commit_run_append(&dispatch.thread_id, &[], Some(expected_version), run)
+                .await?
+            {
+                self.refresh_worker_checkpoint_cache(&dispatch.thread_id, &messages, run)
+                    .await;
+                return Ok(());
+            }
+        }
+        Err(MailboxError::Internal(format!(
+            "terminal dispatch run checkpoint exhausted {MAX_APPEND_ATTEMPTS} retries under version conflict for thread '{}'",
+            dispatch.thread_id
+        )))
     }
 }
