@@ -105,7 +105,9 @@ pub use awaken_ext_generative_ui::{
 };
 
 #[cfg(feature = "server")]
-pub use awaken_server::app::{AppState, ServerConfig, ShutdownConfig, serve, serve_with_shutdown};
+pub use awaken_server::app::{
+    ServerConfig, ServerState, ShutdownConfig, serve, serve_with_shutdown,
+};
 #[cfg(feature = "server")]
 pub use awaken_server::mailbox::{Mailbox, MailboxConfig};
 #[cfg(feature = "server")]

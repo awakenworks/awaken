@@ -296,6 +296,7 @@ pub struct ServerState {
     pub(crate) credential_broker: Arc<dyn CredentialBroker>,
 }
 
+#[deprecated(note = "use ServerState")]
 pub type AppState = ServerState;
 
 impl ServerState {
