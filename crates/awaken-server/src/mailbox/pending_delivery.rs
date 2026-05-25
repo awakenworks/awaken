@@ -77,6 +77,40 @@ impl Mailbox {
             .await?)
     }
 
+    pub async fn update_pending_message(
+        &self,
+        thread_id: &str,
+        pending_id: &str,
+        message: Message,
+    ) -> Result<PendingMessageRecord, MailboxError> {
+        let store = self.pending_thread_run_store()?;
+        Ok(store
+            .update_pending_message_record(thread_id, pending_id, message)
+            .await?)
+    }
+
+    pub async fn retract_pending_message(
+        &self,
+        thread_id: &str,
+        pending_id: &str,
+    ) -> Result<PendingMessageRecord, MailboxError> {
+        let store = self.pending_thread_run_store()?;
+        Ok(store
+            .retract_pending_message_record(thread_id, pending_id)
+            .await?)
+    }
+
+    pub async fn reorder_pending_messages(
+        &self,
+        thread_id: &str,
+        ordered_pending_ids: &[String],
+    ) -> Result<Vec<PendingMessageRecord>, MailboxError> {
+        let store = self.pending_thread_run_store()?;
+        Ok(store
+            .reorder_pending_message_records(thread_id, ordered_pending_ids)
+            .await?)
+    }
+
     pub(super) async fn prepare_pending_new_run_for_dispatch(
         &self,
         request: &RunActivation,
@@ -407,6 +441,100 @@ mod tests {
                 .unwrap()
                 .is_empty()
         );
+    }
+
+    #[tokio::test]
+    async fn pending_messages_can_be_edited_reordered_and_retracted_before_freeze() {
+        let thread_store = Arc::new(InMemoryStore::new());
+        let mailbox = Mailbox::new_with_pending_thread_run_store(
+            Arc::new(NoopExecutor),
+            Arc::new(InMemoryMailboxStore::new()),
+            thread_store.clone(),
+            "consumer".to_string(),
+            MailboxConfig::default(),
+        );
+        let delivered = mailbox
+            .deliver(
+                "thread-edit-pending",
+                &[
+                    Message::user("first").with_id("pending-1".to_string()),
+                    Message::user("second").with_id("pending-2".to_string()),
+                ],
+                DeliveryMode::new_run(DeliveryGranularity::Batch),
+            )
+            .await
+            .unwrap();
+
+        let edited = mailbox
+            .update_pending_message(
+                "thread-edit-pending",
+                &delivered[0].pending_id,
+                Message::user("edited").with_id(delivered[0].pending_id.clone()),
+            )
+            .await
+            .unwrap();
+        assert_eq!(edited.message.text(), "edited");
+
+        let reordered = mailbox
+            .reorder_pending_messages(
+                "thread-edit-pending",
+                &[
+                    delivered[1].pending_id.clone(),
+                    delivered[0].pending_id.clone(),
+                ],
+            )
+            .await
+            .unwrap();
+        assert_eq!(reordered[0].pending_id, delivered[1].pending_id);
+        assert_eq!(reordered[1].pending_id, delivered[0].pending_id);
+
+        let retracted = mailbox
+            .retract_pending_message("thread-edit-pending", &delivered[1].pending_id)
+            .await
+            .unwrap();
+        assert_eq!(retracted.message.text(), "second");
+
+        let frozen = mailbox
+            .freeze_pending("thread-edit-pending", DeliveryBoundary::NewRun, Some(0))
+            .await
+            .unwrap();
+        assert_eq!(frozen.len(), 1);
+        assert_eq!(frozen[0].message.text(), "edited");
+    }
+
+    #[tokio::test]
+    async fn pending_message_edit_after_freeze_returns_consumed_error() {
+        let thread_store = Arc::new(InMemoryStore::new());
+        let mailbox = Mailbox::new_with_pending_thread_run_store(
+            Arc::new(NoopExecutor),
+            Arc::new(InMemoryMailboxStore::new()),
+            thread_store,
+            "consumer".to_string(),
+            MailboxConfig::default(),
+        );
+        let delivered = mailbox
+            .deliver(
+                "thread-edit-consumed",
+                &[Message::user("sent").with_id("sent-id".to_string())],
+                DeliveryMode::new_run(DeliveryGranularity::Batch),
+            )
+            .await
+            .unwrap();
+        mailbox
+            .freeze_pending("thread-edit-consumed", DeliveryBoundary::NewRun, Some(0))
+            .await
+            .unwrap();
+
+        let error = mailbox
+            .update_pending_message(
+                "thread-edit-consumed",
+                &delivered[0].pending_id,
+                Message::user("too late").with_id(delivered[0].pending_id.clone()),
+            )
+            .await
+            .unwrap_err();
+
+        assert!(error.to_string().contains("already consumed"));
     }
 
     #[tokio::test]
