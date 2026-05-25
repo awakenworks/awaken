@@ -1630,7 +1630,11 @@ fn build_multi_agent_app() -> (axum::Router, Arc<InMemoryStore>) {
         label: "beta-out",
     });
     let builder = AgentRuntimeBuilder::new()
-        .with_model(ModelSpec::new("model-alpha", "alpha-provider", "alpha-model"))
+        .with_model(ModelSpec::new(
+            "model-alpha",
+            "alpha-provider",
+            "alpha-model",
+        ))
         .with_model(ModelSpec::new("model-beta", "beta-provider", "beta-model"))
         .with_provider("alpha-provider", alpha)
         .with_provider("beta-provider", beta)

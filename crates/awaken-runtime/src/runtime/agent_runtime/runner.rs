@@ -897,8 +897,6 @@ mod tests {
     use crate::registry::snapshot::RegistryHandle;
     #[cfg(feature = "a2a")]
     use crate::registry::traits::{BackendRegistry, RegistrySet};
-    #[cfg(feature = "a2a")]
-    use awaken_contract::registry_spec::ModelSpec;
     use crate::registry::{AgentResolver, ResolvedAgent};
     use crate::state::{KeyScope, StateCommand, StateKey, StateKeyOptions};
     use crate::{PhaseContext, PhaseHook, RunActivation, ToolPolicyHook};
@@ -925,6 +923,8 @@ mod tests {
     use awaken_contract::contract::tool_intercept::{
         AdapterKind, RunMode, ToolPolicyContext, ToolPolicyDecision,
     };
+    #[cfg(feature = "a2a")]
+    use awaken_contract::registry_spec::ModelSpec;
     #[cfg(feature = "a2a")]
     use awaken_contract::registry_spec::{AgentSpec, RemoteEndpoint};
     use awaken_stores::InMemoryStore;

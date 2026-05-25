@@ -366,14 +366,13 @@ impl StandardRegistryGraphValidator {
         entry: &PinnedRegistryEntry,
         record: &VersionedRecord<serde_json::Value>,
     ) -> Result<Vec<PinnedRegistryEntry>, RegistryGraphValidationError> {
-        let spec =
-            serde_json::from_value::<ModelSpec>(record.value.clone()).map_err(|error| {
-                RegistryGraphValidationError::InvalidReference {
-                    kind: entry.kind.clone(),
-                    id: entry.id.clone(),
-                    reason: format!("invalid ModelSpec: {error}"),
-                }
-            })?;
+        let spec = serde_json::from_value::<ModelSpec>(record.value.clone()).map_err(|error| {
+            RegistryGraphValidationError::InvalidReference {
+                kind: entry.kind.clone(),
+                id: entry.id.clone(),
+                reason: format!("invalid ModelSpec: {error}"),
+            }
+        })?;
         if spec.id != entry.id {
             return Err(RegistryGraphValidationError::InvalidReference {
                 kind: entry.kind.clone(),
