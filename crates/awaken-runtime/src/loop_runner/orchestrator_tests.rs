@@ -211,6 +211,10 @@ mod termination_sequence_tests {
 mod persist_checkpoint_tests {
     use super::*;
     use crate::agent::state::{RunLifecycle, RunLifecycleUpdate};
+    use awaken_contract::model::{
+        PendingScheduledActions, Phase, ScheduledAction, ScheduledActionEnvelope,
+        ScheduledActionQueueUpdate,
+    };
 
     fn store_with_lifecycle() -> StateStore {
         let store = StateStore::new();
@@ -266,6 +270,47 @@ mod persist_checkpoint_tests {
 
         let lifecycle = store.read::<RunLifecycle>().unwrap();
         assert_eq!(lifecycle.status_reason.as_deref(), Some("natural"));
+    }
+
+    #[test]
+    fn terminal_run_clears_pending_scheduled_actions() {
+        let store = store_with_lifecycle();
+        let _runtime = crate::phase::PhaseRuntime::new(store.clone()).unwrap();
+        let mut batch = MutationBatch::new();
+        batch.update::<PendingScheduledActions>(ScheduledActionQueueUpdate::Push(
+            ScheduledActionEnvelope {
+                id: 42,
+                action: ScheduledAction::new(
+                    Phase::AfterInference,
+                    "test.stale.action",
+                    serde_json::json!({"run_id": "r1", "message_id": "missing-message"}),
+                ),
+            },
+        ));
+        store.commit(batch).unwrap();
+        assert_eq!(store.read::<PendingScheduledActions>().unwrap().len(), 1);
+
+        crate::loop_runner::commit_update::<RunLifecycle>(
+            &store,
+            RunLifecycleUpdate::Start {
+                run_id: "r1".into(),
+                updated_at: 100,
+            },
+        )
+        .unwrap();
+        crate::loop_runner::commit_update::<RunLifecycle>(
+            &store,
+            RunLifecycleUpdate::Done {
+                done_reason: "natural".into(),
+                updated_at: 200,
+            },
+        )
+        .unwrap();
+
+        assert!(
+            store.read::<PendingScheduledActions>().unwrap().is_empty(),
+            "terminal runs must not leave stale scheduled actions for later dispatches"
+        );
     }
 }
 

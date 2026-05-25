@@ -282,6 +282,15 @@ async fn nats_reclaim_expired_leases_dead_letters_at_max_attempts() {
 }
 
 #[tokio::test]
+async fn nats_reclaim_expired_leases_dead_letter_is_idempotent_under_concurrency() {
+    let fixture = NatsFixture::start().await;
+    let store = make_store(&fixture).await;
+    mailbox_conformance::reclaim_expired_leases_dead_letter_is_idempotent_under_concurrency(&store)
+        .await;
+    store.shutdown().await.unwrap();
+}
+
+#[tokio::test]
 async fn nats_purge_terminal_removes_old() {
     let fixture = NatsFixture::start().await;
     let store = make_store(&fixture).await;

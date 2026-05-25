@@ -122,6 +122,36 @@ fn commit_update<S: crate::state::StateKey>(
     let mut patch = MutationBatch::new();
     patch.update::<S>(update);
     store.commit(patch)?;
+    clear_pending_scheduled_actions_for_terminal_run::<S>(store)?;
+    Ok(())
+}
+
+fn clear_pending_scheduled_actions_for_terminal_run<S: crate::state::StateKey>(
+    store: &crate::state::StateStore,
+) -> Result<(), awaken_contract::StateError> {
+    if S::KEY != "__runtime.run_lifecycle" {
+        return Ok(());
+    }
+    let Some(lifecycle) = store.read::<RunLifecycle>() else {
+        return Ok(());
+    };
+    if !lifecycle.status.is_terminal() {
+        return Ok(());
+    }
+    let Some(pending) = store.read::<awaken_contract::model::PendingScheduledActions>() else {
+        return Ok(());
+    };
+    if pending.is_empty() {
+        return Ok(());
+    }
+
+    let mut cleanup = MutationBatch::new();
+    for action in pending {
+        cleanup.update::<awaken_contract::model::PendingScheduledActions>(
+            awaken_contract::model::ScheduledActionQueueUpdate::Remove { id: action.id },
+        );
+    }
+    store.commit(cleanup)?;
     Ok(())
 }
 

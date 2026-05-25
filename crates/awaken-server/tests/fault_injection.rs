@@ -9,6 +9,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use async_trait::async_trait;
 use awaken_contract::contract::event::AgentEvent;
 use awaken_contract::contract::event_sink::EventSink;
+use awaken_contract::contract::executor::{InferenceExecutionError, InferenceRequest, LlmExecutor};
+use awaken_contract::contract::inference::{StopReason, StreamResult};
+use awaken_contract::contract::lifecycle::RunStatus;
 use awaken_contract::contract::mailbox::{
     MailboxInterrupt, MailboxInterruptDetails, MailboxStore, RunDispatch, RunDispatchResult,
     RunDispatchStatus,
@@ -263,6 +266,65 @@ fn make_dispatch(dispatch_id: &str, thread_id: &str) -> RunDispatch {
         completed_at: None,
         created_at: 1000,
         updated_at: 1000,
+    }
+}
+
+struct ImmediateLlm;
+
+#[async_trait]
+impl LlmExecutor for ImmediateLlm {
+    async fn execute(
+        &self,
+        _request: InferenceRequest,
+    ) -> Result<StreamResult, InferenceExecutionError> {
+        Ok(StreamResult {
+            content: Vec::new(),
+            tool_calls: Vec::new(),
+            usage: None,
+            stop_reason: Some(StopReason::EndTurn),
+            has_incomplete_tool_calls: false,
+        })
+    }
+
+    fn name(&self) -> &str {
+        "immediate"
+    }
+}
+
+fn background_waiting_run(run_id: &str, thread_id: &str) -> RunRecord {
+    RunRecord {
+        run_id: run_id.to_string(),
+        thread_id: thread_id.to_string(),
+        agent_id: "agent".to_string(),
+        parent_run_id: None,
+        registry_manifest: None,
+        activation: None,
+        request: None,
+        input: None,
+        output: None,
+        status: RunStatus::Waiting,
+        termination_reason: None,
+        final_output: None,
+        error_payload: None,
+        dispatch_id: None,
+        session_id: None,
+        transport_request_id: None,
+        waiting: Some(RunWaitingState {
+            reason: WaitingReason::BackgroundTasks,
+            ticket_ids: Vec::new(),
+            tickets: Vec::new(),
+            since_dispatch_id: None,
+            message: None,
+        }),
+        outcome: None,
+        created_at: 1,
+        started_at: None,
+        finished_at: None,
+        updated_at: 1,
+        steps: 0,
+        input_tokens: 0,
+        output_tokens: 0,
+        state: None,
     }
 }
 

@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 use awaken_contract::contract::lifecycle::RunStatus;
 use awaken_contract::contract::mailbox::{RunDispatch, RunDispatchStatus};
 use awaken_contract::contract::message::Message;
-use awaken_contract::contract::storage::{RunQuery, RunRecord};
+use awaken_contract::contract::storage::{RunQuery, RunRecord, StorageError};
 use awaken_contract::contract::tool_intercept::{AdapterKind, RunMode};
 use awaken_contract::now_ms;
 use awaken_runtime::RunActivation;
@@ -250,14 +250,13 @@ impl Mailbox {
             .with_origin(awaken_contract::contract::storage::RunRequestOrigin::Internal)
             .with_run_mode(RunMode::InternalWake)
             .with_adapter(AdapterKind::Internal);
-            if self.submit_background(request).await.is_ok() {
-                total += 1;
-                tracing::info!(
-                    thread_id = %run.thread_id,
-                    run_id = %run.run_id,
-                    "recover: enqueued wake dispatch for orphaned background-task thread"
-                );
-            }
+            self.submit_background(request).await?;
+            total += 1;
+            tracing::info!(
+                thread_id = %run.thread_id,
+                run_id = %run.run_id,
+                "recover: enqueued wake dispatch for orphaned background-task thread"
+            );
         }
 
         Ok(total)
@@ -305,7 +304,20 @@ impl Mailbox {
                 created_at: now,
                 updated_at: now,
             };
-            self.store.enqueue(&dispatch).await?;
+            if let Err(error) = self.store.enqueue(&dispatch).await {
+                match error {
+                    StorageError::AlreadyExists(id) if id == dispatch_id => {
+                        tracing::info!(
+                            thread_id = %run.thread_id,
+                            run_id = %run.run_id,
+                            dispatch_id = %dispatch_id,
+                            "recover: another instance reconstructed prepared dispatch WAL"
+                        );
+                        continue;
+                    }
+                    other => return Err(MailboxError::Store(other)),
+                }
+            }
             self.record_mailbox_dispatch_event("RunQueued", &dispatch)
                 .await;
             total += 1;

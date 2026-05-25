@@ -627,6 +627,49 @@ pub async fn reclaim_expired_leases_dead_letters_at_max_attempts<S: MailboxStore
     assert_claim_fields_clear(&loaded);
 }
 
+/// Concurrent maintenance sweeps are idempotent: only one worker may
+/// terminalize an expired exhausted dispatch, and later sweeps must not return
+/// it for execution again.
+pub async fn reclaim_expired_leases_dead_letter_is_idempotent_under_concurrency<S: MailboxStore>(
+    store: &S,
+) {
+    let mut dispatch = make_dispatch("d1", "t-reclaim-idempotent", "r1", 128, 1000);
+    dispatch.max_attempts = 1;
+    store.enqueue(&dispatch).await.unwrap();
+
+    store
+        .claim("t-reclaim-idempotent", "consumer-1", 100, 1000, 1)
+        .await
+        .unwrap();
+
+    let (left, right) = tokio::join!(
+        store.reclaim_expired_leases(2000, 10),
+        store.reclaim_expired_leases(2000, 10)
+    );
+    let mut reclaimed = Vec::new();
+    reclaimed.extend(left.unwrap());
+    reclaimed.extend(right.unwrap());
+
+    assert_eq!(
+        reclaimed.len(),
+        1,
+        "concurrent sweeps must observe a single terminal transition"
+    );
+    assert_eq!(reclaimed[0].dispatch_id, "d1");
+    assert_eq!(reclaimed[0].status, RunDispatchStatus::DeadLetter);
+
+    let loaded = store.load_dispatch("d1").await.unwrap().unwrap();
+    assert_eq!(loaded.status, RunDispatchStatus::DeadLetter);
+    assert_eq!(loaded.attempt_count, 1);
+    assert_claim_fields_clear(&loaded);
+
+    let later = store.reclaim_expired_leases(3000, 10).await.unwrap();
+    assert!(
+        later.is_empty(),
+        "dead-lettered dispatch must not be returned by later sweeps"
+    );
+}
+
 /// `purge_terminal()` removes terminal dispatches older than the cutoff.
 pub async fn purge_terminal_removes_old<S: MailboxStore>(store: &S) {
     let dispatch = make_dispatch("d1", "t-purge", "r1", 128, 1000);

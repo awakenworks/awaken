@@ -141,7 +141,7 @@ impl GenaiExecutor {
         opts
     }
 
-    fn map_error(e: genai::Error) -> InferenceExecutionError {
+    pub(super) fn map_error(e: genai::Error) -> InferenceExecutionError {
         tracing::warn!(error = ?e, "LLM inference error");
 
         let parts = Self::extract_structured_parts(&e);

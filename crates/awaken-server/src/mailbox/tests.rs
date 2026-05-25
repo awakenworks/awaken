@@ -169,6 +169,7 @@ struct RecoverFlakyMailboxStore {
     inner: InMemoryMailboxStore,
     reclaim_failures_remaining: AtomicUsize,
     reclaim_calls: AtomicUsize,
+    dead_letter_calls: AtomicUsize,
 }
 
 impl RecoverFlakyMailboxStore {
@@ -177,11 +178,16 @@ impl RecoverFlakyMailboxStore {
             inner: InMemoryMailboxStore::new(),
             reclaim_failures_remaining: AtomicUsize::new(reclaim_failures),
             reclaim_calls: AtomicUsize::new(0),
+            dead_letter_calls: AtomicUsize::new(0),
         }
     }
 
     fn reclaim_calls(&self) -> usize {
         self.reclaim_calls.load(Ordering::SeqCst)
+    }
+
+    fn dead_letter_calls(&self) -> usize {
+        self.dead_letter_calls.load(Ordering::SeqCst)
     }
 }
 
@@ -269,6 +275,7 @@ impl MailboxStore for RecoverFlakyMailboxStore {
         error: &str,
         now: u64,
     ) -> Result<(), StorageError> {
+        self.dead_letter_calls.fetch_add(1, Ordering::SeqCst);
         self.inner
             .dead_letter(dispatch_id, claim_token, error, now)
             .await
@@ -2221,6 +2228,60 @@ async fn start_lifecycle_reclaims_expired_claimed_dispatches_and_executes_them()
 }
 
 #[tokio::test]
+async fn multi_instance_ready_lifecycle_executes_shared_dispatch_once() {
+    let mailbox_store = make_store();
+    let run_store = Arc::new(InMemoryStore::new());
+    let runtime_a = Arc::new(CountingMailboxRuntime::default());
+    let runtime_b = Arc::new(CountingMailboxRuntime::default());
+    let mailbox_a = Arc::new(Mailbox::new(
+        runtime_a.clone(),
+        mailbox_store.clone(),
+        run_store.clone(),
+        "consumer-a".to_string(),
+        MailboxConfig::default(),
+    ));
+    let mailbox_b = Arc::new(Mailbox::new(
+        runtime_b.clone(),
+        mailbox_store.clone(),
+        run_store,
+        "consumer-b".to_string(),
+        MailboxConfig::default(),
+    ));
+    let dispatch = prepare_queued_dispatch(
+        &mailbox_a,
+        "thread-multi-instance-ready",
+        "shared startup dispatch",
+    )
+    .await;
+    let dispatch_id = dispatch.dispatch_id.clone();
+    mailbox_store
+        .enqueue(&dispatch)
+        .await
+        .expect("enqueue shared dispatch");
+
+    let (handle_a, handle_b) = tokio::join!(
+        mailbox_a.start_lifecycle_ready(MailboxLifecycleConfig::default()),
+        mailbox_b.start_lifecycle_ready(MailboxLifecycleConfig::default())
+    );
+    let handle_a = handle_a.expect("instance a lifecycle should start");
+    let handle_b = handle_b.expect("instance b lifecycle should start");
+
+    let acked = wait_for_dispatch(&mailbox_store, &dispatch_id, |dispatch| {
+        dispatch.status == RunDispatchStatus::Acked
+    })
+    .await;
+    assert_eq!(acked.status, RunDispatchStatus::Acked);
+    assert_eq!(
+        runtime_a.run_count() + runtime_b.run_count(),
+        1,
+        "shared mailbox dispatch must be claimed and executed by exactly one instance"
+    );
+
+    handle_a.shutdown().await.expect("shutdown instance a");
+    handle_b.shutdown().await.expect("shutdown instance b");
+}
+
+#[tokio::test]
 async fn dispatch_signal_loop_claims_and_executes_queued_dispatch() {
     let store = Arc::new(SignalMailboxStore::new());
     let run_store = Arc::new(InMemoryStore::new());
@@ -3656,6 +3717,83 @@ async fn reconstruct_failure_cleans_worker_and_dispatches_next_queued() {
     })
     .await;
     assert_eq!(acked.status, RunDispatchStatus::Acked);
+}
+
+#[tokio::test]
+async fn reconstruct_failure_dead_letters_once_and_is_not_polled_again() {
+    let store = Arc::new(RecoverFlakyMailboxStore::new(0));
+    let thread_store = Arc::new(InMemoryStore::new());
+    let runtime = Arc::new(RecordingMailboxRuntime::default());
+    let mailbox = Arc::new(Mailbox::new(
+        runtime,
+        store.clone(),
+        thread_store,
+        "test-consumer".to_string(),
+        MailboxConfig::default(),
+    ));
+    let thread_id = "thread-reconstruct-once";
+    let now = now_ms();
+
+    let missing = RunDispatch {
+        dispatch_id: "dispatch-reconstruct-once".to_string(),
+        thread_id: thread_id.to_string(),
+        run_id: "missing-run".to_string(),
+        priority: 10,
+        dedupe_key: None,
+        dispatch_epoch: 0,
+        status: RunDispatchStatus::Queued,
+        available_at: now,
+        attempt_count: 0,
+        max_attempts: 3,
+        last_error: None,
+        claim_token: None,
+        claimed_by: None,
+        lease_until: None,
+        dispatch_instance_id: None,
+        run_status: None,
+        termination: None,
+        run_response: None,
+        run_error: None,
+        completed_at: None,
+        created_at: now,
+        updated_at: now,
+    };
+    store.enqueue(&missing).await.expect("enqueue missing run");
+
+    mailbox.get_or_create_worker(thread_id).await;
+    assert_eq!(
+        mailbox.try_dispatch_next(thread_id).await,
+        DispatchAttempt::Claimed
+    );
+
+    let dead = wait_for_dispatch(&store.inner, "dispatch-reconstruct-once", |dispatch| {
+        dispatch.status == RunDispatchStatus::DeadLetter
+    })
+    .await;
+    assert_eq!(dead.status, RunDispatchStatus::DeadLetter);
+
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        let attempt = mailbox.try_dispatch_next(thread_id).await;
+        if attempt != DispatchAttempt::Busy {
+            assert_eq!(
+                attempt,
+                DispatchAttempt::NoEligible,
+                "dead-lettered reconstruct failure must not be claimable again"
+            );
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "timed out waiting for reconstruct failure worker to release"
+        );
+        sleep(Duration::from_millis(10)).await;
+    }
+    assert_eq!(
+        store.dead_letter_calls(),
+        1,
+        "reconstruct failure should issue exactly one dead_letter transition"
+    );
 }
 
 // ── MailboxDispatchStatus ────────────────────────────────────────
@@ -6142,6 +6280,260 @@ async fn recover_prepared_runs_collects_before_enqueue_to_avoid_offset_skips() {
             "missing reconstructed dispatch {dispatch_id}"
         );
     }
+}
+
+#[tokio::test]
+async fn distributed_claim_same_dispatch_allows_exactly_one_consumer() {
+    let store = make_store();
+    store
+        .enqueue(&sample_dispatch(
+            "thread-distributed-claim",
+            "run-distributed-claim",
+            "dispatch-distributed-claim",
+        ))
+        .await
+        .expect("enqueue dispatch");
+
+    let attempts = (0..32)
+        .map(|idx| {
+            let store = Arc::clone(&store);
+            tokio::spawn(async move {
+                store
+                    .claim_dispatch(
+                        "dispatch-distributed-claim",
+                        &format!("consumer-{idx}"),
+                        30_000,
+                        now_ms(),
+                    )
+                    .await
+                    .expect("claim attempt")
+            })
+        })
+        .collect::<Vec<_>>();
+
+    let mut winners = Vec::new();
+    for attempt in attempts {
+        if let Some(dispatch) = attempt.await.expect("claim task") {
+            winners.push(dispatch);
+        }
+    }
+
+    assert_eq!(
+        winners.len(),
+        1,
+        "distributed claim contention must produce exactly one owner"
+    );
+    let loaded = store
+        .load_dispatch("dispatch-distributed-claim")
+        .await
+        .expect("load dispatch")
+        .expect("dispatch exists");
+    assert_eq!(loaded.status, RunDispatchStatus::Claimed);
+    assert_eq!(loaded.claimed_by, winners[0].claimed_by);
+    assert_eq!(loaded.claim_token, winners[0].claim_token);
+}
+
+#[tokio::test]
+async fn distributed_expired_lease_reclaim_rejects_late_old_owner_ack() {
+    let store = make_store();
+    let mut dispatch =
+        sample_dispatch("thread-lease-race", "run-lease-race", "dispatch-lease-race");
+    dispatch.available_at = 0;
+    store.enqueue(&dispatch).await.expect("enqueue dispatch");
+
+    let claimed_by_a = store
+        .claim_dispatch("dispatch-lease-race", "consumer-a", 100, 1_000)
+        .await
+        .expect("claim by a")
+        .expect("a owns dispatch");
+    let old_token = claimed_by_a.claim_token.clone().expect("old token");
+
+    let reclaimed = store
+        .reclaim_expired_leases(1_101, 10)
+        .await
+        .expect("reclaim expired lease");
+    assert_eq!(reclaimed.len(), 1);
+    assert_eq!(reclaimed[0].status, RunDispatchStatus::Queued);
+    assert_eq!(reclaimed[0].attempt_count, 1);
+
+    let claimed_by_b = store
+        .claim_dispatch("dispatch-lease-race", "consumer-b", 30_000, 1_102)
+        .await
+        .expect("claim by b")
+        .expect("b owns dispatch after reclaim");
+    let new_token = claimed_by_b.claim_token.clone().expect("new token");
+
+    assert!(
+        store
+            .ack("dispatch-lease-race", &old_token, 1_103)
+            .await
+            .is_err(),
+        "late ack from old owner must not release the new owner's claim"
+    );
+    let still_claimed_by_b = store
+        .load_dispatch("dispatch-lease-race")
+        .await
+        .expect("load after old ack")
+        .expect("dispatch exists");
+    assert_eq!(still_claimed_by_b.status, RunDispatchStatus::Claimed);
+    assert_eq!(still_claimed_by_b.claimed_by.as_deref(), Some("consumer-b"));
+
+    store
+        .ack("dispatch-lease-race", &new_token, 1_104)
+        .await
+        .expect("new owner ack succeeds");
+    let delivered = store
+        .load_dispatch("dispatch-lease-race")
+        .await
+        .expect("load delivered")
+        .expect("dispatch exists");
+    assert_eq!(delivered.status, RunDispatchStatus::Acked);
+}
+
+#[tokio::test]
+async fn distributed_lease_reclaim_uses_strict_expiry_boundary() {
+    let store = make_store();
+    let mut dispatch = sample_dispatch(
+        "thread-lease-boundary",
+        "run-lease-boundary",
+        "dispatch-lease-boundary",
+    );
+    dispatch.available_at = 0;
+    store.enqueue(&dispatch).await.expect("enqueue dispatch");
+
+    store
+        .claim_dispatch("dispatch-lease-boundary", "consumer-a", 100, 1_000)
+        .await
+        .expect("claim dispatch")
+        .expect("claim exists");
+
+    let before_expiry = store
+        .reclaim_expired_leases(999, 10)
+        .await
+        .expect("backward clock reclaim");
+    assert!(
+        before_expiry.is_empty(),
+        "a backward-skewed recovery clock must not reclaim a live lease"
+    );
+
+    let at_expiry = store
+        .reclaim_expired_leases(1_100, 10)
+        .await
+        .expect("exact boundary reclaim");
+    assert!(
+        at_expiry.is_empty(),
+        "lease_until is still owned at the exact boundary"
+    );
+
+    let after_expiry = store
+        .reclaim_expired_leases(1_101, 10)
+        .await
+        .expect("expired reclaim");
+    assert_eq!(
+        after_expiry.len(),
+        1,
+        "lease should only be reclaimed after the boundary has passed"
+    );
+    assert_eq!(after_expiry[0].status, RunDispatchStatus::Queued);
+}
+
+#[tokio::test]
+async fn distributed_nack_retry_window_respects_retry_at_boundary() {
+    let store = make_store();
+    let mut dispatch = sample_dispatch(
+        "thread-retry-boundary",
+        "run-retry-boundary",
+        "dispatch-retry-boundary",
+    );
+    dispatch.available_at = 0;
+    store.enqueue(&dispatch).await.expect("enqueue dispatch");
+
+    let claimed = store
+        .claim_dispatch("dispatch-retry-boundary", "consumer-a", 30_000, 1_000)
+        .await
+        .expect("claim dispatch")
+        .expect("claim exists");
+    let token = claimed.claim_token.expect("claim token");
+
+    store
+        .nack(
+            "dispatch-retry-boundary",
+            &token,
+            2_000,
+            "retry later",
+            1_001,
+        )
+        .await
+        .expect("nack dispatch");
+
+    let too_early = store
+        .claim("thread-retry-boundary", "consumer-b", 30_000, 1_999, 1)
+        .await
+        .expect("too early claim");
+    assert!(
+        too_early.is_empty(),
+        "dispatch must not be claimable before retry_at"
+    );
+
+    let at_retry = store
+        .claim("thread-retry-boundary", "consumer-b", 30_000, 2_000, 1)
+        .await
+        .expect("retry boundary claim");
+    assert!(
+        at_retry
+            .first()
+            .is_some_and(|dispatch| dispatch.dispatch_id == "dispatch-retry-boundary"),
+        "dispatch must become claimable at retry_at"
+    );
+}
+
+#[tokio::test]
+async fn distributed_recover_prepared_run_missing_wal_is_idempotent_across_instances() {
+    let run_store = Arc::new(InMemoryStore::new());
+    let mailbox_store = make_store();
+    let runtime_a = Arc::new(RecordingStoreMailboxRuntime::new(run_store.clone()));
+    let runtime_b = Arc::new(RecordingStoreMailboxRuntime::new(run_store.clone()));
+    let mailbox_a = Arc::new(Mailbox::new(
+        runtime_a,
+        mailbox_store.clone(),
+        run_store.clone(),
+        "consumer-a".to_string(),
+        MailboxConfig::default(),
+    ));
+    let mailbox_b = Arc::new(Mailbox::new(
+        runtime_b,
+        mailbox_store.clone(),
+        run_store.clone(),
+        "consumer-b".to_string(),
+        MailboxConfig::default(),
+    ));
+    let mut run = make_run_record(
+        "run-distributed-recover",
+        "thread-distributed-recover",
+        RunStatus::Created,
+    );
+    run.dispatch_id = Some("dispatch-distributed-recover".to_string());
+    run_store
+        .create_run(&run)
+        .await
+        .expect("seed prepared run without WAL");
+
+    let (a, b) = tokio::join!(
+        mailbox_a.recover_prepared_runs_missing_dispatch_wal(&[]),
+        mailbox_b.recover_prepared_runs_missing_dispatch_wal(&[])
+    );
+    let total = a.expect("recover a") + b.expect("recover b");
+
+    assert_eq!(
+        total, 1,
+        "concurrent startup recovery must reconstruct each prepared dispatch once"
+    );
+    let dispatches = mailbox_store
+        .list_dispatches("thread-distributed-recover", None, 10, 0)
+        .await
+        .expect("list dispatches");
+    assert_eq!(dispatches.len(), 1);
+    assert_eq!(dispatches[0].dispatch_id, "dispatch-distributed-recover");
 }
 
 #[tokio::test]

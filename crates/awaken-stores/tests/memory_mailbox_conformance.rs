@@ -39,6 +39,7 @@ conformance_test!(reclaim_expired_stale_claim_supersedes);
 conformance_test!(dedupe_key_rejects_duplicate);
 conformance_test!(reclaim_expired_leases_requeues);
 conformance_test!(reclaim_expired_leases_dead_letters_at_max_attempts);
+conformance_test!(reclaim_expired_leases_dead_letter_is_idempotent_under_concurrency);
 conformance_test!(purge_terminal_removes_old);
 conformance_test!(queued_thread_ids_returns_active_threads);
 conformance_test!(count_dispatches_by_status_tracks_lifecycle);

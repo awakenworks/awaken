@@ -13,6 +13,9 @@ pub mod retry;
 pub mod scripted;
 pub mod streaming;
 
+#[cfg(test)]
+mod executor_tests;
+
 pub use circuit_breaker::{CircuitBreaker, CircuitBreakerConfig};
 pub use executor::GenaiExecutor;
 pub use mock::{MockLlmExecutor, MockProviderProfile};
