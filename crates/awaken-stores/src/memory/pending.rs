@@ -5,10 +5,12 @@ use awaken_contract::contract::message::{
     DeliveryBoundary, DeliveryMode, Message, MessageRecord, PendingMessageRecord,
     select_pending_for_freeze,
 };
-use awaken_contract::contract::storage::StorageError;
+use awaken_contract::contract::storage::{RunRecord, StorageError, checkpoint_parent_thread_id};
+use awaken_contract::thread::Thread;
 
 use crate::PendingMessageStore;
 
+use super::validate_thread_hierarchy_map;
 use super::{InMemoryStore, current_millis};
 
 fn normalize_pending_positions(pending: &mut [PendingMessageRecord]) {
@@ -27,6 +29,16 @@ fn already_consumed(pending_id: &str) -> StorageError {
     StorageError::Validation(format!(
         "pending message '{pending_id}' is already consumed"
     ))
+}
+
+fn selected_pending_ids(
+    pending: &[PendingMessageRecord],
+    selected_indexes: &[usize],
+) -> Vec<String> {
+    selected_indexes
+        .iter()
+        .map(|index| pending[*index].pending_id.clone())
+        .collect()
 }
 
 impl InMemoryStore {
@@ -213,6 +225,74 @@ impl PendingMessageStore for InMemoryStore {
                 MessageRecord::from_message(thread_id.to_owned(), start_seq + index as u64, message)
             })
             .collect();
+        Ok(appended)
+    }
+
+    async fn freeze_pending_message_records_with_run(
+        &self,
+        thread_id: &str,
+        boundary: DeliveryBoundary,
+        expected_message_version: Option<u64>,
+        expected_pending_ids: &[String],
+        run: &RunRecord,
+    ) -> Result<Vec<MessageRecord>, StorageError> {
+        let now = current_millis();
+        let mut thread_guard = self.threads.write().await;
+        let existing_thread = thread_guard.get(thread_id).cloned();
+        validate_thread_hierarchy_map(
+            &thread_guard,
+            thread_id,
+            checkpoint_parent_thread_id(existing_thread.as_ref(), run),
+        )?;
+        let mut messages_guard = self.messages.write().await;
+        let mut pending_guard = self.pending_messages.write().await;
+        let mut run_guard = self.runs.write().await;
+        let actual = messages_guard
+            .get(thread_id)
+            .map(|messages| messages.len() as u64)
+            .unwrap_or(0);
+        if let Some(expected) = expected_message_version
+            && expected != actual
+        {
+            return Err(StorageError::VersionConflict { expected, actual });
+        }
+        let pending = pending_guard.entry(thread_id.to_owned()).or_default();
+        let selected_indexes = select_pending_for_freeze(pending, boundary);
+        let selected_ids = selected_pending_ids(pending, &selected_indexes);
+        if selected_ids != expected_pending_ids {
+            return Err(StorageError::VersionConflict {
+                expected: expected_pending_ids.len() as u64,
+                actual: selected_ids.len() as u64,
+            });
+        }
+
+        let mut selected = Vec::with_capacity(selected_indexes.len());
+        for index in selected_indexes.iter().rev() {
+            selected.push(pending.remove(*index));
+        }
+        selected.reverse();
+        normalize_pending_positions(pending);
+        let committed = messages_guard.entry(thread_id.to_owned()).or_default();
+        let start_seq = committed.len() as u64 + 1;
+        let appended = selected
+            .into_iter()
+            .enumerate()
+            .map(|(index, record)| {
+                let message = record.message;
+                committed.push(message.clone());
+                MessageRecord::from_message(thread_id.to_owned(), start_seq + index as u64, message)
+            })
+            .collect::<Vec<_>>();
+        let mut thread = existing_thread.unwrap_or_else(|| Thread::with_id(thread_id));
+        thread.touch(now);
+        thread.apply_run_projection(run);
+        thread.normalize_lineage();
+        thread_guard.insert(thread_id.to_owned(), thread);
+        run_guard.insert(run.run_id.clone(), run.clone());
+        self.run_insertion
+            .write()
+            .await
+            .insert(run.run_id.clone(), self.next_run_seq());
         Ok(appended)
     }
 }
