@@ -117,14 +117,14 @@ impl ProviderExecutorFactory for CountingProviderFactory {
 }
 
 #[cfg(feature = "permission")]
-struct RecordingFallbackExecutor {
+struct RecordingPoolExecutor {
     attempts: Arc<Mutex<Vec<String>>>,
     retryable_model: String,
 }
 
 #[cfg(feature = "permission")]
 #[async_trait]
-impl LlmExecutor for RecordingFallbackExecutor {
+impl LlmExecutor for RecordingPoolExecutor {
     async fn execute(
         &self,
         request: InferenceRequest,
@@ -148,21 +148,21 @@ impl LlmExecutor for RecordingFallbackExecutor {
     }
 
     fn name(&self) -> &str {
-        "recording-fallback"
+        "recording-pool"
     }
 }
 
 #[cfg(feature = "permission")]
-struct RecordingProviderFactory {
+struct RecordingPoolProviderFactory {
     attempts: Arc<Mutex<Vec<String>>>,
     retryable_model: String,
 }
 
 #[cfg(feature = "permission")]
-impl ProviderExecutorFactory for RecordingProviderFactory {
+impl ProviderExecutorFactory for RecordingPoolProviderFactory {
     fn build(&self, spec: &ProviderSpec) -> Result<Arc<dyn LlmExecutor>, ConfigRuntimeError> {
         if spec.adapter.eq_ignore_ascii_case("stub") {
-            return Ok(Arc::new(RecordingFallbackExecutor {
+            return Ok(Arc::new(RecordingPoolExecutor {
                 attempts: self.attempts.clone(),
                 retryable_model: self.retryable_model.clone(),
             }));
@@ -1631,7 +1631,7 @@ async fn documented_config_driven_agent_tuning_publishes_sections_and_retry() {
         Some(notifier.clone() as Arc<dyn ConfigChangeNotifier>),
         Arc::new(TestMcpRegistryFactory),
         None,
-        Arc::new(RecordingProviderFactory {
+        Arc::new(RecordingPoolProviderFactory {
             attempts: attempts.clone(),
             retryable_model: "doc-primary".into(),
         }),
@@ -1677,13 +1677,41 @@ async fn documented_config_driven_agent_tuning_publishes_sections_and_retry() {
         Method::POST,
         "/v1/config/models",
         Some(json!({
-            "id": "research-default",
+            "id": "research-primary",
             "provider_id": "doc-provider",
             "upstream_model": "doc-primary"
         })),
     )
     .await;
     assert_eq!(status, StatusCode::CREATED);
+
+    let (status, _) = request_json(
+        &router,
+        Method::POST,
+        "/v1/config/models",
+        Some(json!({
+            "id": "research-backup",
+            "provider_id": "doc-provider",
+            "upstream_model": "doc-backup"
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, body) = request_json(
+        &router,
+        Method::POST,
+        "/v1/config/model-pools",
+        Some(json!({
+            "id": "research-default",
+            "members": [
+                { "model_id": "research-primary" },
+                { "model_id": "research-backup", "role": "failover_only" }
+            ]
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "body={body}");
 
     let (status, agent) = request_json(
         &router,
@@ -1711,7 +1739,6 @@ async fn documented_config_driven_agent_tuning_publishes_sections_and_retry() {
             "sections": {
                 "retry": {
                     "max_retries": 1,
-                    "fallback_upstream_models": ["doc-fallback"],
                     "backoff_base_ms": 0
                 },
                 "permission": {
@@ -1758,7 +1785,7 @@ async fn documented_config_driven_agent_tuning_publishes_sections_and_retry() {
         .expect("documented config-driven agent should resolve");
     assert_eq!(resolved.id(), "research-assistant");
     assert_eq!(resolved.model_id(), "research-default");
-    assert_eq!(resolved.upstream_model, "doc-primary");
+    assert_eq!(resolved.upstream_model, "research-default");
     assert_eq!(resolved.max_rounds(), 12);
     assert_eq!(resolved.max_continuation_retries(), 3);
     assert_eq!(
@@ -1787,10 +1814,6 @@ async fn documented_config_driven_agent_tuning_publishes_sections_and_retry() {
         .config::<RetryConfigKey>()
         .expect("retry section should decode");
     assert_eq!(retry.max_retries, 1);
-    assert_eq!(
-        retry.fallback_upstream_models,
-        vec!["doc-fallback".to_string()]
-    );
     assert_eq!(retry.backoff_base_ms, 0);
 
     let permission = resolved
@@ -1820,6 +1843,7 @@ async fn documented_config_driven_agent_tuning_publishes_sections_and_retry() {
         .llm_executor
         .execute(InferenceRequest {
             upstream_model: resolved.upstream_model.clone(),
+            routing_key: None,
             messages: vec![],
             tools: vec![],
             system: vec![],
@@ -1827,13 +1851,13 @@ async fn documented_config_driven_agent_tuning_publishes_sections_and_retry() {
             enable_prompt_cache: context_policy.enable_prompt_cache,
         })
         .await
-        .expect("fallback upstream model should recover retryable primary failure");
+        .expect("model pool should recover retryable primary failure");
     assert_eq!(
         *attempts.lock().expect("attempt log lock poisoned"),
         vec![
             "doc-primary".to_string(),
             "doc-primary".to_string(),
-            "doc-fallback".to_string()
+            "doc-backup".to_string()
         ]
     );
 }
@@ -4769,4 +4793,243 @@ async fn config_models_namespace_rejects_duplicate_id_via_namespace_keying() {
     let (status, conflict) =
         request_json(&app.router, Method::POST, "/v1/config/models", Some(body)).await;
     assert_eq!(status, StatusCode::CONFLICT, "body: {conflict}");
+}
+
+async fn create_stub_provider(app: &TestApp, id: &str) {
+    let (status, body) = request_json(
+        &app.router,
+        Method::POST,
+        "/v1/config/providers",
+        Some(json!({
+            "id": id,
+            "adapter": "stub"
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "body={body}");
+}
+
+async fn create_stub_model(app: &TestApp, id: &str, provider_id: &str) {
+    let (status, body) = request_json(
+        &app.router,
+        Method::POST,
+        "/v1/config/models",
+        Some(json!({
+            "id": id,
+            "provider_id": provider_id,
+            "upstream_model": format!("{id}-upstream")
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "body={body}");
+}
+
+#[tokio::test]
+async fn model_pools_crud_round_trip() {
+    let app = make_app().await;
+
+    create_stub_provider(&app, "pool-provider").await;
+    create_stub_model(&app, "claude-direct", "pool-provider").await;
+    create_stub_model(&app, "claude-bedrock", "pool-provider").await;
+
+    let (status, capabilities) =
+        request_json(&app.router, Method::GET, "/v1/capabilities", None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        capabilities.to_string().contains("model-pools"),
+        "capabilities must advertise the model-pools namespace: {capabilities}"
+    );
+
+    let (status, created) = request_json(
+        &app.router,
+        Method::POST,
+        "/v1/config/model-pools",
+        Some(json!({
+            "id": "claude-pool",
+            "members": [
+                {"model_id": "claude-direct"},
+                {"model_id": "claude-bedrock", "role": "failover_only"}
+            ],
+            "routing": {"home": "deterministic"},
+            "switch": {"on_quota": true}
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "body={created}");
+    assert_eq!(created["id"], "claude-pool");
+
+    let (status, fetched) = request_json(
+        &app.router,
+        Method::GET,
+        "/v1/config/model-pools/claude-pool",
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(fetched["members"].as_array().unwrap().len(), 2);
+
+    let (status, list) =
+        request_json(&app.router, Method::GET, "/v1/config/model-pools", None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(contains_id(
+        list["items"].as_array().unwrap(),
+        "claude-pool"
+    ));
+
+    let (status, updated) = request_json(
+        &app.router,
+        Method::PUT,
+        "/v1/config/model-pools/claude-pool",
+        Some(json!({
+            "id": "claude-pool",
+            "members": [{"model_id": "claude-direct"}]
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "body={updated}");
+    assert_eq!(updated["members"].as_array().unwrap().len(), 1);
+
+    let (status, deleted) = request_json(
+        &app.router,
+        Method::DELETE,
+        "/v1/config/model-pools/claude-pool",
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT, "body={deleted}");
+
+    let (status, _) = request_json(
+        &app.router,
+        Method::GET,
+        "/v1/config/model-pools/claude-pool",
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn model_pool_rejects_invalid_payload() {
+    let app = make_app().await;
+
+    let (status, body) = request_json(
+        &app.router,
+        Method::POST,
+        "/v1/config/model-pools",
+        Some(json!({"id": "empty-pool", "members": []})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "body={body}");
+    assert!(body["error"].as_str().unwrap().contains("member"));
+}
+
+#[tokio::test]
+async fn model_pool_rejects_unknown_member_model() {
+    let app = make_app().await;
+
+    let (status, body) = request_json(
+        &app.router,
+        Method::POST,
+        "/v1/config/model-pools",
+        Some(json!({
+            "id": "bad-pool",
+            "members": [{"model_id": "missing-model"}]
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "body={body}");
+    assert!(
+        body["error"]
+            .as_str()
+            .expect("error string")
+            .contains("model pool 'bad-pool' references missing model 'missing-model'"),
+        "body={body}"
+    );
+
+    let stored = ConfigStore::get(app.store.as_ref(), "model-pools", "bad-pool")
+        .await
+        .expect("read rolled-back pool");
+    assert!(stored.is_none(), "invalid pool must roll back");
+}
+
+#[tokio::test]
+async fn agent_can_reference_model_pool_and_resolve() {
+    let app = make_app().await;
+
+    create_stub_provider(&app, "pool-provider").await;
+    create_stub_model(&app, "pool-m0", "pool-provider").await;
+    create_stub_model(&app, "pool-m1", "pool-provider").await;
+
+    let (status, body) = request_json(
+        &app.router,
+        Method::POST,
+        "/v1/config/model-pools",
+        Some(json!({
+            "id": "shared-pool",
+            "members": [
+                {"model_id": "pool-m0"},
+                {"model_id": "pool-m1", "role": "failover_only"}
+            ]
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "body={body}");
+
+    let (status, agent) = request_json(
+        &app.router,
+        Method::POST,
+        "/v1/config/agents",
+        Some(json!({
+            "id": "pooled-agent",
+            "model_id": "shared-pool",
+            "system_prompt": "use the pool",
+            "max_rounds": 2
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "body={agent}");
+
+    let resolved = app
+        .runtime
+        .resolver()
+        .resolve("pooled-agent")
+        .expect("agent should resolve through model pool");
+    assert_eq!(resolved.model_id(), "shared-pool");
+    assert_eq!(resolved.upstream_model, "shared-pool");
+}
+
+#[tokio::test]
+async fn delete_model_blocked_when_model_pool_uses_it() {
+    let app = make_app().await;
+
+    create_stub_provider(&app, "pool-provider").await;
+    create_stub_model(&app, "pooled-model", "pool-provider").await;
+
+    let (status, body) = request_json(
+        &app.router,
+        Method::POST,
+        "/v1/config/model-pools",
+        Some(json!({
+            "id": "model-user-pool",
+            "members": [{"model_id": "pooled-model"}]
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "body={body}");
+
+    let (status, body) = request_json(
+        &app.router,
+        Method::DELETE,
+        "/v1/config/models/pooled-model",
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "body={body}");
+    let used_by = body["used_by"].as_array().expect("used_by array");
+    assert!(
+        used_by.iter().any(|record| {
+            record["namespace"] == "model-pools" && record["id"] == "model-user-pool"
+        }),
+        "should report the pool that references the model: {body}"
+    );
 }

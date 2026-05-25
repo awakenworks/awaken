@@ -51,7 +51,7 @@ flowchart LR
 
 3. **LlmExecutor** -- 解析得到的 `ModelSpec` 中的 provider ID 通过 `ProviderRegistry` 查到一个活的 `LlmExecutor` 实例。
 
-4. **重试装饰** -- 如果智能体规格包含 `RetryConfigKey` 配置段，且 `max_retries > 0` 或 `fallback_upstream_models` 非空，则执行器会被包装在 `RetryingExecutor` 装饰器中。
+4. **重试装饰** -- 如果智能体规格包含 `RetryConfigKey` 配置段，且 `max_retries > 0`，则执行器会被包装在 `RetryingExecutor` 装饰器中。
 
 ### 非本地执行
 

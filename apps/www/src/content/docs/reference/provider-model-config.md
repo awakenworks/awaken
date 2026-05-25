@@ -166,8 +166,7 @@ AgentSpec    -> AgentSpecRegistry
 ```
 
 Configuration documents use only canonical field names. Use `model_id` on
-agents, `provider_id` and `upstream_model` on model specs, and
-`fallback_upstream_models` in retry or inference overrides.
+agents, and `provider_id` plus `upstream_model` on model specs.
 
 The candidate registry set is validated before it replaces the active runtime snapshot. If validation fails, the config write is rolled back.
 
@@ -189,13 +188,12 @@ before upgrading:
 | `ProviderRemovalPolicy::CascadeUnusedModelBindings` | `CascadeUnusedModels` |
 | Rust-internal field `model_bindings: Vec<…>` | `models: Vec<ModelSpec>` (wire JSON key was already `models`) |
 | `InferenceOverride.model` | `InferenceOverride.upstream_model` |
-| `fallback_models` | `fallback_upstream_models` |
 | `AgentSystemConfig.models` as an object keyed by model id | `AgentSystemConfig.models` as a list of `ModelSpec` objects with explicit `id` |
 
 Upgrade check:
 
 ```bash
-rg '"model"\s*:|"provider"\s*:|fallback_models' config/ docs/ tests/
+rg '"model"\s*:|"provider"\s*:' config/ docs/ tests/
 ```
 
 Each match should be checked. Protocol payloads may still use a field named
@@ -264,9 +262,9 @@ Diagnostics are available without publishing a snapshot:
 
 ## Inference overrides
 
-`InferenceOverride.upstream_model` and `InferenceOverride.fallback_upstream_models` use upstream model names for the already resolved provider. They do not re-resolve `AgentSpec.model_id` and do not switch provider executors.
+`InferenceOverride.upstream_model` uses an upstream model name for the already resolved provider. It does not re-resolve `AgentSpec.model_id` and does not switch provider executors.
 
-At execution time the primary override is applied to `InferenceRequest.upstream_model`; executors should treat that field as the single source of truth for the primary upstream model. Remaining override fields carry generation parameters and fallback upstream models.
+At execution time the override is applied to `InferenceRequest.upstream_model`; executors should treat that field as the single source of truth for the upstream model. Remaining override fields carry generation parameters.
 
 Use model overrides for same-provider model changes:
 
@@ -275,20 +273,19 @@ use awaken::contract::inference::InferenceOverride;
 
 let overrides = InferenceOverride {
     upstream_model: Some("gpt-4o".into()),
-    fallback_upstream_models: Some(vec!["gpt-4o-mini".into()]),
     ..Default::default()
 };
 ```
 
-Use a different `AgentSpec.model_id` or agent handoff when execution must move to another provider.
+Use a `ModelPoolSpec`, a different `AgentSpec.model_id`, or agent handoff when execution must move to another model/provider.
 
-## Retry and fallback
+## Retry and model pools
 
-Per-agent retry is read through the `"retry"` section via `RetryConfigKey`. When the section is absent, `LlmRetryPolicy::default()` is used. Resolution wraps the provider executor in `RetryingExecutor` when the resulting policy has retries or fallback upstream models. Set `max_retries` to `0` and leave `fallback_upstream_models` empty to disable the wrapper.
+Per-agent retry is read through the `"retry"` section via `RetryConfigKey`. When the section is absent, `LlmRetryPolicy::default()` is used. Resolution wraps the provider executor in `RetryingExecutor` when the resulting policy has retries. Set `max_retries` to `0` to disable the wrapper.
 
 Provider factories return provider executors; retry is added by the resolve pipeline, not hidden inside provider construction.
 
-For collected execution, retry and fallback apply to the full inference call. For streaming execution, retry and fallback apply while opening the stream. Once a stream has started, later stream-item errors are surfaced directly because retrying would duplicate already emitted deltas.
+For collected execution, retry applies to the full inference call. For streaming execution, retry applies while opening the stream. Once a stream has started, later stream-item errors are surfaced directly because retrying would duplicate already emitted deltas. Model failover belongs in `ModelPoolSpec`.
 
 ## Related
 

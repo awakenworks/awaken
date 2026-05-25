@@ -91,6 +91,19 @@ impl ConfigRuntimeManager {
                 });
             }
         }
+        for pool_id in candidate.models.pool_ids() {
+            let Some(pool) = candidate.models.get_pool(&pool_id) else {
+                continue;
+            };
+            for member in pool.members {
+                if candidate.models.get_model(&member.model_id).is_none() {
+                    diagnostics.push(RegistryDiagnostic::ModelPoolMissingModel {
+                        pool_id: pool_id.clone(),
+                        model_id: member.model_id,
+                    });
+                }
+            }
+        }
         for agent in local_agents {
             diagnostics.extend(diagnose_agent_spec(candidate, agent));
         }

@@ -479,7 +479,6 @@ fn stream_result_to_message_to_event_pipeline() {
 fn inference_override_merges_upstream_model_and_params() {
     let mut combined = InferenceOverride {
         upstream_model: Some("claude-opus".into()),
-        fallback_upstream_models: Some(vec!["claude-sonnet".into()]),
         ..Default::default()
     };
     assert!(!combined.is_empty());
@@ -497,10 +496,6 @@ fn inference_override_merges_upstream_model_and_params() {
     assert_eq!(combined.temperature, Some(0.7));
     assert_eq!(combined.max_tokens, Some(4096));
     assert_eq!(combined.reasoning_effort, Some(ReasoningEffort::High));
-    assert_eq!(
-        combined.fallback_upstream_models,
-        Some(vec!["claude-sonnet".into()])
-    );
 }
 
 #[test]

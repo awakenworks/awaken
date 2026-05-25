@@ -159,8 +159,7 @@ AgentSpec    -> AgentSpecRegistry
 ```
 
 配置文档只使用 canonical 字段名：agent 使用 `model_id`，model spec 使用
-`provider_id` 和 `upstream_model`，retry 或 inference override 使用
-`fallback_upstream_models`。
+`provider_id` 和 `upstream_model`。
 
 候选注册表会先验证，再替换 runtime 的活动快照。验证失败时，本次配置写入会回滚。
 
@@ -181,13 +180,12 @@ AgentSpec    -> AgentSpecRegistry
 | `ProviderRemovalPolicy::CascadeUnusedModelBindings` | `CascadeUnusedModels` |
 | Rust 内部字段 `model_bindings: Vec<…>` | `models: Vec<ModelSpec>`（wire JSON key 始终是 `models`，未变）|
 | `InferenceOverride.model` | `InferenceOverride.upstream_model` |
-| `fallback_models` | `fallback_upstream_models` |
 | `AgentSystemConfig.models` 使用以 model id 为 key 的对象 | `AgentSystemConfig.models` 使用显式包含 `id` 的 `ModelSpec` 列表 |
 
 升级检查：
 
 ```bash
-rg '"model"\s*:|"provider"\s*:|fallback_models' config/ docs/ tests/
+rg '"model"\s*:|"provider"\s*:' config/ docs/ tests/
 ```
 
 每个匹配项都需要人工确认。某些外部协议 payload 可能仍然有名为 `model` 的字段；
@@ -253,9 +251,9 @@ providers，并在返回前验证候选注册表。
 
 ## 推理覆盖
 
-`InferenceOverride.upstream_model` 和 `InferenceOverride.fallback_upstream_models` 使用的是当前已解析 provider 的上游模型名。它们不会重新解析 `AgentSpec.model_id`，也不会切换 provider executor。
+`InferenceOverride.upstream_model` 使用当前已解析 provider 的上游模型名。它不会重新解析 `AgentSpec.model_id`，也不会切换 provider executor。
 
-执行时，primary override 会应用到 `InferenceRequest.upstream_model`；executor 应把这个字段作为 primary 上游模型的唯一来源。其余 override 字段保留生成参数和 fallback upstream models。
+执行时，override 会应用到 `InferenceRequest.upstream_model`；executor 应把这个字段作为上游模型的唯一来源。其余 override 字段保留生成参数。
 
 同 provider 内切换模型时可以使用 model override：
 
@@ -264,20 +262,19 @@ use awaken::contract::inference::InferenceOverride;
 
 let overrides = InferenceOverride {
     upstream_model: Some("gpt-4o".into()),
-    fallback_upstream_models: Some(vec!["gpt-4o-mini".into()]),
     ..Default::default()
 };
 ```
 
-如果需要切换到另一个 provider，请使用不同的 `AgentSpec.model_id` 或 agent handoff。
+如果需要切换到另一个模型或 provider，请使用 `ModelPoolSpec`、不同的 `AgentSpec.model_id` 或 agent handoff。
 
-## Retry 与 fallback
+## Retry 与 model pool
 
-每个 agent 通过 `RetryConfigKey` 读取 `"retry"` section。缺失 section 时使用 `LlmRetryPolicy::default()`。解析阶段会在最终 policy 配置了 retry 或 fallback upstream model 时，用 `RetryingExecutor` 包装 provider executor。将 `max_retries` 设为 `0` 且保持 `fallback_upstream_models` 为空可以禁用该包装。
+每个 agent 通过 `RetryConfigKey` 读取 `"retry"` section。缺失 section 时使用 `LlmRetryPolicy::default()`。解析阶段会在最终 policy 配置了 retry 时，用 `RetryingExecutor` 包装 provider executor。将 `max_retries` 设为 `0` 可以禁用该包装。
 
 Provider factory 只返回 provider executor；retry 由解析流水线添加，不隐藏在 provider 构造里。
 
-非流式执行中，retry 与 fallback 作用于完整推理调用。流式执行中，retry 与 fallback 只作用于打开 stream 的阶段。stream 已经开始后，如果后续 stream item 报错，会直接向上返回，因为重试会导致已经发出的 delta 重复。
+非流式执行中，retry 作用于完整推理调用。流式执行中，retry 只作用于打开 stream 的阶段。stream 已经开始后，如果后续 stream item 报错，会直接向上返回，因为重试会导致已经发出的 delta 重复。模型故障切换由 `ModelPoolSpec` 配置。
 
 ## 相关
 

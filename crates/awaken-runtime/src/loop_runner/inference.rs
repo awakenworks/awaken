@@ -781,6 +781,7 @@ mod tests {
     fn make_request() -> InferenceRequest {
         InferenceRequest {
             upstream_model: "test-model".into(),
+            routing_key: None,
             messages: vec![Message::user("hello")],
             tools: vec![],
             system: vec![],
@@ -788,7 +789,6 @@ mod tests {
             enable_prompt_cache: false,
         }
     }
-
     // -- Text streaming --
 
     #[tokio::test]
@@ -1943,9 +1943,9 @@ mod tests {
     fn idle_timeout_for_doubles_on_thinking_model_names() {
         let policy = LlmRetryPolicy::default().with_stream_idle_timeout_secs(30);
         let base = Duration::from_secs(30);
-
         let plain = InferenceRequest {
             upstream_model: "gpt-4o-mini".into(),
+            routing_key: None,
             messages: vec![],
             tools: vec![],
             system: vec![],

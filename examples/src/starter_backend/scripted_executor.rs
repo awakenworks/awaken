@@ -224,6 +224,7 @@ mod tests {
     fn make_request(text: &str) -> InferenceRequest {
         InferenceRequest {
             upstream_model: "scripted".into(),
+            routing_key: None,
             messages: vec![Message::user(text)],
             tools: vec![],
             system: vec![],

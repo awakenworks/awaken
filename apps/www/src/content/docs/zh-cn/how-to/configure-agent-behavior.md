@@ -98,7 +98,6 @@ curl -sS -X PUT http://localhost:3000/v1/config/agents/research-assistant \
   "sections": {
     "retry": {
       "max_retries": 2,
-      "fallback_upstream_models": ["claude-3-haiku"],
       "backoff_base_ms": 500
     },
     "permission": {
@@ -179,7 +178,7 @@ curl -sS -X PUT http://localhost:3000/v1/config/agents/research-assistant \
 ## 兼容性规则
 
 - 对外保持 `AgentSpec.id`、`ModelSpec.id` 和 `ProviderSpec.id` 稳定。
-- 使用 canonical 字段：`model_id`、`provider_id`、`upstream_model`、`fallback_upstream_models`。旧的 `model`、`provider`、`fallback_models` 不是托管配置字段。
+- 使用 canonical 字段：`model_id`、`provider_id`、`upstream_model`。旧的 `model`、`provider` 不是托管配置字段。
 - 将 `InferenceOverride.upstream_model` 视为同 provider 内的覆盖。它不会重新解析 `AgentSpec.model_id`，也不能切换 provider executor。
 - 生成配置前查询 `/v1/config/{namespace}/$schema`，并通过 `/v1/capabilities` 查看插件 `config_schemas`。`AgentSpec`、`ModelSpec` 和多个 section 类型会拒绝未知字段。
 - 只要插件已注册且 section value 匹配 schema，新增 section 属于兼容变更。不合法 section 会在 runtime snapshot 发布前失败。

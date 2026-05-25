@@ -3,7 +3,9 @@
 
 use super::*;
 use awaken_contract::config_record::ConfigRecord;
-use awaken_contract::{AgentSpec, McpServerSpec, ModelSpec, ProviderSpec, SkillSpec};
+use awaken_contract::{
+    AgentSpec, McpServerSpec, ModelPoolSpec, ModelSpec, ProviderSpec, SkillSpec,
+};
 use awaken_stores::memory::InMemoryStore;
 
 // ── spec constructors ────────────────────────────────────────────────────
@@ -27,6 +29,10 @@ fn provider_spec(id: &str) -> ProviderSpec {
 
 fn model_spec(id: &str) -> ModelSpec {
     ModelSpec::new(id, "openai", "gpt-4o")
+}
+
+fn model_pool_spec(id: &str, members: impl IntoIterator<Item = &'static str>) -> ModelPoolSpec {
+    ModelPoolSpec::new(id, members)
 }
 
 fn mcp_spec(id: &str) -> McpServerSpec {
@@ -336,17 +342,19 @@ async fn mixed_namespace_seed_routes_correctly() {
         BuiltinSpec::Agent(Box::new(agent_spec("agent-1", "hi"))),
         BuiltinSpec::Provider(provider_spec("prov-1")),
         BuiltinSpec::Model(model_spec("model-1")),
+        BuiltinSpec::ModelPool(model_pool_spec("pool-1", ["model-1"])),
         BuiltinSpec::McpServer(mcp_spec("mcp-1")),
         BuiltinSpec::Skill(skill_spec("skill-1")),
     ]);
 
     let report = apply_builtin_seed(&s, &seed).await.unwrap();
-    assert_eq!(report.created.len(), 5);
+    assert_eq!(report.created.len(), 6);
 
     // Each spec lands in the correct namespace.
     assert!(s.get("agents", "agent-1").await.unwrap().is_some());
     assert!(s.get("providers", "prov-1").await.unwrap().is_some());
     assert!(s.get("models", "model-1").await.unwrap().is_some());
+    assert!(s.get("model-pools", "pool-1").await.unwrap().is_some());
     assert!(s.get("mcp-servers", "mcp-1").await.unwrap().is_some());
     assert!(s.get("skills", "skill-1").await.unwrap().is_some());
 

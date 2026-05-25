@@ -51,7 +51,7 @@ The first stage fetches the raw data from registries:
 
 3. **LlmExecutor** -- the provider ID from the resolved `ModelSpec` is looked up through `ProviderRegistry` to get a live `LlmExecutor` instance.
 
-4. **Retry decoration** -- if the agent spec contains a `RetryConfigKey` section with `max_retries > 0` or non-empty `fallback_upstream_models`, the executor is wrapped in a `RetryingExecutor` decorator.
+4. **Retry decoration** -- if the agent spec contains a `RetryConfigKey` section with `max_retries > 0`, the executor is wrapped in a `RetryingExecutor` decorator.
 
 ### Non-local execution
 

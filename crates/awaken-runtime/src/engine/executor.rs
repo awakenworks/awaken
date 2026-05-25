@@ -462,7 +462,6 @@ impl LlmExecutor for GenaiExecutor {
         "genai"
     }
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -474,6 +473,7 @@ mod tests {
     fn make_request(overrides: Option<InferenceOverride>) -> InferenceRequest {
         InferenceRequest {
             upstream_model: "test-model".into(),
+            routing_key: None,
             messages: vec![Message::user("hello")],
             tools: vec![],
             system: vec![],

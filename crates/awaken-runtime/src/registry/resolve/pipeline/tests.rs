@@ -12,16 +12,19 @@ use crate::registry::memory::MapBackendRegistry;
 use crate::registry::memory::{
     MapAgentSpecRegistry, MapModelRegistry, MapPluginSource, MapProviderRegistry, MapToolRegistry,
 };
+use crate::resolution::{PersistenceRequirement, RunFeatureSet};
 use async_trait::async_trait;
 use awaken_contract::contract::executor::{InferenceExecutionError, InferenceRequest};
 use awaken_contract::contract::inference::{StopReason, StreamResult, TokenUsage};
 use awaken_contract::contract::lifecycle::TerminationReason;
+use awaken_contract::contract::run::RunResolutionScope;
 use awaken_contract::contract::tool::{
     ToolCallContext, ToolDescriptor, ToolError, ToolOutput, ToolResult,
 };
 #[cfg(feature = "a2a")]
 use awaken_contract::registry_spec::RemoteEndpoint;
 use awaken_contract::registry_spec::{ModelPoolSpec, ModelSpec};
+use awaken_contract::{REGISTRY_KIND_MODEL, REGISTRY_KIND_PROVIDER};
 use serde_json::Value;
 #[cfg(feature = "a2a")]
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -273,6 +276,72 @@ fn resolve_pool_succeeds_with_placeholder_upstream() {
     // The pool overrides the per-request upstream model per member, so the
     // resolved stand-in is the pool id rather than any single member.
     assert_eq!(run.upstream_model, "my-pool");
+}
+
+#[tokio::test]
+async fn replayable_manifest_includes_model_pool_and_member_models() {
+    let spec = AgentSpec {
+        model_id: "my-pool".into(),
+        ..make_spec("agent-1")
+    };
+    let regs = build_pool_registries(
+        vec![
+            ModelSpec::new("m0", "p", "m0-upstream"),
+            ModelSpec::new("m1", "p", "m1-upstream"),
+        ],
+        ModelPoolSpec::new("my-pool", ["m0", "m1"]),
+        "p",
+        Arc::new(MockExecutor),
+        spec,
+    );
+
+    let resolver = RegistrySetResolver::new(regs);
+    let plan = Resolver::resolve(
+        &resolver,
+        ResolutionRequest {
+            target: ResolutionTarget::Root {
+                agent_id: "agent-1".into(),
+                thread_id: "thread-1".into(),
+            },
+            resolution_scope: RunResolutionScope::Live,
+            overrides: None,
+            frontend_tools: vec![],
+            features: RunFeatureSet {
+                requested_persistence: PersistenceRequirement::CheckpointRequired,
+                ..Default::default()
+            },
+        },
+    )
+    .await
+    .expect("persistent pool-backed agent should resolve");
+    let manifest = plan
+        .replayable_manifest()
+        .expect("persistent request should pin a manifest");
+
+    assert!(
+        manifest
+            .entries
+            .iter()
+            .any(|entry| { entry.kind == REGISTRY_KIND_MODEL_POOL && entry.id == "my-pool" })
+    );
+    assert!(
+        manifest
+            .entries
+            .iter()
+            .any(|entry| entry.kind == REGISTRY_KIND_MODEL && entry.id == "m0")
+    );
+    assert!(
+        manifest
+            .entries
+            .iter()
+            .any(|entry| entry.kind == REGISTRY_KIND_MODEL && entry.id == "m1")
+    );
+    assert!(
+        manifest
+            .entries
+            .iter()
+            .any(|entry| entry.kind == REGISTRY_KIND_PROVIDER && entry.id == "p")
+    );
 }
 
 #[test]
@@ -548,8 +617,7 @@ fn resolve_invalid_retry_config_fails() {
     let spec = make_spec("a").with_section(
         "retry",
         serde_json::json!({
-            "max_retries": "not-a-number",
-            "fallback_upstream_models": []
+            "max_retries": "not-a-number"
         }),
     );
 

@@ -135,6 +135,7 @@ mod tests {
     fn make_request() -> InferenceRequest {
         InferenceRequest {
             upstream_model: "mock".into(),
+            routing_key: None,
             messages: vec![Message::user("hello")],
             tools: vec![],
             system: vec![],

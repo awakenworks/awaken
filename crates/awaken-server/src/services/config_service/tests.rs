@@ -1129,20 +1129,21 @@ async fn delete_rollback_re_emits_envelope() {
 #[test]
 fn namespace_all_lists_every_variant() {
     let all = ConfigNamespace::all();
-    assert_eq!(all.len(), 5, "all writable config namespaces");
+    assert_eq!(all.len(), 6, "all writable config namespaces");
 
     // Each variant must appear exactly once.
     let has = |v: ConfigNamespace| all.iter().filter(|&&x| x == v).count();
     assert_eq!(has(ConfigNamespace::Agents), 1);
     assert_eq!(has(ConfigNamespace::Providers), 1);
     assert_eq!(has(ConfigNamespace::Models), 1);
+    assert_eq!(has(ConfigNamespace::ModelPools), 1);
     assert_eq!(has(ConfigNamespace::McpServers), 1);
     assert_eq!(has(ConfigNamespace::Skills), 1);
 }
 
 #[test]
 fn namespace_all_matches_builtin_spec_namespace() {
-    use awaken_contract::{BuiltinSpec, McpServerSpec, SkillSpec};
+    use awaken_contract::{BuiltinSpec, McpServerSpec, ModelPoolSpec, SkillSpec};
 
     for &ns in ConfigNamespace::all() {
         let spec = match ns {
@@ -1158,6 +1159,7 @@ fn namespace_all_matches_builtin_spec_namespace() {
                 ..Default::default()
             }),
             ConfigNamespace::Models => BuiltinSpec::Model(ModelSpec::new("x", "p", "m")),
+            ConfigNamespace::ModelPools => BuiltinSpec::ModelPool(ModelPoolSpec::new("x", ["m"])),
             ConfigNamespace::McpServers => BuiltinSpec::McpServer(McpServerSpec {
                 id: "x".into(),
                 ..Default::default()
@@ -1639,7 +1641,12 @@ fn config_namespace_rejects_tools_to_keep_public_enum_compatible() {
 
 #[test]
 fn config_namespace_all_excludes_tools_to_keep_public_enum_compatible() {
-    assert_eq!(ConfigNamespace::ALL.len(), 5);
+    assert_eq!(ConfigNamespace::ALL.len(), 6);
+    assert!(
+        !ConfigNamespace::ALL
+            .iter()
+            .any(|namespace| namespace.as_str() == "tools")
+    );
 }
 
 #[test]

@@ -187,11 +187,8 @@ pub struct InferenceOverride {
     /// Upstream model name to send to the already resolved provider.
     ///
     /// This does not re-resolve `AgentSpec.model_id` and therefore does not switch
-    /// providers. Use a different `AgentSpec.model_id` or agent handoff when a run
-    /// must move to another provider.
+    /// providers. Use a `ModelPoolSpec` when a run needs model failover.
     pub upstream_model: Option<String>,
-    /// Upstream fallback model names for the same resolved provider.
-    pub fallback_upstream_models: Option<Vec<String>>,
     /// Sampling temperature.
     pub temperature: Option<f64>,
     /// Maximum output tokens.
@@ -206,7 +203,6 @@ impl InferenceOverride {
     /// Returns true if all fields are `None` (no override set).
     pub fn is_empty(&self) -> bool {
         self.upstream_model.is_none()
-            && self.fallback_upstream_models.is_none()
             && self.temperature.is_none()
             && self.max_tokens.is_none()
             && self.top_p.is_none()
@@ -217,9 +213,6 @@ impl InferenceOverride {
     pub fn merge(&mut self, other: InferenceOverride) {
         if other.upstream_model.is_some() {
             self.upstream_model = other.upstream_model;
-        }
-        if other.fallback_upstream_models.is_some() {
-            self.fallback_upstream_models = other.fallback_upstream_models;
         }
         if other.temperature.is_some() {
             self.temperature = other.temperature;
@@ -326,20 +319,23 @@ mod tests {
     fn inference_override_uses_canonical_names() {
         let canonical = InferenceOverride {
             upstream_model: Some("gpt-4o".into()),
-            fallback_upstream_models: Some(vec!["gpt-4o-mini".into()]),
+            max_tokens: Some(1024),
             ..Default::default()
         };
 
         let encoded = serde_json::to_value(&canonical).unwrap();
         assert_eq!(encoded["upstream_model"], "gpt-4o");
-        assert_eq!(encoded["fallback_upstream_models"][0], "gpt-4o-mini");
+        assert_eq!(encoded["max_tokens"], 1024);
     }
 
     #[test]
-    fn inference_override_rejects_legacy_model_fields() {
+    fn inference_override_rejects_model_fallback_fields() {
+        let legacy_field = ["fallback", "models"].join("_");
+        let removed_field = ["fallback", "upstream", "models"].join("_");
         let legacy = serde_json::from_value::<InferenceOverride>(json!({
             "model": "gpt-4o",
-            "fallback_models": ["gpt-4o-mini"]
+            legacy_field: ["gpt-4o-mini"],
+            removed_field: ["gpt-4o-mini"]
         }));
         assert!(legacy.is_err());
     }
@@ -586,15 +582,6 @@ mod tests {
         assert!(!ovr.is_empty());
     }
 
-    #[test]
-    fn inference_override_not_empty_with_fallback_upstream_models() {
-        let ovr = InferenceOverride {
-            fallback_upstream_models: Some(vec!["m1".into()]),
-            ..Default::default()
-        };
-        assert!(!ovr.is_empty());
-    }
-
     // ── TokenUsage tests (migrated from uncarve) ──
 
     #[test]
@@ -741,19 +728,6 @@ mod tests {
     }
 
     // ── InferenceOverride merge tests (migrated from uncarve) ──
-
-    #[test]
-    fn inference_override_merge_fallback_upstream_models() {
-        let mut base = InferenceOverride::default();
-        base.merge(InferenceOverride {
-            fallback_upstream_models: Some(vec!["model-a".into(), "model-b".into()]),
-            ..Default::default()
-        });
-        assert_eq!(
-            base.fallback_upstream_models,
-            Some(vec!["model-a".into(), "model-b".into()])
-        );
-    }
 
     #[test]
     fn inference_override_merge_top_p() {

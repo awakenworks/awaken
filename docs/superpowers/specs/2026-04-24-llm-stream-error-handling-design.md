@@ -158,8 +158,8 @@ Two defaults and one rule change in `RetryingExecutor`:
   to give the provider more room.
 - For `RateLimited { retry_after: Some(d) }` and `Overloaded` carrying a
   `Retry-After` header, the wait is `max(retry_after, computed_backoff)`.
-- `AllModelsUnavailable` is raised when every `fallback_upstream_models` entry
-  has an open breaker; the error is returned immediately without waiting.
+- `AllModelsUnavailable` is returned immediately when a higher-level router can
+  prove no model candidate is available.
 
 ### Stream-level recovery: where it lives
 

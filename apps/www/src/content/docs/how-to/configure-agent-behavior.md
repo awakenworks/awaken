@@ -130,7 +130,6 @@ consumer that reads that key.
   "sections": {
     "retry": {
       "max_retries": 2,
-      "fallback_upstream_models": ["claude-3-haiku"],
       "backoff_base_ms": 500
     },
     "permission": {
@@ -219,7 +218,7 @@ for a specific agent.
    `max_continuation_retries`, `reasoning_effort`, and `context_policy`.
 4. Restrict visible tools with `allowed_tools` and `excluded_tools`.
 5. Add `permission` rules for runtime allow/ask/deny decisions.
-6. Add `retry` fallback upstream models for same-provider resilience.
+6. Point `model_id` at a model pool when the agent needs model failover.
 7. Add `reminder`, `generative-ui`, `deferred_tools`, and `compaction` sections
    only when the corresponding plugin behavior is needed.
 8. Publish the config through `/v1/config/*`, then start a new run to use the
@@ -229,9 +228,8 @@ for a specific agent.
 
 - Keep `AgentSpec.id`, `ModelSpec.id`, and `ProviderSpec.id` stable for
   clients that reference them.
-- Use canonical fields: `model_id`, `provider_id`, `upstream_model`, and
-  `fallback_upstream_models`. Legacy `model`, `provider`, and
-  `fallback_models` fields are not managed config fields.
+- Use canonical fields: `model_id`, `provider_id`, and `upstream_model`.
+  Legacy `model` and `provider` fields are not managed config fields.
 - Treat `InferenceOverride.upstream_model` as a same-provider override. It does
   not re-resolve `AgentSpec.model_id` and cannot switch provider executors.
 - Query `/v1/config/{namespace}/$schema` before writing generated config, and

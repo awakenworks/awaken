@@ -1,4 +1,6 @@
-use awaken_contract::{AgentSpec, ModelSpec, SkillSpec, parse_skill_allowed_tool_token};
+use awaken_contract::{
+    AgentSpec, ModelPoolSpec, ModelSpec, SkillSpec, parse_skill_allowed_tool_token,
+};
 use awaken_tool_pattern::{parse_pattern, pattern_matches};
 use serde_json::Value;
 
@@ -36,6 +38,37 @@ impl ConfigService {
                 Ok(refs)
             }
             ConfigNamespace::Models => {
+                let agents = self.store.list("agents", 0, usize::MAX).await?;
+                let mut refs = Vec::new();
+                for (agent_id, value) in agents {
+                    let Some(agent) = effective_visible_record::<AgentSpec>(value)? else {
+                        continue;
+                    };
+                    if agent.endpoint.is_none() && agent.model_id == id {
+                        refs.push(DependentRef {
+                            namespace: "agents",
+                            id: agent_id,
+                        });
+                    }
+                }
+                // A model may also be a member of a pool; deleting it would
+                // break the pool's routing.
+                let pools = self.store.list("model-pools", 0, usize::MAX).await?;
+                for (pool_id, value) in pools {
+                    let Some(pool) = effective_visible_record::<ModelPoolSpec>(value)? else {
+                        continue;
+                    };
+                    if pool.members.iter().any(|member| member.model_id == id) {
+                        refs.push(DependentRef {
+                            namespace: "model-pools",
+                            id: pool_id,
+                        });
+                    }
+                }
+                Ok(refs)
+            }
+            ConfigNamespace::ModelPools => {
+                // Agents reference a pool exactly as they reference a model.
                 let agents = self.store.list("agents", 0, usize::MAX).await?;
                 let mut refs = Vec::new();
                 for (agent_id, value) in agents {

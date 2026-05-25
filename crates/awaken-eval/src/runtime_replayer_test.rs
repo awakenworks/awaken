@@ -197,6 +197,7 @@ async fn replay_surfaces_script_exhausted_when_runtime_overcalls() {
     }]);
     let req = awaken_contract::contract::executor::InferenceRequest {
         upstream_model: "scripted".into(),
+        routing_key: None,
         messages: vec![awaken_contract::contract::message::Message::user("p")],
         tools: vec![],
         system: vec![],

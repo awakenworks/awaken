@@ -294,9 +294,9 @@ async fn recover_truncation(
             transform_arcs,
         );
         let upstream_model = effective_upstream_model(ctx.agent, overrides.as_ref())?;
-
         let cont_request = InferenceRequest {
             upstream_model,
+            routing_key: Some(ctx.run_identity.thread_id.clone()),
             messages: cont_messages,
             tools: ctx.agent.tool_descriptors(),
             system: vec![],
@@ -527,13 +527,13 @@ async fn run_inference_phase(
     let request_upstream_model = effective_upstream_model(ctx.agent, overrides.as_ref())?;
     let request = InferenceRequest {
         upstream_model: request_upstream_model.clone(),
+        routing_key: Some(ctx.run_identity.thread_id.clone()),
         messages: request_messages,
         tools,
         system: vec![],
         overrides: executor_overrides(overrides.clone()),
         enable_prompt_cache,
     };
-
     // Inference. Wire the agent's stream checkpoint store (if any) so
     // mid-stream accumulator snapshots are flushed for cross-process
     // resume. The `run_identity` supplies the keying — `run_id` is the

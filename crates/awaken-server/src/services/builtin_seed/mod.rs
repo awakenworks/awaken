@@ -7,13 +7,15 @@ use std::collections::{HashMap, HashSet};
 use awaken_contract::contract::storage::StorageError;
 use awaken_contract::{
     BuiltinSeedSet, BuiltinSpec, ConfigRecord, ConfigStore, RecordMeta, RecordSource, SkillSpec,
+    validate_model_pool_spec_struct,
 };
 
 const SEED_LIST_PAGE_SIZE: usize = 256;
-const BUILTIN_SEED_NAMESPACES: [&str; 6] = [
+const BUILTIN_SEED_NAMESPACES: [&str; 7] = [
     "agents",
     "providers",
     "models",
+    "model-pools",
     "mcp-servers",
     "tools",
     "skills",
@@ -66,6 +68,9 @@ pub enum SeedError {
     /// Built-in skill spec failed the config write-path validation.
     #[error("skill spec '{id}' is invalid: {errors}")]
     InvalidSkillSpec { id: String, errors: String },
+    /// Built-in model pool spec failed the config write-path validation.
+    #[error("model pool spec '{id}' is invalid: {errors}")]
+    InvalidModelPoolSpec { id: String, errors: String },
 }
 
 // ── apply_builtin_seed ────────────────────────────────────────────────────────
@@ -102,6 +107,14 @@ pub async fn apply_builtin_seed(
     for spec in &seed.specs {
         match spec {
             BuiltinSpec::Agent(agent) => validate_agent_spec_catalog(agent)?,
+            BuiltinSpec::ModelPool(pool) => {
+                validate_model_pool_spec_struct(pool).map_err(|error| {
+                    SeedError::InvalidModelPoolSpec {
+                        id: pool.id.clone(),
+                        errors: error.to_string(),
+                    }
+                })?;
+            }
             BuiltinSpec::Skill(skill) => validate_builtin_skill_spec(skill)?,
             _ => {}
         }
@@ -277,6 +290,7 @@ fn builtin_spec_to_value(spec: &BuiltinSpec) -> Result<serde_json::Value, serde_
         BuiltinSpec::Agent(s) => serde_json::to_value(s.as_ref()),
         BuiltinSpec::Provider(s) => serde_json::to_value(s),
         BuiltinSpec::Model(s) => serde_json::to_value(s),
+        BuiltinSpec::ModelPool(s) => serde_json::to_value(s),
         BuiltinSpec::McpServer(s) => serde_json::to_value(s),
         BuiltinSpec::Tool(s) => serde_json::to_value(s),
         BuiltinSpec::Skill(s) => serde_json::to_value(s),

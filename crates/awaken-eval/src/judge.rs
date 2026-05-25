@@ -317,6 +317,7 @@ impl Judge for LlmExecutorJudge {
 
         let request = InferenceRequest {
             upstream_model: self.upstream_model.clone(),
+            routing_key: None,
             messages,
             tools: Vec::new(),
             system: vec![ContentBlock::text(self.system_prompt.clone())],

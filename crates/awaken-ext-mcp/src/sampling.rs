@@ -280,6 +280,7 @@ impl SamplingHandler for DefaultSamplingHandler {
 
         let request = InferenceRequest {
             upstream_model: self.upstream_model.clone(),
+            routing_key: None,
             messages,
             tools: vec![],
             system,

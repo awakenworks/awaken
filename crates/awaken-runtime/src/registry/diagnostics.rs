@@ -16,6 +16,10 @@ pub enum RegistryDiagnostic {
         model_id: String,
         provider_id: String,
     },
+    ModelPoolMissingModel {
+        pool_id: String,
+        model_id: String,
+    },
     AgentMissingPlugin {
         agent_id: String,
         plugin_id: String,
@@ -57,6 +61,7 @@ impl RegistryDiagnostic {
         match self {
             Self::AgentMissingModel { .. } => "agent_missing_model",
             Self::ModelMissingProvider { .. } => "model_missing_provider",
+            Self::ModelPoolMissingModel { .. } => "model_pool_missing_model",
             Self::AgentMissingPlugin { .. } => "agent_missing_plugin",
             Self::AgentMissingDelegate { .. } => "agent_missing_delegate",
             Self::AgentHookFilterPluginNotLoaded { .. } => "agent_hook_filter_plugin_not_loaded",
@@ -76,6 +81,10 @@ impl RegistryDiagnostic {
                 namespace: "models",
                 id: model_id.clone(),
             },
+            Self::ModelPoolMissingModel { pool_id, .. } => RegistryResourceRef {
+                namespace: "model-pools",
+                id: pool_id.clone(),
+            },
         }
     }
 
@@ -88,6 +97,10 @@ impl RegistryDiagnostic {
             Self::ModelMissingProvider { provider_id, .. } => Some(RegistryResourceRef {
                 namespace: "providers",
                 id: provider_id.clone(),
+            }),
+            Self::ModelPoolMissingModel { model_id, .. } => Some(RegistryResourceRef {
+                namespace: "models",
+                id: model_id.clone(),
             }),
             Self::AgentMissingPlugin { plugin_id, .. }
             | Self::AgentHookFilterPluginNotLoaded { plugin_id, .. } => Some(RegistryResourceRef {
@@ -128,6 +141,12 @@ impl fmt::Display for RegistryDiagnostic {
                 f,
                 "model '{model_id}' references missing provider '{provider_id}'"
             ),
+            Self::ModelPoolMissingModel { pool_id, model_id } => {
+                write!(
+                    f,
+                    "model pool '{pool_id}' references missing model '{model_id}'"
+                )
+            }
             Self::AgentMissingPlugin {
                 agent_id,
                 plugin_id,
@@ -194,6 +213,19 @@ pub fn diagnose_registry_set(registries: &RegistrySet) -> Vec<RegistryDiagnostic
             });
         }
     }
+    for pool_id in registries.models.pool_ids() {
+        let Some(pool) = registries.models.get_pool(&pool_id) else {
+            continue;
+        };
+        for member in pool.members {
+            if registries.models.get_model(&member.model_id).is_none() {
+                diagnostics.push(RegistryDiagnostic::ModelPoolMissingModel {
+                    pool_id: pool_id.clone(),
+                    model_id: member.model_id,
+                });
+            }
+        }
+    }
 
     for agent_id in registries.agents.agent_ids() {
         let Some(spec) = registries.agents.get_agent(&agent_id) else {
@@ -228,23 +260,22 @@ pub fn diagnose_agent_spec(registries: &RegistrySet, spec: &AgentSpec) -> Vec<Re
     let agent_id = spec.id.clone();
 
     if spec.endpoint.is_none() {
-        match registries.models.get_model(&spec.model_id) {
-            Some(binding) => {
-                if registries
-                    .providers
-                    .get_provider(&binding.provider_id)
-                    .is_none()
-                {
-                    diagnostics.push(RegistryDiagnostic::ModelMissingProvider {
-                        model_id: spec.model_id.clone(),
-                        provider_id: binding.provider_id,
-                    });
-                }
+        if let Some(binding) = registries.models.get_model(&spec.model_id) {
+            if registries
+                .providers
+                .get_provider(&binding.provider_id)
+                .is_none()
+            {
+                diagnostics.push(RegistryDiagnostic::ModelMissingProvider {
+                    model_id: spec.model_id.clone(),
+                    provider_id: binding.provider_id,
+                });
             }
-            None => diagnostics.push(RegistryDiagnostic::AgentMissingModel {
+        } else if registries.models.get_pool(&spec.model_id).is_none() {
+            diagnostics.push(RegistryDiagnostic::AgentMissingModel {
                 agent_id: agent_id.clone(),
                 model_id: spec.model_id.clone(),
-            }),
+            });
         }
     }
 
@@ -307,7 +338,7 @@ mod tests {
         MapAgentSpecRegistry, MapModelRegistry, MapPluginSource, MapProviderRegistry,
         MapToolRegistry,
     };
-    use awaken_contract::registry_spec::ModelSpec;
+    use awaken_contract::registry_spec::{ModelPoolSpec, ModelSpec};
     use std::sync::Arc;
 
     fn empty_registry_set() -> RegistrySet {
@@ -343,6 +374,30 @@ mod tests {
     }
 
     #[test]
+    fn diagnose_agent_spec_accepts_model_pool_binding() {
+        let mut models = MapModelRegistry::new();
+        models
+            .register_model(ModelSpec::new("m", "missing-provider", "upstream"))
+            .unwrap();
+        models
+            .register_model_pool(ModelPoolSpec::new("pool", ["m"]))
+            .unwrap();
+        let registries = RegistrySet {
+            models: Arc::new(models),
+            ..empty_registry_set()
+        };
+        let spec = AgentSpec {
+            id: "agent".into(),
+            model_id: "pool".into(),
+            system_prompt: "s".into(),
+            ..Default::default()
+        };
+
+        let diagnostics = diagnose_agent_spec(&registries, &spec);
+        assert!(diagnostics.is_empty());
+    }
+
+    #[test]
     fn diagnose_registry_set_reports_model_missing_provider() {
         let mut models = MapModelRegistry::new();
         models
@@ -360,6 +415,29 @@ mod tests {
                 model_id: "m".into(),
                 provider_id: "missing-provider".into(),
             }]
+        );
+    }
+
+    #[test]
+    fn diagnose_registry_set_reports_model_pool_missing_member_model() {
+        let mut models = MapModelRegistry::new();
+        models
+            .register_model(ModelSpec::new("m0", "provider", "upstream"))
+            .unwrap();
+        models
+            .register_model_pool(ModelPoolSpec::new("pool", ["m0", "m9"]))
+            .unwrap();
+        let registries = RegistrySet {
+            models: Arc::new(models),
+            ..empty_registry_set()
+        };
+
+        let diagnostics = diagnose_registry_set(&registries);
+        assert!(
+            diagnostics.contains(&RegistryDiagnostic::ModelPoolMissingModel {
+                pool_id: "pool".into(),
+                model_id: "m9".into(),
+            })
         );
     }
 

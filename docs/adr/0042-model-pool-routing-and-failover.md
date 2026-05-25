@@ -20,9 +20,9 @@ make a single fixed binding insufficient:
   cold-starts the cache and inflates cost and latency.
 
 These pull in opposite directions: availability wants to move between models;
-cache efficiency wants to stay put. The existing `fallback_upstream_models`
-list only swaps the upstream model *string* on the same provider, so it cannot
-escape a provider-wide quota or outage, and it has no notion of a stable home.
+cache efficiency wants to stay put. The old retry-layer upstream-model list
+only swapped the model *string* on the same provider, so it could not escape a
+provider-wide quota or outage, and it had no notion of a stable home.
 
 ## Decision
 
@@ -48,8 +48,9 @@ duplicate members, positive weights, and at least one home-eligible member.
 `PoolRouter` (in `awaken-runtime::engine`) owns member metadata + policy and
 answers three pure questions, with member health passed in as a mask:
 
-- **Home** — weighted-rendezvous (HRW) hash of the routing key (the agent id)
-  over healthy home-eligible members. Stable per agent (cache affinity) and
+- **Home** — weighted-rendezvous (HRW) hash of the routing key (the thread id
+  for agent-loop requests, with agent id as a fallback outside a run) over
+  healthy home-eligible members. Stable per conversation (cache affinity) and
   spread across the pool; degrades gracefully as members change.
 - **Failover** — the best-scoring healthy member other than the current one.
 - **Switch** — whether an `InferenceExecutionError` warrants leaving the
@@ -57,11 +58,12 @@ answers three pure questions, with member health passed in as a mask:
 
 ### D3: `PoolExecutor` presents the model contract
 
-`PoolExecutor` implements `LlmExecutor`, so the run loop, streaming, retry, and
+`PoolExecutor` implements `LlmExecutor`, so streaming, retry, and
 context-window clamp treat a pool identically to a model. Resolution builds one
-per session over the members, each paired with its resolved provider executor.
-Routing is **sticky per session**: a home is chosen on first use and held; a
-switch only happens when:
+over the members, each paired with its resolved provider executor. Agent-loop
+requests carry the thread identifier in the request `routing_key`, and routing
+is **sticky per thread**: a home is chosen on first use and held; a switch only
+happens when:
 
 - the active member returns a **quota** (`RateLimited`/`Overloaded`, gated by an
   optional retry-after threshold) or **permanent** (`Unauthorized`/
@@ -95,13 +97,13 @@ holds models and pools in one namespace.
 
 ## Consequences
 
-- A pool is a drop-in for a model: no changes to `InferenceRequest`, the run
-  loop, or downstream plugins. Single-model executors are unaffected.
+- A pool is a drop-in for a model. Requests carry an optional routing key so
+  pool executors can keep per-thread affinity; single-model executors ignore it.
 - Cache efficiency is preserved by deterministic homing + sticky sessions;
   switching is deliberately conservative so the cache only cold-starts on real
   availability loss.
 - Cross-provider failover handles account-scoped quota exhaustion, which the
-  prior `fallback_upstream_models` could not.
+  prior retry-layer upstream-model list could not.
 
 ### Durable runs and replay
 
@@ -114,10 +116,11 @@ serves models and pools from one id namespace exactly as the live
 
 Replay determinism rests on two properties rather than a recorded member log:
 the pinned manifest freezes the pool and member specs, and home selection is a
-stable hash of the agent id — so a resumed run resolves the identical pool
-configuration and homes to the same member. The per-session circuit breaker is
-process-local, so after a restart a previously-avoided member is re-probed
-(desirable: health is re-evaluated). Completed turns replay their recorded
+stable hash of the thread id — so a resumed run resolves the identical pool
+configuration and homes to the same member for that conversation. The
+per-session circuit breaker is process-local, so after a restart a
+previously-avoided member is re-probed (desirable: health is re-evaluated).
+Completed turns replay their recorded
 outputs and do not re-invoke routing.
 
 ### Follow-ups

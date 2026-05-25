@@ -1,10 +1,11 @@
 //! [`PoolExecutor`] — a model pool that presents the single-model
 //! [`LlmExecutor`] contract.
 //!
-//! Resolution builds one `PoolExecutor` per session over the pool's member
-//! models, each paired with its own resolved provider executor. The agent id
-//! is baked in as the home key, so the [`PoolRouter`] deterministically pins
-//! the agent to one member (prompt-cache affinity); a shared
+//! Resolution builds a `PoolExecutor` over the pool's member models, each
+//! paired with its own resolved provider executor. Each inference request can
+//! carry a routing key (the agent loop uses the thread id), so the
+//! [`PoolRouter`] deterministically pins a conversation to one member
+//! (prompt-cache affinity); a shared
 //! [`CircuitBreaker`] keyed by member model id carries failure memory across
 //! sessions, so while a member is unhealthy every session avoids it and
 //! returns to it once it heals.
@@ -21,8 +22,8 @@
 //!   `ContentFiltered`) and `Cancelled` never switch — they would fail
 //!   identically on every member.
 
+use std::collections::HashMap;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU32, Ordering};
 
 use async_trait::async_trait;
 use awaken_contract::contract::executor::{
@@ -47,18 +48,23 @@ pub struct PoolMemberExecutor {
 /// A model pool exposed as a single [`LlmExecutor`].
 pub struct PoolExecutor {
     pool_id: String,
-    home_key: String,
+    fallback_home_key: String,
     members: Vec<PoolMemberExecutor>,
     router: PoolRouter,
     breaker: Arc<CircuitBreaker>,
-    active: parking_lot::RwLock<Option<usize>>,
-    switch_count: AtomicU32,
+    sessions: parking_lot::RwLock<HashMap<String, PoolSessionState>>,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct PoolSessionState {
+    active: Option<usize>,
+    switch_count: u32,
 }
 
 impl PoolExecutor {
     /// Build a pool executor. `members` and `router.members()` must align by
-    /// index (same order). `home_key` is the agent id used for deterministic
-    /// home selection; `breaker` is shared across sessions of the pool.
+    /// index (same order). `home_key` is the fallback key used when a request
+    /// has no routing key; `breaker` is shared across sessions of the pool.
     pub fn new(
         pool_id: impl Into<String>,
         home_key: impl Into<String>,
@@ -73,12 +79,11 @@ impl PoolExecutor {
         );
         Self {
             pool_id: pool_id.into(),
-            home_key: home_key.into(),
+            fallback_home_key: home_key.into(),
             members,
             router,
             breaker,
-            active: parking_lot::RwLock::new(None),
-            switch_count: AtomicU32::new(0),
+            sessions: parking_lot::RwLock::new(HashMap::new()),
         }
     }
 
@@ -96,35 +101,44 @@ impl PoolExecutor {
         }
     }
 
-    fn switches_remain(&self) -> bool {
+    fn switches_remain(&self, switch_count: u32) -> bool {
         match self.router.switch_policy().max_switches_per_session {
-            Some(max) => self.switch_count.load(Ordering::SeqCst) < max,
+            Some(max) => switch_count < max,
             None => true,
         }
     }
 
+    fn session_key(&self, request: &InferenceRequest) -> String {
+        request
+            .routing_key
+            .as_ref()
+            .filter(|key| !key.trim().is_empty())
+            .cloned()
+            .unwrap_or_else(|| self.fallback_home_key.clone())
+    }
+
     /// Resolve the active member for this session: home on first use, then a
     /// session-level failover if the active member's breaker has since opened.
-    fn select_active(&self) -> usize {
+    fn select_active(&self, session_key: &str) -> usize {
         let health = self.health_mask();
-        let mut guard = self.active.write();
-        match *guard {
+        let mut sessions = self.sessions.write();
+        let state = sessions.entry(session_key.to_string()).or_default();
+        match state.active {
             None => {
-                let home = self.router.select_home(&self.home_key, &health);
-                *guard = Some(home);
+                let home = self.router.select_home(session_key, &health);
+                state.active = Some(home);
                 home
             }
             Some(current) => {
                 let unhealthy = health.get(current).copied() == Some(false);
                 if unhealthy
                     && self.router.switch_policy().on_circuit_open
-                    && self.switches_remain()
-                    && let Some(next) =
-                        self.router
-                            .select_failover(&self.home_key, current, &health)
+                    && self.switches_remain(state.switch_count)
+                    && let Some(next) = self.router.select_failover(session_key, current, &health)
                 {
                     self.record_switch(current, next, "circuit open");
-                    *guard = Some(next);
+                    state.switch_count += 1;
+                    state.active = Some(next);
                     return next;
                 }
                 current
@@ -138,11 +152,18 @@ impl PoolExecutor {
     /// in this call so a single call cannot loop on the same members.
     fn next_on_error(
         &self,
+        session_key: &str,
         current: usize,
         err: &InferenceExecutionError,
         tried: &[bool],
     ) -> Option<usize> {
-        if !self.router.should_switch_on_error(err) || !self.switches_remain() {
+        let current_switch_count = self
+            .sessions
+            .read()
+            .get(session_key)
+            .map(|state| state.switch_count)
+            .unwrap_or_default();
+        if !self.router.should_switch_on_error(err) || !self.switches_remain(current_switch_count) {
             return None;
         }
         let mut mask = self.health_mask();
@@ -151,16 +172,16 @@ impl PoolExecutor {
                 mask[i] = false;
             }
         }
-        let next = self
-            .router
-            .select_failover(&self.home_key, current, &mask)?;
+        let next = self.router.select_failover(session_key, current, &mask)?;
         self.record_switch(current, next, "error-driven");
-        *self.active.write() = Some(next);
+        let mut sessions = self.sessions.write();
+        let state = sessions.entry(session_key.to_string()).or_default();
+        state.switch_count += 1;
+        state.active = Some(next);
         Some(next)
     }
 
     fn record_switch(&self, from: usize, to: usize, reason: &str) {
-        self.switch_count.fetch_add(1, Ordering::SeqCst);
         tracing::info!(
             pool = %self.pool_id,
             from = %self.members[from].model_id,
@@ -189,7 +210,8 @@ impl LlmExecutor for PoolExecutor {
         &self,
         request: InferenceRequest,
     ) -> Result<StreamResult, InferenceExecutionError> {
-        let mut idx = self.select_active();
+        let session_key = self.session_key(&request);
+        let mut idx = self.select_active(&session_key);
         let mut tried = vec![false; self.members.len()];
         loop {
             tried[idx] = true;
@@ -201,7 +223,7 @@ impl LlmExecutor for PoolExecutor {
                 }
                 Err(err) => {
                     self.record_failure(idx, &err);
-                    match self.next_on_error(idx, &err, &tried) {
+                    match self.next_on_error(&session_key, idx, &err, &tried) {
                         Some(next) => idx = next,
                         None => return Err(err),
                     }
@@ -221,7 +243,8 @@ impl LlmExecutor for PoolExecutor {
         >,
     > {
         Box::pin(async move {
-            let mut idx = self.select_active();
+            let session_key = self.session_key(&request);
+            let mut idx = self.select_active(&session_key);
             let mut tried = vec![false; self.members.len()];
             loop {
                 tried[idx] = true;
@@ -233,7 +256,7 @@ impl LlmExecutor for PoolExecutor {
                     }
                     Err(err) => {
                         self.record_failure(idx, &err);
-                        match self.next_on_error(idx, &err, &tried) {
+                        match self.next_on_error(&session_key, idx, &err, &tried) {
                             Some(next) => idx = next,
                             None => return Err(err),
                         }
@@ -257,6 +280,7 @@ mod tests {
     use awaken_contract::contract::inference::StopReason;
     use awaken_contract::contract::message::Message;
     use awaken_contract::registry_spec::{PoolMemberRole, PoolRoutingPolicy, PoolSwitchPolicy};
+    use std::sync::atomic::{AtomicU32, Ordering};
 
     fn ok_result() -> StreamResult {
         StreamResult {
@@ -271,11 +295,19 @@ mod tests {
     fn request() -> InferenceRequest {
         InferenceRequest {
             upstream_model: "pool-incoming".into(),
+            routing_key: None,
             messages: vec![Message::user("hi")],
             tools: vec![],
             system: vec![],
             overrides: None,
             enable_prompt_cache: false,
+        }
+    }
+
+    fn request_for_thread(thread_id: &str) -> InferenceRequest {
+        InferenceRequest {
+            routing_key: Some(thread_id.to_string()),
+            ..request()
         }
     }
 
@@ -438,6 +470,85 @@ mod tests {
             .map(|(_, s)| s.call_count())
             .sum();
         assert_eq!(others, 0, "only the home member runs");
+    }
+
+    #[tokio::test]
+    async fn same_thread_reuses_same_member_for_cache_affinity() {
+        let thread_id = "thread-cache-affinity";
+        let (pool, stubs) = pool_all(
+            "agent-x",
+            vec![Behavior::AlwaysOk, Behavior::AlwaysOk, Behavior::AlwaysOk],
+            PoolSwitchPolicy::default(),
+            breaker(),
+        );
+        let home = home_of(thread_id, stubs.len());
+
+        assert!(pool.execute(request_for_thread(thread_id)).await.is_ok());
+        assert!(pool.execute(request_for_thread(thread_id)).await.is_ok());
+
+        assert_eq!(
+            stubs[home].call_count(),
+            2,
+            "same thread must stay on its selected home member"
+        );
+        let other_calls: u32 = stubs
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| *i != home)
+            .map(|(_, stub)| stub.call_count())
+            .sum();
+        assert_eq!(other_calls, 0);
+    }
+
+    #[tokio::test]
+    async fn different_threads_keep_independent_sticky_members() {
+        let (pool, stubs) = pool_all(
+            "agent-x",
+            vec![Behavior::AlwaysOk, Behavior::AlwaysOk],
+            PoolSwitchPolicy::default(),
+            breaker(),
+        );
+        let left = (0..200)
+            .map(|i| format!("thread-left-{i}"))
+            .find(|key| home_of(key, stubs.len()) == 0)
+            .expect("left-home key");
+        let right = (0..200)
+            .map(|i| format!("thread-right-{i}"))
+            .find(|key| home_of(key, stubs.len()) == 1)
+            .expect("right-home key");
+
+        assert!(pool.execute(request_for_thread(&left)).await.is_ok());
+        assert!(pool.execute(request_for_thread(&left)).await.is_ok());
+        assert!(pool.execute(request_for_thread(&right)).await.is_ok());
+        assert!(pool.execute(request_for_thread(&right)).await.is_ok());
+
+        assert_eq!(stubs[0].call_count(), 2);
+        assert_eq!(stubs[1].call_count(), 2);
+    }
+
+    #[tokio::test]
+    async fn same_thread_stays_on_failover_member_after_switch() {
+        let thread_id = "thread-failover-sticky";
+        let (pool, stubs, home) = pool_home_fails(
+            thread_id,
+            2,
+            Behavior::AlwaysErr(InferenceExecutionError::rate_limited("429")),
+            PoolSwitchPolicy::default(),
+            breaker(),
+        );
+        let failover = 1 - home;
+
+        assert!(pool.execute(request_for_thread(thread_id)).await.is_ok());
+        assert_eq!(stubs[home].call_count(), 1);
+        assert_eq!(stubs[failover].call_count(), 1);
+
+        assert!(pool.execute(request_for_thread(thread_id)).await.is_ok());
+        assert_eq!(
+            stubs[home].call_count(),
+            1,
+            "thread should not return to quota-limited home after switching"
+        );
+        assert_eq!(stubs[failover].call_count(), 2);
     }
 
     #[tokio::test]

@@ -14,6 +14,10 @@ use thiserror::Error;
 pub struct InferenceRequest {
     /// Effective upstream model name sent to the resolved provider executor.
     pub upstream_model: String,
+    /// Stable routing key for executors that need session affinity. The agent
+    /// loop sets this to the thread id so model pools can preserve prompt-cache
+    /// affinity within one conversation.
+    pub routing_key: Option<String>,
     /// Messages to send.
     pub messages: Vec<Message>,
     /// Available tools.
@@ -21,7 +25,7 @@ pub struct InferenceRequest {
     /// System prompt content blocks. Empty means no system prompt.
     pub system: Vec<ContentBlock>,
     /// Per-inference overrides that remain after runtime routing is applied
-    /// (temperature, max_tokens, fallback upstream models, etc).
+    /// (temperature, max_tokens, etc).
     pub overrides: Option<InferenceOverride>,
     /// Whether to apply prompt cache hints (e.g. `CacheControl::Ephemeral`) to system messages.
     pub enable_prompt_cache: bool,
@@ -474,6 +478,7 @@ mod tests {
         };
         let request = InferenceRequest {
             upstream_model: "test-model".into(),
+            routing_key: None,
             messages: vec![Message::user("hi")],
             tools: vec![],
             system: vec![],
@@ -494,6 +499,7 @@ mod tests {
         };
         let request = InferenceRequest {
             upstream_model: "test-model".into(),
+            routing_key: None,
             messages: vec![Message::user("search for rust")],
             tools: vec![ToolDescriptor::new("search", "search", "Web search")],
             system: vec![ContentBlock::text("You are helpful.")],
@@ -515,6 +521,7 @@ mod tests {
         };
         let request = InferenceRequest {
             upstream_model: "base-model".into(),
+            routing_key: None,
             messages: vec![],
             tools: vec![],
             system: vec![],

@@ -86,6 +86,7 @@ impl ContextSummarizer for DefaultSummarizer {
 
         let request = awaken_contract::contract::executor::InferenceRequest {
             upstream_model: model,
+            routing_key: None,
             messages: vec![
                 Message::system(&self.config.summarizer_system_prompt),
                 Message::user(user_prompt),

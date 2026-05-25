@@ -1,4 +1,4 @@
-//! LLM retry policy with exponential backoff and optional upstream model fallback.
+//! LLM retry policy with exponential backoff.
 //!
 //! Provides [`LlmRetryPolicy`] for configuring retry behavior and
 //! [`RetryingExecutor`] which wraps any [`LlmExecutor`] to apply the policy.
@@ -25,8 +25,6 @@ const MAX_BACKOFF_MS: u64 = 8_000;
 pub struct LlmRetryPolicy {
     /// Maximum number of retry attempts (0 = no retry, only the initial attempt).
     pub max_retries: u32,
-    /// Fallback upstream model names to try after the primary upstream model exhausts retries.
-    pub fallback_upstream_models: Vec<String>,
     /// Base delay in milliseconds for exponential backoff between retries.
     /// Actual delay = min(base_ms * 2^attempt, 8000ms). Set to 0 to disable backoff.
     #[serde(default = "default_backoff_base_ms")]
@@ -69,7 +67,6 @@ impl Default for LlmRetryPolicy {
     fn default() -> Self {
         Self {
             max_retries: 2,
-            fallback_upstream_models: Vec::new(),
             backoff_base_ms: default_backoff_base_ms(),
             overloaded_backoff_base_ms: default_overloaded_backoff_base_ms(),
             max_stream_retries: default_max_stream_retries(),
@@ -90,12 +87,6 @@ impl LlmRetryPolicy {
     /// Set the maximum number of retry attempts.
     pub fn with_max_retries(mut self, n: u32) -> Self {
         self.max_retries = n;
-        self
-    }
-
-    /// Append a fallback upstream model name.
-    pub fn with_fallback_upstream_model(mut self, upstream_model: impl Into<String>) -> Self {
-        self.fallback_upstream_models.push(upstream_model.into());
         self
     }
 
@@ -166,8 +157,7 @@ fn is_retryable(err: &InferenceExecutionError) -> bool {
 /// An [`LlmExecutor`] wrapper that applies a [`LlmRetryPolicy`].
 ///
 /// On transient failure the wrapper retries the inner executor up to
-/// `policy.max_retries` times for the primary model, then tries each
-/// fallback upstream model with the same retry budget.
+/// `policy.max_retries` times for the requested model.
 pub struct RetryingExecutor {
     inner: Arc<dyn LlmExecutor>,
     policy: LlmRetryPolicy,
@@ -236,14 +226,6 @@ impl RetryingExecutor {
         Err(last_error.expect("at least one attempt was made"))
     }
 
-    fn fallback_upstream_models_for_request(&self, request: &InferenceRequest) -> Vec<String> {
-        request
-            .overrides
-            .as_ref()
-            .and_then(|overrides| overrides.fallback_upstream_models.clone())
-            .unwrap_or_else(|| self.policy.fallback_upstream_models.clone())
-    }
-
     /// Attempt to open a streaming response with retries for one model variant.
     ///
     /// Retries apply only while creating the stream. Once a provider has returned
@@ -291,24 +273,6 @@ impl RetryingExecutor {
 
         Err(last_error.expect("at least one stream attempt was made"))
     }
-
-    /// Return `AllModelsUnavailable` iff a circuit breaker is attached and
-    /// every candidate model (primary + fallbacks) is currently open.
-    fn all_models_blocked(
-        &self,
-        request: &InferenceRequest,
-        fallback_upstream_models: &[String],
-    ) -> bool {
-        let Some(ref cb) = self.circuit_breaker else {
-            return false;
-        };
-        if cb.check(&request.upstream_model).is_ok() {
-            return false;
-        }
-        fallback_upstream_models
-            .iter()
-            .all(|m| cb.check(m).is_err())
-    }
 }
 
 #[async_trait]
@@ -317,41 +281,7 @@ impl LlmExecutor for RetryingExecutor {
         &self,
         request: InferenceRequest,
     ) -> Result<StreamResult, InferenceExecutionError> {
-        let fallback_upstream_models = self.fallback_upstream_models_for_request(&request);
-
-        if self.all_models_blocked(&request, &fallback_upstream_models) {
-            return Err(InferenceExecutionError::AllModelsUnavailable);
-        }
-
-        // Try primary model.
-        match self.try_with_retries(&request).await {
-            Ok(result) => return Ok(result),
-            Err(err) if !is_retryable(&err) || fallback_upstream_models.is_empty() => {
-                return Err(err);
-            }
-            Err(_) => {}
-        }
-
-        // Try fallback upstream models in order.
-        let mut last_error = None;
-        for (i, fallback_upstream_model) in fallback_upstream_models.iter().enumerate() {
-            let mut fallback_request = request.clone();
-            fallback_request.upstream_model = fallback_upstream_model.clone();
-
-            match self.try_with_retries(&fallback_request).await {
-                Ok(result) => return Ok(result),
-                Err(err) => {
-                    let is_last = i == fallback_upstream_models.len() - 1;
-                    if !is_retryable(&err) || is_last {
-                        last_error = Some(err);
-                        break;
-                    }
-                    last_error = Some(err);
-                }
-            }
-        }
-
-        Err(last_error.expect("at least one fallback was attempted"))
+        self.try_with_retries(&request).await
     }
 
     fn execute_stream(
@@ -364,41 +294,7 @@ impl LlmExecutor for RetryingExecutor {
                 + '_,
         >,
     > {
-        Box::pin(async move {
-            let fallback_upstream_models = self.fallback_upstream_models_for_request(&request);
-
-            if self.all_models_blocked(&request, &fallback_upstream_models) {
-                return Err(InferenceExecutionError::AllModelsUnavailable);
-            }
-
-            match self.try_stream_with_retries(&request).await {
-                Ok(stream) => return Ok(stream),
-                Err(err) if !is_retryable(&err) || fallback_upstream_models.is_empty() => {
-                    return Err(err);
-                }
-                Err(_) => {}
-            }
-
-            let mut last_error = None;
-            for (i, fallback_upstream_model) in fallback_upstream_models.iter().enumerate() {
-                let mut fallback_request = request.clone();
-                fallback_request.upstream_model = fallback_upstream_model.clone();
-
-                match self.try_stream_with_retries(&fallback_request).await {
-                    Ok(stream) => return Ok(stream),
-                    Err(err) => {
-                        let is_last = i == fallback_upstream_models.len() - 1;
-                        if !is_retryable(&err) || is_last {
-                            last_error = Some(err);
-                            break;
-                        }
-                        last_error = Some(err);
-                    }
-                }
-            }
-
-            Err(last_error.expect("at least one stream fallback was attempted"))
-        })
+        Box::pin(async move { self.try_stream_with_retries(&request).await })
     }
 
     fn name(&self) -> &str {
@@ -418,7 +314,7 @@ impl awaken_contract::registry_spec::PluginConfigKey for RetryConfigKey {
 mod tests {
     use super::*;
     use awaken_contract::contract::content::ContentBlock;
-    use awaken_contract::contract::inference::{InferenceOverride, StopReason, TokenUsage};
+    use awaken_contract::contract::inference::{StopReason, TokenUsage};
     use awaken_contract::contract::message::Message;
     use std::sync::atomic::{AtomicU32, Ordering};
 
@@ -471,6 +367,7 @@ mod tests {
     fn test_request() -> InferenceRequest {
         InferenceRequest {
             upstream_model: "primary-model".into(),
+            routing_key: None,
             messages: vec![Message::user("hello")],
             tools: vec![],
             system: vec![],
@@ -495,43 +392,6 @@ mod tests {
 
         fn name(&self) -> &str {
             "mock"
-        }
-    }
-
-    /// Mock that records which model was requested and always fails.
-    struct ModelRecorder {
-        models: std::sync::Mutex<Vec<String>>,
-        error: InferenceExecutionError,
-    }
-
-    impl ModelRecorder {
-        fn always_fail_with(err: InferenceExecutionError) -> Self {
-            Self {
-                models: std::sync::Mutex::new(Vec::new()),
-                error: err,
-            }
-        }
-
-        fn recorded_models(&self) -> Vec<String> {
-            self.models.lock().unwrap().clone()
-        }
-    }
-
-    #[async_trait]
-    impl LlmExecutor for ModelRecorder {
-        async fn execute(
-            &self,
-            request: InferenceRequest,
-        ) -> Result<StreamResult, InferenceExecutionError> {
-            self.models
-                .lock()
-                .unwrap()
-                .push(request.upstream_model.clone());
-            Err(self.error.clone())
-        }
-
-        fn name(&self) -> &str {
-            "model-recorder"
         }
     }
 
@@ -584,58 +444,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn fallback_upstream_model_used_after_primary_exhausts_retries() {
-        let inner = Arc::new(ModelRecorder::always_fail_with(
-            InferenceExecutionError::rate_limited("overloaded"),
-        ));
-        let policy = test_policy()
-            .with_max_retries(1)
-            .with_fallback_upstream_model("fallback-a")
-            .with_fallback_upstream_model("fallback-b");
-        let executor = RetryingExecutor::new(inner.clone(), policy);
-
-        let result = executor.execute(test_request()).await;
-        assert!(result.is_err());
-
-        let models = inner.recorded_models();
-        // primary: 2 attempts (1 initial + 1 retry)
-        // fallback-a: 2 attempts
-        // fallback-b: 2 attempts
-        assert_eq!(models.len(), 6);
-        assert_eq!(models[0], "primary-model");
-        assert_eq!(models[1], "primary-model");
-        assert_eq!(models[2], "fallback-a");
-        assert_eq!(models[3], "fallback-a");
-        assert_eq!(models[4], "fallback-b");
-        assert_eq!(models[5], "fallback-b");
-    }
-
-    #[tokio::test]
-    async fn request_override_fallback_upstream_models_replace_policy_fallbacks() {
-        let inner = Arc::new(ModelRecorder::always_fail_with(
-            InferenceExecutionError::rate_limited("overloaded"),
-        ));
-        let policy = test_policy()
-            .with_max_retries(0)
-            .with_fallback_upstream_model("policy-fallback");
-        let executor = RetryingExecutor::new(inner.clone(), policy);
-
-        let mut request = test_request();
-        request.overrides = Some(InferenceOverride {
-            fallback_upstream_models: Some(vec!["override-fallback".into()]),
-            ..Default::default()
-        });
-
-        let result = executor.execute(request).await;
-        assert!(result.is_err());
-
-        assert_eq!(
-            inner.recorded_models(),
-            vec!["primary-model", "override-fallback"]
-        );
-    }
-
-    #[tokio::test]
     async fn execute_stream_retries_stream_start_until_success() {
         let inner = Arc::new(FailNThenSucceed::new(1));
         let policy = test_policy().with_max_retries(2);
@@ -644,45 +452,6 @@ mod tests {
         let result = executor.execute_stream(test_request()).await;
         assert!(result.is_ok());
         assert_eq!(inner.call_count(), 2);
-    }
-
-    #[tokio::test]
-    async fn execute_stream_uses_request_override_fallback_upstream_models() {
-        let inner = Arc::new(ModelRecorder::always_fail_with(
-            InferenceExecutionError::rate_limited("overloaded"),
-        ));
-        let policy = test_policy()
-            .with_max_retries(0)
-            .with_fallback_upstream_model("policy-fallback");
-        let executor = RetryingExecutor::new(inner.clone(), policy);
-
-        let mut request = test_request();
-        request.overrides = Some(InferenceOverride {
-            fallback_upstream_models: Some(vec!["override-fallback".into()]),
-            ..Default::default()
-        });
-
-        let result = executor.execute_stream(request).await;
-        assert!(result.is_err());
-
-        assert_eq!(
-            inner.recorded_models(),
-            vec!["primary-model", "override-fallback"]
-        );
-    }
-
-    #[tokio::test]
-    async fn fallback_succeeds_after_primary_fails() {
-        let inner = Arc::new(FailNThenSucceed::new(3));
-        let policy = test_policy()
-            .with_max_retries(1)
-            .with_fallback_upstream_model("fallback-model");
-        let executor = RetryingExecutor::new(inner.clone(), policy);
-
-        let result = executor.execute(test_request()).await;
-        assert!(result.is_ok());
-        // primary: 2 calls (fail), fallback: 1 fail + 1 success = 4
-        assert_eq!(inner.call_count(), 4);
     }
 
     #[tokio::test]
@@ -703,53 +472,10 @@ mod tests {
         assert_eq!(executor.name(), "mock");
     }
 
-    #[tokio::test]
-    async fn non_retryable_error_during_fallback_stops_immediately() {
-        let call_count = Arc::new(AtomicU32::new(0));
-        let cc = call_count.clone();
-
-        struct PrimaryRetryableFallbackFatal {
-            calls: Arc<AtomicU32>,
-        }
-
-        #[async_trait]
-        impl LlmExecutor for PrimaryRetryableFallbackFatal {
-            async fn execute(
-                &self,
-                request: InferenceRequest,
-            ) -> Result<StreamResult, InferenceExecutionError> {
-                let n = self.calls.fetch_add(1, Ordering::SeqCst);
-                if request.upstream_model.starts_with("primary") {
-                    Err(InferenceExecutionError::Provider("down".into()))
-                } else {
-                    let _ = n;
-                    Err(InferenceExecutionError::Cancelled)
-                }
-            }
-
-            fn name(&self) -> &str {
-                "primary-retryable-fallback-fatal"
-            }
-        }
-
-        let inner = Arc::new(PrimaryRetryableFallbackFatal { calls: cc });
-        let policy = test_policy()
-            .with_max_retries(0)
-            .with_fallback_upstream_model("fallback-a")
-            .with_fallback_upstream_model("fallback-b");
-        let executor = RetryingExecutor::new(inner, policy);
-
-        let result = executor.execute(test_request()).await;
-        assert!(result.is_err());
-        // primary: 1 call, fallback-a: 1 call (Cancelled, stops immediately)
-        assert_eq!(call_count.load(Ordering::SeqCst), 2);
-    }
-
     #[test]
     fn default_policy_values() {
         let policy = LlmRetryPolicy::default();
         assert_eq!(policy.max_retries, 2);
-        assert!(policy.fallback_upstream_models.is_empty());
         assert_eq!(policy.backoff_base_ms, 500);
         assert_eq!(policy.overloaded_backoff_base_ms, 2_000);
         assert_eq!(policy.max_stream_retries, 2);
@@ -760,7 +486,6 @@ mod tests {
     fn no_retry_policy_values() {
         let policy = LlmRetryPolicy::no_retry();
         assert_eq!(policy.max_retries, 0);
-        assert!(policy.fallback_upstream_models.is_empty());
     }
 
     #[test]
@@ -831,11 +556,8 @@ mod tests {
     fn builder_methods_chain() {
         let policy = LlmRetryPolicy::default()
             .with_max_retries(5)
-            .with_fallback_upstream_model("model-a")
-            .with_fallback_upstream_model("model-b")
             .with_backoff_base_ms(100);
         assert_eq!(policy.max_retries, 5);
-        assert_eq!(policy.fallback_upstream_models, vec!["model-a", "model-b"]);
         assert_eq!(policy.backoff_base_ms, 100);
     }
 
@@ -955,23 +677,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn zero_retries_with_fallback_tries_fallback_once() {
-        let inner = Arc::new(FailNThenSucceed::new(1)); // primary fails, fallback succeeds
-        let policy = test_policy()
-            .with_max_retries(0)
-            .with_fallback_upstream_model("fallback");
-        let executor = RetryingExecutor::new(inner.clone(), policy);
-
-        let result = executor.execute(test_request()).await;
-        assert!(result.is_ok());
-        assert_eq!(inner.call_count(), 2); // primary once + fallback once
-    }
-
-    #[tokio::test]
-    async fn no_fallback_upstream_models_configured_returns_primary_error() {
+    async fn retry_budget_exhausted_returns_primary_error() {
         let inner = Arc::new(FailNThenSucceed::new(100));
         let policy = test_policy().with_max_retries(1);
-        // No fallback upstream models
         let executor = RetryingExecutor::new(inner.clone(), policy);
 
         let result = executor.execute(test_request()).await;
@@ -996,7 +704,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn max_retries_zero_and_no_fallback_just_one_attempt() {
+    async fn max_retries_zero_just_one_attempt() {
         let inner = Arc::new(FailNThenSucceed::new(100));
         let policy = LlmRetryPolicy::no_retry().with_backoff_base_ms(0);
         let executor = RetryingExecutor::new(inner.clone(), policy);
@@ -1007,20 +715,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn success_on_first_try_no_fallback_attempted() {
-        let recorder = Arc::new(ModelRecorder::always_fail_with(
-            InferenceExecutionError::Provider("down".into()),
-        ));
+    async fn success_on_first_try_skips_retries() {
         let inner = Arc::new(FailNThenSucceed::new(0)); // never fails
-        let policy = test_policy()
-            .with_max_retries(3)
-            .with_fallback_upstream_model("fallback-a");
+        let policy = test_policy().with_max_retries(3);
         let executor = RetryingExecutor::new(inner.clone(), policy);
 
         let result = executor.execute(test_request()).await;
         assert!(result.is_ok());
-        assert_eq!(inner.call_count(), 1, "should not attempt fallback");
-        let _ = recorder; // suppress unused warning
+        assert_eq!(inner.call_count(), 1, "should not retry after success");
     }
 
     // -----------------------------------------------------------------------
@@ -1031,8 +733,6 @@ mod tests {
     fn retry_policy_serde_roundtrip() {
         let policy = LlmRetryPolicy::default()
             .with_max_retries(5)
-            .with_fallback_upstream_model("fallback-a")
-            .with_fallback_upstream_model("fallback-b")
             .with_backoff_base_ms(200)
             .with_overloaded_backoff_base_ms(4_000)
             .with_max_stream_retries(3)
@@ -1040,10 +740,6 @@ mod tests {
         let json = serde_json::to_string(&policy).unwrap();
         let parsed: LlmRetryPolicy = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed.max_retries, 5);
-        assert_eq!(
-            parsed.fallback_upstream_models,
-            vec!["fallback-a", "fallback-b"]
-        );
         assert_eq!(parsed.backoff_base_ms, 200);
         assert_eq!(parsed.overloaded_backoff_base_ms, 4_000);
         assert_eq!(parsed.max_stream_retries, 3);
@@ -1053,7 +749,7 @@ mod tests {
     #[test]
     fn retry_policy_serde_default_backoff() {
         // Deserializing without optional fields should use defaults.
-        let json = r#"{"max_retries":2,"fallback_upstream_models":[]}"#;
+        let json = r#"{"max_retries":2}"#;
         let parsed: LlmRetryPolicy = serde_json::from_str(json).unwrap();
         assert_eq!(parsed.backoff_base_ms, 500);
         assert_eq!(parsed.overloaded_backoff_base_ms, 2_000);
@@ -1062,9 +758,17 @@ mod tests {
     }
 
     #[test]
-    fn retry_policy_rejects_legacy_fallback_field() {
-        let json = r#"{"max_retries":2,"fallback_models":[]}"#;
-        let parsed = serde_json::from_str::<LlmRetryPolicy>(json);
+    fn retry_policy_rejects_model_fallback_fields() {
+        let legacy_field = ["fallback", "models"].join("_");
+        let parsed = serde_json::from_value::<LlmRetryPolicy>(
+            serde_json::json!({ "max_retries": 2, legacy_field: [] }),
+        );
+        assert!(parsed.is_err());
+
+        let removed_field = ["fallback", "upstream", "models"].join("_");
+        let parsed = serde_json::from_value::<LlmRetryPolicy>(
+            serde_json::json!({ "max_retries": 2, removed_field: [] }),
+        );
         assert!(parsed.is_err());
     }
 
@@ -1111,37 +815,6 @@ mod tests {
         assert!(result.is_err());
         // 2 actual calls trip the CB (failure_threshold=2), 3rd attempt blocked by CB
         assert_eq!(inner.call_count(), 2);
-    }
-
-    // -----------------------------------------------------------------------
-    // Circuit breaker independent per model in fallback
-    // -----------------------------------------------------------------------
-
-    #[tokio::test]
-    async fn circuit_breaker_independent_per_model_in_fallback() {
-        use crate::engine::circuit_breaker::CircuitBreakerConfig;
-
-        let cb = Arc::new(CircuitBreaker::new(CircuitBreakerConfig {
-            failure_threshold: 2,
-            cooldown: Duration::from_secs(60),
-            half_open_max: 1,
-        }));
-        // Pre-open circuit for primary model only
-        cb.record_failure("primary-model");
-        cb.record_failure("primary-model");
-
-        // Always succeeds (fail_count=0)
-        let inner = Arc::new(FailNThenSucceed::new(0));
-        let policy = test_policy()
-            .with_max_retries(0)
-            .with_fallback_upstream_model("fallback-model");
-        let executor = RetryingExecutor::new(inner.clone(), policy).with_circuit_breaker(cb);
-
-        let result = executor.execute(test_request()).await;
-        // Primary blocked by CB, fallback should succeed
-        assert!(result.is_ok());
-        // Only the fallback call was made (primary was blocked)
-        assert_eq!(inner.call_count(), 1);
     }
 
     // -----------------------------------------------------------------------
@@ -1257,7 +930,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn all_models_blocked_short_circuits_with_all_models_unavailable() {
+    async fn open_circuit_short_circuits_current_model() {
         use crate::engine::circuit_breaker::CircuitBreakerConfig;
 
         let cb = Arc::new(CircuitBreaker::new(CircuitBreakerConfig {
@@ -1266,26 +939,20 @@ mod tests {
             half_open_max: 1,
         }));
         cb.record_failure("primary-model");
-        cb.record_failure("fallback-a");
-        cb.record_failure("fallback-b");
 
         let inner = Arc::new(FailNThenSucceed::new(0)); // would succeed if called
-        let policy = test_policy()
-            .with_max_retries(2)
-            .with_fallback_upstream_model("fallback-a")
-            .with_fallback_upstream_model("fallback-b");
+        let policy = test_policy().with_max_retries(2);
         let executor =
             RetryingExecutor::new(inner.clone(), policy).with_circuit_breaker(cb.clone());
 
         let result = executor.execute(test_request()).await;
         assert!(
-            matches!(result, Err(InferenceExecutionError::AllModelsUnavailable)),
-            "expected AllModelsUnavailable, got {result:?}"
+            matches!(result, Err(InferenceExecutionError::Provider(_))),
+            "expected circuit breaker provider error, got {result:?}"
         );
         assert_eq!(inner.call_count(), 0, "no inner call should be made");
     }
 
-    // -----------------------------------------------------------------------
     // Backoff sleep verification with paused time
     // -----------------------------------------------------------------------
 
@@ -1326,11 +993,9 @@ mod tests {
                 overloaded_backoff_base_ms in 0u64..10000,
                 max_stream_retries in 0u32..10,
                 stream_idle_timeout_secs in 1u64..300,
-                num_fallbacks in 0usize..5,
             ) {
                 let policy = LlmRetryPolicy {
                     max_retries,
-                    fallback_upstream_models: (0..num_fallbacks).map(|i| format!("model-{i}")).collect(),
                     backoff_base_ms,
                     overloaded_backoff_base_ms,
                     max_stream_retries,
@@ -1343,7 +1008,6 @@ mod tests {
                 prop_assert_eq!(parsed.overloaded_backoff_base_ms, overloaded_backoff_base_ms);
                 prop_assert_eq!(parsed.max_stream_retries, max_stream_retries);
                 prop_assert_eq!(parsed.stream_idle_timeout_secs, stream_idle_timeout_secs);
-                prop_assert_eq!(parsed.fallback_upstream_models.len(), num_fallbacks);
             }
 
             #[test]

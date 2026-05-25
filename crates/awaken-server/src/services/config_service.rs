@@ -4,7 +4,8 @@ use awaken_contract::AuditAction;
 use awaken_contract::contract::config_store::ConfigStore;
 use awaken_contract::contract::storage::StorageError;
 use awaken_contract::{
-    AgentSpec, ConfigRecord, McpServerSpec, ModelSpec, ProviderSpec, SkillSpec, ToolSpec,
+    AgentSpec, ConfigRecord, McpServerSpec, ModelPoolSpec, ModelSpec, ProviderSpec, SkillSpec,
+    ToolSpec,
 };
 use axum::http::HeaderMap;
 use serde_json::{Value, json};
@@ -38,6 +39,7 @@ const OVERRIDES_NOT_SUPPORTED_FOR_USER_RECORD: &str =
 pub enum ConfigNamespace {
     Agents,
     Models,
+    ModelPools,
     Providers,
     McpServers,
     Skills,
@@ -45,10 +47,11 @@ pub enum ConfigNamespace {
 
 impl ConfigNamespace {
     /// All writable public managed namespaces in a fixed order.
-    pub const ALL: [Self; 5] = [
+    pub const ALL: [Self; 6] = [
         Self::Agents,
         Self::Providers,
         Self::Models,
+        Self::ModelPools,
         Self::McpServers,
         Self::Skills,
     ];
@@ -67,6 +70,7 @@ impl ConfigNamespace {
         match value {
             "agents" => Ok(Self::Agents),
             "models" => Ok(Self::Models),
+            "model-pools" => Ok(Self::ModelPools),
             "providers" => Ok(Self::Providers),
             "mcp-servers" => Ok(Self::McpServers),
             SKILLS_NAMESPACE => Ok(Self::Skills),
@@ -78,6 +82,7 @@ impl ConfigNamespace {
         match self {
             Self::Agents => "agents",
             Self::Models => "models",
+            Self::ModelPools => "model-pools",
             Self::Providers => "providers",
             Self::McpServers => "mcp-servers",
             Self::Skills => SKILLS_NAMESPACE,
@@ -88,6 +93,7 @@ impl ConfigNamespace {
         let schema = match self {
             Self::Agents => schemars::schema_for!(AgentSpec),
             Self::Models => schemars::schema_for!(ModelSpec),
+            Self::ModelPools => schemars::schema_for!(ModelPoolSpec),
             Self::Providers => schemars::schema_for!(ProviderSpec),
             Self::McpServers => schemars::schema_for!(McpServerSpec),
             Self::Skills => schemars::schema_for!(SkillSpec),
@@ -311,6 +317,7 @@ impl ConfigService {
             "namespaces": [
                 { "namespace": "agents", "schema": ConfigNamespace::Agents.schema_json()? },
                 { "namespace": "models", "schema": ConfigNamespace::Models.schema_json()? },
+                { "namespace": "model-pools", "schema": ConfigNamespace::ModelPools.schema_json()? },
                 { "namespace": "providers", "schema": ConfigNamespace::Providers.schema_json()? },
                 { "namespace": "mcp-servers", "schema": ConfigNamespace::McpServers.schema_json()? },
                 { "namespace": SKILLS_NAMESPACE, "schema": ConfigNamespace::Skills.schema_json()? },

@@ -41,7 +41,10 @@ impl ConfigService {
                 self.normalize_mcp_server_payload(path_id, &mut object)
                     .await?;
             }
-            ConfigNamespace::Agents | ConfigNamespace::Models | ConfigNamespace::Skills => {}
+            ConfigNamespace::Agents
+            | ConfigNamespace::Models
+            | ConfigNamespace::ModelPools
+            | ConfigNamespace::Skills => {}
         }
 
         object.remove("created_at");
@@ -63,6 +66,10 @@ impl ConfigService {
             }
             ConfigNamespace::Models => {
                 awaken_contract::validate_model_spec(body.clone())
+                    .map_err(|e| ConfigServiceError::InvalidPayload(e.to_string()))?;
+            }
+            ConfigNamespace::ModelPools => {
+                awaken_contract::validate_model_pool_spec(body.clone())
                     .map_err(|e| ConfigServiceError::InvalidPayload(e.to_string()))?;
             }
             ConfigNamespace::Providers => {

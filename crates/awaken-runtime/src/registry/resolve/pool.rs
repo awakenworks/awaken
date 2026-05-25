@@ -46,7 +46,7 @@ pub fn build_pool_executor(
             .providers
             .get_provider(&model.provider_id)
             .ok_or_else(|| ResolveError::ProviderNotFound(model.provider_id.clone()))?;
-        let executor = if policy.max_retries > 0 || !policy.fallback_upstream_models.is_empty() {
+        let executor = if policy.max_retries > 0 {
             Arc::new(RetryingExecutor::new(executor, policy.clone())) as Arc<dyn LlmExecutor>
         } else {
             executor

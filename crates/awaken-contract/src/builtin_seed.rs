@@ -8,7 +8,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::registry_spec::{AgentSpec, McpServerSpec, ModelSpec, ProviderSpec};
+use crate::registry_spec::{AgentSpec, McpServerSpec, ModelPoolSpec, ModelSpec, ProviderSpec};
 use crate::skill_spec::SkillSpec;
 use crate::tool_spec::ToolSpec;
 
@@ -24,6 +24,7 @@ pub enum BuiltinSpec {
     Agent(Box<AgentSpec>),
     Provider(ProviderSpec),
     Model(ModelSpec),
+    ModelPool(ModelPoolSpec),
     McpServer(McpServerSpec),
     Tool(ToolSpec),
     Skill(SkillSpec),
@@ -43,6 +44,11 @@ impl BuiltinSpec {
     /// Wrap a `ModelSpec`.
     pub fn model(spec: ModelSpec) -> Self {
         Self::Model(spec)
+    }
+
+    /// Wrap a `ModelPoolSpec`.
+    pub fn model_pool(spec: ModelPoolSpec) -> Self {
+        Self::ModelPool(spec)
     }
 
     /// Wrap a `McpServerSpec`.
@@ -69,6 +75,7 @@ impl BuiltinSpec {
             Self::Agent(_) => "agents",
             Self::Provider(_) => "providers",
             Self::Model(_) => "models",
+            Self::ModelPool(_) => "model-pools",
             Self::McpServer(_) => "mcp-servers",
             Self::Tool(_) => "tools",
             Self::Skill(_) => "skills",
@@ -81,6 +88,7 @@ impl BuiltinSpec {
             Self::Agent(s) => &s.id,
             Self::Provider(s) => &s.id,
             Self::Model(s) => &s.id,
+            Self::ModelPool(s) => &s.id,
             Self::McpServer(s) => &s.id,
             Self::Tool(s) => &s.id,
             Self::Skill(s) => &s.id,
@@ -145,6 +153,15 @@ mod tests {
     fn constructor_model_wraps() {
         let spec = ModelSpec::new("m1", "openai", "gpt-4o");
         assert!(matches!(BuiltinSpec::model(spec), BuiltinSpec::Model(_)));
+    }
+
+    #[test]
+    fn constructor_model_pool_wraps() {
+        let spec = ModelPoolSpec::new("pool1", ["m1"]);
+        assert!(matches!(
+            BuiltinSpec::model_pool(spec),
+            BuiltinSpec::ModelPool(_)
+        ));
     }
 
     #[test]
