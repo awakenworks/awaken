@@ -116,6 +116,77 @@ pub async fn append_message_records_assigns_seq<S: ThreadRunStore>(store: &S) {
     assert_eq!(records[1].seq, 2);
 }
 
+// ── ADR-0042 A: version-guarded committed append ─────────────────────
+
+pub async fn checkpoint_append_assigns_version<S: ThreadRunStore>(store: &S) {
+    let thread_id = "t-ap-version";
+    let run = make_run("r1", thread_id, RunStatus::Created);
+    let v1 = store
+        .checkpoint_append(thread_id, &[Message::user("a")], Some(0), &run)
+        .await
+        .unwrap();
+    assert_eq!(v1, 1, "first append returns new committed count");
+    let v2 = store
+        .checkpoint_append(
+            thread_id,
+            &[Message::user("b"), Message::user("c")],
+            Some(1),
+            &run,
+        )
+        .await
+        .unwrap();
+    assert_eq!(v2, 3, "second append returns cumulative committed count");
+    let msgs = store.load_messages(thread_id).await.unwrap().unwrap();
+    assert_eq!(msgs.len(), 3);
+    assert_eq!(msgs[0].text(), "a");
+    assert_eq!(msgs[2].text(), "c");
+    let run = store.load_run("r1").await.unwrap().unwrap();
+    assert_eq!(run.thread_id, thread_id);
+}
+
+pub async fn checkpoint_append_unconditional_appends<S: ThreadRunStore>(store: &S) {
+    let thread_id = "t-ap-uncond";
+    let run = make_run("r1", thread_id, RunStatus::Created);
+    store
+        .checkpoint_append(thread_id, &[Message::user("a")], None, &run)
+        .await
+        .unwrap();
+    let v = store
+        .checkpoint_append(thread_id, &[Message::user("b")], None, &run)
+        .await
+        .unwrap();
+    assert_eq!(v, 2, "unconditional append ignores the version guard");
+}
+
+pub async fn checkpoint_append_rejects_stale_version<S: ThreadRunStore>(store: &S) {
+    let thread_id = "t-ap-stale";
+    let run = make_run("r1", thread_id, RunStatus::Created);
+    store
+        .checkpoint_append(
+            thread_id,
+            &[Message::user("a"), Message::user("b")],
+            Some(0),
+            &run,
+        )
+        .await
+        .unwrap();
+    // committed length is now 2, so expecting 0 must conflict.
+    let err = store
+        .checkpoint_append(thread_id, &[Message::user("c")], Some(0), &run)
+        .await
+        .unwrap_err();
+    match err {
+        StorageError::VersionConflict { expected, actual } => {
+            assert_eq!(expected, 0);
+            assert_eq!(actual, 2);
+        }
+        other => panic!("expected VersionConflict, got {other:?}"),
+    }
+    // The conflicting append left the committed log untouched.
+    let msgs = store.load_messages(thread_id).await.unwrap().unwrap();
+    assert_eq!(msgs.len(), 2);
+}
+
 pub async fn list_threads_query_filters_lineage<S: ThreadRunStore>(store: &S) {
     let mut matching = Thread::with_id("t-filter-match")
         .with_resource_id("resource-a")
