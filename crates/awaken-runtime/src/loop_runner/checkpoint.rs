@@ -329,10 +329,15 @@ fn materialize_checkpoint_append(
     step_count: u32,
     input_message_count: usize,
 ) -> (Vec<Message>, Option<RunMessageOutput>) {
-    let committed_seq_by_id: HashMap<String, u64> = committed_messages
+    let committed_by_id: HashMap<String, (u64, &Message)> = committed_messages
         .iter()
         .enumerate()
-        .filter_map(|(index, message)| message.id.as_ref().map(|id| (id.clone(), index as u64 + 1)))
+        .filter_map(|(index, message)| {
+            message
+                .id
+                .as_ref()
+                .map(|id| (id.clone(), (index as u64 + 1, message)))
+        })
         .collect();
     let previous_output_ids: HashSet<String> = previous
         .and_then(|record| record.output.as_ref())
@@ -358,18 +363,33 @@ fn materialize_checkpoint_append(
     let mut has_new_output = false;
     for (index, message) in messages.iter().enumerate() {
         let mut message = (**message).clone();
-        let committed_seq = message
+        let committed = message
             .id
             .as_ref()
-            .and_then(|id| committed_seq_by_id.get(id))
+            .and_then(|id| committed_by_id.get(id))
             .copied();
+        let committed_seq = committed.map(|(seq, _)| seq);
         let seq = committed_seq.unwrap_or(next_append_seq);
+        let committed_output = committed.is_some_and(|(_, committed_message)| {
+            committed_message.produced_by_run_id() == Some(run_identity.run_id.as_str())
+        });
+        let previous_output = message
+            .id
+            .as_ref()
+            .is_some_and(|id| previous_output_ids.contains(id));
         let already_recorded_output = message.produced_by_run_id()
             == Some(run_identity.run_id.as_str())
-            || message
-                .id
-                .as_ref()
-                .is_some_and(|id| previous_output_ids.contains(id));
+            || committed_output
+            || previous_output;
+        if already_recorded_output
+            && message.produced_by_run_id() != Some(run_identity.run_id.as_str())
+        {
+            message.metadata = committed
+                .and_then(|(_, committed_message)| committed_message.metadata.clone())
+                .filter(|metadata| metadata.run_id.as_deref() == Some(run_identity.run_id.as_str()))
+                .or(message.metadata);
+            message.mark_produced_by(&run_identity.run_id, step_index);
+        }
         let new_output = committed_seq.is_none()
             && index >= input_message_count
             && is_run_output_message(&message);
@@ -388,9 +408,13 @@ fn materialize_checkpoint_append(
             }
         }
 
-        if committed_seq.is_none() {
+        if committed_seq.is_none()
+            || committed.is_some_and(|(_, committed_message)| committed_message != &message)
+        {
             delta.push(message);
-            next_append_seq += 1;
+            if committed_seq.is_none() {
+                next_append_seq += 1;
+            }
         }
     }
 

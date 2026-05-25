@@ -13,7 +13,7 @@ use std::sync::{Arc, OnceLock, Weak};
 
 use async_trait::async_trait;
 use awaken_contract::contract::config_store::{ConfigStore, extract_meta_revision};
-use awaken_contract::contract::message::Message;
+use awaken_contract::contract::message::{Message, strip_unpaired_tool_calls_from_owned_view};
 use awaken_contract::contract::profile_store::{ProfileEntry, ProfileOwner, ProfileStore};
 use awaken_contract::contract::storage::{
     ChildThreadDeleteStrategy, MessagePage, MessageQuery, RunPage, RunQuery, RunRecord, RunStore,
@@ -906,10 +906,10 @@ impl ThreadStore for FileStore {
 
     async fn load_messages(&self, thread_id: &str) -> Result<Option<Vec<Message>>, StorageError> {
         validate_id(thread_id, "thread id")?;
-        let path = self.messages_dir().join(format!("{thread_id}.json"));
-        read_json(&path).await
+        read_json::<Vec<Message>>(&self.messages_dir().join(format!("{thread_id}.json")))
+            .await
+            .map(|messages| messages.map(strip_unpaired_tool_calls_from_owned_view))
     }
-
     async fn list_message_records(
         &self,
         thread_id: &str,

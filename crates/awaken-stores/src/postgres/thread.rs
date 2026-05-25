@@ -1,5 +1,5 @@
 use async_trait::async_trait;
-use awaken_contract::contract::message::Message;
+use awaken_contract::contract::message::{Message, strip_unpaired_tool_calls_from_view};
 use awaken_contract::contract::storage::{
     ChildThreadDeleteStrategy, MessagePage, MessageQuery, StorageError, ThreadPage,
     ThreadParentFilter, ThreadQuery, ThreadStore, paginate_message_records,
@@ -425,8 +425,9 @@ impl ThreadStore for PostgresStore {
 
         match row {
             Some((data,)) => {
-                let messages: Vec<Message> = serde_json::from_value(data)
+                let mut messages: Vec<Message> = serde_json::from_value(data)
                     .map_err(|e| StorageError::Serialization(e.to_string()))?;
+                strip_unpaired_tool_calls_from_view(&mut messages);
                 Ok(Some(messages))
             }
             None => Ok(None),
