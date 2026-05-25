@@ -1,6 +1,7 @@
 //! Resolution pipeline: `agent_id` + `RegistrySet` -> `ResolvedAgent` /
 //! `ExecutionPlan`.
 
+mod capability_runtime;
 mod catalog;
 mod filter;
 mod manifest;
@@ -28,6 +29,7 @@ use awaken_contract::contract::versioned_registry::{PinnedRegistryEntry, PinnedR
 use awaken_contract::registry_spec::{AgentSpec, ModelSpec};
 use awaken_contract::{REGISTRY_KIND_AGENT, REGISTRY_KIND_MODEL_POOL};
 
+use crate::registry::model_capabilities::ModelCapabilitySources;
 use crate::registry::snapshot::RegistryHandle;
 use crate::registry::traits::RegistrySet;
 use manifest::{collect_model_manifest_entries, insert_manifest_entry};
@@ -76,10 +78,11 @@ pub(crate) fn resolve_registry_set(
             spec.id.clone(),
         ));
     }
-    let (executor, upstream_model, model) = resolve_model_and_executor(registries, &spec)?;
+    let (executor, upstream_model, model, capability_sources) =
+        resolve_model_and_executor(registries, &spec)?;
 
     // Stage 2: Plugin pipeline
-    let plugins = build_plugin_chain(registries, &spec, &model)?;
+    let plugins = build_plugin_chain(registries, &spec, &model, &capability_sources)?;
     let env = ExecutionEnv::from_plugins(&plugins, &spec.active_hook_filter)?;
 
     // Stage 3: Tool pipeline
@@ -156,8 +159,9 @@ fn resolve_local_spec(
     registries: &RegistrySet,
     spec: AgentSpec,
 ) -> Result<ResolvedAgent, ResolveError> {
-    let (executor, upstream_model, model) = resolve_model_and_executor(registries, &spec)?;
-    let plugins = build_plugin_chain(registries, &spec, &model)?;
+    let (executor, upstream_model, model, capability_sources) =
+        resolve_model_and_executor(registries, &spec)?;
+    let plugins = build_plugin_chain(registries, &spec, &model, &capability_sources)?;
     let env = ExecutionEnv::from_plugins(&plugins, &spec.active_hook_filter)?;
     let tools = build_tool_set(registries, &spec, &env)?;
     let spec_arc = Arc::new(spec);
@@ -184,7 +188,15 @@ fn resolve_local_spec(
 fn resolve_model_and_executor(
     registries: &RegistrySet,
     spec: &AgentSpec,
-) -> Result<(Arc<dyn LlmExecutor>, String, ModelSpec), ResolveError> {
+) -> Result<
+    (
+        Arc<dyn LlmExecutor>,
+        String,
+        ModelSpec,
+        ModelCapabilitySources,
+    ),
+    ResolveError,
+> {
     let policy = spec
         .config::<crate::engine::RetryConfigKey>()
         .map_err(|error| match error {
@@ -216,11 +228,13 @@ fn resolve_model_and_executor(
             let discovered = registries
                 .providers
                 .provider_model_capability(&model.provider_id, &model.upstream_model);
-            let model = crate::registry::model_capabilities::backfill_model_capabilities(
+            let resolved = crate::registry::model_capabilities::resolve_model_capabilities(
                 model,
                 provider_source.as_deref(),
                 discovered.as_ref(),
             );
+            let model = resolved.model;
+            let capability_sources = resolved.sources;
 
             let executor = registries
                 .providers
@@ -233,10 +247,14 @@ fn resolve_model_and_executor(
             } else {
                 executor
             };
-            let executor = crate::engine::ModalityGuardExecutor::wrap(executor, &model);
+            let executor = crate::engine::ModalityGuardExecutor::wrap_trusted(
+                executor,
+                &model,
+                capability_sources.modalities,
+            );
 
             let upstream_model = model.upstream_model.clone();
-            return Ok((executor, upstream_model, model));
+            return Ok((executor, upstream_model, model, capability_sources));
         }
         (None, None) => {}
     }
@@ -257,6 +275,7 @@ fn build_plugin_chain(
     registries: &RegistrySet,
     spec: &AgentSpec,
     model: &ModelSpec,
+    capability_sources: &ModelCapabilitySources,
 ) -> Result<Vec<Arc<dyn Plugin>>, ResolveError> {
     // User-declared plugins
     let plugins = resolve_plugins(registries, spec)?;
@@ -264,10 +283,10 @@ fn build_plugin_chain(
     // Runtime-required default plugins
     let mut plugins = inject_default_plugins(plugins, spec.max_rounds);
 
-    if let Some(cutoff) = model.knowledge_cutoff.as_ref() {
-        plugins.push(Arc::new(crate::context::KnowledgeCutoffPlugin::new(
-            cutoff.clone(),
-        )));
+    if let Some(cutoff) =
+        capability_runtime::knowledge_cutoff_context(spec, model, capability_sources)?
+    {
+        plugins.push(Arc::new(crate::context::KnowledgeCutoffPlugin::new(cutoff)));
     }
 
     // Conditional plugins (only when context_policy is set)

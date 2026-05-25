@@ -21,7 +21,8 @@ pub use plugin::{
     CompactionBoundary, CompactionConfig, CompactionConfigKey, CompactionFailure,
     CompactionInFlight, CompactionPlugin, CompactionSkipped, CompactionState, CompactionStateKey,
     ContextTransformConfig, ContextTransformConfigKey, ContextTransformPlugin,
-    KNOWLEDGE_CUTOFF_PLUGIN_ID, KnowledgeCutoffPlugin,
+    KNOWLEDGE_CUTOFF_PLUGIN_ID, KnowledgeCutoffConfig, KnowledgeCutoffConfigKey,
+    KnowledgeCutoffPlugin,
 };
 pub use summarizer::{
     ContextSummarizer, DefaultSummarizer, MIN_COMPACTION_GAIN_TOKENS, SummarizationError,

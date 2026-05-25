@@ -13,4 +13,7 @@ pub use context_transform::{
     CONTEXT_TRANSFORM_PLUGIN_ID, ContextTransformConfig, ContextTransformConfigKey,
     ContextTransformPlugin,
 };
-pub use knowledge_cutoff::{KNOWLEDGE_CUTOFF_PLUGIN_ID, KnowledgeCutoffPlugin};
+pub use knowledge_cutoff::{
+    KNOWLEDGE_CUTOFF_PLUGIN_ID, KnowledgeCutoffConfig, KnowledgeCutoffConfigKey,
+    KnowledgeCutoffPlugin,
+};

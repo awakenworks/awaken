@@ -84,8 +84,11 @@ pub trait ProviderRegistry: Send + Sync {
 
     /// Provider-published model capabilities discovered from live metadata.
     ///
-    /// The resolver uses these as an overlay before built-in defaults while
-    /// still preserving explicit fields in the stored [`ModelSpec`].
+    /// The resolver treats this as a trusted provider-discovery overlay before
+    /// built-in defaults while still preserving explicit fields in the stored
+    /// [`ModelSpec`]. Implementations should expose complete replacement
+    /// snapshots for a provider definition rather than silently merging partial
+    /// discovery responses.
     fn provider_model_capability(
         &self,
         _provider_id: &str,

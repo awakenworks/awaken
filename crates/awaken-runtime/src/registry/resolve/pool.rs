@@ -12,6 +12,9 @@ use crate::engine::circuit_breaker::{CircuitBreaker, CircuitBreakerConfig};
 use crate::engine::pool_executor::{PoolExecutor, PoolMemberExecutor};
 use crate::engine::pool_router::{PoolRouter, RouterMember};
 use crate::engine::retry::{LlmRetryPolicy, RetryingExecutor};
+use crate::registry::model_capabilities::{
+    CapabilitySource, ModelCapabilitySources, resolve_model_capabilities,
+};
 use crate::registry::traits::RegistrySet;
 
 use super::error::ResolveError;
@@ -32,10 +35,19 @@ pub fn build_pool_executor(
     pool: &ModelPoolSpec,
     home_key: &str,
     policy: &LlmRetryPolicy,
-) -> Result<(Arc<dyn LlmExecutor>, String, ModelSpec), ResolveError> {
+) -> Result<
+    (
+        Arc<dyn LlmExecutor>,
+        String,
+        ModelSpec,
+        ModelCapabilitySources,
+    ),
+    ResolveError,
+> {
     let mut router_members = Vec::with_capacity(pool.members.len());
     let mut member_execs = Vec::with_capacity(pool.members.len());
     let mut member_specs = Vec::with_capacity(pool.members.len());
+    let mut member_capability_sources = Vec::with_capacity(pool.members.len());
     let mut provider_signatures = Vec::with_capacity(pool.members.len());
 
     for member in &pool.members {
@@ -49,11 +61,10 @@ pub fn build_pool_executor(
         let discovered = registries
             .providers
             .provider_model_capability(&model.provider_id, &model.upstream_model);
-        let model = crate::registry::model_capabilities::backfill_model_capabilities(
-            model,
-            provider_source.as_deref(),
-            discovered.as_ref(),
-        );
+        let resolved =
+            resolve_model_capabilities(model, provider_source.as_deref(), discovered.as_ref());
+        let model = resolved.model;
+        let capability_sources = resolved.sources;
         let provider_signature = registries
             .providers
             .provider_signature(&model.provider_id)
@@ -69,7 +80,11 @@ pub fn build_pool_executor(
         } else {
             provider_executor
         };
-        let executor = crate::engine::ModalityGuardExecutor::wrap(executor, &model);
+        let executor = crate::engine::ModalityGuardExecutor::wrap_trusted(
+            executor,
+            &model,
+            capability_sources.modalities,
+        );
 
         router_members.push(RouterMember {
             model_id: member.model_id.clone(),
@@ -82,10 +97,15 @@ pub fn build_pool_executor(
             executor,
         });
         member_specs.push(model);
+        member_capability_sources.push(capability_sources);
         provider_signatures.push(provider_signature);
     }
 
-    let reconciled = reconcile_pool_capabilities(&pool.id, &member_specs);
+    let (reconciled, pool_capability_sources) = reconcile_pool_capabilities_with_sources(
+        &pool.id,
+        &member_specs,
+        &member_capability_sources,
+    );
     let router = PoolRouter::new(router_members, pool.routing.clone(), pool.switch.clone());
     let breaker = pool_breaker(&pool_breaker_key(pool, &member_specs, &provider_signatures));
     let upstream_stand_in = reconciled.upstream_model.clone();
@@ -96,7 +116,12 @@ pub fn build_pool_executor(
         router,
         breaker,
     ));
-    Ok((executor, upstream_stand_in, reconciled))
+    Ok((
+        executor,
+        upstream_stand_in,
+        reconciled,
+        pool_capability_sources,
+    ))
 }
 
 /// Upper bound on distinct breaker keys retained at once. Each key embeds the
@@ -205,9 +230,20 @@ fn fnv1a(bytes: &[u8]) -> u64 {
 ///   member declares that bound. If any member is unknown, the pool bound is
 ///   unknown too, because routing may select that member.
 ///
-/// Modalities, knowledge cutoff, and pricing are left unset: they have no
-/// runtime effect today and cannot be soundly attributed to a single member.
-pub fn reconcile_pool_capabilities(pool_id: &str, members: &[ModelSpec]) -> ModelSpec {
+/// Modalities and pricing are left unset: they cannot be soundly attributed to
+/// a single member. Knowledge cutoff is exposed only when every member has the
+/// same trusted cutoff, so the pool can install one deterministic context
+/// plugin without depending on the eventual routed member.
+#[cfg(test)]
+fn reconcile_pool_capabilities(pool_id: &str, members: &[ModelSpec]) -> ModelSpec {
+    reconcile_pool_capabilities_with_sources(pool_id, members, &[]).0
+}
+
+fn reconcile_pool_capabilities_with_sources(
+    pool_id: &str,
+    members: &[ModelSpec],
+    sources: &[ModelCapabilitySources],
+) -> (ModelSpec, ModelCapabilitySources) {
     let min_declared = |f: fn(&ModelSpec) -> Option<u32>| {
         members
             .iter()
@@ -215,11 +251,41 @@ pub fn reconcile_pool_capabilities(pool_id: &str, members: &[ModelSpec]) -> Mode
             .collect::<Option<Vec<_>>>()
             .and_then(|values| values.into_iter().min())
     };
-    ModelSpec {
+
+    let mut capability_sources = ModelCapabilitySources::default();
+    let trusted_cutoff = common_trusted_knowledge_cutoff(members, sources);
+    if trusted_cutoff.is_some() {
+        capability_sources.knowledge_cutoff = sources.first().and_then(|source| {
+            source
+                .knowledge_cutoff
+                .filter(|source| source.is_runtime_trusted())
+        });
+    }
+
+    let mut spec = ModelSpec {
         context_window: min_declared(|m| m.context_window),
         max_output_tokens: min_declared(|m| m.max_output_tokens),
         ..ModelSpec::new(pool_id, pool_id, pool_id)
+    };
+    spec.knowledge_cutoff = trusted_cutoff;
+    (spec, capability_sources)
+}
+
+fn common_trusted_knowledge_cutoff(
+    members: &[ModelSpec],
+    sources: &[ModelCapabilitySources],
+) -> Option<String> {
+    if members.is_empty() || members.len() != sources.len() {
+        return None;
     }
+    let first = members.first()?.knowledge_cutoff.as_ref()?;
+    let all_same_trusted = members.iter().zip(sources).all(|(member, source)| {
+        member.knowledge_cutoff.as_ref() == Some(first)
+            && source
+                .knowledge_cutoff
+                .is_some_and(CapabilitySource::is_runtime_trusted)
+    });
+    all_same_trusted.then(|| first.clone())
 }
 
 #[cfg(test)]
@@ -231,6 +297,13 @@ mod tests {
             context_window: ctx,
             max_output_tokens: out,
             ..ModelSpec::new(id, "provider", format!("{id}-upstream"))
+        }
+    }
+
+    fn trusted_cutoff_source() -> ModelCapabilitySources {
+        ModelCapabilitySources {
+            knowledge_cutoff: Some(CapabilitySource::ExplicitSpec),
+            ..ModelCapabilitySources::default()
         }
     }
 
@@ -277,6 +350,50 @@ mod tests {
         assert!(spec.modalities.input.is_empty() && spec.modalities.output.is_empty());
         assert_eq!(spec.knowledge_cutoff, None);
         assert_eq!(spec.input_token_price_per_million_usd, None);
+    }
+
+    #[test]
+    fn common_trusted_member_cutoff_is_reconciled_for_pool_runtime() {
+        let mut a = model_with("a", Some(1000), Some(500));
+        a.knowledge_cutoff = Some("2025-01".into());
+        let mut b = model_with("b", Some(1000), Some(500));
+        b.knowledge_cutoff = Some("2025-01".into());
+        let (spec, sources) = reconcile_pool_capabilities_with_sources(
+            "pool",
+            &[a, b],
+            &[trusted_cutoff_source(), trusted_cutoff_source()],
+        );
+
+        assert_eq!(spec.knowledge_cutoff.as_deref(), Some("2025-01"));
+        assert_eq!(
+            sources.knowledge_cutoff,
+            Some(CapabilitySource::ExplicitSpec)
+        );
+    }
+
+    #[test]
+    fn static_or_divergent_member_cutoffs_are_not_reconciled() {
+        let mut a = model_with("a", Some(1000), Some(500));
+        a.knowledge_cutoff = Some("2025-01".into());
+        let mut b = model_with("b", Some(1000), Some(500));
+        b.knowledge_cutoff = Some("2025-02".into());
+
+        let (divergent, divergent_sources) = reconcile_pool_capabilities_with_sources(
+            "pool",
+            &[a.clone(), b],
+            &[trusted_cutoff_source(), trusted_cutoff_source()],
+        );
+        assert_eq!(divergent.knowledge_cutoff, None);
+        assert_eq!(divergent_sources.knowledge_cutoff, None);
+
+        let static_source = ModelCapabilitySources {
+            knowledge_cutoff: Some(CapabilitySource::StaticHeuristic),
+            ..ModelCapabilitySources::default()
+        };
+        let (static_only, static_sources) =
+            reconcile_pool_capabilities_with_sources("pool", &[a], &[static_source]);
+        assert_eq!(static_only.knowledge_cutoff, None);
+        assert_eq!(static_sources.knowledge_cutoff, None);
     }
 
     #[test]

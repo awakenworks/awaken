@@ -170,6 +170,48 @@ agents, and `provider_id` plus `upstream_model` on model specs.
 
 The candidate registry set is validated before it replaces the active runtime snapshot. If validation fails, the config write is rolled back.
 
+### Model capability sources
+
+Capability fields follow this priority during resolution:
+
+1. Explicit fields stored in `ModelSpec`.
+2. Provider model metadata discovered from `/models` during registry publish.
+3. Built-in static heuristics for common model families.
+
+Static heuristics are conservative metadata only. Runtime input-modality
+enforcement and automatic knowledge-cutoff context are enabled only when the
+field came from explicit `ModelSpec` config or provider discovery.
+
+When `ModelSpec.modalities.input` is explicit or provider-discovered and
+non-empty, unsupported image/audio/video/pdf request blocks are rejected before
+the provider call. The guard applies to any media the model must ingest. Tool
+*calls* and reasoning/thinking blocks are protocol structures, not media the
+model ingests, so they are not modality-gated. Media (image/audio/pdf/video)
+embedded inside a `ToolResult.content` *is* validated against `modalities.input`,
+because the model still has to read that media: the guard recurses into tool
+results and checks each contained block. Only documents identifiable as PDFs are
+checked against `pdf`. When
+`knowledge_cutoff` is explicit or provider-discovered, the resolver installs
+`knowledge_cutoff_context`, which injects one system context message per
+inference boundary. Disable it per agent with:
+
+```json
+{
+  "sections": {
+    "knowledge_cutoff_context": { "enabled": false }
+  }
+}
+```
+
+Provider discovery is a full snapshot for a provider definition. If a later
+publish cannot refresh `/models`, the last successful snapshot for the same
+provider signature is kept; changing the provider endpoint/options invalidates
+that cached snapshot.
+
+Model pool members use the same capability resolution and modality guard as
+single models. Pool-level knowledge-cutoff context is installed only when every
+member exposes the same trusted cutoff.
+
 ## Migration from legacy model fields
 
 This version intentionally rejects legacy provider/model field names instead of

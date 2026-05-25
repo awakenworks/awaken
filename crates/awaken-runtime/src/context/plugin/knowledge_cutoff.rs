@@ -3,14 +3,34 @@ use awaken_contract::StateError;
 use awaken_contract::contract::context_message::ContextMessage;
 use awaken_contract::model::Phase;
 use awaken_contract::state::StateCommand;
+use serde::{Deserialize, Serialize};
 
 use crate::agent::state::AddContextMessage;
 use crate::hooks::{PhaseContext, PhaseHook};
-use crate::plugins::{Plugin, PluginDescriptor, PluginRegistrar};
+use crate::plugins::{ConfigSchema, Plugin, PluginDescriptor, PluginRegistrar};
 
 pub const KNOWLEDGE_CUTOFF_PLUGIN_ID: &str = "knowledge_cutoff_context";
 
 const KNOWLEDGE_CUTOFF_CONTEXT_KEY: &str = "knowledge_cutoff.context";
+
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema, PartialEq, Eq)]
+#[serde(default)]
+pub struct KnowledgeCutoffConfig {
+    pub enabled: bool,
+}
+
+impl Default for KnowledgeCutoffConfig {
+    fn default() -> Self {
+        Self { enabled: true }
+    }
+}
+
+pub struct KnowledgeCutoffConfigKey;
+
+impl awaken_contract::registry_spec::PluginConfigKey for KnowledgeCutoffConfigKey {
+    const KEY: &'static str = KNOWLEDGE_CUTOFF_PLUGIN_ID;
+    type Config = KnowledgeCutoffConfig;
+}
 
 pub struct KnowledgeCutoffPlugin {
     cutoff: String,
@@ -51,6 +71,10 @@ impl Plugin for KnowledgeCutoffPlugin {
             },
         )?;
         Ok(())
+    }
+
+    fn config_schemas(&self) -> Vec<ConfigSchema> {
+        vec![ConfigSchema::for_key::<KnowledgeCutoffConfigKey>()]
     }
 }
 
@@ -175,5 +199,48 @@ mod tests {
             text,
             "Today is 2026-05-26. The model's training cutoff is 2025-01."
         );
+    }
+
+    #[tokio::test]
+    async fn knowledge_cutoff_plugin_is_idempotent_across_before_inference_runs() {
+        let store = StateStore::new();
+        store
+            .install_plugin(LoopStatePlugin)
+            .expect("install loop state");
+
+        let mut batch = MutationBatch::new();
+        batch.update::<RunLifecycle>(RunLifecycleUpdate::Start {
+            run_id: "run".into(),
+            updated_at: 0,
+        });
+        store.commit(batch).expect("init lifecycle");
+
+        let runtime = PhaseRuntime::new(store).expect("runtime");
+        let plugins: Vec<Arc<dyn Plugin>> = vec![
+            Arc::new(LoopActionHandlersPlugin),
+            Arc::new(KnowledgeCutoffPlugin::with_today("2025-01", "2026-05-26")),
+        ];
+        let env = ExecutionEnv::from_plugins(&plugins, &Default::default()).expect("env");
+
+        for _ in 0..2 {
+            runtime
+                .run_phase_with_context(
+                    &env,
+                    PhaseContext::new(Phase::BeforeInference, runtime.store().snapshot()),
+                )
+                .await
+                .expect("phase");
+        }
+
+        let messages = runtime
+            .store()
+            .read::<ContextMessageStore>()
+            .expect("context store")
+            .sorted_messages()
+            .into_iter()
+            .filter(|message| message.key == KNOWLEDGE_CUTOFF_CONTEXT_KEY)
+            .count();
+
+        assert_eq!(messages, 1);
     }
 }

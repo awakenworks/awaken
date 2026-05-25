@@ -66,6 +66,14 @@ impl Plugin for ContextTransformPlugin {
     }
 
     fn register(&self, registrar: &mut PluginRegistrar) -> Result<(), awaken_contract::StateError> {
+        self.config
+            .artifact_compaction
+            .validate()
+            .map_err(|message| awaken_contract::StateError::KeyDecode {
+                key: <ContextTransformConfigKey as awaken_contract::registry_spec::PluginConfigKey>::KEY
+                    .into(),
+                message,
+            })?;
         registrar.register_request_transform(
             CONTEXT_TRANSFORM_PLUGIN_ID,
             crate::context::ContextTransform::with_artifact_compaction(
@@ -150,6 +158,28 @@ mod tests {
         );
         assert!(output.messages[1].text().starts_with("abcdef"));
         assert!(output.messages[1].text().contains("[Content compacted:"));
+    }
+
+    #[test]
+    fn context_transform_plugin_rejects_invalid_artifact_compaction_config() {
+        let policy = awaken_contract::contract::inference::ContextWindowPolicy::default();
+        let plugin = ContextTransformPlugin::with_config(
+            policy,
+            ContextTransformConfig {
+                artifact_compaction: ArtifactCompactionConfig {
+                    threshold_tokens: 0,
+                    ..Default::default()
+                },
+            },
+        );
+        let mut registrar = PluginRegistrar::new();
+
+        let err = plugin
+            .register(&mut registrar)
+            .expect_err("plugin registration should reject invalid runtime config");
+
+        assert!(err.to_string().contains("threshold_tokens"));
+        assert!(registrar.request_transforms.is_empty());
     }
 
     #[test]
