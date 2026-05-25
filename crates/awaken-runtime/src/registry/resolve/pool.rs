@@ -43,6 +43,13 @@ pub fn build_pool_executor(
             .models
             .get_model(&member.model_id)
             .ok_or_else(|| ResolveError::ModelNotFound(member.model_id.clone()))?;
+        let provider_source = registries
+            .providers
+            .provider_capability_source(&model.provider_id);
+        let model = crate::registry::model_capabilities::backfill_model_capabilities(
+            model,
+            provider_source.as_deref(),
+        );
         let provider_signature = registries
             .providers
             .provider_signature(&model.provider_id)

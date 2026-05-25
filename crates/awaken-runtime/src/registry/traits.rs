@@ -71,6 +71,15 @@ pub trait ProviderRegistry: Send + Sync {
     fn provider_signature(&self, _id: &str) -> Option<String> {
         None
     }
+
+    /// Provider family used for built-in model capability defaults.
+    ///
+    /// This is commonly the serializable `ProviderSpec.adapter` value. It is
+    /// separate from provider id so deployments can name providers
+    /// `prod-openai`, `openai-eu`, etc. and still receive OpenAI defaults.
+    fn provider_capability_source(&self, _id: &str) -> Option<String> {
+        None
+    }
 }
 
 // ---------------------------------------------------------------------------

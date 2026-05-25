@@ -37,10 +37,11 @@ impl ConfigRuntimeManager {
                 (provider.clone(), Arc::clone(&executor)),
             );
             provider_registry
-                .register_provider_with_signature(
+                .register_provider_with_signature_and_capability_source(
                     provider.id.clone(),
                     executor,
                     provider_definition_signature(provider),
+                    provider.adapter.clone(),
                 )
                 .map_err(|error| ConfigRuntimeError::InvalidConfig(error.to_string()))?;
         }

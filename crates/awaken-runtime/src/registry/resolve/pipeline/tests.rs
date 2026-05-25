@@ -229,6 +229,44 @@ fn build_registries(
     }
 }
 
+fn build_registries_with_provider_source(
+    model_spec: ModelSpec,
+    provider_id: &str,
+    provider_source: &str,
+    spec: AgentSpec,
+) -> RegistrySet {
+    let mut model_reg = MapModelRegistry::new();
+    model_reg
+        .register_model(model_spec)
+        .expect("duplicate model in test");
+
+    let mut provider_reg = MapProviderRegistry::new();
+    provider_reg
+        .register_provider_with_signature_and_capability_source(
+            provider_id,
+            Arc::new(MockExecutor),
+            "mock",
+            provider_source,
+        )
+        .expect("duplicate provider in test");
+
+    let mut agent_reg = MapAgentSpecRegistry::new();
+    agent_reg
+        .register_spec(spec)
+        .expect("duplicate agent in test");
+
+    RegistrySet {
+        agents: Arc::new(agent_reg),
+        tools: Arc::new(MapToolRegistry::new()),
+        models: Arc::new(model_reg),
+        providers: Arc::new(provider_reg),
+        plugins: Arc::new(MapPluginSource::new()),
+        #[cfg(feature = "a2a")]
+        backends: Arc::new(MapBackendRegistry::with_default_remote_backends())
+            as Arc<dyn BackendRegistry>,
+    }
+}
+
 fn make_spec(id: &str) -> AgentSpec {
     AgentSpec {
         id: id.into(),
@@ -1803,4 +1841,118 @@ fn build_plugin_chain_clamps_context_policy_to_model_capabilities() {
         .expect("plugin must be ContextTransformPlugin");
     assert_eq!(transform.policy().max_context_tokens, 32_000);
     assert_eq!(transform.policy().max_output_tokens, 4_096);
+}
+
+#[test]
+fn build_plugin_chain_backfills_common_model_capabilities() {
+    use awaken_contract::contract::inference::ContextWindowPolicy;
+
+    let spec = AgentSpec {
+        context_policy: Some(ContextWindowPolicy {
+            max_context_tokens: 300_000,
+            max_output_tokens: 50_000,
+            ..Default::default()
+        }),
+        ..make_spec("a")
+    };
+
+    let regs = build_registries(
+        vec![],
+        "test-model",
+        ModelSpec::new("test-model", "openai", "gpt-4o"),
+        "openai",
+        Arc::new(MockExecutor),
+        vec![],
+        spec,
+    );
+
+    let run = resolve(&regs, "a").unwrap();
+    let plugin_arc = run
+        .env
+        .plugins
+        .iter()
+        .find(|p| p.descriptor().name == crate::context::CONTEXT_TRANSFORM_PLUGIN_ID)
+        .cloned()
+        .expect("ContextTransformPlugin must be installed when context_policy is set");
+    let transform = plugin_arc
+        .as_any()
+        .downcast_ref::<crate::context::ContextTransformPlugin>()
+        .expect("plugin must be ContextTransformPlugin");
+    assert_eq!(transform.policy().max_context_tokens, 128_000);
+    assert_eq!(transform.policy().max_output_tokens, 16_384);
+}
+
+#[test]
+fn build_plugin_chain_uses_provider_capability_source_alias() {
+    use awaken_contract::contract::inference::ContextWindowPolicy;
+
+    let spec = AgentSpec {
+        context_policy: Some(ContextWindowPolicy {
+            max_context_tokens: 300_000,
+            max_output_tokens: 50_000,
+            ..Default::default()
+        }),
+        ..make_spec("a")
+    };
+    let regs = build_registries_with_provider_source(
+        ModelSpec::new("test-model", "prod-openai", "gpt-4o-mini"),
+        "prod-openai",
+        "openai",
+        spec,
+    );
+
+    let run = resolve(&regs, "a").unwrap();
+    let plugin_arc = run
+        .env
+        .plugins
+        .iter()
+        .find(|p| p.descriptor().name == crate::context::CONTEXT_TRANSFORM_PLUGIN_ID)
+        .cloned()
+        .expect("ContextTransformPlugin must be installed when context_policy is set");
+    let transform = plugin_arc
+        .as_any()
+        .downcast_ref::<crate::context::ContextTransformPlugin>()
+        .expect("plugin must be ContextTransformPlugin");
+    assert_eq!(transform.policy().max_context_tokens, 128_000);
+    assert_eq!(transform.policy().max_output_tokens, 16_384);
+}
+
+#[test]
+fn pool_reconciliation_uses_backfilled_member_capabilities() {
+    use awaken_contract::contract::inference::ContextWindowPolicy;
+
+    let spec = AgentSpec {
+        model_id: "my-pool".into(),
+        context_policy: Some(ContextWindowPolicy {
+            max_context_tokens: 2_000_000,
+            max_output_tokens: 100_000,
+            ..Default::default()
+        }),
+        ..make_spec("agent-1")
+    };
+    let regs = build_pool_registries(
+        vec![
+            ModelSpec::new("m0", "openai", "gpt-4o"),
+            ModelSpec::new("m1", "openai", "gpt-4.1"),
+        ],
+        ModelPoolSpec::new("my-pool", ["m0", "m1"]),
+        "openai",
+        Arc::new(MockExecutor),
+        spec,
+    );
+
+    let run = resolve(&regs, "agent-1").expect("pool model_id resolves");
+    let plugin_arc = run
+        .env
+        .plugins
+        .iter()
+        .find(|p| p.descriptor().name == crate::context::CONTEXT_TRANSFORM_PLUGIN_ID)
+        .cloned()
+        .expect("ContextTransformPlugin must be installed when context_policy is set");
+    let transform = plugin_arc
+        .as_any()
+        .downcast_ref::<crate::context::ContextTransformPlugin>()
+        .expect("plugin must be ContextTransformPlugin");
+    assert_eq!(transform.policy().max_context_tokens, 128_000);
+    assert_eq!(transform.policy().max_output_tokens, 16_384);
 }

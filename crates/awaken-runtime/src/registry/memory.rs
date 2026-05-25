@@ -99,6 +99,7 @@ pub type MapBackendRegistry = MapRegistry<Arc<dyn ExecutionBackendFactory>>;
 pub struct MapProviderRegistry {
     providers: MapRegistry<Arc<dyn LlmExecutor>>,
     signatures: HashMap<String, String>,
+    capability_sources: HashMap<String, String>,
 }
 
 impl Default for MapProviderRegistry {
@@ -112,6 +113,7 @@ impl MapProviderRegistry {
         Self {
             providers: MapRegistry::new(),
             signatures: HashMap::new(),
+            capability_sources: HashMap::new(),
         }
     }
 
@@ -239,6 +241,19 @@ impl MapProviderRegistry {
         Ok(())
     }
 
+    pub fn register_provider_with_signature_and_capability_source(
+        &mut self,
+        id: impl Into<String>,
+        executor: Arc<dyn LlmExecutor>,
+        signature: impl Into<String>,
+        capability_source: impl Into<String>,
+    ) -> Result<(), BuildError> {
+        let id = id.into();
+        self.register_provider_with_signature(id.clone(), executor, signature)?;
+        self.capability_sources.insert(id, capability_source.into());
+        Ok(())
+    }
+
     pub fn replace_provider(
         &mut self,
         id: impl Into<String>,
@@ -247,11 +262,13 @@ impl MapProviderRegistry {
         let id = id.into();
         self.signatures
             .insert(id.clone(), executor.name().to_string());
+        self.capability_sources.remove(&id);
         self.providers.replace(id, executor)
     }
 
     pub fn remove_provider(&mut self, id: &str) -> Option<Arc<dyn LlmExecutor>> {
         self.signatures.remove(id);
+        self.capability_sources.remove(id);
         self.providers.remove(id)
     }
 }
@@ -342,6 +359,10 @@ impl ProviderRegistry for MapProviderRegistry {
 
     fn provider_signature(&self, id: &str) -> Option<String> {
         self.signatures.get(id).cloned()
+    }
+
+    fn provider_capability_source(&self, id: &str) -> Option<String> {
+        self.capability_sources.get(id).cloned()
     }
 }
 

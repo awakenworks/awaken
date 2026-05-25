@@ -8,6 +8,7 @@ pub mod config;
 pub mod diagnostics;
 pub mod lifecycle;
 pub mod memory;
+pub(crate) mod model_capabilities;
 pub mod pinned;
 pub mod resolve;
 pub mod resolver;

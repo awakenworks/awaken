@@ -210,6 +210,14 @@ fn resolve_model_and_executor(
             return super::pool::build_pool_executor(registries, &pool, &spec.id, &policy);
         }
         (None, Some(model)) => {
+            let provider_source = registries
+                .providers
+                .provider_capability_source(&model.provider_id);
+            let model = crate::registry::model_capabilities::backfill_model_capabilities(
+                model,
+                provider_source.as_deref(),
+            );
+
             let executor = registries
                 .providers
                 .get_provider(&model.provider_id)
