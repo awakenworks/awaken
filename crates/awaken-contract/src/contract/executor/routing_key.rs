@@ -10,9 +10,13 @@ pub struct InferenceRoutingKey {
     pub run_id: Option<String>,
     /// Fallback key for callers that do not have runtime identity.
     pub fallback: Option<String>,
-    /// Stable id for retries belonging to one logical inference. Pool
-    /// executors use this to keep streaming recovery from retrying a member
-    /// that already failed within the same assistant response.
+    /// Stable id for retries belonging to one logical inference.
+    ///
+    /// Pool executors use this to carry per-response stream attempt history
+    /// across recovery opens. Transient stream failures stay on the sticky
+    /// member until breaker/switch policy marks it unavailable; once policy
+    /// moves the response to another member, the attempt history prevents the
+    /// same logical response from bouncing back to already-tried members.
     pub logical_inference_id: Option<String>,
 }
 

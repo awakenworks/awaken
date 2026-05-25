@@ -4,6 +4,8 @@ mod tests {
     use awaken_contract::registry_spec::{
         HomeStrategy, PoolRoutingPolicy, PoolSwitchPolicy, StickyScope,
     };
+    use std::sync::Arc;
+    use std::thread;
 
     #[tokio::test]
     async fn routes_home_and_succeeds() {
@@ -14,7 +16,7 @@ mod tests {
             PoolSwitchPolicy::default(),
             breaker(),
         );
-        assert!(pool.execute(request()).await.is_ok());
+        assert!(pool.execute(request_for_thread("agent-x")).await.is_ok());
         assert_eq!(stubs[home].call_count(), 1);
         let others: u32 = stubs
             .iter()
@@ -190,7 +192,7 @@ mod tests {
             breaker(),
         );
         assert!(
-            pool.execute(request()).await.is_ok(),
+            pool.execute(request_for_thread("agent-x")).await.is_ok(),
             "should switch off the quota-limited home member"
         );
         let others: u32 = stubs
@@ -241,6 +243,46 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn on_permanent_false_does_not_quarantine_member() {
+        let thread_id = (0..200)
+            .map(|i| format!("permanent-no-quarantine-{i}"))
+            .find(|key| home_of(key, 2) == 0)
+            .expect("thread home on m0");
+        let switch = PoolSwitchPolicy {
+            on_permanent: false,
+            ..PoolSwitchPolicy::default()
+        };
+        let (pool, stubs, home) = pool_home_fails(
+            &thread_id,
+            2,
+            Behavior::AlwaysErr(InferenceExecutionError::Unauthorized("401".into())),
+            switch,
+            breaker(),
+        );
+
+        let err = pool
+            .execute(request_for_thread(&thread_id))
+            .await
+            .expect_err("permanent error propagates when switching disabled");
+        assert!(matches!(err, InferenceExecutionError::Unauthorized(_)));
+
+        let second_thread = (0..200)
+            .map(|i| format!("permanent-no-quarantine-new-{i}"))
+            .find(|key| home_of(key, 2) == home)
+            .expect("new thread also homes on same member");
+        let err = pool
+            .execute(request_for_thread(&second_thread))
+            .await
+            .expect_err("same member remains eligible when quarantine disabled");
+        assert!(matches!(err, InferenceExecutionError::Unauthorized(_)));
+        assert_eq!(
+            stubs[home].call_count(),
+            2,
+            "on_permanent=false must not quarantine or silently bypass the member"
+        );
+    }
+
+    #[tokio::test]
     async fn does_not_switch_on_transient_error() {
         let cb = breaker();
         let (pool, stubs, home) = pool_home_fails(
@@ -251,7 +293,7 @@ mod tests {
             cb.clone(),
         );
         let err = pool
-            .execute(request())
+            .execute(request_for_thread("agent-x"))
             .await
             .expect_err("transient propagates");
         assert!(matches!(err, InferenceExecutionError::Provider(_)));
@@ -275,7 +317,7 @@ mod tests {
             breaker(),
         );
         let err = pool
-            .execute(request())
+            .execute(request_for_thread("agent-x"))
             .await
             .expect_err("request-level error propagates");
         assert!(matches!(err, InferenceExecutionError::ContextOverflow(_)));
@@ -299,9 +341,9 @@ mod tests {
             breaker_threshold(1),
         );
         // First call: home fails transiently and opens its breaker.
-        assert!(pool.execute(request()).await.is_err());
+        assert!(pool.execute(request_for_thread("agent-x")).await.is_err());
         // Second call: home is unhealthy, so the session fails over to the peer.
-        assert!(pool.execute(request()).await.is_ok());
+        assert!(pool.execute(request_for_thread("agent-x")).await.is_ok());
         let others: u32 = stubs
             .iter()
             .enumerate()
@@ -324,7 +366,7 @@ mod tests {
         );
 
         let err = pool
-            .execute(request())
+            .execute(request_for_thread("agent-x"))
             .await
             .expect_err("all open members should short-circuit");
 
@@ -352,8 +394,192 @@ mod tests {
             switch,
             breaker(),
         );
-        assert!(pool.execute(request()).await.is_err());
+        assert!(pool.execute(request_for_thread("agent-x")).await.is_err());
         let total: u32 = stubs.iter().map(|s| s.call_count()).sum();
         assert_eq!(total, 2, "home + exactly one switch");
+    }
+
+    #[tokio::test]
+    async fn error_driven_exhaustion_returns_pool_level_error() {
+        let (pool, stubs) = pool_all(
+            "agent-x",
+            vec![
+                Behavior::AlwaysErr(InferenceExecutionError::rate_limited("m0 quota")),
+                Behavior::AlwaysErr(InferenceExecutionError::rate_limited("m1 quota")),
+            ],
+            PoolSwitchPolicy::default(),
+            breaker(),
+        );
+
+        let err = pool
+            .execute(request_for_thread("agent-x"))
+            .await
+            .expect_err("all switch-worthy attempts should be exhausted");
+
+        assert!(matches!(
+            err,
+            InferenceExecutionError::PoolAttemptsExhausted
+        ));
+        assert_eq!(
+            stubs.iter().map(|s| s.call_count()).collect::<Vec<_>>(),
+            vec![1, 1]
+        );
+    }
+
+    #[tokio::test]
+    async fn error_driven_exhaustion_stays_pool_level_after_breakers_open() {
+        let (pool, stubs) = pool_all(
+            "agent-x",
+            vec![
+                Behavior::AlwaysErr(InferenceExecutionError::overloaded("m0 overloaded")),
+                Behavior::AlwaysErr(InferenceExecutionError::overloaded("m1 overloaded")),
+            ],
+            PoolSwitchPolicy::default(),
+            breaker_threshold(1),
+        );
+
+        let err = pool
+            .execute(request_for_thread("agent-x"))
+            .await
+            .expect_err("all switch-worthy attempts should be exhausted");
+
+        assert!(matches!(
+            err,
+            InferenceExecutionError::PoolAttemptsExhausted
+        ));
+        assert_eq!(
+            stubs.iter().map(|s| s.call_count()).collect::<Vec<_>>(),
+            vec![1, 1],
+            "error-driven exhaustion must report the attempted pool call, not only final health"
+        );
+    }
+
+    #[tokio::test]
+    async fn missing_routing_key_uses_anonymous_sessions_for_round_robin() {
+        let routing = PoolRoutingPolicy {
+            home: HomeStrategy::RoundRobin,
+            ..PoolRoutingPolicy::default()
+        };
+        let (pool, stubs) = pool_all_with_routing(
+            "agent-x",
+            vec![Behavior::AlwaysOk, Behavior::AlwaysOk, Behavior::AlwaysOk],
+            routing,
+            PoolSwitchPolicy::default(),
+            breaker(),
+        );
+
+        for _ in 0..3 {
+            assert!(pool.execute(request()).await.is_ok());
+        }
+
+        assert_eq!(
+            stubs.iter().map(|s| s.call_count()).collect::<Vec<_>>(),
+            vec![1, 1, 1],
+            "requests without routing keys must not share one sticky session"
+        );
+    }
+
+    #[test]
+    fn concurrent_error_failover_commits_once_and_followers_reuse_active() {
+        let switch = PoolSwitchPolicy {
+            max_switches_per_session: Some(1),
+            ..PoolSwitchPolicy::default()
+        };
+        let (pool, _stubs) = pool_all(
+            "session-race",
+            vec![Behavior::AlwaysOk, Behavior::AlwaysOk, Behavior::AlwaysOk],
+            switch,
+            breaker(),
+        );
+        let session_key = "session-race";
+        let current = pool.inner.select_active(session_key);
+        let mut tried = vec![false; 3];
+        tried[current] = true;
+        let err = InferenceExecutionError::rate_limited("429");
+
+        thread::scope(|scope| {
+            let left = scope.spawn(|| pool.inner.next_on_error(session_key, current, &err, &tried));
+            let right =
+                scope.spawn(|| pool.inner.next_on_error(session_key, current, &err, &tried));
+            let results = [left.join().unwrap(), right.join().unwrap()];
+            assert!(
+                results.iter().all(Option::is_some),
+                "a stale follower may reuse the committed active member"
+            );
+            assert_eq!(
+                results[0], results[1],
+                "concurrent failover callers must converge on one active member"
+            );
+        });
+
+        let sessions = pool.inner.sessions.read();
+        let state = sessions.get(session_key).expect("session state");
+        assert_eq!(state.switch_count, 1);
+        assert_ne!(state.active, Some(current));
+    }
+
+    #[tokio::test]
+    async fn concurrent_execute_failover_followers_retry_new_active() {
+        let thread_id = (0..200)
+            .map(|i| format!("session-follower-{i}"))
+            .find(|key| home_of(key, 2) == 0)
+            .expect("thread home on m0");
+        let gate = Arc::new(tokio::sync::Barrier::new(2));
+        let (pool, stubs) = pool_all(
+            &thread_id,
+            vec![
+                Behavior::GateThenErr {
+                    gate,
+                    err: InferenceExecutionError::rate_limited("m0 quota"),
+                },
+                Behavior::AlwaysOk,
+            ],
+            PoolSwitchPolicy::default(),
+            breaker(),
+        );
+
+        let (left, right) = tokio::join!(
+            pool.execute(request_for_thread(&thread_id)),
+            pool.execute(request_for_thread(&thread_id))
+        );
+
+        assert!(left.is_ok(), "first request should retry on failover");
+        assert!(right.is_ok(), "stale follower should retry on new active");
+        assert_eq!(
+            stubs.iter().map(|s| s.call_count()).collect::<Vec<_>>(),
+            vec![2, 2],
+            "both requests start on m0 and then converge on m1"
+        );
+    }
+
+    #[test]
+    fn stale_error_failover_reuses_active_without_overwriting_it() {
+        let (pool, _stubs) = pool_all(
+            "session-stale",
+            vec![Behavior::AlwaysOk, Behavior::AlwaysOk, Behavior::AlwaysOk],
+            PoolSwitchPolicy::default(),
+            breaker(),
+        );
+        let session_key = "session-stale";
+        let current = pool.inner.select_active(session_key);
+        let err = InferenceExecutionError::rate_limited("429");
+        let mut tried = vec![false; 3];
+        tried[current] = true;
+        let first = pool
+            .inner
+            .next_on_error(session_key, current, &err, &tried)
+            .expect("first switch");
+
+        let stale = pool.inner.next_on_error(session_key, current, &err, &tried);
+        assert_eq!(stale, Some(first));
+        assert_eq!(
+            pool.inner
+                .sessions
+                .read()
+                .get(session_key)
+                .and_then(|s| s.active),
+            Some(first),
+            "an older failure must not roll back the active member"
+        );
     }
 }

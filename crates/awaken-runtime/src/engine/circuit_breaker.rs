@@ -159,6 +159,25 @@ impl CircuitBreaker {
             state.status = CircuitStatus::Open;
         }
     }
+
+    /// Release an abandoned half-open probe without counting it as a normal
+    /// provider failure.
+    ///
+    /// Stream cancellation/drop is often user-initiated, so treating every
+    /// abandoned stream as a member failure would pollute health. In half-open
+    /// state, however, a consumed probe must resolve; abandoning it re-opens
+    /// the circuit without incrementing the consecutive failure counter.
+    pub fn record_abandoned_probe(&self, model: &str) {
+        let mut states = self.states.write();
+        let Some(state) = states.get_mut(model) else {
+            return;
+        };
+        if state.status == CircuitStatus::HalfOpen {
+            state.status = CircuitStatus::Open;
+            state.half_open_attempts = 0;
+            state.last_failure = Instant::now();
+        }
+    }
 }
 
 #[cfg(test)]
@@ -267,6 +286,26 @@ mod tests {
 
         // Should be open again
         assert!(cb.check("model-a").is_err());
+    }
+
+    #[test]
+    fn abandoned_half_open_probe_reopens_without_incrementing_failures() {
+        let config = CircuitBreakerConfig {
+            failure_threshold: 3,
+            cooldown: Duration::ZERO,
+            half_open_max: 1,
+        };
+        let cb = CircuitBreaker::new(config);
+        cb.record_failure("model-a");
+        cb.record_failure("model-a");
+        cb.record_failure("model-a");
+
+        assert!(cb.check("model-a").is_ok());
+        cb.record_abandoned_probe("model-a");
+
+        assert!(cb.check("model-a").is_ok());
+        cb.record_success("model-a");
+        assert!(cb.check("model-a").is_ok());
     }
 
     #[test]

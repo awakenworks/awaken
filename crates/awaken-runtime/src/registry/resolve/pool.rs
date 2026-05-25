@@ -87,18 +87,69 @@ pub fn build_pool_executor(
     Ok((executor, upstream_stand_in, reconciled))
 }
 
+/// Upper bound on distinct breaker keys retained at once. Each key embeds the
+/// pool id, a hash of the serialized pool/member specs, and the provider
+/// signature, so every config hot-reload that changes any of those mints a new
+/// key. Without a bound the cache would accumulate one stranded breaker per
+/// historical config revision for the life of the process. 1024 leaves ample
+/// room for many concurrent pools across many recent revisions while capping
+/// memory; evicting the least-recently-used key only resets that rarely-touched
+/// config's circuit state, which self-heals on the next failure/success.
+const MAX_POOL_BREAKERS: usize = 1024;
+
+/// Access-ordered, bounded registry of pool circuit breakers. Mirrors the
+/// monotonic `last_access` counter scheme used by
+/// `PoolExecutorInner::ensure_stream_attempt_capacity`: each touch stamps the
+/// entry with the next sequence value, and eviction drops the smallest stamp.
+#[derive(Default)]
+struct BoundedBreakerCache {
+    entries: HashMap<String, (Arc<CircuitBreaker>, u64)>,
+    access_seq: u64,
+}
+
+impl BoundedBreakerCache {
+    fn next_access(&mut self) -> u64 {
+        self.access_seq = self.access_seq.wrapping_add(1);
+        self.access_seq
+    }
+
+    fn get_or_insert(&mut self, key: &str) -> Arc<CircuitBreaker> {
+        if self.entries.contains_key(key) {
+            let stamp = self.next_access();
+            let (breaker, last_access) = self.entries.get_mut(key).expect("checked above");
+            *last_access = stamp;
+            return breaker.clone();
+        }
+        if self.entries.len() >= MAX_POOL_BREAKERS
+            && let Some(victim) = self
+                .entries
+                .iter()
+                .min_by_key(|(_, (_, last_access))| *last_access)
+                .map(|(key, _)| key.clone())
+        {
+            self.entries.remove(&victim);
+        }
+        let stamp = self.next_access();
+        let breaker = Arc::new(CircuitBreaker::new(CircuitBreakerConfig::default()));
+        self.entries
+            .insert(key.to_string(), (breaker.clone(), stamp));
+        breaker
+    }
+}
+
 /// Process-shared circuit breaker for a pool, created on first use. Sharing the
 /// breaker across resolutions gives member health cross-session memory: while a
 /// member is unhealthy every session avoids it, and sessions return once it
 /// heals. Breakers reset on process restart.
+///
+/// The backing registry is bounded ([`MAX_POOL_BREAKERS`], LRU eviction) so
+/// config hot-reload — which mints a fresh key per revision — cannot leak
+/// breakers without limit.
 fn pool_breaker(key: &str) -> Arc<CircuitBreaker> {
-    static BREAKERS: OnceLock<Mutex<HashMap<String, Arc<CircuitBreaker>>>> = OnceLock::new();
-    let breakers = BREAKERS.get_or_init(|| Mutex::new(HashMap::new()));
+    static BREAKERS: OnceLock<Mutex<BoundedBreakerCache>> = OnceLock::new();
+    let breakers = BREAKERS.get_or_init(|| Mutex::new(BoundedBreakerCache::default()));
     let mut guard = breakers.lock().expect("pool breaker registry poisoned");
-    guard
-        .entry(key.to_string())
-        .or_insert_with(|| Arc::new(CircuitBreaker::new(CircuitBreakerConfig::default())))
-        .clone()
+    guard.get_or_insert(key)
 }
 
 fn pool_breaker_key(
@@ -243,6 +294,50 @@ mod tests {
                 &signatures
             )
         );
+    }
+
+    #[test]
+    fn breaker_cache_evicts_least_recently_used_when_over_capacity() {
+        let mut cache = BoundedBreakerCache::default();
+
+        // Fill to capacity.
+        for i in 0..MAX_POOL_BREAKERS {
+            cache.get_or_insert(&format!("key-{i}"));
+        }
+        assert_eq!(cache.entries.len(), MAX_POOL_BREAKERS);
+
+        // Touch key-0 so it becomes the most-recently-used; key-1 is now the LRU.
+        let survivor = cache.get_or_insert("key-0");
+
+        // One more distinct key forces a single eviction of the LRU (key-1).
+        cache.get_or_insert("over-cap");
+
+        assert_eq!(
+            cache.entries.len(),
+            MAX_POOL_BREAKERS,
+            "cache must stay bounded under key churn"
+        );
+        assert!(
+            !cache.entries.contains_key("key-1"),
+            "the least-recently-used key must be evicted"
+        );
+        assert!(
+            cache.entries.contains_key("key-0"),
+            "a recently-used key must survive eviction"
+        );
+        assert!(cache.entries.contains_key("over-cap"));
+
+        // The retained breaker is the same instance (identity preserved on hit).
+        assert!(Arc::ptr_eq(&survivor, &cache.get_or_insert("key-0")));
+    }
+
+    #[test]
+    fn breaker_cache_returns_same_breaker_for_repeated_key() {
+        let mut cache = BoundedBreakerCache::default();
+        let first = cache.get_or_insert("stable");
+        let second = cache.get_or_insert("stable");
+        assert!(Arc::ptr_eq(&first, &second));
+        assert_eq!(cache.entries.len(), 1);
     }
 
     #[test]

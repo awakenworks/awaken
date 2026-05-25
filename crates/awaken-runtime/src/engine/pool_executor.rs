@@ -1,48 +1,33 @@
-//! [`PoolExecutor`] — a model pool that presents the single-model
+//! [`PoolExecutor`] presents a model pool through the single-model
 //! [`LlmExecutor`] contract.
 //!
-//! Resolution builds a `PoolExecutor` over the pool's member models, each
-//! paired with its own resolved provider executor. Each inference request can
-//! carry routing keys (the agent loop supplies thread and run ids), so the
-//! [`PoolRouter`] pins the configured sticky scope to one member
-//! (prompt-cache affinity); a shared
-//! [`CircuitBreaker`] keyed by member model id carries failure memory across
-//! sessions, so while a member is unhealthy every session avoids it and
-//! returns to it once it heals.
-//!
-//! Switching is deliberately conservative to protect the upstream prompt
-//! cache:
-//! - **Quota** (`RateLimited`/`Overloaded`) and **permanent** member errors
-//!   (`Unauthorized`/`ModelNotFound`) switch to another member within the same
-//!   call, per [`PoolSwitchPolicy`].
-//! - **Transient** failures are returned to the caller; the member's own retry
-//!   policy absorbs blips, and repeated failures open the member's breaker so a
-//!   later call re-homes off it (this is the "long-term failure" path).
-//! - **Request-level** errors (`ContextOverflow`, `InvalidRequest`,
-//!   `ContentFiltered`) and `Cancelled` never switch — they would fail
-//!   identically on every member.
+//! The pool pins each routed session to one member for prompt-cache affinity,
+//! while a shared [`CircuitBreaker`] carries member health across sessions.
+//! Switching stays conservative: quota and permanent member errors may fail
+//! over within the same call, transient failures are left to provider retry,
+//! and request-level errors never switch because they would fail on every
+//! member.
 
 use std::collections::HashMap;
-use std::pin::Pin;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::task::{Context, Poll};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
 use async_trait::async_trait;
-use awaken_contract::contract::executor::InterruptCause;
 use awaken_contract::contract::executor::{
-    InferenceExecutionError, InferenceRequest, InferenceStream, InterruptSnapshot, LlmExecutor,
-    LlmStreamEvent,
+    InferenceExecutionError, InferenceRequest, InferenceStream, LlmExecutor,
 };
 use awaken_contract::contract::inference::StreamResult;
 use awaken_contract::registry_spec::HomeStrategy;
-use futures::Stream;
 
 use super::circuit_breaker::CircuitBreaker;
 use super::pool_router::PoolRouter;
+use pool_observed_stream::PoolObservedStream;
 
 const MAX_POOL_SESSION_STATES: usize = 4096;
 const MAX_POOL_STREAM_ATTEMPTS: usize = 4096;
+
+#[path = "pool_observed_stream.rs"]
+mod pool_observed_stream;
 
 /// A resolved pool member paired with its concrete provider executor.
 pub struct PoolMemberExecutor {
@@ -70,12 +55,19 @@ struct PoolExecutorInner {
     stream_attempts: parking_lot::RwLock<HashMap<String, PoolStreamAttemptState>>,
     permanent_quarantine: parking_lot::RwLock<Vec<bool>>,
     home_sequence: AtomicU64,
+    anonymous_session_sequence: AtomicU64,
+    stream_attempt_sequence: AtomicUsize,
+    session_sequence: AtomicUsize,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
 struct PoolSessionState {
     active: Option<usize>,
     switch_count: u32,
+    /// Monotonic access stamp for LRU eviction, mirroring
+    /// [`PoolStreamAttemptState::last_access`]. Bumped on every read/touch so
+    /// `ensure_session_capacity` can evict the least-recently-used session.
+    last_access: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -83,6 +75,8 @@ struct PoolStreamAttemptState {
     active: Option<usize>,
     tried: Vec<bool>,
     failure_observed: bool,
+    in_flight: bool,
+    last_access: usize,
 }
 
 impl PoolStreamAttemptState {
@@ -91,6 +85,8 @@ impl PoolStreamAttemptState {
             active: None,
             tried: vec![false; member_count],
             failure_observed: false,
+            in_flight: false,
+            last_access: 0,
         }
     }
 }
@@ -123,6 +119,9 @@ impl PoolExecutor {
                 stream_attempts: parking_lot::RwLock::new(HashMap::new()),
                 permanent_quarantine: parking_lot::RwLock::new(vec![false; member_count]),
                 home_sequence: AtomicU64::new(0),
+                anonymous_session_sequence: AtomicU64::new(0),
+                stream_attempt_sequence: AtomicUsize::new(0),
+                session_sequence: AtomicUsize::new(0),
             }),
         }
     }
@@ -162,28 +161,68 @@ impl PoolExecutorInner {
             .routing_key
             .as_ref()
             .and_then(|key| key.for_scope(self.router.sticky_scope()));
-        key.unwrap_or_else(|| self.fallback_home_key.clone())
+        key.unwrap_or_else(|| {
+            let sequence = self
+                .anonymous_session_sequence
+                .fetch_add(1, Ordering::Relaxed)
+                .saturating_add(1);
+            tracing::warn!(
+                pool = %self.pool_id,
+                sticky_scope = ?self.router.sticky_scope(),
+                "model pool request missing routing key; using anonymous session"
+            );
+            format!("{}\0anonymous\0{sequence}", self.fallback_home_key)
+        })
     }
 
     fn ensure_session_capacity(sessions: &mut HashMap<String, PoolSessionState>, current: &str) {
         if sessions.len() < MAX_POOL_SESSION_STATES || sessions.contains_key(current) {
             return;
         }
-        if let Some(victim) = sessions.keys().find(|key| key.as_str() != current).cloned() {
+        // Evict the least-recently-accessed session (never `current`), mirroring
+        // `ensure_stream_attempt_capacity`. HashMap iteration order is arbitrary,
+        // so picking by `last_access` keeps hot sessions resident instead of
+        // dropping whichever key the map happened to surface first.
+        let victim = sessions
+            .iter()
+            .filter(|(key, _)| key.as_str() != current)
+            .min_by_key(|(_, state)| state.last_access)
+            .map(|(key, _)| key.clone());
+        if let Some(victim) = victim {
             sessions.remove(&victim);
         }
+    }
+
+    fn next_session_sequence(&self) -> usize {
+        self.session_sequence
+            .fetch_add(1, Ordering::Relaxed)
+            .saturating_add(1)
     }
 
     fn ensure_stream_attempt_capacity(
         attempts: &mut HashMap<String, PoolStreamAttemptState>,
         current: &str,
-    ) {
+    ) -> bool {
         if attempts.len() < MAX_POOL_STREAM_ATTEMPTS || attempts.contains_key(current) {
-            return;
+            return true;
         }
-        if let Some(victim) = attempts.keys().find(|key| key.as_str() != current).cloned() {
+        let victim = attempts
+            .iter()
+            .filter(|(key, attempt)| key.as_str() != current && !attempt.in_flight)
+            .min_by_key(|(_, attempt)| attempt.last_access)
+            .map(|(key, _)| key.clone());
+        if let Some(victim) = victim {
             attempts.remove(&victim);
+            true
+        } else {
+            false
         }
+    }
+
+    fn next_stream_attempt_sequence(&self) -> usize {
+        self.stream_attempt_sequence
+            .fetch_add(1, Ordering::Relaxed)
+            .saturating_add(1)
     }
 
     fn stream_attempt_key(&self, session_key: &str, request: &InferenceRequest) -> Option<String> {
@@ -199,10 +238,20 @@ impl PoolExecutorInner {
             return vec![false; self.members.len()];
         };
         self.stream_attempts
-            .read()
-            .get(attempt_key)
-            .map(|attempt| attempt.tried.clone())
+            .write()
+            .get_mut(attempt_key)
+            .map(|attempt| {
+                attempt.last_access = self.next_stream_attempt_sequence();
+                attempt.tried.clone()
+            })
             .unwrap_or_else(|| vec![false; self.members.len()])
+    }
+
+    fn merge_stream_tried_mask(&self, tried: &mut [bool], attempt_key: Option<&str>) {
+        let cached = self.stream_tried_mask(attempt_key);
+        for (attempted, cached_attempted) in tried.iter_mut().zip(cached) {
+            *attempted |= cached_attempted;
+        }
     }
 
     fn mark_stream_active(&self, attempt_key: Option<&str>, idx: usize) {
@@ -210,15 +259,39 @@ impl PoolExecutorInner {
             return;
         };
         let mut attempts = self.stream_attempts.write();
-        Self::ensure_stream_attempt_capacity(&mut attempts, attempt_key);
+        if !Self::ensure_stream_attempt_capacity(&mut attempts, attempt_key) {
+            return;
+        }
         let attempt = attempts
             .entry(attempt_key.to_string())
             .or_insert_with(|| PoolStreamAttemptState::new(self.members.len()));
+        attempt.last_access = self.next_stream_attempt_sequence();
         if idx < attempt.tried.len() {
             attempt.tried[idx] = true;
         }
         attempt.active = Some(idx);
         attempt.failure_observed = false;
+        attempt.in_flight = true;
+    }
+
+    fn mark_stream_open_failure(&self, attempt_key: Option<&str>, idx: usize) {
+        let Some(attempt_key) = attempt_key else {
+            return;
+        };
+        let mut attempts = self.stream_attempts.write();
+        if !Self::ensure_stream_attempt_capacity(&mut attempts, attempt_key) {
+            return;
+        }
+        let attempt = attempts
+            .entry(attempt_key.to_string())
+            .or_insert_with(|| PoolStreamAttemptState::new(self.members.len()));
+        attempt.last_access = self.next_stream_attempt_sequence();
+        if idx < attempt.tried.len() {
+            attempt.tried[idx] = true;
+        }
+        attempt.active = Some(idx);
+        attempt.failure_observed = true;
+        attempt.in_flight = false;
     }
 
     fn clear_stream_attempt(&self, attempt_key: Option<&str>) {
@@ -236,9 +309,11 @@ impl PoolExecutorInner {
     /// session-level failover if the active member's breaker has since opened.
     fn select_active(&self, session_key: &str) -> usize {
         let health = self.health_mask();
+        let access = self.next_session_sequence();
         let mut sessions = self.sessions.write();
         Self::ensure_session_capacity(&mut sessions, session_key);
         let state = sessions.entry(session_key.to_string()).or_default();
+        state.last_access = access;
         match state.active {
             None => {
                 let home = self.router.select_home_with_sequence(
@@ -276,13 +351,7 @@ impl PoolExecutorInner {
         err: &InferenceExecutionError,
         tried: &[bool],
     ) -> Option<usize> {
-        let current_switch_count = self
-            .sessions
-            .read()
-            .get(session_key)
-            .map(|state| state.switch_count)
-            .unwrap_or_default();
-        if !self.router.should_switch_on_error(err) || !self.switches_remain(current_switch_count) {
+        if !self.router.should_switch_on_error(err) {
             return None;
         }
         let mut mask = self.health_mask();
@@ -291,11 +360,23 @@ impl PoolExecutorInner {
                 mask[i] = false;
             }
         }
-        let next = self.router.select_failover(session_key, current, &mask)?;
-        self.record_switch(current, next, "error-driven");
+        let access = self.next_session_sequence();
         let mut sessions = self.sessions.write();
         Self::ensure_session_capacity(&mut sessions, session_key);
         let state = sessions.entry(session_key.to_string()).or_default();
+        if state.active != Some(current) {
+            state.last_access = access;
+            return state
+                .active
+                .filter(|active| mask.get(*active).copied().unwrap_or(false));
+        }
+        if !self.switches_remain(state.switch_count) {
+            state.last_access = access;
+            return None;
+        }
+        let next = self.router.select_failover(session_key, current, &mask)?;
+        self.record_switch(current, next, "error-driven");
+        state.last_access = access;
         state.switch_count += 1;
         state.active = Some(next);
         Some(next)
@@ -307,26 +388,29 @@ impl PoolExecutorInner {
         current: usize,
         tried: &[bool],
     ) -> Option<usize> {
-        let current_switch_count = self
-            .sessions
-            .read()
-            .get(session_key)
-            .map(|state| state.switch_count)
-            .unwrap_or_default();
-        if !self.switches_remain(current_switch_count) {
-            return None;
-        }
         let mut mask = self.health_mask();
         for (i, attempted) in tried.iter().enumerate() {
             if *attempted {
                 mask[i] = false;
             }
         }
-        let next = self.router.select_failover(session_key, current, &mask)?;
-        self.record_switch(current, next, "member unavailable");
+        let access = self.next_session_sequence();
         let mut sessions = self.sessions.write();
         Self::ensure_session_capacity(&mut sessions, session_key);
         let state = sessions.entry(session_key.to_string()).or_default();
+        if state.active != Some(current) {
+            state.last_access = access;
+            return state
+                .active
+                .filter(|active| mask.get(*active).copied().unwrap_or(false));
+        }
+        if !self.switches_remain(state.switch_count) {
+            state.last_access = access;
+            return None;
+        }
+        let next = self.router.select_failover(session_key, current, &mask)?;
+        self.record_switch(current, next, "member unavailable");
+        state.last_access = access;
         state.switch_count += 1;
         state.active = Some(next);
         Some(next)
@@ -352,6 +436,17 @@ impl PoolExecutorInner {
         }
     }
 
+    fn error_driven_no_member_available_error(
+        &self,
+        fallback: InferenceExecutionError,
+        tried: &[bool],
+    ) -> InferenceExecutionError {
+        if (0..self.members.len()).all(|idx| tried.get(idx).copied().unwrap_or(false)) {
+            return InferenceExecutionError::PoolAttemptsExhausted;
+        }
+        self.no_member_available_error(fallback, tried)
+    }
+
     fn no_member_available_error(
         &self,
         fallback: InferenceExecutionError,
@@ -373,7 +468,9 @@ impl PoolExecutorInner {
     }
 
     fn reset_switch_budget(&self, session_key: &str) {
+        let access = self.next_session_sequence();
         if let Some(state) = self.sessions.write().get_mut(session_key) {
+            state.last_access = access;
             state.switch_count = 0;
         }
     }
@@ -385,10 +482,26 @@ impl PoolExecutorInner {
     ) {
         let session_key = self.session_key(request);
         let attempt_key = self.stream_attempt_key(&session_key, request);
-        let current = attempt_key
+        // A stream failure must be attributed to the member that actually
+        // opened the stream, recorded in this attempt's `active` slot by
+        // `mark_stream_active`. The precise per-item path
+        // (`PoolObservedStream`) already records failures the inner stream
+        // yields; the outer call only adds failures that path cannot see
+        // (e.g. an idle stall where `next()` times out without an `Err`).
+        //
+        // If the originating member cannot be precisely resolved — no
+        // attempt key, or the key is absent from the cache (the stream was
+        // never opened through this pool, or the attempt was already
+        // evicted) — we must NOT fall back to the currently active member:
+        // a session-level failover may have moved `active` off the member
+        // that opened the stream, so recording there would mis-attribute the
+        // failure onto an innocent member's breaker. Skip recording instead.
+        let Some(current) = attempt_key
             .as_deref()
             .and_then(|key| self.stream_attempts.read().get(key).and_then(|a| a.active))
-            .unwrap_or_else(|| self.select_active(&session_key));
+        else {
+            return;
+        };
         self.record_stream_attempt_failure_once(&session_key, attempt_key.as_deref(), current, err);
     }
 
@@ -402,15 +515,22 @@ impl PoolExecutorInner {
         self.record_failure(current, err);
         let tried = if let Some(attempt_key) = attempt_key {
             let mut attempts = self.stream_attempts.write();
-            Self::ensure_stream_attempt_capacity(&mut attempts, attempt_key);
-            let attempt = attempts
-                .entry(attempt_key.to_string())
-                .or_insert_with(|| PoolStreamAttemptState::new(self.members.len()));
-            if current < attempt.tried.len() {
-                attempt.tried[current] = true;
+            if Self::ensure_stream_attempt_capacity(&mut attempts, attempt_key) {
+                let attempt = attempts
+                    .entry(attempt_key.to_string())
+                    .or_insert_with(|| PoolStreamAttemptState::new(self.members.len()));
+                attempt.last_access = self.next_stream_attempt_sequence();
+                if current < attempt.tried.len() {
+                    attempt.tried[current] = true;
+                }
+                attempt.active = Some(current);
+                attempt.in_flight = false;
+                attempt.tried.clone()
+            } else {
+                let mut tried = vec![false; self.members.len()];
+                tried[current] = true;
+                tried
             }
-            attempt.active = Some(current);
-            attempt.tried.clone()
         } else {
             let mut tried = vec![false; self.members.len()];
             tried[current] = true;
@@ -445,22 +565,44 @@ impl PoolExecutorInner {
     ) {
         if let Some(attempt_key) = attempt_key {
             let mut attempts = self.stream_attempts.write();
-            Self::ensure_stream_attempt_capacity(&mut attempts, attempt_key);
-            let attempt = attempts
-                .entry(attempt_key.to_string())
-                .or_insert_with(|| PoolStreamAttemptState::new(self.members.len()));
-            if current < attempt.tried.len() {
-                attempt.tried[current] = true;
-            }
-            let duplicate = attempt.active == Some(current) && attempt.failure_observed;
-            attempt.active = Some(current);
-            attempt.failure_observed = true;
-            drop(attempts);
-            if duplicate {
-                return;
+            if Self::ensure_stream_attempt_capacity(&mut attempts, attempt_key) {
+                let attempt = attempts
+                    .entry(attempt_key.to_string())
+                    .or_insert_with(|| PoolStreamAttemptState::new(self.members.len()));
+                attempt.last_access = self.next_stream_attempt_sequence();
+                if current < attempt.tried.len() {
+                    attempt.tried[current] = true;
+                }
+                let duplicate = attempt.active == Some(current) && attempt.failure_observed;
+                attempt.active = Some(current);
+                attempt.failure_observed = true;
+                attempt.in_flight = false;
+                drop(attempts);
+                if duplicate {
+                    return;
+                }
             }
         }
         self.record_stream_attempt_failure(session_key, attempt_key, current, err);
+    }
+
+    fn record_stream_attempt_abandoned(&self, attempt_key: Option<&str>, current: usize) {
+        self.breaker
+            .record_abandoned_probe(&self.members[current].model_id);
+        let Some(attempt_key) = attempt_key else {
+            return;
+        };
+        let mut attempts = self.stream_attempts.write();
+        let should_clear = if let Some(attempt) = attempts.get_mut(attempt_key) {
+            attempt.last_access = self.next_stream_attempt_sequence();
+            attempt.in_flight = false;
+            !attempt.failure_observed
+        } else {
+            false
+        };
+        if should_clear {
+            attempts.remove(attempt_key);
+        }
     }
 
     fn record_switch(&self, from: usize, to: usize, reason: &str) {
@@ -474,7 +616,8 @@ impl PoolExecutorInner {
     }
 
     fn record_failure(&self, idx: usize, err: &InferenceExecutionError) {
-        if Self::is_member_permanent_error(err)
+        if self.router.switch_policy().on_permanent
+            && Self::is_member_permanent_error(err)
             && let Some(quarantined) = self.permanent_quarantine.write().get_mut(idx)
         {
             *quarantined = true;
@@ -495,70 +638,6 @@ impl PoolExecutorInner {
         let mut req = base.clone();
         req.upstream_model = self.members[idx].upstream_model.clone();
         req
-    }
-}
-
-struct PoolObservedStream {
-    inner: InferenceStream,
-    pool: Arc<PoolExecutorInner>,
-    session_key: String,
-    attempt_key: Option<String>,
-    member_idx: usize,
-    finished: bool,
-}
-
-impl Stream for PoolObservedStream {
-    type Item = Result<LlmStreamEvent, InferenceExecutionError>;
-
-    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        let this = self.as_mut().get_mut();
-        match this.inner.as_mut().poll_next(cx) {
-            Poll::Ready(Some(Err(err))) => {
-                this.finished = true;
-                this.pool.record_stream_attempt_failure_once(
-                    &this.session_key,
-                    this.attempt_key.as_deref(),
-                    this.member_idx,
-                    &err,
-                );
-                Poll::Ready(Some(Err(err)))
-            }
-            Poll::Ready(None) => {
-                if !this.finished {
-                    this.finished = true;
-                    this.pool.record_stream_attempt_success(
-                        &this.session_key,
-                        this.attempt_key.as_deref(),
-                        this.member_idx,
-                    );
-                }
-                Poll::Ready(None)
-            }
-            other => other,
-        }
-    }
-}
-
-impl Drop for PoolObservedStream {
-    fn drop(&mut self) {
-        if self.finished {
-            return;
-        }
-        self.finished = true;
-        self.pool.record_stream_attempt_failure_once(
-            &self.session_key,
-            self.attempt_key.as_deref(),
-            self.member_idx,
-            &InferenceExecutionError::StreamInterrupted {
-                cause: InterruptCause::IdleStall,
-                snapshot: Box::new(InterruptSnapshot {
-                    text: None,
-                    completed_tool_calls: vec![],
-                    in_flight_tool: None,
-                    bytes_received: 0,
-                }),
-            },
-        );
     }
 }
 
@@ -595,6 +674,9 @@ impl LlmExecutor for PoolExecutor {
                     inner.record_failure(idx, &err);
                     match inner.next_on_error(&session_key, idx, &err, &tried) {
                         Some(next) => idx = next,
+                        None if inner.router.should_switch_on_error(&err) => {
+                            return Err(inner.error_driven_no_member_available_error(err, &tried));
+                        }
                         None => return Err(err),
                     }
                 }
@@ -634,25 +716,32 @@ impl LlmExecutor for PoolExecutor {
                 match inner.members[idx].executor.execute_stream(req).await {
                     Ok(stream) => {
                         inner.mark_stream_active(attempt_key.as_deref(), idx);
-                        let observed = PoolObservedStream {
-                            inner: stream,
-                            pool: Arc::clone(&inner),
+                        let observed = PoolObservedStream::new(
+                            stream,
+                            Arc::clone(&inner),
                             session_key,
                             attempt_key,
-                            member_idx: idx,
-                            finished: false,
-                        };
+                            idx,
+                        );
                         return Ok(Box::pin(observed) as InferenceStream);
                     }
                     Err(err) => {
                         inner.record_failure(idx, &err);
-                        if let Some(key) = attempt_key.as_deref() {
-                            inner.mark_stream_active(Some(key), idx);
-                        }
+                        inner.mark_stream_open_failure(attempt_key.as_deref(), idx);
                         match inner.next_on_error(&session_key, idx, &err, &tried) {
                             Some(next) => {
                                 idx = next;
-                                tried = inner.stream_tried_mask(attempt_key.as_deref());
+                                if attempt_key.is_some() {
+                                    inner.merge_stream_tried_mask(
+                                        &mut tried,
+                                        attempt_key.as_deref(),
+                                    );
+                                }
+                            }
+                            None if inner.router.should_switch_on_error(&err) => {
+                                return Err(
+                                    inner.error_driven_no_member_available_error(err, &tried)
+                                );
                             }
                             None => return Err(err),
                         }

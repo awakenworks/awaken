@@ -55,8 +55,7 @@ answers three pure questions, with member health passed in as a mask:
   homes, and both strategies avoid unhealthy members when alternatives exist.
 - **Failover** — the best-scoring healthy member other than the current one.
 - **Switch** — whether an `InferenceExecutionError` warrants leaving the
-  current member (quota / permanent / stream interruption), per
-  `PoolSwitchPolicy`.
+  current member (quota / permanent / circuit-open), per `PoolSwitchPolicy`.
 
 ### D3: `PoolExecutor` presents the model contract
 
@@ -72,14 +71,17 @@ first use and held; a switch only happens when:
   `ModelNotFound`) error — an in-call switch to another member; or
 - the active member's circuit breaker has **opened** (sustained transient
   failure = "long-term failure") — a later call re-homes off it; or
-- a stream opens but then fails mid-stream — the pool records member failure
-  and moves the next recovery attempt to another healthy member when policy
-  allows.
+- a stream opens but then fails mid-stream — the pool records member failure;
+  the next recovery attempt stays on the sticky member for transient failures
+  until breaker/switch policy marks that member unavailable. If policy moves
+  the logical response to another member, its attempt history prevents bouncing
+  back to already-tried members.
 
 Transient single failures are returned to the caller (absorbed by the member's
 own retry policy); request-level errors (`ContextOverflow`, `InvalidRequest`,
 `ContentFiltered`) and `Cancelled` never switch, since they fail identically on
-every member. A shared `CircuitBreaker` keyed by pool definition and member
+every member. User/client cancellation of an open stream releases any half-open
+probe but does not count as provider failure. A shared `CircuitBreaker` keyed by pool definition and member
 model id carries health across sessions for one published pool shape: while a
 member is unhealthy every session avoids it, and sessions return once it heals.
 Successful requests reset the per-session switch budget;

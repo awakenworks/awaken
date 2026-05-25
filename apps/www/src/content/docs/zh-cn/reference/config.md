@@ -455,8 +455,11 @@ retry 策略。对于流式推理，retry 只作用于打开 stream 的阶段。
 
 ```rust,ignore
 pub struct LlmRetryPolicy {
-    pub max_retries: u32,              // default: 2
-    pub backoff_base_ms: u64,          // default: 500
+    pub max_retries: u32,                  // default: 2
+    pub backoff_base_ms: u64,              // default: 500
+    pub overloaded_backoff_base_ms: u64,   // default: 2000
+    pub max_stream_retries: u32,           // default: 2
+    pub stream_idle_timeout_secs: u64,     // default: 60
 }
 ```
 
@@ -466,6 +469,9 @@ pub struct LlmRetryPolicy {
 |---|---|---|---|
 | `max_retries` | `u32` | `2` | 初次调用后的最大重试次数（0 表示不重试） |
 | `backoff_base_ms` | `u64` | `500` | 指数退避的基础延迟（毫秒）；实际延迟 = min(base × 2^attempt, 8000ms)。设为 0 可禁用退避 |
+| `overloaded_backoff_base_ms` | `u64` | `2000` | provider overloaded 响应使用的基础退避延迟；指数上限与 `backoff_base_ms` 相同 |
+| `max_stream_retries` | `u32` | `2` | 流式推理中断后的最大恢复尝试次数 |
+| `stream_idle_timeout_secs` | `u64` | `60` | 流式推理在无事件超过该秒数后视为中断 |
 
 ### AgentSpec 集成
 
@@ -478,6 +484,9 @@ let spec = AgentSpec::new("my-agent")
     .with_config::<RetryConfigKey>(LlmRetryPolicy {
         max_retries: 3,
         backoff_base_ms: 1000,
+        overloaded_backoff_base_ms: 2000,
+        max_stream_retries: 2,
+        stream_idle_timeout_secs: 60,
     })?;
 ```
 

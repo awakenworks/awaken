@@ -70,8 +70,14 @@ pub(super) fn request_for_thread_run(thread_id: &str, run_id: &str) -> Inference
 pub(super) enum Behavior {
     AlwaysOk,
     AlwaysErr(InferenceExecutionError),
-    FailTransientThenOk { fails: u32 },
+    FailTransientThenOk {
+        fails: u32,
+    },
     StreamErr(InferenceExecutionError),
+    GateThenErr {
+        gate: Arc<tokio::sync::Barrier>,
+        err: InferenceExecutionError,
+    },
 }
 
 pub(super) struct StubExecutor {
@@ -112,6 +118,10 @@ impl LlmExecutor for StubExecutor {
                 }
             }
             Behavior::StreamErr(_) => Ok(ok_result()),
+            Behavior::GateThenErr { gate, err } => {
+                gate.wait().await;
+                Err(err.clone())
+            }
         }
     }
 
@@ -129,6 +139,7 @@ impl LlmExecutor for StubExecutor {
             self.calls.fetch_add(1, Ordering::SeqCst);
             match &self.behavior {
                 Behavior::AlwaysErr(err) => Err(err.clone()),
+                Behavior::GateThenErr { err, .. } => Err(err.clone()),
                 Behavior::StreamErr(err) => Ok(Box::pin(futures::stream::iter(vec![
                     Ok(LlmStreamEvent::TextDelta("partial".into())),
                     Err(err.clone()),

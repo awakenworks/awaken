@@ -508,8 +508,11 @@ stream.
 
 ```rust,ignore
 pub struct LlmRetryPolicy {
-    pub max_retries: u32,              // default: 2
-    pub backoff_base_ms: u64,          // default: 500
+    pub max_retries: u32,                  // default: 2
+    pub backoff_base_ms: u64,              // default: 500
+    pub overloaded_backoff_base_ms: u64,   // default: 2000
+    pub max_stream_retries: u32,           // default: 2
+    pub stream_idle_timeout_secs: u64,     // default: 60
 }
 ```
 
@@ -519,6 +522,9 @@ pub struct LlmRetryPolicy {
 |---|---|---|---|
 | `max_retries` | `u32` | `2` | Maximum retry attempts after the initial call (0 = no retry) |
 | `backoff_base_ms` | `u64` | `500` | Base delay in milliseconds for exponential backoff; actual delay = min(base * 2^attempt, 8000ms). Set to 0 to disable backoff |
+| `overloaded_backoff_base_ms` | `u64` | `2000` | Base delay for provider-overloaded responses; follows the same exponential cap as `backoff_base_ms` |
+| `max_stream_retries` | `u32` | `2` | Maximum recovery attempts for interrupted streaming inference |
+| `stream_idle_timeout_secs` | `u64` | `60` | Idle duration before a streaming inference is treated as interrupted |
 
 ### AgentSpec integration
 
@@ -531,6 +537,9 @@ let spec = AgentSpec::new("my-agent")
     .with_config::<RetryConfigKey>(LlmRetryPolicy {
         max_retries: 3,
         backoff_base_ms: 1000,
+        overloaded_backoff_base_ms: 2000,
+        max_stream_retries: 2,
+        stream_idle_timeout_secs: 60,
     })?;
 ```
 
