@@ -7,7 +7,7 @@ use awaken_contract::contract::message::{
 };
 use awaken_contract::contract::run::{RunActivationSnapshot, RunInputSnapshot};
 use awaken_contract::contract::storage::{
-    PinnedRegistryManifest, RunRecord, StorageError, ThreadRunStore,
+    PinnedRegistryManifest, RunMessageInput, RunRecord, StorageError, ThreadRunStore,
 };
 use awaken_contract::contract::tool_intercept::RunMode;
 use awaken_contract::now_ms;
@@ -111,7 +111,7 @@ impl Mailbox {
             .await?)
     }
 
-    pub(super) async fn prepare_pending_new_run_for_dispatch(
+    pub(super) async fn prepare_pending_messages_for_dispatch(
         &self,
         request: &RunActivation,
         thread_id: &str,
@@ -123,31 +123,49 @@ impl Mailbox {
         let Some(store) = self.pending_thread_run_store.as_ref() else {
             return Ok(None);
         };
-        if normalized_messages.is_empty() || request.trace.run_mode != RunMode::Scheduled {
+        if normalized_messages.is_empty() {
             return Ok(None);
         }
+        let boundary = match request.trace.run_mode {
+            RunMode::Foreground => DeliveryBoundary::Interrupt,
+            RunMode::Scheduled => DeliveryBoundary::NewRun,
+            // Internal wake carries no user input; never stage pending.
+            RunMode::InternalWake => return Ok(None),
+            // A genuine HITL decision resume (seeded decisions) carries no fresh
+            // user input and must not stage pending. But a fresh user submit that
+            // was auto-routed to a reusable waiting run (Resume with no seeded
+            // decisions) is user input and must stage through pending so it stays
+            // editable/retractable until consumed; it continues the waiting run
+            // via NewRun semantics (ADR-0042 D4).
+            RunMode::Resume => {
+                if request.control.seeded_decisions.is_empty() {
+                    DeliveryBoundary::NewRun
+                } else {
+                    return Ok(None);
+                }
+            }
+        };
         store
             .append_pending_message_records(
                 thread_id,
                 normalized_messages,
-                DeliveryMode::new_run(DeliveryGranularity::Batch),
+                DeliveryMode {
+                    boundary,
+                    granularity: DeliveryGranularity::Batch,
+                    barrier: false,
+                },
             )
             .await?;
 
         match self
             .prepare_pending_boundary_for_run(
-                request,
-                thread_id,
-                DeliveryBoundary::NewRun,
-                run_id,
-                record,
-                manifest,
+                request, thread_id, boundary, run_id, record, manifest,
             )
             .await?
         {
             Some(run_id) => Ok(Some(run_id)),
             None => Err(MailboxError::Internal(format!(
-                "pending NewRun freeze found no eligible messages for thread '{thread_id}'"
+                "pending {boundary:?} freeze found no eligible messages for thread '{thread_id}'"
             ))),
         }
     }
@@ -208,8 +226,29 @@ impl Mailbox {
 
             let first_new_seq = expected_version + 1;
             let last_new_seq = expected_version + selected_pending_ids.len() as u64;
-            let (input_snapshot, input) =
+            let (mut input_snapshot, _) =
                 build_run_input(thread_id, last_new_seq, &trigger_message_ids);
+            // Accumulate consumed triggers across multiple boundary freezes on the
+            // same run: one run may drain pending over several turns (ADR-0042 D4),
+            // so RunRecord.input must record the full consumed input, not just the
+            // last freeze. The range already spans from seq 1 to the latest seq.
+            if let Some(prior) = record.input.as_ref() {
+                let mut merged = prior.trigger_message_ids.clone();
+                for id in &input_snapshot.trigger_message_ids {
+                    if !merged.contains(id) {
+                        merged.push(id.clone());
+                    }
+                }
+                input_snapshot.trigger_message_ids = merged;
+            }
+            let input = Some(RunMessageInput {
+                thread_id: input_snapshot.thread_id.clone(),
+                range: input_snapshot.range,
+                trigger_message_ids: input_snapshot.trigger_message_ids.clone(),
+                selected_message_ids: input_snapshot.selected_message_ids.clone(),
+                context_policy: input_snapshot.context_policy.clone(),
+                compacted_snapshot_id: input_snapshot.compacted_snapshot_id.clone(),
+            });
             let mut snapshot = snapshot_template.clone();
             snapshot.input = input_snapshot;
             record.activation = Some(snapshot);
@@ -444,100 +483,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn pending_messages_can_be_edited_reordered_and_retracted_before_freeze() {
-        let thread_store = Arc::new(InMemoryStore::new());
-        let mailbox = Mailbox::new_with_pending_thread_run_store(
-            Arc::new(NoopExecutor),
-            Arc::new(InMemoryMailboxStore::new()),
-            thread_store.clone(),
-            "consumer".to_string(),
-            MailboxConfig::default(),
-        );
-        let delivered = mailbox
-            .deliver(
-                "thread-edit-pending",
-                &[
-                    Message::user("first").with_id("pending-1".to_string()),
-                    Message::user("second").with_id("pending-2".to_string()),
-                ],
-                DeliveryMode::new_run(DeliveryGranularity::Batch),
-            )
-            .await
-            .unwrap();
-
-        let edited = mailbox
-            .update_pending_message(
-                "thread-edit-pending",
-                &delivered[0].pending_id,
-                Message::user("edited").with_id(delivered[0].pending_id.clone()),
-            )
-            .await
-            .unwrap();
-        assert_eq!(edited.message.text(), "edited");
-
-        let reordered = mailbox
-            .reorder_pending_messages(
-                "thread-edit-pending",
-                &[
-                    delivered[1].pending_id.clone(),
-                    delivered[0].pending_id.clone(),
-                ],
-            )
-            .await
-            .unwrap();
-        assert_eq!(reordered[0].pending_id, delivered[1].pending_id);
-        assert_eq!(reordered[1].pending_id, delivered[0].pending_id);
-
-        let retracted = mailbox
-            .retract_pending_message("thread-edit-pending", &delivered[1].pending_id)
-            .await
-            .unwrap();
-        assert_eq!(retracted.message.text(), "second");
-
-        let frozen = mailbox
-            .freeze_pending("thread-edit-pending", DeliveryBoundary::NewRun, Some(0))
-            .await
-            .unwrap();
-        assert_eq!(frozen.len(), 1);
-        assert_eq!(frozen[0].message.text(), "edited");
-    }
-
-    #[tokio::test]
-    async fn pending_message_edit_after_freeze_returns_consumed_error() {
-        let thread_store = Arc::new(InMemoryStore::new());
-        let mailbox = Mailbox::new_with_pending_thread_run_store(
-            Arc::new(NoopExecutor),
-            Arc::new(InMemoryMailboxStore::new()),
-            thread_store,
-            "consumer".to_string(),
-            MailboxConfig::default(),
-        );
-        let delivered = mailbox
-            .deliver(
-                "thread-edit-consumed",
-                &[Message::user("sent").with_id("sent-id".to_string())],
-                DeliveryMode::new_run(DeliveryGranularity::Batch),
-            )
-            .await
-            .unwrap();
-        mailbox
-            .freeze_pending("thread-edit-consumed", DeliveryBoundary::NewRun, Some(0))
-            .await
-            .unwrap();
-
-        let error = mailbox
-            .update_pending_message(
-                "thread-edit-consumed",
-                &delivered[0].pending_id,
-                Message::user("too late").with_id(delivered[0].pending_id.clone()),
-            )
-            .await
-            .unwrap_err();
-
-        assert!(error.to_string().contains("already consumed"));
-    }
-
-    #[tokio::test]
     async fn boundary_freeze_uses_requested_delivery_boundary() {
         let thread_store = Arc::new(InMemoryStore::new());
         let mailbox = Mailbox::new_with_pending_thread_run_store(
@@ -649,53 +594,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn live_then_queue_stages_remote_running_input_as_next_step_pending() {
-        let mailbox_store = Arc::new(InMemoryMailboxStore::new());
-        let thread_store = Arc::new(InMemoryStore::new());
-        let mut run = created_run_record("thread-live-pending", "run-live-pending");
-        run.status = RunStatus::Running;
-        run.dispatch_id = Some("dispatch-live-pending".to_string());
-        thread_store.create_run(&run).await.unwrap();
-        let mailbox = Arc::new(Mailbox::new_with_pending_thread_run_store(
-            Arc::new(NoopExecutor),
-            mailbox_store.clone(),
-            thread_store.clone(),
-            "consumer".to_string(),
-            MailboxConfig::default(),
-        ));
-
-        let result = mailbox
-            .submit_live_then_queue(
-                RunActivation::new("thread-live-pending", vec![Message::user("steer")])
-                    .with_agent_id("agent-1"),
-                None,
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(
-            result.status,
-            crate::mailbox::MailboxDispatchStatus::Running
-        );
-        assert_eq!(result.run_id, "run-live-pending");
-        let pending = thread_store
-            .load_pending_message_records("thread-live-pending")
-            .await
-            .unwrap();
-        assert_eq!(pending.len(), 1);
-        assert_eq!(pending[0].message.text(), "steer");
-        assert_eq!(
-            pending[0].delivery_mode,
-            DeliveryMode::next_step(DeliveryGranularity::Batch)
-        );
-        let dispatches = mailbox_store
-            .list_dispatches("thread-live-pending", None, 10, 0)
-            .await
-            .unwrap();
-        assert!(dispatches.is_empty());
-    }
-
-    #[tokio::test]
     async fn submit_background_consumes_messages_through_pending_store() {
         let thread_store = Arc::new(InMemoryStore::new());
         let mailbox = Arc::new(Mailbox::new_with_pending_thread_run_store(
@@ -780,3 +678,7 @@ mod tests {
         assert_eq!(run.activation.unwrap().input.trigger_message_ids.len(), 2);
     }
 }
+
+#[cfg(test)]
+#[path = "pending_delivery_tests.rs"]
+mod pending_delivery_tests;

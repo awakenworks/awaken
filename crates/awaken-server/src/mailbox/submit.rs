@@ -460,7 +460,7 @@ impl Mailbox {
         };
 
         if let Some(run_id) = self
-            .prepare_pending_new_run_for_dispatch(
+            .prepare_pending_messages_for_dispatch(
                 request,
                 thread_id,
                 &normalized_messages,
