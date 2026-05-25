@@ -12,6 +12,7 @@ use awaken_contract::contract::outbox::{
 use awaken_contract::contract::protocol_replay_log::{ProtocolReplayLog, ProtocolReplayLookup};
 use parking_lot::Mutex;
 use tokio::task::JoinHandle;
+use tokio_util::sync::CancellationToken;
 
 use crate::app::{ReplayBufferEntry, ReplayBufferMap, ServerState};
 use crate::outbox_relay::{OutboxRelay, OutboxRelayConfig, OutboxRelayError};
@@ -96,6 +97,7 @@ impl Default for ProtocolFanoutRelayConfig {
 
 pub struct ProtocolRelayHandle {
     task: JoinHandle<()>,
+    cancel: CancellationToken,
     name: &'static str,
 }
 
@@ -104,11 +106,31 @@ pub type ProtocolFanoutRelayHandle = ProtocolRelayHandle;
 
 impl ProtocolRelayHandle {
     pub async fn shutdown(self) {
-        self.task.abort();
-        if let Err(error) = self.task.await
-            && !error.is_cancelled()
-        {
-            tracing::warn!(error = %error, relay = self.name, "outbox relay failed during shutdown");
+        self.shutdown_with_timeout(Duration::from_secs(30)).await;
+    }
+
+    pub async fn shutdown_with_timeout(self, timeout: Duration) {
+        self.cancel.cancel();
+        let mut task = self.task;
+        match tokio::time::timeout(timeout, &mut task).await {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) if error.is_cancelled() => {}
+            Ok(Err(error)) => {
+                tracing::warn!(error = %error, relay = self.name, "outbox relay failed during shutdown");
+            }
+            Err(_) => {
+                tracing::warn!(
+                    relay = self.name,
+                    timeout_ms = timeout.as_millis(),
+                    "outbox relay shutdown timed out; aborting task and relying on lease retry"
+                );
+                task.abort();
+                if let Err(error) = task.await
+                    && !error.is_cancelled()
+                {
+                    tracing::warn!(error = %error, relay = self.name, "outbox relay failed after abort");
+                }
+            }
         }
     }
 }
@@ -280,13 +302,16 @@ pub(crate) fn start_protocol_projector_relay(
     ));
     let relay = OutboxRelay::new(attachment.outbox, handler, attachment.config.relay.clone())?;
     let config = attachment.config;
+    let cancel = CancellationToken::new();
     Ok(Some(ProtocolRelayHandle {
         task: tokio::spawn(run_outbox_relay(
             relay,
             config.idle_sleep,
             config.error_sleep,
             "protocol projector relay",
+            cancel.clone(),
         )),
+        cancel,
         name: "protocol projector relay",
     }))
 }
@@ -310,13 +335,16 @@ pub(crate) fn start_protocol_fanout_relay(
     ));
     let relay = OutboxRelay::new(attachment.outbox, handler, attachment.config.relay.clone())?;
     let config = attachment.config;
+    let cancel = CancellationToken::new();
     Ok(Some(ProtocolRelayHandle {
         task: tokio::spawn(run_outbox_relay(
             relay,
             config.idle_sleep,
             config.error_sleep,
             "protocol fanout relay",
+            cancel.clone(),
         )),
+        cancel,
         name: "protocol fanout relay",
     }))
 }
@@ -326,8 +354,12 @@ async fn run_outbox_relay(
     idle_sleep: Duration,
     error_sleep: Duration,
     name: &'static str,
+    cancel: CancellationToken,
 ) {
     loop {
+        if cancel.is_cancelled() {
+            break;
+        }
         match relay.tick().await {
             Ok(stats) if stats.claimed == 0 => wait(idle_sleep).await,
             Ok(_) => {}
@@ -335,6 +367,9 @@ async fn run_outbox_relay(
                 tracing::warn!(error = %error, relay = name, "outbox relay tick failed");
                 wait(error_sleep).await;
             }
+        }
+        if cancel.is_cancelled() {
+            break;
         }
     }
 }
