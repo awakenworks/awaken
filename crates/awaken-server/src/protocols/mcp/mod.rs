@@ -34,6 +34,10 @@ pub fn build_mcp_server_config(
     build_mcp_server_config_inner(runtime, None, outbound_tx)
 }
 
+/// Build MCP tools that submit through the durable mailbox.
+///
+/// HTTP production wiring uses this path so tool calls participate in mailbox
+/// dispatch, pending delivery, recovery, and canonical replay.
 pub fn build_mcp_server_config_with_mailbox(
     runtime: &Arc<AgentRuntime>,
     mailbox: Arc<Mailbox>,
@@ -92,12 +96,15 @@ fn build_mcp_server_config_inner(
 /// Create and start an MCP server backed by all known Awaken agents.
 ///
 /// Returns the server handle and channel pair for wiring to a transport
-/// (HTTP or Stdio). Tools will send progress/log notifications through the
-/// server's outbound channel.
+/// (Stdio and tests). HTTP production wiring uses
+/// [`create_mcp_server_with_mailbox`] so MCP tool calls enter durable mailbox
+/// dispatch. Tools will send progress/log notifications through the server's
+/// outbound channel.
 pub fn create_mcp_server(runtime: &Arc<AgentRuntime>) -> (Arc<McpServer>, McpServerChannels) {
     create_mcp_server_inner(runtime, None)
 }
 
+/// Create an MCP server whose tools submit through the durable mailbox.
 pub fn create_mcp_server_with_mailbox(
     runtime: &Arc<AgentRuntime>,
     mailbox: Arc<Mailbox>,

@@ -248,6 +248,23 @@ mod tests {
     }
 
     #[test]
+    fn pending_record_missing_delivery_mode_defaults_to_new_run_batch() {
+        let json = serde_json::json!({
+            "pending_id": "pending-1",
+            "thread_id": "thread-1",
+            "position": 1,
+            "message": Message::user("hello").with_id("pending-1".to_string())
+        });
+
+        let record: PendingMessageRecord = serde_json::from_value(json).unwrap();
+
+        assert_eq!(
+            record.delivery_mode,
+            DeliveryMode::new_run(DeliveryGranularity::Batch)
+        );
+    }
+
+    #[test]
     fn freeze_selection_takes_one_when_first_eligible_is_one() {
         let pending = vec![
             pending("a", 1, DeliveryBoundary::NewRun, DeliveryGranularity::One),
