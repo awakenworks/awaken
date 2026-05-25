@@ -18,6 +18,7 @@ use futures::channel::mpsc;
 use crate::EventBuffer;
 use crate::cancellation::CancellationToken;
 use crate::inbox::{InboxReceiver, InboxSender};
+use crate::loop_runner::PendingBoundaryHandler;
 use crate::registry::RegistrySet;
 
 /// Read-only snapshot of cached thread state, passed from mailbox to runtime.
@@ -79,6 +80,7 @@ pub struct RunControl {
     pub cancellation_token: Option<CancellationToken>,
     pub decision_rx: Option<mpsc::UnboundedReceiver<Vec<(String, ToolCallResume)>>>,
     pub inbox: Option<RunInbox>,
+    pub pending_boundary: Option<Arc<dyn PendingBoundaryHandler>>,
     pub seeded_decisions: Vec<(String, ToolCallResume)>,
 }
 
@@ -321,6 +323,15 @@ impl RunActivation {
     #[must_use]
     pub fn with_inbox(mut self, sender: InboxSender, receiver: InboxReceiver) -> Self {
         self.control.inbox = Some(RunInbox { sender, receiver });
+        self
+    }
+
+    #[must_use]
+    pub fn with_pending_boundary_handler(
+        mut self,
+        handler: Arc<dyn PendingBoundaryHandler>,
+    ) -> Self {
+        self.control.pending_boundary = Some(handler);
         self
     }
 

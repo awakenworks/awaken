@@ -5,12 +5,14 @@ use awaken_contract::contract::message::{
     DeliveryBoundary, DeliveryGranularity, DeliveryMode, Message, MessageRecord,
     PendingMessageRecord, select_pending_for_freeze,
 };
+use awaken_contract::contract::run::{RunActivationSnapshot, RunInputSnapshot};
 use awaken_contract::contract::storage::{
     PinnedRegistryManifest, RunRecord, StorageError, ThreadRunStore,
 };
 use awaken_contract::contract::tool_intercept::RunMode;
 use awaken_contract::now_ms;
 use awaken_runtime::RunActivation;
+use awaken_runtime::loop_runner::{AgentLoopError, PendingBoundaryFreeze, PendingBoundaryHandler};
 
 use super::Mailbox;
 use super::helpers::{build_run_input, normalize_message_ids};
@@ -125,6 +127,26 @@ impl Mailbox {
         record: &mut RunRecord,
         manifest: &PinnedRegistryManifest,
     ) -> Result<Option<String>, MailboxError> {
+        let snapshot_template = request.snapshot(RunInputSnapshot::default(), manifest.clone());
+        self.prepare_pending_boundary_snapshot_for_run(
+            &snapshot_template,
+            thread_id,
+            boundary,
+            run_id,
+            record,
+        )
+        .await
+        .map(|frozen| frozen.map(|_| run_id.to_string()))
+    }
+
+    pub(super) async fn prepare_pending_boundary_snapshot_for_run(
+        &self,
+        snapshot_template: &RunActivationSnapshot,
+        thread_id: &str,
+        boundary: DeliveryBoundary,
+        run_id: &str,
+        record: &mut RunRecord,
+    ) -> Result<Option<Vec<MessageRecord>>, MailboxError> {
         let Some(store) = self.pending_thread_run_store.as_ref() else {
             return Ok(None);
         };
@@ -154,7 +176,9 @@ impl Mailbox {
             let last_new_seq = expected_version + selected_pending_ids.len() as u64;
             let (input_snapshot, input) =
                 build_run_input(thread_id, last_new_seq, &trigger_message_ids);
-            record.activation = Some(request.snapshot(input_snapshot, manifest.clone()));
+            let mut snapshot = snapshot_template.clone();
+            snapshot.input = input_snapshot;
+            record.activation = Some(snapshot);
             record.input = input;
             record.updated_at = now_ms() / 1000;
 
@@ -184,12 +208,70 @@ impl Mailbox {
             .await;
             self.refresh_worker_checkpoint_cache(thread_id, &appended_messages, record)
                 .await;
-            return Ok(Some(run_id.to_string()));
+            return Ok(Some(frozen));
         }
 
         Err(MailboxError::Internal(format!(
             "pending {boundary:?} freeze exhausted {MAX_PENDING_FREEZE_ATTEMPTS} retries under version conflict for thread '{thread_id}'"
         )))
+    }
+
+    pub(super) fn pending_boundary_handler(
+        self: &Arc<Self>,
+        request: &RunActivation,
+        run_id: &str,
+        manifest: &PinnedRegistryManifest,
+    ) -> Option<Arc<dyn PendingBoundaryHandler>> {
+        self.pending_thread_run_store.as_ref()?;
+        let snapshot_template = request.snapshot(RunInputSnapshot::default(), manifest.clone());
+        Some(Arc::new(MailboxPendingBoundaryHandler {
+            mailbox: Arc::clone(self),
+            thread_id: request.thread_id().to_string(),
+            run_id: run_id.to_string(),
+            snapshot_template,
+        }))
+    }
+}
+
+struct MailboxPendingBoundaryHandler {
+    mailbox: Arc<Mailbox>,
+    thread_id: String,
+    run_id: String,
+    snapshot_template: RunActivationSnapshot,
+}
+
+#[async_trait::async_trait]
+impl PendingBoundaryHandler for MailboxPendingBoundaryHandler {
+    async fn freeze_pending_boundary(
+        &self,
+        boundary: DeliveryBoundary,
+    ) -> Result<Option<PendingBoundaryFreeze>, AgentLoopError> {
+        let mut record = self
+            .mailbox
+            .thread_run_store()
+            .load_run(&self.run_id)
+            .await
+            .map_err(|error| AgentLoopError::StorageError(error.to_string()))?
+            .ok_or_else(|| {
+                AgentLoopError::StorageError(format!(
+                    "run '{}' not found while freezing pending {boundary:?}",
+                    self.run_id
+                ))
+            })?;
+        let frozen = self
+            .mailbox
+            .prepare_pending_boundary_snapshot_for_run(
+                &self.snapshot_template,
+                &self.thread_id,
+                boundary,
+                &self.run_id,
+                &mut record,
+            )
+            .await
+            .map_err(|error| AgentLoopError::StorageError(error.to_string()))?;
+        Ok(frozen.map(|records| PendingBoundaryFreeze {
+            messages: records.into_iter().map(|record| record.message).collect(),
+        }))
     }
 }
 
@@ -379,6 +461,62 @@ mod tests {
         assert_eq!(
             run.activation.unwrap().input.trigger_message_ids,
             vec!["next-id".to_string(), "new-id".to_string()]
+        );
+    }
+
+    #[tokio::test]
+    async fn runtime_pending_boundary_handler_freezes_next_step_messages() {
+        let thread_store = Arc::new(InMemoryStore::new());
+        let mailbox = Arc::new(Mailbox::new_with_pending_thread_run_store(
+            Arc::new(NoopExecutor),
+            Arc::new(InMemoryMailboxStore::new()),
+            thread_store.clone(),
+            "consumer".to_string(),
+            MailboxConfig::default(),
+        ));
+        thread_store
+            .create_run(&created_run_record("thread-handler", "run-handler"))
+            .await
+            .unwrap();
+        mailbox
+            .deliver(
+                "thread-handler",
+                &[Message::user("steer").with_id("steer-id".to_string())],
+                DeliveryMode::next_step(DeliveryGranularity::Batch),
+            )
+            .await
+            .unwrap();
+
+        let request =
+            RunActivation::new("thread-handler", Vec::new()).with_run_id_hint("run-handler");
+        let handler = mailbox
+            .pending_boundary_handler(&request, "run-handler", &empty_manifest())
+            .expect("handler configured");
+        let frozen = handler
+            .freeze_pending_boundary(DeliveryBoundary::NextStep)
+            .await
+            .unwrap()
+            .expect("frozen messages");
+
+        assert_eq!(frozen.messages.len(), 1);
+        assert_eq!(frozen.messages[0].text(), "steer");
+        let committed = thread_store
+            .load_messages("thread-handler")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(committed.len(), 1);
+        assert!(
+            thread_store
+                .load_pending_message_records("thread-handler")
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        let run = thread_store.load_run("run-handler").await.unwrap().unwrap();
+        assert_eq!(
+            run.activation.unwrap().input.trigger_message_ids,
+            vec!["steer-id".to_string()]
         );
     }
 
