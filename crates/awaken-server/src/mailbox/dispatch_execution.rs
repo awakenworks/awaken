@@ -279,6 +279,11 @@ pub(super) async fn run_claimed_dispatch(
         .and_then(|plan| plan.into_replayable())
     {
         Ok(plan) => {
+            if let Some(handler) =
+                this.pending_boundary_handler(&request, &run_id, &plan.scope.manifest)
+            {
+                request = request.with_pending_boundary_handler(handler);
+            }
             this.executor
                 .run_replayable_with_thread_context(request, plan, sink.clone(), thread_ctx)
                 .await

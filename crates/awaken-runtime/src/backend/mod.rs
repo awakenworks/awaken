@@ -28,7 +28,7 @@ use serde_json::{Value, json};
 
 use crate::cancellation::CancellationToken;
 use crate::inbox::{InboxReceiver, InboxSender};
-use crate::loop_runner::{AgentLoopError, AgentRunResult};
+use crate::loop_runner::{AgentLoopError, AgentRunResult, PendingBoundaryHandler};
 use crate::phase::PhaseRuntime;
 use crate::{
     registry::{AgentResolver, ResolvedBackendAgent},
@@ -52,6 +52,7 @@ pub struct BackendParentContext {
 pub struct BackendControl {
     pub cancellation_token: Option<CancellationToken>,
     pub decision_rx: Option<mpsc::UnboundedReceiver<Vec<(String, ToolCallResume)>>>,
+    pub pending_boundary: Option<Arc<dyn PendingBoundaryHandler>>,
 }
 
 /// Root execution request shared by local and remote root execution.

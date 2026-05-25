@@ -350,6 +350,7 @@ async fn execute_delegate_in_background_task_can_self_cancel_and_cascade() {
                                 control: BackendControl {
                                     cancellation_token: Some(ctx.cancel_token.clone()),
                                     decision_rx: None,
+                    pending_boundary: None,
                                 },
                                 policy: BackendDelegatePolicy::default(),
                                 state_seed: None,                                })
@@ -458,6 +459,7 @@ async fn execute_delegate_preserves_existing_cancel_task_tool_in_background_cont
                             control: BackendControl {
                                 cancellation_token: Some(ctx.cancel_token),
                                 decision_rx: None,
+                    pending_boundary: None,
                             },
                             policy: BackendDelegatePolicy::default(),
                             state_seed: None,                            })

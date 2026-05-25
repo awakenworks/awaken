@@ -352,6 +352,7 @@ impl AgentRuntime {
                     .supports_cooperative_token()
                     .then_some(cancellation_token),
                 decision_rx,
+                pending_boundary: control.pending_boundary,
             },
             decisions,
             overrides,
@@ -370,7 +371,6 @@ impl AgentRuntime {
                 }),
             },
         )?;
-
         // Register active run (guard ensures cleanup on drop/panic/cancellation)
         self.register_run(&thread_id, handle)
             .map_err(AgentLoopError::RuntimeError)?;
