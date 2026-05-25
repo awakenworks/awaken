@@ -34,6 +34,11 @@ tempfile = { workspace = true }
 proptest = { workspace = true }
 futures = { workspace = true }
 testcontainers = { workspace = true }
+criterion = { workspace = true }
+
+[[bench]]
+name = "mailbox_ops"
+harness = false
 
 [features]
 default = []

@@ -82,6 +82,7 @@ uuid = { workspace = true }
 sqlx = { workspace = true, features = ["runtime-tokio", "postgres", "json"] }
 tempfile = { workspace = true }
 testcontainers = { workspace = true }
+proptest = { workspace = true }
 
 [features]
 default = ["permission"]

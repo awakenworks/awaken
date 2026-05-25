@@ -80,6 +80,17 @@ impl crate::plugins::Plugin for LoopStatePlugin {
 pub enum AgentLoopError {
     #[error("inference failed: {0}")]
     InferenceFailed(String),
+    /// Structured inference failure that preserves the upstream
+    /// [`InferenceExecutionError`](awaken_contract::contract::executor::InferenceExecutionError)
+    /// classification. Every production inference fault flows through here
+    /// (see `inference::drive_one_stream`), so downstream dispatch can consult
+    /// [`is_retryable`](awaken_contract::contract::executor::InferenceExecutionError::is_retryable)
+    /// and [`retry_after`](awaken_contract::contract::executor::InferenceExecutionError::retry_after)
+    /// to nack-with-backoff vs dead-letter, instead of blindly retrying a
+    /// permanent fault (bad credentials, exhausted quota, context overflow)
+    /// until `max_attempts` is burned.
+    #[error("inference failed: {0}")]
+    Inference(#[from] awaken_contract::contract::executor::InferenceExecutionError),
     #[error("storage failed: {0}")]
     StorageError(String),
     #[error("phase error: {0}")]
@@ -88,12 +99,6 @@ pub enum AgentLoopError {
     RuntimeError(#[from] crate::error::RuntimeError),
     #[error("invalid resume: {0}")]
     InvalidResume(String),
-}
-
-impl From<awaken_contract::contract::executor::InferenceExecutionError> for AgentLoopError {
-    fn from(e: awaken_contract::contract::executor::InferenceExecutionError) -> Self {
-        Self::InferenceFailed(e.to_string())
-    }
 }
 
 impl From<crate::execution::executor::ToolExecutorError> for AgentLoopError {
