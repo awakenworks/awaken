@@ -27,6 +27,16 @@ mod pending_boundary_tests {
 
     #[async_trait]
     impl PendingBoundaryHandler for RecordingBoundaryHandler {
+        async fn stage_pending_messages(
+            &self,
+            boundary: DeliveryBoundary,
+            messages: Vec<Message>,
+        ) -> Result<(), AgentLoopError> {
+            self.boundaries.lock().unwrap().push(boundary);
+            assert!(messages.is_empty());
+            Ok(())
+        }
+
         async fn freeze_pending_boundary(
             &self,
             boundary: DeliveryBoundary,
@@ -34,6 +44,34 @@ mod pending_boundary_tests {
             self.boundaries.lock().unwrap().push(boundary);
             Ok(Some(crate::loop_runner::PendingBoundaryFreeze {
                 messages: self.messages.clone(),
+            }))
+        }
+    }
+
+    struct StagingBoundaryHandler {
+        staged_boundaries: Mutex<Vec<DeliveryBoundary>>,
+        staged_messages: Mutex<Vec<Message>>,
+    }
+
+    #[async_trait]
+    impl PendingBoundaryHandler for StagingBoundaryHandler {
+        async fn stage_pending_messages(
+            &self,
+            boundary: DeliveryBoundary,
+            messages: Vec<Message>,
+        ) -> Result<(), AgentLoopError> {
+            self.staged_boundaries.lock().unwrap().push(boundary);
+            self.staged_messages.lock().unwrap().extend(messages);
+            Ok(())
+        }
+
+        async fn freeze_pending_boundary(
+            &self,
+            boundary: DeliveryBoundary,
+        ) -> Result<Option<crate::loop_runner::PendingBoundaryFreeze>, AgentLoopError> {
+            self.staged_boundaries.lock().unwrap().push(boundary);
+            Ok(Some(crate::loop_runner::PendingBoundaryFreeze {
+                messages: self.staged_messages.lock().unwrap().clone(),
             }))
         }
     }
@@ -67,6 +105,53 @@ mod pending_boundary_tests {
 
         assert!(!appended);
         assert_eq!(messages.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn inbox_payloads_stage_to_pending_before_freeze_when_handler_exists() {
+        let handler = std::sync::Arc::new(StagingBoundaryHandler {
+            staged_boundaries: Mutex::new(Vec::new()),
+            staged_messages: Mutex::new(Vec::new()),
+        });
+        let handler: std::sync::Arc<dyn PendingBoundaryHandler> = handler;
+        let mut messages = vec![std::sync::Arc::new(Message::user("original"))];
+        let payload = crate::inbox::inbox_messages_payload(vec![Message::user("live")]);
+        let store = StateStore::new();
+
+        let appended = apply_inbox_payloads_at_boundary(
+            Some(&handler),
+            DeliveryBoundary::NextStep,
+            &mut messages,
+            vec![payload],
+            &store,
+        )
+        .await
+        .unwrap();
+
+        assert!(appended);
+        assert_eq!(messages.len(), 2);
+        assert_eq!(messages[1].text(), "live");
+    }
+
+    #[tokio::test]
+    async fn inbox_payloads_append_directly_without_pending_handler() {
+        let mut messages = vec![std::sync::Arc::new(Message::user("original"))];
+        let payload = crate::inbox::inbox_messages_payload(vec![Message::user("live")]);
+        let store = StateStore::new();
+
+        let appended = apply_inbox_payloads_at_boundary(
+            None,
+            DeliveryBoundary::NextStep,
+            &mut messages,
+            vec![payload],
+            &store,
+        )
+        .await
+        .unwrap();
+
+        assert!(appended);
+        assert_eq!(messages.len(), 2);
+        assert_eq!(messages[1].text(), "live");
     }
 }
 

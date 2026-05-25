@@ -38,26 +38,35 @@ fn has_pending_work(store: &StateStore) -> bool {
         .unwrap_or(false)
 }
 
-fn push_inbox_payload(messages: &mut Vec<std::sync::Arc<Message>>, payload: &serde_json::Value) {
-    for message in inbox_payload_messages(payload) {
-        messages.push(std::sync::Arc::new(message));
-    }
-}
-
-/// Drain a single inbox payload. Returns `true` when the payload caused
-/// new conversational input to be appended (caller should keep the loop
-/// running). Compaction events return `false` because they perform an
-/// in-place context swap rather than introducing new turns for the LLM.
-fn apply_inbox_payload(
-    messages: &mut Vec<std::sync::Arc<Message>>,
-    payload: &serde_json::Value,
+async fn apply_inbox_payloads_at_boundary(
+    pending_boundary: Option<&Arc<dyn PendingBoundaryHandler>>,
+    boundary: DeliveryBoundary,
+    messages: &mut Vec<Arc<Message>>,
+    payloads: Vec<serde_json::Value>,
     store: &StateStore,
-) -> bool {
-    if try_consume_compaction_event(messages, payload, store) {
-        return false;
+) -> Result<bool, AgentLoopError> {
+    let mut inbox_messages = Vec::new();
+    let mut changed = false;
+    for payload in payloads {
+        if try_consume_compaction_event(messages, &payload, store) {
+            changed = true;
+            continue;
+        }
+        inbox_messages.extend(inbox_payload_messages(&payload));
     }
-    push_inbox_payload(messages, payload);
-    true
+    if inbox_messages.is_empty() {
+        return Ok(changed);
+    }
+
+    let Some(handler) = pending_boundary else {
+        messages.extend(inbox_messages.into_iter().map(Arc::new));
+        return Ok(true);
+    };
+
+    handler
+        .stage_pending_messages(boundary, inbox_messages)
+        .await?;
+    apply_pending_boundary(Some(handler), boundary, messages).await
 }
 
 async fn apply_pending_boundary(
@@ -314,12 +323,17 @@ pub(super) async fn run_agent_loop_impl(
                 // If new messages arrived, continue the loop so LLM can
                 // process them — don't terminate with unprocessed messages.
                 let mut has_new_messages = false;
-                if let Some(ref mut inbox) = inbox {
-                    for msg in inbox.drain() {
-                        if apply_inbox_payload(&mut messages, &msg, store) {
-                            has_new_messages = true;
-                        }
-                    }
+                if let Some(ref mut inbox) = inbox
+                    && apply_inbox_payloads_at_boundary(
+                        pending_boundary.as_ref(),
+                        DeliveryBoundary::OnNaturalEnd,
+                        &mut messages,
+                        inbox.drain(),
+                        store,
+                    )
+                    .await?
+                {
+                    has_new_messages = true;
                 }
 
                 if has_new_messages {
@@ -348,10 +362,16 @@ pub(super) async fn run_agent_loop_impl(
                         if let Some(ref mut inbox) = inbox {
                             match inbox.recv_or_cancel(cancellation_token.as_ref()).await {
                                 Some(msg) => {
-                                    apply_inbox_payload(&mut messages, &msg, store);
-                                    for extra in inbox.drain() {
-                                        apply_inbox_payload(&mut messages, &extra, store);
-                                    }
+                                    let mut payloads = vec![msg];
+                                    payloads.extend(inbox.drain());
+                                    apply_inbox_payloads_at_boundary(
+                                        pending_boundary.as_ref(),
+                                        DeliveryBoundary::OnNaturalEnd,
+                                        &mut messages,
+                                        payloads,
+                                        store,
+                                    )
+                                    .await?;
                                     continue; // back to loop — LLM processes events
                                 }
                                 None => break TerminationReason::Cancelled,
@@ -504,25 +524,32 @@ pub(super) async fn run_agent_loop_impl(
                             continue 'run_loop;
                         }
                         WaitOutcome::InboxMessages(events) => {
-                            for event in events {
-                                push_inbox_payload(&mut messages, &event);
-                            }
-                            persist_checkpoint(CheckpointPersist {
+                            let appended = apply_inbox_payloads_at_boundary(
+                                pending_boundary.as_ref(),
+                                DeliveryBoundary::NextStep,
+                                &mut messages,
+                                events,
                                 store,
-                                checkpoint_store,
-                                commit,
-                                messages: &messages,
-                                input_message_count,
-                                run_identity: &run_identity,
-                                run_created_at,
-                                total_input_tokens,
-                                total_output_tokens,
-                                termination_reason: None,
-                                final_output: None,
-                                error_payload: None,
-                                thread_ctx: thread_ctx.as_ref(),
-                            })
+                            )
                             .await?;
+                            if appended && pending_boundary.is_none() {
+                                persist_checkpoint(CheckpointPersist {
+                                    store,
+                                    checkpoint_store,
+                                    commit,
+                                    messages: &messages,
+                                    input_message_count,
+                                    run_identity: &run_identity,
+                                    run_created_at,
+                                    total_input_tokens,
+                                    total_output_tokens,
+                                    termination_reason: None,
+                                    final_output: None,
+                                    error_payload: None,
+                                    thread_ctx: thread_ctx.as_ref(),
+                                })
+                                .await?;
+                            }
                             continue;
                         }
                         WaitOutcome::Cancelled => {
@@ -553,9 +580,14 @@ pub(super) async fn run_agent_loop_impl(
                 .await?;
                 // Drain inbox messages that arrived during step execution
                 if let Some(ref mut inbox) = inbox {
-                    for msg in inbox.drain() {
-                        push_inbox_payload(&mut messages, &msg);
-                    }
+                    apply_inbox_payloads_at_boundary(
+                        pending_boundary.as_ref(),
+                        DeliveryBoundary::NextStep,
+                        &mut messages,
+                        inbox.drain(),
+                        store,
+                    )
+                    .await?;
                 }
                 if apply_pending_boundary(
                     pending_boundary.as_ref(),
