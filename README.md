@@ -188,7 +188,7 @@ import { CopilotKit } from "@copilotkit/react-core";
 
 #### Admin Console
 
-Wire a `ConfigStore` into `AppState` and the SPA in [`apps/admin-console`](./apps/admin-console/) gives you a browser UI for the same API (reads `VITE_BACKEND_URL` for the server base URL). It's a React 19 + Vite app on the Awaken brand: JetBrains Mono throughout, achromatic surfaces, sharp 2px corners; light by default with a Light/Dark/System cycle toggle in the topbar (also auto-switches to dark on `prefers-color-scheme: dark`). The dashboard surfaces live signal — **awaiting-decision** (HITL) gets warn-tinted hero treatment, plus rolling-window aggregates from the observability registry (inferences, errors, tokens, suspensions/handoffs/delegations) with top-N agents and tools — so an operator sees what needs attention in one glance.
+Wire a `ConfigStore` into `ServerState` and the SPA in [`apps/admin-console`](./apps/admin-console/) gives you a browser UI for the same API (reads `VITE_BACKEND_URL` for the server base URL). It's a React 19 + Vite app on the Awaken brand: JetBrains Mono throughout, achromatic surfaces, sharp 2px corners; light by default with a Light/Dark/System cycle toggle in the topbar (also auto-switches to dark on `prefers-color-scheme: dark`). The dashboard surfaces live signal — **awaiting-decision** (HITL) gets warn-tinted hero treatment, plus rolling-window aggregates from the observability registry (inferences, errors, tokens, suspensions/handoffs/delegations) with top-N agents and tools — so an operator sees what needs attention in one glance.
 
 <table>
   <tr>
