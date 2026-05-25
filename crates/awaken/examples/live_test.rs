@@ -140,6 +140,7 @@ async fn main() {
         overrides: None,
         frontend_tools: Vec::new(),
         inbox: None,
+        pending_boundary: None,
         is_continuation: false,
         commit: CommitWiring::default(),
         initial_state_seed: None,

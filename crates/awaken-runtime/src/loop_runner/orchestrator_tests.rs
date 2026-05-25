@@ -15,6 +15,61 @@ fn latest_run_response_uses_current_run_non_tool_output() {
     assert_eq!(latest_run_response(&messages, messages.len()), "");
 }
 
+mod pending_boundary_tests {
+    use super::*;
+    use async_trait::async_trait;
+    use std::sync::Mutex;
+
+    struct RecordingBoundaryHandler {
+        boundaries: Mutex<Vec<DeliveryBoundary>>,
+        messages: Vec<Message>,
+    }
+
+    #[async_trait]
+    impl PendingBoundaryHandler for RecordingBoundaryHandler {
+        async fn freeze_pending_boundary(
+            &self,
+            boundary: DeliveryBoundary,
+        ) -> Result<Option<crate::loop_runner::PendingBoundaryFreeze>, AgentLoopError> {
+            self.boundaries.lock().unwrap().push(boundary);
+            Ok(Some(crate::loop_runner::PendingBoundaryFreeze {
+                messages: self.messages.clone(),
+            }))
+        }
+    }
+
+    #[tokio::test]
+    async fn apply_pending_boundary_appends_frozen_messages() {
+        let handler = std::sync::Arc::new(RecordingBoundaryHandler {
+            boundaries: Mutex::new(Vec::new()),
+            messages: vec![Message::user("pending")],
+        });
+        let handler: std::sync::Arc<dyn PendingBoundaryHandler> = handler;
+        let mut messages = vec![std::sync::Arc::new(Message::user("original"))];
+
+        let appended =
+            apply_pending_boundary(Some(&handler), DeliveryBoundary::NextStep, &mut messages)
+                .await
+                .unwrap();
+
+        assert!(appended);
+        assert_eq!(messages.len(), 2);
+        assert_eq!(messages[1].text(), "pending");
+    }
+
+    #[tokio::test]
+    async fn apply_pending_boundary_without_handler_is_noop() {
+        let mut messages = vec![std::sync::Arc::new(Message::user("original"))];
+
+        let appended = apply_pending_boundary(None, DeliveryBoundary::OnNaturalEnd, &mut messages)
+            .await
+            .unwrap();
+
+        assert!(!appended);
+        assert_eq!(messages.len(), 1);
+    }
+}
+
 mod pending_work_tests {
     use super::*;
     use crate::agent::state::PendingWorkKey;

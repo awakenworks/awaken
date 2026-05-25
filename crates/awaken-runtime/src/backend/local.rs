@@ -212,6 +212,7 @@ impl LocalBackend {
                 overrides: request.overrides,
                 frontend_tools: request.frontend_tools,
                 inbox: request.inbox,
+                pending_boundary: None,
                 is_continuation: request.is_continuation,
                 initial_state_seed: None,
             },
@@ -369,6 +370,7 @@ impl LocalBackend {
             overrides: None,
             frontend_tools: Vec::new(),
             inbox: Some(inbox_receiver),
+            pending_boundary: None,
             is_continuation: false,
             initial_state_seed: request.state_seed,
         })

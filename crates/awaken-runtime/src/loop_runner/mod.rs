@@ -24,11 +24,12 @@ use crate::cancellation::CancellationToken;
 use crate::phase::{ExecutionEnv, PhaseRuntime};
 use crate::registry::AgentResolver;
 use crate::state::MutationBatch;
+use async_trait::async_trait;
 use awaken_contract::StateError;
 use awaken_contract::contract::event_sink::EventSink;
 use awaken_contract::contract::identity::RunIdentity;
 use awaken_contract::contract::inference::InferenceOverride;
-use awaken_contract::contract::message::Message;
+use awaken_contract::contract::message::{DeliveryBoundary, Message};
 use awaken_contract::contract::storage::ThreadRunStore;
 use awaken_contract::contract::suspension::ToolCallResume;
 use awaken_contract::contract::tool::{ToolResult, ToolStatus};
@@ -114,6 +115,25 @@ pub struct AgentRunResult {
     pub response: String,
     pub termination: awaken_contract::contract::lifecycle::TerminationReason,
     pub steps: usize,
+}
+
+/// Messages frozen from durable pending state at a loop boundary.
+#[derive(Debug, Clone, Default)]
+pub struct PendingBoundaryFreeze {
+    pub messages: Vec<Message>,
+}
+
+/// Runtime callback for ADR-0042 durable pending consumption.
+///
+/// The loop runner owns `NextStep` / `OnNaturalEnd` injection points but does
+/// not own persistent thread-message storage. Mailbox/server code provides the
+/// implementation when durable pending is enabled.
+#[async_trait]
+pub trait PendingBoundaryHandler: Send + Sync {
+    async fn freeze_pending_boundary(
+        &self,
+        boundary: DeliveryBoundary,
+    ) -> Result<Option<PendingBoundaryFreeze>, AgentLoopError>;
 }
 
 // -- Shared helpers --
@@ -222,6 +242,8 @@ pub struct AgentLoopParams<'a> {
     pub frontend_tools: Vec<awaken_contract::contract::tool::ToolDescriptor>,
     /// Optional inbox receiver for background-task messages.
     pub inbox: Option<crate::inbox::InboxReceiver>,
+    /// Optional durable pending-message boundary hook.
+    pub pending_boundary: Option<Arc<dyn PendingBoundaryHandler>>,
     /// When `true`, the run is a continuation of a previous awaiting_tasks run.
     /// The orchestrator emits `SetRunning` instead of `Start`.
     pub is_continuation: bool,

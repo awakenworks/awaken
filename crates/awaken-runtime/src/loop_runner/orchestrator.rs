@@ -5,8 +5,9 @@ use crate::inbox::inbox_payload_messages;
 use crate::state::StateStore;
 use awaken_contract::contract::event::AgentEvent;
 use awaken_contract::contract::lifecycle::{RunStatus, TerminationReason};
-use awaken_contract::contract::message::{Message, Role, gen_message_id};
+use awaken_contract::contract::message::{DeliveryBoundary, Message, Role, gen_message_id};
 use awaken_contract::model::Phase;
+use std::sync::Arc;
 
 use super::checkpoint::{
     CheckpointPersist, StepCompletion, check_termination, complete_step, emit_state_snapshot,
@@ -17,7 +18,9 @@ use super::resume::{
 };
 use super::setup::{PreparedRun, prepare_run};
 use super::step::{self, StepContext, StepOutcome, execute_step};
-use super::{AgentLoopError, AgentLoopParams, AgentRunResult, commit_update, now_ms};
+use super::{
+    AgentLoopError, AgentLoopParams, AgentRunResult, PendingBoundaryHandler, commit_update, now_ms,
+};
 use crate::agent::state::{RunLifecycle, RunLifecycleUpdate, ToolCallStates, ToolCallStatesUpdate};
 #[cfg(feature = "handoff")]
 use crate::state::MutationBatch;
@@ -57,6 +60,24 @@ fn apply_inbox_payload(
     true
 }
 
+async fn apply_pending_boundary(
+    pending_boundary: Option<&Arc<dyn PendingBoundaryHandler>>,
+    boundary: DeliveryBoundary,
+    messages: &mut Vec<Arc<Message>>,
+) -> Result<bool, AgentLoopError> {
+    let Some(handler) = pending_boundary else {
+        return Ok(false);
+    };
+    let Some(freeze) = handler.freeze_pending_boundary(boundary).await? else {
+        return Ok(false);
+    };
+    if freeze.messages.is_empty() {
+        return Ok(false);
+    }
+    messages.extend(freeze.messages.into_iter().map(Arc::new));
+    Ok(true)
+}
+
 #[tracing::instrument(skip_all, fields(agent_id = %params.agent_id, run_id = %params.run_identity.run_id))]
 pub(super) async fn run_agent_loop_impl(
     params: AgentLoopParams<'_>,
@@ -76,6 +97,7 @@ pub(super) async fn run_agent_loop_impl(
         overrides: initial_overrides,
         frontend_tools,
         mut inbox,
+        pending_boundary,
         is_continuation,
         initial_state_seed,
     } = params;
@@ -305,6 +327,16 @@ pub(super) async fn run_agent_loop_impl(
                     continue;
                 }
 
+                if apply_pending_boundary(
+                    pending_boundary.as_ref(),
+                    DeliveryBoundary::OnNaturalEnd,
+                    &mut messages,
+                )
+                .await?
+                {
+                    continue;
+                }
+
                 if has_pending_work(store) {
                     // Background tasks still running but no new messages yet.
                     if run_identity.origin()
@@ -524,6 +556,15 @@ pub(super) async fn run_agent_loop_impl(
                     for msg in inbox.drain() {
                         push_inbox_payload(&mut messages, &msg);
                     }
+                }
+                if apply_pending_boundary(
+                    pending_boundary.as_ref(),
+                    DeliveryBoundary::NextStep,
+                    &mut messages,
+                )
+                .await?
+                {
+                    continue;
                 }
                 if let Some(reason) = check_termination(store) {
                     break reason;
