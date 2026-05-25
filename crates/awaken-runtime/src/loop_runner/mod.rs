@@ -245,9 +245,13 @@ pub fn build_agent_env(
         crate::registry::resolve::inject_default_plugins(plugins.to_vec(), agent.max_rounds());
 
     if let Some(policy) = agent.context_policy() {
-        all_plugins.push(Arc::new(crate::context::ContextTransformPlugin::new(
-            policy.clone(),
-        )));
+        let transform_config = agent
+            .spec
+            .config::<crate::context::ContextTransformConfigKey>()
+            .unwrap_or_default();
+        all_plugins.push(Arc::new(
+            crate::context::ContextTransformPlugin::with_config(policy.clone(), transform_config),
+        ));
     }
 
     ExecutionEnv::from_plugins(&all_plugins, &std::collections::HashSet::new())

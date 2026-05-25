@@ -20,14 +20,14 @@ pub use plugin::{
     CONTEXT_COMPACTION_PLUGIN_ID, CONTEXT_TRANSFORM_PLUGIN_ID, CompactionAction,
     CompactionBoundary, CompactionConfig, CompactionConfigKey, CompactionFailure,
     CompactionInFlight, CompactionPlugin, CompactionSkipped, CompactionState, CompactionStateKey,
-    ContextTransformPlugin,
+    ContextTransformConfig, ContextTransformConfigKey, ContextTransformPlugin,
 };
 pub use summarizer::{
     ContextSummarizer, DefaultSummarizer, MIN_COMPACTION_GAIN_TOKENS, SummarizationError,
     extract_previous_summary, render_transcript,
 };
 pub use transform::{
-    ARTIFACT_COMPACT_THRESHOLD_TOKENS, ARTIFACT_PREVIEW_MAX_CHARS, ARTIFACT_PREVIEW_MAX_LINES,
-    ContextTransform, compact_artifact, compact_tool_results,
+    ArtifactCompactionConfig, ContextTransform, compact_artifact, compact_artifact_with_config,
+    compact_tool_results, compact_tool_results_with_config,
 };
 pub use truncation::{TruncationState, continuation_message, should_retry};

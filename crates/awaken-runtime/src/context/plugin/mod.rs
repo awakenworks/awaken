@@ -8,4 +8,7 @@ pub use compaction::{
     CompactionConfigKey, CompactionFailure, CompactionInFlight, CompactionPlugin,
     CompactionSkipped, CompactionState, CompactionStateKey,
 };
-pub use context_transform::{CONTEXT_TRANSFORM_PLUGIN_ID, ContextTransformPlugin};
+pub use context_transform::{
+    CONTEXT_TRANSFORM_PLUGIN_ID, ContextTransformConfig, ContextTransformConfigKey,
+    ContextTransformPlugin,
+};

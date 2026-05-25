@@ -4,8 +4,8 @@ mod compaction;
 mod truncation;
 
 pub use compaction::{
-    ARTIFACT_COMPACT_THRESHOLD_TOKENS, ARTIFACT_PREVIEW_MAX_CHARS, ARTIFACT_PREVIEW_MAX_LINES,
-    compact_artifact, compact_tool_results,
+    ArtifactCompactionConfig, compact_artifact, compact_artifact_with_config, compact_tool_results,
+    compact_tool_results_with_config,
 };
 pub use truncation::{adjust_split_for_tool_pairs, find_split_point};
 
@@ -23,11 +23,22 @@ use awaken_contract::contract::transform::{
 /// Adjusts split points to avoid orphaning tool call/result pairs.
 pub struct ContextTransform {
     policy: ContextWindowPolicy,
+    artifact_compaction: ArtifactCompactionConfig,
 }
 
 impl ContextTransform {
     pub fn new(policy: ContextWindowPolicy) -> Self {
-        Self { policy }
+        Self::with_artifact_compaction(policy, ArtifactCompactionConfig::default())
+    }
+
+    pub fn with_artifact_compaction(
+        policy: ContextWindowPolicy,
+        artifact_compaction: ArtifactCompactionConfig,
+    ) -> Self {
+        Self {
+            policy,
+            artifact_compaction,
+        }
     }
 }
 
@@ -38,7 +49,7 @@ impl InferenceRequestTransform for ContextTransform {
         tool_descriptors: &[ToolDescriptor],
     ) -> TransformOutput {
         // Compact oversized tool results before truncation
-        compact_tool_results(&mut messages);
+        compact_tool_results_with_config(&mut messages, &self.artifact_compaction);
 
         let tool_tokens = estimate_tool_tokens(tool_descriptors);
         let available = self

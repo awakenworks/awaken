@@ -269,9 +269,12 @@ fn build_plugin_chain(
         plugins.push(Arc::new(crate::context::CompactionPlugin::new(
             compaction_config,
         )));
-        plugins.push(Arc::new(crate::context::ContextTransformPlugin::new(
-            effective,
-        )));
+        let transform_config = spec
+            .config::<crate::context::ContextTransformConfigKey>()
+            .unwrap_or_default();
+        plugins.push(Arc::new(
+            crate::context::ContextTransformPlugin::with_config(effective, transform_config),
+        ));
     }
 
     // Validate spec sections against plugin-declared schemas

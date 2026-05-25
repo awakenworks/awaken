@@ -1,21 +1,48 @@
 //! ContextTransformPlugin — registers the context truncation request transform.
 
-use crate::plugins::{Plugin, PluginDescriptor, PluginRegistrar};
+use serde::{Deserialize, Serialize};
+
+use crate::context::ArtifactCompactionConfig;
+use crate::plugins::{ConfigSchema, Plugin, PluginDescriptor, PluginRegistrar};
 
 /// Plugin ID for context truncation transform.
 pub const CONTEXT_TRANSFORM_PLUGIN_ID: &str = "context_transform";
+
+/// Configuration for the built-in context request transform.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema, PartialEq, Eq)]
+#[serde(default)]
+pub struct ContextTransformConfig {
+    pub artifact_compaction: ArtifactCompactionConfig,
+}
+
+/// Plugin config key for [`ContextTransformConfig`].
+pub struct ContextTransformConfigKey;
+
+impl awaken_contract::registry_spec::PluginConfigKey for ContextTransformConfigKey {
+    const KEY: &'static str = "context_transform";
+    type Config = ContextTransformConfig;
+}
 
 /// Plugin that registers the built-in context truncation request transform.
 /// Wraps a `ContextWindowPolicy` and registers a `ContextTransform` via
 /// `register_request_transform()` during plugin registration (ADR-0001).
 pub struct ContextTransformPlugin {
     policy: awaken_contract::contract::inference::ContextWindowPolicy,
+    config: ContextTransformConfig,
 }
 
 impl ContextTransformPlugin {
     pub fn new(policy: awaken_contract::contract::inference::ContextWindowPolicy) -> Self {
-        Self { policy }
+        Self::with_config(policy, ContextTransformConfig::default())
     }
+
+    pub fn with_config(
+        policy: awaken_contract::contract::inference::ContextWindowPolicy,
+        config: ContextTransformConfig,
+    ) -> Self {
+        Self { policy, config }
+    }
+
     /// Effective policy this plugin will install as a request transform.
     ///
     /// Only used by resolve-pipeline tests; gated to avoid `dead_code` in
@@ -23,6 +50,11 @@ impl ContextTransformPlugin {
     #[cfg(test)]
     pub(crate) fn policy(&self) -> &awaken_contract::contract::inference::ContextWindowPolicy {
         &self.policy
+    }
+
+    #[cfg(test)]
+    pub(crate) fn config(&self) -> &ContextTransformConfig {
+        &self.config
     }
 }
 
@@ -36,9 +68,16 @@ impl Plugin for ContextTransformPlugin {
     fn register(&self, registrar: &mut PluginRegistrar) -> Result<(), awaken_contract::StateError> {
         registrar.register_request_transform(
             CONTEXT_TRANSFORM_PLUGIN_ID,
-            crate::context::ContextTransform::new(self.policy.clone()),
+            crate::context::ContextTransform::with_artifact_compaction(
+                self.policy.clone(),
+                self.config.artifact_compaction.clone(),
+            ),
         );
         Ok(())
+    }
+
+    fn config_schemas(&self) -> Vec<ConfigSchema> {
+        vec![ConfigSchema::for_key::<ContextTransformConfigKey>()]
     }
 }
 
@@ -68,6 +107,60 @@ mod tests {
         assert_eq!(
             registrar.request_transforms[0].plugin_id,
             CONTEXT_TRANSFORM_PLUGIN_ID
+        );
+    }
+
+    #[test]
+    fn context_transform_plugin_uses_artifact_compaction_config() {
+        use awaken_contract::contract::message::{Message, ToolCall};
+        use serde_json::json;
+
+        let policy = awaken_contract::contract::inference::ContextWindowPolicy {
+            max_context_tokens: 100_000,
+            max_output_tokens: 0,
+            ..Default::default()
+        };
+        let plugin = ContextTransformPlugin::with_config(
+            policy,
+            ContextTransformConfig {
+                artifact_compaction: ArtifactCompactionConfig {
+                    threshold_tokens: 1,
+                    preview_max_chars: 6,
+                    preview_max_lines: 1,
+                },
+            },
+        );
+        assert_eq!(
+            plugin.config().artifact_compaction.preview_max_chars,
+            6,
+            "plugin keeps the typed artifact compaction config"
+        );
+        let mut registrar = PluginRegistrar::new();
+        plugin.register(&mut registrar).unwrap();
+
+        let output = registrar.request_transforms[0].transform.transform(
+            vec![
+                Message::assistant_with_tool_calls(
+                    "",
+                    vec![ToolCall::new("c1", "large", json!({}))],
+                ),
+                Message::tool("c1", "abcdefghijklmnop"),
+            ],
+            &[],
+        );
+        assert!(output.messages[1].text().starts_with("abcdef"));
+        assert!(output.messages[1].text().contains("[Content compacted:"));
+    }
+
+    #[test]
+    fn context_transform_plugin_declares_config_schema() {
+        let policy = awaken_contract::contract::inference::ContextWindowPolicy::default();
+        let plugin = ContextTransformPlugin::new(policy);
+        let schemas = plugin.config_schemas();
+        assert_eq!(schemas.len(), 1);
+        assert_eq!(
+            schemas[0].key,
+            <ContextTransformConfigKey as awaken_contract::registry_spec::PluginConfigKey>::KEY
         );
     }
 

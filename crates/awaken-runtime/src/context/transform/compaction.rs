@@ -2,24 +2,45 @@
 
 use awaken_contract::contract::content::ContentBlock;
 use awaken_contract::contract::message::{Message, Role};
+use serde::{Deserialize, Serialize};
 
-/// Token threshold above which a tool result is compacted to a preview.
-pub const ARTIFACT_COMPACT_THRESHOLD_TOKENS: usize = 2048;
+/// Configuration for compacting oversized tool-result artifacts.
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema, PartialEq, Eq)]
+#[serde(default)]
+pub struct ArtifactCompactionConfig {
+    /// Token threshold above which a tool result is compacted to a preview.
+    #[schemars(range(min = 1))]
+    pub threshold_tokens: usize,
+    /// Maximum characters retained in a compacted artifact preview.
+    #[schemars(range(min = 1))]
+    pub preview_max_chars: usize,
+    /// Maximum lines retained in a compacted artifact preview.
+    #[schemars(range(min = 1))]
+    pub preview_max_lines: usize,
+}
 
-/// Maximum characters retained in a compacted artifact preview.
-pub const ARTIFACT_PREVIEW_MAX_CHARS: usize = 1600;
-
-/// Maximum lines retained in a compacted artifact preview.
-pub const ARTIFACT_PREVIEW_MAX_LINES: usize = 24;
+impl Default for ArtifactCompactionConfig {
+    fn default() -> Self {
+        Self {
+            threshold_tokens: 2048,
+            preview_max_chars: 1600,
+            preview_max_lines: 24,
+        }
+    }
+}
 
 /// Compact a single artifact string if it exceeds the token threshold.
 ///
 /// Returns the original content unchanged when estimated tokens are within budget.
-/// Otherwise truncates to [`ARTIFACT_PREVIEW_MAX_CHARS`] / [`ARTIFACT_PREVIEW_MAX_LINES`]
+/// Otherwise truncates to the default preview character / line limits
 /// (whichever is shorter) and appends a compaction indicator.
 pub fn compact_artifact(content: &str) -> String {
+    compact_artifact_with_config(content, &ArtifactCompactionConfig::default())
+}
+
+pub fn compact_artifact_with_config(content: &str, config: &ArtifactCompactionConfig) -> String {
     let estimated_tokens = content.len() / 4;
-    if estimated_tokens < ARTIFACT_COMPACT_THRESHOLD_TOKENS {
+    if estimated_tokens < config.threshold_tokens {
         return content.to_string();
     }
 
@@ -29,7 +50,7 @@ pub fn compact_artifact(content: &str) -> String {
     let mut end_byte = 0usize;
 
     for (idx, ch) in content.char_indices() {
-        if char_count >= ARTIFACT_PREVIEW_MAX_CHARS || line_count >= ARTIFACT_PREVIEW_MAX_LINES {
+        if char_count >= config.preview_max_chars || line_count >= config.preview_max_lines {
             break;
         }
         if ch == '\n' {
@@ -50,6 +71,13 @@ pub fn compact_artifact(content: &str) -> String {
 /// Iterates over all `Role::Tool` messages and replaces oversized text content
 /// blocks with a truncated preview plus compaction indicator.
 pub fn compact_tool_results(messages: &mut [Message]) {
+    compact_tool_results_with_config(messages, &ArtifactCompactionConfig::default());
+}
+
+pub fn compact_tool_results_with_config(
+    messages: &mut [Message],
+    config: &ArtifactCompactionConfig,
+) {
     for msg in messages.iter_mut() {
         if msg.role != Role::Tool {
             continue;
@@ -60,7 +88,7 @@ pub fn compact_tool_results(messages: &mut [Message]) {
             .iter()
             .map(|block| match block {
                 ContentBlock::Text { text } => {
-                    let compacted = compact_artifact(text);
+                    let compacted = compact_artifact_with_config(text, config);
                     if compacted.len() != text.len() {
                         modified = true;
                     }
@@ -160,6 +188,7 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n");
         let result = compact_artifact(&content);
+        let default_limit = ArtifactCompactionConfig::default().preview_max_lines;
         // Count lines in the preview part (before the compaction indicator)
         let lines_before_indicator = result
             .split("[Content compacted:")
@@ -168,10 +197,35 @@ mod tests {
             .lines()
             .count();
         assert!(
-            lines_before_indicator <= ARTIFACT_PREVIEW_MAX_LINES + 1,
+            lines_before_indicator <= default_limit + 1,
             "should respect line limit, got {} lines",
             lines_before_indicator
         );
+    }
+
+    #[test]
+    fn compact_artifact_uses_custom_config() {
+        let config = ArtifactCompactionConfig {
+            threshold_tokens: 1,
+            preview_max_chars: 8,
+            preview_max_lines: 1,
+        };
+        let result = compact_artifact_with_config("abcdefghijklmnop", &config);
+        assert!(result.starts_with("abcdefgh"));
+        assert!(result.contains("showing first 8 chars"));
+    }
+
+    #[test]
+    fn compact_tool_results_uses_custom_config() {
+        let config = ArtifactCompactionConfig {
+            threshold_tokens: 1,
+            preview_max_chars: 4,
+            preview_max_lines: 1,
+        };
+        let mut messages = vec![Message::tool("c1", "abcdefghijklmnop")];
+        compact_tool_results_with_config(&mut messages, &config);
+        assert!(messages[0].text().starts_with("abcd"));
+        assert!(messages[0].text().contains("[Content compacted:"));
     }
 
     #[test]
