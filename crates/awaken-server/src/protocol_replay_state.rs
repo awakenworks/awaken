@@ -617,4 +617,175 @@ mod tests {
             .unwrap();
         assert_eq!(delivered.len(), 1);
     }
+
+    // Regression: previously `run_outbox_relay` raced `relay.tick()` against
+    // `cancel.cancelled()` in the same `select!`, so a shutdown that fired
+    // after `claim_outbox` but before `ack`/`nack` would drop the tick
+    // future and leave the row claimed until lease expiry. The relay now
+    // only observes cancellation between ticks; verify a slow handler
+    // completes its delivery before shutdown returns.
+    #[tokio::test]
+    async fn shutdown_does_not_drop_in_flight_tick() {
+        use awaken_contract::contract::outbox::OutboxStore;
+        use tokio::sync::Notify;
+
+        struct GatedHandler {
+            entered: Arc<Notify>,
+            release: Arc<Notify>,
+        }
+
+        #[async_trait]
+        impl crate::outbox_relay::OutboxRelayHandler for GatedHandler {
+            async fn deliver(
+                &self,
+                _message: &awaken_contract::contract::outbox::OutboxMessage,
+            ) -> Result<(), crate::outbox_relay::OutboxRelayError> {
+                self.entered.notify_one();
+                self.release.notified().await;
+                Ok(())
+            }
+        }
+
+        let outbox = Arc::new(InMemoryOutboxStore::new());
+        let mut draft = OutboxMessageDraft::new(
+            OUTBOX_LANE_CANONICAL,
+            OUTBOX_TARGET_PROTOCOL_PROJECTOR,
+            serde_json::json!({"event_id": "evt"}),
+        )
+        .unwrap();
+        draft.dedupe_key = Some("dedupe".into());
+        outbox.enqueue_outbox(draft).await.unwrap();
+
+        let entered = Arc::new(Notify::new());
+        let release = Arc::new(Notify::new());
+        let handler = Arc::new(GatedHandler {
+            entered: entered.clone(),
+            release: release.clone(),
+        });
+        let relay = OutboxRelay::new(
+            outbox.clone(),
+            handler,
+            OutboxRelayConfig {
+                lane: OUTBOX_LANE_CANONICAL.to_string(),
+                target: OUTBOX_TARGET_PROTOCOL_PROJECTOR.to_string(),
+                consumer_id: "shutdown-test".into(),
+                batch_limit: 10,
+                lease_ms: 60_000,
+                retry_delay_ms: 0,
+                max_retry_delay_ms: 0,
+            },
+        )
+        .unwrap();
+        let cancel = CancellationToken::new();
+        let mut task = tokio::spawn(run_outbox_relay(
+            relay,
+            Duration::from_millis(1),
+            Duration::from_millis(1),
+            "shutdown-test",
+            cancel.clone(),
+        ));
+
+        // Wait until the handler is mid-deliver, then request shutdown.
+        entered.notified().await;
+        cancel.cancel();
+
+        // While the handler is blocked, the relay task must still be alive:
+        // cancel-safe shutdown means the tick future is not dropped, so the
+        // task cannot exit until the handler returns.
+        let early = tokio::time::timeout(Duration::from_millis(25), &mut task).await;
+        assert!(
+            early.is_err(),
+            "relay task exited mid-deliver, lost cancel-safety"
+        );
+
+        // Let the handler complete; the relay should ack then observe the
+        // cancellation between ticks and shut down cleanly.
+        release.notify_one();
+        tokio::time::timeout(Duration::from_secs(2), task)
+            .await
+            .expect("relay task did not shut down after handler released")
+            .expect("relay task panicked");
+
+        let delivered = outbox
+            .list_outbox(Some(OutboxStatus::Delivered), 10)
+            .await
+            .unwrap();
+        assert_eq!(delivered.len(), 1, "row must be acked, not stuck claimed");
+    }
+
+    #[tokio::test]
+    async fn shutdown_timeout_bounds_stuck_in_flight_tick() {
+        use awaken_contract::contract::outbox::OutboxStore;
+        use tokio::sync::Notify;
+
+        struct StuckHandler {
+            entered: Arc<Notify>,
+        }
+
+        #[async_trait]
+        impl crate::outbox_relay::OutboxRelayHandler for StuckHandler {
+            async fn deliver(
+                &self,
+                _message: &awaken_contract::contract::outbox::OutboxMessage,
+            ) -> Result<(), crate::outbox_relay::OutboxRelayError> {
+                self.entered.notify_one();
+                std::future::pending::<()>().await;
+                Ok(())
+            }
+        }
+
+        let outbox = Arc::new(InMemoryOutboxStore::new());
+        let mut draft = OutboxMessageDraft::new(
+            OUTBOX_LANE_CANONICAL,
+            OUTBOX_TARGET_PROTOCOL_PROJECTOR,
+            serde_json::json!({"event_id": "evt-timeout"}),
+        )
+        .unwrap();
+        draft.dedupe_key = Some("dedupe-timeout".into());
+        outbox.enqueue_outbox(draft).await.unwrap();
+
+        let entered = Arc::new(Notify::new());
+        let relay = OutboxRelay::new(
+            outbox.clone(),
+            Arc::new(StuckHandler {
+                entered: entered.clone(),
+            }),
+            OutboxRelayConfig {
+                lane: OUTBOX_LANE_CANONICAL.to_string(),
+                target: OUTBOX_TARGET_PROTOCOL_PROJECTOR.to_string(),
+                consumer_id: "shutdown-timeout-test".into(),
+                batch_limit: 10,
+                lease_ms: 60_000,
+                retry_delay_ms: 0,
+                max_retry_delay_ms: 0,
+            },
+        )
+        .unwrap();
+        let cancel = CancellationToken::new();
+        let handle = ProtocolRelayHandle {
+            task: tokio::spawn(run_outbox_relay(
+                relay,
+                Duration::from_millis(1),
+                Duration::from_millis(1),
+                "shutdown-timeout-test",
+                cancel.clone(),
+            )),
+            cancel,
+            name: "shutdown-timeout-test",
+        };
+
+        entered.notified().await;
+        tokio::time::timeout(
+            Duration::from_secs(1),
+            handle.shutdown_with_timeout(Duration::from_millis(25)),
+        )
+        .await
+        .expect("shutdown timeout must bound a stuck handler");
+
+        let claimed = outbox
+            .list_outbox(Some(OutboxStatus::Claimed), 10)
+            .await
+            .unwrap();
+        assert_eq!(claimed.len(), 1, "lease retry owns recovery after abort");
+    }
 }

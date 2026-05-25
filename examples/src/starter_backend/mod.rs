@@ -45,7 +45,7 @@ use awaken_runtime::policies::{
     ConsecutiveErrorsPolicy, StopConditionPlugin, StopPolicy, TimeoutPolicy, TokenBudgetPolicy,
 };
 use awaken_server::app::{
-    AppState, ServerConfig, SkillCatalogArgument, SkillCatalogContext, SkillCatalogEntry,
+    ServerConfig, ServerState, SkillCatalogArgument, SkillCatalogContext, SkillCatalogEntry,
     SkillCatalogProvider, build_service_router, serve_with_shutdown,
 };
 use awaken_server::mailbox::{Mailbox, MailboxConfig};
@@ -1009,7 +1009,7 @@ Deterministic compatibility directives:\n\
     let runtime = Arc::new(runtime);
     let config_store = file_store.clone() as Arc<dyn ConfigStore>;
     // Build a single audit logger shared by ConfigRuntimeManager (for seed-apply
-    // events at boot) and AppState (for all subsequent audit events).
+    // events at boot) and ServerState (for all subsequent audit events).
     let audit_logger = Arc::new(awaken_server::services::audit_log::AuditLogger::new(
         config_store.clone(),
     ));
@@ -1097,7 +1097,7 @@ Deterministic compatibility directives:\n\
 
     // -- Server --
 
-    let state = AppState::new(
+    let state = ServerState::new(
         runtime,
         mailbox,
         file_store.clone() as Arc<dyn ThreadRunStore>,

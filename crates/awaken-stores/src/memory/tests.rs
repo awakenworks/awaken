@@ -1,5 +1,3 @@
-#![cfg(test)]
-use super::*;
 use super::*;
 use awaken_contract::contract::lifecycle::RunStatus;
 use awaken_contract::contract::message::Message;
