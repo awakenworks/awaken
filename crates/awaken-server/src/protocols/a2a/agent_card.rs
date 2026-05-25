@@ -104,7 +104,7 @@ fn build_agent_card(
             url: interface_url(headers, tenant),
             protocol_binding: "HTTP+JSON".to_string(),
             protocol_version: A2A_VERSION.to_string(),
-            tenant: tenant.map(ToOwned::to_owned),
+            agent_id: tenant.map(ToOwned::to_owned),
         }],
         provider: Some(AgentProvider {
             organization: "Awaken".to_string(),

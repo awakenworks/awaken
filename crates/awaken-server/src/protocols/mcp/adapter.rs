@@ -15,6 +15,8 @@ use tokio::sync::mpsc;
 
 use awaken_contract::contract::event::AgentEvent;
 use awaken_contract::contract::message::Message;
+use awaken_contract::contract::storage::RunRequestOrigin;
+use awaken_contract::contract::tool_intercept::AdapterKind;
 use awaken_runtime::{AgentRuntime, RunActivation};
 
 use super::JSON_RPC_VERSION;
@@ -98,8 +100,10 @@ impl McpTool for AgentMcpTool {
 
             let thread_id = format!("mcp-{}", uuid::Uuid::now_v7());
             let messages = vec![Message::user(&text)];
-            let request =
-                RunActivation::new(thread_id, messages).with_agent_id(self.agent_id.clone());
+            let request = RunActivation::new(thread_id, messages)
+                .with_agent_id(self.agent_id.clone())
+                .with_origin(RunRequestOrigin::Mcp)
+                .with_adapter(AdapterKind::Mcp);
 
             let (event_tx, mut event_rx) = mpsc::unbounded_channel();
             let sink = Arc::new(ChannelEventSink::new(event_tx));

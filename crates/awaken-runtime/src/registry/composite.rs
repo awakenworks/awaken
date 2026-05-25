@@ -229,7 +229,7 @@ fn agent_card_to_spec(
 
     Ok(AgentSpec {
         id: interface
-            .tenant
+            .agent_id
             .clone()
             .unwrap_or_else(|| slugify_agent_name(&card.name)),
         // Remote agents don't need a local model — they run on the remote server.
@@ -239,7 +239,7 @@ fn agent_card_to_spec(
             backend: "a2a".into(),
             base_url: interface.url.clone(),
             auth: source.bearer_token.clone().map(RemoteAuth::bearer),
-            target: interface.tenant.clone(),
+            target: interface.agent_id.clone(),
             ..Default::default()
         }),
         registry: Some(source.name.clone()),
@@ -427,7 +427,7 @@ mod tests {
                 url: "https://test.example.com/v1/a2a".into(),
                 protocol_binding: "HTTP+JSON".into(),
                 protocol_version: "1.0".into(),
-                tenant: Some("test-agent".into()),
+                agent_id: Some("test-agent".into()),
             }],
             provider: None,
             version: "1.0.0".into(),

@@ -58,9 +58,14 @@ pub struct AgentInterface {
     pub protocol_binding: String,
     /// Supported protocol version for this interface.
     pub protocol_version: String,
-    /// Optional tenant path parameter value.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub tenant: Option<String>,
+    /// Optional agent path parameter value (was `tenant` pre-0.6).
+    #[serde(
+        default,
+        alias = "agent_id",
+        alias = "tenant",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub agent_id: Option<String>,
 }
 
 /// Provider metadata.
@@ -302,8 +307,17 @@ pub struct Artifact {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct SendMessageRequest {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub tenant: Option<String>,
+    /// Optional agent selector — equivalent to the path agent in
+    /// `/v1/a2a/{agent}/message:send`. Renamed from `tenant` in 0.6 to
+    /// reflect that the value is an agent identifier, not a tenancy
+    /// scope.
+    #[serde(
+        default,
+        alias = "agent_id",
+        alias = "tenant",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub agent_id: Option<String>,
     pub message: Message,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub configuration: Option<SendMessageConfiguration>,
@@ -376,8 +390,14 @@ pub struct AuthenticationInfo {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct PushNotificationConfig {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub tenant: Option<String>,
+    /// Optional agent selector mirroring `SendMessageRequest.agent_id`.
+    #[serde(
+        default,
+        alias = "agent_id",
+        alias = "tenant",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub agent_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -449,7 +469,7 @@ mod tests {
                 url: "https://example.com/v1/a2a".into(),
                 protocol_binding: "HTTP+JSON".into(),
                 protocol_version: "1.0".into(),
-                tenant: None,
+                agent_id: None,
             }],
             provider: None,
             version: "1.0.0".into(),
@@ -524,9 +544,53 @@ mod tests {
     }
 
     #[test]
+    fn a2a_agent_selector_accepts_legacy_tenant_alias() {
+        let request: SendMessageRequest = serde_json::from_value(json!({
+            "tenant": "agent-legacy",
+            "message": {
+                "messageId": "msg-1",
+                "role": "ROLE_USER",
+                "parts": [{"text": "hello"}]
+            }
+        }))
+        .unwrap();
+        assert_eq!(request.agent_id.as_deref(), Some("agent-legacy"));
+
+        let interface: AgentInterface = serde_json::from_value(json!({
+            "url": "https://example.com/v1/a2a/agent-legacy",
+            "protocolBinding": "HTTP+JSON",
+            "protocolVersion": "1.0",
+            "tenant": "agent-legacy"
+        }))
+        .unwrap();
+        assert_eq!(interface.agent_id.as_deref(), Some("agent-legacy"));
+
+        let config: PushNotificationConfig = serde_json::from_value(json!({
+            "tenant": "agent-legacy",
+            "url": "https://example.com/webhook"
+        }))
+        .unwrap();
+        assert_eq!(config.agent_id.as_deref(), Some("agent-legacy"));
+    }
+
+    #[test]
+    fn a2a_agent_selector_accepts_snake_case_alias() {
+        let request: SendMessageRequest = serde_json::from_value(json!({
+            "agent_id": "agent-snake",
+            "message": {
+                "messageId": "msg-1",
+                "role": "ROLE_USER",
+                "parts": [{"text": "hello"}]
+            }
+        }))
+        .unwrap();
+        assert_eq!(request.agent_id.as_deref(), Some("agent-snake"));
+    }
+
+    #[test]
     fn push_notification_config_roundtrip() {
         let config = PushNotificationConfig {
-            tenant: Some("tenant-a".into()),
+            agent_id: Some("agent-a".into()),
             id: Some("cfg-1".into()),
             task_id: Some("task-1".into()),
             url: "https://example.com/webhook".into(),
