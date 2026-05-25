@@ -2,7 +2,7 @@ use async_trait::async_trait;
 use awaken_contract::contract::message::{
     DeliveryBoundary, DeliveryMode, Message, MessageRecord, PendingMessageRecord,
 };
-use awaken_contract::contract::storage::StorageError;
+use awaken_contract::contract::storage::{RunRecord, StorageError};
 
 /// Store-local extension for delivered-but-unconsumed thread messages.
 #[async_trait]
@@ -43,5 +43,14 @@ pub trait PendingMessageStore: Send + Sync {
         thread_id: &str,
         boundary: DeliveryBoundary,
         expected_message_version: Option<u64>,
+    ) -> Result<Vec<MessageRecord>, StorageError>;
+
+    async fn freeze_pending_message_records_with_run(
+        &self,
+        thread_id: &str,
+        boundary: DeliveryBoundary,
+        expected_message_version: Option<u64>,
+        expected_pending_ids: &[String],
+        run: &RunRecord,
     ) -> Result<Vec<MessageRecord>, StorageError>;
 }

@@ -351,6 +351,94 @@ async fn freeze_pending_rejects_stale_committed_version_without_consuming() {
 }
 
 #[tokio::test]
+async fn freeze_pending_with_run_commits_messages_and_run_atomically() {
+    let store = InMemoryStore::new();
+    store
+        .append_pending_message_records(
+            "thread-freeze-run",
+            &[Message::user("pending").with_id("pending-run".to_string())],
+            DeliveryMode::new_run(DeliveryGranularity::Batch),
+        )
+        .await
+        .unwrap();
+    let run = make_run("run-freeze", "thread-freeze-run", RunStatus::Created);
+
+    let frozen = store
+        .freeze_pending_message_records_with_run(
+            "thread-freeze-run",
+            DeliveryBoundary::NewRun,
+            Some(0),
+            &["pending-run".to_string()],
+            &run,
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(frozen.len(), 1);
+    assert_eq!(frozen[0].seq, 1);
+    assert_eq!(
+        store
+            .load_run("run-freeze")
+            .await
+            .unwrap()
+            .unwrap()
+            .thread_id,
+        "thread-freeze-run"
+    );
+    assert!(
+        store
+            .load_pending_message_records("thread-freeze-run")
+            .await
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[tokio::test]
+async fn freeze_pending_with_run_rejects_stale_version_without_run_write() {
+    let store = InMemoryStore::new();
+    store
+        .save_messages("thread-freeze-run-stale", &[Message::user("committed")])
+        .await
+        .unwrap();
+    store
+        .append_pending_message_records(
+            "thread-freeze-run-stale",
+            &[Message::user("pending").with_id("pending-run-stale".to_string())],
+            DeliveryMode::new_run(DeliveryGranularity::Batch),
+        )
+        .await
+        .unwrap();
+    let run = make_run(
+        "run-freeze-stale",
+        "thread-freeze-run-stale",
+        RunStatus::Created,
+    );
+
+    let err = store
+        .freeze_pending_message_records_with_run(
+            "thread-freeze-run-stale",
+            DeliveryBoundary::NewRun,
+            Some(0),
+            &["pending-run-stale".to_string()],
+            &run,
+        )
+        .await
+        .unwrap_err();
+
+    assert!(matches!(err, StorageError::VersionConflict { .. }));
+    assert!(store.load_run("run-freeze-stale").await.unwrap().is_none());
+    assert_eq!(
+        store
+            .load_pending_message_records("thread-freeze-run-stale")
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+}
+
+#[tokio::test]
 async fn pending_mutation_rejects_already_consumed_message() {
     let store = InMemoryStore::new();
     store
