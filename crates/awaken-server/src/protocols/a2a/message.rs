@@ -460,6 +460,11 @@ async fn prepare_send_request(
         request = request.with_agent_id(tenant.clone());
     } else if let Some(agent_id) = latest_context_agent_id(st, &thread_id).await? {
         request = request.with_agent_id(agent_id);
+    } else if thread_has_prior_context(st, &thread_id).await? {
+        return Err(A2aError::invalid(
+            "agent",
+            "thread has prior context but no identifiable agent binding; specify the agent via tenant path or body agent_id",
+        ));
     } else {
         request = request.with_agent_id(public_agent_id(st)?);
     }
@@ -532,4 +537,56 @@ async fn latest_context_agent_id(
             let agent_id = run.agent_id.trim();
             (!agent_id.is_empty()).then(|| agent_id.to_string())
         }))
+}
+
+async fn thread_has_prior_context(
+    st: &ProtocolRoutesState,
+    thread_id: &str,
+) -> Result<bool, A2aError> {
+    use awaken_contract::contract::mailbox::RunDispatchStatus;
+
+    let store = st.run.store();
+    let Some(thread) = store
+        .load_thread(thread_id)
+        .await
+        .map_err(|e| A2aError::Internal(e.to_string()))?
+    else {
+        return Ok(false);
+    };
+
+    if thread.active_run_id.is_some() || thread.open_run_id.is_some() {
+        return Ok(true);
+    }
+    if thread
+        .metadata
+        .custom
+        .get(super::types::TASK_BINDINGS_METADATA_KEY)
+        .and_then(|value| {
+            serde_json::from_value::<super::types::StoredTaskBindings>(value.clone()).ok()
+        })
+        .is_some_and(|bindings| !bindings.tasks.is_empty())
+    {
+        return Ok(true);
+    }
+
+    let messages = store
+        .load_messages(thread_id)
+        .await
+        .map_err(|e| A2aError::Internal(e.to_string()))?;
+    if messages.is_some_and(|messages| !messages.is_empty()) {
+        return Ok(true);
+    }
+
+    let pending = st
+        .run
+        .mailbox
+        .list_dispatches(
+            thread_id,
+            Some(&[RunDispatchStatus::Queued, RunDispatchStatus::Claimed]),
+            1,
+            0,
+        )
+        .await
+        .map_err(|e| A2aError::Internal(e.to_string()))?;
+    Ok(!pending.is_empty())
 }
