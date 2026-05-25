@@ -739,8 +739,13 @@ impl AgentSpec {
 
 mod catalog_match;
 mod catalog_validation;
+mod model_pool_spec;
 mod model_spec;
 pub use catalog_validation::{IssueSeverity, ValidationIssue};
+pub use model_pool_spec::{
+    HomeStrategy, ModelPoolSpec, PoolMemberRole, PoolMemberSpec, PoolRoutingPolicy,
+    PoolSwitchPolicy, StickyScope,
+};
 pub use model_spec::{Modalities, Modality, ModelSpec};
 
 #[cfg(test)]
