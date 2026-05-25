@@ -210,6 +210,14 @@ impl Mailbox {
         self.reconcile_terminal_dispatches().await;
         total += reclaimed.len();
 
+        let repaired_checkpoint_events = self.repair_thread_message_checkpoint_events().await?;
+        if repaired_checkpoint_events > 0 {
+            tracing::info!(
+                repaired_checkpoint_events,
+                "repaired thread message checkpoint events"
+            );
+        }
+
         // Reload all queued mailbox IDs and try to dispatch.
         let thread_ids = self.store.queued_thread_ids().await?;
         for thread_id in &thread_ids {

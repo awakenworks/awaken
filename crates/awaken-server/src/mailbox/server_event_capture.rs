@@ -4,11 +4,11 @@ use awaken_contract::contract::event_store::{
 };
 use awaken_contract::contract::mailbox::{RunDispatch, RunDispatchStatus};
 use awaken_contract::contract::message::{Message, Role, Visibility};
-use awaken_contract::contract::storage::{RunRecord, StorageError};
+use awaken_contract::contract::storage::{RunQuery, RunRecord, StorageError};
 use awaken_contract::contract::suspension::ToolCallResume;
 use serde_json::json;
 
-use super::{Mailbox, dispatch_status_label};
+use super::{Mailbox, MailboxError, dispatch_status_label};
 
 impl Mailbox {
     pub(super) async fn record_mailbox_dispatch_event(
@@ -308,6 +308,56 @@ impl Mailbox {
             last_new_seq,
         )
         .await;
+    }
+
+    pub(super) async fn repair_thread_message_checkpoint_events(
+        &self,
+    ) -> Result<usize, MailboxError> {
+        if self.server_event_publisher.is_none() {
+            return Ok(0);
+        }
+
+        let mut offset = 0usize;
+        let limit = 100usize;
+        let mut repaired = 0usize;
+        loop {
+            let page = self
+                .run_store
+                .list_runs(&RunQuery {
+                    offset,
+                    limit,
+                    thread_id: None,
+                    status: None,
+                })
+                .await?;
+            for run in &page.items {
+                let Some(input) = &run.input else {
+                    continue;
+                };
+                let Some(range) = input.range else {
+                    continue;
+                };
+                let messages = self
+                    .run_store
+                    .load_messages(&input.thread_id)
+                    .await?
+                    .unwrap_or_default();
+                self.record_thread_message_checkpoint_events(
+                    &input.thread_id,
+                    &run.run_id,
+                    &messages,
+                    range.from_seq,
+                    range.to_seq,
+                )
+                .await;
+                repaired += range.len() as usize;
+            }
+            if !page.has_more {
+                break;
+            }
+            offset += limit;
+        }
+        Ok(repaired)
     }
 
     pub(crate) async fn record_mailbox_decision_received_for_run(
