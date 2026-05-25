@@ -2443,6 +2443,85 @@ async fn permanent_error_recovers_from_transient_dead_letter_fault() {
     );
 }
 
+/// Lost-update race: concurrent submits on the SAME thread each perform a
+/// non-atomic `load_messages → append → checkpoint`. Because `checkpoint`
+/// overwrites the whole message list (last-writer-wins), an interleaved write
+/// drops a message that a run's snapshot still references — surfacing later as
+/// "message '…' not found for run '…'". Every appended message must survive.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn concurrent_same_thread_submits_do_not_lose_messages() {
+    const CONCURRENCY: usize = 32;
+
+    let store = make_store();
+    let run_store = Arc::new(InMemoryStore::new());
+    let runtime: Arc<dyn RunDispatchExecutor> = Arc::new(NoopMailboxRuntime);
+    let mailbox = Arc::new(Mailbox::new(
+        runtime,
+        store.clone(),
+        run_store.clone(),
+        "race-consumer".to_string(),
+        MailboxConfig::default(),
+    ));
+
+    let thread_id = "thread-race";
+    let mut handles = Vec::with_capacity(CONCURRENCY);
+    for i in 0..CONCURRENCY {
+        let mb = Arc::clone(&mailbox);
+        let tid = thread_id.to_string();
+        handles.push(tokio::spawn(async move {
+            let mut request = RunActivation::new(&tid, vec![Message::user(format!("msg-{i}"))])
+                .with_agent_id("agent");
+            let (validated_thread_id, messages) = validate_run_inputs(
+                request.thread_id().to_owned(),
+                request.messages().to_vec(),
+                false,
+            )
+            .expect("input should validate");
+            mb.prepare_run_for_dispatch(&mut request, &validated_thread_id, &messages)
+                .await
+                .expect("prepare run")
+        }));
+    }
+    let mut run_ids = Vec::with_capacity(CONCURRENCY);
+    for handle in handles {
+        run_ids.push(handle.await.expect("prepare task should not panic"));
+    }
+
+    // Every concurrently-appended message must survive — no lost update.
+    let final_messages = run_store
+        .load_messages(thread_id)
+        .await
+        .unwrap()
+        .unwrap_or_default();
+    assert_eq!(
+        final_messages.len(),
+        CONCURRENCY,
+        "lost-update race dropped {} message(s) from the thread",
+        CONCURRENCY.saturating_sub(final_messages.len())
+    );
+
+    // And every run's referenced trigger message must still be resolvable
+    // (this is exactly the lookup reconstruct_run_request performs).
+    for run_id in &run_ids {
+        let run = run_store
+            .load_run(run_id)
+            .await
+            .unwrap()
+            .expect("run record exists");
+        let snapshot = run.activation.expect("activation snapshot");
+        for message_id in &snapshot.input.trigger_message_ids {
+            assert!(
+                run_store
+                    .load_message_record(thread_id, message_id)
+                    .await
+                    .unwrap()
+                    .is_some(),
+                "message '{message_id}' not found for run '{run_id}' (lost-update race)"
+            );
+        }
+    }
+}
+
 #[tokio::test]
 async fn start_lifecycle_ready_serializes_concurrent_recovery() {
     let store = Arc::new(RecoverFlakyMailboxStore::new(0));
