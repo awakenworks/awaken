@@ -37,7 +37,6 @@ pub mod state;
 
 // CancellationToken now lives in awaken-contract; re-export for backward compat.
 pub use awaken_contract::{CancellationHandle, CancellationToken};
-pub use backend::BackendCapabilities;
 pub use error::RuntimeError;
 pub use event_buffer::EventBuffer;
 pub use profile::ProfileAccess;
@@ -78,7 +77,7 @@ pub use resolution::{
 };
 pub use run::{
     CaptureWiring, PersistenceHints, ResolverInheritance, RunActivation, RunActivationError,
-    RunControl, RunRequest, ThreadContextSnapshot,
+    RunControl, ThreadContextSnapshot,
 };
 pub use runtime::AgentRuntime;
 pub use state::{CommitEvent, CommitHook, MutationBatch, StateCommand, StateStore};

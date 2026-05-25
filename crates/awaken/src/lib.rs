@@ -17,10 +17,10 @@
 //!     .with_model(ModelSpec::new("gpt-4o-mini", "openai", "gpt-4o-mini"))
 //!     .build()?;
 //!
-//! let request = RunRequest::new("thread-1", vec![Message::user("Hello")])
+//! let activation = RunActivation::new("thread-1", vec![Message::user("Hello")])
 //!     .with_agent_id("assistant");
 //!
-//! let result = runtime.run_to_completion(request).await?;
+//! let result = runtime.run_to_completion(activation).await?;
 //! let response = result.response;
 //! # let _ = response;
 //! # Ok(())
@@ -117,7 +117,7 @@ pub use awaken_runtime::policies;
 /// Agent registry lookup and resolution.
 pub use awaken_runtime::registry;
 
-/// [`AgentRuntime`] and [`RunRequest`] — the top-level run API.
+/// [`AgentRuntime`] and [`RunActivation`] — the top-level run API.
 pub use awaken_runtime::runtime;
 
 /// Agent configuration and instance types.
@@ -159,7 +159,7 @@ pub use awaken_runtime::{
     PhaseRuntime, Plugin, PluginDescriptor, PluginRegistrar, ProviderRemovalImpact,
     ProviderRemovalPolicy, ProviderRemovalPreview, RegistryDiagnostic, RegistryDiagnosticSeverity,
     RegistryResourceRef, RegistryUpdateError, RegistryValidationError, ResolvedAgent,
-    RunActivation, RunRequest, RuntimeError, RuntimeRegistryUpdate, SerializableRegistryDiagnostic,
+    RunActivation, RuntimeError, RuntimeRegistryUpdate, SerializableRegistryDiagnostic,
     StateCommand, StateStore, ToolGateHook, TypedEffectHandler, TypedScheduledActionHandler,
     diagnose_agent_spec, diagnose_registry_set, diagnose_registry_set_serializable,
     preview_provider_removal, rebuild_agent_model_provider_registries,

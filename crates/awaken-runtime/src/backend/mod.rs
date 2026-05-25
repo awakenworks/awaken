@@ -5,8 +5,8 @@ mod local;
 
 mod capabilities;
 pub use capabilities::{
-    BackendCancellationCapability, BackendCapabilities, BackendContinuationCapability,
-    BackendOutputCapability, BackendTranscriptCapability, BackendWaitCapability,
+    BackendCancellationCapability, BackendContinuationCapability, BackendOutputCapability,
+    BackendTranscriptCapability, BackendWaitCapability,
 };
 use std::sync::Arc;
 

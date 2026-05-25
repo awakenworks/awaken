@@ -53,6 +53,6 @@ fn main() {
     );
 
     // Smoke assertions — the wiring is correct and Arc identity holds.
-    assert_eq!(state.config.address, "127.0.0.1:0");
-    assert!(Arc::ptr_eq(&state.runtime, &runtime));
+    assert_eq!(state.server_config.address, "127.0.0.1:0");
+    assert!(Arc::ptr_eq(&state.run.runtime, &runtime));
 }

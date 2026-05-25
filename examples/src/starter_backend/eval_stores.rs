@@ -21,7 +21,7 @@ use awaken_ext_observability::{
 /// in-memory + runtime-stats + trace store sinks, and an
 /// `ObservabilityPlugin` configured for content capture so trace →
 /// fixture curation succeeds. Returns the `TraceStore` separately so
-/// `AppState::with_trace_store` can read what the sink wrote.
+/// `ServerState.trace` can read what the sink wrote.
 pub fn build_observability(
     storage_dir: &Path,
     runtime_stats: Arc<RuntimeStatsRegistry>,

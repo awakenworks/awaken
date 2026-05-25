@@ -45,8 +45,9 @@ use awaken_runtime::policies::{
     ConsecutiveErrorsPolicy, StopConditionPlugin, StopPolicy, TimeoutPolicy, TokenBudgetPolicy,
 };
 use awaken_server::app::{
-    ServerConfig, ServerState, SkillCatalogArgument, SkillCatalogContext, SkillCatalogEntry,
-    SkillCatalogProvider, build_service_router, serve_with_shutdown,
+    ConfigModuleState, EvalModuleState, ServerConfig, ServerState, SkillCatalogArgument,
+    SkillCatalogContext, SkillCatalogEntry, SkillCatalogProvider, TraceModuleState,
+    build_service_router, serve_with_shutdown,
 };
 use awaken_server::mailbox::{Mailbox, MailboxConfig};
 use awaken_server::services::config_runtime::{
@@ -693,7 +694,7 @@ Deterministic compatibility directives:\n\
 
     // Creative agent: demonstrates per-agent context window policy.
     // InferenceOverride (temperature, reasoning_effort, etc.) is a per-run
-    // concern set via `RunRequest::with_overrides` — it is not an AgentSpec field.
+    // concern set via `RunActivation::with_overrides` — it is not an AgentSpec field.
     // This agent instead shows ContextWindowPolicy configuration.
     let creative_agent = apply_agent_prompt_override(
         AgentSpec {
@@ -1093,10 +1094,8 @@ Deterministic compatibility directives:\n\
         format!("starter-backend:{}", std::process::id()),
         MailboxConfig::default(),
     ));
-
     // -- Server --
-
-    let state = ServerState::new(
+    let mut state = ServerState::new(
         runtime,
         mailbox,
         file_store.clone() as Arc<dyn ThreadRunStore>,
@@ -1105,23 +1104,22 @@ Deterministic compatibility directives:\n\
             address: args.http_addr.clone(),
             ..Default::default()
         },
-    )
-    .with_admin_api_config(eval_stores::admin_api_config_with_traces())
-    .with_config_store(config_store)
-    .with_config_runtime_manager(config_runtime_manager)
-    .with_credential_broker(Arc::clone(&credential_broker))
-    .with_runtime_stats(runtime_stats)
-    .with_trace_store(trace_store)
-    .with_eval_run_store(eval_stores::build_eval_run_store(
-        args.storage_dir.as_path(),
-    ))
-    .with_audit_log(audit_logger)
-    .with_audit_log_from_config()
-    .with_skill_catalog_provider(Arc::new(RegistryBackedSkillCatalogProvider::new(
-        starter_skills.live_registry(),
-    )) as Arc<dyn SkillCatalogProvider>);
-
-    let shutdown_timeout = Duration::from_secs(state.config.shutdown.timeout_secs);
+    );
+    state.admin.admin_api_config = eval_stores::admin_api_config_with_traces();
+    state.run.credential_broker = Arc::clone(&credential_broker);
+    state.run.runtime_stats = Some(runtime_stats);
+    state.config = Some(ConfigModuleState {
+        config_store,
+        runtime_manager: config_runtime_manager,
+        audit_log: Some(audit_logger),
+        skill_catalog_provider: Some(Arc::new(RegistryBackedSkillCatalogProvider::new(
+            starter_skills.live_registry(),
+        )) as Arc<dyn SkillCatalogProvider>),
+    });
+    state.trace = Some(TraceModuleState { trace_store });
+    let eval_run_store = eval_stores::build_eval_run_store(args.storage_dir.as_path());
+    state.eval = Some(EvalModuleState { eval_run_store });
+    let shutdown_timeout = Duration::from_secs(state.server_config.shutdown.timeout_secs);
     let mut app = build_service_router(state).expect("failed to build server router");
 
     if config.enable_cors {

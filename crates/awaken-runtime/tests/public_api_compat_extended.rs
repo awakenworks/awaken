@@ -68,8 +68,7 @@ fn agent_runtime_0_2_methods_resolve_at_expected_signatures() {
 fn local_backend_profile_surface() {
     let backend: Arc<dyn ExecutionBackend> = Arc::new(LocalBackend::new());
     let profile: BackendProfile = backend.capabilities();
-    // ADR-0040 D5: typed BackendProfile replaces BackendCapabilities. Confirm
-    // the nine public dimensions are still accessible.
+    // ADR-0040 D5: typed BackendProfile exposes the nine public dimensions.
     let _ = (
         profile.cancellation,
         profile.continuation,

@@ -25,15 +25,12 @@ impl AgentRuntime {
     ///
     /// This is the legacy live entry point. Persistent server dispatch first
     /// resolves the activation and then calls [`Self::run_replayable`].
-    pub async fn run<A>(
+    pub async fn run(
         &self,
-        activation: A,
+        activation: RunActivation,
         sink: Arc<dyn EventSink>,
-    ) -> Result<AgentRunResult, AgentLoopError>
-    where
-        A: Into<RunActivation>,
-    {
-        self.run_inner(activation.into(), sink, None, None).await
+    ) -> Result<AgentRunResult, AgentLoopError> {
+        self.run_inner(activation, sink, None, None).await
     }
 
     /// Run an activation using a replayable plan produced by
@@ -66,17 +63,13 @@ impl AgentRuntime {
     }
 
     #[doc(hidden)]
-    pub async fn run_with_thread_context<A>(
+    pub async fn run_with_thread_context(
         &self,
-        activation: A,
+        activation: RunActivation,
         sink: Arc<dyn EventSink>,
         thread_ctx: Option<ThreadContextSnapshot>,
-    ) -> Result<AgentRunResult, AgentLoopError>
-    where
-        A: Into<RunActivation>,
-    {
-        self.run_inner(activation.into(), sink, thread_ctx, None)
-            .await
+    ) -> Result<AgentRunResult, AgentLoopError> {
+        self.run_inner(activation, sink, thread_ctx, None).await
     }
 
     #[doc(hidden)]
