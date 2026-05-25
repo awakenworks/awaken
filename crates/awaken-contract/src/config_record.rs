@@ -8,7 +8,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::agent_spec_patch::{AgentSpecPatch, merge_agent_spec};
-use crate::registry_spec::{AgentSpec, McpServerSpec, ModelSpec, ProviderSpec};
+use crate::registry_spec::{AgentSpec, McpServerSpec, ModelPoolSpec, ModelSpec, ProviderSpec};
 use crate::skill_spec::SkillSpec;
 use crate::skill_spec_patch::{SkillSpecPatch, merge_skill_spec};
 use crate::tool_spec::ToolSpec;
@@ -106,6 +106,14 @@ impl ConfigRecordMerge for ProviderSpec {
 }
 
 impl ConfigRecordMerge for ModelSpec {
+    type Patch = NoConfigPatch;
+
+    fn merge_patch(self, _patch: NoConfigPatch) -> Self {
+        self
+    }
+}
+
+impl ConfigRecordMerge for ModelPoolSpec {
     type Patch = NoConfigPatch;
 
     fn merge_patch(self, _patch: NoConfigPatch) -> Self {

@@ -103,17 +103,31 @@ holds models and pools in one namespace.
 - Cross-provider failover handles account-scoped quota exhaustion, which the
   prior `fallback_upstream_models` could not.
 
-### Known limitation and follow-ups
+### Durable runs and replay
 
-- **Durable / pinned runs are not yet pool-aware.** Pinned resolution reads
-  models from `PinnedSpecMap` (ADR-0035), whose `get_pool` is the default
-  `None`, so a durable run whose agent references a pool fails resolution on
-  resume. Supporting it requires a `model_pool` kind in the versioned-config
-  store and publication pipeline, plus recording the per-session routing
-  decisions (home + switches) in the run manifest so replay reproduces the
-  identical member sequence.
-- **Server config API**: pools are registrable via `AgentRuntimeBuilder`; the
-  admin/config write surface for pools follows the durable-config work above.
+Durable/pinned runs are pool-aware. A `model_pool` is a published versioned
+kind: it is included in the publication graph (an agent's `model_id` resolves
+as a model **or** a pool; a pool depends on its member models), frozen into the
+run's pinned manifest, and resolved at resume via `PinnedModelRegistry`, which
+serves models and pools from one id namespace exactly as the live
+`MapModelRegistry` does.
+
+Replay determinism rests on two properties rather than a recorded member log:
+the pinned manifest freezes the pool and member specs, and home selection is a
+stable hash of the agent id — so a resumed run resolves the identical pool
+configuration and homes to the same member. The per-session circuit breaker is
+process-local, so after a restart a previously-avoided member is re-probed
+(desirable: health is re-evaluated). Completed turns replay their recorded
+outputs and do not re-invoke routing.
+
+### Follow-ups
+
+- **Server config write API**: pools are registrable via `AgentRuntimeBuilder`
+  and through the config store's `model-pools` namespace (so they publish and
+  freeze), but a dedicated admin HTTP surface for pool CRUD is not yet added.
+- **Eval-grade replay**: for byte-identical eval reproduction across differing
+  breaker state, record per-session routing decisions (home + switches) as an
+  event and replay them; not required for durable resume correctness.
 - **`RoundRobin` home strategy** currently scores like `Deterministic` in the
   pure router (no shared cursor); true round-robin needs session-spanning
   state and is deferred. `Deterministic` (the default) is the cache-optimal

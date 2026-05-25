@@ -1,9 +1,10 @@
 //! Pinned runtime registries used by run-scoped frozen registry sets.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use awaken_contract::contract::storage::PinnedRegistryEntry;
-use awaken_contract::registry_spec::{AgentSpec, ModelSpec};
+use awaken_contract::registry_spec::{AgentSpec, ModelPoolSpec, ModelSpec};
 use thiserror::Error;
 
 use super::memory::MapAgentSpecRegistry;
@@ -219,6 +220,46 @@ impl ModelRegistry for PinnedSpecMap<ModelSpec> {
     }
 }
 
+/// Pinned model registry holding both pinned models and pinned pools in one id
+/// namespace, mirroring the live [`MapModelRegistry`](super::memory::MapModelRegistry)
+/// so durable/pinned runs resolve a pool exactly as live runs do.
+///
+/// Holds the maps behind `Arc` so a frozen registry can share its existing
+/// pinned spec maps without cloning them.
+#[derive(Debug)]
+pub struct PinnedModelRegistry {
+    models: Arc<PinnedSpecMap<ModelSpec>>,
+    pools: Arc<PinnedSpecMap<ModelPoolSpec>>,
+}
+
+impl PinnedModelRegistry {
+    #[must_use]
+    pub fn new(
+        models: Arc<PinnedSpecMap<ModelSpec>>,
+        pools: Arc<PinnedSpecMap<ModelPoolSpec>>,
+    ) -> Self {
+        Self { models, pools }
+    }
+}
+
+impl ModelRegistry for PinnedModelRegistry {
+    fn get_model(&self, id: &str) -> Option<ModelSpec> {
+        self.models.get(id).cloned()
+    }
+
+    fn model_ids(&self) -> Vec<String> {
+        self.models.ids()
+    }
+
+    fn get_pool(&self, id: &str) -> Option<ModelPoolSpec> {
+        self.pools.get(id).cloned()
+    }
+
+    fn pool_ids(&self) -> Vec<String> {
+        self.pools.ids()
+    }
+}
+
 fn is_valid_content_hash(hash: &str) -> bool {
     const SHA256_PREFIX: &str = "sha256:";
     let Some(hex) = hash.strip_prefix(SHA256_PREFIX) else {
@@ -381,6 +422,38 @@ mod tests {
         assert_eq!(spec.provider_id, "openai");
         assert_eq!(spec.upstream_model, "gpt-4o");
         assert_eq!(ModelRegistry::model_ids(&map), vec!["model-1".to_string()]);
+    }
+
+    #[test]
+    fn pinned_model_registry_resolves_models_and_pools() {
+        let mut models: PinnedSpecMap<ModelSpec> = PinnedSpecMap::new("model");
+        let mut model_pin = pin("m0", 2);
+        model_pin.kind = "model".to_string();
+        models
+            .insert("m0".to_string(), ModelSpec::new("m0", "p", "up"), model_pin)
+            .unwrap();
+
+        let mut pools: PinnedSpecMap<ModelPoolSpec> = PinnedSpecMap::new("model_pool");
+        let mut pool_pin = pin("pool-1", 5);
+        pool_pin.kind = "model_pool".to_string();
+        pools
+            .insert(
+                "pool-1".to_string(),
+                ModelPoolSpec::new("pool-1", ["m0"]),
+                pool_pin,
+            )
+            .unwrap();
+
+        let registry = PinnedModelRegistry::new(Arc::new(models), Arc::new(pools));
+        // Models resolve as before.
+        assert_eq!(registry.get_model("m0").unwrap().provider_id, "p");
+        assert_eq!(registry.model_ids(), vec!["m0".to_string()]);
+        // Pools resolve from the parallel pinned map.
+        assert_eq!(registry.get_pool("pool-1").unwrap().members.len(), 1);
+        assert_eq!(registry.pool_ids(), vec!["pool-1".to_string()]);
+        // A pool id is not a model and vice versa.
+        assert!(registry.get_model("pool-1").is_none());
+        assert!(registry.get_pool("m0").is_none());
     }
 
     #[test]

@@ -5,14 +5,16 @@ use awaken_contract::contract::versioned_registry::VersionedRecord;
 use awaken_contract::skill_spec::SkillSpec;
 use awaken_contract::tool_spec::ToolSpec;
 use awaken_contract::{
-    AgentSpec, ModelSpec, PinnedRegistryEntry, PinnedRegistryManifest, ProviderSpec,
-    REGISTRY_KIND_AGENT, REGISTRY_KIND_MODEL, REGISTRY_KIND_PLUGIN_CONFIG, REGISTRY_KIND_PROVIDER,
-    REGISTRY_KIND_SKILL, REGISTRY_KIND_TOOL, RegistryGraphValidationError,
-    RegistryGraphValidationRequest, RegistryGraphValidator, StandardRegistryGraphValidator,
-    VersionSelector, VersionedRegistryError, VersionedRegistryStore,
+    AgentSpec, ModelPoolSpec, ModelSpec, PinnedRegistryEntry, PinnedRegistryManifest, ProviderSpec,
+    REGISTRY_KIND_AGENT, REGISTRY_KIND_MODEL, REGISTRY_KIND_MODEL_POOL,
+    REGISTRY_KIND_PLUGIN_CONFIG, REGISTRY_KIND_PROVIDER, REGISTRY_KIND_SKILL, REGISTRY_KIND_TOOL,
+    RegistryGraphValidationError, RegistryGraphValidationRequest, RegistryGraphValidator,
+    StandardRegistryGraphValidator, VersionSelector, VersionedRegistryError,
+    VersionedRegistryStore,
 };
 use awaken_runtime::registry::{
-    PinnedAgentSpecRegistry, PinnedRegistryError, PinnedSpecMap, RegistryHandle,
+    PinnedAgentSpecRegistry, PinnedModelRegistry, PinnedRegistryError, PinnedSpecMap,
+    RegistryHandle,
 };
 use awaken_runtime::resolution::{
     PersistenceRequirement, ResolutionRequest, ResolveError, ResolvedRunPlan, Resolver,
@@ -39,6 +41,9 @@ pub struct FrozenAgentRegistry {
     pub agents: Arc<PinnedAgentSpecRegistry>,
     /// Pinned model bindings reachable from the manifest (ADR-0035 D8).
     pub models: Arc<PinnedSpecMap<ModelSpec>>,
+    /// Pinned model pools reachable from the manifest. A pool shares the model
+    /// id namespace, so durable runs resolve it like a model (ADR-0042).
+    pub pools: Arc<PinnedSpecMap<ModelPoolSpec>>,
     /// Pinned provider specs reachable from the manifest.
     pub providers: Arc<PinnedSpecMap<ProviderSpec>>,
     /// Pinned skill specs reachable from the manifest.
@@ -61,9 +66,13 @@ impl FrozenAgentRegistry {
         &self,
         live: &awaken_runtime::registry::RegistrySet,
     ) -> awaken_runtime::registry::RegistrySet {
+        let models = Arc::new(PinnedModelRegistry::new(
+            self.models.clone(),
+            self.pools.clone(),
+        )) as Arc<dyn awaken_runtime::registry::ModelRegistry>;
         awaken_runtime::registry::RegistrySet {
             agents: self.agents.clone() as Arc<dyn awaken_runtime::registry::AgentSpecRegistry>,
-            models: self.models.clone() as Arc<dyn awaken_runtime::registry::ModelRegistry>,
+            models,
             tools: live.tools.clone(),
             providers: live.providers.clone(),
             plugins: live.plugins.clone(),
@@ -173,6 +182,14 @@ impl FrozenAgentRegistryMaterializer {
                 |spec| spec.id.clone(),
             )
             .await?;
+        let pools = self
+            .load_pinned_kind::<ModelPoolSpec>(
+                &scope_id,
+                &report.entries,
+                REGISTRY_KIND_MODEL_POOL,
+                |spec| spec.id.clone(),
+            )
+            .await?;
         let providers = self
             .load_pinned_kind::<ProviderSpec>(
                 &scope_id,
@@ -208,6 +225,7 @@ impl FrozenAgentRegistryMaterializer {
             manifest,
             agents: Arc::new(agents),
             models: Arc::new(models),
+            pools: Arc::new(pools),
             providers: Arc::new(providers),
             skills: Arc::new(skills),
             tools: Arc::new(tools),
@@ -404,6 +422,43 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn materializes_pool_reachable_from_agent() {
+        let store = InMemoryVersionedRegistryStore::new();
+        let provider = publish_provider(&store, "provider-1").await;
+        let m0 = publish_model(&store, "m0", "provider-1").await;
+        let m1 = publish_model(&store, "m1", "provider-1").await;
+        let pool = publish_model_pool(&store, "pool-1", ["m0", "m1"]).await;
+        let root = publish_agent(&store, agent("root", "pool-1", [])).await;
+        store
+            .create_publication(
+                "default",
+                "pub-1",
+                refs([&provider, &m0, &m1, &pool, &root]),
+                Vec::new(),
+                None,
+                json!({}),
+            )
+            .await
+            .unwrap();
+
+        let materializer = FrozenAgentRegistryMaterializer::new(Arc::new(store));
+        let frozen = materializer
+            .materialize(VersionSelector::LatestPublication {
+                scope_id: "default".to_string(),
+            })
+            .await
+            .unwrap();
+
+        // The pool and its member models are frozen for the run.
+        assert_eq!(frozen.pools.get("pool-1").unwrap().members.len(), 2);
+        assert!(frozen.models.get("m0").is_some());
+        assert!(frozen.models.get("m1").is_some());
+        assert!(frozen.manifest.entries.iter().any(|entry| {
+            entry.kind == awaken_contract::REGISTRY_KIND_MODEL_POOL && entry.id == "pool-1"
+        }));
+    }
+
+    #[tokio::test]
     async fn materializes_exact_agent_with_current_references() {
         let store = InMemoryVersionedRegistryStore::new();
         publish_provider(&store, "provider-1").await;
@@ -514,6 +569,15 @@ mod tests {
     ) -> PinnedRegistryEntry {
         let spec = ModelSpec::new(id, provider_id, "upstream");
         publish(store, "model", id, serde_json::to_value(spec).unwrap()).await
+    }
+
+    async fn publish_model_pool<'a>(
+        store: &InMemoryVersionedRegistryStore,
+        id: &str,
+        members: impl IntoIterator<Item = &'a str>,
+    ) -> PinnedRegistryEntry {
+        let spec = ModelPoolSpec::new(id, members);
+        publish(store, "model_pool", id, serde_json::to_value(spec).unwrap()).await
     }
 
     async fn publish_provider(

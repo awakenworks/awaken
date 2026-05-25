@@ -2647,6 +2647,7 @@ mod tests {
             .publish(ManagedConfigSnapshot {
                 providers: Vec::new(),
                 models: Vec::new(),
+                pools: Vec::new(),
                 agents: Vec::new(),
                 mcp_servers: vec![McpServerSpec {
                     id: "demo".to_string(),

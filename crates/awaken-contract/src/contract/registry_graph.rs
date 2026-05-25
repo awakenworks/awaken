@@ -8,7 +8,7 @@ use futures::future::BoxFuture;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::registry_spec::{AgentSpec, ModelSpec};
+use crate::registry_spec::{AgentSpec, ModelPoolSpec, ModelSpec};
 
 use super::versioned_registry::{
     PinnedRegistryEntry, PinnedRegistryManifest, VersionRef, VersionedRecord,
@@ -17,6 +17,7 @@ use super::versioned_registry::{
 
 pub const REGISTRY_KIND_AGENT: &str = "agent";
 pub const REGISTRY_KIND_MODEL: &str = "model";
+pub const REGISTRY_KIND_MODEL_POOL: &str = "model_pool";
 pub const REGISTRY_KIND_PROVIDER: &str = "provider";
 pub const REGISTRY_KIND_SKILL: &str = "skill";
 pub const REGISTRY_KIND_TOOL: &str = "tool";
@@ -311,6 +312,7 @@ impl StandardRegistryGraphValidator {
         match entry.kind.as_str() {
             REGISTRY_KIND_AGENT => self.agent_dependencies(context, entry, record).await,
             REGISTRY_KIND_MODEL => self.model_dependencies(context, entry, record).await,
+            REGISTRY_KIND_MODEL_POOL => self.model_pool_dependencies(context, entry, record).await,
             REGISTRY_KIND_PROVIDER
             | REGISTRY_KIND_SKILL
             | REGISTRY_KIND_TOOL
@@ -347,7 +349,7 @@ impl StandardRegistryGraphValidator {
         let mut dependencies = Vec::new();
         if spec.endpoint.is_none() {
             dependencies.push(
-                self.resolve_reference_entry(context, REGISTRY_KIND_MODEL, &spec.model_id)
+                self.resolve_model_or_pool_reference(context, &spec.model_id)
                     .await?,
             );
         }
@@ -384,6 +386,93 @@ impl StandardRegistryGraphValidator {
             self.resolve_reference_entry(context, REGISTRY_KIND_PROVIDER, &spec.provider_id)
                 .await?,
         ])
+    }
+
+    async fn model_pool_dependencies(
+        &self,
+        context: &ValidationContext,
+        entry: &PinnedRegistryEntry,
+        record: &VersionedRecord<serde_json::Value>,
+    ) -> Result<Vec<PinnedRegistryEntry>, RegistryGraphValidationError> {
+        let spec =
+            serde_json::from_value::<ModelPoolSpec>(record.value.clone()).map_err(|error| {
+                RegistryGraphValidationError::InvalidReference {
+                    kind: entry.kind.clone(),
+                    id: entry.id.clone(),
+                    reason: format!("invalid ModelPoolSpec: {error}"),
+                }
+            })?;
+        if spec.id != entry.id {
+            return Err(RegistryGraphValidationError::InvalidReference {
+                kind: entry.kind.clone(),
+                id: entry.id.clone(),
+                reason: format!("ModelPoolSpec.id {} does not match registry id", spec.id),
+            });
+        }
+        let mut dependencies = Vec::with_capacity(spec.members.len());
+        for member in &spec.members {
+            dependencies.push(
+                self.resolve_reference_entry(context, REGISTRY_KIND_MODEL, &member.model_id)
+                    .await?,
+            );
+        }
+        Ok(dependencies)
+    }
+
+    /// Resolve an agent's `model_id`, which may name either a single model or a
+    /// pool (pools share the model id namespace). Prefers a model; falls back
+    /// to a pool; reports a missing model when neither exists.
+    async fn resolve_model_or_pool_reference(
+        &self,
+        context: &ValidationContext,
+        id: &str,
+    ) -> Result<PinnedRegistryEntry, RegistryGraphValidationError> {
+        if let Some(entry) = self
+            .try_reference_entry(context, REGISTRY_KIND_MODEL, id)
+            .await?
+        {
+            return Ok(entry);
+        }
+        if let Some(entry) = self
+            .try_reference_entry(context, REGISTRY_KIND_MODEL_POOL, id)
+            .await?
+        {
+            return Ok(entry);
+        }
+        Err(RegistryGraphValidationError::MissingResource {
+            kind: REGISTRY_KIND_MODEL.to_string(),
+            id: id.to_string(),
+        })
+    }
+
+    /// Like [`resolve_reference_entry`](Self::resolve_reference_entry) but
+    /// returns `Ok(None)` when the resource is absent instead of an error, so a
+    /// caller can try an alternative kind. Other failures (archived, store)
+    /// still propagate.
+    async fn try_reference_entry(
+        &self,
+        context: &ValidationContext,
+        kind: &str,
+        id: &str,
+    ) -> Result<Option<PinnedRegistryEntry>, RegistryGraphValidationError> {
+        let key = ResourceKey::new(kind, id);
+        if let Some(entry) = context.candidate_entries.get(&key) {
+            return Ok(Some(entry.clone()));
+        }
+        if !context.allow_current_reference_resolution {
+            return Ok(None);
+        }
+        self.reject_archived(&context.scope_id, kind, id, None)
+            .await?;
+        let Some(record) = self.store.current(&context.scope_id, kind, id).await? else {
+            return Ok(None);
+        };
+        Ok(Some(PinnedRegistryEntry {
+            kind: kind.to_string(),
+            id: id.to_string(),
+            version: record.version,
+            content_hash: record.content_hash,
+        }))
     }
 
     async fn resolve_reference_entry(

@@ -1,6 +1,6 @@
 use awaken_contract::{
-    AgentSpec, ConfigRecord, ConfigRevisionRef, McpServerSpec, ModelSpec, ProviderSpec, SkillSpec,
-    ToolSpec, validate_unique_model_ids,
+    AgentSpec, ConfigRecord, ConfigRevisionRef, McpServerSpec, ModelPoolSpec, ModelSpec,
+    ProviderSpec, SkillSpec, ToolSpec, validate_unique_model_ids,
 };
 use serde_json::Value;
 
@@ -9,9 +9,15 @@ use super::{
     NS_SKILLS, NS_TOOLS, deserialize_namespace, fingerprint_config,
 };
 
+/// Config-store namespace for model pools. Defined here (its only consumer)
+/// rather than alongside the other namespace constants to avoid growing the
+/// oversized `config_runtime.rs`.
+const NS_MODEL_POOLS: &str = "model-pools";
+
 pub(crate) struct ManagedConfigSnapshot {
     pub(crate) providers: Vec<ProviderSpec>,
     pub(crate) models: Vec<ModelSpec>,
+    pub(crate) pools: Vec<ModelPoolSpec>,
     pub(crate) agents: Vec<AgentSpec>,
     pub(crate) mcp_servers: Vec<McpServerSpec>,
     pub(crate) tools: Vec<ToolSpec>,
@@ -26,6 +32,7 @@ impl ConfigRuntimeManager {
     ) -> Result<ManagedConfigSnapshot, ConfigRuntimeError> {
         let provider_values = self.load_namespace_entries(NS_PROVIDERS).await?;
         let model_values = self.load_namespace_entries(NS_MODELS).await?;
+        let pool_values = self.load_namespace_entries(NS_MODEL_POOLS).await?;
         let agent_values = self.load_namespace_entries(NS_AGENTS).await?;
         let mcp_values = self.load_namespace_entries(NS_MCP_SERVERS).await?;
         let tool_values = self.load_namespace_entries(NS_TOOLS).await?;
@@ -34,6 +41,7 @@ impl ConfigRuntimeManager {
         let fingerprint = fingerprint_config(&[
             (NS_PROVIDERS, &provider_values),
             (NS_MODELS, &model_values),
+            (NS_MODEL_POOLS, &pool_values),
             (NS_AGENTS, &agent_values),
             (NS_MCP_SERVERS, &mcp_values),
             (NS_TOOLS, &tool_values),
@@ -42,6 +50,7 @@ impl ConfigRuntimeManager {
         let mut source_config_revisions = Vec::new();
         source_config_revisions.extend(config_revision_refs(NS_PROVIDERS, &provider_values)?);
         source_config_revisions.extend(config_revision_refs(NS_MODELS, &model_values)?);
+        source_config_revisions.extend(config_revision_refs(NS_MODEL_POOLS, &pool_values)?);
         source_config_revisions.extend(config_revision_refs(NS_AGENTS, &agent_values)?);
         source_config_revisions.extend(config_revision_refs(NS_TOOLS, &tool_values)?);
         source_config_revisions.extend(config_revision_refs(NS_SKILLS, &skill_values)?);
@@ -53,6 +62,7 @@ impl ConfigRuntimeManager {
         Ok(ManagedConfigSnapshot {
             providers: deserialize_namespace(&provider_values)?,
             models,
+            pools: deserialize_namespace(&pool_values)?,
             agents: deserialize_namespace(&agent_values)?,
             mcp_servers: deserialize_namespace(&mcp_values)?,
             tools: deserialize_namespace(&tool_values)?,

@@ -126,10 +126,11 @@ pub use contract::mailbox::{
     RunDispatchStatus,
 };
 pub use contract::registry_graph::{
-    REGISTRY_KIND_AGENT, REGISTRY_KIND_MODEL, REGISTRY_KIND_PLUGIN_CONFIG, REGISTRY_KIND_PROVIDER,
-    REGISTRY_KIND_SKILL, REGISTRY_KIND_TOOL, RegistryGraphValidationError,
-    RegistryGraphValidationReport, RegistryGraphValidationRequest, RegistryGraphValidator,
-    RegistryReferencePolicy, StandardRegistryGraphValidator, VersionSelector,
+    REGISTRY_KIND_AGENT, REGISTRY_KIND_MODEL, REGISTRY_KIND_MODEL_POOL,
+    REGISTRY_KIND_PLUGIN_CONFIG, REGISTRY_KIND_PROVIDER, REGISTRY_KIND_SKILL, REGISTRY_KIND_TOOL,
+    RegistryGraphValidationError, RegistryGraphValidationReport, RegistryGraphValidationRequest,
+    RegistryGraphValidator, RegistryReferencePolicy, StandardRegistryGraphValidator,
+    VersionSelector,
 };
 pub use contract::run::{
     RunActivationSnapshot, RunInput, RunInputSnapshot, RunIntent, RunKind, RunOptions,

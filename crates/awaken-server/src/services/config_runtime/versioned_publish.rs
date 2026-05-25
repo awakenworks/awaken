@@ -86,6 +86,12 @@ impl ConfigRuntimeManager {
             &mut resources,
         )?;
         append_specs(
+            awaken_contract::REGISTRY_KIND_MODEL_POOL,
+            &managed.pools,
+            |spec| spec.id.as_str(),
+            &mut resources,
+        )?;
+        append_specs(
             awaken_contract::REGISTRY_KIND_AGENT,
             &managed.agents,
             |spec| spec.id.as_str(),

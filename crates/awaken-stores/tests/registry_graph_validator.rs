@@ -2,9 +2,9 @@ use std::sync::Arc;
 
 use awaken_contract::contract::versioned_registry::PublishOutcome;
 use awaken_contract::{
-    AgentSpec, ModelSpec, PinnedRegistryEntry, ProviderSpec, RegistryGraphValidationError,
-    RegistryGraphValidationRequest, RegistryGraphValidator, StandardRegistryGraphValidator,
-    VersionRef, VersionSelector, VersionedRegistryStore,
+    AgentSpec, ModelPoolSpec, ModelSpec, PinnedRegistryEntry, ProviderSpec,
+    RegistryGraphValidationError, RegistryGraphValidationRequest, RegistryGraphValidator,
+    StandardRegistryGraphValidator, VersionRef, VersionSelector, VersionedRegistryStore,
 };
 use awaken_stores::InMemoryVersionedRegistryStore;
 use serde_json::{Value, json};
@@ -48,6 +48,64 @@ async fn validates_latest_publication_reachable_agent_model_provider_graph() {
             .entries
             .iter()
             .any(|entry| { entry.kind == "provider" && entry.id == "provider-1" })
+    );
+}
+
+#[tokio::test]
+async fn validates_agent_referencing_model_pool_graph() {
+    let store = InMemoryVersionedRegistryStore::new();
+    let provider = publish_provider(&store, "provider-1").await;
+    let m0 = publish_model(&store, "m0", "provider-1").await;
+    let m1 = publish_model(&store, "m1", "provider-1").await;
+    let pool = publish_model_pool(&store, "pool-1", ["m0", "m1"]).await;
+    let root = publish_agent(&store, agent("root", "pool-1", [])).await;
+    store
+        .create_publication(
+            "default",
+            "pub-1",
+            refs([&provider, &m0, &m1, &pool, &root]),
+            Vec::new(),
+            None,
+            json!({}),
+        )
+        .await
+        .unwrap();
+
+    let validator = StandardRegistryGraphValidator::new(Arc::new(store));
+    let report = validator
+        .validate(RegistryGraphValidationRequest {
+            root: VersionSelector::LatestPublication {
+                scope_id: "default".to_string(),
+            },
+            reference_policy: Default::default(),
+        })
+        .await
+        .unwrap();
+
+    // agent → pool → (m0, m1) → provider must all be reachable.
+    assert!(
+        report
+            .entries
+            .iter()
+            .any(|e| e.kind == "model_pool" && e.id == "pool-1")
+    );
+    assert!(
+        report
+            .entries
+            .iter()
+            .any(|e| e.kind == "model" && e.id == "m0")
+    );
+    assert!(
+        report
+            .entries
+            .iter()
+            .any(|e| e.kind == "model" && e.id == "m1")
+    );
+    assert!(
+        report
+            .entries
+            .iter()
+            .any(|e| e.kind == "provider" && e.id == "provider-1")
     );
 }
 
@@ -201,6 +259,15 @@ async fn publish_model(
 ) -> PinnedRegistryEntry {
     let spec = ModelSpec::new(id, provider_id, "upstream");
     publish(store, "model", id, serde_json::to_value(spec).unwrap()).await
+}
+
+async fn publish_model_pool<'a>(
+    store: &InMemoryVersionedRegistryStore,
+    id: &str,
+    members: impl IntoIterator<Item = &'a str>,
+) -> PinnedRegistryEntry {
+    let spec = ModelPoolSpec::new(id, members);
+    publish(store, "model_pool", id, serde_json::to_value(spec).unwrap()).await
 }
 
 async fn publish_provider(store: &InMemoryVersionedRegistryStore, id: &str) -> PinnedRegistryEntry {
