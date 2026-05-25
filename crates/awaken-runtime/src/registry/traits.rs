@@ -62,6 +62,15 @@ pub trait ProviderRegistry: Send + Sync {
     fn get_provider(&self, id: &str) -> Option<Arc<dyn LlmExecutor>>;
     /// List all registered provider IDs.
     fn provider_ids(&self) -> Vec<String>;
+    /// Stable provider definition signature when the registry knows one.
+    ///
+    /// Pool circuit breaker keys include this value so a provider endpoint or
+    /// adapter-options change does not inherit stale health from the previous
+    /// definition. Registries without serializable provider specs may return
+    /// `None`; the pool resolver still keys by provider id and executor name.
+    fn provider_signature(&self, _id: &str) -> Option<String> {
+        None
+    }
 }
 
 // ---------------------------------------------------------------------------

@@ -11,7 +11,7 @@
 //!    member to move to.
 //! 3. **Switch decision** — whether a given inference error warrants leaving the
 //!    current member at all (quota / permanent), as opposed to a transient blip
-//!    that the member's own retry policy should absorb.
+//!    that the member's own retry policy or breaker-open path should absorb.
 //!
 //! Health is supplied by the caller as a mask aligned with the member list, so
 //! the router stays free of circuit-breaker timing and is trivially testable.
@@ -158,13 +158,13 @@ impl PoolRouter {
         })
     }
 
-    /// Whether `err` warrants leaving the current member.
+    /// Whether `err` warrants leaving the current member immediately.
     ///
     /// Quota signals (rate-limit / overload) switch when [`PoolSwitchPolicy::on_quota`]
     /// is set and any retry-after threshold is met; permanent member errors
     /// (unauthorized / model-not-found) switch when [`PoolSwitchPolicy::on_permanent`]
-    /// is set. Transient and request-level errors never switch — the former are
-    /// absorbed by the member's own retry policy, the latter would fail
+    /// is set. Transient and request-level errors never switch immediately —
+    /// the former are absorbed by retry/breaker policy, the latter would fail
     /// identically on every member.
     pub fn should_switch_on_error(&self, err: &InferenceExecutionError) -> bool {
         match err {
@@ -174,7 +174,6 @@ impl PoolRouter {
             }
             InferenceExecutionError::Unauthorized(_)
             | InferenceExecutionError::ModelNotFound(_) => self.switch.on_permanent,
-            InferenceExecutionError::StreamInterrupted { .. } => self.switch.on_circuit_open,
             _ => false,
         }
     }
@@ -292,11 +291,23 @@ mod tests {
         // Transient — the member's own retry policy absorbs these.
         assert!(!r.should_switch_on_error(&InferenceExecutionError::Provider("blip".into())));
         assert!(!r.should_switch_on_error(&InferenceExecutionError::Timeout("slow".into())));
+        assert!(
+            !r.should_switch_on_error(&InferenceExecutionError::StreamInterrupted {
+                cause: awaken_contract::contract::executor::InterruptCause::ConnectionReset,
+                snapshot: Box::new(awaken_contract::contract::executor::InterruptSnapshot {
+                    text: None,
+                    completed_tool_calls: vec![],
+                    in_flight_tool: None,
+                    bytes_received: 0,
+                }),
+            })
+        );
         // Request-level — would fail identically on any member.
         assert!(!r.should_switch_on_error(&InferenceExecutionError::ContextOverflow("big".into())));
         assert!(!r.should_switch_on_error(&InferenceExecutionError::InvalidRequest("bad".into())));
         assert!(!r.should_switch_on_error(&InferenceExecutionError::Cancelled));
         assert!(!r.should_switch_on_error(&InferenceExecutionError::AllModelsUnavailable));
+        assert!(!r.should_switch_on_error(&InferenceExecutionError::PoolAttemptsExhausted));
     }
 
     #[test]

@@ -6,6 +6,7 @@ use awaken_runtime::registry::memory::{
     MapAgentSpecRegistry, MapModelRegistry, MapProviderRegistry,
 };
 use awaken_runtime::registry::{AgentSpecRegistry, RegistrySet, ToolRegistry};
+use sha2::{Digest, Sha256};
 
 use super::{
     AgentSpecRegistryWithDiscovery, ConfigRuntimeError, ConfigRuntimeManager, ProviderExecutorCache,
@@ -36,7 +37,11 @@ impl ConfigRuntimeManager {
                 (provider.clone(), Arc::clone(&executor)),
             );
             provider_registry
-                .register_provider(provider.id.clone(), executor)
+                .register_provider_with_signature(
+                    provider.id.clone(),
+                    executor,
+                    provider_definition_signature(provider),
+                )
                 .map_err(|error| ConfigRuntimeError::InvalidConfig(error.to_string()))?;
         }
 
@@ -92,5 +97,66 @@ impl ConfigRuntimeManager {
             },
             next_cache,
         ))
+    }
+}
+
+fn provider_definition_signature(provider: &ProviderSpec) -> String {
+    let options =
+        serde_json::to_string(&provider.adapter_options).unwrap_or_else(|_| "<options>".into());
+    format!(
+        "adapter={};base_url={:?};timeout={};credential={};options={}",
+        provider.adapter,
+        provider.base_url,
+        provider.timeout_secs,
+        provider_credential_signature(provider),
+        options
+    )
+}
+
+fn provider_credential_signature(provider: &ProviderSpec) -> String {
+    let kind = provider
+        .adapter_options
+        .get("credentials_kind")
+        .and_then(|value| value.as_str())
+        .unwrap_or("bearer");
+    let fingerprint = provider
+        .api_key
+        .as_ref()
+        .filter(|key| !key.is_empty())
+        .map(|key| {
+            let digest = Sha256::digest(key.expose_secret().as_bytes());
+            format!("sha256:{digest:x}")
+        })
+        .unwrap_or_else(|| "none".to_string());
+    format!("kind={kind};material={fingerprint}")
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+
+    use awaken_contract::ProviderSpec;
+
+    use super::provider_definition_signature;
+
+    fn provider(api_key: Option<&str>) -> ProviderSpec {
+        ProviderSpec {
+            id: "provider-a".into(),
+            adapter: "openai".into(),
+            api_key: api_key.map(Into::into),
+            base_url: Some("https://example.invalid/v1".into()),
+            timeout_secs: 30,
+            adapter_options: BTreeMap::new(),
+        }
+    }
+
+    #[test]
+    fn provider_signature_changes_when_credential_material_changes() {
+        let first = provider_definition_signature(&provider(Some("credential-one")));
+        let second = provider_definition_signature(&provider(Some("credential-two")));
+
+        assert_ne!(first, second);
+        assert!(!first.contains("credential-one"));
+        assert!(!second.contains("credential-two"));
     }
 }
