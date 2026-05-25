@@ -65,7 +65,7 @@ impl Mailbox {
             .await?)
     }
 
-    pub async fn freeze_pending(
+    pub(crate) async fn freeze_pending(
         &self,
         thread_id: &str,
         boundary: DeliveryBoundary,
@@ -315,6 +315,29 @@ struct MailboxPendingBoundaryHandler {
 
 #[async_trait::async_trait]
 impl PendingBoundaryHandler for MailboxPendingBoundaryHandler {
+    async fn stage_pending_messages(
+        &self,
+        boundary: DeliveryBoundary,
+        messages: Vec<Message>,
+    ) -> Result<(), AgentLoopError> {
+        if messages.is_empty() {
+            return Ok(());
+        }
+        self.mailbox
+            .deliver(
+                &self.thread_id,
+                &messages,
+                DeliveryMode {
+                    boundary,
+                    granularity: DeliveryGranularity::Batch,
+                    barrier: false,
+                },
+            )
+            .await
+            .map_err(|error| AgentLoopError::StorageError(error.to_string()))?;
+        Ok(())
+    }
+
     async fn freeze_pending_boundary(
         &self,
         boundary: DeliveryBoundary,

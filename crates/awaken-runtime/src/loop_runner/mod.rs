@@ -130,6 +130,12 @@ pub struct PendingBoundaryFreeze {
 /// implementation when durable pending is enabled.
 #[async_trait]
 pub trait PendingBoundaryHandler: Send + Sync {
+    async fn stage_pending_messages(
+        &self,
+        boundary: DeliveryBoundary,
+        messages: Vec<Message>,
+    ) -> Result<(), AgentLoopError>;
+
     async fn freeze_pending_boundary(
         &self,
         boundary: DeliveryBoundary,
