@@ -15,39 +15,61 @@ use awaken_contract::contract::event::AgentEvent;
 use awaken_contract::contract::lifecycle::RunStatus;
 use awaken_contract::contract::mailbox::{RunDispatch, RunDispatchStatus};
 use awaken_contract::contract::message::Message;
+use awaken_contract::contract::run::{RunInput, RunInputSnapshot, RunKind, RunResolutionScope};
 use awaken_contract::contract::storage::{
-    MessageSeqRange, RunMessageInput, RunRecord, RunRequestSnapshot, RunResumeDecision,
+    MessageSeqRange, PinnedRegistryManifest, RunMessageInput, RunRecord, RunRequestSnapshot,
 };
-use awaken_contract::contract::tool_intercept::{AdapterKind, RunMode};
+use awaken_contract::contract::tool_intercept::RunMode;
 use awaken_contract::now_ms;
-use awaken_runtime::RunRequest;
+use awaken_runtime::{ResolutionPolicy, RunActivation};
 
 use crate::transport::channel_sink::ReconnectableEventSink;
 
 use super::{
-    ACTIVE_RUN_CONFLICT_MESSAGE, INLINE_CLAIM_GUARD_MS, Mailbox, MailboxDispatchStatus,
-    MailboxError, MailboxSubmitResult, MailboxWorkerStatus, RunRequestExtras, ThreadContext,
-    normalize_mailbox_run_mode, normalize_message_ids, record_mailbox_operation_result,
-    result_label, validate_run_inputs,
+    ACTIVE_RUN_CONFLICT_MESSAGE, INLINE_CLAIM_GUARD_MS, LegacyRunRequestSnapshotAdapter,
+    LegacyRunSnapshotExtras, Mailbox, MailboxDispatchStatus, MailboxError, MailboxSubmitResult,
+    MailboxWorkerStatus, ThreadContext, legacy_input_snapshot, normalize_mailbox_run_mode,
+    normalize_message_ids, record_mailbox_operation_result, result_label, validate_run_inputs,
 };
 
 impl Mailbox {
     // ── Submission ───────────────────────────────────────────────────
 
+    async fn enqueue_dispatch_for_request(
+        &self,
+        request: &RunActivation,
+        dispatch: &RunDispatch,
+    ) -> Result<(), MailboxError> {
+        let result = self.enqueue_dispatch_with_metrics(dispatch).await;
+        if let Err(error) = &result
+            && !request.control.seeded_decisions.is_empty()
+        {
+            self.record_mailbox_resume_failed(
+                dispatch,
+                &request.control.seeded_decisions,
+                "enqueue_failed",
+                error,
+            )
+            .await;
+        }
+        result?;
+        Ok(())
+    }
+
     /// Submit a run for streaming. Returns event receiver immediately.
     ///
     /// The dispatch is persisted (WAL), then claimed inline by this process.
     /// The caller wires `event_rx` to their transport (SSE, WebSocket, etc).
-    #[tracing::instrument(skip(self, request), fields(thread_id = %request.thread_id))]
+    #[tracing::instrument(skip(self, request), fields(thread_id = %request.thread_id()))]
     pub async fn submit(
         self: &Arc<Self>,
-        mut request: RunRequest,
+        mut request: RunActivation,
     ) -> Result<(MailboxSubmitResult, mpsc::Receiver<AgentEvent>), MailboxError> {
         normalize_mailbox_run_mode(&mut request, false);
         let (thread_id, messages) = validate_run_inputs(
-            request.thread_id.clone(),
-            request.messages.clone(),
-            !request.decisions.is_empty(),
+            request.thread_id().to_owned(),
+            request.messages().to_vec(),
+            !request.control.seeded_decisions.is_empty(),
         )?;
 
         // Step 1: Interrupt — bump dispatch epoch, supersede stale queued dispatches.
@@ -77,6 +99,8 @@ impl Mailbox {
                     if !cancelled {
                         return Err(MailboxError::Validation(ACTIVE_RUN_CONFLICT_MESSAGE.into()));
                     }
+                    self.record_mailbox_dispatch_event("RunInterrupted", active_dispatch)
+                        .await;
                     tracing::info!(
                         thread_id = %thread_id,
                         superseded = interrupt.superseded_count,
@@ -93,6 +117,7 @@ impl Mailbox {
             }
         }
 
+        self.ensure_dispatch_id_hint(&mut request);
         let run_id = self
             .prepare_run_for_dispatch(&mut request, &thread_id, &messages)
             .await?;
@@ -100,13 +125,17 @@ impl Mailbox {
         let dispatch_id = dispatch.dispatch_id.clone();
         let thread_id = dispatch.thread_id.clone();
 
-        // WAL: persist before anything else.
+        // WAL: persist after the prepared checkpoint; startup recovery
+        // reconciles the crash window before this enqueue.
         // Set available_at slightly in the future to prevent sweep from grabbing
         // the dispatch during the inline claim window. If the process crashes before
         // the claim completes, sweep will reclaim the dispatch after the guard period.
         let mut wal_dispatch = dispatch;
         wal_dispatch.available_at = now_ms() + INLINE_CLAIM_GUARD_MS;
-        self.enqueue_dispatch_with_metrics(&wal_dispatch).await?;
+        self.enqueue_dispatch_for_request(&request, &wal_dispatch)
+            .await?;
+        self.record_mailbox_dispatch_event("RunQueued", &wal_dispatch)
+            .await;
 
         // Inline claim.
         let now = now_ms();
@@ -168,7 +197,6 @@ impl Mailbox {
             // Spawn execution.
             self.spawn_execution(
                 claimed_dispatch,
-                event_tx.clone(),
                 reconnectable_sink,
                 claim_token,
                 thread_id.clone(),
@@ -219,18 +247,19 @@ impl Mailbox {
     ///
     /// Dispatch is persisted with `available_at = now`, then execution is event-driven.
     /// Returns dispatch_id + thread_id for status polling.
-    #[tracing::instrument(skip(self, request), fields(thread_id = %request.thread_id))]
+    #[tracing::instrument(skip(self, request), fields(thread_id = %request.thread_id()))]
     pub async fn submit_background(
         self: &Arc<Self>,
-        mut request: RunRequest,
+        mut request: RunActivation,
     ) -> Result<MailboxSubmitResult, MailboxError> {
         normalize_mailbox_run_mode(&mut request, true);
         let (thread_id, messages) = validate_run_inputs(
-            request.thread_id.clone(),
-            request.messages.clone(),
-            !request.decisions.is_empty(),
+            request.thread_id().to_owned(),
+            request.messages().to_vec(),
+            !request.control.seeded_decisions.is_empty(),
         )?;
 
+        self.ensure_dispatch_id_hint(&mut request);
         let run_id = self
             .prepare_run_for_dispatch(&mut request, &thread_id, &messages)
             .await?;
@@ -238,8 +267,12 @@ impl Mailbox {
         let dispatch_id = dispatch.dispatch_id.clone();
         let thread_id = dispatch.thread_id.clone();
 
-        // WAL: persist with available_at = now.
-        self.enqueue_dispatch_with_metrics(&dispatch).await?;
+        // WAL: persist with available_at = now; startup recovery reconstructs
+        // the row if the process crashed after preparing the run checkpoint.
+        self.enqueue_dispatch_for_request(&request, &dispatch)
+            .await?;
+        self.record_mailbox_dispatch_event("RunQueued", &dispatch)
+            .await;
 
         // Dispatch via try_dispatch_next which handles Idle → Claiming atomically.
         self.get_or_create_worker(&thread_id).await;
@@ -278,21 +311,21 @@ impl Mailbox {
     /// 4. When the current run ends, the queued dispatch executes and
     ///    the user-visible message history contains duplicates.
     ///
-    /// `RunRequest` does not expose dispatch-level dedupe. Callers that need
+    /// `RunActivation` does not expose dispatch-level dedupe. Callers that need
     /// exactly-once effects must drive idempotency at the application layer
     /// (e.g., unique
     ///   message IDs normalized via `normalize_message_ids`; agent
     ///   state that rejects redundant inputs).
-    #[tracing::instrument(skip(self, request), fields(thread_id = %request.thread_id))]
+    #[tracing::instrument(skip(self, request), fields(thread_id = %request.thread_id()))]
     pub async fn submit_live_then_queue(
         self: &Arc<Self>,
-        mut request: RunRequest,
+        mut request: RunActivation,
         expected_run_id: Option<&str>,
     ) -> Result<MailboxSubmitResult, MailboxError> {
         let (thread_id, messages) = validate_run_inputs(
-            request.thread_id.clone(),
-            request.messages.clone(),
-            !request.decisions.is_empty(),
+            request.thread_id().to_owned(),
+            request.messages().to_vec(),
+            !request.control.seeded_decisions.is_empty(),
         )?;
         let messages = normalize_message_ids(&messages);
 
@@ -303,36 +336,55 @@ impl Mailbox {
             return Ok(result);
         }
 
-        request.thread_id = thread_id;
-        request.messages = messages;
+        request.intent.thread_id = thread_id;
+        request.input = RunInput::NewMessages(messages);
         self.submit_background(request).await
     }
 
     // ── Run preparation & reconstruction ─────────────────────────────
 
+    fn ensure_dispatch_id_hint(&self, request: &mut RunActivation) -> String {
+        match request.persistence.dispatch_id_hint.as_ref() {
+            Some(id) if !id.trim().is_empty() => id.clone(),
+            _ => {
+                let id = uuid::Uuid::now_v7().to_string();
+                request.persistence.dispatch_id_hint = Some(id.clone());
+                id
+            }
+        }
+    }
+
     /// Create or update the durable run truth before enqueuing a dispatch.
+    ///
+    /// The caller assigns `dispatch_id_hint` before this method persists the
+    /// checkpoint. Startup recovery can then reconcile the crash window where
+    /// the run checkpoint landed but the matching dispatch WAL write did not.
     pub(super) async fn prepare_run_for_dispatch(
         &self,
-        request: &mut RunRequest,
+        request: &mut RunActivation,
         thread_id: &str,
         messages: &[Message],
     ) -> Result<String, MailboxError> {
-        if request.continue_run_id.is_none()
-            && request.run_id_hint.is_none()
+        if request.resume_run_id().is_none()
+            && request.persistence.run_id_hint.is_none()
             && let Some(waiting_run_id) = self.reusable_waiting_run_id(thread_id).await
         {
-            request.continue_run_id = Some(waiting_run_id);
+            request.intent.kind = RunKind::HitlResume {
+                run_id: waiting_run_id,
+            };
+            request.trace.run_mode = RunMode::Resume;
         }
 
         let run_id = request
-            .continue_run_id
-            .clone()
-            .or_else(|| request.run_id_hint.clone())
+            .resume_run_id()
+            .map(str::to_owned)
+            .or_else(|| request.persistence.run_id_hint.clone())
             .filter(|id| !id.trim().is_empty())
             .unwrap_or_else(|| uuid::Uuid::now_v7().to_string());
-        if request.continue_run_id.is_none() {
-            request.run_id_hint = Some(run_id.clone());
+        if request.resume_run_id().is_none() {
+            request.persistence.run_id_hint = Some(run_id.clone());
         }
+        let dispatch_id = self.ensure_dispatch_id_hint(request);
 
         let normalized_messages = normalize_message_ids(messages);
         let existing_messages = self
@@ -342,41 +394,29 @@ impl Mailbox {
             .unwrap_or_default();
         let previous_run = self.run_store.latest_run(thread_id).await?;
         let mut appended_messages = existing_messages;
+        let first_new_seq = appended_messages.len() as u64 + 1;
         appended_messages.extend(normalized_messages.iter().cloned());
+        let last_new_seq = appended_messages.len() as u64;
         let input_message_ids = normalized_messages
             .iter()
             .filter_map(|message| message.id.clone())
             .collect::<Vec<_>>();
-        let request_extras = RunRequestExtras::from_request(request)
-            .to_value()
-            .map_err(|e| {
-                MailboxError::Internal(format!("failed to serialize request extras: {e}"))
-            })?;
-        let request_snapshot = RunRequestSnapshot {
-            origin: request.origin,
-            sender_id: None,
-            input_message_ids: input_message_ids.clone(),
-            input_message_count: normalized_messages.len() as u64,
-            request_extras,
-            decisions: request
-                .decisions
-                .iter()
-                .map(|(call_id, resume)| RunResumeDecision {
-                    call_id: call_id.clone(),
-                    resume: resume.clone(),
-                })
-                .collect(),
-            frontend_tools: request.frontend_tools.clone(),
-            parent_thread_id: request.parent_thread_id.clone(),
-            transport_request_id: request.transport_request_id.clone(),
-        };
-        let input = Some(RunMessageInput {
+        let input_range = MessageSeqRange::new(1, appended_messages.len() as u64);
+        let input_snapshot = RunInputSnapshot {
             thread_id: thread_id.to_string(),
-            range: MessageSeqRange::new(1, appended_messages.len() as u64),
+            range: input_range,
             trigger_message_ids: input_message_ids,
             selected_message_ids: Vec::new(),
             context_policy: None,
             compacted_snapshot_id: None,
+        };
+        let input = Some(RunMessageInput {
+            thread_id: input_snapshot.thread_id.clone(),
+            range: input_snapshot.range,
+            trigger_message_ids: input_snapshot.trigger_message_ids.clone(),
+            selected_message_ids: input_snapshot.selected_message_ids.clone(),
+            context_policy: input_snapshot.context_policy.clone(),
+            compacted_snapshot_id: input_snapshot.compacted_snapshot_id.clone(),
         });
 
         let existing_run = self.run_store.load_run(&run_id).await?;
@@ -392,25 +432,40 @@ impl Mailbox {
                     "run_id '{run_id}' is not open for dispatch"
                 )));
             }
-            existing.request = Some(request_snapshot);
-            existing.input = input;
-            existing.updated_at = now_ms() / 1000;
-            self.run_store
-                .checkpoint(thread_id, &appended_messages, &existing)
-                .await?;
-            {
-                let workers = self.workers.read().await;
-                if let Some(worker) = workers.get(thread_id) {
-                    let mut w = worker.lock();
-                    if let Some(ref mut ctx) = w.thread_ctx {
-                        ctx.apply_checkpoint(&appended_messages, &existing);
-                    }
-                }
+            if request.intent.agent_id.is_none() {
+                request.intent.agent_id = Some(existing.agent_id.clone());
             }
+            let registry_manifest = if let Some(manifest) = existing.registry_manifest.clone() {
+                request.resolution_scope = RunResolutionScope::Pinned(manifest.clone());
+                manifest
+            } else {
+                let manifest = self.resolve_replayable_manifest(request).await?;
+                existing.registry_manifest = Some(manifest.clone());
+                request.resolution_scope = RunResolutionScope::Pinned(manifest.clone());
+                manifest
+            };
+            existing.activation = Some(request.snapshot(input_snapshot.clone(), registry_manifest));
+            existing.request = None;
+            existing.input = input;
+            existing.dispatch_id = Some(dispatch_id);
+            existing.updated_at = now_ms() / 1000;
+            self.commit_run_checkpoint(thread_id, &appended_messages, &existing)
+                .await?;
+            self.record_thread_message_checkpoint_events(
+                thread_id,
+                &run_id,
+                &appended_messages,
+                first_new_seq,
+                last_new_seq,
+            )
+            .await;
+            self.refresh_worker_checkpoint_cache(thread_id, &appended_messages, &existing)
+                .await;
             return Ok(run_id);
         }
 
         let inferred_agent_id = request
+            .intent
             .agent_id
             .clone()
             .or_else(|| {
@@ -424,24 +479,31 @@ impl Mailbox {
             .as_ref()
             .filter(|run| run.status != RunStatus::Created)
             .and_then(|run| run.state.clone());
+        if request.intent.agent_id.is_none() {
+            request.intent.agent_id = Some(inferred_agent_id.clone());
+        }
+        let registry_manifest = self.resolve_replayable_manifest(request).await?;
+        request.resolution_scope = RunResolutionScope::Pinned(registry_manifest.clone());
+        let activation = Some(request.snapshot(input_snapshot, registry_manifest.clone()));
+        let registry_manifest = Some(registry_manifest);
         let now = now_ms() / 1000;
         let record = RunRecord {
             run_id: run_id.clone(),
             thread_id: thread_id.to_string(),
             agent_id: inferred_agent_id,
-            parent_run_id: request.parent_run_id.clone(),
-            registry_manifest: None,
-            activation: None,
-            request: Some(request_snapshot),
+            parent_run_id: request.trace.parent_run_id.clone(),
+            registry_manifest,
+            activation,
+            request: None,
             input,
             output: None,
             status: RunStatus::Created,
             termination_reason: None,
             final_output: None,
             error_payload: None,
-            dispatch_id: None,
+            dispatch_id: Some(dispatch_id),
             session_id: None,
-            transport_request_id: request.transport_request_id.clone(),
+            transport_request_id: request.trace.transport_request_id.clone(),
             waiting: None,
             outcome: None,
             created_at: now,
@@ -453,35 +515,52 @@ impl Mailbox {
             output_tokens: 0,
             state: inherited_state,
         };
-        self.run_store
-            .checkpoint(thread_id, &appended_messages, &record)
+        self.commit_run_checkpoint(thread_id, &appended_messages, &record)
             .await?;
-        {
-            let workers = self.workers.read().await;
-            if let Some(worker) = workers.get(thread_id) {
-                let mut w = worker.lock();
-                if let Some(ref mut ctx) = w.thread_ctx {
-                    ctx.apply_checkpoint(&appended_messages, &record);
-                }
-            }
-        }
+        self.record_thread_message_checkpoint_events(
+            thread_id,
+            &run_id,
+            &appended_messages,
+            first_new_seq,
+            last_new_seq,
+        )
+        .await;
+        self.refresh_worker_checkpoint_cache(thread_id, &appended_messages, &record)
+            .await;
         Ok(run_id)
+    }
+
+    async fn resolve_replayable_manifest(
+        &self,
+        request: &RunActivation,
+    ) -> Result<PinnedRegistryManifest, MailboxError> {
+        self.executor
+            .resolve_activation(request, ResolutionPolicy::PersistentServer)
+            .await
+            .and_then(|plan| plan.into_replayable())
+            .map(|plan| plan.scope.manifest)
+            .map_err(|error| {
+                MailboxError::Validation(format!(
+                    "persistent mailbox dispatch requires a replayable resolved run: {error}"
+                ))
+            })
     }
 
     /// Build a RunDispatch from the durable run prepared above.
     pub(super) fn build_dispatch(
         &self,
-        request: &RunRequest,
+        request: &RunActivation,
         thread_id: &str,
     ) -> Result<RunDispatch, MailboxError> {
         let run_id = request
-            .continue_run_id
-            .clone()
-            .or_else(|| request.run_id_hint.clone())
+            .resume_run_id()
+            .map(str::to_owned)
+            .or_else(|| request.persistence.run_id_hint.clone())
             .ok_or_else(|| MailboxError::Internal("run_id missing after preparation".into()))?;
         let now = now_ms();
         Ok(RunDispatch {
             dispatch_id: request
+                .persistence
                 .dispatch_id_hint
                 .clone()
                 .unwrap_or_else(|| uuid::Uuid::now_v7().to_string()),
@@ -512,7 +591,7 @@ impl Mailbox {
     pub(super) async fn reconstruct_run_request(
         &self,
         dispatch: &RunDispatch,
-    ) -> Result<RunRequest, MailboxError> {
+    ) -> Result<RunActivation, MailboxError> {
         let run = {
             let cached = {
                 let workers = self.workers.read().await;
@@ -543,51 +622,100 @@ impl Mailbox {
                 run.run_id, run.thread_id, dispatch.thread_id
             )));
         }
+        if let Some(snapshot) = run.activation.clone() {
+            let activation_messages = self
+                .activation_messages_for_snapshot(&run, &snapshot.input)
+                .await?;
+            let mut request = RunActivation::new(run.thread_id.clone(), activation_messages)
+                .with_messages_already_persisted(true);
+            request.intent = snapshot.intent;
+            request.options = snapshot.options;
+            request.trace = snapshot.trace;
+            request.control.seeded_decisions = snapshot.seeded_decisions;
+            request.resolution_scope = RunResolutionScope::Pinned(snapshot.resolution_scope);
+            return self
+                .attach_dispatch_replay_wiring(&run, dispatch, request)
+                .await;
+        }
+
         let snapshot = run.request.clone().ok_or_else(|| {
-            MailboxError::Validation(format!("run '{}' has no request snapshot", run.run_id))
+            MailboxError::Validation(format!("run '{}' has no activation snapshot", run.run_id))
         })?;
         let activation_messages = self.activation_messages_for_run(&run, &snapshot).await?;
-        let mut request = RunRequest::new(run.thread_id.clone(), activation_messages)
-            .with_messages_already_persisted(true)
-            .with_origin(snapshot.origin)
-            .with_run_mode(RunMode::Resume)
-            .with_adapter(AdapterKind::Internal);
-        if !run.agent_id.trim().is_empty() {
-            request = request.with_agent_id(run.agent_id.clone());
-        }
-        if let Some(parent_run_id) = run.parent_run_id.clone() {
-            request = request.with_parent_run_id(parent_run_id);
-        }
-        if let Some(parent_thread_id) = snapshot.parent_thread_id.clone() {
-            request = request.with_parent_thread_id(parent_thread_id);
-        }
-        if let Some(transport_request_id) = snapshot.transport_request_id.clone() {
-            request = request.with_transport_request_id(transport_request_id);
-        }
-        if !snapshot.decisions.is_empty() {
-            request = request.with_decisions(
-                snapshot
-                    .decisions
-                    .iter()
-                    .map(|decision| (decision.call_id.clone(), decision.resume.clone()))
-                    .collect(),
-            );
-        }
-        if !snapshot.frontend_tools.is_empty() {
-            request = request.with_frontend_tools(snapshot.frontend_tools.clone());
-        }
-        if let Some(extras_value) = snapshot.request_extras.as_ref() {
-            let extras = RunRequestExtras::from_value(extras_value).map_err(|error| {
-                MailboxError::Validation(format!("corrupt request_extras: {error}"))
-            })?;
-            request = extras.apply_to(request);
-        }
+        let extras = snapshot
+            .request_extras
+            .as_ref()
+            .map(|extras_value| {
+                LegacyRunSnapshotExtras::from_value(extras_value).map_err(|error| {
+                    MailboxError::Validation(format!("corrupt request_extras: {error}"))
+                })
+            })
+            .transpose()?;
+        let manifest = run.registry_manifest.clone().ok_or_else(|| {
+            MailboxError::Validation(format!(
+                "legacy run '{}' has no pinned registry manifest",
+                run.run_id
+            ))
+        })?;
+        let input = legacy_input_snapshot(&run, &snapshot);
+        let snapshot = awaken_contract::contract::run::RunActivationSnapshot::try_from(
+            LegacyRunRequestSnapshotAdapter {
+                snapshot,
+                input,
+                manifest,
+                thread_id: run.thread_id.clone(),
+                agent_id: (!run.agent_id.trim().is_empty()).then(|| run.agent_id.clone()),
+                parent_run_id: run.parent_run_id.clone(),
+                extras,
+            },
+        )
+        .map_err(|error| {
+            MailboxError::Validation(format!("legacy run snapshot conversion failed: {error}"))
+        })?;
+        let mut request = RunActivation::new(run.thread_id.clone(), activation_messages)
+            .with_messages_already_persisted(true);
+        request.intent = snapshot.intent;
+        request.options = snapshot.options;
+        request.trace = snapshot.trace;
+        request.control.seeded_decisions = snapshot.seeded_decisions;
+        request.resolution_scope = RunResolutionScope::Pinned(snapshot.resolution_scope);
+        self.attach_dispatch_replay_wiring(&run, dispatch, request)
+            .await
+    }
+
+    async fn attach_dispatch_replay_wiring(
+        &self,
+        run: &RunRecord,
+        dispatch: &RunDispatch,
+        mut request: RunActivation,
+    ) -> Result<RunActivation, MailboxError> {
         request = if run.is_resumable_waiting() {
-            request.with_continue_run_id(run.run_id.clone())
+            request.intent.kind = RunKind::HitlResume {
+                run_id: run.run_id.clone(),
+            };
+            if request.trace.run_mode == RunMode::Foreground {
+                request.trace.run_mode = RunMode::Resume;
+            }
+            request
         } else {
             request.with_run_id_hint(run.run_id.clone())
         };
+        if let Some(manifest) = run.registry_manifest.clone() {
+            request = request.with_registry_manifest(manifest);
+        }
         Ok(request.with_trace_dispatch_id(dispatch.dispatch_id.clone()))
+    }
+
+    async fn activation_messages_for_snapshot(
+        &self,
+        run: &RunRecord,
+        snapshot: &RunInputSnapshot,
+    ) -> Result<Vec<Message>, MailboxError> {
+        if snapshot.trigger_message_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        self.activation_messages_by_ids(run, &snapshot.trigger_message_ids)
+            .await
     }
 
     async fn activation_messages_for_run(
@@ -598,14 +726,22 @@ impl Mailbox {
         if snapshot.input_message_ids.is_empty() {
             return self.activation_messages_from_range(run, snapshot).await;
         }
-        // Try cache first for message lookups.
+        self.activation_messages_by_ids(run, &snapshot.input_message_ids)
+            .await
+    }
+
+    async fn activation_messages_by_ids(
+        &self,
+        run: &RunRecord,
+        message_ids: &[String],
+    ) -> Result<Vec<Message>, MailboxError> {
         let cached_messages: Option<Vec<Message>> = {
             let workers = self.workers.read().await;
             workers.get(&run.thread_id).and_then(|w| {
                 let w = w.lock();
                 w.thread_ctx.as_ref().and_then(|ctx| {
-                    let mut msgs = Vec::with_capacity(snapshot.input_message_ids.len());
-                    for msg_id in &snapshot.input_message_ids {
+                    let mut msgs = Vec::with_capacity(message_ids.len());
+                    for msg_id in message_ids {
                         let found = ctx
                             .messages
                             .iter()
@@ -619,8 +755,8 @@ impl Mailbox {
         if let Some(msgs) = cached_messages {
             return Ok(msgs);
         }
-        let mut messages = Vec::with_capacity(snapshot.input_message_ids.len());
-        for message_id in &snapshot.input_message_ids {
+        let mut messages = Vec::with_capacity(message_ids.len());
+        for message_id in message_ids {
             let record = self
                 .run_store
                 .load_message_record(&run.thread_id, message_id)

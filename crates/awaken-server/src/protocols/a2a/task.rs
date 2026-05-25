@@ -9,7 +9,7 @@ use axum::extract::{Path, Query, State};
 use axum::http::HeaderMap;
 use serde_json::json;
 
-use crate::app::AppState;
+use crate::app::ProtocolRoutesState;
 
 use super::common::{
     ensure_runnable_agent, ensure_supported_version, load_thread_metadata_projection,
@@ -24,7 +24,7 @@ use super::types::{
 };
 
 pub(super) async fn a2a_list_tasks_default(
-    State(st): State<AppState>,
+    State(st): State<ProtocolRoutesState>,
     headers: HeaderMap,
     Query(query): Query<ListTasksQuery>,
 ) -> Result<Json<ListTasksResponse>, A2aError> {
@@ -32,7 +32,7 @@ pub(super) async fn a2a_list_tasks_default(
 }
 
 pub(super) async fn a2a_list_tasks_tenant(
-    State(st): State<AppState>,
+    State(st): State<ProtocolRoutesState>,
     Path(tenant): Path<String>,
     headers: HeaderMap,
     Query(query): Query<ListTasksQuery>,
@@ -41,7 +41,7 @@ pub(super) async fn a2a_list_tasks_tenant(
 }
 
 pub(super) async fn a2a_get_task_default(
-    State(st): State<AppState>,
+    State(st): State<ProtocolRoutesState>,
     Path(task_id): Path<String>,
     headers: HeaderMap,
     Query(query): Query<GetTaskQuery>,
@@ -50,7 +50,7 @@ pub(super) async fn a2a_get_task_default(
 }
 
 pub(super) async fn a2a_get_task_tenant(
-    State(st): State<AppState>,
+    State(st): State<ProtocolRoutesState>,
     Path((tenant, task_id)): Path<(String, String)>,
     headers: HeaderMap,
     Query(query): Query<GetTaskQuery>,
@@ -59,7 +59,7 @@ pub(super) async fn a2a_get_task_tenant(
 }
 
 pub(super) async fn cancel_task(
-    st: AppState,
+    st: ProtocolRoutesState,
     headers: HeaderMap,
     tenant: Option<String>,
     task_id: String,
@@ -81,6 +81,7 @@ pub(super) async fn cancel_task(
     }
 
     let queued_dispatches = st
+        .run
         .mailbox
         .list_dispatches(
             &existing.task.id,
@@ -94,12 +95,14 @@ pub(super) async fn cancel_task(
     let mut cancelled = false;
     for dispatch in queued_dispatches {
         cancelled |= st
+            .run
             .mailbox
             .cancel(&dispatch.dispatch_id)
             .await
             .map_err(|e| A2aError::Internal(e.to_string()))?;
     }
     cancelled |= st
+        .run
         .mailbox
         .cancel(&existing.task.id)
         .await
@@ -127,7 +130,7 @@ pub(super) async fn cancel_task(
 }
 
 async fn list_tasks(
-    st: AppState,
+    st: ProtocolRoutesState,
     headers: HeaderMap,
     tenant: Option<String>,
     query: ListTasksQuery,
@@ -200,7 +203,7 @@ async fn list_tasks(
 }
 
 async fn get_task(
-    st: AppState,
+    st: ProtocolRoutesState,
     headers: HeaderMap,
     tenant: Option<String>,
     task_id: String,
@@ -218,16 +221,18 @@ async fn get_task(
 }
 
 pub(super) async fn resolve_task(
-    st: &AppState,
+    st: &ProtocolRoutesState,
     task_id: &str,
 ) -> Result<Option<ResolvedTask>, A2aError> {
     if let Some(run) = st
-        .store
+        .run
+        .store()
         .load_run(task_id)
         .await
         .map_err(|e| A2aError::Internal(e.to_string()))?
     {
         let dispatch = st
+            .run
             .mailbox
             .load_dispatch(task_id)
             .await
@@ -240,6 +245,7 @@ pub(super) async fn resolve_task(
     }
 
     let Some(dispatch) = st
+        .run
         .mailbox
         .load_dispatch(task_id)
         .await
@@ -259,7 +265,7 @@ pub(super) fn run_is_a2a_resumable(run: &RunRecord) -> bool {
 }
 
 pub(super) async fn record_task_binding(
-    st: &AppState,
+    st: &ProtocolRoutesState,
     thread_id: &str,
     task_id: &str,
     start_message_id: &str,
@@ -293,12 +299,13 @@ pub(super) async fn record_task_binding(
 }
 
 async fn load_task_binding(
-    st: &AppState,
+    st: &ProtocolRoutesState,
     thread_id: &str,
     task_id: &str,
 ) -> Result<Option<StoredTaskBinding>, A2aError> {
     let Some(thread) = st
-        .store
+        .run
+        .store()
         .load_thread(thread_id)
         .await
         .map_err(|e| A2aError::Internal(e.to_string()))?
@@ -314,7 +321,10 @@ async fn load_task_binding(
         .and_then(|bindings| bindings.tasks.get(task_id).cloned()))
 }
 
-pub(super) async fn task_context_id(st: &AppState, task_id: &str) -> Result<String, A2aError> {
+pub(super) async fn task_context_id(
+    st: &ProtocolRoutesState,
+    task_id: &str,
+) -> Result<String, A2aError> {
     Ok(resolve_task(st, task_id)
         .await?
         .map(|task| task.thread_id)
@@ -322,7 +332,7 @@ pub(super) async fn task_context_id(st: &AppState, task_id: &str) -> Result<Stri
 }
 
 pub(super) async fn wait_for_task(
-    st: &AppState,
+    st: &ProtocolRoutesState,
     task_id: &str,
     tenant: Option<&str>,
     history_length: usize,
@@ -351,7 +361,7 @@ pub(super) async fn wait_for_task(
 }
 
 pub(super) async fn load_task_snapshot(
-    st: &AppState,
+    st: &ProtocolRoutesState,
     task_id: &str,
     tenant: Option<&str>,
     history_length: usize,
@@ -365,7 +375,8 @@ pub(super) async fn load_task_snapshot(
     let latest_dispatch: Option<RunDispatch> = if let Some(dispatch) = task.dispatch.clone() {
         Some(dispatch)
     } else {
-        st.mailbox
+        st.run
+            .mailbox
             .list_dispatches(&thread_id, None, 100, 0)
             .await
             .map_err(|e| A2aError::Internal(e.to_string()))?
@@ -375,7 +386,8 @@ pub(super) async fn load_task_snapshot(
     };
 
     let history = st
-        .store
+        .run
+        .store()
         .load_messages(&thread_id)
         .await
         .map_err(|e| A2aError::Internal(e.to_string()))?
@@ -559,7 +571,7 @@ pub(super) fn canceled_task(task_id: &str, context_id: &str, tenant: Option<&str
 }
 
 pub(super) async fn ensure_task_visible(
-    st: &AppState,
+    st: &ProtocolRoutesState,
     task_id: &str,
     tenant: Option<&str>,
 ) -> Result<(), A2aError> {
@@ -581,12 +593,13 @@ pub(super) async fn ensure_task_visible(
     }
 }
 
-pub(super) async fn collect_task_ids(st: &AppState) -> Result<Vec<String>, A2aError> {
+pub(super) async fn collect_task_ids(st: &ProtocolRoutesState) -> Result<Vec<String>, A2aError> {
     let mut ids = BTreeSet::new();
     let mut run_offset = 0;
     loop {
         let page = st
-            .store
+            .run
+            .store()
             .list_runs(&RunQuery {
                 offset: run_offset,
                 limit: 100,
@@ -607,7 +620,8 @@ pub(super) async fn collect_task_ids(st: &AppState) -> Result<Vec<String>, A2aEr
     let mut offset = 0;
     loop {
         let batch = st
-            .store
+            .run
+            .store()
             .list_threads(offset, 100)
             .await
             .map_err(|e| A2aError::Internal(e.to_string()))?;
@@ -617,6 +631,7 @@ pub(super) async fn collect_task_ids(st: &AppState) -> Result<Vec<String>, A2aEr
         offset += batch.len();
         for thread_id in batch {
             let dispatches = st
+                .run
                 .mailbox
                 .list_dispatches(
                     &thread_id,

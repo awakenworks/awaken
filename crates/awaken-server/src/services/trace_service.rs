@@ -13,7 +13,7 @@ use axum::response::{IntoResponse, Response};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-use crate::app::AppState;
+use crate::app::TraceRoutesState;
 use crate::error::ApiError;
 
 // ── Wire type ──────────────────────────────────────────────────────────────
@@ -102,14 +102,12 @@ fn map_trace_store_error(err: TraceStoreError) -> ApiError {
 // into every tracing event under this span.
 #[tracing::instrument(skip_all, fields(agent_id = ?params.agent_id))]
 pub async fn list_traces(
-    State(state): State<AppState>,
+    State(state): State<TraceRoutesState>,
     headers: axum::http::HeaderMap,
     Query(params): Query<ListTracesQuery>,
 ) -> Result<Response, ApiError> {
-    crate::config_routes::ensure_admin_auth(&state, &headers)?;
-    let store = state
-        .trace_store()
-        .ok_or_else(|| ApiError::ServiceUnavailable("trace store not configured".into()))?;
+    crate::config_routes::ensure_admin_auth(&state.admin, &headers)?;
+    let store = state.trace.trace_store.clone();
 
     // The `since` parse error preserves the original {error, detail}
     // wire shape; clients depend on the two-field split.
@@ -179,15 +177,13 @@ pub struct GetTraceQuery {
 // tracked as a follow-up (`TraceStore::read_page`).
 #[tracing::instrument(skip_all, fields(run_id = %run_id))]
 pub async fn get_trace(
-    State(state): State<AppState>,
+    State(state): State<TraceRoutesState>,
     headers: axum::http::HeaderMap,
     Path(run_id): Path<String>,
     Query(params): Query<GetTraceQuery>,
 ) -> Result<Response, ApiError> {
-    crate::config_routes::ensure_admin_auth(&state, &headers)?;
-    let store = state
-        .trace_store()
-        .ok_or_else(|| ApiError::ServiceUnavailable("trace store not configured".into()))?;
+    crate::config_routes::ensure_admin_auth(&state.admin, &headers)?;
+    let store = state.trace.trace_store.clone();
 
     let offset = params.offset.unwrap_or(0);
     // F17: clamp `limit` to a positive value. `limit=0` would freeze a
@@ -244,14 +240,12 @@ pub async fn get_trace(
 // `skip_all` keeps the bearer header out of trace logs.
 #[tracing::instrument(skip_all, fields(run_id = %run_id))]
 pub async fn pin_trace(
-    State(state): State<AppState>,
+    State(state): State<TraceRoutesState>,
     headers: axum::http::HeaderMap,
     Path(run_id): Path<String>,
 ) -> Result<Response, ApiError> {
-    crate::config_routes::ensure_admin_auth(&state, &headers)?;
-    let store = state
-        .trace_store()
-        .ok_or_else(|| ApiError::ServiceUnavailable("trace store not configured".into()))?;
+    crate::config_routes::ensure_admin_auth(&state.admin, &headers)?;
+    let store = state.trace.trace_store.clone();
 
     store
         .mark_referenced(&run_id, ReferenceKind::OperatorPin)

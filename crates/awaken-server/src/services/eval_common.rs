@@ -13,20 +13,15 @@ use awaken_contract::contract::storage::StorageError;
 use awaken_contract::registry_spec::{AgentSpec, ModelBindingSpec, ProviderSpec};
 use awaken_ext_observability::trace_store::TraceStoreError;
 
-use crate::app::AppState;
+use crate::app::EvalRoutesState;
 use crate::error::ApiError;
 use crate::services::config_runtime::build_genai_provider_executor_with_broker;
 
-/// Fetch the attached `ConfigStore` or surface a 503 — both eval
-/// services depend on it being wired and otherwise return identical
-/// "config store not configured" messages.
-pub(crate) fn config_store_or_unavailable(
-    state: &AppState,
-) -> Result<Arc<dyn ConfigStore>, ApiError> {
-    state
-        .config_store
-        .clone()
-        .ok_or_else(|| ApiError::ServiceUnavailable("config store not configured".into()))
+/// Fetch the config store required by `EvalRoutesState`. Route composition only
+/// mounts eval handlers once this module state exists, so handlers do not carry
+/// a second "config store not configured" branch.
+pub(crate) fn eval_config_store(state: &EvalRoutesState) -> Arc<dyn ConfigStore> {
+    state.config.config_store.clone()
 }
 
 /// Resolve a `model_id` against the registry to a live executor + its
@@ -41,10 +36,10 @@ pub(crate) fn config_store_or_unavailable(
 /// `NotFound` on either lookup becomes `404` with a message identifying
 /// which side missed.
 pub(crate) async fn resolve_live_executor(
-    state: &AppState,
+    state: &EvalRoutesState,
     model_id: &str,
 ) -> Result<ResolvedLiveExecutor, ApiError> {
-    let store = config_store_or_unavailable(state)?;
+    let store = eval_config_store(state);
 
     let binding_value = store
         .get("models", model_id)
@@ -78,8 +73,9 @@ pub(crate) async fn resolve_live_executor(
             .map_err(|err| ApiError::Internal(format!("decoding provider: {err}")))?;
     let provider = provider_record.spec;
 
-    let executor = build_genai_provider_executor_with_broker(&provider, state.credential_broker())
-        .map_err(|err| ApiError::Internal(format!("building provider executor: {err}")))?;
+    let executor =
+        build_genai_provider_executor_with_broker(&provider, state.run.credential_broker.clone())
+            .map_err(|err| ApiError::Internal(format!("building provider executor: {err}")))?;
     Ok(ResolvedLiveExecutor {
         upstream_model: binding.upstream_model.clone(),
         binding,
@@ -105,10 +101,10 @@ pub(crate) struct ResolvedLiveExecutor {
 /// `NotFound` becomes a 404 identifying the missing record so the
 /// caller can correct the id rather than seeing an opaque 500.
 pub(crate) async fn resolve_agent_spec(
-    state: &AppState,
+    state: &EvalRoutesState,
     agent_id: &str,
 ) -> Result<AgentSpec, ApiError> {
-    let store = config_store_or_unavailable(state)?;
+    let store = eval_config_store(state);
     let raw = store
         .get("agents", agent_id)
         .await

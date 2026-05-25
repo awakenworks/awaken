@@ -543,22 +543,19 @@ async fn resumable_relay_frames_have_sequential_ids() {
         chunks.push(String::from_utf8(chunk.to_vec()).unwrap());
     }
 
+    // ADR-0034 D3: transient buffer frames omit SSE `id:` so the
+    // in-process sequence is never leaked as a durable Last-Event-ID.
     assert_eq!(chunks.len(), 3);
-    assert!(
-        chunks[0].starts_with("id: 1\n"),
-        "first frame should have id 1: {}",
-        chunks[0]
-    );
-    assert!(
-        chunks[1].starts_with("id: 2\n"),
-        "second frame should have id 2: {}",
-        chunks[1]
-    );
-    assert!(
-        chunks[2].starts_with("id: 3\n"),
-        "third frame should have id 3: {}",
-        chunks[2]
-    );
+    for chunk in &chunks {
+        assert!(
+            !chunk.contains("id:"),
+            "frame must not advertise id: {chunk}"
+        );
+        assert!(
+            chunk.starts_with("data:"),
+            "frame must start with data: {chunk}"
+        );
+    }
 }
 
 #[tokio::test]
@@ -605,12 +602,13 @@ async fn resumable_relay_replay_after_partial_consumption() {
     // Drain all
     while sse_rx.recv().await.is_some() {}
 
-    // Simulate client reconnect: "I last saw event 2"
+    // Simulate client reconnect: "I last saw event 2". ADR-0034 D3: replay
+    // frames carry only `data:` content; server-side seq is internal.
     let replayed = buffer_clone.replay_after(2);
     assert_eq!(replayed.len(), 3, "should replay events 3, 4, 5");
-    assert!(String::from_utf8_lossy(&replayed[0]).starts_with("id: 3\n"));
-    assert!(String::from_utf8_lossy(&replayed[1]).starts_with("id: 4\n"));
-    assert!(String::from_utf8_lossy(&replayed[2]).starts_with("id: 5\n"));
+    assert!(String::from_utf8_lossy(&replayed[0]).contains(r#"msg2"#));
+    assert!(String::from_utf8_lossy(&replayed[1]).contains(r#"msg3"#));
+    assert!(String::from_utf8_lossy(&replayed[2]).contains(r#"msg4"#));
 }
 
 #[tokio::test]
@@ -633,7 +631,7 @@ async fn resumable_relay_subscribe_after_catches_live_events() {
     buffer.push_json(r#"{"n":4}"#);
 
     let live_frame = live_rx.recv().await.unwrap();
-    assert!(String::from_utf8_lossy(&live_frame).contains("id: 4\n"));
+    assert!(String::from_utf8_lossy(&live_frame).contains(r#""n":4"#));
 
     // No duplicate of events 2 or 3 in live stream
     assert!(live_rx.try_recv().is_err());
@@ -692,13 +690,15 @@ async fn resumable_relay_with_ai_sdk_encoder() {
         chunks.push(String::from_utf8(chunk.to_vec()).unwrap());
     }
 
-    // All frames should have id: N prefix
+    // ADR-0034 D3: frames carry only `data:` — server-side seq is internal.
     for (i, chunk) in chunks.iter().enumerate() {
         assert!(
-            chunk.starts_with(&format!("id: {}\n", i + 1)),
-            "chunk {} should have sequential id: {}",
-            i,
-            chunk,
+            !chunk.contains("id:"),
+            "chunk {i} must not advertise SSE id: {chunk}",
+        );
+        assert!(
+            chunk.starts_with("data:"),
+            "chunk {i} must start with data: {chunk}",
         );
     }
 

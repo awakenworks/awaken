@@ -1,3 +1,4 @@
+#![allow(deprecated)] // ADR-0038 D7: integration tests exercise the legacy checkpoint API directly
 //! HTTP API contract tests — migrated from tirea-agentos-server/tests/http_api.rs.
 //!
 //! Validates route construction, request/response serialization,
@@ -264,6 +265,7 @@ fn run_status_transitions() {
 
 mod integration {
     use async_trait::async_trait;
+    use awaken_contract::contract::event_store::{EventReader, EventScope};
     use awaken_contract::contract::executor::{InferenceExecutionError, InferenceRequest};
     use awaken_contract::contract::inference::{StopReason, StreamResult, TokenUsage};
     use awaken_contract::contract::lifecycle::RunStatus;
@@ -274,18 +276,82 @@ mod integration {
         WaitingReason,
     };
     use awaken_contract::contract::suspension::ToolCallResumeMode;
+    use awaken_contract::contract::versioned_registry::PinnedRegistryManifest;
     use awaken_contract::registry_spec::AgentSpec;
     use awaken_contract::thread::Thread;
     use awaken_runtime::builder::AgentRuntimeBuilder;
     use awaken_runtime::registry::traits::ModelBinding;
-    use awaken_server::app::{AppState, ServerConfig};
+    use awaken_server::app::{ServerConfig, ServerState};
     use awaken_server::routes::build_router;
-    use awaken_stores::memory::InMemoryStore;
+    use awaken_stores::{InMemoryEventStore, memory::InMemoryStore};
     use axum::body::to_bytes;
     use axum::http::{Request, StatusCode};
     use serde_json::{Value, json};
     use std::sync::Arc;
     use tower::ServiceExt;
+
+    struct TestRunResolver {
+        inner: Arc<dyn awaken_runtime::AgentResolver>,
+    }
+
+    #[async_trait]
+    impl awaken_runtime::Resolver for TestRunResolver {
+        async fn resolve(
+            &self,
+            req: awaken_runtime::ResolutionRequest,
+        ) -> Result<awaken_runtime::ResolvedRunPlan, awaken_runtime::ResolveError> {
+            let agent_id = match &req.target {
+                awaken_runtime::ResolutionTarget::Root { agent_id, .. } => agent_id.as_str(),
+                awaken_runtime::ResolutionTarget::Delegate { agent_id, .. } => agent_id.as_str(),
+                awaken_runtime::ResolutionTarget::Handoff { agent_id, .. } => agent_id.as_str(),
+            };
+            let execution = self.inner.resolve_execution(agent_id).unwrap_or_else(|_| {
+                let agent = awaken_runtime::ResolvedAgent::new(
+                    agent_id,
+                    "test-model",
+                    "test",
+                    Arc::new(ImmediateExecutor),
+                );
+                awaken_runtime::ExecutionPlan::from_resolved_agent(&agent)
+            });
+            let tools = match &execution {
+                awaken_runtime::ExecutionPlan::Local(agent) => agent
+                    .tool_descriptors()
+                    .into_iter()
+                    .map(|descriptor| awaken_runtime::ResolvedTool { descriptor })
+                    .collect(),
+                awaken_runtime::ExecutionPlan::Remote(_) => Vec::new(),
+            };
+            Ok(awaken_runtime::ResolvedRunPlan::Replayable(
+                awaken_runtime::ResolvedRun {
+                    agent_spec: execution.spec().clone(),
+                    role: awaken_runtime::ExecutionRole::Root,
+                    model: awaken_runtime::ResolvedModelBinding {
+                        upstream_model: match &execution {
+                            awaken_runtime::ExecutionPlan::Local(agent) => {
+                                agent.upstream_model.clone()
+                            }
+                            awaken_runtime::ExecutionPlan::Remote(agent) => {
+                                agent.spec.model_id.clone()
+                            }
+                        },
+                    },
+                    execution,
+                    tools,
+                    overrides: req.overrides,
+                    backend_profile: awaken_runtime::BackendProfile::full_local(),
+                    requirements: awaken_runtime::BackendRequirements::from_features(&req.features),
+                    scope: awaken_runtime::ReplayableScope {
+                        manifest: PinnedRegistryManifest {
+                            publication_id: Some("test-publication".into()),
+                            registry_snapshot_version: Some(1),
+                            entries: Vec::new(),
+                        },
+                    },
+                },
+            ))
+        }
+    }
 
     struct ImmediateExecutor;
 
@@ -312,10 +378,12 @@ mod integration {
         router: axum::Router,
         store: Arc<InMemoryStore>,
         mailbox_store: Arc<awaken_stores::InMemoryMailboxStore>,
+        event_store: Arc<InMemoryEventStore>,
     }
 
     fn make_test_app() -> TestApp {
         let store = Arc::new(InMemoryStore::new());
+        let event_store = Arc::new(InMemoryEventStore::new());
         let runtime = Arc::new(
             AgentRuntimeBuilder::new()
                 .with_model_binding(
@@ -337,6 +405,9 @@ mod integration {
                 .build()
                 .expect("build runtime"),
         );
+        runtime.set_run_resolver(Arc::new(TestRunResolver {
+            inner: runtime.resolver_arc(),
+        }));
         let mailbox_store = Arc::new(awaken_stores::InMemoryMailboxStore::new());
         let mailbox = std::sync::Arc::new(awaken_server::mailbox::Mailbox::new(
             runtime.clone(),
@@ -345,17 +416,19 @@ mod integration {
             "test".to_string(),
             awaken_server::mailbox::MailboxConfig::default(),
         ));
-        let state = AppState::new(
+        let state = ServerState::new(
             runtime.clone(),
             mailbox,
             store.clone(),
             runtime.resolver_arc(),
             ServerConfig::default(),
-        );
+        )
+        .with_event_store(event_store.clone());
         TestApp {
-            router: build_router(&state).with_state(state),
+            router: build_router(&state),
             store,
             mailbox_store,
+            event_store,
         }
     }
 
@@ -730,6 +803,23 @@ mod integration {
         let thread = test.store.load_thread(thread_id).await.unwrap().unwrap();
         assert_eq!(thread.resource_id.as_deref(), Some("resource-a"));
         assert_eq!(thread.parent_thread_id.as_deref(), Some(parent_id.as_str()));
+
+        let by_thread = test
+            .event_store
+            .list(EventScope::thread(thread_id), None, 10)
+            .await
+            .unwrap();
+        assert_eq!(by_thread.events.len(), 1);
+        assert_eq!(by_thread.events[0].event_kind.as_str(), "ThreadCreated");
+        assert_eq!(by_thread.events[0].payload["resource_id"], "resource-a");
+        assert_eq!(
+            by_thread.events[0].payload["parent_thread_id"],
+            parent_id.as_str()
+        );
+        assert_eq!(
+            by_thread.events[0].scopes,
+            vec![EventScope::thread(thread_id)]
+        );
     }
 
     #[tokio::test]
@@ -904,6 +994,17 @@ mod integration {
         let thread = test.store.load_thread(&id).await.unwrap().unwrap();
         assert_eq!(thread.resource_id.as_deref(), Some("resource-b"));
         assert_eq!(thread.parent_thread_id.as_deref(), Some(parent_id.as_str()));
+
+        let page = test
+            .event_store
+            .list(EventScope::thread(id.as_str()), None, 10)
+            .await
+            .unwrap();
+        assert_eq!(page.events.len(), 1);
+        assert_eq!(page.events[0].event_kind.as_str(), "ThreadUpdated");
+        assert_eq!(page.events[0].payload["resource_id"], "resource-b");
+        assert_eq!(page.events[0].payload["parent_thread_id"], parent_id);
+        assert!(page.events[0].payload["previous"]["resource_id"].is_null());
     }
 
     #[tokio::test]
@@ -973,6 +1074,15 @@ mod integration {
         // Verify it's gone
         let (status2, _) = get_json(test.router, &format!("/v1/threads/{id}")).await;
         assert_eq!(status2, StatusCode::NOT_FOUND);
+
+        let page = test
+            .event_store
+            .list(EventScope::thread(id.as_str()), None, 10)
+            .await
+            .unwrap();
+        assert_eq!(page.events.len(), 1);
+        assert_eq!(page.events[0].event_kind.as_str(), "ThreadDeleted");
+        assert_eq!(page.events[0].payload["child_strategy"], "detach");
     }
 
     #[tokio::test]

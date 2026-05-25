@@ -11,7 +11,7 @@ use super::{
     overrides_not_supported_for_user_record,
 };
 
-impl<'a> ConfigService<'a> {
+impl ConfigService {
     /// POST /v1/config/agents/:id/overrides
     ///
     /// Dry-run validation for the override patch payload. It validates the

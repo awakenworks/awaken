@@ -25,7 +25,7 @@ pub use awaken_protocol_a2a::{
     TaskState, TaskStatus, TaskStatusUpdateEvent,
 };
 
-use crate::app::AppState;
+use crate::app::ProtocolRoutesState;
 
 use common::{
     decode_json_body, decode_query, ensure_supported_version_from_request, parse_a2a_tail,
@@ -35,7 +35,7 @@ use error::A2aError;
 use types::{DISCOVERY_PATH, GetTaskQuery, ListPushConfigsQuery, ListTasksQuery};
 
 /// Build A2A routes.
-pub fn a2a_routes() -> Router<AppState> {
+pub fn a2a_routes() -> Router<ProtocolRoutesState> {
     Router::new()
         .route(DISCOVERY_PATH, get(a2a_agent_card_route))
         .route(
@@ -47,7 +47,7 @@ pub fn a2a_routes() -> Router<AppState> {
 }
 
 async fn a2a_agent_card_route(
-    State(st): State<AppState>,
+    State(st): State<ProtocolRoutesState>,
     headers: HeaderMap,
     uri: Uri,
 ) -> Result<Json<AgentCard>, A2aError> {
@@ -55,7 +55,7 @@ async fn a2a_agent_card_route(
 }
 
 async fn a2a_get_dispatch(
-    State(st): State<AppState>,
+    State(st): State<ProtocolRoutesState>,
     Path(tail): Path<String>,
     headers: HeaderMap,
     uri: Uri,
@@ -167,7 +167,7 @@ async fn a2a_get_dispatch(
 }
 
 async fn a2a_post_dispatch(
-    State(st): State<AppState>,
+    State(st): State<ProtocolRoutesState>,
     Path(tail): Path<String>,
     headers: HeaderMap,
     uri: Uri,
@@ -269,7 +269,7 @@ async fn a2a_post_dispatch(
 }
 
 async fn a2a_delete_dispatch(
-    State(st): State<AppState>,
+    State(st): State<ProtocolRoutesState>,
     Path(tail): Path<String>,
     headers: HeaderMap,
     uri: Uri,

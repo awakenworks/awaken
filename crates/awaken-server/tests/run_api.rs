@@ -1,7 +1,7 @@
 //! Run API lifecycle tests — validates start, list, and contract behavior.
 //!
 //! Mirrors high-value run API tests from uncarve's tirea-agentos-server/tests/run_api.rs,
-//! adapted to awaken's AppState + Mailbox architecture.
+//! adapted to awaken's ServerState + Mailbox architecture.
 //!
 //! NOTE: Control operations (cancel, decision) are now unified under
 //! `/v1/threads/:id/{cancel,decision}`. The `/v1/runs` namespace is
@@ -13,6 +13,7 @@ use awaken_contract::contract::executor::{InferenceExecutionError, InferenceRequ
 use awaken_contract::contract::inference::{StopReason, StreamResult, TokenUsage};
 use awaken_contract::contract::lifecycle::{RunStatus, TerminationReason};
 use awaken_contract::contract::storage::{RunRecord, RunStore, ThreadStore};
+use awaken_contract::contract::versioned_registry::PinnedRegistryManifest;
 use awaken_contract::registry_spec::AgentSpec;
 use awaken_contract::registry_spec::RemoteEndpoint;
 use awaken_runtime::builder::AgentRuntimeBuilder;
@@ -21,7 +22,7 @@ use awaken_runtime::extensions::a2a::{
     DelegateRunResult, DelegateRunStatus,
 };
 use awaken_runtime::registry::traits::ModelBinding;
-use awaken_server::app::{AppState, ServerConfig};
+use awaken_server::app::{ServerConfig, ServerState};
 use awaken_server::routes::build_router;
 use awaken_stores::memory::InMemoryStore;
 use axum::body::to_bytes;
@@ -29,6 +30,57 @@ use axum::http::{Request, StatusCode};
 use serde_json::{Value, json};
 use std::sync::Arc;
 use tower::ServiceExt;
+
+struct TestRunResolver {
+    inner: Arc<dyn awaken_runtime::AgentResolver>,
+}
+
+#[async_trait]
+impl awaken_runtime::Resolver for TestRunResolver {
+    async fn resolve(
+        &self,
+        req: awaken_runtime::ResolutionRequest,
+    ) -> Result<awaken_runtime::ResolvedRunPlan, awaken_runtime::ResolveError> {
+        let agent_id = match &req.target {
+            awaken_runtime::ResolutionTarget::Root { agent_id, .. } => agent_id.as_str(),
+            awaken_runtime::ResolutionTarget::Delegate { agent_id, .. } => agent_id.as_str(),
+            awaken_runtime::ResolutionTarget::Handoff { agent_id, .. } => agent_id.as_str(),
+        };
+        let execution = self.inner.resolve_execution(agent_id)?;
+        let tools = match &execution {
+            awaken_runtime::ExecutionPlan::Local(agent) => agent
+                .tool_descriptors()
+                .into_iter()
+                .map(|descriptor| awaken_runtime::ResolvedTool { descriptor })
+                .collect(),
+            awaken_runtime::ExecutionPlan::Remote(_) => Vec::new(),
+        };
+        Ok(awaken_runtime::ResolvedRunPlan::Replayable(
+            awaken_runtime::ResolvedRun {
+                agent_spec: execution.spec().clone(),
+                role: awaken_runtime::ExecutionRole::Root,
+                model: awaken_runtime::ResolvedModelBinding {
+                    upstream_model: match &execution {
+                        awaken_runtime::ExecutionPlan::Local(agent) => agent.upstream_model.clone(),
+                        awaken_runtime::ExecutionPlan::Remote(agent) => agent.spec.model_id.clone(),
+                    },
+                },
+                execution,
+                tools,
+                overrides: req.overrides,
+                backend_profile: awaken_runtime::BackendProfile::full_local(),
+                requirements: awaken_runtime::BackendRequirements::from_features(&req.features),
+                scope: awaken_runtime::ReplayableScope {
+                    manifest: PinnedRegistryManifest {
+                        publication_id: Some("test-publication".into()),
+                        registry_snapshot_version: Some(1),
+                        entries: Vec::new(),
+                    },
+                },
+            },
+        ))
+    }
+}
 
 // ── Mock executor ──
 
@@ -196,10 +248,15 @@ struct TestApp {
     store: Arc<InMemoryStore>,
 }
 
+const TEST_ADMIN_TOKEN: &str = "run-api-test-token";
+
 fn make_test_app_with_runtime(
     runtime: Arc<awaken_runtime::AgentRuntime>,
     store: Arc<InMemoryStore>,
 ) -> TestApp {
+    runtime.set_run_resolver(Arc::new(TestRunResolver {
+        inner: runtime.resolver_arc(),
+    }));
     let mailbox_store = std::sync::Arc::new(awaken_stores::InMemoryMailboxStore::new());
     let mailbox = std::sync::Arc::new(awaken_server::mailbox::Mailbox::new(
         runtime.clone(),
@@ -208,15 +265,16 @@ fn make_test_app_with_runtime(
         "test".to_string(),
         awaken_server::mailbox::MailboxConfig::default(),
     ));
-    let state = AppState::new(
+    let state = ServerState::new(
         runtime.clone(),
         mailbox,
         store.clone(),
         runtime.resolver_arc(),
         ServerConfig::default(),
-    );
+    )
+    .with_admin_api_bearer_token(TEST_ADMIN_TOKEN);
     TestApp {
-        router: build_router(&state).with_state(state),
+        router: build_router(&state),
         store,
     }
 }
@@ -309,6 +367,7 @@ async fn post_json(app: axum::Router, uri: &str, payload: Value) -> (StatusCode,
                 .method("POST")
                 .uri(uri)
                 .header("content-type", "application/json")
+                .header("authorization", format!("Bearer {TEST_ADMIN_TOKEN}"))
                 .body(axum::body::Body::from(payload.to_string()))
                 .expect("request build"),
         )
@@ -838,6 +897,9 @@ async fn ai_sdk_agent_preview_requires_admin_token_when_configured() {
             .expect("build runtime"),
     );
     let mailbox_store = Arc::new(awaken_stores::InMemoryMailboxStore::new());
+    runtime.set_run_resolver(Arc::new(TestRunResolver {
+        inner: runtime.resolver_arc(),
+    }));
     let mailbox = Arc::new(awaken_server::mailbox::Mailbox::new(
         runtime.clone(),
         mailbox_store,
@@ -845,7 +907,7 @@ async fn ai_sdk_agent_preview_requires_admin_token_when_configured() {
         "test".to_string(),
         awaken_server::mailbox::MailboxConfig::default(),
     ));
-    let state = AppState::new(
+    let state = ServerState::new(
         runtime.clone(),
         mailbox,
         store.clone(),
@@ -853,7 +915,7 @@ async fn ai_sdk_agent_preview_requires_admin_token_when_configured() {
         ServerConfig::default(),
     )
     .with_admin_api_bearer_token("expected-token");
-    let router = build_router(&state).with_state(state);
+    let router = build_router(&state);
 
     // No Authorization header → 401.
     let (status, _) = post_json(

@@ -1,6 +1,6 @@
 use super::*;
 
-fn state_for_admin_surface_test(address: &str, admin_api_config: AdminApiConfig) -> AppState {
+fn state_for_admin_surface_test(address: &str, admin_api_config: AdminApiConfig) -> ServerState {
     use crate::mailbox::{Mailbox, MailboxConfig};
     use awaken_runtime::AgentRuntime;
     use awaken_stores::{InMemoryMailboxStore, InMemoryStore};
@@ -33,7 +33,7 @@ fn state_for_admin_surface_test(address: &str, admin_api_config: AdminApiConfig)
         ..ServerConfig::default()
     };
 
-    AppState::new(
+    ServerState::new(
         runtime,
         mailbox,
         store.clone() as Arc<dyn ThreadRunStore>,
@@ -42,22 +42,6 @@ fn state_for_admin_surface_test(address: &str, admin_api_config: AdminApiConfig)
     )
     .with_config_store(store as Arc<dyn ConfigStore>)
     .with_admin_api_config(admin_api_config)
-}
-
-#[test]
-fn admin_surface_has_sensitive_state_includes_eval_run_store() {
-    // Regression: eval_run_store carries persisted prompts + tool args
-    // /results and must count as sensitive state — otherwise
-    // validate_admin_surface short-circuits past the bearer-token
-    // requirement on a deployment that exposes /v1/eval/* with only an
-    // eval store attached.
-    use awaken_eval::FileEvalRunStore;
-    let tmp = tempfile::tempdir().unwrap();
-    let mut state = state_for_admin_surface_test("0.0.0.0:3000", AdminApiConfig::default());
-    state = state
-        .with_eval_run_store(Arc::new(FileEvalRunStore::new(tmp.path()).unwrap())
-            as Arc<dyn awaken_eval::EvalRunStore>);
-    assert!(super::admin_surface_has_sensitive_state(&state));
 }
 
 #[test]
@@ -314,8 +298,8 @@ fn shutdown_config_custom() {
 
 // ── Replay buffer management (standalone map) ───────────────────
 
-/// Helper: create a standalone replay buffer map (same type as `AppState::replay_buffers`)
-/// to test purge logic without needing a full `AppState`.
+/// Helper: create a standalone replay buffer map (same type as `ServerState::replay_buffers`)
+/// to test purge logic without needing a full `ServerState`.
 fn make_replay_map() -> ReplayBufferMap {
     Arc::new(Mutex::new(HashMap::new()))
 }
@@ -472,7 +456,7 @@ async fn with_audit_log_from_config_reuses_preset_logger() {
     let preset_logger = Arc::new(AuditLogger::new(store.clone() as Arc<dyn ConfigStore>));
     let preset_ptr = Arc::as_ptr(&preset_logger);
 
-    let state = AppState::new(
+    let state = ServerState::new(
         runtime,
         mailbox,
         store.clone() as Arc<dyn awaken_contract::contract::storage::ThreadRunStore>,

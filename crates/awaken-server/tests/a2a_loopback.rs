@@ -34,7 +34,7 @@ use awaken_runtime::extensions::background::{
     TaskResult as BackgroundTaskResult, TaskStatus,
 };
 use awaken_runtime::registry::traits::ModelBinding;
-use awaken_server::app::{AppState, ServerConfig};
+use awaken_server::app::{ServerConfig, ServerState};
 use awaken_server::mailbox::{Mailbox, MailboxConfig};
 use awaken_server::routes::build_router;
 use awaken_stores::InMemoryMailboxStore;
@@ -342,7 +342,7 @@ async fn a2a_loopback_remote_self_cancel_cascades_background_children() {
         "loopback-test".to_string(),
         MailboxConfig::default(),
     ));
-    let state = AppState::new(
+    let state = ServerState::new(
         runtime.clone(),
         mailbox,
         store.clone(),
@@ -350,7 +350,7 @@ async fn a2a_loopback_remote_self_cancel_cascades_background_children() {
         ServerConfig::default(),
     );
 
-    let router = build_router(&state).with_state(state);
+    let router = build_router(&state);
     let server_handle = tokio::spawn(async move {
         axum::serve(listener, router).await.ok();
     });
@@ -518,14 +518,14 @@ async fn a2a_dual_server_remote_self_cancel_cascades_background_children() {
         "dual-loopback-worker".to_string(),
         MailboxConfig::default(),
     ));
-    let worker_state = AppState::new(
+    let worker_state = ServerState::new(
         worker_runtime.clone(),
         worker_mailbox,
         worker_store.clone(),
         worker_runtime.resolver_arc(),
         ServerConfig::default(),
     );
-    let worker_router = build_router(&worker_state).with_state(worker_state);
+    let worker_router = build_router(&worker_state);
     let worker_handle = tokio::spawn(async move {
         axum::serve(worker_listener, worker_router).await.ok();
     });
@@ -601,14 +601,14 @@ async fn a2a_dual_server_remote_self_cancel_cascades_background_children() {
         "dual-loopback-orchestrator".to_string(),
         MailboxConfig::default(),
     ));
-    let orchestrator_state = AppState::new(
+    let orchestrator_state = ServerState::new(
         orchestrator_runtime.clone(),
         orchestrator_mailbox,
         orchestrator_store.clone(),
         orchestrator_runtime.resolver_arc(),
         ServerConfig::default(),
     );
-    let orchestrator_router = build_router(&orchestrator_state).with_state(orchestrator_state);
+    let orchestrator_router = build_router(&orchestrator_state);
     let orchestrator_handle = tokio::spawn(async move {
         axum::serve(orchestrator_listener, orchestrator_router)
             .await
@@ -842,7 +842,7 @@ async fn a2a_loopback_orchestrator_delegates_to_worker() {
         MailboxConfig::default(),
     ));
 
-    let state = AppState::new(
+    let state = ServerState::new(
         runtime.clone(),
         mailbox,
         store.clone(),
@@ -852,7 +852,7 @@ async fn a2a_loopback_orchestrator_delegates_to_worker() {
 
     // -- Start server ---------------------------------------------------------
 
-    let router = build_router(&state).with_state(state);
+    let router = build_router(&state);
     let server_handle = tokio::spawn(async move {
         axum::serve(listener, router).await.ok();
     });

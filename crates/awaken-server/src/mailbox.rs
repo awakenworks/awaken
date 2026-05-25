@@ -1,9 +1,4 @@
-//! Mailbox service: unified persistent run queue.
-//!
-//! Every run request (streaming, background, A2A, internal) enters as a
-//! [`RunDispatch`] keyed by `thread_id`. The Mailbox orchestrates persistent
-//! enqueue, lease-based claim, execution via [`RunDispatchExecutor`], and lifecycle
-//! management (lease renewal, sweep, GC).
+//! Mailbox service: persistent run queue, dispatch execution, leasing, and lifecycle management.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -17,15 +12,20 @@ use thiserror::Error;
 use tokio::sync::{Mutex, RwLock};
 use tokio::task::JoinHandle;
 
+use awaken_contract::contract::commit_coordinator::{
+    CommitCoordinator, OutboxServerEventPublisher,
+};
 use awaken_contract::contract::event::AgentEvent;
 use awaken_contract::contract::event_sink::EventSink;
 use awaken_contract::contract::mailbox::{MailboxStore, RunDispatchStatus};
 use awaken_contract::contract::message::Message;
+use awaken_contract::contract::run::{
+    RunActivationSnapshot, RunInputSnapshot, RunIntent, RunKind, RunOptions, RunTraceContext,
+};
 use awaken_contract::contract::storage::{RunRecord, StorageError, ThreadRunStore};
 use awaken_contract::contract::suspension::{ToolCallOutcome, ToolCallResume};
 use awaken_contract::contract::tool_intercept::{AdapterKind, RunMode};
-use awaken_runtime::loop_runner::{AgentLoopError, AgentRunResult};
-use awaken_runtime::{AgentRuntime, RunRequest, ThreadContextSnapshot};
+use awaken_runtime::RunActivation;
 
 use crate::transport::channel_sink::ReconnectableEventSink;
 
@@ -63,12 +63,12 @@ const MAILBOX_DEPTH_STATUSES: [RunDispatchStatus; 6] = [
 pub(crate) const ACTIVE_RUN_CONFLICT_MESSAGE: &str =
     "thread has an active run; cannot claim inline";
 
-// ── RunRequest ↔ RunDispatch conversion ───────────────────────────────
+// ── Legacy run snapshot conversion ───────────────────────────────
 
-/// Typed envelope for RunRequest fields that Mailbox stores opaquely.
-/// Centralizes the RunRequest → RunDispatch → RunRequest round-trip.
+/// Typed envelope for RunActivation fields that Mailbox stores opaquely.
+/// Centralizes the legacy run snapshot round-trip round-trip.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-struct RunRequestExtras {
+pub(super) struct LegacyRunSnapshotExtras {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     overrides: Option<awaken_contract::contract::inference::InferenceOverride>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -94,22 +94,24 @@ struct RunRequestExtras {
     adapter: AdapterKind,
 }
 
-impl RunRequestExtras {
-    fn from_request(request: &awaken_runtime::RunRequest) -> Self {
+impl LegacyRunSnapshotExtras {
+    #[cfg(test)]
+    fn from_request(request: &awaken_runtime::RunActivation) -> Self {
         Self {
-            overrides: request.overrides.clone(),
-            decisions: request.decisions.clone(),
-            frontend_tools: request.frontend_tools.clone(),
-            continue_run_id: request.continue_run_id.clone(),
-            run_id_hint: request.run_id_hint.clone(),
-            dispatch_id_hint: request.dispatch_id_hint.clone(),
-            parent_thread_id: request.parent_thread_id.clone(),
-            transport_request_id: request.transport_request_id.clone(),
-            run_mode: request.run_mode,
-            adapter: request.adapter,
+            overrides: request.options.overrides.clone(),
+            decisions: request.control.seeded_decisions.clone(),
+            frontend_tools: request.options.frontend_tools.clone(),
+            continue_run_id: request.resume_run_id().map(str::to_owned),
+            run_id_hint: request.persistence.run_id_hint.clone(),
+            dispatch_id_hint: request.persistence.dispatch_id_hint.clone(),
+            parent_thread_id: request.trace.parent_thread_id.clone(),
+            transport_request_id: request.trace.transport_request_id.clone(),
+            run_mode: request.trace.run_mode,
+            adapter: request.trace.adapter,
         }
     }
 
+    #[cfg(test)]
     fn to_value(&self) -> Result<Option<serde_json::Value>, serde_json::Error> {
         if self.overrides.is_none()
             && self.decisions.is_empty()
@@ -132,7 +134,8 @@ impl RunRequestExtras {
         serde_json::from_value(value.clone())
     }
 
-    fn apply_to(self, mut request: awaken_runtime::RunRequest) -> awaken_runtime::RunRequest {
+    #[cfg(test)]
+    fn apply_to(self, mut request: awaken_runtime::RunActivation) -> awaken_runtime::RunActivation {
         if let Some(ov) = self.overrides {
             request = request.with_overrides(ov);
         }
@@ -160,6 +163,105 @@ impl RunRequestExtras {
         request
             .with_run_mode(self.run_mode)
             .with_adapter(self.adapter)
+    }
+}
+
+pub(super) struct LegacyRunRequestSnapshotAdapter {
+    pub snapshot: awaken_contract::contract::storage::RunRequestSnapshot,
+    pub input: RunInputSnapshot,
+    pub manifest: awaken_contract::contract::storage::PinnedRegistryManifest,
+    pub thread_id: String,
+    pub agent_id: Option<String>,
+    pub parent_run_id: Option<String>,
+    pub extras: Option<LegacyRunSnapshotExtras>,
+}
+
+impl TryFrom<LegacyRunRequestSnapshotAdapter> for RunActivationSnapshot {
+    type Error = String;
+
+    fn try_from(value: LegacyRunRequestSnapshotAdapter) -> Result<Self, Self::Error> {
+        let mut options = RunOptions {
+            overrides: None,
+            frontend_tools: value.snapshot.frontend_tools,
+        };
+        let mut trace = RunTraceContext {
+            parent_run_id: value.parent_run_id,
+            parent_thread_id: value.snapshot.parent_thread_id,
+            origin: value.snapshot.origin.into(),
+            adapter: AdapterKind::Internal,
+            run_mode: RunMode::Resume,
+            dispatch_id: None,
+            session_id: None,
+            transport_request_id: value.snapshot.transport_request_id,
+            correlation_id: None,
+        };
+        let mut kind = RunKind::NewIntent;
+        let mut seeded_decisions = value
+            .snapshot
+            .decisions
+            .into_iter()
+            .map(|decision| (decision.call_id, decision.resume))
+            .collect::<Vec<_>>();
+
+        if let Some(extras) = value.extras {
+            if let Some(overrides) = extras.overrides {
+                options.overrides = Some(overrides);
+            }
+            if !extras.frontend_tools.is_empty() {
+                options.frontend_tools = extras.frontend_tools;
+            }
+            if !extras.decisions.is_empty() {
+                seeded_decisions = extras.decisions;
+            }
+            if let Some(run_id) = extras.continue_run_id {
+                kind = RunKind::HitlResume { run_id };
+            }
+            if let Some(parent_thread_id) = extras.parent_thread_id {
+                trace.parent_thread_id = Some(parent_thread_id);
+            }
+            if let Some(transport_request_id) = extras.transport_request_id {
+                trace.transport_request_id = Some(transport_request_id);
+            }
+            trace.run_mode = extras.run_mode;
+            trace.adapter = extras.adapter;
+        }
+
+        Ok(RunActivationSnapshot {
+            intent: RunIntent {
+                agent_id: value.agent_id,
+                thread_id: value.thread_id,
+                kind,
+            },
+            input: value.input,
+            options,
+            trace,
+            seeded_decisions,
+            resolution_scope: value.manifest,
+        })
+    }
+}
+
+pub(super) fn legacy_input_snapshot(
+    run: &RunRecord,
+    snapshot: &awaken_contract::contract::storage::RunRequestSnapshot,
+) -> RunInputSnapshot {
+    if let Some(input) = run.input.as_ref() {
+        return RunInputSnapshot {
+            thread_id: input.thread_id.clone(),
+            range: input.range,
+            trigger_message_ids: input.trigger_message_ids.clone(),
+            selected_message_ids: input.selected_message_ids.clone(),
+            context_policy: input.context_policy.clone(),
+            compacted_snapshot_id: input.compacted_snapshot_id.clone(),
+        };
+    }
+    RunInputSnapshot {
+        thread_id: run.thread_id.clone(),
+        range: None,
+        trigger_message_ids: snapshot.input_message_ids.clone(),
+        selected_message_ids: Vec::new(),
+        context_policy: None,
+        compacted_snapshot_id: None,
     }
 }
 
@@ -195,7 +297,7 @@ impl awaken_runtime::inbox::OnInboxClosed for TaskDoneMailboxNotify {
 
         // Spawn because OnInboxClosed::closed is sync but enqueue+dispatch is async
         tokio::spawn(async move {
-            let mut request = RunRequest::new(thread_id.clone(), vec![wake_message])
+            let mut request = RunActivation::new(thread_id.clone(), vec![wake_message])
                 .with_origin(awaken_contract::contract::storage::RunRequestOrigin::Internal)
                 .with_run_mode(RunMode::InternalWake)
                 .with_adapter(AdapterKind::Internal);
@@ -258,84 +360,6 @@ impl MailboxRunOutcome {
             Self::TransientError(_) => "transient_error",
             Self::PermanentError(_) => "permanent_error",
         }
-    }
-}
-
-/// Execution boundary used by mailbox dispatch.
-///
-/// Mailbox owns delivery, leasing, retry, and recovery. The executor behind
-/// this trait owns actual run execution and live-run control. It intentionally
-/// does not expose storage so mailbox scheduling stays orthogonal to the main
-/// runtime implementation.
-#[async_trait]
-pub trait RunDispatchExecutor: Send + Sync {
-    /// Execute a run request and stream events into the provided sink.
-    async fn run(
-        &self,
-        request: RunRequest,
-        sink: Arc<dyn EventSink>,
-    ) -> Result<AgentRunResult, AgentLoopError>;
-
-    /// Execute a run with an optional mailbox-provided thread cache.
-    async fn run_with_thread_context(
-        &self,
-        request: RunRequest,
-        sink: Arc<dyn EventSink>,
-        thread_ctx: Option<ThreadContextSnapshot>,
-    ) -> Result<AgentRunResult, AgentLoopError> {
-        let _ = thread_ctx;
-        self.run(request, sink).await
-    }
-
-    /// Cancel an active run by run id or thread id.
-    fn cancel(&self, id: &str) -> bool;
-
-    /// Cancel an active run by thread id and wait for it to unregister.
-    async fn cancel_and_wait_by_thread(&self, thread_id: &str) -> bool;
-
-    /// Forward one human/tool decision to an active run.
-    fn send_decision(&self, id: &str, tool_call_id: String, resume: ToolCallResume) -> bool;
-
-    /// Forward direct input messages to an active run.
-    fn send_messages(&self, id: &str, messages: Vec<Message>) -> bool {
-        let _ = (id, messages);
-        false
-    }
-}
-
-#[async_trait]
-impl RunDispatchExecutor for AgentRuntime {
-    async fn run(
-        &self,
-        request: RunRequest,
-        sink: Arc<dyn EventSink>,
-    ) -> Result<AgentRunResult, AgentLoopError> {
-        AgentRuntime::run(self, request, sink).await
-    }
-
-    async fn run_with_thread_context(
-        &self,
-        request: RunRequest,
-        sink: Arc<dyn EventSink>,
-        thread_ctx: Option<ThreadContextSnapshot>,
-    ) -> Result<AgentRunResult, AgentLoopError> {
-        AgentRuntime::run_with_thread_context(self, request, sink, thread_ctx).await
-    }
-
-    fn cancel(&self, id: &str) -> bool {
-        AgentRuntime::cancel(self, id)
-    }
-
-    async fn cancel_and_wait_by_thread(&self, thread_id: &str) -> bool {
-        AgentRuntime::cancel_and_wait_by_thread(self, thread_id).await
-    }
-
-    fn send_decision(&self, id: &str, tool_call_id: String, resume: ToolCallResume) -> bool {
-        AgentRuntime::send_decision(self, id, tool_call_id, resume)
-    }
-
-    fn send_messages(&self, id: &str, messages: Vec<Message>) -> bool {
-        AgentRuntime::send_messages(self, id, messages)
     }
 }
 
@@ -638,51 +662,100 @@ impl Drop for ActiveRunGuard {
 pub struct Mailbox {
     executor: Arc<dyn RunDispatchExecutor>,
     store: Arc<dyn MailboxStore>,
+    /// Single durable-write boundary. Production runtimes must provide this
+    /// through `executor.commit_coordinator()`. Debug/test builds may fall
+    /// back to `MailboxRunStoreCoordinator` for embedded unit callers, but
+    /// release builds fail closed instead of taking a partial durable path.
+    coordinator: Arc<dyn CommitCoordinator>,
+    /// Projection of `coordinator.thread_run_store()` cached for repeated
+    /// read access; never diverges from the coordinator by construction.
     run_store: Arc<dyn ThreadRunStore>,
     consumer_id: String,
     workers: RwLock<HashMap<String, Arc<SyncMutex<MailboxWorker>>>>,
     config: MailboxConfig,
+    runtime_event_capture: Option<RuntimeEventCaptureConfig>,
+    server_event_publisher: Option<Arc<dyn OutboxServerEventPublisher>>,
+    server_event_origin: String,
     lifecycle_tasks: Arc<StdMutex<Option<MailboxLifecycleTasks>>>,
     lifecycle_start_lock: Arc<Mutex<()>>,
 }
 
 impl Mailbox {
     /// Create a new Mailbox service.
-    pub fn new<R>(
-        executor: Arc<R>,
-        store: Arc<dyn MailboxStore>,
-        run_store: Arc<dyn ThreadRunStore>,
-        consumer_id: String,
-        config: MailboxConfig,
-    ) -> Self
-    where
-        R: RunDispatchExecutor + 'static,
-    {
-        Self::new_with_executor(executor, store, run_store, consumer_id, config)
-    }
-
-    /// Create a Mailbox service from an already-erased execution boundary.
-    pub fn new_with_executor(
-        executor: Arc<dyn RunDispatchExecutor>,
+    pub fn new(
+        executor: impl IntoDispatchExecutor,
         store: Arc<dyn MailboxStore>,
         run_store: Arc<dyn ThreadRunStore>,
         consumer_id: String,
         config: MailboxConfig,
     ) -> Self {
-        Self {
+        Self::try_new(executor, store, run_store, consumer_id, config)
+            .expect("Mailbox requires a CommitCoordinator outside debug/test fallback")
+    }
+
+    /// Fallible constructor for production wiring that must fail closed.
+    ///
+    /// ADR-0038 D7: the mailbox adopts `executor.commit_coordinator()` and
+    /// derives its `ThreadRunStore` from that coordinator. Debug/test builds
+    /// retain the legacy implicit run-store coordinator for embedded unit
+    /// callers; release builds return an error instead of silently taking a
+    /// partial durable path with no canonical events/outbox writes.
+    pub fn try_new(
+        executor: impl IntoDispatchExecutor,
+        store: Arc<dyn MailboxStore>,
+        run_store: Arc<dyn ThreadRunStore>,
+        consumer_id: String,
+        config: MailboxConfig,
+    ) -> Result<Self, MailboxError> {
+        let executor = executor.into_dispatch_executor();
+        let coordinator = if let Some(coordinator) = executor.commit_coordinator() {
+            coordinator
+        } else if cfg!(debug_assertions) {
+            tracing::warn!(
+                "using dev/test MailboxRunStoreCoordinator fallback; production executors must \
+                 provide a CommitCoordinator"
+            );
+            Arc::new(MailboxRunStoreCoordinator::new(Arc::clone(&run_store)))
+                as Arc<dyn CommitCoordinator>
+        } else {
+            return Err(MailboxError::Internal(
+                "Mailbox requires a CommitCoordinator in release builds; wire a durable \
+                 Memory/File/Pg coordinator through the runtime"
+                    .to_string(),
+            ));
+        };
+        let run_store = coordinator.thread_run_store();
+        Ok(Self {
             executor,
             store,
+            coordinator,
             run_store,
             consumer_id,
             workers: RwLock::new(HashMap::new()),
             config,
+            runtime_event_capture: None,
+            server_event_publisher: None,
+            server_event_origin: "mailbox".to_string(),
             lifecycle_tasks: Arc::new(StdMutex::new(None)),
             lifecycle_start_lock: Arc::new(Mutex::new(())),
-        }
+        })
     }
 
     /// Default bounded channel capacity for the runtime->SSE relay.
     const EVENT_CHANNEL_CAPACITY: usize = 256;
+
+    /// Single source of truth for the thread/run store. Always returns the
+    /// store wrapped by the mailbox's [`CommitCoordinator`] — callers that
+    /// previously held a parallel `Arc<dyn ThreadRunStore>` should reach
+    /// it through this accessor instead.
+    pub fn thread_run_store(&self) -> &Arc<dyn ThreadRunStore> {
+        &self.run_store
+    }
+
+    /// Borrow the durable-write coordinator.
+    pub fn coordinator(&self) -> &Arc<dyn CommitCoordinator> {
+        &self.coordinator
+    }
 
     /// Forward a tool-call decision to an active run in this process only.
     ///
@@ -694,16 +767,23 @@ impl Mailbox {
 }
 
 mod cancel;
+mod checkpoint;
+mod coordinator_facade;
 mod decision;
+mod dispatch_execution;
+mod executor;
 mod helpers;
 mod lifecycle;
 mod live_delivery;
+mod runtime_event_capture;
+mod server_event_capture;
 mod signal_loop;
 mod submit;
 
-use helpers::*;
-
-// ── Tests ────────────────────────────────────────────────────────────
+use self::coordinator_facade::MailboxRunStoreCoordinator;
+use self::{helpers::*, runtime_event_capture::RuntimeEventCaptureConfig};
+pub use coordinator_facade::IntoDispatchExecutor;
+pub use executor::RunDispatchExecutor;
 
 #[cfg(test)]
 mod tests;

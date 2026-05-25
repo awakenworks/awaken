@@ -5,7 +5,7 @@
 use axum::Router;
 use axum::routing::{get, post};
 
-use crate::app::AppState;
+use crate::app::EvalRoutesState;
 use crate::services::dataset_service::{
     append_fixture, create_dataset, curate_items, delete_dataset, get_dataset, import_dialogue,
     import_traces, list_datasets, put_dataset,
@@ -13,7 +13,7 @@ use crate::services::dataset_service::{
 use crate::services::eval_run_service::{get_eval_run, list_eval_runs, start_eval_run};
 use crate::services::online_eval_service::start_online_eval;
 
-pub fn eval_routes() -> Router<AppState> {
+pub fn eval_routes() -> Router<EvalRoutesState> {
     Router::new()
         .route("/v1/eval/datasets", get(list_datasets).post(create_dataset))
         .route(

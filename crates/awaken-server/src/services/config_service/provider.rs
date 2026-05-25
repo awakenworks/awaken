@@ -13,7 +13,7 @@ use super::{
     effective_visible_record,
 };
 
-impl<'a> ConfigService<'a> {
+impl ConfigService {
     pub async fn preview_remove_provider(
         &self,
         id: &str,
@@ -67,6 +67,7 @@ impl<'a> ConfigService<'a> {
     ) -> Result<Vec<SerializableRegistryDiagnostic>, ConfigServiceError> {
         let registries = self
             .state
+            .run
             .runtime
             .registry_set()
             .ok_or(ConfigServiceError::Apply(

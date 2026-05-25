@@ -5,7 +5,7 @@ use serde_json::Value;
 use super::normalization::effective_visible_record;
 use super::{ConfigNamespace, ConfigService, ConfigServiceError, DependentRef};
 
-impl<'a> ConfigService<'a> {
+impl ConfigService {
     /// Return all records in other namespaces that reference `id` in `namespace`.
     ///
     /// - Providers: scans models for `provider_id == id`
@@ -77,6 +77,7 @@ impl<'a> ConfigService<'a> {
 
     fn current_tool_ids_with_prefix(&self, prefix: &str) -> Vec<String> {
         self.state
+            .run
             .runtime
             .registry_set()
             .map(|registries| {

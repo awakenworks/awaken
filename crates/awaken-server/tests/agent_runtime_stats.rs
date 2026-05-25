@@ -13,13 +13,15 @@ use awaken_ext_observability::{
 };
 use awaken_runtime::builder::AgentRuntimeBuilder;
 use awaken_runtime::registry::traits::ModelBinding;
-use awaken_server::app::{AppState, ServerConfig};
+use awaken_server::app::{AdminApiConfig, ServerConfig, ServerState};
 use awaken_server::routes::build_router;
 use awaken_stores::memory::InMemoryStore;
 use axum::body::to_bytes;
 use axum::http::{Request, StatusCode};
 use serde_json::Value;
 use tower::ServiceExt;
+
+const ADMIN_TOKEN: &str = "test-admin-token";
 
 /// Stub executor — never invoked in these tests because no run is driven;
 /// it only exists so `AgentRuntimeBuilder::build()` succeeds.
@@ -77,17 +79,21 @@ fn build_app(runtime_stats: Option<Arc<RuntimeStatsRegistry>>) -> axum::Router {
         "test".into(),
         awaken_server::mailbox::MailboxConfig::default(),
     ));
-    let mut state = AppState::new(
+    let mut state = ServerState::new(
         runtime.clone(),
         mailbox,
         store.clone(),
         runtime.resolver_arc(),
         ServerConfig::default(),
-    );
+    )
+    .with_admin_api_config(AdminApiConfig {
+        bearer_token: Some(ADMIN_TOKEN.into()),
+        ..Default::default()
+    });
     if let Some(reg) = runtime_stats {
         state = state.with_runtime_stats(reg);
     }
-    build_router(&state).with_state(state)
+    build_router(&state)
 }
 
 fn ctx(agent: &str) -> SpanContext {
@@ -160,6 +166,7 @@ async fn fetch(app: axum::Router, uri: &str) -> (StatusCode, Value) {
             Request::builder()
                 .method("GET")
                 .uri(uri)
+                .header("authorization", format!("Bearer {ADMIN_TOKEN}"))
                 .body(axum::body::Body::empty())
                 .unwrap(),
         )

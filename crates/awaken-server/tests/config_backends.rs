@@ -16,7 +16,7 @@ use awaken_contract::{AgentSpec, BuiltinSeedSet, BuiltinSpec, ModelBindingSpec, 
 use awaken_runtime::AgentRuntime;
 use awaken_runtime::builder::AgentRuntimeBuilder;
 use awaken_runtime::registry::traits::ModelBinding;
-use awaken_server::app::{AppState, ServerConfig};
+use awaken_server::app::{ServerConfig, ServerState};
 use awaken_server::mailbox::{Mailbox, MailboxConfig};
 use awaken_server::routes::build_router;
 use awaken_server::services::config_runtime::{
@@ -28,6 +28,8 @@ use axum::http::{Method, Request, StatusCode};
 use serde_json::{Value, json};
 use sqlx::PgPool;
 use tower::ServiceExt;
+
+const ADMIN_TOKEN: &str = "config-backends-admin-token";
 
 #[cfg(feature = "nats")]
 use awaken_stores::{InMemoryStore, NatsBufferedThreadConfig, NatsBufferedThreadStore};
@@ -109,6 +111,10 @@ where
     S: ConfigStore + ThreadRunStore + Send + Sync + 'static,
     F: FnOnce(Arc<S>) -> Arc<dyn CommitCoordinator>,
 {
+    // ADR-0038 D7: the runtime's CommitCoordinator must wrap the same
+    // ThreadRunStore handle as the mailbox uses. The backend-specific
+    // coordinator factory is supplied by the caller so FileStore tests can
+    // pair with FileCommitCoordinator, etc.
     let coordinator = make_coordinator(Arc::clone(&store));
     let runtime = Arc::new(
         AgentRuntimeBuilder::new()
@@ -143,18 +149,19 @@ where
         server_name.to_string(),
         MailboxConfig::default(),
     ));
-    let state = AppState::new(
+    let state = ServerState::new(
         runtime.clone(),
         mailbox,
         store.clone() as Arc<dyn ThreadRunStore>,
         runtime.resolver_arc(),
         ServerConfig::default(),
     )
+    .with_admin_api_bearer_token(ADMIN_TOKEN)
     .with_config_store(config_store)
     .with_config_runtime_manager(manager);
 
     TestApp {
-        router: build_router(&state).with_state(state),
+        router: build_router(&state),
         runtime,
         store,
     }
@@ -171,10 +178,16 @@ fn postgres_coordinator(store: Arc<PostgresStore>) -> Arc<dyn CommitCoordinator>
     ) as Arc<dyn CommitCoordinator>
 }
 
-async fn make_thread_app<S>(store: Arc<S>, server_name: &str) -> axum::Router
+async fn make_thread_app<S, F>(
+    store: Arc<S>,
+    server_name: &str,
+    make_coordinator: F,
+) -> axum::Router
 where
     S: ThreadRunStore + Send + Sync + 'static,
+    F: FnOnce(Arc<S>) -> Arc<dyn CommitCoordinator>,
 {
+    let coordinator = make_coordinator(Arc::clone(&store));
     let runtime = Arc::new(
         AgentRuntimeBuilder::new()
             .with_provider("mock", Arc::new(ImmediateExecutor))
@@ -192,6 +205,8 @@ where
                 max_rounds: 0,
                 ..Default::default()
             })
+            .with_thread_run_store(store.clone() as Arc<dyn ThreadRunStore>)
+            .with_commit_coordinator(coordinator)
             .build()
             .expect("build runtime"),
     );
@@ -203,14 +218,14 @@ where
         server_name.to_string(),
         MailboxConfig::default(),
     ));
-    let state = AppState::new(
+    let state = ServerState::new(
         runtime.clone(),
         mailbox,
         store as Arc<dyn ThreadRunStore>,
         runtime.resolver_arc(),
         ServerConfig::default(),
     );
-    build_router(&state).with_state(state)
+    build_router(&state)
 }
 
 #[cfg(feature = "nats")]
@@ -283,7 +298,10 @@ async fn send_request(
     uri: &str,
     body: Option<Value>,
 ) -> (StatusCode, String) {
-    let mut builder = Request::builder().method(method).uri(uri);
+    let mut builder = Request::builder()
+        .method(method)
+        .uri(uri)
+        .header("authorization", format!("Bearer {ADMIN_TOKEN}"));
     let request = if let Some(body) = body {
         builder = builder.header("content-type", "application/json");
         builder
@@ -582,7 +600,7 @@ async fn file_store_thread_lineage_filters_round_trip_via_http() {
 async fn file_store_thread_hierarchy_management_round_trip_via_http() {
     let dir = tempfile::tempdir().expect("tempdir");
     let store = Arc::new(FileStore::new(dir.path()));
-    let router = make_thread_app(store.clone(), "file-hierarchy-test").await;
+    let router = make_thread_app(store.clone(), "file-hierarchy-test", file_coordinator).await;
 
     assert_thread_hierarchy_management_round_trip(&router, &store, "file-parent").await;
     assert_thread_hierarchy_rejects_missing_parent(&router).await;
@@ -731,7 +749,12 @@ async fn postgres_store_thread_lineage_filters_round_trip_via_http() {
 #[ignore = "requires PostgreSQL via DATABASE_URL"]
 async fn postgres_store_thread_hierarchy_management_round_trip_via_http() {
     let (store, _pool, _prefix) = make_postgres_store("cfg_hierarchy").await;
-    let router = make_thread_app(store.clone(), "postgres-hierarchy-test").await;
+    let router = make_thread_app(
+        store.clone(),
+        "postgres-hierarchy-test",
+        postgres_coordinator,
+    )
+    .await;
 
     assert_thread_hierarchy_management_round_trip(&router, &store, "pg-parent").await;
     assert_thread_hierarchy_rejects_missing_parent(&router).await;
@@ -747,7 +770,14 @@ async fn nats_buffered_store_thread_routes_round_trip_via_http() {
             .await
             .expect("connect buffered nats store"),
     );
-    let router = make_thread_app(store.clone(), "nats-lineage-test").await;
+    let router = make_thread_app(store.clone(), "nats-lineage-test", |_| {
+        // NATS-buffered thread store fronts an InMemoryStore inner; tests
+        // rely on the runtime/mailbox coordinator path matching that buffer,
+        // not the inner store directly.
+        awaken_stores::MemoryCommitCoordinator::wrap(Arc::new(awaken_stores::InMemoryStore::new()))
+            as Arc<dyn awaken_contract::contract::commit_coordinator::CommitCoordinator>
+    })
+    .await;
 
     store
         .save_thread(

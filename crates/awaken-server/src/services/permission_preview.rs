@@ -23,7 +23,7 @@ use awaken_ext_permission::{
 };
 use serde::Serialize;
 
-use crate::app::AppState;
+use crate::app::ConfigRoutesState;
 use crate::services::config_service::{ConfigNamespace, ConfigService, ConfigServiceError};
 
 #[derive(Debug, Clone, Serialize)]
@@ -85,7 +85,7 @@ pub enum PermissionPreviewError {
 
 /// Run the preview for the given agent id and return the analysis.
 pub async fn preview_agent_permissions(
-    state: &AppState,
+    state: &ConfigRoutesState,
     agent_id: &str,
 ) -> Result<PermissionPreviewResponse, PermissionPreviewError> {
     let service = ConfigService::new(state).map_err(PermissionPreviewError::Config)?;
@@ -99,6 +99,7 @@ pub async fn preview_agent_permissions(
         .map_err(|err| PermissionPreviewError::InvalidSpec(err.to_string()))?;
 
     let registries = state
+        .run
         .runtime
         .registry_set()
         .ok_or(PermissionPreviewError::RegistryUnavailable)?;

@@ -30,7 +30,7 @@ use awaken_runtime::engine::RetryConfigKey;
 use awaken_runtime::registry::ToolRegistry;
 use awaken_runtime::registry::memory::MapToolRegistry;
 use awaken_server::app::{
-    AdminApiConfig, AppState, ServerConfig, SkillCatalogArgument, SkillCatalogContext,
+    AdminApiConfig, ServerConfig, ServerState, SkillCatalogArgument, SkillCatalogContext,
     SkillCatalogEntry, SkillCatalogProvider,
 };
 use awaken_server::mailbox::{Mailbox, MailboxConfig};
@@ -45,6 +45,9 @@ use axum::http::{Method, Request, StatusCode};
 use serde_json::{Value, json};
 use tokio::sync::broadcast;
 use tower::ServiceExt;
+
+const ADMIN_TOKEN: &str = "admin-token";
+const ADMIN_AUTH_HEADER: &str = "Bearer admin-token";
 
 struct ImmediateExecutor;
 
@@ -667,7 +670,7 @@ async fn make_app_without_skill_sink() -> TestApp {
         "config-api-test".into(),
         MailboxConfig::default(),
     ));
-    let state = AppState::new(
+    let state = ServerState::new(
         runtime.clone(),
         mailbox,
         store.clone(),
@@ -675,10 +678,11 @@ async fn make_app_without_skill_sink() -> TestApp {
         ServerConfig::default(),
     )
     .with_config_store(config_store)
-    .with_config_runtime_manager(manager.clone());
+    .with_config_runtime_manager(manager.clone())
+    .with_admin_api_bearer_token(ADMIN_TOKEN);
 
     TestApp {
-        router: build_router(&state).with_state(state),
+        router: build_router(&state),
         runtime,
         store,
         manager,
@@ -728,7 +732,7 @@ async fn make_app_with_skill_catalog_config_and_admin(
         "config-api-test".into(),
         MailboxConfig::default(),
     ));
-    let mut state = AppState::new(
+    let mut state = ServerState::new(
         runtime.clone(),
         mailbox,
         store.clone(),
@@ -737,15 +741,17 @@ async fn make_app_with_skill_catalog_config_and_admin(
     )
     .with_config_store(config_store)
     .with_config_runtime_manager(manager.clone());
-    if let Some(admin_config) = admin_config {
-        state = state.with_admin_api_config(admin_config);
-    }
+    state = if let Some(admin_config) = admin_config {
+        state.with_admin_api_config(admin_config)
+    } else {
+        state.with_admin_api_bearer_token(ADMIN_TOKEN)
+    };
     if let Some(provider) = skill_catalog_provider {
         state = state.with_skill_catalog_provider(provider);
     }
 
     TestApp {
-        router: build_router(&state).with_state(state),
+        router: build_router(&state),
         runtime,
         store,
         manager,
@@ -759,7 +765,14 @@ async fn request_json(
     uri: &str,
     body: Option<Value>,
 ) -> (StatusCode, Value) {
-    request_json_with_headers(router, method, uri, body, &[]).await
+    request_json_with_headers(
+        router,
+        method,
+        uri,
+        body,
+        &[("authorization", ADMIN_AUTH_HEADER)],
+    )
+    .await
 }
 
 async fn request_json_with_headers(
@@ -824,7 +837,8 @@ async fn wait_until(
 async fn admin_config_routes_require_bearer_token_when_configured() {
     let app = make_app_with_admin_token("admin-token").await;
 
-    let (status, body) = request_json(&app.router, Method::GET, "/v1/capabilities", None).await;
+    let (status, body) =
+        request_json_with_headers(&app.router, Method::GET, "/v1/capabilities", None, &[]).await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
     assert!(body["error"].as_str().unwrap().contains("authentication"));
 
@@ -853,7 +867,8 @@ async fn admin_config_routes_require_bearer_token_when_configured() {
         "/v1/config/diagnostics",
         "/v1/config/providers/bootstrap/removal-preview",
     ] {
-        let (status, body) = request_json(&app.router, Method::GET, uri, None).await;
+        let (status, body) =
+            request_json_with_headers(&app.router, Method::GET, uri, None, &[]).await;
         assert_eq!(status, StatusCode::UNAUTHORIZED, "uri: {uri}, body: {body}");
 
         let (status, body) = request_json_with_headers(
@@ -1537,7 +1552,7 @@ async fn documented_config_driven_agent_tuning_publishes_sections_and_retry() {
         "config-doc-scenario-test".into(),
         MailboxConfig::default(),
     ));
-    let state = AppState::new(
+    let state = ServerState::new(
         runtime.clone(),
         mailbox,
         store,
@@ -1545,8 +1560,9 @@ async fn documented_config_driven_agent_tuning_publishes_sections_and_retry() {
         ServerConfig::default(),
     )
     .with_config_store(config_store)
-    .with_config_runtime_manager(manager);
-    let router = build_router(&state).with_state(state);
+    .with_config_runtime_manager(manager)
+    .with_admin_api_bearer_token(ADMIN_TOKEN);
+    let router = build_router(&state);
 
     let (status, _) = request_json(
         &router,
@@ -2532,9 +2548,9 @@ async fn apply_if_changed_returns_some_after_store_mutation() {
 // ── MCP server status and restart endpoint smoke tests ──────────────────────
 
 #[tokio::test]
-async fn mcp_status_returns_503_when_no_runtime_configured() {
-    // Build a state without a config_runtime_manager so the MCP status endpoint
-    // returns 503 Service Unavailable.
+async fn mcp_status_routes_absent_without_config_module() {
+    // Build a state without a config module so config-backed MCP admin
+    // endpoints are absent instead of carrying handler-local fallbacks.
     let store = Arc::new(InMemoryStore::new());
     let thread_store = store.clone();
     use awaken_contract::AgentSpec;
@@ -2593,15 +2609,16 @@ async fn mcp_status_returns_503_when_no_runtime_configured() {
         "mcp-status-test".into(),
         MailboxConfig::default(),
     ));
-    // No config_runtime_manager attached → MCP endpoints return 503.
-    let state = awaken_server::app::AppState::new(
+    // No config module attached → config-backed MCP admin endpoints are absent.
+    let state = awaken_server::app::ServerState::new(
         runtime.clone(),
         mailbox,
         thread_store as Arc<dyn awaken_contract::contract::storage::ThreadRunStore>,
         runtime.resolver_arc(),
         ServerConfig::default(),
-    );
-    let router = build_router(&state).with_state(state);
+    )
+    .with_admin_api_bearer_token(ADMIN_TOKEN);
+    let router = build_router(&state);
 
     let (status, _body) = request_json(
         &router,
@@ -2610,7 +2627,7 @@ async fn mcp_status_returns_503_when_no_runtime_configured() {
         None,
     )
     .await;
-    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(status, StatusCode::NOT_FOUND);
 
     let (status, _body) = request_json(
         &router,
@@ -2619,7 +2636,7 @@ async fn mcp_status_returns_503_when_no_runtime_configured() {
         None,
     )
     .await;
-    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(status, StatusCode::NOT_FOUND);
 }
 
 #[tokio::test]
@@ -2725,7 +2742,7 @@ async fn mcp_status_route_surfaces_session_reconnect_init_fields() {
         "mcp-status-fields-test".into(),
         MailboxConfig::default(),
     ));
-    let state = AppState::new(
+    let state = ServerState::new(
         runtime.clone(),
         mailbox,
         store.clone(),
@@ -2733,8 +2750,9 @@ async fn mcp_status_route_surfaces_session_reconnect_init_fields() {
         ServerConfig::default(),
     )
     .with_config_store(config_store)
-    .with_config_runtime_manager(manager.clone());
-    let router = build_router(&state).with_state(state);
+    .with_config_runtime_manager(manager.clone())
+    .with_admin_api_bearer_token(ADMIN_TOKEN);
+    let router = build_router(&state);
 
     // Register an MCP server so the factory's `connect` is called and
     // the stub registry becomes active.
@@ -3472,7 +3490,7 @@ async fn audit_event_emitted_for_patch_and_delete() {
         "override-audit-test".into(),
         MailboxConfig::default(),
     ));
-    let state = awaken_server::app::AppState::new(
+    let state = awaken_server::app::ServerState::new(
         runtime.clone(),
         mailbox,
         thread_store,
@@ -3481,7 +3499,8 @@ async fn audit_event_emitted_for_patch_and_delete() {
     )
     .with_config_store(config_store.clone() as Arc<dyn ConfigStore>)
     .with_config_runtime_manager(manager)
-    .with_audit_log(audit_logger.clone());
+    .with_audit_log(audit_logger.clone())
+    .with_admin_api_bearer_token(ADMIN_TOKEN);
 
     let headers = axum::http::HeaderMap::new();
 
@@ -3721,7 +3740,7 @@ async fn make_permission_preview_app() -> axum::Router {
         "permission-preview-test".into(),
         MailboxConfig::default(),
     ));
-    let state = AppState::new(
+    let state = ServerState::new(
         runtime.clone(),
         mailbox,
         store,
@@ -3729,8 +3748,9 @@ async fn make_permission_preview_app() -> axum::Router {
         ServerConfig::default(),
     )
     .with_config_store(config_store)
-    .with_config_runtime_manager(manager);
-    build_router(&state).with_state(state)
+    .with_config_runtime_manager(manager)
+    .with_admin_api_bearer_token(ADMIN_TOKEN);
+    build_router(&state)
 }
 
 /// Standalone runtime+manager+store for permission preview tests, with a

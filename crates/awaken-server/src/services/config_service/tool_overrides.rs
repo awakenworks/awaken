@@ -10,7 +10,7 @@ use super::{
     overrides_not_supported_for_user_record,
 };
 
-impl<'a> ConfigService<'a> {
+impl ConfigService {
     /// PATCH /v1/config/tools/:id/overrides — see ADR-0029.
     pub async fn patch_tool_overrides(
         &self,

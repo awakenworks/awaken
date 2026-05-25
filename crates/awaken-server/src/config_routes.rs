@@ -13,7 +13,7 @@ struct DeleteParams {
     force: bool,
 }
 
-use crate::app::AppState;
+use crate::app::{AdminModuleState, ConfigRoutesState};
 use crate::routes::ApiError;
 use crate::services::audit_log::{AuditQuery, AuditQueryError};
 use crate::services::config_service::{
@@ -69,7 +69,7 @@ impl RouteConfigNamespace {
     }
 }
 
-pub fn config_routes() -> Router<AppState> {
+pub fn config_routes() -> Router<ConfigRoutesState> {
     Router::new()
         .route("/v1/capabilities", get(get_capabilities))
         .route(
@@ -117,10 +117,10 @@ pub fn config_routes() -> Router<AppState> {
 }
 
 async fn get_capabilities(
-    State(state): State<AppState>,
+    State(state): State<ConfigRoutesState>,
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, ApiError> {
-    ensure_admin_auth(&state, &headers)?;
+    ensure_admin_auth(&state.admin, &headers)?;
     let service = ConfigService::new(&state).map_err(map_service_error)?;
     Ok(Json(
         service.capabilities().await.map_err(map_service_error)?,
@@ -128,11 +128,11 @@ async fn get_capabilities(
 }
 
 async fn get_schema(
-    State(state): State<AppState>,
+    State(state): State<ConfigRoutesState>,
     headers: HeaderMap,
     Path(namespace): Path<String>,
 ) -> Result<impl IntoResponse, ApiError> {
-    ensure_admin_auth(&state, &headers)?;
+    ensure_admin_auth(&state.admin, &headers)?;
     let namespace = RouteConfigNamespace::parse(&namespace).map_err(map_service_error)?;
     let schema = match namespace {
         RouteConfigNamespace::Managed(namespace) => namespace.schema_json(),
@@ -143,21 +143,21 @@ async fn get_schema(
 }
 
 async fn get_config_diagnostics(
-    State(state): State<AppState>,
+    State(state): State<ConfigRoutesState>,
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, ApiError> {
-    ensure_admin_auth(&state, &headers)?;
+    ensure_admin_auth(&state.admin, &headers)?;
     let service = ConfigService::new(&state).map_err(map_service_error)?;
     let diagnostics = service.registry_diagnostics().map_err(map_service_error)?;
     Ok(Json(json!({ "diagnostics": diagnostics })))
 }
 
 async fn preview_provider_removal(
-    State(state): State<AppState>,
+    State(state): State<ConfigRoutesState>,
     headers: HeaderMap,
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, ApiError> {
-    ensure_admin_auth(&state, &headers)?;
+    ensure_admin_auth(&state.admin, &headers)?;
     let service = ConfigService::new(&state).map_err(map_service_error)?;
     let preview = service
         .preview_remove_provider(&id)
@@ -167,35 +167,35 @@ async fn preview_provider_removal(
 }
 
 async fn list_agents(
-    State(state): State<AppState>,
+    State(state): State<ConfigRoutesState>,
     headers: HeaderMap,
     query: Query<ListParams>,
 ) -> Result<impl IntoResponse, ApiError> {
-    ensure_admin_auth(&state, &headers)?;
+    ensure_admin_auth(&state.admin, &headers)?;
     list_config_inner(state, "agents".to_string(), query.0).await
 }
 
 async fn get_agent(
-    State(state): State<AppState>,
+    State(state): State<ConfigRoutesState>,
     headers: HeaderMap,
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, ApiError> {
-    ensure_admin_auth(&state, &headers)?;
+    ensure_admin_auth(&state.admin, &headers)?;
     get_config_inner(state, "agents".to_string(), id).await
 }
 
 async fn list_config(
-    State(state): State<AppState>,
+    State(state): State<ConfigRoutesState>,
     headers: HeaderMap,
     Path(namespace): Path<String>,
     Query(params): Query<ListParams>,
 ) -> Result<impl IntoResponse, ApiError> {
-    ensure_admin_auth(&state, &headers)?;
+    ensure_admin_auth(&state.admin, &headers)?;
     list_config_inner(state, namespace, params).await
 }
 
 async fn list_config_inner(
-    state: AppState,
+    state: ConfigRoutesState,
     namespace: String,
     params: ListParams,
 ) -> Result<impl IntoResponse, ApiError> {
@@ -217,12 +217,12 @@ async fn list_config_inner(
 }
 
 async fn create_config(
-    State(state): State<AppState>,
+    State(state): State<ConfigRoutesState>,
     headers: HeaderMap,
     Path(namespace): Path<String>,
     Json(body): Json<Value>,
 ) -> Result<impl IntoResponse, ApiError> {
-    ensure_admin_auth(&state, &headers)?;
+    ensure_admin_auth(&state.admin, &headers)?;
     let namespace = RouteConfigNamespace::parse(&namespace).map_err(map_service_error)?;
     let namespace = match namespace {
         RouteConfigNamespace::Managed(namespace) => namespace,
@@ -247,13 +247,13 @@ struct ValidateParams {
 }
 
 async fn validate_config(
-    State(state): State<AppState>,
+    State(state): State<ConfigRoutesState>,
     headers: HeaderMap,
     Path(namespace): Path<String>,
     Query(params): Query<ValidateParams>,
     Json(body): Json<Value>,
 ) -> Result<impl IntoResponse, ApiError> {
-    ensure_admin_auth(&state, &headers)?;
+    ensure_admin_auth(&state.admin, &headers)?;
     let namespace = RouteConfigNamespace::parse(&namespace).map_err(map_service_error)?;
     let namespace = match namespace {
         RouteConfigNamespace::Managed(namespace) => namespace,
@@ -273,16 +273,16 @@ async fn validate_config(
 }
 
 async fn get_config(
-    State(state): State<AppState>,
+    State(state): State<ConfigRoutesState>,
     headers: HeaderMap,
     Path((namespace, id)): Path<(String, String)>,
 ) -> Result<impl IntoResponse, ApiError> {
-    ensure_admin_auth(&state, &headers)?;
+    ensure_admin_auth(&state.admin, &headers)?;
     get_config_inner(state, namespace, id).await
 }
 
 async fn get_config_inner(
-    state: AppState,
+    state: ConfigRoutesState,
     namespace: String,
     id: String,
 ) -> Result<impl IntoResponse, ApiError> {
@@ -298,11 +298,11 @@ async fn get_config_inner(
 }
 
 async fn get_config_meta(
-    State(state): State<AppState>,
+    State(state): State<ConfigRoutesState>,
     headers: HeaderMap,
     Path((namespace, id)): Path<(String, String)>,
 ) -> Result<impl IntoResponse, ApiError> {
-    ensure_admin_auth(&state, &headers)?;
+    ensure_admin_auth(&state.admin, &headers)?;
     let namespace = RouteConfigNamespace::parse(&namespace).map_err(map_service_error)?;
     let service = ConfigService::new(&state).map_err(map_service_error)?;
     let meta = match namespace {
@@ -315,12 +315,12 @@ async fn get_config_meta(
 }
 
 async fn list_config_meta(
-    State(state): State<AppState>,
+    State(state): State<ConfigRoutesState>,
     headers: HeaderMap,
     Path(namespace): Path<String>,
     Query(params): Query<ListParams>,
 ) -> Result<impl IntoResponse, ApiError> {
-    ensure_admin_auth(&state, &headers)?;
+    ensure_admin_auth(&state.admin, &headers)?;
     let namespace = RouteConfigNamespace::parse(&namespace).map_err(map_service_error)?;
     let service = ConfigService::new(&state).map_err(map_service_error)?;
     let items = match namespace {
@@ -340,12 +340,12 @@ async fn list_config_meta(
 }
 
 async fn put_config(
-    State(state): State<AppState>,
+    State(state): State<ConfigRoutesState>,
     headers: HeaderMap,
     Path((namespace, id)): Path<(String, String)>,
     Json(body): Json<Value>,
 ) -> Result<impl IntoResponse, ApiError> {
-    ensure_admin_auth(&state, &headers)?;
+    ensure_admin_auth(&state.admin, &headers)?;
     let namespace = RouteConfigNamespace::parse(&namespace).map_err(map_service_error)?;
     let namespace = match namespace {
         RouteConfigNamespace::Managed(namespace) => namespace,
@@ -362,12 +362,12 @@ async fn put_config(
 }
 
 async fn delete_config(
-    State(state): State<AppState>,
+    State(state): State<ConfigRoutesState>,
     headers: HeaderMap,
     Path((namespace, id)): Path<(String, String)>,
     Query(params): Query<DeleteParams>,
 ) -> Response {
-    if let Err(err) = ensure_admin_auth(&state, &headers) {
+    if let Err(err) = ensure_admin_auth(&state.admin, &headers) {
         return err.into_response();
     }
     let namespace = match RouteConfigNamespace::parse(&namespace) {
@@ -408,7 +408,7 @@ async fn delete_config(
 }
 
 async fn delete_blockers_for_route(
-    service: &ConfigService<'_>,
+    service: &ConfigService,
     namespace: ConfigNamespace,
     id: &str,
     force: bool,
@@ -439,12 +439,12 @@ struct RestoreBody {
 }
 
 async fn restore_config(
-    State(state): State<AppState>,
+    State(state): State<ConfigRoutesState>,
     headers: HeaderMap,
     Path((namespace, id)): Path<(String, String)>,
     Json(body): Json<RestoreBody>,
 ) -> Response {
-    if let Err(err) = ensure_admin_auth(&state, &headers) {
+    if let Err(err) = ensure_admin_auth(&state.admin, &headers) {
         return err.into_response();
     }
     let namespace = match RouteConfigNamespace::parse(&namespace) {
@@ -497,11 +497,11 @@ async fn restore_config(
 }
 
 async fn test_provider_connection(
-    State(state): State<AppState>,
+    State(state): State<ConfigRoutesState>,
     headers: HeaderMap,
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, ApiError> {
-    ensure_admin_auth(&state, &headers)?;
+    ensure_admin_auth(&state.admin, &headers)?;
     let service = ConfigService::new(&state).map_err(map_service_error)?;
     let result: ProviderTestResult = service
         .test_provider(&id)
@@ -511,17 +511,14 @@ async fn test_provider_connection(
 }
 
 async fn get_mcp_server_status(
-    State(state): State<AppState>,
+    State(state): State<ConfigRoutesState>,
     headers: HeaderMap,
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, ApiError> {
-    ensure_admin_auth(&state, &headers)?;
+    ensure_admin_auth(&state.admin, &headers)?;
 
     // 503 when no MCP runtime is configured.
-    let manager = state
-        .config_runtime_manager
-        .as_ref()
-        .ok_or_else(|| ApiError::ServiceUnavailable("MCP runtime is not configured".into()))?;
+    let manager = &state.config.runtime_manager;
 
     // 404 when the id is unknown to the active registry.
     let status = manager
@@ -554,17 +551,14 @@ fn systime_to_secs(t: std::time::SystemTime) -> Option<u64> {
 }
 
 async fn post_mcp_server_restart(
-    State(state): State<AppState>,
+    State(state): State<ConfigRoutesState>,
     headers: HeaderMap,
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, ApiError> {
-    ensure_admin_auth(&state, &headers)?;
+    ensure_admin_auth(&state.admin, &headers)?;
 
     // 503 when no MCP runtime is configured.
-    let manager = state
-        .config_runtime_manager
-        .as_ref()
-        .ok_or_else(|| ApiError::ServiceUnavailable("MCP runtime is not configured".into()))?;
+    let manager = &state.config.runtime_manager;
 
     manager.mcp_server_reconnect(&id).await.map_err(|e| {
         // Map unknown-server errors (surfaced as InvalidConfig wrapping UnknownServer) to 404.
@@ -581,7 +575,7 @@ async fn post_mcp_server_restart(
     })?;
 
     // Emit audit event after successful restart.
-    if let Some(audit) = state.audit_log() {
+    if let Some(audit) = state.config.audit_log.clone() {
         let resource = format!("mcp-servers/{id}");
         audit
             .emit(
@@ -598,13 +592,15 @@ async fn post_mcp_server_restart(
 }
 
 async fn list_audit_log(
-    State(state): State<AppState>,
+    State(state): State<ConfigRoutesState>,
     headers: HeaderMap,
     Query(query): Query<AuditQuery>,
 ) -> Result<impl IntoResponse, ApiError> {
-    ensure_admin_auth(&state, &headers)?;
+    ensure_admin_auth(&state.admin, &headers)?;
     let audit = state
-        .audit_log()
+        .config
+        .audit_log
+        .clone()
         .ok_or_else(|| ApiError::ServiceUnavailable("audit log is not configured".into()))?;
     let mut effective_query = query;
     effective_query.limit = effective_query.limit.clamp(1, 1000);
@@ -615,9 +611,11 @@ async fn list_audit_log(
     Ok(Json(page))
 }
 
-pub(crate) fn ensure_admin_auth(state: &AppState, headers: &HeaderMap) -> Result<(), ApiError> {
-    let config = crate::app::admin_api_config(state);
-    ensure_admin_auth_for_token(config.bearer_token.as_ref(), headers)
+pub(crate) fn ensure_admin_auth(
+    admin: &AdminModuleState,
+    headers: &HeaderMap,
+) -> Result<(), ApiError> {
+    ensure_admin_auth_for_token(admin.admin_api_config.bearer_token.as_ref(), headers)
 }
 
 fn ensure_admin_auth_for_token(
@@ -625,7 +623,9 @@ fn ensure_admin_auth_for_token(
     headers: &HeaderMap,
 ) -> Result<(), ApiError> {
     let Some(expected) = expected else {
-        return Ok(());
+        return Err(ApiError::Unauthorized(
+            "admin authentication is not configured".into(),
+        ));
     };
     let mut auth_values = headers.get_all(axum::http::header::AUTHORIZATION).iter();
     let Some(auth) = auth_values.next() else {
@@ -658,12 +658,12 @@ fn ensure_admin_auth_for_token(
 }
 
 async fn patch_agent_overrides_handler(
-    State(state): State<AppState>,
+    State(state): State<ConfigRoutesState>,
     headers: HeaderMap,
     Path(id): Path<String>,
     Json(body): Json<Value>,
 ) -> Response {
-    if let Err(err) = ensure_admin_auth(&state, &headers) {
+    if let Err(err) = ensure_admin_auth(&state.admin, &headers) {
         return err.into_response();
     }
     let service = match ConfigService::new(&state) {
@@ -678,12 +678,12 @@ async fn patch_agent_overrides_handler(
 }
 
 async fn validate_agent_overrides_handler(
-    State(state): State<AppState>,
+    State(state): State<ConfigRoutesState>,
     headers: HeaderMap,
     Path(id): Path<String>,
     Json(body): Json<Value>,
 ) -> Response {
-    if let Err(err) = ensure_admin_auth(&state, &headers) {
+    if let Err(err) = ensure_admin_auth(&state.admin, &headers) {
         return err.into_response();
     }
     let service = match ConfigService::new(&state) {
@@ -698,11 +698,11 @@ async fn validate_agent_overrides_handler(
 }
 
 async fn clear_agent_overrides_handler(
-    State(state): State<AppState>,
+    State(state): State<ConfigRoutesState>,
     headers: HeaderMap,
     Path(id): Path<String>,
 ) -> Response {
-    if let Err(err) = ensure_admin_auth(&state, &headers) {
+    if let Err(err) = ensure_admin_auth(&state.admin, &headers) {
         return err.into_response();
     }
     let service = match ConfigService::new(&state) {
@@ -717,11 +717,11 @@ async fn clear_agent_overrides_handler(
 }
 
 async fn clear_agent_override_field_handler(
-    State(state): State<AppState>,
+    State(state): State<ConfigRoutesState>,
     headers: HeaderMap,
     Path((id, field)): Path<(String, String)>,
 ) -> Response {
-    if let Err(err) = ensure_admin_auth(&state, &headers) {
+    if let Err(err) = ensure_admin_auth(&state.admin, &headers) {
         return err.into_response();
     }
     let service = match ConfigService::new(&state) {
@@ -739,12 +739,12 @@ async fn clear_agent_override_field_handler(
 }
 
 async fn patch_tool_overrides_handler(
-    State(state): State<AppState>,
+    State(state): State<ConfigRoutesState>,
     headers: HeaderMap,
     Path(id): Path<String>,
     Json(body): Json<Value>,
 ) -> Response {
-    if let Err(err) = ensure_admin_auth(&state, &headers) {
+    if let Err(err) = ensure_admin_auth(&state.admin, &headers) {
         return err.into_response();
     }
     let service = match ConfigService::new(&state) {
@@ -759,11 +759,11 @@ async fn patch_tool_overrides_handler(
 }
 
 async fn clear_tool_overrides_handler(
-    State(state): State<AppState>,
+    State(state): State<ConfigRoutesState>,
     headers: HeaderMap,
     Path(id): Path<String>,
 ) -> Response {
-    if let Err(err) = ensure_admin_auth(&state, &headers) {
+    if let Err(err) = ensure_admin_auth(&state.admin, &headers) {
         return err.into_response();
     }
     let service = match ConfigService::new(&state) {
@@ -778,11 +778,11 @@ async fn clear_tool_overrides_handler(
 }
 
 async fn clear_tool_override_field_handler(
-    State(state): State<AppState>,
+    State(state): State<ConfigRoutesState>,
     headers: HeaderMap,
     Path((id, field)): Path<(String, String)>,
 ) -> Response {
-    if let Err(err) = ensure_admin_auth(&state, &headers) {
+    if let Err(err) = ensure_admin_auth(&state.admin, &headers) {
         return err.into_response();
     }
     let service = match ConfigService::new(&state) {
@@ -830,20 +830,21 @@ mod tests {
     use super::*;
     use awaken_contract::RedactedString;
     use axum::http::{HeaderMap, HeaderValue, header};
-
     #[test]
-    fn admin_auth_allows_unconfigured_routes() {
+    fn admin_auth_rejects_when_token_not_configured() {
         let headers = HeaderMap::new();
-        assert!(ensure_admin_auth_for_token(None, &headers).is_ok());
+        let err = ensure_admin_auth_for_token(None, &headers).unwrap_err();
+        assert!(matches!(
+            err,
+            ApiError::Unauthorized(message) if message.contains("not configured")
+        ));
     }
-
     #[test]
     fn admin_auth_rejects_missing_or_wrong_token() {
         let expected = RedactedString::from("secret");
         let headers = HeaderMap::new();
         let missing = ensure_admin_auth_for_token(Some(&expected), &headers).unwrap_err();
         assert_eq!(missing.into_response().status(), StatusCode::UNAUTHORIZED);
-
         let mut headers = HeaderMap::new();
         headers.insert(
             header::AUTHORIZATION,
@@ -852,7 +853,6 @@ mod tests {
         let wrong = ensure_admin_auth_for_token(Some(&expected), &headers).unwrap_err();
         assert_eq!(wrong.into_response().status(), StatusCode::UNAUTHORIZED);
     }
-
     #[test]
     fn admin_auth_accepts_bearer_token() {
         let expected = RedactedString::from("secret");
@@ -863,7 +863,6 @@ mod tests {
         );
         assert!(ensure_admin_auth_for_token(Some(&expected), &headers).is_ok());
     }
-
     #[test]
     fn admin_auth_rejects_ambiguous_or_malformed_bearer_headers_without_leaking_secret() {
         let expected = RedactedString::from("secret-value-that-must-not-leak");
@@ -875,7 +874,6 @@ mod tests {
             "bearer wrong-token",
             "Bearer secret-value-that-must-not-leak extra",
         ];
-
         for value in cases {
             let mut headers = HeaderMap::new();
             headers.insert(
@@ -922,8 +920,10 @@ mod tests {
     // ── delete 409 / force integration tests ──────────────────────────────
 
     mod delete_integration {
-        use std::sync::Arc;
-
+        use crate::app::{ServerConfig, ServerState};
+        use crate::mailbox::{Mailbox, MailboxConfig};
+        use crate::routes::build_router;
+        use crate::services::config_runtime::{ConfigRuntimeManager, ProviderExecutorFactory};
         use async_trait::async_trait;
         use awaken_contract::contract::executor::{
             InferenceExecutionError, InferenceRequest, LlmExecutor,
@@ -938,15 +938,9 @@ mod tests {
         use axum::http::{Request, StatusCode};
         use http_body_util::BodyExt;
         use serde_json::Value;
+        use std::sync::Arc;
         use tower::ServiceExt;
-
-        use crate::app::{AppState, ServerConfig};
-        use crate::mailbox::{Mailbox, MailboxConfig};
-        use crate::routes::build_router;
-        use crate::services::config_runtime::{ConfigRuntimeManager, ProviderExecutorFactory};
-
         struct ImmediateExecutor;
-
         #[async_trait]
         impl LlmExecutor for ImmediateExecutor {
             async fn execute(
@@ -961,14 +955,11 @@ mod tests {
                     has_incomplete_tool_calls: false,
                 })
             }
-
             fn name(&self) -> &str {
                 "immediate"
             }
         }
-
         struct TestProviderFactory;
-
         impl ProviderExecutorFactory for TestProviderFactory {
             fn build(
                 &self,
@@ -985,7 +976,6 @@ mod tests {
                 )
             }
         }
-
         fn bootstrap_agent() -> AgentSpec {
             AgentSpec {
                 id: "bootstrap".into(),
@@ -995,7 +985,21 @@ mod tests {
                 ..Default::default()
             }
         }
+        const TEST_ADMIN_TOKEN: &str = "test-admin-token";
 
+        fn build_authorized_test_router(state: &ServerState) -> axum::Router {
+            use axum::http::{HeaderValue, header};
+            use axum::middleware::{self, Next};
+            build_router(state).layer(middleware::from_fn(
+                |mut req: Request<Body>, next: Next| async move {
+                    req.headers_mut().insert(
+                        header::AUTHORIZATION,
+                        HeaderValue::from_static("Bearer test-admin-token"),
+                    );
+                    next.run(req).await
+                },
+            ))
+        }
         async fn build_test_app() -> axum::Router {
             let config_store = Arc::new(awaken_stores::InMemoryStore::new());
             let thread_store = Arc::new(awaken_stores::InMemoryStore::new());
@@ -1006,7 +1010,6 @@ mod tests {
                     .build()
                     .expect("build runtime"),
             );
-
             let manager = Arc::new(
                 ConfigRuntimeManager::new(runtime.clone(), config_store.clone())
                     .expect("config runtime manager")
@@ -1030,7 +1033,6 @@ mod tests {
             };
             manager.apply_seed(&seed).await.expect("apply_seed");
             manager.apply().await.expect("publish config");
-
             let resolver = runtime.resolver_arc();
             let mailbox = Arc::new(Mailbox::new(
                 runtime.clone(),
@@ -1039,7 +1041,7 @@ mod tests {
                 "route-test".into(),
                 MailboxConfig::default(),
             ));
-            let state = AppState::new(
+            let state = ServerState::new(
                 runtime,
                 mailbox,
                 thread_store,
@@ -1047,11 +1049,10 @@ mod tests {
                 ServerConfig::default(),
             )
             .with_config_store(config_store)
-            .with_config_runtime_manager(manager);
-
-            build_router(&state).with_state(state)
+            .with_config_runtime_manager(manager)
+            .with_admin_api_bearer_token(TEST_ADMIN_TOKEN);
+            build_authorized_test_router(&state)
         }
-
         async fn create_record(app: &axum::Router, namespace: &str, body: &str) -> StatusCode {
             let req = Request::builder()
                 .method("POST")
@@ -1061,7 +1062,6 @@ mod tests {
                 .unwrap();
             app.clone().oneshot(req).await.unwrap().status()
         }
-
         async fn delete_record(
             app: &axum::Router,
             namespace: &str,
@@ -1088,7 +1088,6 @@ mod tests {
             };
             (status, body)
         }
-
         async fn validate_record(
             app: &axum::Router,
             namespace: &str,
@@ -1110,7 +1109,6 @@ mod tests {
             };
             (status, body)
         }
-
         async fn get_json(app: &axum::Router, uri: &str) -> (StatusCode, Value) {
             let req = Request::builder()
                 .method("GET")
@@ -1127,7 +1125,6 @@ mod tests {
             };
             (status, body)
         }
-
         #[tokio::test]
         async fn validate_returns_normalized_payload_without_persisting() {
             let app = build_test_app().await;
@@ -1149,18 +1146,15 @@ mod tests {
             let get_resp = app.clone().oneshot(get_req).await.unwrap();
             assert_eq!(get_resp.status(), StatusCode::NOT_FOUND);
         }
-
         #[tokio::test]
         async fn validate_rejects_missing_id() {
             let app = build_test_app().await;
             let (status, _) = validate_record(&app, "providers", r#"{"adapter":"stub"}"#).await;
             assert_eq!(status, StatusCode::BAD_REQUEST);
         }
-
         #[tokio::test]
         async fn validate_rejects_unknown_provider_and_empty_model_fields() {
             let app = build_test_app().await;
-
             let (status, body) = validate_record(
                 &app,
                 "providers",
@@ -1169,7 +1163,6 @@ mod tests {
             .await;
             assert_eq!(status, StatusCode::BAD_REQUEST);
             assert!(body["error"].as_str().unwrap().contains("future_top_level"));
-
             let (status, body) = validate_record(
                 &app,
                 "models",
@@ -1179,7 +1172,6 @@ mod tests {
             assert_eq!(status, StatusCode::BAD_REQUEST);
             assert!(body["error"].as_str().unwrap().contains("provider_id"));
         }
-
         #[tokio::test]
         async fn validate_agent_overrides_does_not_persist_patch() {
             let app = build_test_app().await;
@@ -1195,7 +1187,6 @@ mod tests {
             let body: Value = serde_json::from_slice(&bytes).unwrap();
             assert_eq!(body["ok"], Value::Bool(true));
             assert_eq!(body["normalized"]["system_prompt"], "patched");
-
             let (status, meta) = get_json(&app, "/v1/config/agents/bootstrap/meta").await;
             assert_eq!(status, StatusCode::OK);
             assert!(meta["user_overrides"].is_null());
@@ -1443,7 +1434,7 @@ mod tests {
                 "route-test-2".into(),
                 MailboxConfig::default(),
             ));
-            let state = AppState::new(
+            let state = ServerState::new(
                 runtime,
                 mailbox,
                 thread_store,
@@ -1451,8 +1442,9 @@ mod tests {
                 ServerConfig::default(),
             )
             .with_config_store(config_store)
-            .with_config_runtime_manager(manager);
-            let app = build_router(&state).with_state(state);
+            .with_config_runtime_manager(manager)
+            .with_admin_api_bearer_token(TEST_ADMIN_TOKEN);
+            let app = build_authorized_test_router(&state);
 
             let (status, body) = test_provider(&app, "prov-openai").await;
             assert_eq!(status, StatusCode::OK, "body: {body}");
@@ -1558,7 +1550,7 @@ mod tests {
                 "route-test-tool".into(),
                 MailboxConfig::default(),
             ));
-            let state = AppState::new(
+            let state = ServerState::new(
                 runtime,
                 mailbox,
                 thread_store,
@@ -1566,9 +1558,10 @@ mod tests {
                 ServerConfig::default(),
             )
             .with_config_store(config_store)
-            .with_config_runtime_manager(manager);
+            .with_config_runtime_manager(manager)
+            .with_admin_api_bearer_token(TEST_ADMIN_TOKEN);
 
-            build_router(&state).with_state(state)
+            build_authorized_test_router(&state)
         }
 
         #[tokio::test]

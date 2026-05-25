@@ -15,7 +15,7 @@ use tokio::sync::mpsc;
 
 use awaken_contract::contract::event::AgentEvent;
 use awaken_contract::contract::message::Message;
-use awaken_runtime::{AgentRuntime, RunRequest};
+use awaken_runtime::{AgentRuntime, RunActivation};
 
 use super::JSON_RPC_VERSION;
 use crate::transport::channel_sink::ChannelEventSink;
@@ -98,7 +98,8 @@ impl McpTool for AgentMcpTool {
 
             let thread_id = format!("mcp-{}", uuid::Uuid::now_v7());
             let messages = vec![Message::user(&text)];
-            let request = RunRequest::new(thread_id, messages).with_agent_id(self.agent_id.clone());
+            let request =
+                RunActivation::new(thread_id, messages).with_agent_id(self.agent_id.clone());
 
             let (event_tx, mut event_rx) = mpsc::unbounded_channel();
             let sink = Arc::new(ChannelEventSink::new(event_tx));
@@ -106,6 +107,7 @@ impl McpTool for AgentMcpTool {
             self.send_log("info", "starting agent run").await;
 
             let runtime = Arc::clone(&self.runtime);
+            // TODO(ADR-0034 #23): route through Mailbox+DurableEventSink+ProtocolReplayLog.
             let run_handle = tokio::spawn(async move { runtime.run(request, sink).await });
 
             // Collect text deltas and emit logs from agent events.

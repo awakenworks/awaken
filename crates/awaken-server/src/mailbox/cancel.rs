@@ -14,8 +14,9 @@ use awaken_contract::contract::storage::RunRecord;
 use awaken_contract::now_ms;
 
 use super::{
-    Mailbox, MailboxError, TERMINAL_RECONCILE_BATCH, live_target_for_dispatch, live_target_for_run,
-    record_mailbox_dispatch_terminal_metrics, record_mailbox_operation_result, result_label,
+    Mailbox, MailboxError, REMOTE_CANCEL_WAIT_MS, TERMINAL_RECONCILE_BATCH,
+    live_target_for_dispatch, live_target_for_run, record_mailbox_dispatch_terminal_metrics,
+    record_mailbox_operation_result, result_label,
 };
 
 impl Mailbox {
@@ -100,10 +101,17 @@ impl Mailbox {
             .await;
         }
 
+        let Some(active_dispatch) = result.active_dispatch.as_ref() else {
+            return Ok(result);
+        };
+
         // Cancel active runtime run if any.
-        if let Some(active_dispatch) = result.active_dispatch.as_ref() {
-            self.cancel_active_dispatch(thread_id, active_dispatch, false)
-                .await?;
+        if self
+            .cancel_active_dispatch(thread_id, active_dispatch, false)
+            .await?
+        {
+            self.record_mailbox_dispatch_event("RunInterrupted", active_dispatch)
+                .await;
         }
 
         Ok(result)
@@ -128,6 +136,12 @@ impl Mailbox {
                     dispatch_id = %active_dispatch.dispatch_id,
                     "local cancel completed but active dispatch did not release before foreground submit"
                 );
+                self.record_mailbox_timeout(
+                    active_dispatch,
+                    "local_cancel_release_wait",
+                    REMOTE_CANCEL_WAIT_MS,
+                )
+                .await;
                 return Ok(false);
             }
         } else if self.executor.cancel(thread_id) {
@@ -151,6 +165,12 @@ impl Mailbox {
                 dispatch_id = %active_dispatch.dispatch_id,
                 "remote cancel delivered but active dispatch did not release before foreground submit"
             );
+            self.record_mailbox_timeout(
+                active_dispatch,
+                "remote_cancel_release_wait",
+                REMOTE_CANCEL_WAIT_MS,
+            )
+            .await;
             return Ok(false);
         }
         Ok(true)
@@ -199,6 +219,10 @@ impl Mailbox {
         record_mailbox_operation_result(operation, result_label(&result), start);
         if matches!(result, Ok(true)) {
             record_mailbox_dispatch_terminal_metrics(dispatch, outcome);
+            if outcome == "cancelled" {
+                self.record_mailbox_dispatch_event("RunCancelled", dispatch)
+                    .await;
+            }
         }
         if let Err(error) = result {
             tracing::warn!(
@@ -365,18 +389,10 @@ impl Mailbox {
             .load_messages(&dispatch.thread_id)
             .await?
             .unwrap_or_default();
-        self.run_store
-            .checkpoint(&dispatch.thread_id, &messages, run)
+        self.commit_run_checkpoint(&dispatch.thread_id, &messages, run)
             .await?;
-        {
-            let workers = self.workers.read().await;
-            if let Some(worker) = workers.get(&dispatch.thread_id) {
-                let mut worker = worker.lock();
-                if let Some(ref mut ctx) = worker.thread_ctx {
-                    ctx.apply_checkpoint(&messages, run);
-                }
-            }
-        }
+        self.refresh_worker_checkpoint_cache(&dispatch.thread_id, &messages, run)
+            .await;
         Ok(())
     }
 }

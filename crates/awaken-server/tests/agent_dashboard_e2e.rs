@@ -3,7 +3,7 @@
 //! Wires a real `AgentRuntime` with a scripted `LlmExecutor` and an
 //! `ObservabilityPlugin` whose sink list contains a shared
 //! `RuntimeStatsRegistry`. The same registry is also installed on
-//! `AppState`. After driving real chat requests through the AI SDK route,
+//! `ServerState`. After driving real chat requests through the AI SDK route,
 //! the test queries `/v1/agents/:id/runtime-stats` and asserts the
 //! endpoint reflects what the runtime actually did.
 //!
@@ -35,13 +35,15 @@ use awaken_ext_observability::{
 };
 use awaken_runtime::builder::AgentRuntimeBuilder;
 use awaken_runtime::registry::traits::ModelBinding;
-use awaken_server::app::{AppState, ServerConfig};
+use awaken_server::app::{AdminApiConfig, ServerConfig, ServerState};
 use awaken_server::routes::build_router;
 use awaken_stores::memory::InMemoryStore;
 use axum::body::to_bytes;
 use axum::http::{Request, StatusCode};
 use serde_json::{Value, json};
 use tower::ServiceExt;
+
+const ADMIN_TOKEN: &str = "test-admin-token";
 
 // ---------------------------------------------------------------------------
 // Scripted executor
@@ -82,7 +84,7 @@ impl LlmExecutor for ScriptedExecutor {
 }
 
 /// Adapter that lets the plugin own a `MetricsSink` value while sharing
-/// the underlying registry state with `AppState` via the same backing
+/// the underlying registry state with `ServerState` via the same backing
 /// `Arc<Mutex<...>>`.
 #[derive(Clone)]
 struct SharedRegistrySink(RuntimeStatsRegistry);
@@ -109,7 +111,7 @@ impl MetricsSink for SharedRegistrySink {
 fn build_app(response: &str) -> (axum::Router, Arc<RuntimeStatsRegistry>) {
     let registry = Arc::new(RuntimeStatsRegistry::new());
 
-    // The plugin sink and the AppState share the same registry instance —
+    // The plugin sink and the ServerState share the same registry instance —
     // RuntimeStatsRegistry's Clone keeps the inner Arc<Mutex<...>>, so
     // both views see the same buckets.
     let plugin_sink = SharedRegistrySink((*registry).clone());
@@ -154,16 +156,20 @@ fn build_app(response: &str) -> (axum::Router, Arc<RuntimeStatsRegistry>) {
         awaken_server::mailbox::MailboxConfig::default(),
     ));
 
-    let state = AppState::new(
+    let state = ServerState::new(
         runtime.clone(),
         mailbox,
         store.clone(),
         runtime.resolver_arc(),
         ServerConfig::default(),
     )
+    .with_admin_api_config(AdminApiConfig {
+        bearer_token: Some(ADMIN_TOKEN.into()),
+        ..Default::default()
+    })
     .with_runtime_stats(Arc::clone(&registry));
 
-    let app = build_router(&state).with_state(state);
+    let app = build_router(&state);
     (app, registry)
 }
 
@@ -205,6 +211,7 @@ async fn fetch_json(app: axum::Router, uri: &str) -> (StatusCode, Value) {
             Request::builder()
                 .method("GET")
                 .uri(uri)
+                .header("authorization", format!("Bearer {ADMIN_TOKEN}"))
                 .body(axum::body::Body::empty())
                 .unwrap(),
         )

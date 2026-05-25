@@ -28,18 +28,30 @@ impl Mailbox {
             .executor
             .send_decision(id, tool_call_id.clone(), resume.clone())
         {
+            self.record_mailbox_decision_received_for_id(id, &tool_call_id, &resume, "local_live")
+                .await;
             return Ok(true);
         }
 
         if let Some(dispatch) = self.store.load_dispatch(id).await?
             && dispatch.status == RunDispatchStatus::Claimed
         {
-            return self
+            let delivered = self
                 .deliver_live_decision(
                     &live_target_for_dispatch(&dispatch),
-                    vec![(tool_call_id, resume)],
+                    vec![(tool_call_id.clone(), resume.clone())],
+                )
+                .await?;
+            if delivered {
+                self.record_mailbox_decision_received_for_dispatch(
+                    &dispatch,
+                    &tool_call_id,
+                    &resume,
+                    "remote_live",
                 )
                 .await;
+            }
+            return Ok(delivered);
         }
 
         let run = if let Some(run) = self.run_store.load_run(id).await? {
@@ -50,9 +62,22 @@ impl Mailbox {
         if let Some(run) = run
             && matches!(run.status, RunStatus::Running | RunStatus::Waiting)
         {
-            return self
-                .deliver_live_decision(&live_target_for_run(&run), vec![(tool_call_id, resume)])
+            let delivered = self
+                .deliver_live_decision(
+                    &live_target_for_run(&run),
+                    vec![(tool_call_id.clone(), resume.clone())],
+                )
+                .await?;
+            if delivered {
+                self.record_mailbox_decision_received_for_run(
+                    &run,
+                    &tool_call_id,
+                    &resume,
+                    "remote_live",
+                )
                 .await;
+            }
+            return Ok(delivered);
         }
 
         Ok(false)
