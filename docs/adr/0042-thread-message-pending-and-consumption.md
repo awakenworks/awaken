@@ -66,28 +66,68 @@ already been consumed it is rejected with an explicit `AlreadyConsumed` error
 (the client renders it as already sent). Optimistic version/cursor checks surface
 edit conflicts.
 
-### D3 — `DeliveryMode` carried per message controls consumption granularity
+### D3 — `DeliveryMode` is two orthogonal axes: boundary × granularity
 
-Each delivered message declares how it wants to be consumed:
+Each delivered message declares `DeliveryMode = { boundary, granularity }` plus
+an optional `barrier` flag. The two axes are independent.
 
-- `Coalesce` — folded with other pending into one turn (default conversation).
-- `Sequential` — consumed alone, one turn per message (queue).
-- `Steer` — delivered into the in-flight consumption if one exists, else
-  `Coalesce`.
-- `Barrier` — flush all prior pending first, then consume this alone.
+`boundary` — at which point in the target thread's run lifecycle it is consumed:
 
-Granularity is a property of the message, not a global switch; adding a mode is
-one enum arm, not a new scheduling path.
+- `Interrupt` — preempt the active run (cancel it), then consume now.
+- `NextStep` — consume at the active run's next step boundary (mid-task steer);
+  with no active run, falls through to `NewRun`.
+- `OnNaturalEnd` — consume when the active run reaches natural completion,
+  continuing the same run instead of terminating; with no active run, falls
+  through to `NewRun`.
+- `NewRun` — consume as a fresh run after the current run terminates, without
+  preemption; with no active run, start a run now.
 
-### D4 — `freeze` is the single consumption boundary
+`granularity` — how many eligible pending messages one freeze takes:
 
-When a run builds an LLM prompt it calls `freeze(thread)`: under the per-thread
-fence it selects pending per `DeliveryMode` (all for `Coalesce`, the head one for
-`Sequential`, up to the barrier for `Barrier`), appends the selected messages to
-the committed log with assigned `seq`, advances `consumed_seq`, and removes them
-from pending — all in one `CommitCoordinator::commit_checkpoint` transaction
-together with the run record and canonical events. Consumption count decouples
-from dispatch count: one run may drain pending over several turns.
+- `One` — a single message (queue, one turn per message).
+- `Batch` — coalesce all eligible pending at the boundary into one turn.
+
+`barrier` flushes all prior pending before this message is consumed. Boundary and
+granularity are message properties, not global switches; adding a value is one
+enum arm, not a new scheduling path. Legacy intents map directly: foreground
+interrupt = `Interrupt`, live steer = `NextStep` + `Batch`, queued submit =
+`NewRun`, background coalescing = `Batch`.
+
+### D4 — `freeze` runs at each loop boundary, filtered by `boundary`
+
+`freeze(thread, boundary)` is invoked at every run-lifecycle boundary, not only
+at run start: the preempt point (`Interrupt`), each step boundary (`NextStep`),
+the natural-completion decision point (`OnNaturalEnd`), and the post-terminal
+scheduler (`NewRun`). At each, under the per-thread fence it selects pending whose
+`boundary` matches, takes `One` or all per `granularity`, appends them to the
+committed log with assigned `seq`, advances `consumed_seq`, and removes them from
+pending — in one `CommitCoordinator::commit_checkpoint` transaction with the run
+record and canonical events. Consumption count decouples from dispatch count: one
+run may drain pending over several turns.
+
+Active-run semantics differ by boundary:
+
+| boundary | active run present | no active run |
+| --- | --- | --- |
+| `Interrupt` | cancel it, consume now | start a run now |
+| `NextStep` | fold into its next step | falls through to `NewRun` |
+| `OnNaturalEnd` | continue the **same** run at its natural end | falls through to `NewRun` |
+| `NewRun` | queue; run a **new** run after it terminates | start a run now |
+
+`OnNaturalEnd` versus `NewRun`: `OnNaturalEnd` keeps the same `run_id` and warm
+in-process state and emits one run lifecycle; `NewRun` terminates the current run
+and dispatches a distinct run (a fresh `run_id`, or a resumable waiting run),
+cold-loading thread history, with its own retry / dead-letter unit.
+
+`NewRun` to an existing thread runs on the same `thread_id`, inherits that
+thread's committed history as context, appends the frozen pending after it, and
+does not preempt: it waits for any active run to terminate (the existing single
+active-run queue), then starts. Run identity follows existing resolution — a
+resumable waiting run is continued, otherwise a fresh `run_id`.
+
+Fallthrough cascade: `Interrupt → NextStep → OnNaturalEnd → NewRun`. If a run
+ends abnormally (cancel / error) before an `OnNaturalEnd` message is consumed,
+that message falls through to `NewRun`, so it is neither lost nor stuck.
 
 ### D5 — Distributed single-writer via existing fences
 
@@ -110,11 +150,16 @@ whole-list overwrite write model is removed.
 Inbound delivery is one operation `deliver(thread, messages, DeliveryMode)`
 appending to pending, plus one scheduling rule: *pending non-empty ⇒ ensure a
 consume dispatch*. `submit` / `submit_background` / `submit_live` become thin
-wrappers (foreground interrupt becomes a flag, live steer becomes `Steer`); the
-`inbox` becomes the in-memory notification over durable pending;
-`reusable_waiting_run_id`, the background-tasks wake, and
+wrappers (foreground interrupt becomes boundary `Interrupt`, live steer becomes
+boundary `NextStep`); the `inbox` becomes the in-memory notification over durable
+pending; `reusable_waiting_run_id`, the background-tasks wake, and
 `recover_orphaned_background_task_waits` collapse into the single scheduling rule;
-`dedupe_key` coalescing is subsumed by `Coalesce`.
+`dedupe_key` coalescing is subsumed by `Batch` granularity.
+
+`deliver` always resolves a `thread_id`, orthogonal to `boundary`: a supplied
+existing thread continues that conversation, an omitted one is generated (a new
+conversation), and a different existing thread routes through the existing
+child-run / lineage semantics (`parent_thread_id`).
 
 ### D8 — Mailbox stays the scheduling layer
 
@@ -170,8 +215,9 @@ reload-merge retry; remove the eager whole-list overwrite from
 `prepare_run_for_dispatch`. Closes the lost-update and finalization-overlap races
 across instances. The in-process striped lock remains as a fast path.
 
-Increment B: introduce `DeliveryMode` and the `freeze` boundary
-(`Coalesce` / `Sequential` first); collapse `inbox`, waiting reuse, background
+Increment B: introduce `DeliveryMode` (boundary × granularity) and the boundary
+`freeze` calls (`NewRun` and `NextStep` first, then `OnNaturalEnd` reusing the
+continuation path, then `Interrupt`); collapse `inbox`, waiting reuse, background
 wake, and recovery wake into the single scheduling rule; wire `cancel` / edit on
 pending.
 
