@@ -1,6 +1,8 @@
 use std::sync::Arc;
 
-use awaken_contract::contract::message::{DeliveryMode, Message, PendingMessageRecord};
+use awaken_contract::contract::message::{
+    DeliveryBoundary, DeliveryMode, Message, MessageRecord, PendingMessageRecord,
+};
 
 use super::Mailbox;
 use super::MailboxError;
@@ -36,6 +38,22 @@ impl Mailbox {
         let normalized = normalize_message_ids(messages);
         Ok(store
             .append_pending_message_records(thread_id, &normalized, delivery_mode)
+            .await?)
+    }
+
+    pub async fn freeze_pending(
+        &self,
+        thread_id: &str,
+        boundary: DeliveryBoundary,
+        expected_message_version: Option<u64>,
+    ) -> Result<Vec<MessageRecord>, MailboxError> {
+        let Some(store) = self.pending_message_store.as_ref() else {
+            return Err(MailboxError::Internal(
+                "pending message store is not configured".to_string(),
+            ));
+        };
+        Ok(store
+            .freeze_pending_message_records(thread_id, boundary, expected_message_version)
             .await?)
     }
 }
@@ -108,5 +126,43 @@ mod tests {
             .unwrap();
         assert_eq!(pending.len(), 1);
         assert_eq!(pending[0].pending_id, delivered[0].pending_id);
+    }
+
+    #[tokio::test]
+    async fn freeze_pending_commits_delivered_messages() {
+        let thread_store = Arc::new(InMemoryStore::new());
+        let mailbox = Mailbox::new(
+            Arc::new(NoopExecutor),
+            Arc::new(InMemoryMailboxStore::new()),
+            thread_store.clone(),
+            "consumer".to_string(),
+            MailboxConfig::default(),
+        )
+        .with_pending_message_store(thread_store.clone() as Arc<dyn PendingMessageStore>);
+
+        mailbox
+            .deliver(
+                "thread-freeze",
+                &[Message::user("queued")],
+                DeliveryMode::new_run(DeliveryGranularity::Batch),
+            )
+            .await
+            .unwrap();
+
+        let frozen = mailbox
+            .freeze_pending("thread-freeze", DeliveryBoundary::NewRun, Some(0))
+            .await
+            .unwrap();
+
+        assert_eq!(frozen.len(), 1);
+        assert_eq!(frozen[0].seq, 1);
+        assert_eq!(frozen[0].message.text(), "queued");
+        assert!(
+            thread_store
+                .load_pending_message_records("thread-freeze")
+                .await
+                .unwrap()
+                .is_empty()
+        );
     }
 }
