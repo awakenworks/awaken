@@ -13,6 +13,8 @@ pub enum RunOrigin {
     /// End-user initiated run.
     #[default]
     User,
+    /// Model Context Protocol tool invocation.
+    Mcp,
     /// Internal sub-agent delegated run.
     Subagent,
     /// Other internal origin.
@@ -500,7 +502,12 @@ mod tests {
 
     #[test]
     fn run_origin_serde_roundtrip() {
-        for origin in [RunOrigin::User, RunOrigin::Subagent, RunOrigin::Internal] {
+        for origin in [
+            RunOrigin::User,
+            RunOrigin::Mcp,
+            RunOrigin::Subagent,
+            RunOrigin::Internal,
+        ] {
             let json = serde_json::to_string(&origin).unwrap();
             let parsed: RunOrigin = serde_json::from_str(&json).unwrap();
             assert_eq!(parsed, origin);

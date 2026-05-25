@@ -176,6 +176,8 @@ pub(super) async fn persist_checkpoint(
         thread_id: run_identity.thread_id.clone(),
         agent_id: run_identity.agent_id.clone(),
         parent_run_id: run_identity.parent_run_id.clone(),
+        registry_manifest: None,
+        activation: None,
         request: previous.as_ref().and_then(|record| record.request.clone()),
         input,
         output,
@@ -539,6 +541,8 @@ mod tests {
             thread_id: "thread-1".into(),
             agent_id: "agent".into(),
             parent_run_id: None,
+            registry_manifest: None,
+            activation: None,
             request: None,
             input: Some(RunMessageInput {
                 thread_id: "thread-1".into(),

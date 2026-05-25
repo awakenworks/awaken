@@ -627,27 +627,10 @@ mod tests {
             run_id: run_id.to_string(),
             thread_id: thread_id.to_string(),
             agent_id: "agent".to_string(),
-            parent_run_id: None,
-            request: None,
-            input: None,
-            output: None,
             status,
-            termination_reason: None,
-            final_output: None,
-            error_payload: None,
-            dispatch_id: None,
-            session_id: None,
-            transport_request_id: None,
-            waiting: None,
-            outcome: None,
             created_at: 100,
-            started_at: None,
-            finished_at: None,
             updated_at: 100,
-            steps: 0,
-            input_tokens: 0,
-            output_tokens: 0,
-            state: None,
+            ..Default::default()
         }
     }
 

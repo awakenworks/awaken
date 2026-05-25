@@ -1,8 +1,6 @@
 //! Remote A2A agent delegation backend -- HTTP client for A2A v1.0 HTTP+JSON.
-
 mod cancellation;
 mod completion;
-
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 use std::time::Duration;
@@ -1141,6 +1139,8 @@ async fn persist_accepted_checkpoint(
         thread_id: root.run_identity.thread_id.clone(),
         agent_id: root.agent_id.to_string(),
         parent_run_id: root.run_identity.parent_run_id.clone(),
+        registry_manifest: None,
+        activation: None,
         request: previous.as_ref().and_then(|record| record.request.clone()),
         input: previous.as_ref().and_then(|record| record.input.clone()),
         output: previous.as_ref().and_then(|record| record.output.clone()),

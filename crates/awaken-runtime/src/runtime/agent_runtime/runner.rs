@@ -155,6 +155,9 @@ impl AgentRuntime {
             awaken_contract::contract::storage::RunRequestOrigin::User => {
                 awaken_contract::contract::identity::RunOrigin::User
             }
+            awaken_contract::contract::storage::RunRequestOrigin::Mcp => {
+                awaken_contract::contract::identity::RunOrigin::Mcp
+            }
             awaken_contract::contract::storage::RunRequestOrigin::A2A => {
                 awaken_contract::contract::identity::RunOrigin::Subagent
             }

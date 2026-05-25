@@ -1,0 +1,534 @@
+//! Cross-store commit coordination for runtime checkpoints (ADR-0036).
+//!
+//! `CommitCoordinator` is the contract-layer abstraction that owns the
+//! transaction spanning `ThreadRunStore` writes and `EventStore` appends.
+//! It is the only place that observes both stores at once; the stores
+//! themselves remain backend-agnostic.
+//!
+//! Runtime tee for durable `AgentEvent` variants is folded into this
+//! commit boundary through a staging step: a `CanonicalEventStager`
+//! receives drafts from the reshaped `DurableEventSink`, and the
+//! `LoopRunner` drains the staged drafts into a `CheckpointCommitPlan`
+//! at checkpoint cadence.
+
+use async_trait::async_trait;
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+use thiserror::Error;
+
+use std::sync::Arc;
+
+use super::event_store::{AppendOptions, CanonicalEventDraft, EventScope, EventStoreError};
+use super::message::Message;
+use super::outbox::{OutboxError, OutboxMessageDraft};
+use super::storage::{RunRecord, StorageError, ThreadRunStore};
+
+// ── transaction scope id ─────────────────────────────────────────────
+
+/// Opaque equality marker identifying the set of stores that can share
+/// a single backend transaction.
+///
+/// Two coordinator implementations that report the same scope id are
+/// guaranteed to write to backends that genuinely share a transaction
+/// boundary. The string form is for diagnostics only; equality is by
+/// value and is enforced at builder time per ADR-0036 D3.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct TransactionScopeId(String);
+
+impl TransactionScopeId {
+    /// Construct a scope id from a non-empty descriptor.
+    pub fn new(value: impl Into<String>) -> Result<Self, CommitError> {
+        let value = value.into();
+        if value.trim().is_empty() {
+            return Err(CommitError::Validation(
+                "transaction scope id must be non-empty".to_string(),
+            ));
+        }
+        Ok(Self(value))
+    }
+
+    /// Return the opaque descriptor for diagnostics.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+// ── canonical event stager ───────────────────────────────────────────
+
+/// Stage canonical event drafts produced during phase execution.
+///
+/// This is a crate-boundary port, not a general abstraction. A single
+/// runtime-owned buffer implementation is expected; the trait exists so
+/// contract-layer sink code can stage drafts without naming the concrete
+/// runtime type. Staging is infallible; the durable failure surface is
+/// `CommitCoordinator::commit_checkpoint`.
+pub trait CanonicalEventStager: Send + Sync {
+    /// Push a draft into the staging buffer.
+    fn stage(&self, draft: CanonicalEventDraft);
+}
+
+/// Staged canonical event together with its append options.
+#[derive(Debug, Clone, PartialEq)]
+pub struct StagedCanonicalEvent {
+    pub draft: CanonicalEventDraft,
+    pub append_options: AppendOptions,
+}
+
+impl StagedCanonicalEvent {
+    /// Construct a staged entry with default append options.
+    #[must_use]
+    pub fn new(draft: CanonicalEventDraft) -> Self {
+        Self {
+            draft,
+            append_options: AppendOptions::default(),
+        }
+    }
+
+    /// Attach append options (idempotency, expected cursors).
+    #[must_use]
+    pub fn with_options(mut self, options: AppendOptions) -> Self {
+        self.append_options = options;
+        self
+    }
+}
+
+/// Server-authored canonical event attached to the same checkpoint plan as
+/// the state transition that made the fact true.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ServerCanonicalEvent {
+    pub draft: CanonicalEventDraft,
+    pub options: AppendOptions,
+}
+
+impl ServerCanonicalEvent {
+    /// Construct a server-authored canonical event with default append options.
+    #[must_use]
+    pub fn new(draft: CanonicalEventDraft) -> Self {
+        Self {
+            draft,
+            options: AppendOptions::default(),
+        }
+    }
+
+    /// Attach append options (idempotency, expected cursors).
+    #[must_use]
+    pub fn with_options(mut self, options: AppendOptions) -> Self {
+        self.options = options;
+        self
+    }
+}
+
+/// Outcome for advisory server canonical publication through an outbox.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ServerEventPublishOutcome {
+    Enqueued { dedupe_key: String },
+}
+
+/// Failure surface for advisory server canonical publication.
+#[derive(Debug, Error, Clone, PartialEq, Eq)]
+pub enum EventPublishError {
+    #[error("validation error: {0}")]
+    Validation(String),
+    #[error("outbox enqueue failed: {0}")]
+    Enqueue(#[from] OutboxError),
+    #[error("serialization error: {0}")]
+    Serialization(String),
+}
+
+/// Long-lived publisher for advisory server-authored canonical events.
+#[async_trait]
+pub trait OutboxServerEventPublisher: Send + Sync {
+    async fn publish(
+        &self,
+        draft: CanonicalEventDraft,
+        options: AppendOptions,
+    ) -> Result<ServerEventPublishOutcome, EventPublishError>;
+}
+
+/// Non-replay diagnostic event.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DiagnosticEvent {
+    pub kind: String,
+    #[serde(default)]
+    pub payload: Value,
+}
+
+/// Fire-and-forget diagnostic event publisher.
+pub trait DiagnosticEventPublisher: Send + Sync {
+    fn record(&self, event: DiagnosticEvent);
+}
+
+// ── checkpoint commit plan ───────────────────────────────────────────
+
+/// One atomic checkpoint commit.
+///
+/// `ThreadRunStore::checkpoint` inputs (thread id, messages, run record)
+/// are committed together with `canonical_drafts` (each appended via the
+/// shared `EventStore` write) and any additional inline-writer outbox
+/// rows the caller wants atomic with the checkpoint. Canonical outbox
+/// rows for staged drafts are inserted automatically by the
+/// `EventStore::append` path and do not need to appear in
+/// `additional_outbox`.
+#[derive(Debug, Clone)]
+pub struct CheckpointCommitPlan {
+    pub thread_id: String,
+    pub messages: Vec<Message>,
+    pub run: RunRecord,
+    pub canonical_drafts: Vec<StagedCanonicalEvent>,
+    pub server_events: Vec<ServerCanonicalEvent>,
+    pub additional_outbox: Vec<OutboxMessageDraft>,
+}
+
+impl CheckpointCommitPlan {
+    /// Build a checkpoint-only plan with no staged events.
+    pub fn checkpoint_only(
+        thread_id: impl Into<String>,
+        messages: Vec<Message>,
+        run: RunRecord,
+    ) -> Self {
+        Self {
+            thread_id: thread_id.into(),
+            messages,
+            run,
+            canonical_drafts: Vec::new(),
+            server_events: Vec::new(),
+            additional_outbox: Vec::new(),
+        }
+    }
+
+    /// Attach staged canonical drafts to this plan.
+    #[must_use]
+    pub fn with_canonical_drafts(mut self, drafts: Vec<StagedCanonicalEvent>) -> Self {
+        self.canonical_drafts = drafts;
+        self
+    }
+
+    /// Attach server-authored canonical events that must commit atomically.
+    #[must_use]
+    pub fn with_server_events(mut self, events: Vec<ServerCanonicalEvent>) -> Self {
+        self.server_events = events;
+        self
+    }
+
+    /// Attach inline-writer outbox rows that must commit atomically.
+    #[must_use]
+    pub fn with_additional_outbox(mut self, rows: Vec<OutboxMessageDraft>) -> Self {
+        self.additional_outbox = rows;
+        self
+    }
+
+    /// Pre-commit validation that mirrors the runtime invariants.
+    pub fn validate(&self) -> Result<(), CommitError> {
+        if self.thread_id.trim().is_empty() {
+            return Err(CommitError::Validation(
+                "thread_id must be non-empty".to_string(),
+            ));
+        }
+        if self.run.thread_id != self.thread_id {
+            return Err(CommitError::Validation(format!(
+                "run.thread_id '{}' must match checkpoint thread_id '{}'",
+                self.run.thread_id, self.thread_id
+            )));
+        }
+        if self.run.run_id.trim().is_empty() {
+            return Err(CommitError::Validation(
+                "run.run_id must be non-empty".to_string(),
+            ));
+        }
+        if self.run.agent_id.trim().is_empty() {
+            return Err(CommitError::Validation(
+                "run.agent_id must be non-empty".to_string(),
+            ));
+        }
+        for staged in &self.canonical_drafts {
+            staged.draft.validate().map_err(CommitError::EventAppend)?;
+            self.validate_event_scope_membership(&staged.draft)?;
+            staged
+                .append_options
+                .validate()
+                .map_err(CommitError::EventAppend)?;
+        }
+        for event in &self.server_events {
+            event.draft.validate().map_err(CommitError::EventAppend)?;
+            self.validate_event_scope_membership(&event.draft)?;
+            event.options.validate().map_err(CommitError::EventAppend)?;
+        }
+        for row in &self.additional_outbox {
+            row.validate().map_err(CommitError::OutboxInsert)?;
+        }
+        Ok(())
+    }
+
+    fn validate_event_scope_membership(
+        &self,
+        draft: &CanonicalEventDraft,
+    ) -> Result<(), CommitError> {
+        for scope in &draft.scopes {
+            match scope {
+                EventScope::Thread { thread_id } if thread_id != &self.thread_id => {
+                    return Err(CommitError::Validation(format!(
+                        "event thread scope '{thread_id}' must match checkpoint thread_id '{}'",
+                        self.thread_id
+                    )));
+                }
+                EventScope::Run { run_id } if run_id != &self.run.run_id => {
+                    return Err(CommitError::Validation(format!(
+                        "event run scope '{run_id}' must match checkpoint run_id '{}'",
+                        self.run.run_id
+                    )));
+                }
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+}
+
+// ── commit outcome ───────────────────────────────────────────────────
+
+/// Identifiers assigned by stores during a successful commit.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct CheckpointCommitOutcome {
+    /// Canonical event ids in the same order as the input
+    /// `canonical_drafts`. Empty when the plan staged no events.
+    pub canonical_event_ids: Vec<String>,
+    /// Server-authored canonical event ids in the same order as the input
+    /// `server_events`. Empty when the plan attached no server events.
+    pub server_event_ids: Vec<String>,
+    /// Outbox ids in the same order as `additional_outbox`. Empty when
+    /// the plan attached no inline-writer outbox rows.
+    pub additional_outbox_ids: Vec<String>,
+}
+
+// ── error ───────────────────────────────────────────────────────────
+
+/// Failure surface for `CommitCoordinator::commit_checkpoint`.
+///
+/// Any variant aborts the transaction. The runtime treats this as
+/// terminal for the current run per ADR-0036 D6.
+#[derive(Debug, Error)]
+pub enum CommitError {
+    /// Plan failed pre-commit validation.
+    #[error("validation error: {0}")]
+    Validation(String),
+    /// `ThreadRunStore` checkpoint write failed.
+    #[error("thread run store write failed: {0}")]
+    StoreWrite(#[from] StorageError),
+    /// `EventStore::append` failed for a staged draft.
+    #[error("canonical event append failed: {0}")]
+    EventAppend(#[from] EventStoreError),
+    /// Inline-writer outbox insert failed.
+    #[error("outbox insert failed: {0}")]
+    OutboxInsert(#[from] OutboxError),
+    /// Backend-level commit error (transaction commit failure, network).
+    #[error("commit failed: {0}")]
+    Commit(String),
+    /// Builder-time scope mismatch detected at runtime.
+    #[error("transaction scope mismatch: {0}")]
+    ScopeMismatch(String),
+}
+
+// ── coordinator trait ────────────────────────────────────────────────
+
+/// Cross-store atomic commit boundary (ADR-0036 D2).
+///
+/// Implementations open a backend transaction, drive the
+/// `ThreadRunStore` checkpoint write, append each staged canonical
+/// draft (which transitively inserts the canonical outbox row in the
+/// same transaction per ADR-0034 D9), insert any inline-writer outbox
+/// rows from `additional_outbox`, and commit. Any failure rolls the
+/// transaction back and surfaces `CommitError`.
+///
+/// Coordinator construction is the place where scope compatibility is
+/// validated: a coordinator that pairs stores from mismatched backends
+/// must return an error at construction (or expose enough surface for
+/// the `RuntimeBuilder` to reject it at `build()` time). The runtime
+/// does not retry across coordinators.
+#[async_trait]
+pub trait CommitCoordinator: Send + Sync {
+    /// Return the transaction scope identifier shared by the underlying
+    /// `ThreadRunStore` and `EventStore`. Used by the builder to verify
+    /// scope compatibility per ADR-0036 D3.
+    fn scope(&self) -> TransactionScopeId;
+
+    /// Return the underlying [`ThreadRunStore`] handle. The runtime uses
+    /// this for reads (e.g. `load_run`) while writes flow through
+    /// [`Self::commit_checkpoint`]. Returning the same backing store as
+    /// the one driven by `commit_checkpoint` is required.
+    fn thread_run_store(&self) -> Arc<dyn ThreadRunStore>;
+
+    /// Commit one checkpoint plan atomically. See trait docs for
+    /// ordering and failure semantics.
+    async fn commit_checkpoint(
+        &self,
+        plan: CheckpointCommitPlan,
+    ) -> Result<CheckpointCommitOutcome, CommitError>;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::contract::event_store::{
+        CanonicalEventDraft, CanonicalEventKind, EventScope, EventVisibility,
+    };
+    use serde_json::json;
+
+    fn sample_draft(kind: &str) -> CanonicalEventDraft {
+        let mut draft = CanonicalEventDraft::new(
+            vec![EventScope::thread("t-1"), EventScope::run("run-1")],
+            CanonicalEventKind::new(kind).unwrap(),
+            json!({"kind": kind}),
+            "test",
+        )
+        .unwrap();
+        draft.visibility = EventVisibility::Public;
+        draft
+    }
+
+    fn scoped_draft(kind: &str, thread_id: &str, run_id: &str) -> CanonicalEventDraft {
+        let mut draft = CanonicalEventDraft::new(
+            vec![EventScope::thread(thread_id), EventScope::run(run_id)],
+            CanonicalEventKind::new(kind).unwrap(),
+            json!({"kind": kind}),
+            "test",
+        )
+        .unwrap();
+        draft.visibility = EventVisibility::Public;
+        draft
+    }
+
+    fn sample_run_record() -> crate::contract::storage::RunRecord {
+        crate::contract::storage::RunRecord {
+            run_id: "run-1".to_string(),
+            thread_id: "t-1".to_string(),
+            agent_id: "agent-1".to_string(),
+            registry_manifest: None,
+            activation: None,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn transaction_scope_id_rejects_blank() {
+        assert!(TransactionScopeId::new("").is_err());
+        assert!(TransactionScopeId::new("   ").is_err());
+        assert!(TransactionScopeId::new("pg::main").is_ok());
+    }
+
+    #[test]
+    fn staged_canonical_event_with_options_round_trip() {
+        let draft = sample_draft("RunStarted");
+        let opts = AppendOptions {
+            writer_id: Some("runtime".to_string()),
+            idempotency_key: Some("k-1".to_string()),
+            ..Default::default()
+        };
+        let staged = StagedCanonicalEvent::new(draft.clone()).with_options(opts.clone());
+        assert_eq!(staged.draft, draft);
+        assert_eq!(staged.append_options, opts);
+    }
+
+    #[test]
+    fn plan_checkpoint_only_validates() {
+        let plan = CheckpointCommitPlan::checkpoint_only("t-1", Vec::new(), sample_run_record());
+        plan.validate().unwrap();
+    }
+
+    #[test]
+    fn plan_with_drafts_validates_each() {
+        let plan = CheckpointCommitPlan::checkpoint_only("t-1", Vec::new(), sample_run_record())
+            .with_canonical_drafts(vec![StagedCanonicalEvent::new(sample_draft("RunStarted"))]);
+        plan.validate().unwrap();
+    }
+
+    #[test]
+    fn plan_with_server_events_validates_each() {
+        let plan = CheckpointCommitPlan::checkpoint_only("t-1", Vec::new(), sample_run_record())
+            .with_server_events(vec![ServerCanonicalEvent::new(sample_draft(
+                "RunSubmitted",
+            ))]);
+        plan.validate().unwrap();
+    }
+
+    #[test]
+    fn plan_rejects_blank_thread_id() {
+        let mut run = sample_run_record();
+        run.thread_id = String::new();
+        let plan = CheckpointCommitPlan::checkpoint_only("", Vec::new(), run);
+        let err = plan.validate().unwrap_err();
+        assert!(matches!(err, CommitError::Validation(_)));
+    }
+
+    #[test]
+    fn plan_rejects_thread_run_mismatch() {
+        let mut run = sample_run_record();
+        run.thread_id = "other-thread".to_string();
+        let plan = CheckpointCommitPlan::checkpoint_only("t-1", Vec::new(), run);
+        let err = plan.validate().unwrap_err();
+        assert!(
+            matches!(err, CommitError::Validation(message) if message.contains("run.thread_id"))
+        );
+    }
+
+    #[test]
+    fn plan_rejects_blank_run_id() {
+        let mut run = sample_run_record();
+        run.run_id = "   ".to_string();
+        let plan = CheckpointCommitPlan::checkpoint_only("t-1", Vec::new(), run);
+        let err = plan.validate().unwrap_err();
+        assert!(matches!(err, CommitError::Validation(message) if message.contains("run.run_id")));
+    }
+
+    #[test]
+    fn plan_rejects_blank_agent_id() {
+        let mut run = sample_run_record();
+        run.agent_id.clear();
+        let plan = CheckpointCommitPlan::checkpoint_only("t-1", Vec::new(), run);
+        let err = plan.validate().unwrap_err();
+        assert!(
+            matches!(err, CommitError::Validation(message) if message.contains("run.agent_id"))
+        );
+    }
+
+    #[test]
+    fn plan_rejects_staged_event_for_wrong_thread_scope() {
+        let plan = CheckpointCommitPlan::checkpoint_only("t-1", Vec::new(), sample_run_record())
+            .with_canonical_drafts(vec![StagedCanonicalEvent::new(scoped_draft(
+                "RunStarted",
+                "other-thread",
+                "run-1",
+            ))]);
+        let err = plan.validate().unwrap_err();
+        assert!(
+            matches!(err, CommitError::Validation(message) if message.contains("thread scope"))
+        );
+    }
+
+    #[test]
+    fn plan_rejects_staged_event_for_wrong_run_scope() {
+        let plan = CheckpointCommitPlan::checkpoint_only("t-1", Vec::new(), sample_run_record())
+            .with_canonical_drafts(vec![StagedCanonicalEvent::new(scoped_draft(
+                "RunStarted",
+                "t-1",
+                "other-run",
+            ))]);
+        let err = plan.validate().unwrap_err();
+        assert!(matches!(err, CommitError::Validation(message) if message.contains("run scope")));
+    }
+
+    #[test]
+    fn plan_rejects_server_event_for_wrong_scope() {
+        let plan = CheckpointCommitPlan::checkpoint_only("t-1", Vec::new(), sample_run_record())
+            .with_server_events(vec![ServerCanonicalEvent::new(scoped_draft(
+                "RunSubmitted",
+                "other-thread",
+                "run-1",
+            ))]);
+        let err = plan.validate().unwrap_err();
+        assert!(
+            matches!(err, CommitError::Validation(message) if message.contains("thread scope"))
+        );
+    }
+}

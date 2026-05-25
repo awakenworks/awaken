@@ -586,6 +586,8 @@ async fn seed_remote_run(store: &Arc<InMemoryStore>, seed: SeedRemoteRun<'_>) {
                 thread_id: seed.thread_id.into(),
                 agent_id: "remote-agent".into(),
                 parent_run_id: None,
+                registry_manifest: None,
+                activation: None,
                 request: None,
                 input: None,
                 output: None,

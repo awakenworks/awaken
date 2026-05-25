@@ -430,6 +430,8 @@ impl Mailbox {
             thread_id: thread_id.to_string(),
             agent_id: inferred_agent_id,
             parent_run_id: request.parent_run_id.clone(),
+            registry_manifest: None,
+            activation: None,
             request: Some(request_snapshot),
             input,
             output: None,

@@ -27,6 +27,7 @@ pub enum AdapterKind {
     AiSdk,
     AgUi,
     A2a,
+    Mcp,
 }
 
 /// Coarse tool capability class used by policy hooks.

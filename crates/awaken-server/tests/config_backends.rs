@@ -206,6 +206,8 @@ fn test_run_record(run_id: &str, thread_id: &str, updated_at: u64) -> RunRecord 
         thread_id: thread_id.to_string(),
         agent_id: "test-agent".to_string(),
         parent_run_id: None,
+        registry_manifest: None,
+        activation: None,
         request: None,
         input: None,
         output: None,

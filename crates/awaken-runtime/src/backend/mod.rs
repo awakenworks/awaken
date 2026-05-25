@@ -1,8 +1,6 @@
 //! Runtime execution backends and canonical request/result types.
-
-mod local;
-
 mod capabilities;
+mod local;
 pub use capabilities::{
     BackendCancellationCapability, BackendCapabilities, BackendContinuationCapability,
     BackendOutputCapability, BackendTranscriptCapability, BackendWaitCapability,
@@ -709,6 +707,8 @@ async fn persist_remote_root_checkpoint(
         thread_id: thread_id.to_string(),
         agent_id: agent_id.to_string(),
         parent_run_id,
+        registry_manifest: None,
+        activation: None,
         request: previous.as_ref().and_then(|record| record.request.clone()),
         input,
         output,

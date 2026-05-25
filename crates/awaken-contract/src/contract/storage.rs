@@ -1,18 +1,17 @@
 //! Storage traits for thread, run record, and persistence.
-
-use async_trait::async_trait;
-use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
-use serde::de::DeserializeOwned;
-use serde::{Deserialize, Serialize};
-use thiserror::Error;
-
 use super::lifecycle::{RunStatus, TerminationReason};
 use super::message::{Message, MessageRecord, Visibility};
 use super::suspension::{ToolCallResume, ToolCallResumeMode};
 use super::tool::ToolDescriptor;
+pub use super::versioned_registry::{PinnedRegistryEntry, PinnedRegistryManifest};
 use crate::state::PersistedState;
 use crate::thread::{Thread, normalize_lineage_id};
+use async_trait::async_trait;
+use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
+use serde::de::DeserializeOwned;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use thiserror::Error;
 
 const MESSAGE_CURSOR_PREFIX: &str = "msg_";
 const THREAD_CURSOR_PREFIX: &str = "thr_";
@@ -59,6 +58,7 @@ pub enum RunRequestOrigin {
     /// HTTP API, SDK.
     #[default]
     User,
+    Mcp,
     /// Agent-to-Agent protocol.
     A2A,
     /// Child run completion notification, handoff.
@@ -236,7 +236,7 @@ pub struct RunOutcome {
 }
 
 /// A run record for tracking run history and enabling resume.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct RunRecord {
     /// Unique run identifier.
     pub run_id: String,
@@ -246,7 +246,11 @@ pub struct RunRecord {
     pub agent_id: String,
     /// Parent run identifier for nested/handoff runs.
     pub parent_run_id: Option<String>,
-    /// Snapshot of the user intent/request that owns this run.
+    /// Published runtime-config versions frozen for this run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub registry_manifest: Option<PinnedRegistryManifest>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub activation: Option<super::run::RunActivationSnapshot>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub request: Option<RunRequestSnapshot>,
     /// Messages read by this run.
@@ -374,7 +378,7 @@ impl MessageQuery {
     pub fn normalized(&self) -> Self {
         Self {
             offset: self.offset,
-            limit: self.limit.clamp(1, 200),
+            limit: self.limit.min(200),
             after: self.after,
             before: self.before,
             order: self.order,
@@ -579,7 +583,7 @@ impl ThreadQuery {
     pub fn normalized(&self) -> Self {
         Self {
             offset: self.offset,
-            limit: self.limit.clamp(1, 200),
+            limit: self.limit.min(200),
             resource_id: normalize_lineage_id(self.resource_id.as_deref()),
             parent_filter: self.parent_filter.normalized(),
         }
@@ -728,13 +732,14 @@ pub fn paginate_threads(mut threads: Vec<Thread>, query: &ThreadQuery) -> Thread
         .map(|thread| thread.id)
         .collect();
     let next_offset = start + items.len();
-    let has_more = next_offset < total;
+    let has_more = query.limit > 0 && next_offset < total;
     ThreadPage {
         items,
         total,
         has_more,
         next_cursor: has_more.then(|| query.encode_cursor(next_offset)),
-        prev_cursor: (start > 0).then(|| query.encode_cursor(start.saturating_sub(query.limit))),
+        prev_cursor: (query.limit > 0 && start > 0)
+            .then(|| query.encode_cursor(start.saturating_sub(query.limit))),
     }
 }
 
@@ -755,13 +760,14 @@ pub fn paginate_message_records(
     let page_records: Vec<MessageRecord> =
         records.into_iter().skip(start).take(query.limit).collect();
     let next_offset = start + page_records.len();
-    let has_more = next_offset < total;
+    let has_more = query.limit > 0 && next_offset < total;
     MessagePage {
         records: page_records,
         total,
         has_more,
         next_cursor: has_more.then(|| query.encode_cursor(next_offset)),
-        prev_cursor: (start > 0).then(|| query.encode_cursor(start.saturating_sub(query.limit))),
+        prev_cursor: (query.limit > 0 && start > 0)
+            .then(|| query.encode_cursor(start.saturating_sub(query.limit))),
     }
 }
 
@@ -835,7 +841,6 @@ pub trait ThreadStore: Send + Sync {
     ///
     /// The default implementation validates and then delegates to
     /// [`ThreadStore::save_thread`]. It is not atomic across those steps.
-    /// Production stores with concurrent writers should override this method
     /// with a backend-native atomic or fenced implementation.
     async fn save_thread_validated(&self, thread: &Thread) -> Result<(), StorageError> {
         self.validate_thread_hierarchy(&thread.id, thread.parent_thread_id.as_deref())
@@ -1151,15 +1156,13 @@ pub trait RunStore: Send + Sync {
 
 // ── ThreadRunStore (convenience) ────────────────────────────────────
 
-/// Atomic thread+run checkpoint persistence.
-///
-/// Extends [`ThreadStore`] + [`RunStore`] with a transactional checkpoint
-/// that persists thread messages and run record together. Read methods
-/// (`load_messages`, `load_run`, `latest_run`) are inherited from the
-/// supertraits — implementations should not duplicate them.
+/// Atomic thread+run checkpoint persistence. ADR-0038 D7: prefer
+/// [`CommitCoordinator::commit_checkpoint`](super::commit_coordinator::CommitCoordinator::commit_checkpoint)
+/// for production writes; `checkpoint` is retained for conformance tests
+/// and coordinator-internal use.
 #[async_trait]
 pub trait ThreadRunStore: ThreadStore + RunStore + Send + Sync {
-    /// Persist thread messages and run record atomically.
+    #[deprecated(since = "0.6.0", note = "use CommitCoordinator (ADR-0038 D7)")]
     async fn checkpoint(
         &self,
         thread_id: &str,
@@ -1383,7 +1386,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn thread_store_query_clamps_zero_limit() {
+    async fn thread_store_query_zero_limit_returns_empty_terminated_page() {
         let store = MockThreadStore::default();
         store.save_thread(&Thread::with_id("t-1")).await.unwrap();
         store.save_thread(&Thread::with_id("t-2")).await.unwrap();
@@ -1395,14 +1398,9 @@ mod tests {
         };
         let page = store.list_threads_query(&query).await.unwrap();
 
-        assert_eq!(page.items.len(), 1);
-        assert!(page.has_more);
-        assert_eq!(
-            query
-                .decode_cursor(page.next_cursor.as_deref().unwrap())
-                .unwrap(),
-            1
-        );
+        assert!(page.items.is_empty());
+        assert!(!page.has_more);
+        assert!(page.next_cursor.is_none());
     }
 
     #[tokio::test]
@@ -1657,7 +1655,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn thread_store_message_query_clamps_zero_limit() {
+    async fn thread_store_message_query_zero_limit_returns_empty_terminated_page() {
         let store = MockThreadStore::default();
         store
             .save_messages("t-1", &[Message::user("one"), Message::assistant("two")])
@@ -1670,14 +1668,9 @@ mod tests {
         };
         let page = store.list_message_records("t-1", &query).await.unwrap();
 
-        assert_eq!(page.records.len(), 1);
-        assert!(page.has_more);
-        assert_eq!(
-            query
-                .decode_cursor(page.next_cursor.as_deref().unwrap())
-                .unwrap(),
-            1
-        );
+        assert!(page.records.is_empty());
+        assert!(!page.has_more);
+        assert!(page.next_cursor.is_none());
     }
 
     #[tokio::test]
@@ -1759,6 +1752,8 @@ mod tests {
             thread_id: thread_id.to_owned(),
             agent_id: "agent-1".to_owned(),
             parent_run_id: None,
+            registry_manifest: None,
+            activation: None,
             request: None,
             input: None,
             output: None,
@@ -1828,36 +1823,6 @@ mod tests {
             .unwrap();
         assert_eq!(page.total, 2);
         assert_eq!(page.items.len(), 2);
-    }
-
-    // ── RunRecord serde ──
-
-    #[test]
-    fn run_record_serde_roundtrip() {
-        let mut run = make_run("r1", "t-1", 42);
-        run.input = Some(RunMessageInput {
-            thread_id: "t-1".to_string(),
-            range: MessageSeqRange::new(1, 2),
-            trigger_message_ids: vec!["m-1".to_string()],
-            selected_message_ids: Vec::new(),
-            context_policy: None,
-            compacted_snapshot_id: None,
-        });
-        run.output = Some(RunMessageOutput {
-            thread_id: "t-1".to_string(),
-            range: MessageSeqRange::new(3, 4),
-            message_ids: vec!["m-3".to_string(), "m-4".to_string()],
-        });
-        let json = serde_json::to_string(&run).unwrap();
-        let parsed: RunRecord = serde_json::from_str(&json).unwrap();
-        assert_eq!(parsed.run_id, "r1");
-        assert_eq!(parsed.thread_id, "t-1");
-        assert_eq!(parsed.updated_at, 42);
-        assert_eq!(parsed.input.unwrap().range.unwrap().len(), 2);
-        assert_eq!(
-            parsed.output.unwrap().message_ids,
-            vec!["m-3".to_string(), "m-4".to_string()]
-        );
     }
 
     #[test]

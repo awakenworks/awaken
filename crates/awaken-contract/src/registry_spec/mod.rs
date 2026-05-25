@@ -404,7 +404,7 @@ impl<'de> Deserialize<'de> for RemoteEndpoint {
 // ---------------------------------------------------------------------------
 
 /// Serializable model binding from a stable ID to a provider and upstream model.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ModelBindingSpec {
     /// Unique identifier (for example `"gpt-4o-mini"` or `"research-default"`).

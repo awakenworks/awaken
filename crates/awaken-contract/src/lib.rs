@@ -82,12 +82,66 @@ pub use contract::progress::{
     ProgressStatus, TOOL_CALL_PROGRESS_ACTIVITY_TYPE, ToolCallProgressState,
 };
 
+// ── durable event sink ──
+pub use contract::durable_event_sink::{
+    AgentEventNormalizationContext, AgentEventNormalizer, DurableEventSink,
+    NormalizedCanonicalEvent, RuntimeEventDurability, ScopedAgentEventNormalizer,
+};
+
+// ── commit coordinator ──
+pub use contract::commit_coordinator::{
+    CanonicalEventStager, CheckpointCommitOutcome, CheckpointCommitPlan, CommitCoordinator,
+    CommitError, DiagnosticEvent, DiagnosticEventPublisher, EventPublishError,
+    OutboxServerEventPublisher, ServerCanonicalEvent, ServerEventPublishOutcome,
+    StagedCanonicalEvent, TransactionScopeId,
+};
+
+// ── canonical event store ──
+pub use contract::event_store::{
+    AppendOptions, AppendResult, CanonicalEvent, CanonicalEventDraft, CanonicalEventId,
+    CanonicalEventKind, CanonicalEventStream, EventCursor, EventLookup, EventPage, EventReader,
+    EventScope, EventScopeFamily, EventScopeIds, EventStore, EventStoreError, EventSubscriber,
+    EventVisibility, EventWriter, FidelityClass, SubscribeHandle, SubscribeStart,
+};
+
+// ── protocol replay log ──
+pub use contract::protocol_replay_log::{
+    ProtocolReplayAppendResult, ProtocolReplayCursor, ProtocolReplayDraft, ProtocolReplayError,
+    ProtocolReplayId, ProtocolReplayLog, ProtocolReplayLookup, ProtocolReplayPage,
+    ProtocolReplayReader, ProtocolReplayRecord, ProtocolReplayRedactionState, ProtocolReplayWriter,
+    ProtocolStreamKey, SourceEventCursor,
+};
+
+// ── outbox ──
+pub use contract::outbox::{
+    OUTBOX_LANE_CANONICAL, OUTBOX_LANE_PROTOCOL_REPLAY, OUTBOX_TARGET_PROTOCOL_FANOUT,
+    OUTBOX_TARGET_PROTOCOL_PROJECTOR, OutboxEnqueueResult, OutboxError, OutboxMessage,
+    OutboxMessageDraft, OutboxNackOutcome, OutboxStatus, OutboxStore,
+};
+
 // ── mailbox ──
 pub use contract::mailbox::{
     MailboxInterrupt, MailboxInterruptDetails, MailboxStore, RunDispatch, RunDispatchResult,
     RunDispatchStatus,
 };
+pub use contract::registry_graph::{
+    REGISTRY_KIND_AGENT, REGISTRY_KIND_MODEL, REGISTRY_KIND_PLUGIN_CONFIG, REGISTRY_KIND_PROVIDER,
+    REGISTRY_KIND_SKILL, REGISTRY_KIND_TOOL, RegistryGraphValidationError,
+    RegistryGraphValidationReport, RegistryGraphValidationRequest, RegistryGraphValidator,
+    RegistryReferencePolicy, StandardRegistryGraphValidator, VersionSelector,
+};
+pub use contract::run::{
+    RunActivationSnapshot, RunInput, RunInputSnapshot, RunIntent, RunKind, RunOptions,
+    RunResolutionScope, RunTraceContext,
+};
 pub use contract::storage::RunRequestOrigin;
+pub use contract::versioned_registry::{
+    ConfigRevisionRef, PinnedRegistryEntry, PinnedRegistryManifest, PublishOutcome,
+    RegistryPublication, RegistryResourcePublish, RegistryRetentionPolicy, TypedVersionedRegistry,
+    VersionRef, VersionedRecord, VersionedRegistryError, VersionedRegistryRetention,
+    VersionedRegistryStore, VersionedResourceState, canonical_registry_json_bytes,
+    registry_content_hash,
+};
 
 // ── profile store ──
 pub use contract::config_store::{

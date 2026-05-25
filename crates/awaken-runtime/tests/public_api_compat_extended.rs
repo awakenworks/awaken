@@ -93,11 +93,13 @@ fn run_origin_exhaustive_match_keeps_0_2_variants() {
             RunOrigin::User => "user",
             RunOrigin::Subagent => "subagent",
             RunOrigin::Internal => "internal",
+            RunOrigin::Mcp => "mcp",
         }
     }
     assert_eq!(label(RunOrigin::User), "user");
     assert_eq!(label(RunOrigin::Subagent), "subagent");
     assert_eq!(label(RunOrigin::Internal), "internal");
+    assert_eq!(label(RunOrigin::Mcp), "mcp");
 }
 
 #[test]
@@ -107,11 +109,13 @@ fn run_request_origin_exhaustive_match_keeps_0_2_variants() {
             RunRequestOrigin::User => "user",
             RunRequestOrigin::A2A => "a2a",
             RunRequestOrigin::Internal => "internal",
+            RunRequestOrigin::Mcp => "mcp",
         }
     }
     assert_eq!(label(RunRequestOrigin::User), "user");
     assert_eq!(label(RunRequestOrigin::A2A), "a2a");
     assert_eq!(label(RunRequestOrigin::Internal), "internal");
+    assert_eq!(label(RunRequestOrigin::Mcp), "mcp");
 }
 
 #[test]
@@ -139,6 +143,7 @@ fn adapter_kind_exhaustive_match_keeps_0_2_variants() {
             AdapterKind::AiSdk => "ai_sdk",
             AdapterKind::AgUi => "ag_ui",
             AdapterKind::A2a => "a2a",
+            AdapterKind::Mcp => "mcp",
         }
     }
     assert_eq!(label(AdapterKind::Internal), "internal");
@@ -146,6 +151,7 @@ fn adapter_kind_exhaustive_match_keeps_0_2_variants() {
     assert_eq!(label(AdapterKind::AiSdk), "ai_sdk");
     assert_eq!(label(AdapterKind::AgUi), "ag_ui");
     assert_eq!(label(AdapterKind::A2a), "a2a");
+    assert_eq!(label(AdapterKind::Mcp), "mcp");
 }
 
 #[test]

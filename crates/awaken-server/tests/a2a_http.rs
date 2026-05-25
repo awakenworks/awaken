@@ -1074,6 +1074,8 @@ async fn waiting_task_id_resumes_the_same_task() {
         thread_id: context_id.to_string(),
         agent_id: "alpha".to_string(),
         parent_run_id: None,
+        registry_manifest: None,
+        activation: None,
         request: None,
         input: None,
         output: None,

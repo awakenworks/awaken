@@ -9,7 +9,8 @@ use awaken_contract::contract::inference::{
 use awaken_contract::contract::lifecycle::TerminationReason;
 use awaken_contract::contract::message::{Message, MessageMetadata, Role, ToolCall, Visibility};
 use awaken_contract::contract::storage::{
-    MessageQuery, RunPage, RunQuery, RunRecord, StorageError,
+    MessageQuery, MessageSeqRange, PinnedRegistryEntry, PinnedRegistryManifest, RunMessageInput,
+    RunMessageOutput, RunPage, RunQuery, RunRecord, StorageError,
 };
 use awaken_contract::contract::suspension::ToolCallOutcome;
 use awaken_contract::contract::tool::{ToolDescriptor, ToolError, ToolResult};
@@ -211,9 +212,31 @@ fn run_record_roundtrip_preserves_all_fields() {
         thread_id: "t-1".into(),
         agent_id: "agent-1".into(),
         parent_run_id: Some("r-parent".into()),
+        registry_manifest: Some(PinnedRegistryManifest {
+            publication_id: Some("pub-1".to_string()),
+            registry_snapshot_version: Some(7),
+            entries: vec![PinnedRegistryEntry {
+                kind: "agent".to_string(),
+                id: "agent-1".to_string(),
+                version: 3,
+                content_hash: "sha256:agent".to_string(),
+            }],
+        }),
+        activation: None,
         request: None,
-        input: None,
-        output: None,
+        input: Some(RunMessageInput {
+            thread_id: "t-1".to_string(),
+            range: MessageSeqRange::new(1, 2),
+            trigger_message_ids: vec!["m-1".to_string()],
+            selected_message_ids: Vec::new(),
+            context_policy: None,
+            compacted_snapshot_id: None,
+        }),
+        output: Some(RunMessageOutput {
+            thread_id: "t-1".to_string(),
+            range: MessageSeqRange::new(3, 4),
+            message_ids: vec!["m-3".to_string(), "m-4".to_string()],
+        }),
         status: RunStatus::Running,
         termination_reason: Some(TerminationReason::NaturalEnd),
         final_output: Some("done".into()),
@@ -241,6 +264,15 @@ fn run_record_roundtrip_preserves_all_fields() {
     assert_eq!(parsed.steps, 5);
     assert_eq!(parsed.input_tokens, 1000);
     assert_eq!(parsed.output_tokens, 500);
+    let manifest = parsed.registry_manifest.as_ref().unwrap();
+    assert_eq!(manifest.registry_snapshot_version, Some(7));
+    assert_eq!(manifest.entries[0].kind, "agent");
+    assert_eq!(manifest.entries[0].version, 3);
+    assert_eq!(parsed.input.as_ref().unwrap().range.unwrap().len(), 2);
+    assert_eq!(
+        parsed.output.unwrap().message_ids,
+        vec!["m-3".to_string(), "m-4".to_string()]
+    );
     assert_eq!(
         parsed.termination_reason,
         Some(TerminationReason::NaturalEnd)
@@ -262,6 +294,8 @@ fn run_page_with_multiple_records_roundtrips() {
                 thread_id: "t-1".into(),
                 agent_id: "a-1".into(),
                 parent_run_id: None,
+                registry_manifest: None,
+                activation: None,
                 request: None,
                 input: None,
                 output: None,
@@ -288,6 +322,8 @@ fn run_page_with_multiple_records_roundtrips() {
                 thread_id: "t-1".into(),
                 agent_id: "a-1".into(),
                 parent_run_id: Some("r-1".into()),
+                registry_manifest: None,
+                activation: None,
                 request: None,
                 input: None,
                 output: None,
@@ -347,6 +383,7 @@ fn tool_error_variants_display() {
             ToolError::ExecutionFailed("crash".into()),
             "Execution failed: crash",
         ),
+        (ToolError::Timeout("slow".into()), "Timeout: slow"),
         (ToolError::Cancelled("by user".into()), "Cancelled: by user"),
         (ToolError::Denied("blocked".into()), "Denied: blocked"),
         (

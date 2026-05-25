@@ -259,6 +259,8 @@ pub enum ToolError {
     InvalidArguments(String),
     #[error("Execution failed: {0}")]
     ExecutionFailed(String),
+    #[error("Timeout: {0}")]
+    Timeout(String),
     #[error("Cancelled: {0}")]
     Cancelled(String),
     #[error("Denied: {0}")]
@@ -683,7 +685,6 @@ mod tests {
         assert_eq!(result.tool_name, "calc");
         assert_eq!(result.data, json!(42));
     }
-
     #[test]
     fn tool_result_error() {
         let result = ToolResult::error("calc", "division by zero");
@@ -691,7 +692,6 @@ mod tests {
         assert!(!result.is_success());
         assert_eq!(result.message.as_deref(), Some("division by zero"));
     }
-
     #[test]
     fn tool_result_error_with_code() {
         let result = ToolResult::error_with_code("calc", "DIV_ZERO", "division by zero");
