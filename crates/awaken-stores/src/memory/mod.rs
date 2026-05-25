@@ -7,7 +7,7 @@ use awaken_contract::contract::config_store::{
     ConfigChangeEvent, ConfigChangeKind, ConfigChangeNotifier, ConfigChangeSubscriber, ConfigStore,
     extract_meta_revision,
 };
-use awaken_contract::contract::message::Message;
+use awaken_contract::contract::message::{Message, PendingMessageRecord};
 use awaken_contract::contract::profile_store::{ProfileEntry, ProfileOwner, ProfileStore};
 use awaken_contract::contract::storage::{
     MessagePage, MessageQuery, RunPage, RunQuery, RunRecord, RunStore, StorageError, ThreadPage,
@@ -17,6 +17,8 @@ use awaken_contract::contract::storage::{
 use awaken_contract::thread::{Thread, normalize_lineage_id};
 use serde_json::Value;
 use tokio::sync::RwLock;
+
+mod pending;
 
 /// In-memory storage implementing all four store traits.
 ///
@@ -34,6 +36,8 @@ pub struct InMemoryStore {
     pub(crate) run_seq: AtomicU64,
     /// Thread ID -> ordered messages (single source of truth).
     pub(crate) messages: RwLock<HashMap<String, Vec<Message>>>,
+    /// Thread ID -> ordered pending messages not yet consumed by a run.
+    pub(crate) pending_messages: RwLock<HashMap<String, Vec<PendingMessageRecord>>>,
     /// Profile entries keyed by (owner, key).
     profiles: RwLock<HashMap<ProfileOwner, HashMap<String, ProfileEntry>>>,
     /// Config entries keyed by namespace then ID.
@@ -52,6 +56,7 @@ impl InMemoryStore {
             run_insertion: RwLock::new(HashMap::new()),
             run_seq: AtomicU64::new(0),
             messages: RwLock::new(HashMap::new()),
+            pending_messages: RwLock::new(HashMap::new()),
             profiles: RwLock::new(HashMap::new()),
             configs: RwLock::new(HashMap::new()),
             config_change_tx,
@@ -154,8 +159,10 @@ impl ThreadStore for InMemoryStore {
     async fn delete_thread(&self, thread_id: &str) -> Result<(), StorageError> {
         let mut threads = self.threads.write().await;
         let mut messages = self.messages.write().await;
+        let mut pending_messages = self.pending_messages.write().await;
         threads.remove(thread_id);
         messages.remove(thread_id);
+        pending_messages.remove(thread_id);
         Ok(())
     }
 
@@ -166,6 +173,7 @@ impl ThreadStore for InMemoryStore {
     ) -> Result<(), StorageError> {
         let mut threads = self.threads.write().await;
         let mut messages = self.messages.write().await;
+        let mut pending_messages = self.pending_messages.write().await;
         if !threads.contains_key(thread_id) {
             return Err(StorageError::NotFound(thread_id.to_owned()));
         }
@@ -179,6 +187,7 @@ impl ThreadStore for InMemoryStore {
                 }
                 threads.remove(thread_id);
                 messages.remove(thread_id);
+                pending_messages.remove(thread_id);
             }
             awaken_contract::contract::storage::ChildThreadDeleteStrategy::Detach => {
                 let updated_at = current_millis();
@@ -191,6 +200,7 @@ impl ThreadStore for InMemoryStore {
                 }
                 threads.remove(thread_id);
                 messages.remove(thread_id);
+                pending_messages.remove(thread_id);
             }
             awaken_contract::contract::storage::ChildThreadDeleteStrategy::Cascade => {
                 let mut visited = std::collections::HashSet::new();
@@ -221,6 +231,7 @@ impl ThreadStore for InMemoryStore {
                 for id in delete_order {
                     threads.remove(&id);
                     messages.remove(&id);
+                    pending_messages.remove(&id);
                 }
             }
         }

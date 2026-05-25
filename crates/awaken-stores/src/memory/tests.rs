@@ -1,6 +1,9 @@
 use super::*;
+use crate::PendingMessageStore;
 use awaken_contract::contract::lifecycle::RunStatus;
-use awaken_contract::contract::message::Message;
+use awaken_contract::contract::message::{
+    DeliveryBoundary, DeliveryGranularity, DeliveryMode, Message,
+};
 use awaken_contract::contract::storage::{
     RunQuery, RunRecord, RunStore, ThreadRunStore, ThreadStore,
 };
@@ -155,6 +158,225 @@ async fn delete_messages_for_existing_thread() {
 
     store.delete_messages(&thread.id).await.unwrap();
     assert!(store.load_messages(&thread.id).await.unwrap().is_none());
+}
+
+#[tokio::test]
+async fn pending_messages_append_edit_reorder_and_retract() {
+    let store = InMemoryStore::new();
+    let mode = DeliveryMode::new_run(DeliveryGranularity::Batch);
+    let first = Message::user("first").with_id("pending-1".to_string());
+    let second = Message::user("second").with_id("pending-2".to_string());
+
+    let appended = store
+        .append_pending_message_records("thread-pending", &[first, second], mode)
+        .await
+        .unwrap();
+    assert_eq!(appended.len(), 2);
+    assert_eq!(appended[0].position, 1);
+    assert_eq!(appended[1].position, 2);
+
+    let edited = store
+        .update_pending_message_record(
+            "thread-pending",
+            "pending-1",
+            Message::user("edited").with_id("pending-1".to_string()),
+        )
+        .await
+        .unwrap();
+    assert_eq!(edited.message.text(), "edited");
+
+    let reordered = store
+        .reorder_pending_message_records(
+            "thread-pending",
+            &["pending-2".to_string(), "pending-1".to_string()],
+        )
+        .await
+        .unwrap();
+    assert_eq!(reordered[0].pending_id, "pending-2");
+    assert_eq!(reordered[0].position, 1);
+    assert_eq!(reordered[1].position, 2);
+
+    let retracted = store
+        .retract_pending_message_record("thread-pending", "pending-2")
+        .await
+        .unwrap();
+    assert_eq!(retracted.pending_id, "pending-2");
+    let pending = store
+        .load_pending_message_records("thread-pending")
+        .await
+        .unwrap();
+    assert_eq!(pending.len(), 1);
+    assert_eq!(pending[0].pending_id, "pending-1");
+    assert_eq!(pending[0].position, 1);
+}
+
+#[tokio::test]
+async fn pending_reorder_error_keeps_existing_order() {
+    let store = InMemoryStore::new();
+    let mode = DeliveryMode::new_run(DeliveryGranularity::Batch);
+    store
+        .append_pending_message_records(
+            "thread-reorder-error",
+            &[
+                Message::user("first").with_id("pending-1".to_string()),
+                Message::user("second").with_id("pending-2".to_string()),
+            ],
+            mode,
+        )
+        .await
+        .unwrap();
+
+    let err = store
+        .reorder_pending_message_records(
+            "thread-reorder-error",
+            &["pending-2".to_string(), "missing".to_string()],
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(err, StorageError::NotFound(_)));
+
+    let pending = store
+        .load_pending_message_records("thread-reorder-error")
+        .await
+        .unwrap();
+    let ids = pending
+        .iter()
+        .map(|record| record.pending_id.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(ids, vec!["pending-1", "pending-2"]);
+    assert_eq!(pending[0].position, 1);
+    assert_eq!(pending[1].position, 2);
+}
+
+#[tokio::test]
+async fn pending_edit_rejects_message_id_change() {
+    let store = InMemoryStore::new();
+    store
+        .append_pending_message_records(
+            "thread-edit-id",
+            &[Message::user("first").with_id("pending-1".to_string())],
+            DeliveryMode::new_run(DeliveryGranularity::Batch),
+        )
+        .await
+        .unwrap();
+
+    let err = store
+        .update_pending_message_record(
+            "thread-edit-id",
+            "pending-1",
+            Message::user("renamed").with_id("other-id".to_string()),
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, StorageError::Validation(message) if message.contains("cannot change message id"))
+    );
+
+    let pending = store
+        .load_pending_message_records("thread-edit-id")
+        .await
+        .unwrap();
+    assert_eq!(pending[0].pending_id, "pending-1");
+    assert_eq!(pending[0].message.id.as_deref(), Some("pending-1"));
+    assert_eq!(pending[0].message.text(), "first");
+}
+
+#[tokio::test]
+async fn freeze_pending_moves_selected_messages_to_committed_log() {
+    let store = InMemoryStore::new();
+    store
+        .save_messages(
+            "thread-freeze",
+            &[Message::user("committed").with_id("committed-1".to_string())],
+        )
+        .await
+        .unwrap();
+    store
+        .append_pending_message_records(
+            "thread-freeze",
+            &[
+                Message::user("next-step").with_id("pending-next".to_string()),
+                Message::user("new-run").with_id("pending-new".to_string()),
+            ],
+            DeliveryMode::next_step(DeliveryGranularity::Batch),
+        )
+        .await
+        .unwrap();
+    let frozen = store
+        .freeze_pending_message_records("thread-freeze", DeliveryBoundary::NextStep, Some(1))
+        .await
+        .unwrap();
+
+    assert_eq!(frozen.len(), 2);
+    assert_eq!(frozen[0].seq, 2);
+    assert_eq!(frozen[1].seq, 3);
+    let committed = store.load_messages("thread-freeze").await.unwrap().unwrap();
+    assert_eq!(committed.len(), 3);
+    let pending = store
+        .load_pending_message_records("thread-freeze")
+        .await
+        .unwrap();
+    assert!(pending.is_empty());
+}
+
+#[tokio::test]
+async fn freeze_pending_rejects_stale_committed_version_without_consuming() {
+    let store = InMemoryStore::new();
+    store
+        .save_messages("thread-stale-freeze", &[Message::user("committed")])
+        .await
+        .unwrap();
+    store
+        .append_pending_message_records(
+            "thread-stale-freeze",
+            &[Message::user("pending").with_id("pending-stale".to_string())],
+            DeliveryMode::new_run(DeliveryGranularity::Batch),
+        )
+        .await
+        .unwrap();
+
+    let err = store
+        .freeze_pending_message_records("thread-stale-freeze", DeliveryBoundary::NewRun, Some(0))
+        .await
+        .unwrap_err();
+    assert!(matches!(err, StorageError::VersionConflict { .. }));
+    assert_eq!(
+        store
+            .load_pending_message_records("thread-stale-freeze")
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+}
+
+#[tokio::test]
+async fn pending_mutation_rejects_already_consumed_message() {
+    let store = InMemoryStore::new();
+    store
+        .append_pending_message_records(
+            "thread-consumed",
+            &[Message::user("pending").with_id("pending-consumed".to_string())],
+            DeliveryMode::new_run(DeliveryGranularity::Batch),
+        )
+        .await
+        .unwrap();
+    store
+        .freeze_pending_message_records("thread-consumed", DeliveryBoundary::NewRun, Some(0))
+        .await
+        .unwrap();
+
+    let err = store
+        .update_pending_message_record(
+            "thread-consumed",
+            "pending-consumed",
+            Message::user("too late"),
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, StorageError::Validation(message) if message.contains("already consumed"))
+    );
 }
 
 // ── RunStore ──

@@ -26,6 +26,7 @@ use awaken_contract::contract::commit_coordinator::{
     MessageWriteMode, TransactionScopeId,
 };
 use awaken_contract::contract::message::Message;
+use awaken_contract::contract::message::PendingMessageRecord;
 use awaken_contract::contract::storage::{RunRecord, ThreadRunStore};
 use awaken_contract::thread::Thread;
 use tokio::sync::Mutex;
@@ -42,6 +43,7 @@ struct ThreadRunSnapshot {
     threads: HashMap<String, Thread>,
     runs: HashMap<String, RunRecord>,
     messages: HashMap<String, Vec<Message>>,
+    pending_messages: HashMap<String, Vec<PendingMessageRecord>>,
 }
 
 async fn snapshot_thread_run_state(store: &InMemoryStore) -> ThreadRunSnapshot {
@@ -49,6 +51,7 @@ async fn snapshot_thread_run_state(store: &InMemoryStore) -> ThreadRunSnapshot {
         threads: store.threads.read().await.clone(),
         runs: store.runs.read().await.clone(),
         messages: store.messages.read().await.clone(),
+        pending_messages: store.pending_messages.read().await.clone(),
     }
 }
 
@@ -56,6 +59,7 @@ async fn restore_thread_run_state(store: &InMemoryStore, snapshot: ThreadRunSnap
     *store.threads.write().await = snapshot.threads;
     *store.runs.write().await = snapshot.runs;
     *store.messages.write().await = snapshot.messages;
+    *store.pending_messages.write().await = snapshot.pending_messages;
 }
 
 /// Coordinator that drives [`InMemoryStore`], [`InMemoryEventStore`], and

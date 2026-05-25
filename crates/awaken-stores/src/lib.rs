@@ -20,6 +20,7 @@ pub mod memory_mailbox;
 pub mod memory_outbox;
 pub mod memory_protocol_replay_log;
 pub mod memory_versioned_registry;
+pub mod pending_message_store;
 
 /// Wall-clock time in milliseconds since the UNIX epoch.
 ///
@@ -93,6 +94,7 @@ pub use memory_mailbox::InMemoryMailboxStore;
 pub use memory_outbox::InMemoryOutboxStore;
 pub use memory_protocol_replay_log::InMemoryProtocolReplayLog;
 pub use memory_versioned_registry::InMemoryVersionedRegistryStore;
+pub use pending_message_store::PendingMessageStore;
 
 #[cfg(feature = "file")]
 pub use file::FileStore;
