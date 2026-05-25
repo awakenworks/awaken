@@ -58,14 +58,11 @@ async fn make_prefixed_store_with_pool(
 }
 
 fn unique_prefix(prefix: &str) -> Option<String> {
+    let uuid_short = uuid::Uuid::now_v7().simple().to_string();
     Some(format!(
-        "{}_{}_{}",
-        prefix,
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .ok()?
-            .as_millis()
+        "pgs_{}_{}",
+        &uuid_short[..12],
+        &prefix[..prefix.len().min(8)]
     ))
 }
 
@@ -516,7 +513,7 @@ async fn ensure_schema_normalizes_legacy_thread_lineage_columns_from_json() {
 #[tokio::test]
 #[ignore = "requires PostgreSQL via DATABASE_URL"]
 async fn create_and_load_run() {
-    let Some(store) = make_store().await else {
+    let Some(store) = make_prefixed_store("run_create").await else {
         return;
     };
     let mut run = make_run("pg-run-1", "pg-t-1", 100);
@@ -550,7 +547,7 @@ async fn create_and_load_run() {
 #[tokio::test]
 #[ignore = "requires PostgreSQL via DATABASE_URL"]
 async fn latest_run() {
-    let Some(store) = make_store().await else {
+    let Some(store) = make_prefixed_store("run_latest").await else {
         return;
     };
     store
@@ -572,7 +569,7 @@ async fn latest_run() {
 #[tokio::test]
 #[ignore = "requires PostgreSQL via DATABASE_URL"]
 async fn list_runs_with_filter() {
-    let Some(store) = make_store().await else {
+    let Some(store) = make_prefixed_store("run_filter").await else {
         return;
     };
     store
@@ -597,7 +594,7 @@ async fn list_runs_with_filter() {
 #[tokio::test]
 #[ignore = "requires PostgreSQL via DATABASE_URL"]
 async fn run_with_tokens() {
-    let Some(store) = make_store().await else {
+    let Some(store) = make_prefixed_store("run_tokens").await else {
         return;
     };
     let mut run = make_run("pg-rtok", "pg-t-tok", 100);

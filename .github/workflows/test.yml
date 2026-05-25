@@ -3,6 +3,9 @@ on:
   push:
     branches: [main, master]
   pull_request:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 9 * * *"
 concurrency:
   group: test-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
@@ -97,6 +100,22 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm --filter awaken-admin-console run ci
 
+  admin-console-e2e:
+    name: Admin Console Browser E2E
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@1.93.0
+      - uses: Swatinem/rust-cache@v2
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: 'pnpm'
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter awaken-e2e exec playwright install --with-deps chromium
+      - run: pnpm --filter awaken-e2e run test:admin
+
   visual-regression:
     name: Visual Regression
     runs-on: ubuntu-latest
@@ -184,3 +203,88 @@ jobs:
       - uses: dtolnay/rust-toolchain@1.93.0
       - uses: Swatinem/rust-cache@v2
       - run: cargo test --locked -p awaken-stores --features postgres --test postgres_store -- --ignored
+
+  postgres-event-outbox-replay-tests:
+    name: Postgres Event/Outbox/Replay Tests
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: awaken_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d awaken_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      PG_TEST_URL: postgres://postgres:postgres@localhost:5432/awaken_test
+      DATABASE_URL: postgres://postgres:postgres@localhost:5432/awaken_test
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@1.93.0
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test --locked -p awaken-stores --features postgres --test postgres_event_store -- --ignored
+      - run: cargo test --locked -p awaken-stores --features postgres --test postgres_outbox_store -- --ignored
+      - run: cargo test --locked -p awaken-stores --features postgres --test postgres_protocol_replay_log -- --ignored
+      - run: cargo test --locked -p awaken-stores --features postgres --test postgres_commit_coordinator -- --ignored
+      - run: cargo test --locked -p awaken-stores --features postgres --test postgres_stream_checkpoint -- --ignored
+
+  nats-store-tests:
+    name: NATS Store Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@1.93.0
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test --locked -p awaken-stores --features nats --test nats_mailbox_connect -- --test-threads=1
+      - run: cargo test --locked -p awaken-stores --features nats --test nats_mailbox_conformance -- --test-threads=1
+      - run: cargo test --locked -p awaken-stores --features nats --test nats_mailbox_behavior -- --test-threads=1
+      - run: cargo test --locked -p awaken-stores --features nats --test nats_mailbox_distributed -- --test-threads=1
+      - run: cargo test --locked -p awaken-stores --features nats --test nats_mailbox_live -- --test-threads=1
+      - run: cargo test --locked -p awaken-stores --features nats --test nats_buffered_thread_connect -- --test-threads=1
+      - run: cargo test --locked -p awaken-stores --features nats --test nats_buffered_thread_conformance -- --test-threads=1
+      - run: cargo test --locked -p awaken-stores --features nats --test nats_buffered_thread_behavior -- --test-threads=1
+      - run: cargo test --locked -p awaken-stores --features nats --test nats_buffered_thread_distributed -- --test-threads=1
+      - run: cargo test --locked -p awaken-stores --features nats --test nats_buffered_thread_adversarial -- --test-threads=1
+
+  postgres-nats-server-tests:
+    name: Postgres/NATS Server Integration
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: awaken_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d awaken_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      DATABASE_URL: postgres://postgres:postgres@localhost:5432/awaken_test
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@1.93.0
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test --locked -p awaken-server --features nats --test config_backends -- --ignored --test-threads=1
+
+  nats-stress-tests:
+    name: NATS Stress Tests
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    env:
+      AWAKEN_NATS_STRESS_RECORDS: 10000
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@1.93.0
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test --locked -p awaken-stores --features nats --test nats_mailbox_stress -- --ignored --test-threads=1

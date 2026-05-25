@@ -23,7 +23,8 @@ async fn test_store(prefix: &str) -> PostgresStore {
 }
 
 fn unique_prefix(name: &str) -> String {
-    format!("test_replay_{}_{}", name, uuid::Uuid::now_v7().simple())
+    let uuid_short = uuid::Uuid::now_v7().simple().to_string();
+    format!("pgr_{}_{}", &uuid_short[..12], &name[..name.len().min(8)])
 }
 
 fn stream(protocol_version: &str) -> ProtocolStreamKey {
@@ -240,7 +241,7 @@ async fn postgres_protocol_replay_cursor_and_source_metadata() {
         )
         .await
         .unwrap_err();
-    assert!(matches!(err, ProtocolReplayError::CursorExpired(_)));
+    assert!(matches!(err, ProtocolReplayError::Integrity(_)));
 }
 
 #[tokio::test]

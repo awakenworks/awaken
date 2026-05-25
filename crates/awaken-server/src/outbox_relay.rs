@@ -196,6 +196,22 @@ mod tests {
         }
     }
 
+    struct DelayedAckHandler {
+        delivered: Arc<Mutex<Vec<String>>>,
+        started: Arc<tokio::sync::Notify>,
+        release: Arc<tokio::sync::Notify>,
+    }
+
+    #[async_trait]
+    impl OutboxRelayHandler for DelayedAckHandler {
+        async fn deliver(&self, message: &OutboxMessage) -> Result<(), OutboxRelayError> {
+            self.delivered.lock().push(message.outbox_id.clone());
+            self.started.notify_waiters();
+            self.release.notified().await;
+            Ok(())
+        }
+    }
+
     fn config() -> OutboxRelayConfig {
         OutboxRelayConfig {
             lane: "canonical".to_string(),
@@ -257,6 +273,93 @@ mod tests {
                 .unwrap()
                 .contains("publish failed")
         );
+    }
+
+    #[tokio::test]
+    async fn tick_redelivers_after_crashed_relay_loses_ack() {
+        let store = Arc::new(InMemoryOutboxStore::new());
+        let message = store.enqueue_outbox(draft(1)).await.unwrap().message;
+        let crashed_claim = store
+            .claim_outbox("canonical", "projector", 1, 100, "crashed-relay", 1_000)
+            .await
+            .unwrap();
+        assert_eq!(crashed_claim.len(), 1);
+        assert_eq!(crashed_claim[0].outbox_id, message.outbox_id);
+
+        // Simulate a process crash after publish but before ack/nack. A fresh
+        // relay must redeliver once the old lease is expired.
+        let handler = Arc::new(RecordingHandler::default());
+        let relay = OutboxRelay::new(store.clone(), handler.clone(), config()).unwrap();
+
+        let stats = relay.tick().await.unwrap();
+
+        assert_eq!(stats.claimed, 1);
+        assert_eq!(stats.delivered, 1);
+        assert_eq!(handler.delivered.lock().as_slice(), &[message.outbox_id]);
+        let delivered = store
+            .list_outbox(Some(OutboxStatus::Delivered), 10)
+            .await
+            .unwrap();
+        assert_eq!(delivered.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn concurrent_relay_redelivery_rejects_late_ack_after_network_jitter() {
+        let store = Arc::new(InMemoryOutboxStore::new());
+        let message = store.enqueue_outbox(draft(1)).await.unwrap().message;
+        let delayed_deliveries = Arc::new(Mutex::new(Vec::new()));
+        let started = Arc::new(tokio::sync::Notify::new());
+        let release = Arc::new(tokio::sync::Notify::new());
+        let mut short_lease = config();
+        short_lease.consumer_id = "relay-a".to_string();
+        short_lease.lease_ms = 10;
+        let relay_a = Arc::new(
+            OutboxRelay::new(
+                store.clone(),
+                Arc::new(DelayedAckHandler {
+                    delivered: delayed_deliveries.clone(),
+                    started: started.clone(),
+                    release: release.clone(),
+                }),
+                short_lease,
+            )
+            .unwrap(),
+        );
+
+        let tick_a = {
+            let relay = relay_a.clone();
+            tokio::spawn(async move { relay.tick().await })
+        };
+        started.notified().await;
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+
+        let mut relay_b_config = config();
+        relay_b_config.consumer_id = "relay-b".to_string();
+        let relay_b_handler = Arc::new(RecordingHandler::default());
+        let relay_b = OutboxRelay::new(store.clone(), relay_b_handler.clone(), relay_b_config)
+            .expect("relay b");
+        let stats_b = relay_b.tick().await.expect("relay b tick");
+        assert_eq!(stats_b.delivered, 1);
+        assert_eq!(
+            relay_b_handler.delivered.lock().as_slice(),
+            std::slice::from_ref(&message.outbox_id)
+        );
+
+        release.notify_waiters();
+        let stats_a = tick_a.await.expect("relay a task").expect("relay a tick");
+        assert_eq!(stats_a.lost_claims, 1);
+        assert_eq!(
+            delayed_deliveries.lock().as_slice(),
+            std::slice::from_ref(&message.outbox_id)
+        );
+
+        let delivered = store
+            .list_outbox(Some(OutboxStatus::Delivered), 10)
+            .await
+            .unwrap();
+        assert_eq!(delivered.len(), 1);
+        assert_eq!(delivered[0].claimed_by, None);
+        assert_eq!(delivered[0].claim_token, None);
     }
 
     #[tokio::test]

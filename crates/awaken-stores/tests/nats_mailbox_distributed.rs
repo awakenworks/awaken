@@ -195,6 +195,143 @@ async fn expired_lease_reclaimable_by_other_instance() {
     store_b.shutdown().await.unwrap();
 }
 
+/// A stale owner from one instance must not be able to ack after another
+/// instance reclaims and owns the dispatch.
+#[tokio::test]
+async fn late_ack_after_cross_instance_reclaim_is_rejected() {
+    let fixture = NatsFixture::start().await;
+    let (_, cfg) = shared_config(&fixture);
+
+    let store_a = NatsMailboxStore::connect(cfg.clone()).await.expect("a");
+    let store_b = NatsMailboxStore::connect(cfg).await.expect("b");
+    store_a
+        .enqueue(&test_dispatch("d-late-ack", "t-late-ack"))
+        .await
+        .unwrap();
+    assert!(wait_for_index(&store_b, "d-late-ack", 2_000).await);
+
+    let claimed_a = store_a
+        .claim_dispatch("d-late-ack", "consumer-a", 100, 1_000)
+        .await
+        .unwrap()
+        .expect("a owns dispatch");
+    let token_a = claimed_a.claim_token.expect("a claim token");
+
+    let reclaimed = store_b.reclaim_expired_leases(1_101, 10).await.unwrap();
+    assert_eq!(reclaimed.len(), 1);
+    let claimed_b = store_b
+        .claim_dispatch("d-late-ack", "consumer-b", 30_000, 1_102)
+        .await
+        .unwrap()
+        .expect("b owns dispatch");
+    let token_b = claimed_b.claim_token.expect("b claim token");
+
+    assert!(
+        store_a.ack("d-late-ack", &token_a, 1_103).await.is_err(),
+        "old owner ack must not clear a newer cross-instance claim"
+    );
+    let still_claimed = store_b
+        .load_dispatch("d-late-ack")
+        .await
+        .unwrap()
+        .expect("dispatch");
+    assert_eq!(still_claimed.status, RunDispatchStatus::Claimed);
+    assert_eq!(still_claimed.claimed_by.as_deref(), Some("consumer-b"));
+
+    store_b.ack("d-late-ack", &token_b, 1_104).await.unwrap();
+    store_a.shutdown().await.unwrap();
+    store_b.shutdown().await.unwrap();
+}
+
+/// Lease reclaim must tolerate clock skew: a backward or exact-boundary clock
+/// cannot steal a live lease, but a later clock can.
+#[tokio::test]
+async fn cross_instance_lease_reclaim_uses_strict_expiry_boundary() {
+    let fixture = NatsFixture::start().await;
+    let (_, cfg) = shared_config(&fixture);
+
+    let store_a = NatsMailboxStore::connect(cfg.clone()).await.expect("a");
+    let store_b = NatsMailboxStore::connect(cfg).await.expect("b");
+    store_a
+        .enqueue(&test_dispatch("d-lease-boundary", "t-lease-boundary"))
+        .await
+        .unwrap();
+    assert!(wait_for_index(&store_b, "d-lease-boundary", 2_000).await);
+
+    store_a
+        .claim_dispatch("d-lease-boundary", "consumer-a", 100, 1_000)
+        .await
+        .unwrap()
+        .expect("a owns dispatch");
+
+    assert!(
+        store_b
+            .reclaim_expired_leases(999, 10)
+            .await
+            .unwrap()
+            .is_empty(),
+        "backward-skewed clock must not reclaim"
+    );
+    assert!(
+        store_b
+            .reclaim_expired_leases(1_100, 10)
+            .await
+            .unwrap()
+            .is_empty(),
+        "exact lease_until boundary must not reclaim"
+    );
+    let reclaimed = store_b.reclaim_expired_leases(1_101, 10).await.unwrap();
+    assert_eq!(reclaimed.len(), 1);
+    assert_eq!(reclaimed[0].status, RunDispatchStatus::Queued);
+
+    store_a.shutdown().await.unwrap();
+    store_b.shutdown().await.unwrap();
+}
+
+/// Retry scheduling must not be bypassed by another instance claiming by
+/// thread before `retry_at`.
+#[tokio::test]
+async fn cross_instance_nack_retry_window_respects_retry_at() {
+    let fixture = NatsFixture::start().await;
+    let (_, cfg) = shared_config(&fixture);
+
+    let store_a = NatsMailboxStore::connect(cfg.clone()).await.expect("a");
+    let store_b = NatsMailboxStore::connect(cfg).await.expect("b");
+    store_a
+        .enqueue(&test_dispatch("d-retry-boundary", "t-retry-boundary"))
+        .await
+        .unwrap();
+    assert!(wait_for_index(&store_b, "d-retry-boundary", 2_000).await);
+
+    let claimed = store_a
+        .claim("t-retry-boundary", "consumer-a", 30_000, 1_000, 1)
+        .await
+        .unwrap();
+    let token = claimed[0].claim_token.clone().expect("claim token");
+    store_a
+        .nack("d-retry-boundary", &token, 2_000, "retry later", 1_001)
+        .await
+        .unwrap();
+
+    assert!(
+        store_b
+            .claim("t-retry-boundary", "consumer-b", 30_000, 1_999, 1)
+            .await
+            .unwrap()
+            .is_empty(),
+        "dispatch must not be claimable before retry_at"
+    );
+    let claimed_at_retry = store_b
+        .claim("t-retry-boundary", "consumer-b", 30_000, 2_000, 1)
+        .await
+        .unwrap();
+    assert_eq!(claimed_at_retry.len(), 1);
+    assert_eq!(claimed_at_retry[0].dispatch_id, "d-retry-boundary");
+
+    store_a.shutdown().await.unwrap();
+    store_b.shutdown().await.unwrap();
+}
+
 /// Interrupt from one instance is seen by another's index via KV watch.
 #[tokio::test]
 async fn interrupt_supersedes_across_instances() {

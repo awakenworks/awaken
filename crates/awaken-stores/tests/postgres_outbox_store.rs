@@ -5,6 +5,7 @@ use awaken_contract::contract::outbox::{
 };
 use awaken_stores::PostgresStore;
 use sqlx::{PgPool, Row};
+use std::sync::Arc;
 
 async fn test_pool() -> PgPool {
     let url = std::env::var("PG_TEST_URL")
@@ -17,7 +18,8 @@ async fn test_store(prefix: &str) -> PostgresStore {
 }
 
 fn unique_prefix(name: &str) -> String {
-    format!("test_outbox_{}_{}", name, uuid::Uuid::now_v7().simple())
+    let uuid_short = uuid::Uuid::now_v7().simple().to_string();
+    format!("pgo_{}_{}", &uuid_short[..12], &name[..name.len().min(8)])
 }
 
 fn draft(payload: i64) -> OutboxMessageDraft {
@@ -76,6 +78,143 @@ async fn postgres_outbox_enqueue_claim_ack() {
         .await
         .unwrap();
     assert_eq!(delivered.len(), 1);
+}
+
+#[tokio::test]
+#[ignore = "requires PG_TEST_URL or local postgres://localhost/awaken_test"]
+async fn postgres_outbox_concurrent_claim_same_row_has_single_owner() {
+    let store = Arc::new(test_store(&unique_prefix("claim_race")).await);
+    let message = store.enqueue_outbox(draft(1)).await.unwrap().message;
+
+    let attempts = (0..16)
+        .map(|idx| {
+            let store = Arc::clone(&store);
+            tokio::spawn(async move {
+                store
+                    .claim_outbox(
+                        "canonical",
+                        "projector",
+                        1,
+                        1_000,
+                        &format!("worker-{idx}"),
+                        10,
+                    )
+                    .await
+                    .unwrap()
+            })
+        })
+        .collect::<Vec<_>>();
+
+    let mut winners = Vec::new();
+    for attempt in attempts {
+        winners.extend(attempt.await.expect("claim task"));
+    }
+
+    assert_eq!(
+        winners.len(),
+        1,
+        "Postgres SKIP LOCKED claim must produce exactly one owner"
+    );
+    assert_eq!(winners[0].outbox_id, message.outbox_id);
+    assert_eq!(winners[0].status, OutboxStatus::Claimed);
+}
+
+#[tokio::test]
+#[ignore = "requires PG_TEST_URL or local postgres://localhost/awaken_test"]
+async fn postgres_outbox_reclaim_rejects_late_old_owner_ack() {
+    let store = test_store(&unique_prefix("late_ack")).await;
+    let message = store.enqueue_outbox(draft(1)).await.unwrap().message;
+
+    let claimed = store
+        .claim_outbox("canonical", "projector", 1, 100, "worker-a", 1_000)
+        .await
+        .unwrap();
+    let old_token = claimed[0].claim_token.clone().expect("old token");
+
+    let reclaimed = store
+        .claim_outbox("canonical", "projector", 1, 30_000, "worker-b", 1_100)
+        .await
+        .unwrap();
+    assert_eq!(reclaimed.len(), 1);
+    assert_eq!(reclaimed[0].outbox_id, message.outbox_id);
+    let new_token = reclaimed[0].claim_token.clone().expect("new token");
+
+    assert!(
+        !store
+            .ack_outbox(&message.outbox_id, &old_token, 1_101)
+            .await
+            .unwrap(),
+        "late ack from old owner must not clear a reclaimed outbox row"
+    );
+    assert!(
+        store
+            .ack_outbox(&message.outbox_id, &new_token, 1_102)
+            .await
+            .unwrap(),
+        "new owner ack must succeed"
+    );
+}
+
+#[tokio::test]
+#[ignore = "requires PG_TEST_URL or local postgres://localhost/awaken_test"]
+async fn postgres_outbox_retry_window_respects_available_at_boundary() {
+    let store = test_store(&unique_prefix("retry_window")).await;
+    let message = store.enqueue_outbox(draft(1)).await.unwrap().message;
+
+    let claimed = store
+        .claim_outbox("canonical", "projector", 1, 30_000, "worker-a", 1_000)
+        .await
+        .unwrap();
+    let token = claimed[0].claim_token.clone().expect("claim token");
+    let outcome = store
+        .nack_outbox(&message.outbox_id, &token, "retry later", 2_000, 1_001)
+        .await
+        .unwrap();
+    assert_eq!(outcome, OutboxNackOutcome::Requeued);
+
+    assert!(
+        store
+            .claim_outbox("canonical", "projector", 1, 30_000, "worker-b", 1_999)
+            .await
+            .unwrap()
+            .is_empty(),
+        "outbox row must not be claimable before retry_at"
+    );
+    let claimed_at_retry = store
+        .claim_outbox("canonical", "projector", 1, 30_000, "worker-b", 2_000)
+        .await
+        .unwrap();
+    assert_eq!(claimed_at_retry.len(), 1);
+    assert_eq!(claimed_at_retry[0].outbox_id, message.outbox_id);
+}
+
+#[tokio::test]
+#[ignore = "requires PG_TEST_URL or local postgres://localhost/awaken_test"]
+async fn postgres_outbox_concurrent_dedupe_enqueue_returns_single_row() {
+    let store = Arc::new(test_store(&unique_prefix("dedupe_race")).await);
+    let mut template = draft(1);
+    template.dedupe_key = Some("same-event/projector".into());
+
+    let attempts = (0..16)
+        .map(|_| {
+            let store = Arc::clone(&store);
+            let draft = template.clone();
+            tokio::spawn(async move { store.enqueue_outbox(draft).await.unwrap().message })
+        })
+        .collect::<Vec<_>>();
+
+    let mut outbox_ids = Vec::new();
+    for attempt in attempts {
+        outbox_ids.push(attempt.await.expect("enqueue task").outbox_id);
+    }
+    outbox_ids.sort();
+    outbox_ids.dedup();
+
+    assert_eq!(
+        outbox_ids.len(),
+        1,
+        "concurrent idempotent enqueue with one dedupe key must converge to one row"
+    );
 }
 
 #[tokio::test]

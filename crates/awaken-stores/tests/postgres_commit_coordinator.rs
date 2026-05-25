@@ -30,6 +30,7 @@ fn run_record(thread_id: &str, run_id: &str) -> RunRecord {
     RunRecord {
         run_id: run_id.to_string(),
         thread_id: thread_id.to_string(),
+        agent_id: "test-agent".to_string(),
         status: RunStatus::Done,
         ..Default::default()
     }

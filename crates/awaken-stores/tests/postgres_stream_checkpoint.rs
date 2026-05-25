@@ -19,10 +19,12 @@ fn sample(run_id: &str, partial_text: &str, updated_at_ms: u64) -> StreamCheckpo
 #[tokio::test]
 #[ignore]
 async fn postgres_stream_checkpoint_put_get_delete_roundtrip() {
-    let pool = PgPool::connect("postgres://localhost/awaken_test")
-        .await
-        .unwrap();
-    let prefix = format!("test_stream_checkpoint_{}", uuid::Uuid::now_v7().simple());
+    let url = std::env::var("PG_TEST_URL")
+        .or_else(|_| std::env::var("DATABASE_URL"))
+        .unwrap_or_else(|_| "postgres://localhost/awaken_test".to_string());
+    let pool = PgPool::connect(&url).await.unwrap();
+    let uuid_short = uuid::Uuid::now_v7().simple().to_string();
+    let prefix = format!("pgsc_{}", &uuid_short[..12]);
     let store = PostgresStore::with_prefix(pool, prefix);
     store.ensure_schema().await.unwrap();
 

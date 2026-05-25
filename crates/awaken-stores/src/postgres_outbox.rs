@@ -183,13 +183,43 @@ impl OutboxStore for PostgresStore {
             )));
         }
 
+        let dedupe_probe = draft.clone();
         let now = current_millis_i64()?;
         let message = OutboxMessage::from_enqueue(
             format!("out_{}", uuid::Uuid::now_v7()),
             draft,
             now as u64,
         )?;
-        self.insert_outbox_tx(&mut tx, &message, &digest).await?;
+        if let Err(error) = self.insert_outbox_tx(&mut tx, &message, &digest).await {
+            if dedupe_probe.dedupe_key.is_some() && matches!(error, OutboxError::Conflict(_)) {
+                let _ = tx.rollback().await;
+                let mut retry_tx = self
+                    .pool
+                    .begin()
+                    .await
+                    .map_err(|error| OutboxError::Io(error.to_string()))?;
+                if let Some(existing) = self.load_dedupe_tx(&mut retry_tx, &dedupe_probe).await? {
+                    let append_digest =
+                        existing_append_digest(&mut retry_tx, self, &existing.outbox_id).await?;
+                    retry_tx
+                        .commit()
+                        .await
+                        .map_err(|error| OutboxError::Io(error.to_string()))?;
+                    if append_digest.as_deref() == Some(digest.as_slice()) {
+                        return Ok(OutboxEnqueueResult { message: existing });
+                    }
+                    return Err(OutboxError::Conflict(format!(
+                        "outbox dedupe key reused with different input: {}",
+                        dedupe_probe.dedupe_key.as_deref().unwrap_or("")
+                    )));
+                }
+                return Err(OutboxError::Conflict(format!(
+                    "outbox unique constraint conflict without readable dedupe row: {}",
+                    dedupe_probe.dedupe_key.as_deref().unwrap_or("")
+                )));
+            }
+            return Err(error);
+        }
         tx.commit()
             .await
             .map_err(|error| OutboxError::Io(error.to_string()))?;
@@ -454,7 +484,7 @@ impl PostgresStore {
             .bind(message.updated_at as i64)
             .execute(&mut **tx)
             .await
-            .map_err(|error| OutboxError::Io(error.to_string()))?;
+            .map_err(map_sqlx_outbox_error)?;
         Ok(())
     }
 
@@ -594,6 +624,18 @@ fn reject_blank(field: &str, value: &str) -> Result<(), OutboxError> {
         return Err(OutboxError::Validation(format!("{field} is required")));
     }
     Ok(())
+}
+
+fn map_sqlx_outbox_error(error: sqlx::Error) -> OutboxError {
+    if error
+        .as_database_error()
+        .and_then(|database_error| database_error.code())
+        .as_deref()
+        == Some("23505")
+    {
+        return OutboxError::Conflict(error.to_string());
+    }
+    OutboxError::Io(error.to_string())
 }
 
 fn outbox_to_event_error(error: OutboxError) -> EventStoreError {

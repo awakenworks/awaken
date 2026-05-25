@@ -15,8 +15,10 @@ use awaken_contract::contract::storage::{RunStore, ThreadRunStore, ThreadStore};
 use awaken_contract::{AgentSpec, BuiltinSeedSet, BuiltinSpec, ModelSpec, ProviderSpec};
 use awaken_runtime::AgentRuntime;
 use awaken_runtime::builder::AgentRuntimeBuilder;
-use awaken_server::app::{ServerConfig, ServerState};
+use awaken_server::app::{ConfigModuleState, ServerConfig, ServerState};
 use awaken_server::mailbox::{Mailbox, MailboxConfig};
+#[cfg(feature = "nats")]
+use awaken_server::mailbox::{MailboxLifecycleConfig, MailboxStartupRecoveryConfig};
 use awaken_server::routes::build_router;
 use awaken_server::services::config_runtime::{
     ConfigRuntimeError, ConfigRuntimeManager, ProviderExecutorFactory,
@@ -31,7 +33,10 @@ use tower::ServiceExt;
 const ADMIN_TOKEN: &str = "config-backends-admin-token";
 
 #[cfg(feature = "nats")]
-use awaken_stores::{InMemoryStore, NatsBufferedThreadConfig, NatsBufferedThreadStore};
+use awaken_stores::{
+    InMemoryStore, NatsBufferedThreadConfig, NatsBufferedThreadStore, NatsMailboxConfig,
+    NatsMailboxStore,
+};
 #[cfg(feature = "nats")]
 use testcontainers::{ContainerAsync, GenericImage, ImageExt, core::WaitFor, runners::AsyncRunner};
 
@@ -74,6 +79,8 @@ impl ProviderExecutorFactory for StubProviderFactory {
 struct TestApp<S> {
     router: axum::Router,
     runtime: Arc<AgentRuntime>,
+    #[allow(dead_code)]
+    mailbox: Arc<Mailbox>,
     store: Arc<S>,
 }
 
@@ -102,6 +109,21 @@ fn bootstrap_agent() -> AgentSpec {
 async fn make_app<S, F>(store: Arc<S>, server_name: &str, make_coordinator: F) -> TestApp<S>
 where
     S: ConfigStore + ThreadRunStore + Send + Sync + 'static,
+    F: FnOnce(Arc<S>) -> Arc<dyn CommitCoordinator>,
+{
+    let mailbox_store = Arc::new(InMemoryMailboxStore::new());
+    make_app_with_mailbox(store, mailbox_store, server_name, make_coordinator).await
+}
+
+async fn make_app_with_mailbox<S, M, F>(
+    store: Arc<S>,
+    mailbox_store: Arc<M>,
+    server_name: &str,
+    make_coordinator: F,
+) -> TestApp<S>
+where
+    S: ConfigStore + ThreadRunStore + Send + Sync + 'static,
+    M: awaken_contract::contract::mailbox::MailboxStore + Send + Sync + 'static,
     F: FnOnce(Arc<S>) -> Arc<dyn CommitCoordinator>,
 {
     // ADR-0038 D7: the runtime's CommitCoordinator must wrap the same
@@ -137,25 +159,25 @@ where
 
     let mailbox = Arc::new(Mailbox::new(
         runtime.clone(),
-        Arc::new(InMemoryMailboxStore::new()),
+        mailbox_store,
         store.clone(),
         server_name.to_string(),
         MailboxConfig::default(),
     ));
-    let state = ServerState::new(
+    let mut state = ServerState::new(
         runtime.clone(),
-        mailbox,
+        mailbox.clone(),
         store.clone() as Arc<dyn ThreadRunStore>,
         runtime.resolver_arc(),
         ServerConfig::default(),
-    )
-    .with_admin_api_bearer_token(ADMIN_TOKEN)
-    .with_config_store(config_store)
-    .with_config_runtime_manager(manager);
+    );
+    state.admin.admin_api_config.bearer_token = Some(ADMIN_TOKEN.into());
+    state.config = Some(ConfigModuleState::new(config_store, manager));
 
     TestApp {
         router: build_router(&state),
         runtime,
+        mailbox,
         store,
     }
 }
@@ -276,6 +298,23 @@ fn unique_nats_config(fixture: &NatsFixture) -> NatsBufferedThreadConfig {
     config.stream_name = format!("THREADLOG_{}", uuid::Uuid::now_v7().simple());
     config.consumer_name = format!("c_{}", uuid::Uuid::now_v7().simple());
     config.hot_bucket = format!("hot_{}", uuid::Uuid::now_v7().simple());
+    config
+}
+
+#[cfg(feature = "nats")]
+fn unique_nats_mailbox_config(fixture: &NatsFixture) -> NatsMailboxConfig {
+    let suffix = uuid::Uuid::now_v7().simple().to_string();
+    let mut config = NatsMailboxConfig::new(fixture.url.clone());
+    config.stream_name = format!("DISPATCH_{suffix}");
+    config.consumer_name = format!("c_{suffix}");
+    config.dispatch_bucket = format!("d_{suffix}");
+    config.epoch_bucket = format!("e_{suffix}");
+    config.thread_index_bucket = format!("ti_{suffix}");
+    config.sweeper_interval = std::time::Duration::from_millis(100);
+    config.sweeper_republish_after = std::time::Duration::from_millis(200);
+    config.watcher_initial_scan_timeout = std::time::Duration::from_secs(5);
+    config.authoritative_scan_timeout = std::time::Duration::from_secs(5);
+    config.nats_request_timeout = std::time::Duration::from_millis(300);
     config
 }
 
@@ -594,15 +633,8 @@ async fn file_store_thread_hierarchy_management_round_trip_via_http() {
 }
 
 fn unique_postgres_prefix(seed: &str) -> String {
-    format!(
-        "{}_{}_{}",
-        seed,
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .expect("system time before epoch")
-            .as_millis()
-    )
+    let uuid_short = uuid::Uuid::now_v7().simple().to_string();
+    format!("pgs_{}_{}", &uuid_short[..12], &seed[..seed.len().min(8)])
 }
 
 async fn make_postgres_store(seed: &str) -> (Arc<PostgresStore>, PgPool, String) {
@@ -745,6 +777,143 @@ async fn postgres_store_thread_hierarchy_management_round_trip_via_http() {
 
     assert_thread_hierarchy_management_round_trip(&router, &store, "pg-parent").await;
     assert_thread_hierarchy_rejects_missing_parent(&router).await;
+}
+
+#[cfg(feature = "nats")]
+#[tokio::test]
+#[ignore = "requires PostgreSQL via DATABASE_URL and Docker for NATS testcontainers"]
+async fn postgres_nats_two_server_instances_share_runtime_mailbox_without_duplicate_execution() {
+    let url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set for ignored test");
+    let pool = PgPool::connect(&url).await.expect("connect postgres");
+    let prefix = unique_postgres_prefix("pg_nats_two_server");
+    let store_a = Arc::new(PostgresStore::with_prefix(pool.clone(), &prefix));
+    let store_b = Arc::new(PostgresStore::with_prefix(pool, &prefix));
+
+    let fixture = NatsFixture::start().await;
+    let mailbox_config = unique_nats_mailbox_config(&fixture);
+    let mailbox_store_a = Arc::new(
+        NatsMailboxStore::connect(mailbox_config.clone())
+            .await
+            .expect("connect nats mailbox a"),
+    );
+    let mailbox_store_b = Arc::new(
+        NatsMailboxStore::connect(mailbox_config)
+            .await
+            .expect("connect nats mailbox b"),
+    );
+
+    let app_a = make_app_with_mailbox(
+        store_a.clone(),
+        mailbox_store_a.clone(),
+        "server-a",
+        postgres_coordinator,
+    )
+    .await;
+    let app_b = make_app_with_mailbox(
+        store_b.clone(),
+        mailbox_store_b.clone(),
+        "server-b",
+        postgres_coordinator,
+    )
+    .await;
+
+    let lifecycle = app_b
+        .mailbox
+        .start_lifecycle_ready(MailboxLifecycleConfig {
+            startup_delay: std::time::Duration::ZERO,
+            startup_recovery: MailboxStartupRecoveryConfig {
+                max_attempts: 3,
+                retry_delay: std::time::Duration::from_millis(50),
+            },
+            maintenance_callback: None,
+        })
+        .await
+        .expect("server b lifecycle starts");
+
+    let (status, body) = send_request(
+        &app_a.router,
+        Method::POST,
+        "/v1/runs",
+        Some(json!({
+            "agentId": "bootstrap",
+            "threadId": "pg-nats-inline-thread",
+            "messages": [{"role": "user", "content": "inline from server a"}]
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "unexpected inline body: {body}");
+    let events = extract_sse_events(&body);
+    let run_start = find_event(&events, "run_start").expect("run_start missing");
+    let inline_run_id = run_start["run_id"]
+        .as_str()
+        .expect("run_start should contain run_id")
+        .to_string();
+
+    let (status, body) = send_request(
+        &app_b.router,
+        Method::GET,
+        &format!("/v1/runs/{inline_run_id}"),
+        None,
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "server b must read server a run from shared Postgres: {body}"
+    );
+    let body: Value = serde_json::from_str(&body).expect("run json");
+    assert_eq!(body["thread_id"].as_str(), Some("pg-nats-inline-thread"));
+
+    let background = app_a
+        .mailbox
+        .submit_background(
+            awaken_runtime::RunActivation::new(
+                "pg-nats-background-thread",
+                vec![awaken_contract::contract::message::Message::user(
+                    "background through shared nats",
+                )],
+            )
+            .with_agent_id("bootstrap"),
+        )
+        .await
+        .expect("background submit");
+
+    let mut final_run = None;
+    for _ in 0..50 {
+        if let Some(run) = RunStore::load_run(store_b.as_ref(), &background.run_id)
+            .await
+            .expect("load background run")
+            && run.status == RunStatus::Done
+        {
+            final_run = Some(run);
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    let final_run = final_run.expect("background run should complete once");
+    assert_eq!(final_run.thread_id, "pg-nats-background-thread");
+
+    let page = RunStore::list_runs(
+        store_b.as_ref(),
+        &awaken_contract::contract::storage::RunQuery {
+            offset: 0,
+            limit: 20,
+            thread_id: Some("pg-nats-background-thread".to_string()),
+            status: Some(RunStatus::Done),
+        },
+    )
+    .await
+    .expect("list done runs");
+    assert_eq!(
+        page.items.len(),
+        1,
+        "two active server instances must not duplicate a shared NATS dispatch"
+    );
+    assert_eq!(page.items[0].run_id, background.run_id);
+
+    lifecycle.shutdown().await.expect("shutdown lifecycle");
+    mailbox_store_a.shutdown().await.expect("shutdown nats a");
+    mailbox_store_b.shutdown().await.expect("shutdown nats b");
 }
 
 #[cfg(feature = "nats")]

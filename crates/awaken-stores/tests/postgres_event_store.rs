@@ -25,7 +25,8 @@ async fn test_store(prefix: &str) -> PostgresStore {
 }
 
 fn unique_prefix(name: &str) -> String {
-    format!("test_event_{}_{}", name, uuid::Uuid::now_v7().simple())
+    let uuid_short = uuid::Uuid::now_v7().simple().to_string();
+    format!("pge_{}_{}", &uuid_short[..12], &name[..name.len().min(8)])
 }
 
 fn kind(name: &str) -> CanonicalEventKind {
