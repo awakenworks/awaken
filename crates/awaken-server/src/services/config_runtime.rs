@@ -18,8 +18,8 @@ use awaken_ext_mcp::{
 };
 use awaken_runtime::AgentRuntime;
 use awaken_runtime::engine::GenaiExecutor;
-use awaken_runtime::registry::BackendRegistry;
-use awaken_runtime::registry::{AgentSpecRegistry, PluginSource, ToolRegistry};
+use awaken_runtime::registry::{AgentSpecRegistry, BackendRegistry};
+use awaken_runtime::registry::{PluginSource, ToolRegistry};
 use genai::adapter::AdapterKind;
 use genai::resolver::{AuthData, Endpoint};
 use genai::{Client, ModelIden, ServiceTarget, WebConfig};
@@ -31,6 +31,7 @@ use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 
 mod managed_config;
+mod provider_cache;
 mod provider_capability_discovery;
 mod publish;
 mod registry_compile;
@@ -50,9 +51,7 @@ const NS_MCP_SERVERS: &str = "mcp-servers";
 const NS_TOOLS: &str = "tools";
 const NS_SKILLS: &str = "skills";
 
-/// Per-provider executor cache entry: the spec used to build the cached
-/// executor and the executor itself.
-type ProviderExecutorCache = HashMap<String, (ProviderSpec, Arc<dyn LlmExecutor>)>;
+use provider_cache::{ProviderExecutorCache, ProviderRuntimeCache};
 
 #[derive(Debug, thiserror::Error)]
 pub enum ConfigRuntimeError {
@@ -534,7 +533,7 @@ pub struct ConfigRuntimeManager {
     /// per-apply executor rebuild for providers whose spec is unchanged.
     /// Keys are pruned to the current providers list on every apply, so
     /// removed providers do not leak memory.
-    provider_executor_cache: Mutex<ProviderExecutorCache>,
+    provider_cache: Mutex<ProviderRuntimeCache>,
     periodic_refresh: PeriodicRefresher,
     change_listener: Mutex<Option<ChangeListenerRuntime>>,
     mcp_refresh_interval: RwLock<Option<Duration>>,
@@ -584,7 +583,7 @@ impl ConfigRuntimeManager {
             apply_lock: tokio::sync::Mutex::new(()),
             active_mcp_registry: Mutex::new(None),
             last_applied_fingerprint: RwLock::new(None),
-            provider_executor_cache: Mutex::new(HashMap::new()),
+            provider_cache: Mutex::new(ProviderRuntimeCache::default()),
             periodic_refresh: PeriodicRefresher::new(),
             change_listener: Mutex::new(None),
             mcp_refresh_interval: RwLock::new(None),
@@ -2931,12 +2930,10 @@ mod tests {
         manager.apply().await.expect("initial apply");
 
         let initial_cached_provider = manager
-            .provider_executor_cache
+            .provider_cache
             .lock()
-            .get("p")
-            .expect("provider cache entry")
-            .0
-            .clone();
+            .executor_provider("p")
+            .expect("provider cache entry");
 
         let changed_provider = ConfigRecord {
             spec: ProviderSpec {
@@ -2984,12 +2981,10 @@ mod tests {
             .expect_err("invalid candidate must fail validation");
 
         let cached_provider = manager
-            .provider_executor_cache
+            .provider_cache
             .lock()
-            .get("p")
-            .expect("provider cache entry must remain")
-            .0
-            .clone();
+            .executor_provider("p")
+            .expect("provider cache entry must remain");
         assert_eq!(cached_provider, initial_cached_provider);
     }
 

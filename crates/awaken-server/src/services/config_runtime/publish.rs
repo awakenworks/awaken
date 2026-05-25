@@ -16,6 +16,8 @@ impl ConfigRuntimeManager {
             &managed.pools,
         )
         .await;
+        let provider_capabilities =
+            self.update_provider_capability_cache(&managed.providers, provider_capabilities);
         let (candidate, next_provider_cache) =
             match self.compile_registry_set(registry_compile::RegistryCompileInput {
                 providers: &managed.providers,
@@ -56,7 +58,9 @@ impl ConfigRuntimeManager {
             prepared_skills.commit();
         }
 
-        *self.provider_executor_cache.lock() = next_provider_cache;
+        self.provider_cache
+            .lock()
+            .replace_executors(next_provider_cache);
 
         let previous_mcp = if prepared_mcp.state_changed {
             let mut active = self.active_mcp_registry.lock();
@@ -77,5 +81,24 @@ impl ConfigRuntimeManager {
         }
 
         Ok(version)
+    }
+
+    fn update_provider_capability_cache(
+        &self,
+        providers: &[awaken_contract::ProviderSpec],
+        discovered: std::collections::HashMap<
+            String,
+            std::collections::HashMap<String, awaken_runtime::registry::ModelCapabilityPatch>,
+        >,
+    ) -> std::collections::HashMap<
+        String,
+        std::collections::HashMap<String, awaken_runtime::registry::ModelCapabilityPatch>,
+    > {
+        self.provider_cache.lock().update_capability_snapshots(
+            providers,
+            discovered,
+            registry_compile::provider_definition_signature,
+            std::time::SystemTime::now(),
+        )
     }
 }

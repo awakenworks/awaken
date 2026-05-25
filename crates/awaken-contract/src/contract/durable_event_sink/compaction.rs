@@ -221,50 +221,55 @@ impl ScopedAgentEventNormalizer {
             return;
         };
         for (index, skipped) in skipped_entries.iter().enumerate() {
+            let skip_id = non_blank_string(skipped, "skip_id");
             let task_id = non_blank_string(skipped, "task_id");
-            let boundary_message_id =
-                non_blank_string(skipped, "boundary_message_id").unwrap_or_default();
+            let boundary_message_id = non_blank_string(skipped, "boundary_message_id");
             let reason = non_blank_string(skipped, "reason").unwrap_or_else(|| "unknown".into());
-            let pre_tokens = skipped
-                .get("pre_tokens")
-                .and_then(Value::as_u64)
-                .unwrap_or(0);
-            let post_tokens = skipped
-                .get("post_tokens")
-                .and_then(Value::as_u64)
-                .unwrap_or(0);
-            let savings_ratio_ppm = skipped
-                .get("savings_ratio_ppm")
-                .and_then(Value::as_u64)
-                .unwrap_or(0);
-            let min_savings_ratio_ppm = skipped
-                .get("min_savings_ratio_ppm")
-                .and_then(Value::as_u64)
-                .unwrap_or(0);
-            let timestamp_ms = skipped
-                .get("timestamp_ms")
-                .and_then(Value::as_u64)
-                .unwrap_or(0);
-            let fingerprint = format!(
-                "skipped/{index}/{timestamp_ms}/{}/{boundary_message_id}/{reason}/{pre_tokens}/{post_tokens}/{savings_ratio_ppm}/{min_savings_ratio_ppm}",
-                task_id.as_deref().unwrap_or_default()
-            );
+            let pre_tokens = skipped.get("pre_tokens").and_then(Value::as_u64);
+            let post_tokens = skipped.get("post_tokens").and_then(Value::as_u64);
+            let savings_ratio_ppm = skipped.get("savings_ratio_ppm").and_then(Value::as_u64);
+            let min_savings_ratio_ppm =
+                skipped.get("min_savings_ratio_ppm").and_then(Value::as_u64);
+            let timestamp_ms = skipped.get("timestamp_ms").and_then(Value::as_u64);
+            let fingerprint = skip_id.clone().unwrap_or_else(|| {
+                format!(
+                    "skipped/{}/{}/{reason}/{}",
+                    task_id.as_deref().unwrap_or_default(),
+                    boundary_message_id.as_deref().unwrap_or_default(),
+                    timestamp_ms.unwrap_or(0)
+                )
+            });
             if !observation.skipped_fingerprints.insert(fingerprint) {
                 continue;
             }
             let mut payload = json!({
                 "thread_id": self.context.thread_id.as_str(),
                 "skip_index": index,
-                "boundary_message_id": boundary_message_id,
                 "reason": reason,
-                "pre_tokens": pre_tokens,
-                "post_tokens": post_tokens,
-                "savings_ratio_ppm": savings_ratio_ppm,
-                "min_savings_ratio_ppm": min_savings_ratio_ppm,
-                "timestamp_ms": timestamp_ms,
             });
+            if let Some(skip_id) = skip_id {
+                payload["skip_id"] = Value::String(skip_id);
+            }
             if let Some(task_id) = task_id {
                 payload["task_id"] = Value::String(task_id);
+            }
+            if let Some(boundary_message_id) = boundary_message_id {
+                payload["boundary_message_id"] = Value::String(boundary_message_id);
+            }
+            if let Some(pre_tokens) = pre_tokens {
+                payload["pre_tokens"] = Value::from(pre_tokens);
+            }
+            if let Some(post_tokens) = post_tokens {
+                payload["post_tokens"] = Value::from(post_tokens);
+            }
+            if let Some(savings_ratio_ppm) = savings_ratio_ppm {
+                payload["savings_ratio_ppm"] = Value::from(savings_ratio_ppm);
+            }
+            if let Some(min_savings_ratio_ppm) = min_savings_ratio_ppm {
+                payload["min_savings_ratio_ppm"] = Value::from(min_savings_ratio_ppm);
+            }
+            if let Some(timestamp_ms) = timestamp_ms {
+                payload["timestamp_ms"] = Value::from(timestamp_ms);
             }
             planned.push(("ContextCompactionSkipped", payload));
         }

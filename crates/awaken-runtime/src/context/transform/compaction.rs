@@ -5,10 +5,10 @@ use awaken_contract::contract::message::{Message, Role};
 use serde::{Deserialize, Serialize};
 
 /// Configuration for compacting oversized tool-result artifacts.
-#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, schemars::JsonSchema, PartialEq, Eq)]
 #[serde(default)]
 pub struct ArtifactCompactionConfig {
-    /// Token threshold above which a tool result is compacted to a preview.
+    /// Token threshold at or above which a tool result is compacted to a preview.
     #[schemars(range(min = 1))]
     pub threshold_tokens: usize,
     /// Maximum characters retained in a compacted artifact preview.
@@ -29,7 +29,57 @@ impl Default for ArtifactCompactionConfig {
     }
 }
 
-/// Compact a single artifact string if it exceeds the token threshold.
+impl<'de> Deserialize<'de> for ArtifactCompactionConfig {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(default)]
+        struct RawArtifactCompactionConfig {
+            threshold_tokens: usize,
+            preview_max_chars: usize,
+            preview_max_lines: usize,
+        }
+
+        impl Default for RawArtifactCompactionConfig {
+            fn default() -> Self {
+                let defaults = ArtifactCompactionConfig::default();
+                Self {
+                    threshold_tokens: defaults.threshold_tokens,
+                    preview_max_chars: defaults.preview_max_chars,
+                    preview_max_lines: defaults.preview_max_lines,
+                }
+            }
+        }
+
+        let raw = RawArtifactCompactionConfig::deserialize(deserializer)?;
+        let config = Self {
+            threshold_tokens: raw.threshold_tokens,
+            preview_max_chars: raw.preview_max_chars,
+            preview_max_lines: raw.preview_max_lines,
+        };
+        config.validate().map_err(serde::de::Error::custom)?;
+        Ok(config)
+    }
+}
+
+impl ArtifactCompactionConfig {
+    pub fn validate(&self) -> Result<(), String> {
+        if self.threshold_tokens == 0 {
+            return Err("artifact_compaction.threshold_tokens must be >= 1".into());
+        }
+        if self.preview_max_chars == 0 {
+            return Err("artifact_compaction.preview_max_chars must be >= 1".into());
+        }
+        if self.preview_max_lines == 0 {
+            return Err("artifact_compaction.preview_max_lines must be >= 1".into());
+        }
+        Ok(())
+    }
+}
+
+/// Compact a single artifact string if it is at or above the token threshold.
 ///
 /// Returns the original content unchanged when estimated tokens are within budget.
 /// Otherwise truncates to the default preview character / line limits
@@ -66,7 +116,7 @@ pub fn compact_artifact_with_config(content: &str, config: &ArtifactCompactionCo
     )
 }
 
-/// Compact tool result messages that exceed the artifact token threshold.
+/// Compact tool result messages at or above the artifact token threshold.
 ///
 /// Iterates over all `Role::Tool` messages and replaces oversized text content
 /// blocks with a truncated preview plus compaction indicator.
@@ -123,7 +173,7 @@ mod tests {
 
     #[test]
     fn large_tool_result_compacted_to_preview() {
-        // 2048 tokens * 4 chars/token = 8192 chars needed to exceed threshold
+        // 2048 tokens * 4 chars/token = 8192 chars reaches the threshold.
         let large_content = "a".repeat(10_000);
         let mut messages = vec![
             Message::user("go"),
@@ -182,7 +232,7 @@ mod tests {
 
     #[test]
     fn compact_artifact_respects_line_limit() {
-        // Create content with many lines that exceeds threshold
+        // Create content with many lines above the threshold.
         let content: String = (0..100)
             .map(|i| format!("line {}: {}", i, "x".repeat(200)))
             .collect::<Vec<_>>()
@@ -213,6 +263,46 @@ mod tests {
         let result = compact_artifact_with_config("abcdefghijklmnop", &config);
         assert!(result.starts_with("abcdefgh"));
         assert!(result.contains("showing first 8 chars"));
+    }
+
+    #[test]
+    fn artifact_compaction_config_validate_rejects_zero_values() {
+        assert!(
+            ArtifactCompactionConfig {
+                threshold_tokens: 0,
+                ..Default::default()
+            }
+            .validate()
+            .is_err()
+        );
+        assert!(
+            ArtifactCompactionConfig {
+                preview_max_chars: 0,
+                ..Default::default()
+            }
+            .validate()
+            .is_err()
+        );
+        assert!(
+            ArtifactCompactionConfig {
+                preview_max_lines: 0,
+                ..Default::default()
+            }
+            .validate()
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn artifact_compaction_config_serde_rejects_zero_values() {
+        let err = serde_json::from_value::<ArtifactCompactionConfig>(json!({
+            "threshold_tokens": 0,
+            "preview_max_chars": 1600,
+            "preview_max_lines": 24
+        }))
+        .expect_err("serde must enforce runtime minimums");
+
+        assert!(err.to_string().contains("threshold_tokens"));
     }
 
     #[test]

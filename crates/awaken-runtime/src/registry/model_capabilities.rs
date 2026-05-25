@@ -8,6 +8,33 @@ use std::collections::HashMap;
 
 use awaken_contract::registry_spec::{Modalities, Modality, ModelSpec};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CapabilitySource {
+    ExplicitSpec,
+    ProviderDiscovery,
+    StaticHeuristic,
+}
+
+impl CapabilitySource {
+    pub fn is_runtime_trusted(self) -> bool {
+        matches!(self, Self::ExplicitSpec | Self::ProviderDiscovery)
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ModelCapabilitySources {
+    pub context_window: Option<CapabilitySource>,
+    pub max_output_tokens: Option<CapabilitySource>,
+    pub modalities: Option<CapabilitySource>,
+    pub knowledge_cutoff: Option<CapabilitySource>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ResolvedModelCapabilities {
+    pub model: ModelSpec,
+    pub sources: ModelCapabilitySources,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ModelCapabilityPatch {
     pub context_window: Option<u32>,
@@ -49,38 +76,74 @@ impl ModelCapabilityPatch {
     }
 }
 
-pub(crate) fn backfill_model_capabilities(
-    mut model: ModelSpec,
+#[cfg(test)]
+fn backfill_model_capabilities(
+    model: ModelSpec,
     provider_source: Option<&str>,
     discovered: Option<&ModelCapabilityPatch>,
 ) -> ModelSpec {
-    let defaults = discovered.cloned().or_else(|| {
-        provider_source
-            .and_then(|source| lookup(source, &model.upstream_model))
-            .or_else(|| lookup(&model.provider_id, &model.upstream_model))
-    });
+    resolve_model_capabilities(model, provider_source, discovered).model
+}
 
-    let Some(defaults) = defaults else {
-        return model;
+pub(crate) fn resolve_model_capabilities(
+    mut model: ModelSpec,
+    provider_source: Option<&str>,
+    discovered: Option<&ModelCapabilityPatch>,
+) -> ResolvedModelCapabilities {
+    let mut sources = ModelCapabilitySources {
+        context_window: model.context_window.map(|_| CapabilitySource::ExplicitSpec),
+        max_output_tokens: model
+            .max_output_tokens
+            .map(|_| CapabilitySource::ExplicitSpec),
+        modalities: (!model.modalities.input.is_empty() || !model.modalities.output.is_empty())
+            .then_some(CapabilitySource::ExplicitSpec),
+        knowledge_cutoff: model
+            .knowledge_cutoff
+            .as_ref()
+            .map(|_| CapabilitySource::ExplicitSpec),
+    };
+
+    let defaults = discovered
+        .cloned()
+        .map(|patch| (patch, CapabilitySource::ProviderDiscovery))
+        .or_else(|| {
+            provider_source
+                .and_then(|source| lookup(source, &model.upstream_model))
+                .or_else(|| lookup(&model.provider_id, &model.upstream_model))
+                .map(|patch| (patch, CapabilitySource::StaticHeuristic))
+        });
+
+    let Some((defaults, source)) = defaults else {
+        return ResolvedModelCapabilities { model, sources };
     };
 
     if model.context_window.is_none() {
         model.context_window = defaults.context_window;
+        if model.context_window.is_some() {
+            sources.context_window = Some(source);
+        }
     }
     if model.max_output_tokens.is_none() {
         model.max_output_tokens = defaults.max_output_tokens;
+        if model.max_output_tokens.is_some() {
+            sources.max_output_tokens = Some(source);
+        }
     }
     if model.modalities.input.is_empty()
         && model.modalities.output.is_empty()
         && let Some(modalities) = defaults.modalities
     {
         model.modalities = modalities;
+        sources.modalities = Some(source);
     }
     if model.knowledge_cutoff.is_none() {
         model.knowledge_cutoff = defaults.knowledge_cutoff;
+        if model.knowledge_cutoff.is_some() {
+            sources.knowledge_cutoff = Some(source);
+        }
     }
 
-    model
+    ResolvedModelCapabilities { model, sources }
 }
 
 pub fn normalize_capability_model_name(value: &str) -> String {
@@ -345,15 +408,20 @@ mod tests {
 
     #[test]
     fn fills_missing_openai_capabilities() {
-        let model = backfill_model_capabilities(
+        let resolved = resolve_model_capabilities(
             ModelSpec::new("m", "openai", "gpt-4o"),
             Some("openai"),
             None,
         );
+        let model = resolved.model;
 
         assert_eq!(model.context_window, Some(128_000));
         assert_eq!(model.max_output_tokens, Some(16_384));
         assert_eq!(model.modalities, vision_modalities());
+        assert_eq!(
+            resolved.sources.modalities,
+            Some(CapabilitySource::StaticHeuristic)
+        );
     }
 
     #[test]
@@ -438,11 +506,24 @@ mod tests {
             ..ModelSpec::new("m", "openai", "gpt-4o")
         };
 
-        let filled = backfill_model_capabilities(model, Some("openai"), Some(&discovered));
+        let resolved = resolve_model_capabilities(model, Some("openai"), Some(&discovered));
+        let filled = resolved.model;
 
         assert_eq!(filled.context_window, Some(256_000));
         assert_eq!(filled.max_output_tokens, Some(4_096));
         assert_eq!(filled.knowledge_cutoff.as_deref(), Some("2026-02"));
+        assert_eq!(
+            resolved.sources.context_window,
+            Some(CapabilitySource::ProviderDiscovery)
+        );
+        assert_eq!(
+            resolved.sources.max_output_tokens,
+            Some(CapabilitySource::ExplicitSpec)
+        );
+        assert_eq!(
+            resolved.sources.knowledge_cutoff,
+            Some(CapabilitySource::ProviderDiscovery)
+        );
         assert_eq!(
             filled.modalities,
             Modalities {

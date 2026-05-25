@@ -257,7 +257,7 @@ impl MapProviderRegistry {
         Ok(())
     }
 
-    pub fn register_provider_model_capabilities(
+    pub fn replace_provider_model_capability_snapshot(
         &mut self,
         provider_id: impl Into<String>,
         capabilities: HashMap<String, ModelCapabilityPatch>,
@@ -271,6 +271,14 @@ impl MapProviderRegistry {
                 patch,
             );
         }
+    }
+
+    pub fn register_provider_model_capabilities(
+        &mut self,
+        provider_id: impl Into<String>,
+        capabilities: HashMap<String, ModelCapabilityPatch>,
+    ) {
+        self.replace_provider_model_capability_snapshot(provider_id, capabilities);
     }
 
     pub fn replace_provider(
@@ -471,7 +479,7 @@ mod tests {
     #[test]
     fn map_provider_registry_returns_discovered_model_capabilities() {
         let mut registry = MapProviderRegistry::new();
-        registry.register_provider_model_capabilities(
+        registry.replace_provider_model_capability_snapshot(
             "p",
             HashMap::from([(
                 "models/GPT-4O".to_string(),
@@ -490,6 +498,38 @@ mod tests {
 
         assert_eq!(patch.context_window, Some(128_000));
         assert_eq!(patch.max_output_tokens, Some(16_384));
+    }
+
+    #[test]
+    fn map_provider_registry_replaces_capability_snapshot_per_provider() {
+        let mut registry = MapProviderRegistry::new();
+        registry.replace_provider_model_capability_snapshot(
+            "p",
+            HashMap::from([(
+                "gpt-4o".to_string(),
+                ModelCapabilityPatch {
+                    context_window: Some(128_000),
+                    max_output_tokens: None,
+                    modalities: None,
+                    knowledge_cutoff: None,
+                },
+            )]),
+        );
+        registry.replace_provider_model_capability_snapshot(
+            "p",
+            HashMap::from([(
+                "gpt-4.1".to_string(),
+                ModelCapabilityPatch {
+                    context_window: Some(1_000_000),
+                    max_output_tokens: None,
+                    modalities: None,
+                    knowledge_cutoff: None,
+                },
+            )]),
+        );
+
+        assert!(registry.provider_model_capability("p", "gpt-4o").is_none());
+        assert!(registry.provider_model_capability("p", "gpt-4.1").is_some());
     }
 
     #[test]

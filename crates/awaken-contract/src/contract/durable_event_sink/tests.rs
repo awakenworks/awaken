@@ -711,6 +711,93 @@ async fn compacted_mode_persists_context_compaction_skipped_from_state_snapshot(
 }
 
 #[tokio::test]
+async fn compacted_mode_dedupes_skipped_by_stable_identity_not_metrics_or_index() {
+    let stager = Arc::new(RecordingStager::default());
+    let inner = Arc::new(VecEventSink::new());
+    let sink = durable_sink(
+        stager.clone(),
+        inner.clone(),
+        RuntimeEventDurability::Compacted,
+    );
+
+    sink.emit(AgentEvent::StateSnapshot {
+        snapshot: json!({
+            "extensions": {
+                "__context_compaction": {
+                    "skipped": [{
+                        "task_id": "bg_skipped",
+                        "boundary_message_id": "msg_skipped",
+                        "reason": "min_savings_ratio",
+                        "pre_tokens": 4000
+                    }]
+                }
+            }
+        }),
+    })
+    .await;
+    sink.emit(AgentEvent::StateSnapshot {
+        snapshot: json!({
+            "extensions": {
+                "__context_compaction": {
+                    "skipped": [
+                        {
+                            "task_id": "other",
+                            "boundary_message_id": "other_msg",
+                            "reason": "cooldown"
+                        },
+                        {
+                            "task_id": "bg_skipped",
+                            "boundary_message_id": "msg_skipped",
+                            "reason": "min_savings_ratio",
+                            "pre_tokens": 4100,
+                            "post_tokens": 3900
+                        }
+                    ]
+                }
+            }
+        }),
+    })
+    .await;
+
+    let drafts = stager.drafts.lock();
+    let skipped = drafts
+        .iter()
+        .filter(|draft| draft.event_kind.as_str() == "ContextCompactionSkipped")
+        .collect::<Vec<_>>();
+    assert_eq!(skipped.len(), 2);
+    assert_eq!(skipped[0].payload["task_id"], "bg_skipped");
+    assert_eq!(skipped[1].payload["task_id"], "other");
+}
+
+#[tokio::test]
+async fn compacted_mode_omits_absent_optional_skipped_fields() {
+    let stager = Arc::new(RecordingStager::default());
+    let inner = Arc::new(VecEventSink::new());
+    let sink = durable_sink(
+        stager.clone(),
+        inner.clone(),
+        RuntimeEventDurability::Compacted,
+    );
+
+    sink.emit(AgentEvent::StateSnapshot {
+        snapshot: json!({
+            "extensions": {
+                "__context_compaction": {
+                    "skipped": [{ "skip_id": "skip-1", "reason": "cooldown" }]
+                }
+            }
+        }),
+    })
+    .await;
+
+    let drafts = stager.drafts.lock();
+    assert_eq!(drafts.len(), 1);
+    assert_eq!(drafts[0].payload["skip_id"], "skip-1");
+    assert!(drafts[0].payload.get("boundary_message_id").is_none());
+    assert!(drafts[0].payload.get("timestamp_ms").is_none());
+}
+
+#[tokio::test]
 async fn compacted_mode_does_not_cancel_when_previous_in_flight_is_skipped() {
     let stager = Arc::new(RecordingStager::default());
     let inner = Arc::new(VecEventSink::new());

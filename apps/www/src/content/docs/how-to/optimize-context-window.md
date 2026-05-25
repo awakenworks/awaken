@@ -57,7 +57,7 @@ available = max_context_tokens - max_output_tokens - tool_schema_tokens
 
 ### Artifact compaction
 
-Before truncation runs, oversized tool results are compacted automatically. By default, a tool result whose text exceeds 2048 estimated tokens is truncated to a preview of at most 1600 characters or 24 lines, whichever is shorter. The preview includes a compaction indicator showing the original size. Per-agent tuning lives under `sections.context_transform.artifact_compaction` with `threshold_tokens`, `preview_max_chars`, and `preview_max_lines`.
+Before truncation runs, oversized tool results are compacted automatically. By default, a tool result whose text is at or above 2048 estimated tokens is truncated to a preview of at most 1600 characters or 24 lines, whichever is shorter. The preview includes a compaction indicator showing the original size. Per-agent tuning lives under `sections.context_transform.artifact_compaction` with `threshold_tokens`, `preview_max_chars`, and `preview_max_lines`; all three values must be at least `1`.
 
 Non-tool messages (system, user, assistant) are never subject to artifact compaction.
 

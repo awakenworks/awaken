@@ -40,7 +40,7 @@ impl ConfigRuntimeManager {
         } = input;
         let mut provider_registry = MapProviderRegistry::new();
         let mut next_cache: ProviderExecutorCache = HashMap::with_capacity(providers.len());
-        let prior_cache = self.provider_executor_cache.lock().clone();
+        let prior_cache = self.provider_cache.lock().executor_snapshot();
         for provider in providers {
             let executor = match prior_cache.get(&provider.id) {
                 Some((cached_spec, cached_executor)) if cached_spec == provider => {
@@ -61,7 +61,7 @@ impl ConfigRuntimeManager {
                 )
                 .map_err(|error| ConfigRuntimeError::InvalidConfig(error.to_string()))?;
             if let Some(capabilities) = provider_capabilities.get(&provider.id) {
-                provider_registry.register_provider_model_capabilities(
+                provider_registry.replace_provider_model_capability_snapshot(
                     provider.id.clone(),
                     capabilities.clone(),
                 );
@@ -123,7 +123,7 @@ impl ConfigRuntimeManager {
     }
 }
 
-fn provider_definition_signature(provider: &ProviderSpec) -> String {
+pub(super) fn provider_definition_signature(provider: &ProviderSpec) -> String {
     let options =
         serde_json::to_string(&provider.adapter_options).unwrap_or_else(|_| "<options>".into());
     format!(
