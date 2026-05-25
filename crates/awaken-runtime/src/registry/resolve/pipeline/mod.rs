@@ -213,9 +213,13 @@ fn resolve_model_and_executor(
             let provider_source = registries
                 .providers
                 .provider_capability_source(&model.provider_id);
+            let discovered = registries
+                .providers
+                .provider_model_capability(&model.provider_id, &model.upstream_model);
             let model = crate::registry::model_capabilities::backfill_model_capabilities(
                 model,
                 provider_source.as_deref(),
+                discovered.as_ref(),
             );
 
             let executor = registries
@@ -783,5 +787,7 @@ fn resolve_plugins(
 // Tests
 // ---------------------------------------------------------------------------
 
+#[cfg(test)]
+mod capability_tests;
 #[cfg(test)]
 mod tests;

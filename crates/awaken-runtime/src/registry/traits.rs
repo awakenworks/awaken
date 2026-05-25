@@ -8,6 +8,7 @@ use crate::plugins::Plugin;
 use awaken_contract::contract::executor::LlmExecutor;
 use awaken_contract::contract::tool::Tool;
 
+use crate::registry::model_capabilities::ModelCapabilityPatch;
 use awaken_contract::registry_spec::{AgentSpec, ModelPoolSpec, ModelSpec};
 
 // ---------------------------------------------------------------------------
@@ -78,6 +79,18 @@ pub trait ProviderRegistry: Send + Sync {
     /// separate from provider id so deployments can name providers
     /// `prod-openai`, `openai-eu`, etc. and still receive OpenAI defaults.
     fn provider_capability_source(&self, _id: &str) -> Option<String> {
+        None
+    }
+
+    /// Provider-published model capabilities discovered from live metadata.
+    ///
+    /// The resolver uses these as an overlay before built-in defaults while
+    /// still preserving explicit fields in the stored [`ModelSpec`].
+    fn provider_model_capability(
+        &self,
+        _provider_id: &str,
+        _upstream_model: &str,
+    ) -> Option<ModelCapabilityPatch> {
         None
     }
 }

@@ -8,7 +8,7 @@ pub mod config;
 pub mod diagnostics;
 pub mod lifecycle;
 pub mod memory;
-pub(crate) mod model_capabilities;
+pub mod model_capabilities;
 pub mod pinned;
 pub mod resolve;
 pub mod resolver;
@@ -34,6 +34,7 @@ pub use memory::{
     MapAgentSpecRegistry, MapModelRegistry, MapPluginSource, MapProviderRegistry, MapRegistry,
     MapToolRegistry,
 };
+pub use model_capabilities::ModelCapabilityPatch;
 pub use pinned::{
     PinnedAgentSpecRegistry, PinnedModelRegistry, PinnedRegistryError, PinnedSpecMap,
 };

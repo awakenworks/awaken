@@ -5,23 +5,39 @@ use awaken_contract::{AgentSpec, ModelPoolSpec, ModelSpec, ProviderSpec};
 use awaken_runtime::registry::memory::{
     MapAgentSpecRegistry, MapModelRegistry, MapProviderRegistry,
 };
-use awaken_runtime::registry::{AgentSpecRegistry, RegistrySet, ToolRegistry};
+use awaken_runtime::registry::{
+    AgentSpecRegistry, ModelCapabilityPatch, RegistrySet, ToolRegistry,
+};
 use sha2::{Digest, Sha256};
 
 use super::{
     AgentSpecRegistryWithDiscovery, ConfigRuntimeError, ConfigRuntimeManager, ProviderExecutorCache,
 };
 
+pub(super) struct RegistryCompileInput<'a> {
+    pub providers: &'a [ProviderSpec],
+    pub models: &'a [ModelSpec],
+    pub pools: &'a [ModelPoolSpec],
+    pub agents: &'a [AgentSpec],
+    pub tool_specs: &'a [awaken_contract::ToolSpec],
+    pub dynamic_tools: Option<Arc<dyn ToolRegistry>>,
+    pub provider_capabilities: &'a HashMap<String, HashMap<String, ModelCapabilityPatch>>,
+}
+
 impl ConfigRuntimeManager {
     pub(super) fn compile_registry_set(
         &self,
-        providers: &[ProviderSpec],
-        models: &[ModelSpec],
-        pools: &[ModelPoolSpec],
-        agents: &[AgentSpec],
-        tool_specs: &[awaken_contract::ToolSpec],
-        dynamic_tools: Option<Arc<dyn ToolRegistry>>,
+        input: RegistryCompileInput<'_>,
     ) -> Result<(RegistrySet, ProviderExecutorCache), ConfigRuntimeError> {
+        let RegistryCompileInput {
+            providers,
+            models,
+            pools,
+            agents,
+            tool_specs,
+            dynamic_tools,
+            provider_capabilities,
+        } = input;
         let mut provider_registry = MapProviderRegistry::new();
         let mut next_cache: ProviderExecutorCache = HashMap::with_capacity(providers.len());
         let prior_cache = self.provider_executor_cache.lock().clone();
@@ -44,6 +60,12 @@ impl ConfigRuntimeManager {
                     provider.adapter.clone(),
                 )
                 .map_err(|error| ConfigRuntimeError::InvalidConfig(error.to_string()))?;
+            if let Some(capabilities) = provider_capabilities.get(&provider.id) {
+                provider_registry.register_provider_model_capabilities(
+                    provider.id.clone(),
+                    capabilities.clone(),
+                );
+            }
         }
 
         let mut model_registry = MapModelRegistry::new();
