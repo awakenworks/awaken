@@ -5,7 +5,7 @@ use tokio::sync::mpsc;
 use awaken_contract::contract::event::AgentEvent;
 use awaken_contract::contract::lifecycle::RunStatus;
 use awaken_contract::contract::mailbox::{RunDispatch, RunDispatchStatus};
-use awaken_contract::contract::message::Message;
+use awaken_contract::contract::message::{DeliveryGranularity, DeliveryMode, Message};
 
 use super::{
     Mailbox, MailboxDispatchStatus, MailboxError, MailboxSubmitResult, MailboxWorkerStatus,
@@ -43,6 +43,20 @@ impl Mailbox {
             if expected_run_id.is_some_and(|expected| expected != active_run_id) {
                 return Ok(None);
             }
+            if self.pending_thread_run_store.is_some() {
+                self.deliver(
+                    thread_id,
+                    &messages,
+                    DeliveryMode::next_step(DeliveryGranularity::Batch),
+                )
+                .await?;
+                return Ok(Some(MailboxSubmitResult {
+                    dispatch_id: active_dispatch_id,
+                    run_id: active_run_id,
+                    thread_id: thread_id.to_string(),
+                    status: MailboxDispatchStatus::Running,
+                }));
+            }
             // Local fast path: executor has a direct handle to the run's
             // inbox and returns a boolean indicating whether the channel
             // accepted the payload. A `false` here means the local run
@@ -69,6 +83,26 @@ impl Mailbox {
         }
         if expected_run_id.is_some_and(|expected| expected != remote_run.run_id) {
             return Ok(None);
+        }
+
+        if self.pending_thread_run_store.is_some() {
+            let dispatch_id = remote_run
+                .dispatch_id
+                .clone()
+                .unwrap_or_else(|| remote_run.run_id.clone());
+            let run_id = remote_run.run_id;
+            self.deliver(
+                thread_id,
+                &messages,
+                DeliveryMode::next_step(DeliveryGranularity::Batch),
+            )
+            .await?;
+            return Ok(Some(MailboxSubmitResult {
+                dispatch_id,
+                run_id,
+                thread_id: thread_id.to_string(),
+                status: MailboxDispatchStatus::Running,
+            }));
         }
 
         // Cross-node: ask the store to deliver. If the owning node's

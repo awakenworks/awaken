@@ -521,6 +521,53 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn live_then_queue_stages_remote_running_input_as_next_step_pending() {
+        let mailbox_store = Arc::new(InMemoryMailboxStore::new());
+        let thread_store = Arc::new(InMemoryStore::new());
+        let mut run = created_run_record("thread-live-pending", "run-live-pending");
+        run.status = RunStatus::Running;
+        run.dispatch_id = Some("dispatch-live-pending".to_string());
+        thread_store.create_run(&run).await.unwrap();
+        let mailbox = Arc::new(Mailbox::new_with_pending_thread_run_store(
+            Arc::new(NoopExecutor),
+            mailbox_store.clone(),
+            thread_store.clone(),
+            "consumer".to_string(),
+            MailboxConfig::default(),
+        ));
+
+        let result = mailbox
+            .submit_live_then_queue(
+                RunActivation::new("thread-live-pending", vec![Message::user("steer")])
+                    .with_agent_id("agent-1"),
+                None,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            result.status,
+            crate::mailbox::MailboxDispatchStatus::Running
+        );
+        assert_eq!(result.run_id, "run-live-pending");
+        let pending = thread_store
+            .load_pending_message_records("thread-live-pending")
+            .await
+            .unwrap();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].message.text(), "steer");
+        assert_eq!(
+            pending[0].delivery_mode,
+            DeliveryMode::next_step(DeliveryGranularity::Batch)
+        );
+        let dispatches = mailbox_store
+            .list_dispatches("thread-live-pending", None, 10, 0)
+            .await
+            .unwrap();
+        assert!(dispatches.is_empty());
+    }
+
+    #[tokio::test]
     async fn submit_background_consumes_messages_through_pending_store() {
         let thread_store = Arc::new(InMemoryStore::new());
         let mailbox = Arc::new(Mailbox::new_with_pending_thread_run_store(
