@@ -242,8 +242,6 @@ pub struct AgentLoopParams<'a> {
     pub frontend_tools: Vec<awaken_contract::contract::tool::ToolDescriptor>,
     /// Optional inbox receiver for background-task messages.
     pub inbox: Option<crate::inbox::InboxReceiver>,
-    /// Optional durable pending-message boundary hook.
-    pub pending_boundary: Option<Arc<dyn PendingBoundaryHandler>>,
     /// When `true`, the run is a continuation of a previous awaiting_tasks run.
     /// The orchestrator emits `SetRunning` instead of `Start`.
     pub is_continuation: bool,
@@ -284,12 +282,13 @@ pub fn build_agent_env(
 /// Supports dynamic agent handoff via `ActiveAgentIdKey` re-resolve at step boundaries.
 /// Cooperative cancellation via `CancellationToken`.
 pub async fn run_agent_loop(params: AgentLoopParams<'_>) -> Result<AgentRunResult, AgentLoopError> {
-    orchestrator::run_agent_loop_impl(params, None).await
+    orchestrator::run_agent_loop_impl(params, None, None).await
 }
 
-pub(crate) async fn run_agent_loop_with_thread_context(
+pub(crate) async fn run_agent_loop_with_pending_boundary(
     params: AgentLoopParams<'_>,
     thread_ctx: Option<crate::ThreadContextSnapshot>,
+    pending_boundary: Option<Arc<dyn PendingBoundaryHandler>>,
 ) -> Result<AgentRunResult, AgentLoopError> {
-    orchestrator::run_agent_loop_impl(params, thread_ctx).await
+    orchestrator::run_agent_loop_impl(params, thread_ctx, pending_boundary).await
 }
