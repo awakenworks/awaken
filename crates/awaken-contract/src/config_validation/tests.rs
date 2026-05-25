@@ -1,6 +1,7 @@
 use serde_json::json;
 
 use super::*;
+use crate::registry_spec::{HomeStrategy, StickyScope};
 
 #[test]
 fn validate_agent_spec_rejects_unknown_fields() {
@@ -47,6 +48,106 @@ fn validate_config_record_rejects_invalid_user_overrides() {
     }))
     .expect_err("invalid overrides must fail validation");
     assert!(err.to_string().contains("invalid config record"));
+}
+
+#[test]
+fn validate_model_pool_spec_accepts_minimal_valid_pool() {
+    let spec = validate_model_pool_spec(json!({
+        "id": "pool",
+        "members": [{"model_id": "a"}, {"model_id": "b"}]
+    }))
+    .expect("minimal valid pool must validate");
+    assert_eq!(spec.id, "pool");
+    assert_eq!(spec.members.len(), 2);
+    // Defaults applied.
+    assert_eq!(spec.routing.home, HomeStrategy::Deterministic);
+    assert_eq!(spec.routing.sticky_scope, StickyScope::Thread);
+    assert!(spec.switch.on_circuit_open);
+    assert!(spec.switch.on_quota);
+    assert!(spec.switch.on_permanent);
+}
+
+#[test]
+fn validate_model_pool_spec_rejects_unknown_top_level_field() {
+    let err = validate_model_pool_spec(json!({
+        "id": "pool",
+        "members": [{"model_id": "a"}],
+        "future_field": true
+    }))
+    .expect_err("unknown pool fields must be rejected");
+    assert!(err.to_string().contains("model pool spec"));
+}
+
+#[test]
+fn validate_model_pool_spec_rejects_empty_members() {
+    let err = validate_model_pool_spec(json!({"id": "pool", "members": []}))
+        .expect_err("a pool with no members must be rejected");
+    assert!(err.to_string().contains("member"));
+}
+
+#[test]
+fn validate_model_pool_spec_rejects_blank_id() {
+    let err = validate_model_pool_spec(json!({"id": "  ", "members": [{"model_id": "a"}]}))
+        .expect_err("blank pool id must be rejected");
+    assert!(err.to_string().contains("id"));
+}
+
+#[test]
+fn validate_model_pool_spec_rejects_blank_member_model_id() {
+    let err = validate_model_pool_spec(json!({"id": "pool", "members": [{"model_id": ""}]}))
+        .expect_err("blank member model_id must be rejected");
+    assert!(err.to_string().contains("model_id"));
+}
+
+#[test]
+fn validate_model_pool_spec_rejects_zero_member_weight() {
+    let err = validate_model_pool_spec(
+        json!({"id": "pool", "members": [{"model_id": "a", "weight": 0}]}),
+    )
+    .expect_err("zero member weight must be rejected");
+    assert!(err.to_string().contains("weight"));
+}
+
+#[test]
+fn validate_model_pool_spec_rejects_duplicate_member_model_id() {
+    let err = validate_model_pool_spec(json!({
+        "id": "pool",
+        "members": [{"model_id": "a"}, {"model_id": "a"}]
+    }))
+    .expect_err("duplicate member model_id must be rejected");
+    assert!(err.to_string().contains("duplicate"));
+}
+
+#[test]
+fn validate_model_pool_spec_rejects_all_failover_only_members() {
+    let err = validate_model_pool_spec(json!({
+        "id": "pool",
+        "members": [
+            {"model_id": "a", "role": "failover_only"},
+            {"model_id": "b", "role": "failover_only"}
+        ]
+    }))
+    .expect_err("a pool with no home-eligible member must be rejected");
+    assert!(err.to_string().contains("home"));
+}
+
+#[test]
+fn validate_model_pool_spec_accepts_mixed_roles_and_weights() {
+    let spec = validate_model_pool_spec(json!({
+        "id": "pool",
+        "members": [
+            {"model_id": "a", "weight": 3},
+            {"model_id": "b", "role": "failover_only"}
+        ],
+        "routing": {"home": "round_robin", "sticky_scope": "run"},
+        "switch": {"on_quota": false, "max_switches_per_session": 2}
+    }))
+    .expect("a valid mixed pool must validate");
+    assert_eq!(spec.members[0].weight, Some(3));
+    assert_eq!(spec.members[1].role, PoolMemberRole::FailoverOnly);
+    assert_eq!(spec.routing.home, HomeStrategy::RoundRobin);
+    assert!(!spec.switch.on_quota);
+    assert_eq!(spec.switch.max_switches_per_session, Some(2));
 }
 
 #[test]

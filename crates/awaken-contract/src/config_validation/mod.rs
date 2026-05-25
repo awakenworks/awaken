@@ -4,7 +4,9 @@ use std::collections::HashSet;
 
 use crate::agent_spec_patch::AgentSpecPatch;
 use crate::config_record::{ConfigRecord, ConfigRecordError, ConfigRecordMerge};
-use crate::registry_spec::{AgentSpec, Modality, ModelSpec, ProviderSpec};
+use crate::registry_spec::{
+    AgentSpec, Modality, ModelPoolSpec, ModelSpec, PoolMemberRole, ProviderSpec,
+};
 use crate::skill_allowed_tools::{
     is_skill_allowed_tool_pattern, parse_skill_allowed_tools, validate_skill_allowed_tool_pattern,
 };
@@ -25,6 +27,7 @@ pub const AGENT_SPEC_PATCH_UNKNOWN_FIELD_POLICY: UnknownFieldPolicy = UnknownFie
 /// fields so operators do not persist silently ignored provider settings.
 pub const PROVIDER_SPEC_UNKNOWN_FIELD_POLICY: UnknownFieldPolicy = UnknownFieldPolicy::Reject;
 pub const MODEL_SPEC_UNKNOWN_FIELD_POLICY: UnknownFieldPolicy = UnknownFieldPolicy::Reject;
+pub const MODEL_POOL_SPEC_UNKNOWN_FIELD_POLICY: UnknownFieldPolicy = UnknownFieldPolicy::Reject;
 pub const SKILL_SPEC_UNKNOWN_FIELD_POLICY: UnknownFieldPolicy = UnknownFieldPolicy::Reject;
 
 const PROVIDER_SPEC_FIELDS: &[&str] = &[
@@ -46,6 +49,7 @@ const MODEL_SPEC_FIELDS: &[&str] = &[
     "input_token_price_per_million_usd",
     "output_token_price_per_million_usd",
 ];
+const MODEL_POOL_SPEC_FIELDS: &[&str] = &["id", "members", "routing", "switch"];
 const SKILL_SPEC_FIELDS: &[&str] = &[
     "id",
     "name",
@@ -72,6 +76,8 @@ pub enum ConfigValidationError {
     ProviderSpec(#[source] serde_json::Error),
     #[error("invalid model spec: {0}")]
     ModelSpec(#[source] serde_json::Error),
+    #[error("invalid model pool spec: {0}")]
+    ModelPoolSpec(#[source] serde_json::Error),
     #[error("invalid skill spec: {0}")]
     SkillSpec(#[source] serde_json::Error),
     #[error("invalid {surface}: unknown field '{field}'")]
@@ -334,6 +340,66 @@ pub fn validate_skill_spec(value: Value) -> Result<SkillSpec, ConfigValidationEr
         });
     }
     Ok(spec)
+}
+
+/// Validate and decode a `ModelPoolSpec` from JSON for config write surfaces.
+///
+/// Rejects unknown fields, then delegates every semantic rule to
+/// [`validate_model_pool_spec_struct`] so the JSON path and in-memory
+/// construction share one definition of a valid pool.
+pub fn validate_model_pool_spec(value: Value) -> Result<ModelPoolSpec, ConfigValidationError> {
+    reject_unknown_fields(&value, "model pool spec", MODEL_POOL_SPEC_FIELDS)?;
+    let spec: ModelPoolSpec =
+        serde_json::from_value(value).map_err(ConfigValidationError::ModelPoolSpec)?;
+    validate_model_pool_spec_struct(&spec)?;
+    Ok(spec)
+}
+
+/// Validate an already-constructed `ModelPoolSpec`.
+///
+/// Single source of truth for pool validity. Member `model_id` references are
+/// checked against the surrounding registry elsewhere (resolution); this
+/// validates the pool in isolation.
+pub fn validate_model_pool_spec_struct(spec: &ModelPoolSpec) -> Result<(), ConfigValidationError> {
+    reject_empty("model pool spec", "id", &spec.id)?;
+    if spec.members.is_empty() {
+        return Err(ConfigValidationError::Invalid {
+            surface: "model pool spec",
+            message: "must declare at least one member".into(),
+        });
+    }
+    let mut seen = HashSet::new();
+    let mut has_home_member = false;
+    for member in &spec.members {
+        reject_empty("model pool spec", "members.model_id", &member.model_id)?;
+        if member.weight == Some(0) {
+            return Err(ConfigValidationError::Invalid {
+                surface: "model pool spec",
+                message: format!(
+                    "member '{}' weight must be greater than zero",
+                    member.model_id
+                ),
+            });
+        }
+        if !seen.insert(member.model_id.as_str()) {
+            return Err(ConfigValidationError::Invalid {
+                surface: "model pool spec",
+                message: format!("duplicate member model_id '{}'", member.model_id),
+            });
+        }
+        if member.role == PoolMemberRole::Member {
+            has_home_member = true;
+        }
+    }
+    if !has_home_member {
+        return Err(ConfigValidationError::Invalid {
+            surface: "model pool spec",
+            message: "at least one member must be home-eligible (role 'member'); \
+                      a pool of only 'failover_only' members has no home target"
+                .into(),
+        });
+    }
+    Ok(())
 }
 
 /// Validate that a slice of `ModelSpec` contains no duplicate `id` values.
