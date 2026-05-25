@@ -354,7 +354,7 @@ async fn prepare_send_request(
     payload: SendMessageRequest,
 ) -> Result<PreparedRequest, A2aError> {
     let mut violations = Vec::new();
-    let request_tenant = trim_to_option(payload.tenant.as_deref());
+    let request_tenant = trim_to_option(payload.agent_id.as_deref());
     let effective_tenant = match (path_tenant, request_tenant) {
         (Some(path), Some(body)) if path != body => {
             violations.push(FieldViolation {

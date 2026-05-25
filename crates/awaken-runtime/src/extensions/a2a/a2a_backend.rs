@@ -450,7 +450,7 @@ impl A2aBackend {
         let url = format!("{}/message:send", self.interface_base_url());
 
         let request = SendMessageRequest {
-            tenant: None,
+            agent_id: None,
             message,
             configuration: Some(SendMessageConfiguration {
                 accepted_output_modes: vec![

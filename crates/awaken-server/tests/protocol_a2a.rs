@@ -16,7 +16,7 @@ fn agent_card_roundtrip_uses_supported_interfaces() {
             url: "http://localhost:3000/v1/a2a".into(),
             protocol_binding: "HTTP+JSON".into(),
             protocol_version: "1.0".into(),
-            tenant: Some("alpha".into()),
+            agent_id: Some("alpha".into()),
         }],
         provider: None,
         version: "1.0.0".into(),
@@ -58,7 +58,7 @@ fn agent_card_roundtrip_uses_supported_interfaces() {
     let parsed: AgentCard = serde_json::from_value(value).unwrap();
     assert_eq!(parsed.supported_interfaces[0].protocol_version, "1.0");
     assert_eq!(
-        parsed.supported_interfaces[0].tenant.as_deref(),
+        parsed.supported_interfaces[0].agent_id.as_deref(),
         Some("alpha")
     );
 }
@@ -84,7 +84,7 @@ fn part_serializes_without_legacy_type_discriminator() {
 #[test]
 fn send_message_request_uses_role_and_wrapper_parts() {
     let request = SendMessageRequest {
-        tenant: Some("alpha".into()),
+        agent_id: Some("alpha".into()),
         message: A2aMessage {
             task_id: Some("task-1".into()),
             context_id: Some("task-1".into()),
@@ -96,7 +96,7 @@ fn send_message_request_uses_role_and_wrapper_parts() {
         configuration: Some(SendMessageConfiguration {
             accepted_output_modes: vec!["text/plain".into()],
             task_push_notification_config: Some(PushNotificationConfig {
-                tenant: Some("alpha".into()),
+                agent_id: Some("alpha".into()),
                 id: None,
                 task_id: Some("task-1".into()),
                 url: "https://example.com".into(),

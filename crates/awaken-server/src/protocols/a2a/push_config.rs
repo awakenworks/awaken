@@ -206,7 +206,7 @@ pub(super) fn normalize_push_config(
             "push notification taskId must match the enclosing task",
         ));
     }
-    if let Some(existing_tenant) = trim_to_option(config.tenant.as_deref())
+    if let Some(existing_tenant) = trim_to_option(config.agent_id.as_deref())
         && tenant != Some(existing_tenant.as_str())
     {
         return Err(A2aError::invalid(
@@ -225,7 +225,7 @@ pub(super) fn normalize_push_config(
 
     config.id.get_or_insert_with(|| Uuid::now_v7().to_string());
     config.task_id = Some(task_id.to_string());
-    config.tenant = tenant.map(ToOwned::to_owned);
+    config.agent_id = tenant.map(ToOwned::to_owned);
     Ok(config)
 }
 
@@ -249,7 +249,7 @@ pub(super) async fn load_push_notification_configs(
 
     let mut configs = load_thread_push_notification_configs(&thread, task_id)?;
     if let Some(tenant) = tenant {
-        configs.retain(|config| config.tenant.as_deref() == Some(tenant));
+        configs.retain(|config| config.agent_id.as_deref() == Some(tenant));
     }
     configs.sort_by(|left, right| left.id.cmp(&right.id));
     Ok(configs)
@@ -305,7 +305,7 @@ pub(super) async fn upsert_push_notification_config_for_thread(
     let (exists, thread) = load_thread_metadata_projection(st, thread_id).await?;
     let mut configs = load_thread_push_notification_configs(&thread, task_id)?;
     if let Some(tenant) = tenant {
-        configs.retain(|existing| existing.tenant.as_deref() == Some(tenant));
+        configs.retain(|existing| existing.agent_id.as_deref() == Some(tenant));
     }
     if let Some(position) = configs.iter().position(|existing| existing.id == config.id) {
         configs[position] = config;
