@@ -5415,6 +5415,67 @@ async fn runtime_event_capture_compacted_persists_committed_events_and_keeps_liv
 }
 
 #[tokio::test]
+async fn recover_repairs_thread_message_checkpoint_events_from_committed_log() {
+    let event_store = Arc::new(InMemoryEventStore::new());
+    let thread_store = Arc::new(InMemoryStore::new());
+    let mailbox = Arc::new(
+        Mailbox::new(
+            Arc::new(NoopMailboxRuntime),
+            make_store(),
+            thread_store.clone(),
+            "test-consumer".to_string(),
+            MailboxConfig::default(),
+        )
+        .with_server_event_publisher(
+            test_server_event_publisher(Arc::clone(&event_store)),
+            "server",
+        )
+        .unwrap(),
+    );
+
+    let message = Message::user("hi").with_id("message-repair-1".to_string());
+    let (_, input) = build_run_input("thread-repair-events", 1, &["message-repair-1".to_string()]);
+    let mut run = make_run_record("run-repair-events", "thread-repair-events", RunStatus::Done);
+    run.input = input;
+    #[allow(deprecated)]
+    thread_store
+        .checkpoint("thread-repair-events", &[message], &run)
+        .await
+        .unwrap();
+
+    let repaired = mailbox
+        .repair_thread_message_checkpoint_events()
+        .await
+        .unwrap();
+
+    assert_eq!(repaired, 1);
+    let page = event_store
+        .list(EventScope::thread("thread-repair-events"), None, 10)
+        .await
+        .unwrap();
+    let kinds = page
+        .events
+        .iter()
+        .map(|event| event.event_kind.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        kinds,
+        vec!["MessageCommitted", "ThreadMessagesCheckpointed"]
+    );
+
+    let repaired_again = mailbox
+        .repair_thread_message_checkpoint_events()
+        .await
+        .unwrap();
+    assert_eq!(repaired_again, 1);
+    let page = event_store
+        .list(EventScope::thread("thread-repair-events"), None, 10)
+        .await
+        .unwrap();
+    assert_eq!(page.events.len(), 2);
+}
+
+#[tokio::test]
 async fn runtime_event_capture_maps_continue_run_start_to_run_resumed() {
     let mailbox_store = make_store();
     let run_store = Arc::new(InMemoryStore::new());
