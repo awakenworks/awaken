@@ -98,15 +98,43 @@ impl Mailbox {
             )
             .await?;
 
+        match self
+            .prepare_pending_boundary_for_run(
+                request,
+                thread_id,
+                DeliveryBoundary::NewRun,
+                run_id,
+                record,
+                manifest,
+            )
+            .await?
+        {
+            Some(run_id) => Ok(Some(run_id)),
+            None => Err(MailboxError::Internal(format!(
+                "pending NewRun freeze found no eligible messages for thread '{thread_id}'"
+            ))),
+        }
+    }
+
+    pub(super) async fn prepare_pending_boundary_for_run(
+        &self,
+        request: &RunActivation,
+        thread_id: &str,
+        boundary: DeliveryBoundary,
+        run_id: &str,
+        record: &mut RunRecord,
+        manifest: &PinnedRegistryManifest,
+    ) -> Result<Option<String>, MailboxError> {
+        let Some(store) = self.pending_thread_run_store.as_ref() else {
+            return Ok(None);
+        };
         for _ in 0..MAX_PENDING_FREEZE_ATTEMPTS {
             let existing_messages = store.load_messages(thread_id).await?.unwrap_or_default();
             let expected_version = existing_messages.len() as u64;
             let pending = store.load_pending_message_records(thread_id).await?;
-            let selected_indexes = select_pending_for_freeze(&pending, DeliveryBoundary::NewRun);
+            let selected_indexes = select_pending_for_freeze(&pending, boundary);
             if selected_indexes.is_empty() {
-                return Err(MailboxError::Internal(format!(
-                    "pending NewRun freeze found no eligible messages for thread '{thread_id}'"
-                )));
+                return Ok(None);
             }
             let mut selected_pending_ids = Vec::with_capacity(selected_indexes.len());
             let mut trigger_message_ids = Vec::with_capacity(selected_indexes.len());
@@ -133,7 +161,7 @@ impl Mailbox {
             let frozen = match store
                 .freeze_pending_message_records_with_run(
                     thread_id,
-                    DeliveryBoundary::NewRun,
+                    boundary,
                     Some(expected_version),
                     &selected_pending_ids,
                     record,
@@ -160,7 +188,7 @@ impl Mailbox {
         }
 
         Err(MailboxError::Internal(format!(
-            "pending NewRun freeze exhausted {MAX_PENDING_FREEZE_ATTEMPTS} retries under version conflict for thread '{thread_id}'"
+            "pending {boundary:?} freeze exhausted {MAX_PENDING_FREEZE_ATTEMPTS} retries under version conflict for thread '{thread_id}'"
         )))
     }
 }
@@ -170,7 +198,7 @@ mod tests {
     use super::*;
     use async_trait::async_trait;
     use awaken_contract::contract::event_sink::EventSink;
-    use awaken_contract::contract::lifecycle::TerminationReason;
+    use awaken_contract::contract::lifecycle::{RunStatus, TerminationReason};
     use awaken_contract::contract::message::{DeliveryGranularity, Message};
     use awaken_contract::contract::storage::{RunStore, ThreadStore};
     use awaken_contract::contract::suspension::ToolCallResume;
@@ -181,6 +209,24 @@ mod tests {
     use crate::mailbox::{MailboxConfig, RunDispatchExecutor};
 
     struct NoopExecutor;
+
+    fn empty_manifest() -> PinnedRegistryManifest {
+        PinnedRegistryManifest {
+            publication_id: None,
+            registry_snapshot_version: None,
+            entries: Vec::new(),
+        }
+    }
+
+    fn created_run_record(thread_id: &str, run_id: &str) -> RunRecord {
+        RunRecord {
+            run_id: run_id.to_string(),
+            thread_id: thread_id.to_string(),
+            agent_id: "agent-1".to_string(),
+            status: RunStatus::Created,
+            ..Default::default()
+        }
+    }
 
     #[async_trait]
     impl RunDispatchExecutor for NoopExecutor {
@@ -278,6 +324,61 @@ mod tests {
                 .await
                 .unwrap()
                 .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    async fn boundary_freeze_uses_requested_delivery_boundary() {
+        let thread_store = Arc::new(InMemoryStore::new());
+        let mailbox = Mailbox::new_with_pending_thread_run_store(
+            Arc::new(NoopExecutor),
+            Arc::new(InMemoryMailboxStore::new()),
+            thread_store.clone(),
+            "consumer".to_string(),
+            MailboxConfig::default(),
+        );
+        mailbox
+            .deliver(
+                "thread-next-step",
+                &[
+                    Message::user("next").with_id("next-id".to_string()),
+                    Message::user("new").with_id("new-id".to_string()),
+                ],
+                DeliveryMode::next_step(DeliveryGranularity::Batch),
+            )
+            .await
+            .unwrap();
+        let mut record = created_run_record("thread-next-step", "run-next-step");
+        let request =
+            RunActivation::new("thread-next-step", Vec::new()).with_run_id_hint("run-next-step");
+
+        let run_id = mailbox
+            .prepare_pending_boundary_for_run(
+                &request,
+                "thread-next-step",
+                DeliveryBoundary::NextStep,
+                "run-next-step",
+                &mut record,
+                &empty_manifest(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(run_id.as_deref(), Some("run-next-step"));
+        let committed = thread_store
+            .load_messages("thread-next-step")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(committed.len(), 2);
+        let run = thread_store
+            .load_run("run-next-step")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            run.activation.unwrap().input.trigger_message_ids,
+            vec!["next-id".to_string(), "new-id".to_string()]
         );
     }
 
