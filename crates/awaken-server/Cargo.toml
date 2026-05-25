@@ -20,6 +20,7 @@ awaken-contract = { workspace = true }
 awaken-protocol-a2a = { workspace = true }
 awaken-tool-pattern = { workspace = true }
 awaken-runtime = { workspace = true }
+awaken-stores = { workspace = true, features = ["file", "postgres", "nats"] }
 awaken-ext-mcp = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -69,7 +70,6 @@ awaken-ext-permission = { workspace = true, optional = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "time"] }
 http-body-util = "0.1"
 tower = { workspace = true, features = ["util"] }
-awaken-stores = { workspace = true, features = ["file", "postgres", "nats"] }
 awaken-runtime = { workspace = true, features = ["test-utils"] }
 awaken-ext-observability = { workspace = true, features = ["otel"] }
 # Re-link awaken-eval with `test-support` so `eval_api.rs` can use the
