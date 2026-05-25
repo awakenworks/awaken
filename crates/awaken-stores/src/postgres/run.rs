@@ -209,6 +209,65 @@ impl PostgresStore {
     /// externally-managed transaction (ADR-0036 D2). The caller is
     /// responsible for opening the transaction, committing on success,
     /// and rolling back on failure.
+    /// Read a thread's committed messages within an open transaction so the
+    /// caller observes uncommitted writes and any `FOR UPDATE` lock it holds.
+    async fn load_messages_in_tx(
+        &self,
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        thread_id: &str,
+    ) -> Result<Option<Vec<Message>>, StorageError> {
+        let sql = format!(
+            "SELECT data FROM {} WHERE thread_id = $1 ORDER BY updated_at DESC LIMIT 1",
+            self.messages_table
+        );
+        let row = sqlx::query(&sql)
+            .bind(thread_id)
+            .fetch_optional(&mut **tx)
+            .await
+            .map_err(|e| StorageError::Io(e.to_string()))?;
+        let Some(row) = row else {
+            return Ok(None);
+        };
+        let data: serde_json::Value = row.get("data");
+        let messages =
+            serde_json::from_value(data).map_err(|e| StorageError::Serialization(e.to_string()))?;
+        Ok(Some(messages))
+    }
+
+    /// Version-guarded committed append within an open transaction. Locks the
+    /// thread row `FOR UPDATE` so concurrent appends serialize across
+    /// connections/instances (ADR-0042 D5), reads the current committed
+    /// messages, rejects a stale `expected_version`, then delegates the merged
+    /// write + run upsert to [`Self::checkpoint_in_tx`]. Returns the new
+    /// committed message count.
+    pub(crate) async fn checkpoint_append_in_tx(
+        &self,
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        thread_id: &str,
+        messages: &[Message],
+        expected_version: Option<u64>,
+        run: &RunRecord,
+    ) -> Result<u64, StorageError> {
+        // Acquire the per-thread row lock for the transaction; the lock is
+        // held until commit and serializes other appending writers.
+        let _ = self.load_thread_tx(tx, thread_id, "FOR UPDATE").await?;
+        let existing = self
+            .load_messages_in_tx(tx, thread_id)
+            .await?
+            .unwrap_or_default();
+        let actual = existing.len() as u64;
+        if let Some(expected) = expected_version
+            && expected != actual
+        {
+            return Err(StorageError::VersionConflict { expected, actual });
+        }
+        let mut merged = existing;
+        merged.extend(messages.iter().cloned());
+        let new_version = merged.len() as u64;
+        self.checkpoint_in_tx(tx, thread_id, &merged, run).await?;
+        Ok(new_version)
+    }
+
     pub(crate) async fn checkpoint_in_tx(
         &self,
         tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
@@ -361,6 +420,28 @@ impl ThreadRunStore for PostgresStore {
             .await
             .map_err(|e| StorageError::Io(e.to_string()))?;
         Ok(())
+    }
+
+    async fn checkpoint_append(
+        &self,
+        thread_id: &str,
+        messages: &[Message],
+        expected_version: Option<u64>,
+        run: &RunRecord,
+    ) -> Result<u64, StorageError> {
+        self.ensure_schema().await?;
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|e| StorageError::Io(e.to_string()))?;
+        let new_version = self
+            .checkpoint_append_in_tx(&mut tx, thread_id, messages, expected_version, run)
+            .await?;
+        tx.commit()
+            .await
+            .map_err(|e| StorageError::Io(e.to_string()))?;
+        Ok(new_version)
     }
 }
 
