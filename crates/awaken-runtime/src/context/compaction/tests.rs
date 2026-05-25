@@ -39,6 +39,22 @@ fn failed_event(boundary_id: &str, error_text: &str) -> serde_json::Value {
     })
 }
 
+fn skipped_event(boundary_id: &str) -> serde_json::Value {
+    json!({
+        "kind": "custom",
+        "task_id": "bg_99",
+        "event_type": COMPACTION_SKIPPED_EVENT,
+        "payload": {
+            "boundary_message_id": boundary_id,
+            "reason": COMPACTION_SKIP_REASON_MIN_SAVINGS_RATIO,
+            "pre_tokens": 4000,
+            "post_tokens": 3900,
+            "savings_ratio_ppm": 25000,
+            "min_savings_ratio_ppm": 300000,
+        },
+    })
+}
+
 fn mark_in_flight(store: &StateStore, boundary_id: &str) {
     let mut batch = MutationBatch::new();
     batch.update::<CompactionStateKey>(record_compaction_in_flight(CompactionInFlight {
@@ -140,6 +156,34 @@ fn try_consume_compaction_event_clears_in_flight_on_failure() {
     assert_eq!(state.failures[0].task_id.as_deref(), Some("bg_99"));
     assert_eq!(state.failures[0].boundary_message_id, "any");
     assert_eq!(state.failures[0].error, "boom");
+}
+
+#[test]
+fn try_consume_compaction_event_records_skipped_and_preserves_messages() {
+    let store = store_with_compaction_plugin();
+    let mut messages: Vec<Arc<Message>> = vec![Arc::new(Message::user("still here"))];
+    mark_in_flight(&store, "skip-boundary");
+
+    let consumed =
+        try_consume_compaction_event(&mut messages, &skipped_event("skip-boundary"), &store);
+    assert!(consumed);
+
+    let state = store.read::<CompactionStateKey>().unwrap();
+    assert!(!state.is_compacting());
+    assert!(state.boundaries.is_empty());
+    assert!(state.failures.is_empty());
+    assert_eq!(state.skipped.len(), 1);
+    assert_eq!(state.skipped[0].task_id.as_deref(), Some("bg_99"));
+    assert_eq!(state.skipped[0].boundary_message_id, "skip-boundary");
+    assert_eq!(
+        state.skipped[0].reason,
+        COMPACTION_SKIP_REASON_MIN_SAVINGS_RATIO
+    );
+    assert_eq!(state.skipped[0].pre_tokens, 4000);
+    assert_eq!(state.skipped[0].post_tokens, 3900);
+    assert_eq!(state.skipped[0].savings_ratio_ppm, 25000);
+    assert_eq!(messages.len(), 1);
+    assert_eq!(messages[0].text(), "still here");
 }
 
 #[test]

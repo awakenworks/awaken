@@ -667,6 +667,103 @@ async fn compacted_mode_persists_context_compaction_failed_from_state_snapshot()
 }
 
 #[tokio::test]
+async fn compacted_mode_persists_context_compaction_skipped_from_state_snapshot() {
+    let stager = Arc::new(RecordingStager::default());
+    let inner = Arc::new(VecEventSink::new());
+    let sink = durable_sink(
+        stager.clone(),
+        inner.clone(),
+        RuntimeEventDurability::Compacted,
+    );
+
+    sink.emit(AgentEvent::StateSnapshot {
+        snapshot: json!({
+            "revision": 10,
+            "extensions": {
+                "__context_compaction": {
+                    "skipped": [{
+                        "task_id": "bg_skipped",
+                        "boundary_message_id": "msg_skipped",
+                        "reason": "min_savings_ratio",
+                        "pre_tokens": 4000,
+                        "post_tokens": 3900,
+                        "savings_ratio_ppm": 25000,
+                        "min_savings_ratio_ppm": 300000,
+                        "timestamp_ms": 7890
+                    }],
+                    "total_compactions": 0
+                }
+            }
+        }),
+    })
+    .await;
+
+    let drafts = stager.drafts.lock();
+    assert_eq!(drafts.len(), 1);
+    assert_eq!(drafts[0].event_kind.as_str(), "ContextCompactionSkipped");
+    assert_eq!(drafts[0].visibility, EventVisibility::Internal);
+    assert_eq!(drafts[0].payload["task_id"], "bg_skipped");
+    assert_eq!(drafts[0].payload["boundary_message_id"], "msg_skipped");
+    assert_eq!(drafts[0].payload["reason"], "min_savings_ratio");
+    assert_eq!(drafts[0].payload["savings_ratio_ppm"], 25000);
+    assert_eq!(drafts[0].payload["min_savings_ratio_ppm"], 300000);
+    assert_eq!(inner.events().len(), 1);
+}
+
+#[tokio::test]
+async fn compacted_mode_does_not_cancel_when_previous_in_flight_is_skipped() {
+    let stager = Arc::new(RecordingStager::default());
+    let inner = Arc::new(VecEventSink::new());
+    let sink = durable_sink(
+        stager.clone(),
+        inner.clone(),
+        RuntimeEventDurability::Compacted,
+    );
+
+    sink.emit(AgentEvent::StateSnapshot {
+        snapshot: json!({
+            "extensions": {
+                "__context_compaction": {
+                    "total_compactions": 0,
+                    "in_flight": {
+                        "task_id": "bg_skip",
+                        "boundary_message_id": "msg_skip"
+                    }
+                }
+            }
+        }),
+    })
+    .await;
+    sink.emit(AgentEvent::StateSnapshot {
+        snapshot: json!({
+            "extensions": {
+                "__context_compaction": {
+                    "skipped": [{
+                        "task_id": "bg_skip",
+                        "boundary_message_id": "msg_skip",
+                        "reason": "min_savings_ratio",
+                        "timestamp_ms": 22
+                    }],
+                    "total_compactions": 0,
+                    "timestamp_ms": 23
+                }
+            }
+        }),
+    })
+    .await;
+
+    let drafts = stager.drafts.lock();
+    assert_eq!(drafts.len(), 2);
+    assert_eq!(drafts[0].event_kind.as_str(), "ContextCompactionStarted");
+    assert_eq!(drafts[1].event_kind.as_str(), "ContextCompactionSkipped");
+    assert!(
+        drafts
+            .iter()
+            .all(|draft| draft.event_kind.as_str() != "ContextCompactionCancelled")
+    );
+}
+
+#[tokio::test]
 async fn disabled_mode_only_forwards_inner_sink() {
     let stager = Arc::new(RecordingStager::default());
     let inner = Arc::new(VecEventSink::new());

@@ -14,8 +14,10 @@ use serde_json::json;
 
 use super::step::StepContext;
 use crate::context::{
-    COMPACTION_COMPLETED_EVENT, COMPACTION_FAILED_EVENT, CompactionInFlight, CompactionStateKey,
-    plan_compaction, record_compaction_in_flight,
+    COMPACTION_COMPLETED_EVENT, COMPACTION_FAILED_EVENT, COMPACTION_SKIP_REASON_MIN_SAVINGS_RATIO,
+    COMPACTION_SKIPPED_EVENT, COMPACTION_STARTED_EVENT, CompactionConfigKey, CompactionInFlight,
+    CompactionStateKey, compaction_savings_ratio_ppm, plan_compaction, record_compaction_in_flight,
+    summary_message_tokens,
 };
 use crate::extensions::background::{TaskParentContext, TaskResult};
 use crate::state::MutationBatch;
@@ -61,6 +63,13 @@ pub(super) async fn maybe_spawn_compaction(
     };
 
     let executor = Arc::clone(&ctx.agent.llm_executor);
+    let compaction_config = ctx
+        .agent
+        .spec
+        .config::<CompactionConfigKey>()
+        .unwrap_or_default();
+    let min_savings_ratio = compaction_config.min_savings_ratio.clamp(0.0, 1.0);
+    let min_savings_ratio_ppm = (min_savings_ratio * 1_000_000.0).round() as u32;
     let plan_for_task = plan.clone();
     let boundary_id_for_state = plan.boundary_message_id.clone();
     let pre_tokens = plan.pre_tokens;
@@ -73,6 +82,13 @@ pub(super) async fn maybe_spawn_compaction(
             COMPACTION_TASK_DESCRIPTION,
             TaskParentContext::default(),
             move |task_ctx| async move {
+                task_ctx.emit(
+                    COMPACTION_STARTED_EVENT,
+                    json!({
+                        "boundary_message_id": plan_for_task.boundary_message_id.as_str(),
+                        "pre_tokens": pre_tokens,
+                    }),
+                );
                 let res = summarizer
                     .summarize(
                         &plan_for_task.transcript,
@@ -82,6 +98,25 @@ pub(super) async fn maybe_spawn_compaction(
                     .await;
                 match res {
                     Ok(summary) => {
+                        let post_tokens = summary_message_tokens(&summary);
+                        let savings_ratio_ppm =
+                            compaction_savings_ratio_ppm(pre_tokens, post_tokens);
+                        if savings_ratio_ppm < min_savings_ratio_ppm {
+                            task_ctx.emit(
+                                COMPACTION_SKIPPED_EVENT,
+                                json!({
+                                    "boundary_message_id": plan_for_task.boundary_message_id.as_str(),
+                                    "reason": COMPACTION_SKIP_REASON_MIN_SAVINGS_RATIO,
+                                    "pre_tokens": pre_tokens,
+                                    "post_tokens": post_tokens,
+                                    "savings_ratio_ppm": savings_ratio_ppm,
+                                    "min_savings_ratio_ppm": min_savings_ratio_ppm,
+                                    "savings_ratio": savings_ratio_ppm as f64 / 1_000_000.0,
+                                    "min_savings_ratio": min_savings_ratio,
+                                }),
+                            );
+                            return TaskResult::Success(serde_json::Value::Null);
+                        }
                         task_ctx.emit(
                             COMPACTION_COMPLETED_EVENT,
                             json!({

@@ -8,16 +8,18 @@ pub mod transform;
 pub mod truncation;
 
 pub use compaction::{
-    AppliedCompaction, COMPACTION_COMPLETED_EVENT, COMPACTION_FAILED_EVENT, CompactionPlan,
-    apply_summary, clear_compaction_in_flight, find_compaction_boundary, plan_compaction,
-    record_compaction_boundary, record_compaction_failure, record_compaction_in_flight,
-    trim_to_compaction_boundary, try_consume_compaction_event,
+    AppliedCompaction, COMPACTION_COMPLETED_EVENT, COMPACTION_FAILED_EVENT,
+    COMPACTION_SKIP_REASON_MIN_SAVINGS_RATIO, COMPACTION_SKIPPED_EVENT, COMPACTION_STARTED_EVENT,
+    CompactionPlan, apply_summary, clear_compaction_in_flight, compaction_savings_ratio_ppm,
+    find_compaction_boundary, plan_compaction, record_compaction_boundary,
+    record_compaction_failure, record_compaction_in_flight, record_compaction_skipped,
+    summary_message_tokens, trim_to_compaction_boundary, try_consume_compaction_event,
 };
 pub use effective_policy::effective_policy;
 pub use plugin::{
     CONTEXT_COMPACTION_PLUGIN_ID, CONTEXT_TRANSFORM_PLUGIN_ID, CompactionAction,
     CompactionBoundary, CompactionConfig, CompactionConfigKey, CompactionFailure,
-    CompactionInFlight, CompactionPlugin, CompactionState, CompactionStateKey,
+    CompactionInFlight, CompactionPlugin, CompactionSkipped, CompactionState, CompactionStateKey,
     ContextTransformPlugin,
 };
 pub use summarizer::{

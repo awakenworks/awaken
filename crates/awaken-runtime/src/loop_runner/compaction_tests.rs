@@ -13,6 +13,8 @@ use awaken_contract::contract::identity::RunOrigin;
 
 use crate::cancellation::CancellationToken;
 use crate::context::{
+    COMPACTION_COMPLETED_EVENT, COMPACTION_FAILED_EVENT, COMPACTION_SKIP_REASON_MIN_SAVINGS_RATIO,
+    COMPACTION_SKIPPED_EVENT, COMPACTION_STARTED_EVENT, CompactionConfig, CompactionConfigKey,
     CompactionPlugin, CompactionStateKey, ContextSummarizer, SummarizationError, TruncationState,
 };
 use crate::extensions::background::{BackgroundTaskManager, BackgroundTaskPlugin};
@@ -140,6 +142,12 @@ fn make_resolved_agent(
     .with_background_manager(manager)
 }
 
+fn set_compaction_config(agent: &mut ResolvedAgent, config: CompactionConfig) {
+    Arc::make_mut(&mut agent.spec)
+        .set_config::<CompactionConfigKey>(config)
+        .unwrap();
+}
+
 fn make_phase_runtime(
     manager: &Arc<BackgroundTaskManager>,
 ) -> (PhaseRuntime, StateStore, ExecutionEnv) {
@@ -163,6 +171,16 @@ fn run_identity(thread_id: &str) -> RunIdentity {
         RunOrigin::User,
     )
 }
+
+async fn recv_inbox_event(rx: &mut crate::inbox::InboxReceiver) -> serde_json::Value {
+    tokio::time::timeout(Duration::from_secs(2), rx.recv_or_cancel(None))
+        .await
+        .expect("event arrives in time")
+        .expect("event present")
+}
+
+#[path = "compaction_lifecycle_tests.rs"]
+mod lifecycle_tests;
 
 #[tokio::test]
 async fn maybe_spawn_compaction_emits_event_after_summary_completes() {
@@ -220,6 +238,14 @@ async fn maybe_spawn_compaction_emits_event_after_summary_completes() {
     assert!(spawned, "compaction should have been spawned");
     let mid_state = store.read::<CompactionStateKey>().unwrap();
     assert!(mid_state.is_compacting(), "in-flight must be set");
+    let boundary_message_id = mid_state.in_flight.unwrap().boundary_message_id;
+    let started = recv_inbox_event(&mut inbox_rx).await;
+    assert_eq!(started["kind"], "custom");
+    assert_eq!(started["event_type"], COMPACTION_STARTED_EVENT);
+    assert_eq!(
+        started["payload"]["boundary_message_id"].as_str(),
+        Some(boundary_message_id.as_str())
+    );
 
     // A second call must be a no-op while the first is still running.
     let again = maybe_spawn_compaction(&mut ctx, &policy).await;
@@ -227,12 +253,9 @@ async fn maybe_spawn_compaction_emits_event_after_summary_completes() {
 
     // Release the gate; wait for the inbox event to arrive.
     gate.notify_one();
-    let payload = tokio::time::timeout(Duration::from_secs(2), inbox_rx.recv_or_cancel(None))
-        .await
-        .expect("event arrives in time")
-        .expect("event present");
+    let payload = recv_inbox_event(&mut inbox_rx).await;
     assert_eq!(payload["kind"], "custom");
-    assert_eq!(payload["event_type"], "context.compacted");
+    assert_eq!(payload["event_type"], COMPACTION_COMPLETED_EVENT);
     assert_eq!(payload["payload"]["summary"], "synthetic summary text");
     assert_eq!(
         observed.load(std::sync::atomic::Ordering::SeqCst),
@@ -408,88 +431,6 @@ async fn maybe_spawn_compaction_no_op_when_no_useful_boundary() {
     );
 }
 
-/// End-to-end success: spawn → release → drain inbox → consume event →
-/// messages compacted in place AND in-flight cleared AND a boundary
-/// recorded. This is the full happy-path closing the loop the
-/// orchestrator runs in production.
-#[tokio::test]
-async fn round_trip_swap_completes_after_event_drained() {
-    use crate::context::try_consume_compaction_event;
-
-    let manager = Arc::new(BackgroundTaskManager::new());
-    let (runtime, store, env) = make_phase_runtime(&manager);
-    let (inbox_tx, mut inbox_rx) = crate::inbox::inbox_channel();
-    manager.set_owner_inbox(inbox_tx);
-
-    let gate = Arc::new(Notify::new());
-    let summarizer: Arc<dyn ContextSummarizer> = Arc::new(GatedSummarizer {
-        gate: gate.clone(),
-        summary: "round trip summary".into(),
-        observed: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
-    });
-    let mut agent = make_resolved_agent(manager.clone(), summarizer);
-    agent.env = env;
-    let mut messages = make_long_messages();
-    let original_len = messages.len();
-    let identity = run_identity("thread-round-trip");
-    let cancel = CancellationToken::new();
-    let mut total_in = 0u64;
-    let mut total_out = 0u64;
-    let mut truncation = TruncationState::default();
-    let sink: Arc<dyn EventSink> = Arc::new(NullEventSink);
-
-    {
-        let mut ctx = StepContext {
-            agent: &mut agent,
-            messages: &mut messages,
-            runtime: &runtime,
-            sink: sink.clone(),
-            checkpoint_store: None,
-            commit: crate::loop_runner::CommitWiring::default(),
-            run_identity: &identity,
-            input_message_count: 0,
-            cancellation_token: Some(&cancel),
-            run_overrides: &None,
-            total_input_tokens: &mut total_in,
-            total_output_tokens: &mut total_out,
-            truncation_state: &mut truncation,
-            run_created_at: 0,
-            thread_ctx: None,
-        };
-        assert!(maybe_spawn_compaction(&mut ctx, &default_policy()).await);
-    }
-
-    gate.notify_one();
-    let payload = tokio::time::timeout(Duration::from_secs(2), inbox_rx.recv_or_cancel(None))
-        .await
-        .expect("event arrives in time")
-        .expect("event present");
-
-    let consumed = try_consume_compaction_event(&mut messages, &payload, runtime.store());
-    assert!(consumed, "router must claim compaction event");
-    assert!(
-        messages[0]
-            .text()
-            .contains("<conversation-summary>\nround trip summary"),
-        "summary not at front: {}",
-        messages[0].text()
-    );
-    assert!(
-        messages.len() < original_len,
-        "compaction must shrink the message list (was {original_len}, now {})",
-        messages.len()
-    );
-
-    let final_state = store.read::<CompactionStateKey>().unwrap();
-    assert!(!final_state.is_compacting(), "in-flight must be cleared");
-    assert_eq!(
-        final_state.boundaries.len(),
-        1,
-        "one boundary must be recorded"
-    );
-    assert_eq!(final_state.boundaries[0].summary, "round trip summary");
-}
-
 /// End-to-end failure: spawn → summarizer errs → failure event flows
 /// back → consume → in-flight cleared, no boundary recorded.
 #[tokio::test]
@@ -538,13 +479,12 @@ async fn round_trip_failure_clears_in_flight() {
     }
     let mid = store.read::<CompactionStateKey>().unwrap();
     assert!(mid.is_compacting());
+    let started = recv_inbox_event(&mut inbox_rx).await;
+    assert_eq!(started["event_type"], COMPACTION_STARTED_EVENT);
 
     gate.notify_one();
-    let payload = tokio::time::timeout(Duration::from_secs(2), inbox_rx.recv_or_cancel(None))
-        .await
-        .expect("event arrives in time")
-        .expect("event present");
-    assert_eq!(payload["event_type"], "context.compaction_failed");
+    let payload = recv_inbox_event(&mut inbox_rx).await;
+    assert_eq!(payload["event_type"], COMPACTION_FAILED_EVENT);
     let err_text = payload["payload"]["error"].as_str().expect("error string");
     assert!(
         err_text.contains("upstream timeout"),
@@ -617,9 +557,10 @@ async fn background_summarizer_uses_snapshot_not_live_messages() {
     )));
 
     gate.notify_one();
-    let _ = tokio::time::timeout(Duration::from_secs(2), inbox_rx.recv_or_cancel(None))
-        .await
-        .expect("event arrives in time");
+    let started = recv_inbox_event(&mut inbox_rx).await;
+    assert_eq!(started["event_type"], COMPACTION_STARTED_EVENT);
+    let completed = recv_inbox_event(&mut inbox_rx).await;
+    assert_eq!(completed["event_type"], COMPACTION_COMPLETED_EVENT);
 
     let transcript = captured_transcript.lock().unwrap().clone().unwrap();
     assert!(
@@ -702,9 +643,10 @@ async fn previous_summary_is_passed_to_summarizer_on_subsequent_pass() {
     }
 
     gate.notify_one();
-    let _ = tokio::time::timeout(Duration::from_secs(2), inbox_rx.recv_or_cancel(None))
-        .await
-        .expect("event arrives in time");
+    let started = recv_inbox_event(&mut inbox_rx).await;
+    assert_eq!(started["event_type"], COMPACTION_STARTED_EVENT);
+    let completed = recv_inbox_event(&mut inbox_rx).await;
+    assert_eq!(completed["event_type"], COMPACTION_COMPLETED_EVENT);
 
     let prev = captured_previous.lock().unwrap().clone().unwrap();
     assert_eq!(

@@ -8,7 +8,8 @@ use awaken_contract::contract::message::{Message, Role, Visibility};
 use awaken_contract::contract::transform::estimate_message_tokens;
 
 use super::plugin::{
-    CompactionAction, CompactionBoundary, CompactionFailure, CompactionInFlight, CompactionStateKey,
+    CompactionAction, CompactionBoundary, CompactionFailure, CompactionInFlight, CompactionSkipped,
+    CompactionStateKey,
 };
 use super::summarizer::{MIN_COMPACTION_GAIN_TOKENS, extract_previous_summary, render_transcript};
 use crate::state::{MutationBatch, StateStore};
@@ -17,6 +18,13 @@ use crate::state::{MutationBatch, StateStore};
 pub const COMPACTION_COMPLETED_EVENT: &str = "context.compacted";
 /// Custom event type emitted when a background compaction task fails.
 pub const COMPACTION_FAILED_EVENT: &str = "context.compaction_failed";
+/// Custom event type emitted when a background compaction task starts.
+pub const COMPACTION_STARTED_EVENT: &str = "compaction.started";
+/// Custom event type emitted when a background compaction task is not applied.
+pub const COMPACTION_SKIPPED_EVENT: &str = "compaction.skipped";
+
+pub const COMPACTION_SKIP_REASON_MIN_SAVINGS_RATIO: &str = "min_savings_ratio";
+const RATIO_PPM: f64 = 1_000_000.0;
 
 /// Find a safe compaction boundary in the message history.
 ///
@@ -90,6 +98,11 @@ pub fn record_compaction_failure(
     failure: super::plugin::CompactionFailure,
 ) -> super::plugin::CompactionAction {
     super::plugin::CompactionAction::RecordFailure(failure)
+}
+
+/// Record a skipped background compaction attempt in the state store.
+pub fn record_compaction_skipped(skipped: CompactionSkipped) -> CompactionAction {
+    CompactionAction::RecordSkipped(skipped)
 }
 
 /// Inputs needed to run a compaction off the main thread. Snapshotted at
@@ -170,6 +183,20 @@ pub fn record_compaction_in_flight(in_flight: CompactionInFlight) -> CompactionA
 /// success and failure of the background pass.
 pub fn clear_compaction_in_flight() -> CompactionAction {
     CompactionAction::ClearInFlight
+}
+
+/// Estimate the token cost of the summary message that would be inserted.
+pub fn summary_message_tokens(summary_text: &str) -> usize {
+    estimate_message_tokens(&summary_message(summary_text))
+}
+
+/// Calculate a deterministic savings ratio in parts per million.
+pub fn compaction_savings_ratio_ppm(pre_tokens: usize, post_tokens: usize) -> u32 {
+    if pre_tokens == 0 || post_tokens >= pre_tokens {
+        return 0;
+    }
+    let ratio = (pre_tokens - post_tokens) as f64 / pre_tokens as f64;
+    ratio_to_ppm(ratio)
 }
 
 /// Detect and handle a context-compaction event arriving via the inbox.
@@ -288,6 +315,79 @@ pub fn try_consume_compaction_event(
                 );
             }
         }
+        e if e == COMPACTION_SKIPPED_EVENT => {
+            let prior_in_flight = store
+                .read::<CompactionStateKey>()
+                .and_then(|state| state.in_flight);
+            let boundary_message_id = inner
+                .and_then(|p| p.get("boundary_message_id"))
+                .and_then(|v| v.as_str())
+                .filter(|value| !value.trim().is_empty())
+                .map(ToOwned::to_owned)
+                .or_else(|| {
+                    prior_in_flight
+                        .as_ref()
+                        .map(|in_flight| in_flight.boundary_message_id.clone())
+                })
+                .unwrap_or_default();
+            let reason = inner
+                .and_then(|p| p.get("reason"))
+                .and_then(|v| v.as_str())
+                .filter(|value| !value.trim().is_empty())
+                .unwrap_or("unknown")
+                .to_string();
+            let pre_tokens = inner
+                .and_then(|p| p.get("pre_tokens"))
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0) as usize;
+            let post_tokens = inner
+                .and_then(|p| p.get("post_tokens"))
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0) as usize;
+            let savings_ratio_ppm = inner
+                .and_then(|p| p.get("savings_ratio_ppm"))
+                .and_then(|v| v.as_u64())
+                .unwrap_or_else(|| {
+                    inner
+                        .and_then(|p| p.get("savings_ratio"))
+                        .and_then(|v| v.as_f64())
+                        .map(ratio_to_ppm)
+                        .unwrap_or_else(|| compaction_savings_ratio_ppm(pre_tokens, post_tokens))
+                        .into()
+                }) as u32;
+            let min_savings_ratio_ppm = inner
+                .and_then(|p| p.get("min_savings_ratio_ppm"))
+                .and_then(|v| v.as_u64())
+                .unwrap_or_else(|| {
+                    inner
+                        .and_then(|p| p.get("min_savings_ratio"))
+                        .and_then(|v| v.as_f64())
+                        .map(ratio_to_ppm)
+                        .unwrap_or(0)
+                        .into()
+                }) as u32;
+            let mut batch = MutationBatch::new();
+            batch.update::<CompactionStateKey>(CompactionAction::RecordSkipped(
+                CompactionSkipped {
+                    task_id: prior_in_flight.map(|in_flight| in_flight.task_id),
+                    boundary_message_id,
+                    reason,
+                    pre_tokens,
+                    post_tokens,
+                    savings_ratio_ppm,
+                    min_savings_ratio_ppm,
+                    timestamp_ms: now_ms(),
+                },
+            ));
+            batch.update::<CompactionStateKey>(CompactionAction::ClearInFlight);
+            if let Err(error) = store.commit(batch) {
+                tracing::warn!(
+                    error = %error,
+                    "failed to clear in-flight marker after skipped compaction"
+                );
+            }
+        }
+        e if e == COMPACTION_STARTED_EVENT => {}
         _ => {}
     }
     true
@@ -300,7 +400,12 @@ fn compaction_event_type(payload: &serde_json::Value) -> Option<&str> {
     payload
         .get("event_type")
         .and_then(|t| t.as_str())
-        .filter(|t| *t == COMPACTION_COMPLETED_EVENT || *t == COMPACTION_FAILED_EVENT)
+        .filter(|t| {
+            *t == COMPACTION_COMPLETED_EVENT
+                || *t == COMPACTION_FAILED_EVENT
+                || *t == COMPACTION_STARTED_EVENT
+                || *t == COMPACTION_SKIPPED_EVENT
+        })
 }
 
 fn now_ms() -> u64 {
@@ -330,9 +435,7 @@ pub fn apply_summary(
         .map(|m| estimate_message_tokens(m))
         .sum();
     messages.drain(..=idx);
-    let summary_message = Arc::new(Message::internal_system(format!(
-        "<conversation-summary>\n{summary_text}\n</conversation-summary>"
-    )));
+    let summary_message = summary_message(summary_text);
     let post_tokens = estimate_message_tokens(&summary_message);
     messages.insert(0, summary_message);
     Some(AppliedCompaction {
@@ -340,6 +443,19 @@ pub fn apply_summary(
         pre_tokens,
         post_tokens,
     })
+}
+
+fn summary_message(summary_text: &str) -> Arc<Message> {
+    Arc::new(Message::internal_system(format!(
+        "<conversation-summary>\n{summary_text}\n</conversation-summary>"
+    )))
+}
+
+fn ratio_to_ppm(ratio: f64) -> u32 {
+    if !ratio.is_finite() {
+        return 0;
+    }
+    ratio.clamp(0.0, 1.0).mul_add(RATIO_PPM, 0.0).round() as u32
 }
 
 #[cfg(test)]

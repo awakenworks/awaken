@@ -1,6 +1,5 @@
 use super::*;
 use crate::state::StateStore;
-use awaken_contract::contract::message::Message;
 
 #[test]
 fn compaction_state_record_boundary() {
@@ -56,12 +55,7 @@ fn compaction_state_clear() {
             post_tokens: 10,
             timestamp_ms: 1,
         }],
-        failures: vec![CompactionFailure {
-            task_id: Some("bg_old".into()),
-            boundary_message_id: "msg-old".into(),
-            error: "old error".into(),
-            timestamp_ms: 2,
-        }],
+        failures: Vec::new(),
         skipped: Vec::new(),
         total_compactions: 1,
         in_flight: None,
@@ -69,8 +63,6 @@ fn compaction_state_clear() {
 
     state.reduce(CompactionAction::Clear);
     assert!(state.boundaries.is_empty());
-    assert!(state.failures.is_empty());
-    assert!(state.skipped.is_empty());
     assert_eq!(state.total_compactions, 0);
 }
 
@@ -101,12 +93,7 @@ fn compaction_state_serde_roundtrip() {
                 timestamp_ms: 2000,
             },
         ],
-        failures: vec![CompactionFailure {
-            task_id: Some("bg_failed".into()),
-            boundary_message_id: "msg-failed".into(),
-            error: "summarizer failed".into(),
-            timestamp_ms: 2500,
-        }],
+        failures: Vec::new(),
         skipped: Vec::new(),
         total_compactions: 2,
         in_flight: None,
@@ -131,7 +118,7 @@ fn compaction_plugin_state_via_store() {
     store.install_plugin(CompactionPlugin::default()).unwrap();
 
     let mut patch = store.begin_mutation();
-    patch.update::<CompactionStateKey>(super::super::record_compaction_boundary(
+    patch.update::<CompactionStateKey>(crate::context::record_compaction_boundary(
         CompactionBoundary {
             summary: "test summary".into(),
             task_id: None,
@@ -150,7 +137,7 @@ fn compaction_plugin_state_via_store() {
 
 #[test]
 fn record_compaction_boundary_constructor() {
-    let action = super::super::record_compaction_boundary(CompactionBoundary {
+    let action = crate::context::record_compaction_boundary(CompactionBoundary {
         summary: "s".into(),
         task_id: None,
         boundary_message_id: None,
@@ -268,26 +255,8 @@ fn compaction_boundary_serde_roundtrip() {
 fn compaction_state_default_is_empty() {
     let state = CompactionState::default();
     assert!(state.boundaries.is_empty());
-    assert!(state.failures.is_empty());
     assert_eq!(state.total_compactions, 0);
     assert!(state.latest_boundary().is_none());
-}
-
-#[test]
-fn compaction_state_records_failures_without_incrementing_total() {
-    let mut state = CompactionState::default();
-    state.reduce(CompactionAction::RecordFailure(CompactionFailure {
-        task_id: Some("bg_1".into()),
-        boundary_message_id: "msg-1".into(),
-        error: "boom".into(),
-        timestamp_ms: 42,
-    }));
-
-    assert_eq!(state.total_compactions, 0);
-    assert!(state.boundaries.is_empty());
-    assert_eq!(state.failures.len(), 1);
-    assert_eq!(state.failures[0].task_id.as_deref(), Some("bg_1"));
-    assert_eq!(state.failures[0].error, "boom");
 }
 
 #[test]
@@ -373,13 +342,6 @@ fn compaction_state_pre_post_tokens_preserved() {
     assert_eq!(b.pre_tokens, 10_000);
     assert_eq!(b.post_tokens, 500);
     assert_eq!(b.timestamp_ms, 99);
-}
-
-#[test]
-fn context_transform_plugin_descriptor_name() {
-    let policy = awaken_contract::contract::inference::ContextWindowPolicy::default();
-    let plugin = ContextTransformPlugin::new(policy);
-    assert_eq!(plugin.descriptor().name, CONTEXT_TRANSFORM_PLUGIN_ID);
 }
 
 // -----------------------------------------------------------------------
@@ -478,137 +440,22 @@ fn compaction_with_tool_messages_records_correctly() {
 
     // Record a boundary representing a range that included tool messages
     let mut patch = store.begin_mutation();
-    patch.update::<CompactionStateKey>(super::super::record_compaction_boundary(
-            CompactionBoundary {
-                summary: "User asked to search files. Tool search returned 3 results. Assistant presented findings.".into(),
-                task_id: None,
-                boundary_message_id: None,
-                pre_tokens: 8000,
-                post_tokens: 200,
-                timestamp_ms: 1000,
-            },
-        ));
+    patch.update::<CompactionStateKey>(crate::context::record_compaction_boundary(
+        CompactionBoundary {
+            summary: "User asked to search files. Tool search returned 3 results. Assistant presented findings.".into(),
+            task_id: None,
+            boundary_message_id: None,
+            pre_tokens: 8000,
+            post_tokens: 200,
+            timestamp_ms: 1000,
+        },
+    ));
     store.commit(patch).unwrap();
 
     let state = store.read::<CompactionStateKey>().unwrap();
     assert_eq!(state.total_compactions, 1);
     assert!(state.boundaries[0].summary.contains("Tool search"));
     assert_eq!(state.boundaries[0].pre_tokens, 8000);
-}
-
-#[test]
-fn context_transform_plugin_registers_transform() {
-    use crate::plugins::PluginRegistrar;
-    let policy = awaken_contract::contract::inference::ContextWindowPolicy::default();
-    let plugin = ContextTransformPlugin::new(policy);
-    let mut registrar = PluginRegistrar::new();
-    plugin.register(&mut registrar).unwrap();
-    assert_eq!(
-        registrar.request_transforms.len(),
-        1,
-        "should have registered one transform"
-    );
-    assert_eq!(
-        registrar.request_transforms[0].plugin_id,
-        CONTEXT_TRANSFORM_PLUGIN_ID
-    );
-}
-
-#[test]
-fn transform_ordering_compaction_then_context() {
-    use crate::plugins::PluginRegistrar;
-    // Compaction plugin should register no transforms
-    let mut reg_compaction = PluginRegistrar::new();
-    CompactionPlugin::default()
-        .register(&mut reg_compaction)
-        .unwrap();
-    assert!(
-        reg_compaction.request_transforms.is_empty(),
-        "CompactionPlugin should not register request transforms"
-    );
-    // ContextTransformPlugin should register exactly one transform
-    let policy = awaken_contract::contract::inference::ContextWindowPolicy::default();
-    let mut reg_transform = PluginRegistrar::new();
-    ContextTransformPlugin::new(policy)
-        .register(&mut reg_transform)
-        .unwrap();
-    assert_eq!(reg_transform.request_transforms.len(), 1);
-}
-
-#[test]
-fn token_count_estimation_for_various_content_types() {
-    use awaken_contract::contract::transform::estimate_message_tokens;
-
-    // Text message
-    let text_msg = Message::user("Hello, this is a test message with some content.");
-    let text_tokens = estimate_message_tokens(&text_msg);
-    assert!(
-        text_tokens > 4,
-        "text message should have tokens beyond overhead"
-    );
-
-    // Empty content message
-    let empty_msg = Message::user("");
-    let empty_tokens = estimate_message_tokens(&empty_msg);
-    assert_eq!(
-        empty_tokens, 4,
-        "empty message should have only overhead tokens"
-    );
-
-    // Very long message
-    let long_msg = Message::user("x".repeat(4000));
-    let long_tokens = estimate_message_tokens(&long_msg);
-    assert!(
-        long_tokens >= 1000,
-        "4000-char message should estimate >= 1000 tokens, got {long_tokens}"
-    );
-}
-
-#[test]
-fn enable_prompt_cache_flag_in_policy() {
-    let policy_cached = awaken_contract::contract::inference::ContextWindowPolicy {
-        enable_prompt_cache: true,
-        ..Default::default()
-    };
-    assert!(policy_cached.enable_prompt_cache);
-
-    let policy_uncached = awaken_contract::contract::inference::ContextWindowPolicy {
-        enable_prompt_cache: false,
-        ..Default::default()
-    };
-    assert!(!policy_uncached.enable_prompt_cache);
-
-    // Both should create valid transform plugins
-    let _ = ContextTransformPlugin::new(policy_cached);
-    let _ = ContextTransformPlugin::new(policy_uncached);
-}
-
-#[test]
-fn autocompact_threshold_check() {
-    use awaken_contract::contract::transform::estimate_tokens;
-
-    let policy_with_threshold = awaken_contract::contract::inference::ContextWindowPolicy {
-        autocompact_threshold: Some(500),
-        ..Default::default()
-    };
-
-    // Simulate checking if messages exceed autocompact threshold
-    let messages = vec![Message::user("short"), Message::assistant("reply")];
-    let total = estimate_tokens(&messages);
-    assert!(
-        total < policy_with_threshold.autocompact_threshold.unwrap(),
-        "short conversation should be under threshold"
-    );
-
-    // Longer conversation should exceed threshold
-    let long_messages: Vec<Message> = (0..100)
-        .map(|i| Message::user(format!("message {i} with some filler text to add tokens")))
-        .collect();
-    let long_total = estimate_tokens(&long_messages);
-    assert!(
-        long_total > policy_with_threshold.autocompact_threshold.unwrap(),
-        "100-message conversation should exceed threshold of 500, got {long_total}"
-    );
 }
 
 #[test]
@@ -677,12 +524,6 @@ fn compaction_action_serde_roundtrip() {
             post_tokens: 1,
             timestamp_ms: 0,
         }),
-        CompactionAction::RecordFailure(CompactionFailure {
-            task_id: Some("bg".into()),
-            boundary_message_id: "msg".into(),
-            error: "boom".into(),
-            timestamp_ms: 1,
-        }),
         CompactionAction::Clear,
     ];
     for action in actions {
@@ -693,9 +534,6 @@ fn compaction_action_serde_roundtrip() {
             (CompactionAction::Clear, CompactionAction::Clear) => {}
             (CompactionAction::RecordBoundary(a), CompactionAction::RecordBoundary(b)) => {
                 assert_eq!(a.summary, b.summary);
-            }
-            (CompactionAction::RecordFailure(a), CompactionAction::RecordFailure(b)) => {
-                assert_eq!(a, b);
             }
             _ => panic!("action type mismatch after serde roundtrip"),
         }

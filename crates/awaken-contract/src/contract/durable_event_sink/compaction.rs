@@ -13,6 +13,7 @@ pub(super) struct CompactionObservation {
     in_flight: Option<CompactionInFlight>,
     completed_fingerprints: BTreeSet<String>,
     failed_fingerprints: BTreeSet<String>,
+    skipped_fingerprints: BTreeSet<String>,
     cancelled_fingerprints: BTreeSet<String>,
     max_total_compactions: u64,
 }
@@ -45,6 +46,7 @@ impl ScopedAgentEventNormalizer {
             let previous_in_flight = observation.in_flight.clone();
             self.plan_compaction_completed(state, &mut observation, &mut planned);
             self.plan_compaction_failed(state, &mut observation, &mut planned);
+            self.plan_compaction_skipped(state, &mut observation, &mut planned);
             self.plan_compaction_cancelled(
                 state,
                 previous_in_flight.as_ref(),
@@ -209,6 +211,65 @@ impl ScopedAgentEventNormalizer {
         }
     }
 
+    fn plan_compaction_skipped(
+        &self,
+        state: &Value,
+        observation: &mut CompactionObservation,
+        planned: &mut Vec<(&'static str, Value)>,
+    ) {
+        let Some(skipped_entries) = state.get("skipped").and_then(Value::as_array) else {
+            return;
+        };
+        for (index, skipped) in skipped_entries.iter().enumerate() {
+            let task_id = non_blank_string(skipped, "task_id");
+            let boundary_message_id =
+                non_blank_string(skipped, "boundary_message_id").unwrap_or_default();
+            let reason = non_blank_string(skipped, "reason").unwrap_or_else(|| "unknown".into());
+            let pre_tokens = skipped
+                .get("pre_tokens")
+                .and_then(Value::as_u64)
+                .unwrap_or(0);
+            let post_tokens = skipped
+                .get("post_tokens")
+                .and_then(Value::as_u64)
+                .unwrap_or(0);
+            let savings_ratio_ppm = skipped
+                .get("savings_ratio_ppm")
+                .and_then(Value::as_u64)
+                .unwrap_or(0);
+            let min_savings_ratio_ppm = skipped
+                .get("min_savings_ratio_ppm")
+                .and_then(Value::as_u64)
+                .unwrap_or(0);
+            let timestamp_ms = skipped
+                .get("timestamp_ms")
+                .and_then(Value::as_u64)
+                .unwrap_or(0);
+            let fingerprint = format!(
+                "skipped/{index}/{timestamp_ms}/{}/{boundary_message_id}/{reason}/{pre_tokens}/{post_tokens}/{savings_ratio_ppm}/{min_savings_ratio_ppm}",
+                task_id.as_deref().unwrap_or_default()
+            );
+            if !observation.skipped_fingerprints.insert(fingerprint) {
+                continue;
+            }
+            let mut payload = json!({
+                "thread_id": self.context.thread_id.as_str(),
+                "skip_index": index,
+                "boundary_message_id": boundary_message_id,
+                "reason": reason,
+                "pre_tokens": pre_tokens,
+                "post_tokens": post_tokens,
+                "savings_ratio_ppm": savings_ratio_ppm,
+                "min_savings_ratio_ppm": min_savings_ratio_ppm,
+                "timestamp_ms": timestamp_ms,
+            });
+            if let Some(task_id) = task_id {
+                payload["task_id"] = Value::String(task_id);
+            }
+            planned.push(("ContextCompactionSkipped", payload));
+        }
+    }
+
     fn plan_compaction_cancelled(
         &self,
         state: &Value,
@@ -255,6 +316,7 @@ fn reset_after_clear(state: &Value, observation: &mut CompactionObservation) {
         observation.in_flight = None;
         observation.completed_fingerprints.clear();
         observation.failed_fingerprints.clear();
+        observation.skipped_fingerprints.clear();
         observation.cancelled_fingerprints.clear();
     }
     observation.max_total_compactions = total_compactions;
@@ -285,6 +347,14 @@ fn state_has_terminal_for_in_flight(state: &Value, in_flight: &CompactionInFligh
                 failures
                     .iter()
                     .any(|failure| compaction_entry_matches_in_flight(failure, in_flight))
+            })
+        || state
+            .get("skipped")
+            .and_then(Value::as_array)
+            .is_some_and(|skipped_entries| {
+                skipped_entries
+                    .iter()
+                    .any(|skipped| compaction_entry_matches_in_flight(skipped, in_flight))
             })
 }
 
