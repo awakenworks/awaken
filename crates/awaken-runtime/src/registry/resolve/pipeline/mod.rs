@@ -186,16 +186,6 @@ fn resolve_model_and_executor(
     registries: &RegistrySet,
     spec: &AgentSpec,
 ) -> Result<(Arc<dyn LlmExecutor>, String, ModelSpec), ResolveError> {
-    let model = registries
-        .models
-        .get_model(&spec.model_id)
-        .ok_or_else(|| ResolveError::ModelNotFound(spec.model_id.clone()))?;
-
-    let executor = registries
-        .providers
-        .get_provider(&model.provider_id)
-        .ok_or_else(|| ResolveError::ProviderNotFound(model.provider_id.clone()))?;
-
     let policy = spec
         .config::<crate::engine::RetryConfigKey>()
         .map_err(|error| match error {
@@ -208,6 +198,22 @@ fn resolve_model_and_executor(
             }
             other => ResolveError::EnvBuild(other),
         })?;
+
+    // A model id may name a pool; pools share the model id namespace and the
+    // agent id is the deterministic home key.
+    if let Some(pool) = registries.models.get_pool(&spec.model_id) {
+        return super::pool::build_pool_executor(registries, &pool, &spec.id, &policy);
+    }
+
+    let model = registries
+        .models
+        .get_model(&spec.model_id)
+        .ok_or_else(|| ResolveError::ModelNotFound(spec.model_id.clone()))?;
+
+    let executor = registries
+        .providers
+        .get_provider(&model.provider_id)
+        .ok_or_else(|| ResolveError::ProviderNotFound(model.provider_id.clone()))?;
 
     let executor = if policy.max_retries > 0 || !policy.fallback_upstream_models.is_empty() {
         Arc::new(crate::engine::RetryingExecutor::new(executor, policy)) as Arc<dyn LlmExecutor>

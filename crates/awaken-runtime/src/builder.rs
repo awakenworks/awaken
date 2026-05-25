@@ -7,7 +7,7 @@ use awaken_contract::contract::commit_coordinator::CommitCoordinator;
 use awaken_contract::contract::executor::LlmExecutor;
 use awaken_contract::contract::storage::ThreadRunStore;
 use awaken_contract::contract::tool::Tool;
-use awaken_contract::registry_spec::{AgentSpec, ModelSpec};
+use awaken_contract::registry_spec::{AgentSpec, ModelPoolSpec, ModelSpec};
 
 #[cfg(feature = "a2a")]
 use crate::backend::ExecutionBackendFactory;
@@ -146,6 +146,16 @@ impl AgentRuntimeBuilder {
             return self;
         }
         if let Err(e) = self.models.register_model(spec) {
+            self.errors.push(e);
+        }
+        self
+    }
+
+    /// Register a model pool. The id is extracted from `spec.id` and shares the
+    /// model id namespace, so an `AgentSpec.model_id` may reference it exactly
+    /// like a single model.
+    pub fn with_model_pool(mut self, spec: ModelPoolSpec) -> Self {
+        if let Err(e) = self.models.register_model_pool(spec) {
             self.errors.push(e);
         }
         self

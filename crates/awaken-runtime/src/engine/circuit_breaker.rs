@@ -115,6 +115,23 @@ impl CircuitBreaker {
         }
     }
 
+    /// Read-only health peek: would [`check`](Self::check) currently admit a
+    /// request to `model`? Unlike `check`, this never mutates state (no
+    /// Open→HalfOpen transition, no probe consumption), so callers can build a
+    /// health mask over many models without spending half-open probes.
+    pub fn is_available(&self, model: &str) -> bool {
+        let states = self.states.read();
+        match states.get(model) {
+            None => true,
+            Some(state) => match state.status {
+                CircuitStatus::Closed => true,
+                // Cooldown elapsed → check() would transition to half-open and admit.
+                CircuitStatus::Open => state.last_failure.elapsed() >= self.config.cooldown,
+                CircuitStatus::HalfOpen => state.half_open_attempts < self.config.half_open_max,
+            },
+        }
+    }
+
     /// Record a successful request to `model`, resetting the circuit to closed.
     pub fn record_success(&self, model: &str) {
         let mut states = self.states.write();
@@ -260,6 +277,42 @@ mod tests {
         }
         assert!(cb.check("model-a").is_err());
         assert!(cb.check("model-b").is_ok());
+    }
+
+    #[test]
+    fn is_available_true_for_unknown_and_closed() {
+        let cb = CircuitBreaker::new(fast_config());
+        assert!(cb.is_available("never-seen"));
+        cb.record_failure("m");
+        assert!(cb.is_available("m"), "below threshold stays available");
+    }
+
+    #[test]
+    fn is_available_false_while_open_within_cooldown() {
+        let cb = CircuitBreaker::new(fast_config());
+        for _ in 0..3 {
+            cb.record_failure("m");
+        }
+        assert!(!cb.is_available("m"), "open within cooldown is unavailable");
+    }
+
+    #[test]
+    fn is_available_true_after_cooldown_without_mutating() {
+        let config = CircuitBreakerConfig {
+            failure_threshold: 2,
+            cooldown: Duration::from_millis(10),
+            half_open_max: 1,
+        };
+        let cb = CircuitBreaker::new(config);
+        cb.record_failure("m");
+        cb.record_failure("m");
+        std::thread::sleep(Duration::from_millis(15));
+        // Peek twice: must stay available (no half-open probe consumed) since
+        // it is read-only, unlike check().
+        assert!(cb.is_available("m"));
+        assert!(cb.is_available("m"));
+        // And check() still gets its full probe budget afterwards.
+        assert!(cb.check("m").is_ok());
     }
 
     #[test]

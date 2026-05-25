@@ -19,9 +19,9 @@ use awaken_contract::contract::lifecycle::TerminationReason;
 use awaken_contract::contract::tool::{
     ToolCallContext, ToolDescriptor, ToolError, ToolOutput, ToolResult,
 };
-use awaken_contract::registry_spec::ModelSpec;
 #[cfg(feature = "a2a")]
 use awaken_contract::registry_spec::RemoteEndpoint;
+use awaken_contract::registry_spec::{ModelPoolSpec, ModelSpec};
 use serde_json::Value;
 #[cfg(feature = "a2a")]
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -208,6 +208,89 @@ fn make_spec(id: &str) -> AgentSpec {
         system_prompt: "You are helpful.".into(),
         ..Default::default()
     }
+}
+
+/// Build a `RegistrySet` with the given member models, a pool over them, one
+/// provider, and one agent whose `model_id` is the pool id.
+fn build_pool_registries(
+    models: Vec<ModelSpec>,
+    pool: ModelPoolSpec,
+    provider_id: &str,
+    executor: Arc<dyn LlmExecutor>,
+    spec: AgentSpec,
+) -> RegistrySet {
+    let mut model_reg = MapModelRegistry::new();
+    for model in models {
+        model_reg
+            .register_model(model)
+            .expect("duplicate model in test");
+    }
+    model_reg
+        .register_model_pool(pool)
+        .expect("duplicate pool in test");
+
+    let mut provider_reg = MapProviderRegistry::new();
+    provider_reg
+        .register_provider(provider_id, executor)
+        .expect("duplicate provider in test");
+
+    let mut agent_reg = MapAgentSpecRegistry::new();
+    agent_reg
+        .register_spec(spec)
+        .expect("duplicate agent in test");
+
+    RegistrySet {
+        agents: Arc::new(agent_reg),
+        tools: Arc::new(MapToolRegistry::new()),
+        models: Arc::new(model_reg),
+        providers: Arc::new(provider_reg),
+        plugins: Arc::new(MapPluginSource::new()),
+        #[cfg(feature = "a2a")]
+        backends: Arc::new(MapBackendRegistry::with_default_remote_backends())
+            as Arc<dyn BackendRegistry>,
+    }
+}
+
+#[test]
+fn resolve_pool_succeeds_with_placeholder_upstream() {
+    let spec = AgentSpec {
+        model_id: "my-pool".into(),
+        ..make_spec("agent-1")
+    };
+    let regs = build_pool_registries(
+        vec![
+            ModelSpec::new("m0", "p", "m0-upstream"),
+            ModelSpec::new("m1", "p", "m1-upstream"),
+        ],
+        ModelPoolSpec::new("my-pool", ["m0", "m1"]),
+        "p",
+        Arc::new(MockExecutor),
+        spec,
+    );
+
+    let run = resolve(&regs, "agent-1").expect("pool model_id resolves");
+    assert_eq!(run.id(), "agent-1");
+    // The pool overrides the per-request upstream model per member, so the
+    // resolved stand-in is the pool id rather than any single member.
+    assert_eq!(run.upstream_model, "my-pool");
+}
+
+#[test]
+fn resolve_pool_missing_member_model_errors() {
+    let spec = AgentSpec {
+        model_id: "my-pool".into(),
+        ..make_spec("agent-1")
+    };
+    let regs = build_pool_registries(
+        vec![ModelSpec::new("m0", "p", "m0-upstream")],
+        ModelPoolSpec::new("my-pool", ["m0", "m9"]),
+        "p",
+        Arc::new(MockExecutor),
+        spec,
+    );
+
+    let err = resolve(&regs, "agent-1").unwrap_err();
+    assert!(matches!(err, ResolveError::ModelNotFound(ref id) if id == "m9"));
 }
 
 // -- Tests --

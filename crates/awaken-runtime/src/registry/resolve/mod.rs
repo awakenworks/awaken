@@ -2,6 +2,7 @@
 
 mod error;
 mod pipeline;
+mod pool;
 
 pub use error::ResolveError;
 pub(crate) use pipeline::DynamicRegistryResolver;

@@ -1,6 +1,7 @@
 //! In-memory HashMap-backed registry implementations.
 
 use std::collections::HashMap;
+use std::ops::{Deref, DerefMut};
 use std::sync::Arc;
 
 #[cfg(feature = "a2a")]
@@ -17,8 +18,8 @@ use super::traits::BackendRegistry;
 use super::traits::{
     AgentSpecRegistry, ModelRegistry, PluginSource, ProviderRegistry, ToolRegistry,
 };
-use awaken_contract::registry_spec::{AgentSpec, ModelSpec};
-use awaken_contract::validate_model_spec_struct;
+use awaken_contract::registry_spec::{AgentSpec, ModelPoolSpec, ModelSpec};
+use awaken_contract::{validate_model_pool_spec_struct, validate_model_spec_struct};
 
 // ---------------------------------------------------------------------------
 // MapRegistry<V> — generic in-memory registry
@@ -89,7 +90,6 @@ impl<V: Clone> MapRegistry<V> {
 // ---------------------------------------------------------------------------
 
 pub type MapToolRegistry = MapRegistry<Arc<dyn Tool>>;
-pub type MapModelRegistry = MapRegistry<ModelSpec>;
 pub type MapProviderRegistry = MapRegistry<Arc<dyn LlmExecutor>>;
 pub type MapAgentSpecRegistry = MapRegistry<AgentSpec>;
 pub type MapPluginSource = MapRegistry<Arc<dyn Plugin>>;
@@ -112,7 +112,46 @@ impl MapToolRegistry {
     }
 }
 
+/// In-memory model registry holding both single models and model pools in one
+/// id namespace.
+///
+/// Derefs to the inner model `MapRegistry<ModelSpec>` so existing model-only
+/// call sites (`get`, `ids`, `register_model`, …) keep working unchanged; pool
+/// entries live in a parallel map and are reached via the [`ModelRegistry`]
+/// pool methods.
+pub struct MapModelRegistry {
+    models: MapRegistry<ModelSpec>,
+    pools: MapRegistry<ModelPoolSpec>,
+}
+
+impl Default for MapModelRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Deref for MapModelRegistry {
+    type Target = MapRegistry<ModelSpec>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.models
+    }
+}
+
+impl DerefMut for MapModelRegistry {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.models
+    }
+}
+
 impl MapModelRegistry {
+    pub fn new() -> Self {
+        Self {
+            models: MapRegistry::new(),
+            pools: MapRegistry::new(),
+        }
+    }
+
     /// Register a `ModelSpec`, extracting the id from `spec.id`.
     ///
     /// This is the single registration chokepoint for every entry point
@@ -122,9 +161,32 @@ impl MapModelRegistry {
     /// enter a registry with values `validate_model_spec` would reject.
     pub fn register_model(&mut self, spec: ModelSpec) -> Result<(), BuildError> {
         validate_model_spec_struct(&spec)?;
+        if self.pools.contains_key(&spec.id) {
+            return Err(BuildError::ModelRegistryConflict(format!(
+                "model '{}' already registered as a pool",
+                spec.id
+            )));
+        }
         let id = spec.id.clone();
-        self.register(id, spec, |msg| {
+        self.models.register(id, spec, |msg| {
             BuildError::ModelRegistryConflict(format!("model {msg}"))
+        })
+    }
+
+    /// Register a `ModelPoolSpec`, extracting the id from `spec.id`. Validated
+    /// via [`validate_model_pool_spec_struct`]; the id must not collide with a
+    /// model or another pool (single shared id namespace).
+    pub fn register_model_pool(&mut self, spec: ModelPoolSpec) -> Result<(), BuildError> {
+        validate_model_pool_spec_struct(&spec)?;
+        if self.models.contains_key(&spec.id) {
+            return Err(BuildError::ModelRegistryConflict(format!(
+                "pool '{}' already registered as a model",
+                spec.id
+            )));
+        }
+        let id = spec.id.clone();
+        self.pools.register(id, spec, |msg| {
+            BuildError::ModelRegistryConflict(format!("model pool {msg}"))
         })
     }
 }
@@ -212,11 +274,19 @@ impl ToolRegistry for MapToolRegistry {
 
 impl ModelRegistry for MapModelRegistry {
     fn get_model(&self, id: &str) -> Option<ModelSpec> {
-        self.get_cloned(id)
+        self.models.get_cloned(id)
     }
 
     fn model_ids(&self) -> Vec<String> {
-        self.ids()
+        self.models.ids()
+    }
+
+    fn get_pool(&self, id: &str) -> Option<ModelPoolSpec> {
+        self.pools.get_cloned(id)
+    }
+
+    fn pool_ids(&self) -> Vec<String> {
+        self.pools.ids()
     }
 }
 

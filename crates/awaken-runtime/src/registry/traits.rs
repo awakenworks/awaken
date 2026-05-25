@@ -8,7 +8,7 @@ use crate::plugins::Plugin;
 use awaken_contract::contract::executor::LlmExecutor;
 use awaken_contract::contract::tool::Tool;
 
-use awaken_contract::registry_spec::{AgentSpec, ModelSpec};
+use awaken_contract::registry_spec::{AgentSpec, ModelPoolSpec, ModelSpec};
 
 // ---------------------------------------------------------------------------
 // ToolRegistry
@@ -36,6 +36,20 @@ pub trait ModelRegistry: Send + Sync {
     fn get_model(&self, id: &str) -> Option<ModelSpec>;
     /// List all registered model IDs.
     fn model_ids(&self) -> Vec<String>;
+
+    /// Get a model **pool** spec by its ID, if the id names a pool.
+    ///
+    /// Pools share the model id namespace: an `AgentSpec.model_id` resolves to
+    /// either a [`ModelSpec`] (single model) or a [`ModelPoolSpec`] (pool).
+    /// Registries that do not support pools return `None` (the default).
+    fn get_pool(&self, _id: &str) -> Option<ModelPoolSpec> {
+        None
+    }
+
+    /// List all registered pool IDs. Empty by default.
+    fn pool_ids(&self) -> Vec<String> {
+        Vec::new()
+    }
 }
 
 // ---------------------------------------------------------------------------
