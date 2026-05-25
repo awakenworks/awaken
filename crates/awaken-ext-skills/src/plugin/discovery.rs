@@ -6,6 +6,8 @@ use async_trait::async_trait;
 use awaken_contract::StateError;
 use awaken_contract::contract::context_message::ContextMessage;
 use awaken_contract::model::Phase;
+use awaken_contract::registry_spec::AgentSpec;
+use awaken_contract::state::MutationBatch;
 use awaken_runtime::plugins::{Plugin, PluginDescriptor, PluginRegistrar};
 use awaken_runtime::state::StateKeyOptions;
 use awaken_runtime::{PhaseContext, PhaseHook, StateCommand};
@@ -14,7 +16,10 @@ use crate::SKILLS_DISCOVERY_PLUGIN_ID;
 use crate::registry::SkillRegistry;
 use crate::skill::SkillMeta;
 use crate::state::SkillState;
-use crate::visibility::{SkillVisibility, SkillVisibilityStateKey, SkillVisibilityStateValue};
+use crate::visibility::{
+    DefaultSkillVisibilityPolicy, SkillVisibility, SkillVisibilityAction, SkillVisibilityPolicy,
+    SkillVisibilityStateKey, SkillVisibilityStateValue,
+};
 
 /// Injects a skills catalog into the LLM context so the model can discover and activate skills.
 #[derive(Clone)]
@@ -52,6 +57,20 @@ impl SkillDiscoveryPlugin {
         s.replace('&', "&amp;")
             .replace('<', "&lt;")
             .replace('>', "&gt;")
+    }
+
+    /// Compute initial per-skill visibility from the registry using the default
+    /// policy (ADR-0020 D3): a skill starts `Hidden` if `disable-model-invocation`
+    /// is set or it is path-conditional, otherwise `Visible`.
+    pub(crate) fn seed_visibility_entries(&self) -> Vec<(String, SkillVisibility)> {
+        let metas: Vec<SkillMeta> = self
+            .registry
+            .snapshot()
+            .values()
+            .map(|s| s.meta().clone())
+            .collect();
+        let refs: Vec<&SkillMeta> = metas.iter().collect();
+        DefaultSkillVisibilityPolicy.seed(&refs)
     }
 
     pub(crate) fn render_catalog(
@@ -214,6 +233,20 @@ impl Plugin for SkillDiscoveryPlugin {
 
         Ok(())
     }
+
+    /// Seed run-scoped skill visibility at run start (ADR-0020 D3) so that
+    /// `disable-model-invocation` and path-conditional skills start `Hidden`.
+    fn on_activate(
+        &self,
+        _agent_spec: &AgentSpec,
+        patch: &mut MutationBatch,
+    ) -> Result<(), StateError> {
+        let entries = self.seed_visibility_entries();
+        if !entries.is_empty() {
+            patch.update::<SkillVisibilityStateKey>(SkillVisibilityAction::SetBatch { entries });
+        }
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -342,5 +375,85 @@ mod tests {
         let s = plugin.render_catalog(&active, None);
         assert!(s.contains("truncated"));
         assert_eq!(s.matches("<skill>").count(), 2);
+    }
+
+    // --- Visibility seeding (ADR-0020 D3) -----------------------------------
+
+    fn hidden_meta(id: &str) -> SkillMeta {
+        let mut m = mock_meta(id);
+        m.model_invocable = false; // frontmatter `disable-model-invocation: true`
+        m
+    }
+
+    fn path_conditional_meta(id: &str) -> SkillMeta {
+        let mut m = mock_meta(id);
+        m.paths = vec!["src/**/*.rs".to_string()];
+        m
+    }
+
+    #[test]
+    fn seed_visibility_entries_classifies_by_metadata() {
+        use std::collections::HashMap;
+        let skills: Vec<Arc<dyn Skill>> = vec![
+            Arc::new(MockSkill(mock_meta("visible"))),
+            Arc::new(MockSkill(hidden_meta("no_model_invoke"))),
+            Arc::new(MockSkill(path_conditional_meta("conditional"))),
+        ];
+        let plugin = SkillDiscoveryPlugin::new(make_registry(skills));
+
+        let entries: HashMap<String, SkillVisibility> =
+            plugin.seed_visibility_entries().into_iter().collect();
+
+        assert_eq!(entries.get("visible"), Some(&SkillVisibility::Visible));
+        assert_eq!(
+            entries.get("no_model_invoke"),
+            Some(&SkillVisibility::Hidden),
+            "disable-model-invocation skills must seed Hidden"
+        );
+        assert_eq!(
+            entries.get("conditional"),
+            Some(&SkillVisibility::Hidden),
+            "path-conditional skills must seed Hidden until promoted"
+        );
+    }
+
+    #[test]
+    fn on_activate_seeds_visibility_state_key() {
+        use awaken_contract::registry_spec::AgentSpec;
+        use awaken_contract::state::MutationBatch;
+
+        let skills: Vec<Arc<dyn Skill>> = vec![Arc::new(MockSkill(hidden_meta("no_model_invoke")))];
+        let plugin = SkillDiscoveryPlugin::new(make_registry(skills));
+
+        let spec = AgentSpec::new("agent");
+        let mut batch = MutationBatch::new();
+        Plugin::on_activate(&plugin, &spec, &mut batch).unwrap();
+
+        assert!(
+            !batch.is_empty(),
+            "on_activate must seed the visibility state when skills exist"
+        );
+    }
+
+    #[test]
+    fn seeded_visibility_excludes_hidden_skill_from_catalog() {
+        let skills: Vec<Arc<dyn Skill>> = vec![
+            Arc::new(MockSkill(mock_meta("shown"))),
+            Arc::new(MockSkill(hidden_meta("nope"))),
+        ];
+        let plugin = SkillDiscoveryPlugin::new(make_registry(skills));
+
+        // Apply the seed exactly as SkillVisibilityStateKey::apply(SetBatch) would.
+        let mut state = SkillVisibilityStateValue::default();
+        for (id, vis) in plugin.seed_visibility_entries() {
+            state.modes.insert(id, vis);
+        }
+
+        let catalog = plugin.render_catalog(&HashSet::new(), Some(&state));
+        assert!(catalog.contains("<name>shown</name>"));
+        assert!(
+            !catalog.contains("<name>nope</name>"),
+            "disable-model-invocation skill must not appear in the catalog"
+        );
     }
 }
