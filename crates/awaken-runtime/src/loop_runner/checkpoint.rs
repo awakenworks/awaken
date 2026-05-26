@@ -13,7 +13,7 @@ use awaken_contract::contract::event::AgentEvent;
 use awaken_contract::contract::event_sink::EventSink;
 use awaken_contract::contract::identity::RunIdentity;
 use awaken_contract::contract::lifecycle::{RunStatus, TerminationReason};
-use awaken_contract::contract::message::{Message, Role};
+use awaken_contract::contract::message::{Message, Role, Visibility};
 use awaken_contract::contract::storage::{
     MessageSeqRange, RunMessageInput, RunMessageOutput, RunOutcome, RunRecord, RunWaitingState,
     RunWaitingTicket, ThreadRunStore, WaitingReason,
@@ -270,7 +270,7 @@ pub(super) async fn persist_checkpoint(
     const MAX_APPEND_ATTEMPTS: usize = 8;
     for _ in 0..MAX_APPEND_ATTEMPTS {
         let committed_messages = storage
-            .load_messages(&run_identity.thread_id)
+            .load_committed_messages(&run_identity.thread_id)
             .await
             .map_err(|e| AgentLoopError::StorageError(e.to_string()))?
             .unwrap_or_default();
@@ -550,7 +550,7 @@ fn infer_input_from_initial_messages(
 }
 
 fn is_run_output_message(message: &Message) -> bool {
-    matches!(message.role, Role::Assistant | Role::Tool)
+    message.visibility == Visibility::All && matches!(message.role, Role::Assistant | Role::Tool)
 }
 
 #[cfg(test)]

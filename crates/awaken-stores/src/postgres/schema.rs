@@ -101,6 +101,7 @@ impl PostgresStore {
             ("position", "BIGINT"),
             ("delivery_mode", "JSONB"),
             ("created_at_ms", "BIGINT"),
+            ("pending_revision", "BIGINT NOT NULL DEFAULT 1"),
         ];
         for (column, ty) in message_migrations {
             let sql = format!(

@@ -157,6 +157,16 @@ pub fn inbox_messages_payload(messages: Vec<Message>) -> serde_json::Value {
     })
 }
 
+pub fn pending_boundary_wake_payload() -> serde_json::Value {
+    serde_json::json!({
+        "kind": "pending_boundary_wake",
+    })
+}
+
+pub fn is_pending_boundary_wake_payload(json: &serde_json::Value) -> bool {
+    json.get("kind").and_then(|kind| kind.as_str()) == Some("pending_boundary_wake")
+}
+
 /// Convert any inbox payload into messages for the owner agent.
 ///
 /// Unknown payloads are treated as background-task events to preserve the
@@ -327,6 +337,17 @@ mod tests {
         );
         assert_eq!(messages[0].visibility, Visibility::All);
         assert_eq!(messages[0].text(), "live steering");
+    }
+
+    #[test]
+    fn pending_boundary_wake_payload_is_detectable_and_not_a_message() {
+        let payload = pending_boundary_wake_payload();
+        assert!(is_pending_boundary_wake_payload(&payload));
+        assert!(
+            inbox_payload_messages(&payload)[0]
+                .text()
+                .contains("pending_boundary_wake")
+        );
     }
 
     #[test]

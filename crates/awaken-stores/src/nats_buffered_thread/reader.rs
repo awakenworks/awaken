@@ -120,6 +120,38 @@ pub async fn load_messages<T: ThreadRunStore + Send + Sync + 'static>(
     store.inner.load_messages(thread_id).await
 }
 
+/// Raw committed log (no read-time view filter), mirroring [`load_messages`]
+/// but delegating to the inner store's `load_committed_messages` and skipping
+/// `strip_unpaired_tool_calls_*` so the append version guard / seq see the
+/// durable log.
+pub async fn load_committed_messages<T: ThreadRunStore + Send + Sync + 'static>(
+    store: &NatsBufferedThreadStore<T>,
+    thread_id: &str,
+) -> Result<Option<Vec<Message>>, StorageError> {
+    match store.config.read_consistency {
+        ReadConsistency::Eventual => return store.inner.load_committed_messages(thread_id).await,
+        ReadConsistency::Strong => {
+            store.force_flush(thread_id).await?;
+            return store.inner.load_committed_messages(thread_id).await;
+        }
+        ReadConsistency::ReadYourWrites => {}
+    }
+
+    recovery::reconcile_thread_tail(store, thread_id).await?;
+    let meta = hot_meta::read_meta(&store.kv_hot, thread_id).await?;
+    let flushed_seq = hot_meta::read_flushed_seq(&store.kv_hot, thread_id).await?;
+
+    if meta.latest_seq <= flushed_seq {
+        return store.inner.load_committed_messages(thread_id).await;
+    }
+
+    if let Some(latest_entry) = read_committed_wal_entry(store, &meta).await? {
+        return Ok(Some(latest_entry.messages));
+    }
+
+    store.inner.load_committed_messages(thread_id).await
+}
+
 async fn list_all_inner_thread_ids<T: ThreadRunStore + Send + Sync + 'static>(
     store: &NatsBufferedThreadStore<T>,
 ) -> Result<Vec<String>, StorageError> {

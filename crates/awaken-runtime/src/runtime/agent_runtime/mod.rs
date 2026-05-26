@@ -89,6 +89,18 @@ impl RunHandle {
         }
         inbox_tx.try_send(crate::inbox::inbox_messages_payload(messages))
     }
+
+    /// Wake the running loop so it freezes pending messages without adding an
+    /// inbox message.
+    pub(crate) fn wake_pending_boundary(&self) -> bool {
+        let Some(inbox_tx) = self.inbox_tx.as_ref() else {
+            return false;
+        };
+        if inbox_tx.is_closed() {
+            return false;
+        }
+        inbox_tx.try_send(crate::inbox::pending_boundary_wake_payload())
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -490,6 +502,21 @@ async fn run_live_forwarder(
                 } else {
                     // Channel full or closed between the `is_closed` check
                     // and the send; treat as non-delivery.
+                    drop(receipt);
+                }
+            }
+            LiveRunCommand::PendingBoundaryWake => {
+                let Some(tx) = inbox_tx.as_ref() else {
+                    drop(receipt);
+                    continue;
+                };
+                if tx.is_closed() {
+                    drop(receipt);
+                    break;
+                }
+                if tx.try_send(crate::inbox::pending_boundary_wake_payload()) {
+                    receipt.ack();
+                } else {
                     drop(receipt);
                 }
             }

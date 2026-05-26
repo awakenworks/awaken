@@ -1,7 +1,7 @@
 //! Main agent loop orchestration.
 
 use crate::context::{TruncationState, try_consume_compaction_event};
-use crate::inbox::inbox_payload_messages;
+use crate::inbox::{inbox_payload_messages, is_pending_boundary_wake_payload};
 use crate::state::StateStore;
 use awaken_contract::contract::event::AgentEvent;
 use awaken_contract::contract::lifecycle::{RunStatus, TerminationReason};
@@ -47,7 +47,12 @@ async fn apply_inbox_payloads_at_boundary(
 ) -> Result<bool, AgentLoopError> {
     let mut inbox_messages = Vec::new();
     let mut changed = false;
+    let mut wake_pending = false;
     for payload in payloads {
+        if is_pending_boundary_wake_payload(&payload) {
+            wake_pending = true;
+            continue;
+        }
         if try_consume_compaction_event(messages, &payload, store) {
             changed = true;
             continue;
@@ -55,6 +60,10 @@ async fn apply_inbox_payloads_at_boundary(
         inbox_messages.extend(inbox_payload_messages(&payload));
     }
     if inbox_messages.is_empty() {
+        if wake_pending {
+            let frozen = apply_pending_boundary(pending_boundary, boundary, messages).await?;
+            return Ok(changed || frozen);
+        }
         return Ok(changed);
     }
 

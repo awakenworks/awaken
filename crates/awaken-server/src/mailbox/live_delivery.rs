@@ -4,7 +4,9 @@ use tokio::sync::mpsc;
 
 use awaken_contract::contract::event::AgentEvent;
 use awaken_contract::contract::lifecycle::RunStatus;
-use awaken_contract::contract::mailbox::{RunDispatch, RunDispatchStatus};
+use awaken_contract::contract::mailbox::{
+    LiveDeliveryOutcome, LiveRunCommand, RunDispatch, RunDispatchStatus,
+};
 use awaken_contract::contract::message::{DeliveryGranularity, DeliveryMode, Message};
 
 use super::{
@@ -44,12 +46,24 @@ impl Mailbox {
                 return Ok(None);
             }
             if self.pending_thread_run_store.is_some() {
-                self.deliver(
-                    thread_id,
-                    &messages,
-                    DeliveryMode::next_step(DeliveryGranularity::Batch),
-                )
-                .await?;
+                let appended = self
+                    .deliver(
+                        thread_id,
+                        &messages,
+                        DeliveryMode::next_step(DeliveryGranularity::Batch),
+                    )
+                    .await?;
+                if !self.executor.wake_pending_boundary(&active_run_id) {
+                    if let Some(store) = self.pending_thread_run_store.as_ref() {
+                        let pending_ids = appended
+                            .iter()
+                            .map(|record| record.pending_id.clone())
+                            .collect::<Vec<_>>();
+                        self.cleanup_appended_pending_messages(store, thread_id, &pending_ids)
+                            .await;
+                    }
+                    return Ok(None);
+                }
                 return Ok(Some(MailboxSubmitResult {
                     dispatch_id: active_dispatch_id,
                     run_id: active_run_id,
@@ -90,13 +104,30 @@ impl Mailbox {
                 .dispatch_id
                 .clone()
                 .unwrap_or_else(|| remote_run.run_id.clone());
-            let run_id = remote_run.run_id;
-            self.deliver(
-                thread_id,
-                &messages,
-                DeliveryMode::next_step(DeliveryGranularity::Batch),
-            )
-            .await?;
+            let target = live_target_for_run(&remote_run);
+            let run_id = remote_run.run_id.clone();
+            let appended = self
+                .deliver(
+                    thread_id,
+                    &messages,
+                    DeliveryMode::next_step(DeliveryGranularity::Batch),
+                )
+                .await?;
+            let outcome = self
+                .store
+                .deliver_live_to(&target, LiveRunCommand::PendingBoundaryWake)
+                .await?;
+            if matches!(outcome, LiveDeliveryOutcome::NoSubscriber) {
+                if let Some(store) = self.pending_thread_run_store.as_ref() {
+                    let pending_ids = appended
+                        .iter()
+                        .map(|record| record.pending_id.clone())
+                        .collect::<Vec<_>>();
+                    self.cleanup_appended_pending_messages(store, thread_id, &pending_ids)
+                        .await;
+                }
+                return Ok(None);
+            }
             return Ok(Some(MailboxSubmitResult {
                 dispatch_id,
                 run_id,
@@ -113,12 +144,12 @@ impl Mailbox {
             .store
             .deliver_live_to(
                 &live_target_for_run(&remote_run),
-                awaken_contract::contract::mailbox::LiveRunCommand::Messages(messages),
+                LiveRunCommand::Messages(messages),
             )
             .await?;
         match outcome {
-            awaken_contract::contract::mailbox::LiveDeliveryOutcome::Delivered => {}
-            awaken_contract::contract::mailbox::LiveDeliveryOutcome::NoSubscriber => {
+            LiveDeliveryOutcome::Delivered => {}
+            LiveDeliveryOutcome::NoSubscriber => {
                 return Ok(None);
             }
         }

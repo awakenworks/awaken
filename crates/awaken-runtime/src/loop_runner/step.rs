@@ -452,11 +452,7 @@ struct InferencePhaseOutput {
     /// to the next `user` message after the completed tools execute,
     /// telling the model which call was lost so it can choose to retry.
     cancelled_tool_hint: Option<awaken_contract::contract::executor::InFlightTool>,
-    /// Content-addressed ids of the tools that were actually presented
-    /// to the LLM on this turn (post-`apply_tool_filter_payloads`,
-    /// post-frontend-tool injection). Threaded into the `AfterInference`
-    /// phase context so observability stamps the GenAI span with the
-    /// real wire list. F2.
+    /// Content-addressed ids of tools presented to the LLM on this turn.
     effective_tool_ids: Vec<String>,
 }
 
@@ -482,7 +478,7 @@ async fn run_inference_phase(
         }
     }
 
-    // Read context messages from persistent store (populated by AddContextMessage handler)
+    // Read context messages populated by AddContextMessage.
     let context_msgs = take_context_messages(store)?;
 
     let has_system_prompt = !ctx.agent.system_prompt().is_empty();
@@ -490,7 +486,12 @@ async fn run_inference_phase(
     if has_system_prompt {
         request_messages.push(Message::system(ctx.agent.system_prompt()));
     }
-    request_messages.extend(ctx.messages.iter().map(|m| (**m).clone()));
+    request_messages.extend(
+        ctx.messages
+            .iter()
+            .filter(|m| !m.is_internal_tool_result())
+            .map(|m| (**m).clone()),
+    );
 
     if !context_msgs.is_empty() {
         apply_context_messages(&mut request_messages, context_msgs, has_system_prompt);
@@ -498,13 +499,7 @@ async fn run_inference_phase(
 
     let mut tools = ctx.agent.tool_descriptors();
     apply_tool_filter_payloads(&mut tools, exclusion_payloads, inclusion_payloads);
-    // F2: derive tool_desc_ids from the *final* tool list (after
-    // `apply_tool_filter_payloads` and any frontend-tool injection by
-    // the orchestrator). Threaded out via `InferencePhaseOutput` so
-    // `execute_step` stamps it onto the AfterInference PhaseContext —
-    // which is what the observability hook reads when constructing the
-    // GenAISpan. This replaces the BeforeInferenceHook's stale
-    // approximation derived from `agent_spec.allowed_tools`.
+    // Derive tool ids from the final list after filters and frontend injection.
     let effective_tool_ids: Vec<String> = tools
         .iter()
         .map(|td| {

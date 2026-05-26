@@ -1,12 +1,4 @@
 //! File-system storage backend.
-//!
-//! Layout:
-//! ```text
-//! <base_path>/
-//!   threads/<thread_id>.json         — Thread
-//!   messages/<thread_id>.json        — Vec<Message>
-//!   runs/<run_id>.json               — RunRecord
-//! ```
 use std::collections::HashMap;
 use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, OnceLock, Weak};
@@ -34,16 +26,12 @@ mod pending;
 pub struct FileStore {
     base_path: PathBuf,
     hierarchy_lock: Arc<Mutex<()>>,
-    /// In-process mutex serialising config CAS (read-check-write) operations.
-    ///
-    /// FileStore's CAS is process-local; cross-process atomicity is not
-    /// guaranteed. For multi-process deployments use PostgresStore.
+    /// Process-local mutex serialising config CAS operations.
     config_cas_lock: Arc<Mutex<()>>,
 }
 
 impl FileStore {
-    /// Create a new file store rooted at `base_path`.
-    ///
+    /// Create a file store rooted at `base_path`.
     pub fn new(base_path: impl Into<PathBuf>) -> Self {
         let base_path = base_path.into();
         if let Err(error) = recover_checkpoint_journal_sync(&base_path) {
@@ -356,6 +344,8 @@ impl FileStore {
         messages: impl IntoIterator<Item = Message>,
         ops: &mut Vec<StagedFileOp>,
     ) -> Result<Vec<MessageRecord>, StorageError> {
+        let messages = messages.into_iter().collect::<Vec<_>>();
+        message_append::validate_append_only_delta(&[], &messages)?;
         let mut appended = Vec::new();
         for (index, message) in messages.into_iter().enumerate() {
             let seq = start_seq + index as u64;
@@ -381,6 +371,7 @@ impl FileStore {
             .iter()
             .map(|record| record.message.clone())
             .collect::<Vec<_>>();
+        message_append::validate_append_only_delta(&merged, delta)?;
         message_append::merge_checkpoint_append_messages(&mut merged, delta);
         self.stage_replace_message_records(thread_id, &merged, ops)
             .await?;
@@ -611,8 +602,7 @@ pub(crate) async fn atomic_write(
     }
     Ok(())
 }
-/// Like [`atomic_write`] but fails with [`StorageError::AlreadyExists`] if the
-/// target file already exists, using `O_CREAT | O_EXCL` to avoid TOCTOU races.
+/// Like [`atomic_write`] but fails if the target file already exists.
 async fn atomic_write_exclusive(
     dir: &Path,
     filename: &str,
@@ -828,9 +818,7 @@ fn cleanup_orphan_checkpoint_backups_sync(base_dir: &Path) {
     }
 }
 
-/// Write content to a temp file in `dir`, fsync it, and return the staged write
-/// without performing the rename. The caller is responsible for calling
-/// [`commit_staged_writes`] to atomically install all staged files.
+/// Write and fsync a temp file, returning a staged write for later commit.
 async fn stage_write(
     dir: &Path,
     filename: &str,
@@ -1163,6 +1151,22 @@ impl ThreadStore for FileStore {
         Ok(Some(strip_unpaired_tool_calls_from_owned_view(messages)))
     }
 
+    async fn load_committed_messages(
+        &self,
+        thread_id: &str,
+    ) -> Result<Option<Vec<Message>>, StorageError> {
+        validate_id(thread_id, "thread id")?;
+        let Some(records) = self
+            .load_committed_message_records_locked(thread_id)
+            .await?
+        else {
+            return Ok(None);
+        };
+        Ok(Some(
+            records.into_iter().map(|record| record.message).collect(),
+        ))
+    }
+
     async fn load_message_records(
         &self,
         thread_id: &str,
@@ -1490,11 +1494,7 @@ impl ConfigStore for FileStore {
         Ok(())
     }
 
-    /// Atomic compare-and-set for the config revision field.
-    ///
-    /// Atomicity is in-process only (via `config_cas_lock`). Cross-process
-    /// writers to the same file-system path are not protected. For multi-process
-    /// deployments use `PostgresStore` which uses `SELECT FOR UPDATE`.
+    /// Process-local compare-and-set for the config revision field.
     async fn put_if_revision(
         &self,
         namespace: &str,

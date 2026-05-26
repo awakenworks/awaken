@@ -267,6 +267,14 @@ impl ThreadStore for InMemoryStore {
         }))
     }
 
+    async fn load_committed_messages(
+        &self,
+        thread_id: &str,
+    ) -> Result<Option<Vec<Message>>, StorageError> {
+        let guard = self.messages.read().await;
+        Ok(guard.get(thread_id).cloned())
+    }
+
     async fn list_message_records(
         &self,
         thread_id: &str,
@@ -314,6 +322,7 @@ impl ThreadStore for InMemoryStore {
     ) -> Result<Vec<awaken_contract::contract::message::MessageRecord>, StorageError> {
         let mut guard = self.messages.write().await;
         let existing = guard.entry(thread_id.to_owned()).or_default();
+        message_append::validate_append_only_delta(existing, messages)?;
         let start_seq = existing.len() as u64 + 1;
         existing.extend(messages.iter().cloned());
         Ok(messages
@@ -480,6 +489,7 @@ impl ThreadRunStore for InMemoryStore {
             return Err(StorageError::VersionConflict { expected, actual });
         }
         let committed = msg_guard.entry(thread_id.to_owned()).or_default();
+        message_append::validate_append_only_delta(committed, messages)?;
         message_append::merge_checkpoint_append_messages(committed, messages);
         let new_version = committed.len() as u64;
         let mut thread = existing_thread.unwrap_or_else(|| Thread::with_id(thread_id));

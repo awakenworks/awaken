@@ -19,7 +19,9 @@ use awaken_runtime::loop_runner::{AgentLoopError, AgentRunResult};
 use awaken_stores::{InMemoryMailboxStore, InMemoryStore, PendingMessageStore};
 
 use super::*;
-use crate::mailbox::{MailboxConfig, MailboxDispatchStatus, RunDispatchExecutor};
+use crate::mailbox::{
+    MailboxConfig, MailboxDispatchStatus, RunDispatchExecutor, live_target_for_run,
+};
 
 /// Test store that wraps an [`InMemoryStore`] and forces exactly one
 /// `VersionConflict` on the first `freeze_pending_message_records_with_run`
@@ -134,32 +136,44 @@ impl PendingMessageStore for ConflictOnceStore {
             .append_pending_message_records(thread_id, messages, delivery_mode)
             .await
     }
-    async fn update_pending_message_record(
+    async fn update_pending_message_record_checked(
         &self,
         thread_id: &str,
         pending_id: &str,
+        expected_revision: Option<u64>,
         message: Message,
     ) -> Result<PendingMessageRecord, StorageError> {
         self.inner
-            .update_pending_message_record(thread_id, pending_id, message)
+            .update_pending_message_record_checked(
+                thread_id,
+                pending_id,
+                expected_revision,
+                message,
+            )
             .await
     }
-    async fn retract_pending_message_record(
+    async fn retract_pending_message_record_checked(
         &self,
         thread_id: &str,
         pending_id: &str,
+        expected_revision: Option<u64>,
     ) -> Result<PendingMessageRecord, StorageError> {
         self.inner
-            .retract_pending_message_record(thread_id, pending_id)
+            .retract_pending_message_record_checked(thread_id, pending_id, expected_revision)
             .await
     }
-    async fn reorder_pending_message_records(
+    async fn reorder_pending_message_records_checked(
         &self,
         thread_id: &str,
+        expected_queue_revision: Option<u64>,
         ordered_pending_ids: &[String],
     ) -> Result<Vec<PendingMessageRecord>, StorageError> {
         self.inner
-            .reorder_pending_message_records(thread_id, ordered_pending_ids)
+            .reorder_pending_message_records_checked(
+                thread_id,
+                expected_queue_revision,
+                ordered_pending_ids,
+            )
             .await
     }
     async fn freeze_pending_message_records(
@@ -344,12 +358,28 @@ async fn pending_message_edit_after_freeze_returns_consumed_error() {
 
 #[tokio::test]
 async fn live_then_queue_stages_remote_running_input_as_next_step_pending() {
+    use awaken_contract::contract::mailbox::LiveRunCommand;
+    use futures::StreamExt;
+
     let mailbox_store = Arc::new(InMemoryMailboxStore::new());
     let thread_store = Arc::new(InMemoryStore::new());
     let mut run = created_run_record("thread-live-pending", "run-live-pending");
     run.status = RunStatus::Running;
     run.dispatch_id = Some("dispatch-live-pending".to_string());
     thread_store.create_run(&run).await.unwrap();
+    let subscriber = mailbox_store
+        .open_live_channel_for(&live_target_for_run(&run))
+        .await
+        .unwrap();
+    let captured = Arc::new(tokio::sync::Mutex::new(Vec::<LiveRunCommand>::new()));
+    let captured_clone = captured.clone();
+    let _forwarder = tokio::spawn(async move {
+        let mut subscriber = subscriber;
+        while let Some(entry) = subscriber.next().await {
+            captured_clone.lock().await.push(entry.command.clone());
+            entry.receipt.ack();
+        }
+    });
     let mailbox = Arc::new(Mailbox::new_with_pending_thread_run_store(
         Arc::new(NoopExecutor),
         mailbox_store.clone(),
@@ -369,6 +399,13 @@ async fn live_then_queue_stages_remote_running_input_as_next_step_pending() {
 
     assert_eq!(result.status, MailboxDispatchStatus::Running);
     assert_eq!(result.run_id, "run-live-pending");
+    assert!(
+        captured
+            .lock()
+            .await
+            .iter()
+            .any(|command| matches!(command, LiveRunCommand::PendingBoundaryWake))
+    );
     let pending = thread_store
         .load_pending_message_records("thread-live-pending")
         .await
@@ -508,7 +545,6 @@ async fn internal_wake_skips_pending() {
 
 #[tokio::test]
 async fn boundary_freeze_accumulates_run_input_across_freezes() {
-    use awaken_runtime::loop_runner::PendingBoundaryHandler;
     let thread_store = Arc::new(InMemoryStore::new());
     let mailbox = Arc::new(Mailbox::new_with_pending_thread_run_store(
         Arc::new(NoopExecutor),

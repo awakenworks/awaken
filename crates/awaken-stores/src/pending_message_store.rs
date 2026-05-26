@@ -24,17 +24,48 @@ pub trait PendingMessageStore: Send + Sync {
         thread_id: &str,
         pending_id: &str,
         message: Message,
+    ) -> Result<PendingMessageRecord, StorageError> {
+        self.update_pending_message_record_checked(thread_id, pending_id, None, message)
+            .await
+    }
+
+    async fn update_pending_message_record_checked(
+        &self,
+        thread_id: &str,
+        pending_id: &str,
+        expected_revision: Option<u64>,
+        message: Message,
     ) -> Result<PendingMessageRecord, StorageError>;
 
     async fn retract_pending_message_record(
         &self,
         thread_id: &str,
         pending_id: &str,
+    ) -> Result<PendingMessageRecord, StorageError> {
+        self.retract_pending_message_record_checked(thread_id, pending_id, None)
+            .await
+    }
+
+    async fn retract_pending_message_record_checked(
+        &self,
+        thread_id: &str,
+        pending_id: &str,
+        expected_revision: Option<u64>,
     ) -> Result<PendingMessageRecord, StorageError>;
 
     async fn reorder_pending_message_records(
         &self,
         thread_id: &str,
+        ordered_pending_ids: &[String],
+    ) -> Result<Vec<PendingMessageRecord>, StorageError> {
+        self.reorder_pending_message_records_checked(thread_id, None, ordered_pending_ids)
+            .await
+    }
+
+    async fn reorder_pending_message_records_checked(
+        &self,
+        thread_id: &str,
+        expected_queue_revision: Option<u64>,
         ordered_pending_ids: &[String],
     ) -> Result<Vec<PendingMessageRecord>, StorageError>;
 

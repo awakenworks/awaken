@@ -114,6 +114,9 @@ pub struct PendingMessageRecord {
     pub position: u64,
     /// Message payload that will be appended to committed history on freeze.
     pub message: Message,
+    /// Monotonic record revision for optimistic pending edits.
+    #[serde(default = "default_pending_revision")]
+    pub revision: u64,
     /// Delivery policy used by freeze to select this entry.
     #[serde(default)]
     pub delivery_mode: DeliveryMode,
@@ -142,11 +145,37 @@ impl PendingMessageRecord {
             thread_id: thread_id.into(),
             position,
             message,
+            revision: default_pending_revision(),
             delivery_mode,
             created_at: None,
             updated_at: None,
         }
     }
+}
+
+fn default_pending_revision() -> u64 {
+    1
+}
+
+#[must_use]
+pub fn pending_queue_revision(pending: &[PendingMessageRecord]) -> u64 {
+    const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+    const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
+
+    let mut hash = FNV_OFFSET;
+    for record in pending {
+        for byte in record.pending_id.as_bytes() {
+            hash ^= u64::from(*byte);
+            hash = hash.wrapping_mul(FNV_PRIME);
+        }
+        for value in [record.position, record.revision] {
+            for byte in value.to_le_bytes() {
+                hash ^= u64::from(byte);
+                hash = hash.wrapping_mul(FNV_PRIME);
+            }
+        }
+    }
+    hash
 }
 
 /// Select pending entries that a freeze should consume, returning their

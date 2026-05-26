@@ -212,6 +212,36 @@ mod live_forwarder {
     }
 
     #[tokio::test]
+    async fn pending_boundary_wake_variant_lands_in_inbox() {
+        let store = Arc::new(InMemoryMailboxStore::new());
+        let rt = make_runtime().with_mailbox_store(store.clone());
+        let (inbox_tx, mut inbox_rx) = crate::inbox::inbox_channel();
+        let (handle, _token, _rx) =
+            rt.create_run_channels_with_inbox("run-wake".into(), None, Some(inbox_tx));
+        rt.register_run("thread-wake", handle).unwrap();
+        settle().await;
+
+        store
+            .deliver_live_to(
+                &LiveRunTarget::new("thread-wake", "run-wake"),
+                LiveRunCommand::PendingBoundaryWake,
+            )
+            .await
+            .unwrap();
+
+        let mut received = None;
+        for _ in 0..50 {
+            if let Some(json) = inbox_rx.try_recv() {
+                received = Some(json);
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        let payload = received.expect("forwarder must deliver wake within 500ms");
+        assert!(crate::inbox::is_pending_boundary_wake_payload(&payload));
+    }
+
+    #[tokio::test]
     async fn cancel_variant_triggers_token() {
         let store = Arc::new(InMemoryMailboxStore::new());
         let rt = make_runtime().with_mailbox_store(store.clone());

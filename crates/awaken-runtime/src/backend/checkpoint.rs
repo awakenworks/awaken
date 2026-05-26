@@ -131,7 +131,7 @@ pub(super) async fn persist_remote_root_checkpoint(
     const MAX_APPEND_ATTEMPTS: usize = 8;
     for _ in 0..MAX_APPEND_ATTEMPTS {
         let committed_messages = storage
-            .load_messages(thread_id)
+            .load_committed_messages(thread_id)
             .await
             .map_err(|error| AgentLoopError::StorageError(error.to_string()))?
             .unwrap_or_default();

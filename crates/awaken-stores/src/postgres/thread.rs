@@ -87,35 +87,6 @@ impl PostgresStore {
         Ok(())
     }
 
-    pub(super) async fn upsert_committed_message_tx(
-        &self,
-        tx: &mut Transaction<'_, Postgres>,
-        thread_id: &str,
-        seq: u64,
-        message: &Message,
-    ) -> Result<(), StorageError> {
-        let data = serde_json::to_value(message)
-            .map_err(|e| StorageError::Serialization(e.to_string()))?;
-        let sql = format!(
-            "UPDATE {} SET data = $3, message_id = $4, updated_at = now()
-             WHERE thread_id = $1 AND seq = $2 AND COALESCE(state, 'committed') = 'committed'",
-            self.messages_table
-        );
-        let result = sqlx::query(&sql)
-            .bind(thread_id)
-            .bind(seq as i64)
-            .bind(data)
-            .bind(message.id.as_deref())
-            .execute(&mut **tx)
-            .await
-            .map_err(|e| StorageError::Io(e.to_string()))?;
-        if result.rows_affected() == 0 {
-            self.insert_committed_message_tx(tx, thread_id, seq, message)
-                .await?;
-        }
-        Ok(())
-    }
-
     pub(super) async fn replace_committed_messages_tx(
         &self,
         tx: &mut Transaction<'_, Postgres>,
@@ -561,6 +532,30 @@ impl ThreadStore for PostgresStore {
             .collect::<Vec<_>>();
         strip_unpaired_tool_calls_from_view(&mut messages);
         Ok(Some(messages))
+    }
+
+    async fn load_committed_messages(
+        &self,
+        thread_id: &str,
+    ) -> Result<Option<Vec<Message>>, StorageError> {
+        self.ensure_schema().await?;
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|e| StorageError::Io(e.to_string()))?;
+        let records = self
+            .load_committed_message_records_tx(&mut tx, thread_id)
+            .await?;
+        tx.commit()
+            .await
+            .map_err(|e| StorageError::Io(e.to_string()))?;
+        if records.is_empty() {
+            return Ok(None);
+        }
+        Ok(Some(
+            records.into_iter().map(|record| record.message).collect(),
+        ))
     }
 
     async fn load_message_records(

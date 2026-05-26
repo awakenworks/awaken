@@ -227,11 +227,11 @@ impl From<MailboxInterruptDetails> for MailboxInterrupt {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[non_exhaustive]
 pub enum LiveRunCommand {
-    /// Inject messages into the running agent's inbox. Agent picks them up
-    /// at the next step boundary (`turn-boundary` semantics).
+    /// Inject messages into the running agent's next step boundary inbox.
     Messages(Vec<Message>),
-    /// Cooperatively cancel the run (`immediate` semantics — triggers the
-    /// run's cancellation token).
+    /// Wake the owner run to consume already-staged pending messages.
+    PendingBoundaryWake,
+    /// Cooperatively cancel the run (`immediate` cancellation token).
     Cancel,
     /// Deliver tool-call resume decisions to the run.
     Decision(Vec<(String, ToolCallResume)>),
