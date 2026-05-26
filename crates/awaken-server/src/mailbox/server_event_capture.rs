@@ -288,15 +288,13 @@ impl Mailbox {
     /// Append the canonical checkpoint events (one `MessageCommitted` per new
     /// seq plus one `ThreadMessagesCheckpointed`) for a freeze/commit.
     ///
-    /// ADR-0042 D4 requires messages + run record + canonical events to land in
-    /// one boundary. The freeze transaction (`freeze_pending_message_records_with_run`)
-    /// commits messages + run atomically in the store crate, but these events
-    /// are published through the advisory outbox publisher, which that
-    /// transaction cannot reach. A failure here must therefore propagate rather
-    /// than be swallowed, so callers see the inconsistency instead of leaving
-    /// messages/run frozen with events/replay projection silently missing.
-    /// `repair_thread_message_checkpoint_events` is the recovery path that
-    /// re-derives these events from committed run records.
+    /// ADR-0042 D4 requires messages + run record + canonical events to share a
+    /// logical boundary. The freeze transaction commits messages + run
+    /// atomically in the store crate, but these events are published through the
+    /// advisory outbox publisher, which that transaction cannot reach. Callers
+    /// that have already committed state must treat failures here as repairable:
+    /// `repair_thread_message_checkpoint_events` re-derives missing events from
+    /// committed run records.
     pub(super) async fn record_thread_message_checkpoint_events(
         &self,
         thread_id: &str,

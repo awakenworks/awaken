@@ -690,13 +690,13 @@ impl awaken_contract::contract::commit_coordinator::OutboxServerEventPublisher
     }
 }
 
-// FIX #6: after a successful freeze the canonical checkpoint events go through
-// the advisory outbox publisher, which is outside the freeze transaction. A
-// publish failure must surface as an error instead of being silently swallowed,
-// so the remaining non-atomic window does not leave events/replay silently
-// missing without anyone noticing.
+// After a successful freeze the canonical checkpoint events go through the
+// advisory outbox publisher, which is outside the freeze transaction. A publish
+// failure must not turn the already-committed freeze into a caller-visible
+// failure, because that false negative can make clients retry and duplicate
+// user input. Startup repair re-derives the missing checkpoint events.
 #[tokio::test]
-async fn freeze_propagates_checkpoint_event_publish_failure() {
+async fn freeze_event_publish_failure_is_repairable_success() {
     let thread_store = Arc::new(InMemoryStore::new());
     let mailbox = Mailbox::new_with_pending_thread_run_store(
         Arc::new(NoopExecutor),
@@ -719,7 +719,7 @@ async fn freeze_propagates_checkpoint_event_publish_failure() {
     let mut record = created_run_record("thread-event-fail", "run-event-fail");
     let request =
         RunActivation::new("thread-event-fail", Vec::new()).with_run_id_hint("run-event-fail");
-    let error = mailbox
+    let frozen = mailbox
         .prepare_pending_boundary_for_run(
             &request,
             "thread-event-fail",
@@ -729,12 +729,22 @@ async fn freeze_propagates_checkpoint_event_publish_failure() {
             &empty_manifest(),
         )
         .await
-        .unwrap_err();
+        .expect("event publish failure after freeze commit is repairable");
 
+    assert_eq!(frozen, Some("run-event-fail".to_string()));
+    let committed = thread_store
+        .load_committed_messages("thread-event-fail")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(committed.len(), 1);
+    assert_eq!(committed[0].id.as_deref(), Some("evt-id"));
     assert!(
-        error
-            .to_string()
-            .contains("failed to record message committed event"),
-        "checkpoint event publish failure must propagate, got: {error}"
+        thread_store
+            .load_pending_message_records("thread-event-fail")
+            .await
+            .unwrap()
+            .is_empty(),
+        "successful freeze must consume pending instead of cleanup/retry"
     );
 }

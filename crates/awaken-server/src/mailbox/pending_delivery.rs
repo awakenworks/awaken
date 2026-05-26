@@ -373,25 +373,29 @@ impl Mailbox {
             *record = attempt_record;
             let mut appended_messages = existing_messages;
             appended_messages.extend(frozen.iter().map(|record| record.message.clone()));
-            // ADR-0042 D4: messages + run record commit atomically in the freeze
-            // transaction above; the canonical/server checkpoint events go through
-            // the advisory outbox publisher, which the store transaction cannot
-            // reach (it lives in the awaken-stores crate and opens its own backend
-            // transaction). Folding events into that transaction would require
-            // threading the OutboxServerEventPublisher through the
-            // PendingMessageStore trait across every backend — out of scope here.
-            // So a non-atomic window remains between freeze commit and event
-            // append; propagate any append failure instead of swallowing it so the
-            // inconsistency surfaces (recovery: repair_thread_message_checkpoint_events
-            // re-derives the events from committed run records).
-            self.record_thread_message_checkpoint_events(
+            // The freeze transaction has already committed messages + run
+            // record. Checkpoint events are repairable advisory projections
+            // published through a separate outbox path; failing the caller here
+            // would report a false negative and invite duplicate user-message
+            // retries. Startup repair re-derives missing checkpoint events from
+            // committed run records.
+            if let Err(error) = self
+                .record_thread_message_checkpoint_events(
+                    thread_id,
+                    run_id,
+                    &appended_messages,
+                    first_new_seq,
+                    last_new_seq,
+                )
+                .await
+            {
+                tracing::warn!(
                 thread_id,
                 run_id,
-                &appended_messages,
-                first_new_seq,
-                last_new_seq,
-            )
-            .await?;
+                error = %error,
+                "repairable checkpoint event publish failed after pending freeze commit"
+                );
+            }
             self.refresh_worker_checkpoint_cache(thread_id, &appended_messages, record)
                 .await;
             return Ok(Some(frozen));
