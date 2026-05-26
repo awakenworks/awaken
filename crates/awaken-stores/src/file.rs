@@ -371,8 +371,7 @@ impl FileStore {
             .iter()
             .map(|record| record.message.clone())
             .collect::<Vec<_>>();
-        message_append::validate_append_only_delta(&merged, delta)?;
-        message_append::merge_checkpoint_append_messages(&mut merged, delta);
+        message_append::merge_checkpoint_append_messages(&mut merged, delta)?;
         self.stage_replace_message_records(thread_id, &merged, ops)
             .await?;
         Ok(merged.len() as u64)

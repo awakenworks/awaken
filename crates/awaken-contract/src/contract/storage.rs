@@ -1199,8 +1199,7 @@ pub trait ThreadRunStore: ThreadStore + RunStore + Send + Sync {
             return Err(StorageError::VersionConflict { expected, actual });
         }
         let mut merged = existing;
-        message_append::validate_append_only_delta(&merged, messages)?;
-        message_append::merge_checkpoint_append_messages(&mut merged, messages);
+        message_append::merge_checkpoint_append_messages(&mut merged, messages)?;
         let new_version = merged.len() as u64;
         self.checkpoint(thread_id, &merged, run).await?;
         Ok(new_version)
