@@ -285,6 +285,18 @@ impl Mailbox {
         }
     }
 
+    /// Append the canonical checkpoint events (one `MessageCommitted` per new
+    /// seq plus one `ThreadMessagesCheckpointed`) for a freeze/commit.
+    ///
+    /// ADR-0042 D4 requires messages + run record + canonical events to land in
+    /// one boundary. The freeze transaction (`freeze_pending_message_records_with_run`)
+    /// commits messages + run atomically in the store crate, but these events
+    /// are published through the advisory outbox publisher, which that
+    /// transaction cannot reach. A failure here must therefore propagate rather
+    /// than be swallowed, so callers see the inconsistency instead of leaving
+    /// messages/run frozen with events/replay projection silently missing.
+    /// `repair_thread_message_checkpoint_events` is the recovery path that
+    /// re-derives these events from committed run records.
     pub(super) async fn record_thread_message_checkpoint_events(
         &self,
         thread_id: &str,
@@ -292,13 +304,13 @@ impl Mailbox {
         messages: &[Message],
         first_new_seq: u64,
         last_new_seq: u64,
-    ) {
+    ) -> Result<(), MailboxError> {
         if first_new_seq > last_new_seq {
-            return;
+            return Ok(());
         }
         for seq in first_new_seq..=last_new_seq {
             self.record_message_committed(thread_id, run_id, messages, seq)
-                .await;
+                .await?;
         }
         self.record_thread_messages_checkpointed(
             thread_id,
@@ -307,7 +319,8 @@ impl Mailbox {
             first_new_seq,
             last_new_seq,
         )
-        .await;
+        .await?;
+        Ok(())
     }
 
     pub(super) async fn repair_thread_message_checkpoint_events(
@@ -349,7 +362,7 @@ impl Mailbox {
                     range.from_seq,
                     range.to_seq,
                 )
-                .await;
+                .await?;
                 repaired += range.len() as usize;
             }
             if !page.has_more {
@@ -589,9 +602,9 @@ impl Mailbox {
         run_id: &str,
         messages: &[Message],
         seq: u64,
-    ) {
+    ) -> Result<(), MailboxError> {
         let Some(publisher) = &self.server_event_publisher else {
-            return;
+            return Ok(());
         };
         let origin = self.server_event_origin.clone();
         let Some(message) = seq
@@ -604,7 +617,7 @@ impl Mailbox {
                 seq,
                 "message checkpoint event sequence is out of range"
             );
-            return;
+            return Ok(());
         };
         let Some(message_id) = message.id.as_deref().filter(|id| !id.trim().is_empty()) else {
             tracing::warn!(
@@ -613,7 +626,7 @@ impl Mailbox {
                 seq,
                 "message checkpoint event missing message id"
             );
-            return;
+            return Ok(());
         };
         let parent_message_id = seq
             .checked_sub(2)
@@ -630,27 +643,23 @@ impl Mailbox {
             "parent_message_id": parent_message_id,
             "created_at": crate::time::now_millis(),
         });
-        let mut draft = match CanonicalEventDraft::new(
+        let kind = CanonicalEventKind::new("MessageCommitted").map_err(|error| {
+            tracing::error!(error = %error, "invalid message committed event kind");
+            MailboxError::Internal(format!("invalid message committed event kind: {error}"))
+        })?;
+        let mut draft = CanonicalEventDraft::new(
             vec![
                 EventScope::thread(thread_id.to_string()),
                 EventScope::run(run_id.to_string()),
             ],
-            match CanonicalEventKind::new("MessageCommitted") {
-                Ok(kind) => kind,
-                Err(error) => {
-                    tracing::error!(error = %error, "invalid message committed event kind");
-                    return;
-                }
-            },
+            kind,
             payload,
             origin.clone(),
-        ) {
-            Ok(draft) => draft,
-            Err(error) => {
-                tracing::error!(error = %error, thread_id, run_id, message_id, "invalid message committed event draft");
-                return;
-            }
-        };
+        )
+        .map_err(|error| {
+            tracing::error!(error = %error, thread_id, run_id, message_id, "invalid message committed event draft");
+            MailboxError::Internal(format!("invalid message committed event draft: {error}"))
+        })?;
         draft.visibility = EventVisibility::Public;
         draft.correlation_id = Some(run_id.to_string());
         let options = AppendOptions {
@@ -660,9 +669,11 @@ impl Mailbox {
             )),
             expected_prior_cursors: Default::default(),
         };
-        if let Err(error) = publisher.publish(draft, options).await {
+        publisher.publish(draft, options).await.map_err(|error| {
             tracing::error!(error = %error, thread_id, run_id, message_id, "failed to record message committed event");
-        }
+            MailboxError::Internal(format!("failed to record message committed event: {error}"))
+        })?;
+        Ok(())
     }
 
     async fn record_thread_messages_checkpointed(
@@ -672,9 +683,9 @@ impl Mailbox {
         messages: &[Message],
         first_new_seq: u64,
         last_new_seq: u64,
-    ) {
+    ) -> Result<(), MailboxError> {
         let Some(publisher) = &self.server_event_publisher else {
-            return;
+            return Ok(());
         };
         let origin = self.server_event_origin.clone();
         let message_ids = (first_new_seq..=last_new_seq)
@@ -693,27 +704,27 @@ impl Mailbox {
             "message_ids": message_ids,
             "created_at": crate::time::now_millis(),
         });
-        let mut draft = match CanonicalEventDraft::new(
+        let kind = CanonicalEventKind::new("ThreadMessagesCheckpointed").map_err(|error| {
+            tracing::error!(error = %error, "invalid thread messages checkpoint event kind");
+            MailboxError::Internal(format!(
+                "invalid thread messages checkpoint event kind: {error}"
+            ))
+        })?;
+        let mut draft = CanonicalEventDraft::new(
             vec![
                 EventScope::thread(thread_id.to_string()),
                 EventScope::run(run_id.to_string()),
             ],
-            match CanonicalEventKind::new("ThreadMessagesCheckpointed") {
-                Ok(kind) => kind,
-                Err(error) => {
-                    tracing::error!(error = %error, "invalid thread messages checkpoint event kind");
-                    return;
-                }
-            },
+            kind,
             payload,
             origin.clone(),
-        ) {
-            Ok(draft) => draft,
-            Err(error) => {
-                tracing::error!(error = %error, thread_id, run_id, "invalid thread messages checkpoint event draft");
-                return;
-            }
-        };
+        )
+        .map_err(|error| {
+            tracing::error!(error = %error, thread_id, run_id, "invalid thread messages checkpoint event draft");
+            MailboxError::Internal(format!(
+                "invalid thread messages checkpoint event draft: {error}"
+            ))
+        })?;
         draft.visibility = EventVisibility::Public;
         draft.correlation_id = Some(run_id.to_string());
         let options = AppendOptions {
@@ -723,9 +734,13 @@ impl Mailbox {
             )),
             expected_prior_cursors: Default::default(),
         };
-        if let Err(error) = publisher.publish(draft, options).await {
+        publisher.publish(draft, options).await.map_err(|error| {
             tracing::error!(error = %error, thread_id, run_id, "failed to record thread messages checkpoint event");
-        }
+            MailboxError::Internal(format!(
+                "failed to record thread messages checkpoint event: {error}"
+            ))
+        })?;
+        Ok(())
     }
 }
 

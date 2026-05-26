@@ -242,8 +242,23 @@ impl Mailbox {
         let Some(store) = self.pending_thread_run_store.as_ref() else {
             return Ok(None);
         };
+        // Capture the originally persisted prior input once, before any attempt
+        // mutates `record`. Each retry must merge trigger ids against this
+        // original prior — never against a record a failed attempt already
+        // mutated — otherwise a VersionConflict retry re-merges the failed
+        // attempt's ids as "prior" and accumulates phantom trigger ids that were
+        // never frozen (ADR-0042 D4: one run drains pending over several turns,
+        // but only successfully frozen ids belong in RunRecord.input).
+        let original_prior_trigger_ids = record
+            .input
+            .as_ref()
+            .map(|prior| prior.trigger_message_ids.clone())
+            .unwrap_or_default();
         for _ in 0..MAX_PENDING_FREEZE_ATTEMPTS {
-            let existing_messages = store.load_messages(thread_id).await?.unwrap_or_default();
+            let existing_messages = store
+                .load_committed_messages(thread_id)
+                .await?
+                .unwrap_or_default();
             let expected_version = existing_messages.len() as u64;
             let pending = store.load_pending_message_records(thread_id).await?;
             let selected_indexes = select_pending_for_freeze(&pending, boundary);
@@ -253,12 +268,12 @@ impl Mailbox {
             let mut selected_pending_ids = Vec::with_capacity(selected_indexes.len());
             let mut trigger_message_ids = Vec::with_capacity(selected_indexes.len());
             for index in selected_indexes {
-                let record = &pending[index];
-                selected_pending_ids.push(record.pending_id.clone());
-                let Some(message_id) = record.message.id.clone() else {
+                let pending_record = &pending[index];
+                selected_pending_ids.push(pending_record.pending_id.clone());
+                let Some(message_id) = pending_record.message.id.clone() else {
                     return Err(MailboxError::Internal(format!(
                         "pending message '{}' has no message id",
-                        record.pending_id
+                        pending_record.pending_id
                     )));
                 };
                 trigger_message_ids.push(message_id);
@@ -272,15 +287,15 @@ impl Mailbox {
             // same run: one run may drain pending over several turns (ADR-0042 D4),
             // so RunRecord.input must record the full consumed input, not just the
             // last freeze. The range already spans from seq 1 to the latest seq.
-            if let Some(prior) = record.input.as_ref() {
-                let mut merged = prior.trigger_message_ids.clone();
-                for id in &input_snapshot.trigger_message_ids {
-                    if !merged.contains(id) {
-                        merged.push(id.clone());
-                    }
+            // Merge against the original prior captured before the loop so a
+            // retried attempt does not duplicate ids from a prior failed attempt.
+            let mut merged = original_prior_trigger_ids.clone();
+            for id in &input_snapshot.trigger_message_ids {
+                if !merged.contains(id) {
+                    merged.push(id.clone());
                 }
-                input_snapshot.trigger_message_ids = merged;
             }
+            input_snapshot.trigger_message_ids = merged;
             let input = Some(RunMessageInput {
                 thread_id: input_snapshot.thread_id.clone(),
                 range: input_snapshot.range,
@@ -291,9 +306,13 @@ impl Mailbox {
             });
             let mut snapshot = snapshot_template.clone();
             snapshot.input = input_snapshot;
-            record.activation = Some(snapshot);
-            record.input = input;
-            record.updated_at = now_ms() / 1000;
+            // Mutate a throwaway clone, not the caller's record. On
+            // VersionConflict the caller's `record` must stay byte-for-byte
+            // unchanged so the next attempt re-derives from the original prior.
+            let mut attempt_record = record.clone();
+            attempt_record.activation = Some(snapshot);
+            attempt_record.input = input;
+            attempt_record.updated_at = now_ms() / 1000;
 
             let frozen = match store
                 .freeze_pending_message_records_with_run(
@@ -301,7 +320,7 @@ impl Mailbox {
                     boundary,
                     Some(expected_version),
                     &selected_pending_ids,
-                    record,
+                    &attempt_record,
                 )
                 .await
             {
@@ -309,8 +328,22 @@ impl Mailbox {
                 Err(StorageError::VersionConflict { .. }) => continue,
                 Err(error) => return Err(error.into()),
             };
+            // Freeze committed durably; only now adopt the attempt's mutations
+            // into the caller's record.
+            *record = attempt_record;
             let mut appended_messages = existing_messages;
             appended_messages.extend(frozen.iter().map(|record| record.message.clone()));
+            // ADR-0042 D4: messages + run record commit atomically in the freeze
+            // transaction above; the canonical/server checkpoint events go through
+            // the advisory outbox publisher, which the store transaction cannot
+            // reach (it lives in the awaken-stores crate and opens its own backend
+            // transaction). Folding events into that transaction would require
+            // threading the OutboxServerEventPublisher through the
+            // PendingMessageStore trait across every backend — out of scope here.
+            // So a non-atomic window remains between freeze commit and event
+            // append; propagate any append failure instead of swallowing it so the
+            // inconsistency surfaces (recovery: repair_thread_message_checkpoint_events
+            // re-derives the events from committed run records).
             self.record_thread_message_checkpoint_events(
                 thread_id,
                 run_id,
@@ -318,7 +351,7 @@ impl Mailbox {
                 first_new_seq,
                 last_new_seq,
             )
-            .await;
+            .await?;
             self.refresh_worker_checkpoint_cache(thread_id, &appended_messages, record)
                 .await;
             return Ok(Some(frozen));
