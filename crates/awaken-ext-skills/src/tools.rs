@@ -107,6 +107,17 @@ impl Tool for SkillActivateTool {
         };
         let meta = skill.meta();
 
+        // `disable-model-invocation` is the hard invocation guard, not just a
+        // catalog hint (catalog hiding only controls discovery noise).
+        if !meta.model_invocable {
+            return Ok(tool_error(
+                SKILL_ACTIVATE_TOOL_ID,
+                "model_invocation_disabled",
+                format!("Skill '{}' has disable-model-invocation set", meta.id),
+            )
+            .into());
+        }
+
         let activation_args = activation_args(&args);
         let activation = skill
             .activate(activation_args)
@@ -754,25 +765,9 @@ mod tests {
         assert!(required.iter().any(|v: &Value| v.as_str() == Some("skill")));
     }
 
-    #[tokio::test]
-    async fn skill_activate_empty_skill_id_returns_error() {
-        let registry = Arc::new(InMemorySkillRegistry::new());
-        let tool = SkillActivateTool::new(registry);
-        let ctx = ToolCallContext::test_default();
-
-        let result = tool.execute(json!({"skill": ""}), &ctx).await.unwrap();
-        assert!(result.result.is_error());
-    }
-
-    #[tokio::test]
-    async fn skill_activate_whitespace_only_skill_id_returns_error() {
-        let registry = Arc::new(InMemorySkillRegistry::new());
-        let tool = SkillActivateTool::new(registry);
-        let ctx = ToolCallContext::test_default();
-
-        let result = tool.execute(json!({"skill": "   "}), &ctx).await.unwrap();
-        assert!(result.result.is_error());
-    }
+    // empty / whitespace-only skill-id and model-invocation-disabled execute()
+    // error paths live in tests/skills_integration.rs (this module is over the
+    // modular size limit).
 
     // ── LoadSkillResourceTool descriptor ──
 

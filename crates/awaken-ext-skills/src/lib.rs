@@ -54,6 +54,7 @@ pub use state::{SkillRenderedActivation, SkillState, SkillStateUpdate, SkillStat
 pub use tools::{LoadSkillResourceTool, SkillActivateTool, SkillScriptTool};
 pub use visibility::{
     SkillVisibility, SkillVisibilityAction, SkillVisibilityStateKey, SkillVisibilityStateValue,
+    effective_visibility,
 };
 
 #[cfg(feature = "mcp")]

@@ -62,30 +62,43 @@ This mirrors `PermissionOverrides` scoping — visibility does not leak across r
 
 Initial visibility is a declarative decision derived from skill metadata — not a
 user-pluggable policy trait. A skill starts `Hidden` when `model_invocable ==
-false` or `paths` is non-empty (conditional skills start hidden, promoted on file
-match); otherwise `Visible`.
+false` (frontmatter `disable-model-invocation: true`); otherwise `Visible`.
 
-`SkillDiscoveryPlugin::on_activate` evaluates this against the registry snapshot
-and seeds `SkillVisibilityState` via `SkillVisibilityAction::SetBatch` at run
-start. Subsequent changes come through actions (tools, plugins, config). This
-mirrors `awaken-ext-permission`, where policy is declarative rule data rather than
-a code trait.
+Path-conditional hiding (a non-empty `paths` set, shown only when a matching file
+is touched) is **deferred**. The file-match promote hook that would bring such a
+skill back is future scope (see D5), so until it lands, `paths`-only skills seed
+`Visible` rather than disappearing from the catalog with no built-in recovery.
+
+Initial visibility is derived **only from skill metadata**; `on_activate` does not
+read `AgentSpec`. `SkillDiscoveryPlugin::on_activate` evaluates the metadata policy
+against the registry snapshot and seeds `SkillVisibilityState` via
+`SkillVisibilityAction::SetBatch` at run start. Subsequent changes come through
+actions (tools, plugins). This mirrors `awaken-ext-permission`, where policy is
+declarative rule data rather than a code trait.
 
 ### D4: Catalog rendering filters by visibility state
 
 `SkillDiscoveryPlugin::render_catalog()` reads `SkillVisibilityState` from the phase
-context and excludes `Hidden` skills. Also renders `when_to_use` into skill
-descriptions.
+context and excludes `Hidden` skills, resolving each skill through
+`effective_visibility` (explicit Show/Hide wins, else the metadata policy — never
+failing open). Also renders `when_to_use` into skill descriptions.
+
+Catalog hiding is **discovery/noise control, not an invocation boundary**. The hard
+guard is `model_invocable`: `SkillActivateTool` (the model's entry point) refuses to
+activate a skill whose `disable-model-invocation` is set, regardless of whether it
+was rendered. A path-conditional skill that is merely `Hidden` stays invocable.
 
 ### D5: Dynamic control through existing action infrastructure
 
 Any plugin, tool, or phase hook can schedule `SkillVisibilityAction`:
 
-- **Config-driven**: Agent spec YAML rules set initial visibility.
 - **Plugin-driven**: Phase hooks mutate visibility state.
 - **Tool-driven**: ToolSearch or custom tools can promote hidden skills.
-- **Conditional activation**: An `AfterToolExecute` hook can match file paths against
-  skill `paths` patterns and promote matching skills (future, not in this ADR scope).
+- **Config-driven** (future, not yet implemented): Agent spec YAML rules set initial
+  visibility. `on_activate` currently ignores `AgentSpec` and seeds from metadata only.
+- **Conditional activation** (future, not in this ADR scope): An `AfterToolExecute`
+  hook matches file paths against skill `paths` patterns and promotes matching skills.
+  Until this exists, path-conditional hiding is not applied (see D3).
 
 ### D6: Parameter substitution in `activate()`
 
@@ -95,8 +108,9 @@ directory (FsSkill only).
 
 ## Consequences
 
-- **Catalog noise reduction**: Skills with `disable-model-invocation` or unfulfilled
-  `paths` patterns no longer consume context budget.
+- **Catalog noise reduction**: Skills with `disable-model-invocation` no longer
+  consume context budget. (Noise reduction for unfulfilled `paths` patterns lands
+  with the conditional-activation hook in D5.)
 - **Extensibility**: The mechanism (state key + `SkillVisibilityAction`) is the
   extension surface — tools, plugins, and config drive visibility changes at
   runtime without changing the catalog rendering mechanism.
