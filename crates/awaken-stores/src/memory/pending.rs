@@ -4,9 +4,11 @@ use std::collections::HashSet;
 use async_trait::async_trait;
 use awaken_contract::contract::message::{
     DeliveryBoundary, DeliveryMode, Message, MessageRecord, PendingMessageRecord,
-    select_pending_for_freeze,
+    pending_queue_revision, select_pending_for_freeze,
 };
-use awaken_contract::contract::storage::{RunRecord, StorageError, checkpoint_parent_thread_id};
+use awaken_contract::contract::storage::{
+    RunRecord, StorageError, checkpoint_parent_thread_id, message_append,
+};
 use awaken_contract::thread::Thread;
 
 use crate::PendingMessageStore;
@@ -118,10 +120,11 @@ impl PendingMessageStore for InMemoryStore {
         Ok(records)
     }
 
-    async fn update_pending_message_record(
+    async fn update_pending_message_record_checked(
         &self,
         thread_id: &str,
         pending_id: &str,
+        expected_revision: Option<u64>,
         mut message: Message,
     ) -> Result<PendingMessageRecord, StorageError> {
         let mut guard = self.pending_messages.write().await;
@@ -130,6 +133,14 @@ impl PendingMessageStore for InMemoryStore {
                 .iter_mut()
                 .find(|record| record.pending_id == pending_id)
         {
+            if let Some(expected) = expected_revision
+                && record.revision != expected
+            {
+                return Err(StorageError::VersionConflict {
+                    expected,
+                    actual: record.revision,
+                });
+            }
             match message.id.as_deref() {
                 Some(message_id) if message_id != pending_id => {
                     return Err(StorageError::Validation(format!(
@@ -140,6 +151,7 @@ impl PendingMessageStore for InMemoryStore {
                 None => message.id = Some(pending_id.to_owned()),
             }
             record.message = message;
+            record.revision += 1;
             record.updated_at = Some(current_millis() / 1000);
             return Ok(record.clone());
         }
@@ -150,10 +162,11 @@ impl PendingMessageStore for InMemoryStore {
         Err(pending_not_found(thread_id, pending_id))
     }
 
-    async fn retract_pending_message_record(
+    async fn retract_pending_message_record_checked(
         &self,
         thread_id: &str,
         pending_id: &str,
+        expected_revision: Option<u64>,
     ) -> Result<PendingMessageRecord, StorageError> {
         let mut guard = self.pending_messages.write().await;
         if let Some(pending) = guard.get_mut(thread_id)
@@ -161,6 +174,14 @@ impl PendingMessageStore for InMemoryStore {
                 .iter()
                 .position(|record| record.pending_id == pending_id)
         {
+            if let Some(expected) = expected_revision
+                && pending[index].revision != expected
+            {
+                return Err(StorageError::VersionConflict {
+                    expected,
+                    actual: pending[index].revision,
+                });
+            }
             let removed = pending.remove(index);
             normalize_pending_positions(pending);
             return Ok(removed);
@@ -172,9 +193,10 @@ impl PendingMessageStore for InMemoryStore {
         Err(pending_not_found(thread_id, pending_id))
     }
 
-    async fn reorder_pending_message_records(
+    async fn reorder_pending_message_records_checked(
         &self,
         thread_id: &str,
+        expected_queue_revision: Option<u64>,
         ordered_pending_ids: &[String],
     ) -> Result<Vec<PendingMessageRecord>, StorageError> {
         let mut guard = self.pending_messages.write().await;
@@ -187,6 +209,15 @@ impl PendingMessageStore for InMemoryStore {
             }
             return Err(StorageError::NotFound(thread_id.to_owned()));
         };
+        let actual_queue_revision = pending_queue_revision(pending);
+        if let Some(expected) = expected_queue_revision
+            && expected != actual_queue_revision
+        {
+            return Err(StorageError::VersionConflict {
+                expected,
+                actual: actual_queue_revision,
+            });
+        }
         let pending_ids = pending
             .iter()
             .map(|record| record.pending_id.as_str())
@@ -231,6 +262,7 @@ impl PendingMessageStore for InMemoryStore {
         let now = current_millis() / 1000;
         normalize_pending_positions(&mut reordered);
         for record in &mut reordered {
+            record.revision += 1;
             record.updated_at = Some(now);
         }
         *pending = reordered.clone();
@@ -259,6 +291,11 @@ impl PendingMessageStore for InMemoryStore {
         if selected_indexes.is_empty() {
             return Ok(Vec::new());
         }
+        let selected_messages = selected_indexes
+            .iter()
+            .map(|index| pending[*index].message.clone())
+            .collect::<Vec<_>>();
+        message_append::validate_append_only_delta(committed, &selected_messages)?;
 
         let mut selected = Vec::with_capacity(selected_indexes.len());
         for index in selected_indexes.iter().rev() {
@@ -316,6 +353,12 @@ impl PendingMessageStore for InMemoryStore {
                 actual: selected_ids.len() as u64,
             });
         }
+        let committed = messages_guard.entry(thread_id.to_owned()).or_default();
+        let selected_messages = selected_indexes
+            .iter()
+            .map(|index| pending[*index].message.clone())
+            .collect::<Vec<_>>();
+        message_append::validate_append_only_delta(committed, &selected_messages)?;
 
         let mut selected = Vec::with_capacity(selected_indexes.len());
         for index in selected_indexes.iter().rev() {
@@ -323,7 +366,6 @@ impl PendingMessageStore for InMemoryStore {
         }
         selected.reverse();
         normalize_pending_positions(pending);
-        let committed = messages_guard.entry(thread_id.to_owned()).or_default();
         let start_seq = committed.len() as u64 + 1;
         let appended = selected
             .into_iter()

@@ -641,7 +641,6 @@ impl Mailbox {
             "content_blocks": &message.content,
             "message_kind": message_kind(message),
             "parent_message_id": parent_message_id,
-            "created_at": crate::time::now_millis(),
         });
         let kind = CanonicalEventKind::new("MessageCommitted").map_err(|error| {
             tracing::error!(error = %error, "invalid message committed event kind");
@@ -702,7 +701,6 @@ impl Mailbox {
             "message_seq_end": last_new_seq,
             "message_count": message_ids.len(),
             "message_ids": message_ids,
-            "created_at": crate::time::now_millis(),
         });
         let kind = CanonicalEventKind::new("ThreadMessagesCheckpointed").map_err(|error| {
             tracing::error!(error = %error, "invalid thread messages checkpoint event kind");

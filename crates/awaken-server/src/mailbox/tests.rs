@@ -35,7 +35,7 @@ use awaken_runtime::extensions::background::{
 };
 use awaken_runtime::loop_runner::{AgentLoopError, AgentRunResult, build_agent_env};
 use awaken_runtime::{AgentRuntime, Plugin, ResolvedAgent};
-use awaken_stores::{InMemoryEventStore, InMemoryMailboxStore, InMemoryStore};
+use awaken_stores::{InMemoryEventStore, InMemoryMailboxStore, InMemoryStore, PendingMessageStore};
 use serde_json::{Value, json};
 use std::collections::VecDeque;
 use std::sync::Mutex as StdMutex;
@@ -972,6 +972,43 @@ impl RunDispatchExecutor for NoopMailboxRuntime {
 
     fn send_messages(&self, _id: &str, _messages: Vec<Message>) -> bool {
         false
+    }
+}
+
+#[derive(Default)]
+struct WakeRecordingRuntime {
+    wakes: AtomicUsize,
+}
+
+#[async_trait::async_trait]
+impl RunDispatchExecutor for WakeRecordingRuntime {
+    async fn run(
+        &self,
+        _request: RunActivation,
+        _sink: Arc<dyn EventSink>,
+    ) -> Result<AgentRunResult, AgentLoopError> {
+        panic!("wake test must not execute runs")
+    }
+
+    fn cancel(&self, _id: &str) -> bool {
+        false
+    }
+
+    async fn cancel_and_wait_by_thread(&self, _thread_id: &str) -> bool {
+        false
+    }
+
+    fn send_decision(&self, _id: &str, _tool_call_id: String, _resume: ToolCallResume) -> bool {
+        false
+    }
+
+    fn send_messages(&self, _id: &str, _messages: Vec<Message>) -> bool {
+        false
+    }
+
+    fn wake_pending_boundary(&self, _id: &str) -> bool {
+        self.wakes.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        true
     }
 }
 
@@ -6451,6 +6488,56 @@ async fn foreground_submit_waits_for_local_cancelled_dispatch_to_release_claim()
 /// publish on the live channel (for the owning node's forwarder to
 /// receive) and return Running rather than falling back.
 #[tokio::test]
+async fn live_then_queue_wakes_local_active_pending_run() {
+    let mailbox_store = make_store();
+    let thread_store = Arc::new(InMemoryStore::new());
+    let runtime = Arc::new(WakeRecordingRuntime::default());
+    let mailbox = Arc::new(Mailbox::new_with_pending_thread_run_store(
+        runtime.clone(),
+        mailbox_store.clone(),
+        thread_store.clone(),
+        "test-consumer".to_string(),
+        MailboxConfig::default(),
+    ));
+    let thread_id = "thread-local-pending-wake";
+    let run_id = "run-local-pending-wake";
+    let dispatch_id = "dispatch-local-pending-wake";
+    let worker = mailbox.get_or_create_worker(thread_id).await;
+    {
+        let mut worker = worker.lock();
+        worker.status = MailboxWorkerStatus::Running {
+            dispatch_id: dispatch_id.to_string(),
+            run_id: run_id.to_string(),
+            lease_handle: tokio::spawn(async {}),
+            sink: Arc::new(ReconnectableEventSink::new(mpsc::channel(16).0)),
+        };
+    }
+
+    let result = mailbox
+        .submit_live_then_queue(
+            RunActivation::new(thread_id, vec![Message::user("pending-live")])
+                .with_agent_id("agent"),
+            Some(run_id),
+        )
+        .await
+        .expect("live pending submit should wake active run");
+
+    assert_eq!(result.status, MailboxDispatchStatus::Running);
+    assert_eq!(result.run_id, run_id);
+    assert_eq!(runtime.wakes.load(std::sync::atomic::Ordering::SeqCst), 1);
+    let pending = thread_store
+        .load_pending_message_records(thread_id)
+        .await
+        .unwrap();
+    assert_eq!(pending.len(), 1);
+    assert_eq!(pending[0].message.text(), "pending-live");
+}
+
+/// Cross-node live delivery: no local worker, but the thread has an
+/// active Running run recorded globally in ThreadRunStore. Mailbox must
+/// publish on the live channel (for the owning node's forwarder to
+/// receive) and return Running rather than falling back.
+#[tokio::test]
 async fn live_then_queue_publishes_for_remote_active_run() {
     use awaken_contract::contract::mailbox::LiveRunCommand;
     use futures::StreamExt;
@@ -6523,6 +6610,68 @@ async fn live_then_queue_publishes_for_remote_active_run() {
         queued.is_empty(),
         "cross-node live delivery must not create a dispatch"
     );
+}
+
+#[tokio::test]
+async fn live_then_queue_wakes_remote_active_pending_run() {
+    use awaken_contract::contract::mailbox::LiveRunCommand;
+    use futures::StreamExt;
+
+    let mailbox_store = make_store();
+    let thread_store = Arc::new(InMemoryStore::new());
+    let thread_id = "thread-remote-pending-wake";
+    let remote_run_id = "run-remote-pending-wake";
+
+    let mut run = seeded_waiting_run(remote_run_id, thread_id, "agent");
+    run.status = RunStatus::Running;
+    thread_store.create_run(&run).await.expect("seed run");
+
+    let subscriber = mailbox_store
+        .open_live_channel_for(&live_target_for_run(&run))
+        .await
+        .expect("open live channel");
+    let captured = std::sync::Arc::new(tokio::sync::Mutex::new(Vec::<LiveRunCommand>::new()));
+    let captured_clone = captured.clone();
+    let _forwarder = tokio::spawn(async move {
+        let mut subscriber = subscriber;
+        while let Some(entry) = subscriber.next().await {
+            captured_clone.lock().await.push(entry.command.clone());
+            entry.receipt.ack();
+        }
+    });
+
+    let mailbox = Arc::new(Mailbox::new_with_pending_thread_run_store(
+        Arc::new(NoopMailboxRuntime),
+        mailbox_store.clone(),
+        thread_store.clone(),
+        "test-consumer".to_string(),
+        MailboxConfig::default(),
+    ));
+
+    let result = mailbox
+        .submit_live_then_queue(
+            RunActivation::new(thread_id, vec![Message::user("remote-pending")])
+                .with_agent_id("agent"),
+            Some(remote_run_id),
+        )
+        .await
+        .expect("remote pending submit should wake owner");
+
+    assert_eq!(result.status, MailboxDispatchStatus::Running);
+    assert_eq!(result.run_id, remote_run_id);
+    assert!(
+        captured
+            .lock()
+            .await
+            .iter()
+            .any(|command| matches!(command, LiveRunCommand::PendingBoundaryWake))
+    );
+    let pending = thread_store
+        .load_pending_message_records(thread_id)
+        .await
+        .unwrap();
+    assert_eq!(pending.len(), 1);
+    assert_eq!(pending[0].message.text(), "remote-pending");
 }
 
 /// Regression for issue #2: cross-node delivery where the subscriber

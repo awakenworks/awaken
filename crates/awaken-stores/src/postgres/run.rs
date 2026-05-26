@@ -250,6 +250,7 @@ impl PostgresStore {
         {
             return Err(StorageError::VersionConflict { expected, actual });
         }
+        message_append::validate_append_only_delta(&existing, messages)?;
         let mut merged = existing.clone();
         message_append::merge_checkpoint_append_messages(&mut merged, messages);
         let existing_by_id = existing_records
@@ -264,14 +265,13 @@ impl PostgresStore {
             .collect::<std::collections::HashMap<_, _>>();
         let mut next_seq = actual + 1;
         for message in messages {
-            if let Some(seq) = message
+            if message
                 .id
                 .as_ref()
                 .and_then(|id| existing_by_id.get(id))
-                .copied()
+                .is_some()
             {
-                self.upsert_committed_message_tx(tx, thread_id, seq, message)
-                    .await?;
+                continue;
             } else {
                 self.insert_committed_message_tx(tx, thread_id, next_seq, message)
                     .await?;

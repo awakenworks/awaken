@@ -3,7 +3,7 @@ use std::collections::{HashMap, HashSet};
 use async_trait::async_trait;
 use awaken_contract::contract::message::{
     DeliveryBoundary, DeliveryMode, Message, MessageRecord, PendingMessageRecord,
-    select_pending_for_freeze,
+    pending_queue_revision, select_pending_for_freeze,
 };
 use awaken_contract::contract::storage::{
     RunRecord, StorageError, ThreadStore, checkpoint_parent_thread_id,
@@ -77,10 +77,11 @@ impl PendingMessageStore for FileStore {
         Ok(records)
     }
 
-    async fn update_pending_message_record(
+    async fn update_pending_message_record_checked(
         &self,
         thread_id: &str,
         pending_id: &str,
+        expected_revision: Option<u64>,
         mut message: Message,
     ) -> Result<PendingMessageRecord, StorageError> {
         validate_id(thread_id, "thread id")?;
@@ -90,6 +91,14 @@ impl PendingMessageStore for FileStore {
             .iter_mut()
             .find(|record| record.pending_id == pending_id)
         {
+            if let Some(expected) = expected_revision
+                && record.revision != expected
+            {
+                return Err(StorageError::VersionConflict {
+                    expected,
+                    actual: record.revision,
+                });
+            }
             match message.id.as_deref() {
                 Some(message_id) if message_id != pending_id => {
                     return Err(StorageError::Validation(format!(
@@ -100,6 +109,7 @@ impl PendingMessageStore for FileStore {
                 None => message.id = Some(pending_id.to_owned()),
             }
             record.message = message;
+            record.revision += 1;
             record.updated_at = Some(current_millis() / 1000);
             let updated = record.clone();
             let write = self
@@ -114,10 +124,11 @@ impl PendingMessageStore for FileStore {
         Err(Self::pending_not_found(thread_id, pending_id))
     }
 
-    async fn retract_pending_message_record(
+    async fn retract_pending_message_record_checked(
         &self,
         thread_id: &str,
         pending_id: &str,
+        expected_revision: Option<u64>,
     ) -> Result<PendingMessageRecord, StorageError> {
         validate_id(thread_id, "thread id")?;
         let _guard = self.hierarchy_lock.lock().await;
@@ -126,6 +137,14 @@ impl PendingMessageStore for FileStore {
             .iter()
             .position(|record| record.pending_id == pending_id)
         {
+            if let Some(expected) = expected_revision
+                && pending[index].revision != expected
+            {
+                return Err(StorageError::VersionConflict {
+                    expected,
+                    actual: pending[index].revision,
+                });
+            }
             let removed = pending.remove(index);
             Self::normalize_pending_positions(&mut pending);
             let write = self
@@ -140,14 +159,24 @@ impl PendingMessageStore for FileStore {
         Err(Self::pending_not_found(thread_id, pending_id))
     }
 
-    async fn reorder_pending_message_records(
+    async fn reorder_pending_message_records_checked(
         &self,
         thread_id: &str,
+        expected_queue_revision: Option<u64>,
         ordered_pending_ids: &[String],
     ) -> Result<Vec<PendingMessageRecord>, StorageError> {
         validate_id(thread_id, "thread id")?;
         let _guard = self.hierarchy_lock.lock().await;
         let pending = self.read_pending_messages_locked(thread_id).await?;
+        let actual_queue_revision = pending_queue_revision(&pending);
+        if let Some(expected) = expected_queue_revision
+            && expected != actual_queue_revision
+        {
+            return Err(StorageError::VersionConflict {
+                expected,
+                actual: actual_queue_revision,
+            });
+        }
         let pending_ids = pending
             .iter()
             .map(|record| record.pending_id.as_str())
@@ -188,6 +217,7 @@ impl PendingMessageStore for FileStore {
         let now = current_millis() / 1000;
         Self::normalize_pending_positions(&mut reordered);
         for record in &mut reordered {
+            record.revision += 1;
             record.updated_at = Some(now);
         }
         let write = self
@@ -226,14 +256,20 @@ impl PendingMessageStore for FileStore {
         }
         selected.reverse();
         Self::normalize_pending_positions(&mut pending);
+        let selected_messages = selected
+            .into_iter()
+            .map(|record| record.message)
+            .collect::<Vec<_>>();
+        awaken_contract::contract::storage::message_append::validate_append_only_delta(
+            &committed
+                .iter()
+                .map(|record| record.message.clone())
+                .collect::<Vec<_>>(),
+            &selected_messages,
+        )?;
         let mut ops = Vec::new();
         let appended = match self
-            .stage_append_message_records(
-                thread_id,
-                actual + 1,
-                selected.into_iter().map(|record| record.message),
-                &mut ops,
-            )
+            .stage_append_message_records(thread_id, actual + 1, selected_messages, &mut ops)
             .await
         {
             Ok(appended) => appended,
@@ -303,6 +339,17 @@ impl PendingMessageStore for FileStore {
         }
         selected.reverse();
         Self::normalize_pending_positions(&mut pending);
+        let selected_messages = selected
+            .into_iter()
+            .map(|record| record.message)
+            .collect::<Vec<_>>();
+        awaken_contract::contract::storage::message_append::validate_append_only_delta(
+            &committed
+                .iter()
+                .map(|record| record.message.clone())
+                .collect::<Vec<_>>(),
+            &selected_messages,
+        )?;
 
         let thread_payload = serde_json::to_string_pretty(&thread)
             .map_err(|e| StorageError::Serialization(e.to_string()))?;
@@ -316,12 +363,7 @@ impl PendingMessageStore for FileStore {
         .await?;
         let mut ops = vec![StagedFileOp::Write(thread_write)];
         let appended = match self
-            .stage_append_message_records(
-                thread_id,
-                actual + 1,
-                selected.into_iter().map(|record| record.message),
-                &mut ops,
-            )
+            .stage_append_message_records(thread_id, actual + 1, selected_messages, &mut ops)
             .await
         {
             Ok(appended) => appended,

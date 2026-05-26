@@ -3,20 +3,26 @@ use std::collections::HashMap;
 use std::sync::RwLock;
 
 #[test]
-fn merge_checkpoint_append_messages_replaces_same_id_projection() {
+fn merge_checkpoint_append_messages_is_append_only() {
     let mut existing = vec![
         Message::user("first").with_id("msg-1".to_string()),
         Message::assistant("old").with_id("msg-2".to_string()),
     ];
     let delta = vec![
+        // Re-sent already-committed id: append-only history must not rewrite it.
         Message::assistant("new").with_id("msg-2".to_string()),
+        // New id: appended at the tail.
         Message::user("tail").with_id("msg-3".to_string()),
     ];
 
     message_append::merge_checkpoint_append_messages(&mut existing, &delta);
 
-    assert_eq!(existing.len(), 3);
-    assert_eq!(existing[1].text(), "new");
+    assert_eq!(existing.len(), 3, "re-sent committed id must not duplicate");
+    assert_eq!(
+        existing[1].text(),
+        "old",
+        "committed messages are immutable (ADR-0042 I1/D6); not rewritten in place"
+    );
     assert_eq!(existing[2].text(), "tail");
 }
 

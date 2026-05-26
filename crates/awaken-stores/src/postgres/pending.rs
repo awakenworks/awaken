@@ -1,9 +1,9 @@
 use async_trait::async_trait;
 use awaken_contract::contract::message::{
     DeliveryBoundary, DeliveryMode, Message, MessageRecord, PendingMessageRecord,
-    select_pending_for_freeze,
+    pending_queue_revision, select_pending_for_freeze,
 };
-use awaken_contract::contract::storage::{RunRecord, StorageError};
+use awaken_contract::contract::storage::{RunRecord, StorageError, message_append};
 use sqlx::{Postgres, Row, Transaction};
 use std::collections::HashSet;
 
@@ -34,7 +34,7 @@ impl PostgresStore {
         thread_id: &str,
     ) -> Result<Vec<PendingMessageRecord>, StorageError> {
         let sql = format!(
-            "SELECT message_id, position, data, delivery_mode, created_at_ms, EXTRACT(EPOCH FROM updated_at)::BIGINT AS updated_at_s
+            "SELECT message_id, position, data, pending_revision, delivery_mode, created_at_ms, EXTRACT(EPOCH FROM updated_at)::BIGINT AS updated_at_s
              FROM {}
              WHERE thread_id = $1 AND state = 'pending'
              ORDER BY position ASC, updated_at ASC",
@@ -87,6 +87,11 @@ impl PostgresStore {
                     thread_id: thread_id.to_owned(),
                     position,
                     message,
+                    revision: row
+                        .try_get::<Option<i64>, _>("pending_revision")
+                        .ok()
+                        .flatten()
+                        .unwrap_or(1) as u64,
                     delivery_mode,
                     created_at,
                     updated_at,
@@ -124,8 +129,8 @@ impl PostgresStore {
         let delivery_mode = serde_json::to_value(record.delivery_mode)
             .map_err(|e| StorageError::Serialization(e.to_string()))?;
         let sql = format!(
-            "INSERT INTO {} (thread_id, message_id, state, position, data, delivery_mode, created_at_ms)
-             VALUES ($1, $2, 'pending', $3, $4, $5, $6)",
+            "INSERT INTO {} (thread_id, message_id, state, position, data, pending_revision, delivery_mode, created_at_ms)
+             VALUES ($1, $2, 'pending', $3, $4, $5, $6, $7)",
             self.messages_table
         );
         sqlx::query(&sql)
@@ -133,6 +138,7 @@ impl PostgresStore {
             .bind(&record.pending_id)
             .bind(record.position as i64)
             .bind(data)
+            .bind(record.revision as i64)
             .bind(delivery_mode)
             .bind(record.created_at.map(|s| (s * 1000) as i64))
             .execute(&mut **tx)
@@ -221,10 +227,11 @@ impl PendingMessageStore for PostgresStore {
         Ok(records)
     }
 
-    async fn update_pending_message_record(
+    async fn update_pending_message_record_checked(
         &self,
         thread_id: &str,
         pending_id: &str,
+        expected_revision: Option<u64>,
         mut message: Message,
     ) -> Result<PendingMessageRecord, StorageError> {
         self.ensure_schema().await?;
@@ -246,19 +253,30 @@ impl PendingMessageStore for PostgresStore {
         let data = serde_json::to_value(&message)
             .map_err(|e| StorageError::Serialization(e.to_string()))?;
         let sql = format!(
-            "UPDATE {} SET data = $3, updated_at = now()
-             WHERE thread_id = $1 AND message_id = $2 AND state = 'pending'
-             RETURNING position, delivery_mode, created_at_ms, EXTRACT(EPOCH FROM updated_at)::BIGINT AS updated_at_s",
+            "UPDATE {} SET data = $3, pending_revision = pending_revision + 1, updated_at = now()
+             WHERE thread_id = $1 AND message_id = $2 AND state = 'pending' AND ($4::BIGINT IS NULL OR pending_revision = $4)
+             RETURNING position, pending_revision, delivery_mode, created_at_ms, EXTRACT(EPOCH FROM updated_at)::BIGINT AS updated_at_s",
             self.messages_table
         );
         let row = sqlx::query(&sql)
             .bind(thread_id)
             .bind(pending_id)
             .bind(data)
+            .bind(expected_revision.map(|revision| revision as i64))
             .fetch_optional(&mut *tx)
             .await
             .map_err(|e| StorageError::Io(e.to_string()))?;
         let Some(row) = row else {
+            if let Some(expected) = expected_revision
+                && let Some(actual) = self
+                    .load_pending_message_records_tx(&mut tx, thread_id)
+                    .await?
+                    .into_iter()
+                    .find(|record| record.pending_id == pending_id)
+                    .map(|record| record.revision)
+            {
+                return Err(StorageError::VersionConflict { expected, actual });
+            }
             if self
                 .committed_message_exists_tx(&mut tx, thread_id, pending_id)
                 .await?
@@ -275,6 +293,11 @@ impl PendingMessageStore for PostgresStore {
                 .ok()
                 .flatten()
                 .unwrap_or(0) as u64,
+            revision: row
+                .try_get::<Option<i64>, _>("pending_revision")
+                .ok()
+                .flatten()
+                .unwrap_or(1) as u64,
             message,
             delivery_mode: row
                 .try_get::<Option<serde_json::Value>, _>("delivery_mode")
@@ -301,10 +324,11 @@ impl PendingMessageStore for PostgresStore {
         Ok(record)
     }
 
-    async fn retract_pending_message_record(
+    async fn retract_pending_message_record_checked(
         &self,
         thread_id: &str,
         pending_id: &str,
+        expected_revision: Option<u64>,
     ) -> Result<PendingMessageRecord, StorageError> {
         self.ensure_schema().await?;
         let mut tx = self
@@ -328,6 +352,14 @@ impl PendingMessageStore for PostgresStore {
             }
             return Err(pending_not_found(thread_id, pending_id));
         };
+        if let Some(expected) = expected_revision
+            && pending[index].revision != expected
+        {
+            return Err(StorageError::VersionConflict {
+                expected,
+                actual: pending[index].revision,
+            });
+        }
         let removed = pending.remove(index);
         let delete_sql = format!(
             "DELETE FROM {} WHERE thread_id = $1 AND message_id = $2 AND state = 'pending'",
@@ -341,7 +373,7 @@ impl PendingMessageStore for PostgresStore {
             .map_err(|e| StorageError::Io(e.to_string()))?;
         for (index, record) in pending.iter().enumerate() {
             let update_sql = format!(
-                "UPDATE {} SET position = $3, updated_at = now()
+                "UPDATE {} SET position = $3, pending_revision = pending_revision + 1, updated_at = now()
                  WHERE thread_id = $1 AND message_id = $2 AND state = 'pending'",
                 self.messages_table
             );
@@ -359,9 +391,10 @@ impl PendingMessageStore for PostgresStore {
         Ok(removed)
     }
 
-    async fn reorder_pending_message_records(
+    async fn reorder_pending_message_records_checked(
         &self,
         thread_id: &str,
+        expected_queue_revision: Option<u64>,
         ordered_pending_ids: &[String],
     ) -> Result<Vec<PendingMessageRecord>, StorageError> {
         self.ensure_schema().await?;
@@ -374,6 +407,15 @@ impl PendingMessageStore for PostgresStore {
         let pending = self
             .load_pending_message_records_tx(&mut tx, thread_id)
             .await?;
+        let actual_queue_revision = pending_queue_revision(&pending);
+        if let Some(expected) = expected_queue_revision
+            && expected != actual_queue_revision
+        {
+            return Err(StorageError::VersionConflict {
+                expected,
+                actual: actual_queue_revision,
+            });
+        }
         let pending_ids = pending
             .iter()
             .map(|record| record.pending_id.as_str())
@@ -413,9 +455,10 @@ impl PendingMessageStore for PostgresStore {
         let now = crate::current_millis() / 1000;
         for (index, record) in reordered.iter_mut().enumerate() {
             record.position = index as u64 + 1;
+            record.revision += 1;
             record.updated_at = Some(now);
             let update_sql = format!(
-                "UPDATE {} SET position = $3, updated_at = now()
+                "UPDATE {} SET position = $3, pending_revision = pending_revision + 1, updated_at = now()
                  WHERE thread_id = $1 AND message_id = $2 AND state = 'pending'",
                 self.messages_table
             );
@@ -512,6 +555,15 @@ impl PostgresStore {
         if selected_indexes.is_empty() {
             return Ok(Vec::new());
         }
+        let committed_messages = committed
+            .iter()
+            .map(|record| record.message.clone())
+            .collect::<Vec<_>>();
+        let selected_messages = selected_indexes
+            .iter()
+            .map(|index| pending[*index].message.clone())
+            .collect::<Vec<_>>();
+        message_append::validate_append_only_delta(&committed_messages, &selected_messages)?;
 
         let mut selected = Vec::with_capacity(selected_indexes.len());
         for index in selected_indexes.iter().rev() {

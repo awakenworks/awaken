@@ -2,7 +2,7 @@ use super::*;
 use crate::PendingMessageStore;
 use awaken_contract::contract::lifecycle::RunStatus;
 use awaken_contract::contract::message::{
-    DeliveryBoundary, DeliveryGranularity, DeliveryMode, Message,
+    DeliveryBoundary, DeliveryGranularity, DeliveryMode, Message, pending_queue_revision,
 };
 use awaken_contract::contract::storage::{
     RunQuery, RunRecord, RunStore, ThreadRunStore, ThreadStore,
@@ -208,6 +208,73 @@ async fn pending_messages_append_edit_reorder_and_retract() {
     assert_eq!(pending.len(), 1);
     assert_eq!(pending[0].pending_id, "pending-1");
     assert_eq!(pending[0].position, 1);
+}
+
+#[tokio::test]
+async fn pending_mutations_reject_stale_revisions() {
+    let store = InMemoryStore::new();
+    let mode = DeliveryMode::new_run(DeliveryGranularity::Batch);
+    let appended = store
+        .append_pending_message_records(
+            "thread-pending-cas",
+            &[
+                Message::user("first").with_id("pending-1".to_string()),
+                Message::user("second").with_id("pending-2".to_string()),
+            ],
+            mode,
+        )
+        .await
+        .unwrap();
+
+    let queue_revision = pending_queue_revision(&appended);
+    let stale_record_revision = appended[0].revision;
+    let edited = store
+        .update_pending_message_record_checked(
+            "thread-pending-cas",
+            "pending-1",
+            Some(stale_record_revision),
+            Message::user("edited").with_id("pending-1".to_string()),
+        )
+        .await
+        .unwrap();
+    assert!(edited.revision > stale_record_revision);
+
+    let stale_update = store
+        .update_pending_message_record_checked(
+            "thread-pending-cas",
+            "pending-1",
+            Some(stale_record_revision),
+            Message::user("stale").with_id("pending-1".to_string()),
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(stale_update, StorageError::VersionConflict { .. }));
+
+    let stale_reorder = store
+        .reorder_pending_message_records_checked(
+            "thread-pending-cas",
+            Some(queue_revision),
+            &["pending-2".to_string(), "pending-1".to_string()],
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(
+        stale_reorder,
+        StorageError::VersionConflict { .. }
+    ));
+
+    let stale_retract = store
+        .retract_pending_message_record_checked(
+            "thread-pending-cas",
+            "pending-1",
+            Some(stale_record_revision),
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(
+        stale_retract,
+        StorageError::VersionConflict { .. }
+    ));
 }
 
 #[tokio::test]
@@ -492,6 +559,40 @@ async fn freeze_pending_with_run_rejects_stale_version_without_run_write() {
             .len(),
         1
     );
+}
+
+#[tokio::test]
+async fn checkpoint_append_same_id_rejects_projection_update() {
+    let store = InMemoryStore::new();
+    store
+        .save_messages(
+            "thread-append-only",
+            &[Message::user("old").with_id("msg-1".to_string())],
+        )
+        .await
+        .unwrap();
+    let run = make_run("run-append-only", "thread-append-only", RunStatus::Created);
+
+    let err = store
+        .checkpoint_append(
+            "thread-append-only",
+            &[Message::user("new").with_id("msg-1".to_string())],
+            Some(1),
+            &run,
+        )
+        .await
+        .unwrap_err();
+
+    assert!(
+        matches!(err, StorageError::Validation(message) if message.contains("already committed"))
+    );
+    let committed = store
+        .load_committed_messages("thread-append-only")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(committed.len(), 1);
+    assert_eq!(committed[0].text(), "old");
 }
 
 #[tokio::test]

@@ -94,6 +94,12 @@ pub trait RunDispatchExecutor: Send + Sync {
         false
     }
 
+    /// Wake an active run so it consumes durable pending messages.
+    fn wake_pending_boundary(&self, id: &str) -> bool {
+        let _ = id;
+        false
+    }
+
     /// Snapshot the live RegistrySet from the underlying runtime. Used by
     /// the mailbox to overlay a pinned `RegistrySet` (ADR-0035 D9) on top
     /// of the live runtime objects (tools / providers / plugins). Returns
@@ -243,6 +249,10 @@ impl RunDispatchExecutor for AgentRuntime {
 
     fn send_messages(&self, id: &str, messages: Vec<Message>) -> bool {
         AgentRuntime::send_messages(self, id, messages)
+    }
+
+    fn wake_pending_boundary(&self, id: &str) -> bool {
+        AgentRuntime::wake_pending_boundary(self, id)
     }
 
     fn live_registry_set(&self) -> Option<awaken_runtime::registry::RegistrySet> {

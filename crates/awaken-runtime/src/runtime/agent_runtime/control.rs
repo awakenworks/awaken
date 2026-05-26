@@ -112,6 +112,19 @@ impl AgentRuntime {
             }
         }
     }
+
+    /// Wake an active run by run ID or thread ID so it consumes durable pending
+    /// messages at the next step boundary.
+    pub fn wake_pending_boundary(&self, id: &str) -> bool {
+        match self.active_runs.lookup_strict(id) {
+            HandleLookup::Found(handle) => handle.wake_pending_boundary(),
+            HandleLookup::NotFound => false,
+            HandleLookup::Ambiguous => {
+                tracing::warn!(id = %id, "pending boundary wake rejected: ambiguous control id");
+                false
+            }
+        }
+    }
 }
 
 #[cfg(test)]

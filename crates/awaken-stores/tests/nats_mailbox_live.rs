@@ -105,7 +105,7 @@ async fn cross_node_messages_delivery() {
     subscriber_store.shutdown().await.unwrap();
 }
 
-/// All three `LiveRunCommand` variants round-trip across stores.
+/// All `LiveRunCommand` variants round-trip across stores.
 #[tokio::test]
 async fn cross_node_all_variants() {
     let fixture = NatsFixture::start().await;
@@ -148,6 +148,10 @@ async fn cross_node_all_variants() {
         )
         .await
         .unwrap();
+    publisher
+        .deliver_live("t-all", LiveRunCommand::PendingBoundaryWake)
+        .await
+        .unwrap();
 
     tokio::time::sleep(Duration::from_millis(100)).await;
     let cmds = captured.lock().await;
@@ -160,6 +164,7 @@ async fn cross_node_all_variants() {
         }
         other => panic!("expected Decision, got {other:?}"),
     }
+    assert!(matches!(cmds[3], LiveRunCommand::PendingBoundaryWake));
     drop(cmds);
 
     publisher.shutdown().await.unwrap();

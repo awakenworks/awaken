@@ -388,7 +388,7 @@ impl Mailbox {
         for _ in 0..MAX_APPEND_ATTEMPTS {
             let messages = self
                 .run_store
-                .load_messages(&dispatch.thread_id)
+                .load_committed_messages(&dispatch.thread_id)
                 .await?
                 .unwrap_or_default();
             let expected_version = messages.len() as u64;

@@ -1030,10 +1030,15 @@ pub trait ThreadStore: Send + Sync {
         }
     }
 
-    /// Load all messages for a thread. Returns `None` if no messages exist.
     async fn load_messages(&self, thread_id: &str) -> Result<Option<Vec<Message>>, StorageError>;
 
-    /// Load thread-owned message records with stable 1-based sequence numbers.
+    async fn load_committed_messages(
+        &self,
+        thread_id: &str,
+    ) -> Result<Option<Vec<Message>>, StorageError> {
+        self.load_messages(thread_id).await
+    }
+
     async fn load_message_records(
         &self,
         thread_id: &str,
@@ -1070,7 +1075,11 @@ pub trait ThreadStore: Send + Sync {
         thread_id: &str,
         messages: &[Message],
     ) -> Result<Vec<MessageRecord>, StorageError> {
-        let mut existing = self.load_messages(thread_id).await?.unwrap_or_default();
+        let mut existing = self
+            .load_committed_messages(thread_id)
+            .await?
+            .unwrap_or_default();
+        message_append::validate_append_only_delta(&existing, messages)?;
         let start_seq = existing.len() as u64 + 1;
         existing.extend(messages.iter().cloned());
         self.save_messages(thread_id, &existing).await?;
@@ -1170,20 +1179,7 @@ pub trait ThreadRunStore: ThreadStore + RunStore + Send + Sync {
         run: &RunRecord,
     ) -> Result<(), StorageError>;
 
-    /// Append `messages` to the thread's committed log and persist `run`
-    /// atomically, guarded by `expected_version` — the committed message
-    /// count the caller observed. `None` appends unconditionally. Returns
-    /// the new committed message count.
-    ///
-    /// Committed history is append-only (ADR-0042 I1), so the message count
-    /// is a monotonic version and no separate version column is needed. A
-    /// stale `expected_version` yields [`StorageError::VersionConflict`] and
-    /// leaves the committed log untouched.
-    ///
-    /// The default is a non-atomic load→check→append→write fallback, correct
-    /// for single-node stores serialized by their coordinator. Distributed
-    /// backends override it with one atomic, conditional write for
-    /// multi-instance safety (ADR-0042 D5).
+    /// Append to the committed log and persist `run`, guarded by message count.
     #[allow(deprecated)]
     async fn checkpoint_append(
         &self,
@@ -1192,7 +1188,10 @@ pub trait ThreadRunStore: ThreadStore + RunStore + Send + Sync {
         expected_version: Option<u64>,
         run: &RunRecord,
     ) -> Result<u64, StorageError> {
-        let existing = self.load_messages(thread_id).await?.unwrap_or_default();
+        let existing = self
+            .load_committed_messages(thread_id)
+            .await?
+            .unwrap_or_default();
         let actual = existing.len() as u64;
         if let Some(expected) = expected_version
             && expected != actual
@@ -1200,6 +1199,7 @@ pub trait ThreadRunStore: ThreadStore + RunStore + Send + Sync {
             return Err(StorageError::VersionConflict { expected, actual });
         }
         let mut merged = existing;
+        message_append::validate_append_only_delta(&merged, messages)?;
         message_append::merge_checkpoint_append_messages(&mut merged, messages);
         let new_version = merged.len() as u64;
         self.checkpoint(thread_id, &merged, run).await?;

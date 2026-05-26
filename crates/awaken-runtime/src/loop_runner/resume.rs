@@ -7,7 +7,7 @@ use awaken_contract::StateError;
 use awaken_contract::contract::event::AgentEvent;
 use awaken_contract::contract::event_sink::EventSink;
 use awaken_contract::contract::identity::RunIdentity;
-use awaken_contract::contract::message::{Message, ToolCall};
+use awaken_contract::contract::message::{Message, ToolCall, Visibility};
 use awaken_contract::contract::suspension::{
     ResumeDecisionAction, ToolCallResume, ToolCallResumeMode, ToolCallStatus,
 };
@@ -123,10 +123,12 @@ async fn emit_cancelled_resumes(
             result: result.clone(),
         })
         .await;
-        messages.push(Arc::new(Message::tool(
+        let mut marker = Message::tool(
             &call_id,
             serde_json::to_string(&result).unwrap_or_else(|_| "null".into()),
-        )));
+        );
+        marker.visibility = Visibility::Internal;
+        messages.push(Arc::new(marker));
 
         commit_update::<ToolCallStates>(
             store,

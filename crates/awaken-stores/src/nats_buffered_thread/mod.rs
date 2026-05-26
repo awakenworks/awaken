@@ -4,22 +4,6 @@
 //! background flusher that coalesces per-thread writes into the inner store.
 //! Reads serve read-your-writes consistency via a WAL overlay (DB when caught
 //! up, last WAL entry otherwise).
-//!
-//! # Example
-//!
-//! ```no_run
-//! use std::sync::Arc;
-//! use awaken_stores::{InMemoryStore, NatsBufferedThreadConfig, NatsBufferedThreadStore};
-//!
-//! # async fn wire() -> Result<(), Box<dyn std::error::Error>> {
-//! let inner = Arc::new(InMemoryStore::new());
-//! let config = NatsBufferedThreadConfig::new("nats://localhost:4222");
-//! let buffered = NatsBufferedThreadStore::connect(inner, config).await?;
-//! // Use `buffered` wherever a `ThreadRunStore` is expected.
-//! # buffered.shutdown().await?;
-//! # Ok(())
-//! # }
-//! ```
 
 mod config;
 mod entry;
@@ -781,6 +765,12 @@ impl<T: ThreadRunStore + Send + Sync + 'static> ThreadStore for NatsBufferedThre
     }
     async fn load_messages(&self, thread_id: &str) -> Result<Option<Vec<Message>>, StorageError> {
         reader::load_messages(self, thread_id).await
+    }
+    async fn load_committed_messages(
+        &self,
+        thread_id: &str,
+    ) -> Result<Option<Vec<Message>>, StorageError> {
+        reader::load_committed_messages(self, thread_id).await
     }
     async fn list_message_records(
         &self,
