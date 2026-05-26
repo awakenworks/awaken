@@ -83,10 +83,16 @@ impl SkillDiscoveryPlugin {
             .snapshot()
             .values()
             .filter(|s| {
-                // Filter by visibility policy state (ADR-0020).
-                visibility
-                    .map(|v| v.visibility_of(&s.meta().id) != SkillVisibility::Hidden)
-                    .unwrap_or(true)
+                // Filter by visibility policy state (ADR-0020). Explicit Show/Hide
+                // in the run-scoped state wins; otherwise fall back to the
+                // declarative metadata policy rather than failing open. This keeps
+                // `model_invocable=false` / path-conditional skills out of the
+                // catalog even when the seed missed them or the state is absent.
+                let meta = s.meta();
+                let vis = visibility
+                    .and_then(|v| v.explicit(&meta.id))
+                    .unwrap_or_else(|| DefaultSkillVisibilityPolicy.evaluate(meta));
+                vis != SkillVisibility::Hidden
             })
             .map(|s| s.meta().clone())
             .collect();
@@ -454,6 +460,81 @@ mod tests {
         assert!(
             !catalog.contains("<name>nope</name>"),
             "disable-model-invocation skill must not appear in the catalog"
+        );
+    }
+
+    // --- Fail-open visibility default (FIX #12) ------------------------------
+
+    #[test]
+    fn render_catalog_none_visibility_hides_non_model_invocable() {
+        // With no visibility state at all, a `model_invocable=false` skill must
+        // fall back to the declarative metadata policy (Hidden), while a normal
+        // skill remains visible.
+        let skills: Vec<Arc<dyn Skill>> = vec![
+            Arc::new(MockSkill(mock_meta("normal"))),
+            Arc::new(MockSkill(hidden_meta("no_invoke"))),
+        ];
+        let plugin = SkillDiscoveryPlugin::new(make_registry(skills));
+
+        let catalog = plugin.render_catalog(&HashSet::new(), None);
+        assert!(
+            catalog.contains("<name>normal</name>"),
+            "a normal skill must render when visibility state is missing"
+        );
+        assert!(
+            !catalog.contains("<name>no_invoke</name>"),
+            "disable-model-invocation skill must not fail open when state is None"
+        );
+    }
+
+    #[test]
+    fn render_catalog_omitted_path_conditional_skill_is_hidden() {
+        // A state map that omits a path-conditional skill must not fail open: the
+        // absent skill falls back to the metadata policy (Hidden).
+        let skills: Vec<Arc<dyn Skill>> = vec![
+            Arc::new(MockSkill(mock_meta("shown"))),
+            Arc::new(MockSkill(path_conditional_meta("cond"))),
+        ];
+        let plugin = SkillDiscoveryPlugin::new(make_registry(skills));
+
+        // State knows about `shown` only; `cond` is absent from the map.
+        let mut state = SkillVisibilityStateValue::default();
+        state.modes.insert("shown".into(), SkillVisibility::Visible);
+
+        let catalog = plugin.render_catalog(&HashSet::new(), Some(&state));
+        assert!(catalog.contains("<name>shown</name>"));
+        assert!(
+            !catalog.contains("<name>cond</name>"),
+            "path-conditional skill absent from state must fall back to Hidden"
+        );
+    }
+
+    #[test]
+    fn render_catalog_explicit_state_overrides_metadata_policy() {
+        // Explicit Show on an otherwise-hidden skill wins; explicit Hide on an
+        // otherwise-visible skill wins.
+        let skills: Vec<Arc<dyn Skill>> = vec![
+            Arc::new(MockSkill(hidden_meta("promoted"))),
+            Arc::new(MockSkill(mock_meta("suppressed"))),
+        ];
+        let plugin = SkillDiscoveryPlugin::new(make_registry(skills));
+
+        let mut state = SkillVisibilityStateValue::default();
+        state
+            .modes
+            .insert("promoted".into(), SkillVisibility::Visible);
+        state
+            .modes
+            .insert("suppressed".into(), SkillVisibility::Hidden);
+
+        let catalog = plugin.render_catalog(&HashSet::new(), Some(&state));
+        assert!(
+            catalog.contains("<name>promoted</name>"),
+            "explicit Show must override the Hidden metadata default"
+        );
+        assert!(
+            !catalog.contains("<name>suppressed</name>"),
+            "explicit Hide must override the Visible metadata default"
         );
     }
 

@@ -44,6 +44,17 @@ impl SkillVisibilityStateValue {
             .unwrap_or(SkillVisibility::Visible)
     }
 
+    /// Returns the EXPLICIT visibility entry for a skill, or `None` when the
+    /// skill carries no recorded Show/Hide state.
+    ///
+    /// Unlike [`visibility_of`](Self::visibility_of), this does not fail open to
+    /// `Visible`. Callers use the `None` case to fall back to the declarative
+    /// metadata policy ([`DefaultSkillVisibilityPolicy`]) rather than blindly
+    /// showing skills that were never seeded.
+    pub fn explicit(&self, skill_id: &str) -> Option<SkillVisibility> {
+        self.modes.get(skill_id).copied()
+    }
+
     /// Returns an iterator over all hidden skill IDs.
     pub fn hidden_ids(&self) -> impl Iterator<Item = &str> {
         self.modes
@@ -184,6 +195,14 @@ mod tests {
     fn state_value_default_visibility_of_unknown_skill() {
         let state = SkillVisibilityStateValue::default();
         assert_eq!(state.visibility_of("unknown"), SkillVisibility::Visible);
+    }
+
+    #[test]
+    fn explicit_returns_none_for_unknown_skill() {
+        let mut state = SkillVisibilityStateValue::default();
+        state.modes.insert("known".into(), SkillVisibility::Hidden);
+        assert_eq!(state.explicit("unknown"), None);
+        assert_eq!(state.explicit("known"), Some(SkillVisibility::Hidden));
     }
 
     #[test]
