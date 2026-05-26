@@ -11,7 +11,7 @@ use serde_json::json;
 use crate::config::{DeferralRule, DeferredToolsConfig, DeferredToolsConfigKey, ToolLoadMode};
 use crate::plugin::DeferredToolsPlugin;
 use crate::plugin::hooks::DeferredToolsBeforeInferenceHook;
-use crate::state::{DeferralRegistry, DeferralState};
+use crate::state::{DeferralRegistry, DeferralState, DeferralStateAction};
 
 fn tool(id: &str) -> ToolDescriptor {
     ToolDescriptor::new(id, id, format!("{id} tool")).with_parameters(json!({
@@ -81,6 +81,67 @@ fn plugin_on_activate_rejects_invalid_agent_config() {
     let err = plugin.on_activate(&spec, &mut patch).unwrap_err();
 
     assert!(err.to_string().contains(DeferredToolsConfigKey::KEY));
+}
+
+/// A runtime-promoted tool must survive the REAL BeforeInference hook even when
+/// config says it should be Deferred: config-only classification must not re-defer
+/// or exclude it. Drives `DeferredToolsBeforeInferenceHook::run` end to end (the
+/// sibling policy_tests version only simulates the hook logic).
+#[tokio::test]
+async fn promoted_tool_survives_real_before_inference_hook() {
+    let store = StateStore::new();
+    store
+        .install_plugin(DeferredToolsPlugin::new(vec![
+            tool("mcp__query"),
+            tool("mcp__other"),
+        ]))
+        .unwrap();
+
+    // Config defers everything by default; mcp__query is promoted at runtime.
+    let spec = AgentSpec::new("deferred-agent")
+        .with_config::<DeferredToolsConfigKey>(DeferredToolsConfig {
+            enabled: Some(true),
+            default_mode: ToolLoadMode::Deferred,
+            rules: vec![],
+            ..Default::default()
+        })
+        .unwrap();
+
+    let plugin = DeferredToolsPlugin::new(vec![tool("mcp__query"), tool("mcp__other")]);
+    let mut patch = MutationBatch::new();
+    plugin.on_activate(&spec, &mut patch).unwrap();
+    store.commit(patch).unwrap();
+
+    // ToolSearch / skill activation promotes mcp__query to eager.
+    let mut promote = MutationBatch::new();
+    promote.update::<DeferralState>(DeferralStateAction::Promote("mcp__query".into()));
+    store.commit(promote).unwrap();
+    assert_eq!(
+        store.read::<DeferralState>().unwrap().modes["mcp__query"],
+        ToolLoadMode::Eager
+    );
+
+    // Run the real hook with the config attached.
+    let ctx =
+        PhaseContext::new(Phase::BeforeInference, store.snapshot()).with_agent_spec(spec.into());
+    let cmd = DeferredToolsBeforeInferenceHook.run(&ctx).await.unwrap();
+
+    // Collect the tools the hook excludes from this inference step.
+    let excluded: Vec<&str> = cmd
+        .scheduled_actions()
+        .iter()
+        .filter(|a| a.key == "runtime.exclude_tool")
+        .filter_map(|a| a.payload.as_str())
+        .collect();
+
+    assert!(
+        excluded.contains(&"mcp__other"),
+        "a genuinely deferred tool must be excluded (proves the hook ran)"
+    );
+    assert!(
+        !excluded.contains(&"mcp__query"),
+        "a runtime-promoted tool must NOT be re-deferred/excluded by config-only logic"
+    );
 }
 
 #[tokio::test]

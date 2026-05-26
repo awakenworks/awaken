@@ -34,7 +34,12 @@ pub enum SkillVisibility {
 /// Per-skill visibility state (run-scoped).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct SkillVisibilityStateValue {
-    /// Skill ID → visibility.  Skills absent from the map are treated as `Visible`.
+    /// Skill ID → **explicit** visibility override.
+    ///
+    /// Absence does NOT mean `Visible`: it means "no explicit runtime override".
+    /// Callers must resolve actual visibility through [`effective_visibility`],
+    /// which falls back to the declarative metadata policy. Reading this map
+    /// directly and treating absent as `Visible` re-introduces the fail-open bug.
     pub modes: HashMap<String, SkillVisibility>,
 }
 
@@ -73,8 +78,16 @@ pub enum SkillVisibilityAction {
     Hide { skill_id: String },
     /// Make multiple skills visible at once.
     ShowBatch { skill_ids: Vec<String> },
-    /// Batch-set initial visibility (typically used at run start).
+    /// Batch-set visibility, overwriting any existing entry (last-write-wins).
+    /// For explicit runtime control; not for run-start seeding (use `SeedBatch`).
     SetBatch {
+        entries: Vec<(String, SkillVisibility)>,
+    },
+    /// Seed initial visibility at run start, **insert-if-absent**: an entry is
+    /// written only when the skill has no existing state. This guarantees the
+    /// seed never clobbers a runtime `Show`/`Hide` that already happened (e.g. on
+    /// re-activation, handoff, resume, or sub-agent activation).
+    SeedBatch {
         entries: Vec<(String, SkillVisibility)>,
     },
 }
@@ -119,6 +132,11 @@ impl StateKey for SkillVisibilityStateKey {
                     value.modes.insert(id, SkillVisibility::Visible);
                 }
             }
+            SkillVisibilityAction::SeedBatch { entries } => {
+                for (id, vis) in entries {
+                    value.modes.entry(id).or_insert(vis);
+                }
+            }
             SkillVisibilityAction::SetBatch { entries } => {
                 for (id, vis) in entries {
                     value.modes.insert(id, vis);
@@ -136,16 +154,17 @@ impl StateKey for SkillVisibilityStateKey {
 ///
 /// Visibility is **declarative** — derived from skill metadata, not a
 /// user-pluggable strategy (mirroring `awaken-ext-permission`, where policy is
-/// declarative rule data). A skill starts `Hidden` when `model_invocable` is
-/// `false` (frontmatter `disable-model-invocation: true`); otherwise `Visible`.
+/// declarative rule data). A skill is `Hidden` when `model_invocable` is `false`
+/// (frontmatter `disable-model-invocation: true`); otherwise `Visible`.
 ///
-/// Path-conditional hiding (a non-empty `paths` set, shown only when a matching
-/// file is touched) is **deferred**: until the file-match promote hook lands
-/// (ADR-0020 D5, future), `paths`-only skills stay `Visible` rather than being
-/// hidden with no built-in way to bring them back.
+/// `paths` is **not** an input. The agentskills specification has no
+/// path/glob-based conditional activation — skills are surfaced by their
+/// `description` (progressive disclosure) and model-invoked. `paths` is a
+/// non-standard awaken field, retained as parsed metadata but with no effect on
+/// catalog visibility.
 ///
-/// Seeded once at run start; later changes flow through `SkillVisibilityAction`
-/// (tool-, plugin-, or config-driven).
+/// Used by [`effective_visibility`] as the fallback when a skill has no explicit
+/// runtime `Show`/`Hide` override.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct DefaultSkillVisibilityPolicy;
 
@@ -157,14 +176,6 @@ impl DefaultSkillVisibilityPolicy {
         } else {
             SkillVisibility::Visible
         }
-    }
-
-    /// Batch-evaluate all skills to seed the visibility state at run start.
-    pub(crate) fn seed(&self, metas: &[&SkillMeta]) -> Vec<(String, SkillVisibility)> {
-        metas
-            .iter()
-            .map(|m| (m.id.clone(), self.evaluate(m)))
-            .collect()
     }
 }
 
@@ -303,6 +314,40 @@ mod tests {
     }
 
     #[test]
+    fn seed_batch_inserts_only_when_absent() {
+        // SeedBatch must never clobber an existing explicit runtime override:
+        // a prior Show/Hide wins; only skills with no entry get the seeded value.
+        let mut state = SkillVisibilityStateValue::default();
+        // Runtime override happened first (e.g. a tool promoted s1).
+        SkillVisibilityStateKey::apply(
+            &mut state,
+            SkillVisibilityAction::Show {
+                skill_id: "s1".into(),
+            },
+        );
+        // Re-activation seeds s1=Hidden and s2=Hidden.
+        SkillVisibilityStateKey::apply(
+            &mut state,
+            SkillVisibilityAction::SeedBatch {
+                entries: vec![
+                    ("s1".into(), SkillVisibility::Hidden),
+                    ("s2".into(), SkillVisibility::Hidden),
+                ],
+            },
+        );
+        assert_eq!(
+            state.explicit("s1"),
+            Some(SkillVisibility::Visible),
+            "seed must not overwrite an existing runtime override"
+        );
+        assert_eq!(
+            state.explicit("s2"),
+            Some(SkillVisibility::Hidden),
+            "seed fills entries that are absent"
+        );
+    }
+
+    #[test]
     fn hidden_ids_iterator() {
         let mut state = SkillVisibilityStateValue::default();
         SkillVisibilityStateKey::apply(
@@ -416,15 +461,11 @@ mod tests {
     }
 
     #[test]
-    fn default_policy_seed_batch() {
+    fn default_policy_ignores_paths() {
+        // `paths` is not in the agentskills spec and must not affect visibility.
         let policy = DefaultSkillVisibilityPolicy;
-        let m1 = SkillMeta::new("visible", "visible", "ok", vec![]);
-        let mut m2 = SkillMeta::new("hidden", "hidden", "ok", vec![]);
-        m2.model_invocable = false;
-        let metas: Vec<&SkillMeta> = vec![&m1, &m2];
-        let result = policy.seed(&metas);
-        assert_eq!(result.len(), 2);
-        assert_eq!(result[0], ("visible".into(), SkillVisibility::Visible));
-        assert_eq!(result[1], ("hidden".into(), SkillVisibility::Hidden));
+        let mut meta = SkillMeta::new("s1", "s1", "desc", vec![]);
+        meta.paths = vec!["src/**/*.rs".into(), "*.tsx".into()];
+        assert_eq!(policy.evaluate(&meta), SkillVisibility::Visible);
     }
 }
