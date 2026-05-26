@@ -55,6 +55,19 @@ pub(super) fn stream_request_for_thread(thread_id: &str, logical_id: &str) -> In
     }
 }
 
+/// A streaming request that carries *only* a logical inference id — no
+/// thread/run/fallback scope — mirroring `ensure_logical_inference_id` running
+/// on a request with empty run identity.
+pub(super) fn stream_request_logical_only(logical_id: &str) -> InferenceRequest {
+    InferenceRequest {
+        routing_key: Some(InferenceRoutingKey {
+            logical_inference_id: Some(logical_id.to_string()),
+            ..Default::default()
+        }),
+        ..request()
+    }
+}
+
 pub(super) fn request_for_thread_run(thread_id: &str, run_id: &str) -> InferenceRequest {
     InferenceRequest {
         routing_key: Some(InferenceRoutingKey {

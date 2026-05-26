@@ -198,30 +198,37 @@ fn resolve_model_and_executor(
             other => ResolveError::EnvBuild(other),
         })?;
 
-    // A model id may name a pool; pools share the model id namespace and the
-    // agent id is the deterministic home key.
-    if let Some(pool) = registries.models.get_pool(&spec.model_id) {
-        return super::pool::build_pool_executor(registries, &pool, &spec.id, &policy);
+    let model = registries.models.get_model(&spec.model_id);
+    let pool = registries.models.get_pool(&spec.model_id);
+    match (pool, model) {
+        (Some(_), Some(_)) => {
+            return Err(ResolveError::AmbiguousModelReference(spec.model_id.clone()));
+        }
+        (Some(pool), None) => {
+            // A model id may name a pool; pools share the model id namespace and
+            // the agent id is the deterministic home key.
+            return super::pool::build_pool_executor(registries, &pool, &spec.id, &policy);
+        }
+        (None, Some(model)) => {
+            let executor = registries
+                .providers
+                .get_provider(&model.provider_id)
+                .ok_or_else(|| ResolveError::ProviderNotFound(model.provider_id.clone()))?;
+
+            let executor = if policy.max_retries > 0 {
+                Arc::new(crate::engine::RetryingExecutor::new(executor, policy))
+                    as Arc<dyn LlmExecutor>
+            } else {
+                executor
+            };
+
+            let upstream_model = model.upstream_model.clone();
+            return Ok((executor, upstream_model, model));
+        }
+        (None, None) => {}
     }
 
-    let model = registries
-        .models
-        .get_model(&spec.model_id)
-        .ok_or_else(|| ResolveError::ModelNotFound(spec.model_id.clone()))?;
-
-    let executor = registries
-        .providers
-        .get_provider(&model.provider_id)
-        .ok_or_else(|| ResolveError::ProviderNotFound(model.provider_id.clone()))?;
-
-    let executor = if policy.max_retries > 0 {
-        Arc::new(crate::engine::RetryingExecutor::new(executor, policy)) as Arc<dyn LlmExecutor>
-    } else {
-        executor
-    };
-
-    let upstream_model = model.upstream_model.clone();
-    Ok((executor, upstream_model, model))
+    Err(ResolveError::ModelNotFound(spec.model_id.clone()))
 }
 
 // ---------------------------------------------------------------------------
@@ -533,15 +540,27 @@ impl RegistrySetResolver {
         })?;
         insert_manifest_entry(entries, REGISTRY_KIND_AGENT, &agent.id, &agent);
 
-        if let Some(model) = self.registries.models.get_model(&agent.model_id) {
-            collect_model_manifest_entries(entries, &agent.model_id, model);
-        } else if let Some(pool) = self.registries.models.get_pool(&agent.model_id) {
-            insert_manifest_entry(entries, REGISTRY_KIND_MODEL_POOL, &pool.id, &pool);
-            for member in &pool.members {
-                if let Some(model) = self.registries.models.get_model(&member.model_id) {
-                    collect_model_manifest_entries(entries, &member.model_id, model);
+        let model = self.registries.models.get_model(&agent.model_id);
+        let pool = self.registries.models.get_pool(&agent.model_id);
+        match (model, pool) {
+            (Some(_), Some(_)) => {
+                return Err(RunResolveError::Runtime(format!(
+                    "model id resolves to both a model and a model pool: {}",
+                    agent.model_id
+                )));
+            }
+            (Some(model), None) => {
+                collect_model_manifest_entries(entries, &agent.model_id, model);
+            }
+            (None, Some(pool)) => {
+                insert_manifest_entry(entries, REGISTRY_KIND_MODEL_POOL, &pool.id, &pool);
+                for member in &pool.members {
+                    if let Some(model) = self.registries.models.get_model(&member.model_id) {
+                        collect_model_manifest_entries(entries, &member.model_id, model);
+                    }
                 }
             }
+            (None, None) => {}
         }
 
         for delegate_id in &agent.delegates {

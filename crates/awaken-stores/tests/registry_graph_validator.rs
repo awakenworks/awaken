@@ -244,6 +244,111 @@ async fn manifest_validation_rejects_tampered_content_hash() {
     ));
 }
 
+#[tokio::test]
+async fn manifest_validation_rejects_model_and_pool_id_collision() {
+    // Runtime resolution returns AmbiguousModelReference when an id names both
+    // a model and a pool. Durable manifest validation must reject the same
+    // collision rather than silently preferring the model, or graph validation
+    // would pass for a reference the runtime resolver later refuses.
+    let store = InMemoryVersionedRegistryStore::new();
+    let provider = publish_provider(&store, "provider-1").await;
+    let member = publish_model(&store, "m0", "provider-1").await;
+    let model_x = publish_model(&store, "x", "provider-1").await;
+    let pool_x = publish_model_pool(&store, "x", ["m0"]).await;
+    let root = publish_agent(&store, agent("root", "x", [])).await;
+    let manifest = awaken_contract::PinnedRegistryManifest {
+        publication_id: None,
+        registry_snapshot_version: None,
+        entries: vec![root, model_x, pool_x, member, provider],
+    };
+
+    let validator = StandardRegistryGraphValidator::new(Arc::new(store));
+    let error = validator
+        .validate(RegistryGraphValidationRequest {
+            root: VersionSelector::Manifest {
+                scope_id: "default".to_string(),
+                manifest,
+            },
+            reference_policy: Default::default(),
+        })
+        .await
+        .unwrap_err();
+
+    assert!(matches!(
+        error,
+        RegistryGraphValidationError::InvalidReference { kind, id, reason }
+            if kind == "model"
+                && id == "x"
+                && reason == "id resolves to both a model and a model pool"
+    ));
+}
+
+#[tokio::test]
+async fn exact_expansion_rejects_model_and_pool_id_collision() {
+    // Exact expansion resolves transitive references against the store's
+    // current pointer; an id that is both a model and a pool must be rejected
+    // there too, matching the runtime resolver instead of silently expanding
+    // to the model.
+    let store = InMemoryVersionedRegistryStore::new();
+    let _provider = publish_provider(&store, "provider-1").await;
+    let _member = publish_model(&store, "m0", "provider-1").await;
+    let _model_x = publish_model(&store, "x", "provider-1").await;
+    let _pool_x = publish_model_pool(&store, "x", ["m0"]).await;
+    let root = publish_agent(&store, agent("root", "x", [])).await;
+
+    let validator = StandardRegistryGraphValidator::new(Arc::new(store));
+    let error = validator
+        .validate(RegistryGraphValidationRequest {
+            root: VersionSelector::Exact {
+                scope_id: "default".to_string(),
+                kind: "agent".to_string(),
+                id: "root".to_string(),
+                version: root.version,
+            },
+            reference_policy: Default::default(),
+        })
+        .await
+        .unwrap_err();
+
+    assert!(matches!(
+        error,
+        RegistryGraphValidationError::InvalidReference { kind, id, .. }
+            if kind == "model" && id == "x"
+    ));
+}
+
+#[tokio::test]
+async fn exact_expansion_resolves_model_when_no_pool_collision() {
+    // The common case: an id names only a model, with no same-named pool. The
+    // ambiguity check probes the pool kind too; that soft probe must return
+    // "absent" (Ok(None)), not a MissingResource error, so expansion succeeds.
+    let store = InMemoryVersionedRegistryStore::new();
+    let _provider = publish_provider(&store, "provider-1").await;
+    let _model = publish_model(&store, "model-1", "provider-1").await;
+    let root = publish_agent(&store, agent("root", "model-1", [])).await;
+
+    let validator = StandardRegistryGraphValidator::new(Arc::new(store));
+    let report = validator
+        .validate(RegistryGraphValidationRequest {
+            root: VersionSelector::Exact {
+                scope_id: "default".to_string(),
+                kind: "agent".to_string(),
+                id: "root".to_string(),
+                version: root.version,
+            },
+            reference_policy: Default::default(),
+        })
+        .await
+        .expect("agent referencing a model with no same-id pool must resolve");
+
+    assert!(
+        report
+            .entries
+            .iter()
+            .any(|entry| entry.kind == "model" && entry.id == "model-1")
+    );
+}
+
 async fn publish_agent(
     store: &InMemoryVersionedRegistryStore,
     spec: AgentSpec,

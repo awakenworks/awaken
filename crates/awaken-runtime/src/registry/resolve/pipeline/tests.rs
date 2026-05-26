@@ -12,6 +12,7 @@ use crate::registry::memory::MapBackendRegistry;
 use crate::registry::memory::{
     MapAgentSpecRegistry, MapModelRegistry, MapPluginSource, MapProviderRegistry, MapToolRegistry,
 };
+use crate::registry::traits::ModelRegistry;
 use crate::resolution::{PersistenceRequirement, RunFeatureSet};
 use async_trait::async_trait;
 use awaken_contract::contract::executor::{InferenceExecutionError, InferenceRequest};
@@ -67,6 +68,30 @@ impl LlmExecutor for MockExecutor {
 
     fn name(&self) -> &str {
         "mock"
+    }
+}
+
+struct AmbiguousModelRegistry {
+    shared_id: String,
+    model: ModelSpec,
+    pool: ModelPoolSpec,
+}
+
+impl ModelRegistry for AmbiguousModelRegistry {
+    fn get_model(&self, id: &str) -> Option<ModelSpec> {
+        (id == self.shared_id).then(|| self.model.clone())
+    }
+
+    fn model_ids(&self) -> Vec<String> {
+        vec![self.shared_id.clone()]
+    }
+
+    fn get_pool(&self, id: &str) -> Option<ModelPoolSpec> {
+        (id == self.shared_id).then(|| self.pool.clone())
+    }
+
+    fn pool_ids(&self) -> Vec<String> {
+        vec![self.shared_id.clone()]
     }
 }
 
@@ -360,6 +385,82 @@ fn resolve_pool_missing_member_model_errors() {
 
     let err = resolve(&regs, "agent-1").unwrap_err();
     assert!(matches!(err, ResolveError::ModelNotFound(ref id) if id == "m9"));
+}
+
+fn build_ambiguous_model_reference_registries() -> RegistrySet {
+    let shared_id = "shared-model-id";
+    let mut provider_reg = MapProviderRegistry::new();
+    provider_reg
+        .register_provider("p", Arc::new(MockExecutor))
+        .expect("provider registers");
+
+    let mut agent_reg = MapAgentSpecRegistry::new();
+    agent_reg
+        .register_spec(AgentSpec {
+            model_id: shared_id.into(),
+            ..make_spec("agent-1")
+        })
+        .expect("agent registers");
+
+    RegistrySet {
+        agents: Arc::new(agent_reg),
+        tools: Arc::new(MapToolRegistry::new()),
+        models: Arc::new(AmbiguousModelRegistry {
+            shared_id: shared_id.into(),
+            model: ModelSpec::new(shared_id, "p", "single-upstream"),
+            pool: ModelPoolSpec::new(shared_id, ["member"]),
+        }),
+        providers: Arc::new(provider_reg),
+        plugins: Arc::new(MapPluginSource::new()),
+        #[cfg(feature = "a2a")]
+        backends: Arc::new(MapBackendRegistry::with_default_remote_backends())
+            as Arc<dyn BackendRegistry>,
+    }
+}
+
+#[test]
+fn resolve_rejects_model_pool_id_collision() {
+    let regs = build_ambiguous_model_reference_registries();
+
+    let err = resolve(&regs, "agent-1").expect_err("shared model/pool id must be ambiguous");
+
+    assert!(matches!(
+        err,
+        ResolveError::AmbiguousModelReference(ref id) if id == "shared-model-id"
+    ));
+}
+
+#[tokio::test]
+async fn replayable_manifest_rejects_model_pool_id_collision() {
+    let regs = build_ambiguous_model_reference_registries();
+    let resolver = RegistrySetResolver::new(regs);
+
+    let err = match Resolver::resolve(
+        &resolver,
+        ResolutionRequest {
+            target: ResolutionTarget::Root {
+                agent_id: "agent-1".into(),
+                thread_id: "thread-1".into(),
+            },
+            resolution_scope: RunResolutionScope::Live,
+            overrides: None,
+            frontend_tools: vec![],
+            features: RunFeatureSet {
+                requested_persistence: PersistenceRequirement::CheckpointRequired,
+                ..Default::default()
+            },
+        },
+    )
+    .await
+    {
+        Ok(_) => panic!("manifest pinning must reject ambiguous model references"),
+        Err(err) => err,
+    };
+
+    assert!(
+        err.to_string().contains("model id resolves to both"),
+        "got: {err}"
+    );
 }
 
 // -- Tests --

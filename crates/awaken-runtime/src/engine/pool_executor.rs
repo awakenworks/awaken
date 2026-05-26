@@ -157,22 +157,27 @@ impl PoolExecutorInner {
     }
 
     fn session_key(&self, request: &InferenceRequest) -> String {
-        let key = request
-            .routing_key
-            .as_ref()
-            .and_then(|key| key.for_scope(self.router.sticky_scope()));
-        key.unwrap_or_else(|| {
-            let sequence = self
-                .anonymous_session_sequence
-                .fetch_add(1, Ordering::Relaxed)
-                .saturating_add(1);
-            tracing::warn!(
-                pool = %self.pool_id,
-                sticky_scope = ?self.router.sticky_scope(),
-                "model pool request missing routing key; using anonymous session"
-            );
-            format!("{}\0anonymous\0{sequence}", self.fallback_home_key)
-        })
+        let routing_key = request.routing_key.as_ref();
+        if let Some(key) = routing_key.and_then(|key| key.for_scope(self.router.sticky_scope())) {
+            return key;
+        }
+        // A request with only a logical_inference_id (no thread/run/fallback)
+        // still needs a *stable* key: external stream-failure callbacks
+        // recompute it to relocate the originating attempt, which an anonymous
+        // per-call key would defeat — dropping the failure.
+        if let Some(logical_id) = routing_key.and_then(|key| key.logical_inference_id.as_deref()) {
+            return format!("{}\0logical\0{logical_id}", self.fallback_home_key);
+        }
+        let sequence = self
+            .anonymous_session_sequence
+            .fetch_add(1, Ordering::Relaxed)
+            .saturating_add(1);
+        tracing::warn!(
+            pool = %self.pool_id,
+            sticky_scope = ?self.router.sticky_scope(),
+            "model pool request missing routing key; using anonymous session"
+        );
+        format!("{}\0anonymous\0{sequence}", self.fallback_home_key)
     }
 
     fn ensure_session_capacity(sessions: &mut HashMap<String, PoolSessionState>, current: &str) {

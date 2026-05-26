@@ -394,7 +394,14 @@ mod tests {
             switch,
             breaker(),
         );
-        assert!(pool.execute(request_for_thread("agent-x")).await.is_err());
+        let err = pool
+            .execute(request_for_thread("agent-x"))
+            .await
+            .expect_err("switch budget exhausted");
+        // The budget stops after one switch with m2 still untried, so the call
+        // is not "all members exhausted": it surfaces the last provider error,
+        // not PoolAttemptsExhausted.
+        assert!(matches!(err, InferenceExecutionError::RateLimited { .. }));
         let total: u32 = stubs.iter().map(|s| s.call_count()).sum();
         assert_eq!(total, 2, "home + exactly one switch");
     }

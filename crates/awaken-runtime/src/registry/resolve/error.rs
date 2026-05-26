@@ -7,6 +7,8 @@ pub enum ResolveError {
     AgentNotFound(String),
     #[error("model not found: {0}")]
     ModelNotFound(String),
+    #[error("model id resolves to both a model and a model pool: {0}")]
+    AmbiguousModelReference(String),
     #[error("provider not found: {0}")]
     ProviderNotFound(String),
     #[error("plugin not found: {0}")]

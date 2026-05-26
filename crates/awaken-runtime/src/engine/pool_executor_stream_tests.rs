@@ -248,6 +248,57 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn logical_only_stream_failure_is_recorded_and_steers_failover() {
+        // A request carrying only a logical_inference_id (no thread/run/
+        // fallback) must yield a *stable* session key. With the old anonymous
+        // key, `record_stream_failure` recomputed a fresh session — and thus a
+        // different attempt key — so it could not find the originating attempt
+        // and dropped the failure entirely. The stable logical key must let the
+        // external failure land on the originating member and steer the next
+        // attempt onto the failover member instead of bouncing back.
+        let home_key = "agent-x";
+        let logical_id = (0..400)
+            .map(|i| format!("logical-{i}"))
+            .find(|lid| home_of(&format!("{home_key}\0logical\0{lid}"), 2) == 0)
+            .expect("logical-only session homes on m0");
+        let cb = breaker_threshold(1);
+        let (pool, stubs) = pool_all(
+            home_key,
+            vec![Behavior::AlwaysOk, Behavior::AlwaysOk],
+            PoolSwitchPolicy::default(),
+            cb.clone(),
+        );
+        let req = stream_request_logical_only(&logical_id);
+
+        // Open the stream on the home member (m0); the attempt records active=m0.
+        let _stream = pool
+            .execute_stream(req.clone())
+            .await
+            .expect("logical-only stream opens on m0");
+
+        // An idle-stall style external failure for the same logical inference.
+        pool.record_stream_failure(&req, &stream_interrupted());
+
+        // The failure must be attributed to m0 (originating), opening its
+        // breaker; m1 must remain untouched.
+        assert!(
+            !cb.is_available("m0"),
+            "logical-only stream failure must be recorded on the originating member"
+        );
+        assert!(cb.is_available("m1"));
+
+        // The next attempt for this logical inference must fail over to m1, not
+        // bounce back to the already-tried m0 under a fresh anonymous session.
+        let mut second = pool
+            .execute_stream(req)
+            .await
+            .expect("recovery opens on failover member");
+        assert!(second.next().await.expect("recovery delta").is_ok());
+        assert_eq!(stubs[0].call_count(), 1, "m0 only opened the first stream");
+        assert_eq!(stubs[1].call_count(), 1, "recovery moved to m1");
+    }
+
+    #[tokio::test]
     async fn logical_stream_attempts_do_not_switch_on_transient_failure() {
         let thread_id = (0..200)
             .map(|i| format!("stream-transient-{i}"))

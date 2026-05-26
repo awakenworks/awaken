@@ -420,29 +420,33 @@ impl StandardRegistryGraphValidator {
     }
 
     /// Resolve an agent's `model_id`, which may name either a single model or a
-    /// pool (pools share the model id namespace). Prefers a model; falls back
-    /// to a pool; reports a missing model when neither exists.
+    /// pool (pools share the model id namespace). An id that resolves to *both*
+    /// a model and a pool is ambiguous and rejected, matching the runtime
+    /// resolver's `AmbiguousModelReference`; resolving to exactly one is
+    /// returned; resolving to neither reports a missing model.
     async fn resolve_model_or_pool_reference(
         &self,
         context: &ValidationContext,
         id: &str,
     ) -> Result<PinnedRegistryEntry, RegistryGraphValidationError> {
-        if let Some(entry) = self
+        let model = self
             .try_reference_entry(context, REGISTRY_KIND_MODEL, id)
-            .await?
-        {
-            return Ok(entry);
-        }
-        if let Some(entry) = self
+            .await?;
+        let pool = self
             .try_reference_entry(context, REGISTRY_KIND_MODEL_POOL, id)
-            .await?
-        {
-            return Ok(entry);
+            .await?;
+        match (model, pool) {
+            (Some(_), Some(_)) => Err(RegistryGraphValidationError::InvalidReference {
+                kind: REGISTRY_KIND_MODEL.to_string(),
+                id: id.to_string(),
+                reason: "id resolves to both a model and a model pool".to_string(),
+            }),
+            (Some(entry), None) | (None, Some(entry)) => Ok(entry),
+            (None, None) => Err(RegistryGraphValidationError::MissingResource {
+                kind: REGISTRY_KIND_MODEL.to_string(),
+                id: id.to_string(),
+            }),
         }
-        Err(RegistryGraphValidationError::MissingResource {
-            kind: REGISTRY_KIND_MODEL.to_string(),
-            id: id.to_string(),
-        })
     }
 
     /// Like [`resolve_reference_entry`](Self::resolve_reference_entry) but
@@ -460,6 +464,20 @@ impl StandardRegistryGraphValidator {
             return Ok(Some(entry.clone()));
         }
         if !context.allow_current_reference_resolution {
+            return Ok(None);
+        }
+        // Honor the soft contract: a resource that simply does not exist for
+        // this kind is `Ok(None)` so the caller can try the other kind (an id
+        // may name a model OR a pool). `reject_archived` reports absence as
+        // `MissingResource`, so probe existence first and only run the archived
+        // check when the resource is actually present — an archived resource
+        // still propagates as an error.
+        if self
+            .store
+            .resource_state(&context.scope_id, kind, id)
+            .await?
+            .is_none()
+        {
             return Ok(None);
         }
         self.reject_archived(&context.scope_id, kind, id, None)
