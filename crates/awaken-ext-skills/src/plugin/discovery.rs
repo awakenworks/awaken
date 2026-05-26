@@ -18,7 +18,7 @@ use crate::skill::SkillMeta;
 use crate::state::SkillState;
 use crate::visibility::{
     DefaultSkillVisibilityPolicy, SkillVisibility, SkillVisibilityAction, SkillVisibilityStateKey,
-    SkillVisibilityStateValue,
+    SkillVisibilityStateValue, effective_visibility,
 };
 
 /// Injects a skills catalog into the LLM context so the model can discover and activate skills.
@@ -61,7 +61,8 @@ impl SkillDiscoveryPlugin {
 
     /// Compute initial per-skill visibility from the registry using the default
     /// policy (ADR-0020 D3): a skill starts `Hidden` if `disable-model-invocation`
-    /// is set or it is path-conditional, otherwise `Visible`.
+    /// is set, otherwise `Visible`. Path-conditional hiding is deferred until the
+    /// file-match promote hook exists (ADR-0020 D5, future).
     pub(crate) fn seed_visibility_entries(&self) -> Vec<(String, SkillVisibility)> {
         let metas: Vec<SkillMeta> = self
             .registry
@@ -83,16 +84,12 @@ impl SkillDiscoveryPlugin {
             .snapshot()
             .values()
             .filter(|s| {
-                // Filter by visibility policy state (ADR-0020). Explicit Show/Hide
-                // in the run-scoped state wins; otherwise fall back to the
-                // declarative metadata policy rather than failing open. This keeps
-                // `model_invocable=false` / path-conditional skills out of the
-                // catalog even when the seed missed them or the state is absent.
-                let meta = s.meta();
-                let vis = visibility
-                    .and_then(|v| v.explicit(&meta.id))
-                    .unwrap_or_else(|| DefaultSkillVisibilityPolicy.evaluate(meta));
-                vis != SkillVisibility::Hidden
+                // Filter by visibility (ADR-0020) through the single source of
+                // truth: explicit Show/Hide in the run-scoped state wins, else the
+                // declarative metadata policy — never failing open. This keeps
+                // `model_invocable=false` skills out of the catalog even when the
+                // seed missed them or the state is absent.
+                effective_visibility(s.meta(), visibility) != SkillVisibility::Hidden
             })
             .map(|s| s.meta().clone())
             .collect();
@@ -160,7 +157,13 @@ impl SkillDiscoveryPlugin {
         out.push_str("</skills_usage>");
 
         if out.len() > self.max_chars {
-            out.truncate(self.max_chars);
+            // Walk back to the nearest char boundary: `String::truncate` panics
+            // when the index lands inside a multibyte UTF-8 sequence (CJK, emoji).
+            let mut cut = self.max_chars;
+            while cut > 0 && !out.is_char_boundary(cut) {
+                cut -= 1;
+            }
+            out.truncate(cut);
         }
 
         out.trim_end().to_string()
@@ -359,6 +362,26 @@ mod tests {
     }
 
     #[test]
+    fn render_catalog_truncation_handles_multibyte_without_panic() {
+        // `max_chars` may fall inside a multibyte UTF-8 sequence (CJK, emoji).
+        // `String::truncate` panics on a non-char-boundary index, so rendering
+        // must walk back to the nearest boundary instead.
+        let skill: Arc<dyn Skill> =
+            Arc::new(MockSkill(SkillMeta::new("s", "s", "中".repeat(80), vec![])));
+        let mut plugin = SkillDiscoveryPlugin::new(make_registry(vec![skill]));
+        // Sweep cut points across several byte offsets; with 3-byte chars at
+        // least some of these land mid-character.
+        for max in 56..=64 {
+            plugin.max_chars = max;
+            let out = plugin.render_catalog(&HashSet::new(), None);
+            assert!(
+                out.len() <= max,
+                "output must respect max_chars (max={max})"
+            );
+        }
+    }
+
+    #[test]
     fn render_catalog_char_limit_truncates_output() {
         let mut skills: Vec<Arc<dyn Skill>> = Vec::new();
         for i in 0..10 {
@@ -418,8 +441,8 @@ mod tests {
         );
         assert_eq!(
             entries.get("conditional"),
-            Some(&SkillVisibility::Hidden),
-            "path-conditional skills must seed Hidden until promoted"
+            Some(&SkillVisibility::Visible),
+            "path-conditional hiding is deferred until the file-match promote hook (ADR-0020 D5, future)"
         );
     }
 
@@ -488,24 +511,30 @@ mod tests {
     }
 
     #[test]
-    fn render_catalog_omitted_path_conditional_skill_is_hidden() {
-        // A state map that omits a path-conditional skill must not fail open: the
-        // absent skill falls back to the metadata policy (Hidden).
+    fn render_catalog_omitted_skill_falls_back_to_metadata_policy() {
+        // A skill absent from the state map must not fail open blindly: it falls
+        // back to the metadata policy. A `disable-model-invocation` skill stays
+        // Hidden; a path-conditional skill stays Visible (hiding deferred).
         let skills: Vec<Arc<dyn Skill>> = vec![
             Arc::new(MockSkill(mock_meta("shown"))),
             Arc::new(MockSkill(path_conditional_meta("cond"))),
+            Arc::new(MockSkill(hidden_meta("blocked"))),
         ];
         let plugin = SkillDiscoveryPlugin::new(make_registry(skills));
 
-        // State knows about `shown` only; `cond` is absent from the map.
+        // State knows about `shown` only; `cond` and `blocked` are absent.
         let mut state = SkillVisibilityStateValue::default();
         state.modes.insert("shown".into(), SkillVisibility::Visible);
 
         let catalog = plugin.render_catalog(&HashSet::new(), Some(&state));
         assert!(catalog.contains("<name>shown</name>"));
         assert!(
-            !catalog.contains("<name>cond</name>"),
-            "path-conditional skill absent from state must fall back to Hidden"
+            catalog.contains("<name>cond</name>"),
+            "path-conditional skill stays visible until the promote hook exists"
+        );
+        assert!(
+            !catalog.contains("<name>blocked</name>"),
+            "disable-model-invocation skill absent from state must fall back to Hidden"
         );
     }
 
@@ -600,6 +629,59 @@ mod tests {
         assert!(batch.is_empty(), "empty registry has nothing to seed");
     }
 
+    #[tokio::test]
+    async fn activation_seed_committed_and_first_inference_excludes_blocked_skill() {
+        // End-to-end: install → run-start on_activate seed → commit through the
+        // real StateStore → first BeforeInference hook reads the committed state
+        // → catalog excludes the disable-model-invocation skill.
+        use awaken_contract::registry_spec::AgentSpec;
+        use awaken_contract::state::MutationBatch;
+        use awaken_runtime::state::StateStore;
+
+        let skills: Vec<Arc<dyn Skill>> = vec![
+            Arc::new(MockSkill(mock_meta("shown"))),
+            Arc::new(MockSkill(hidden_meta("blocked"))),
+        ];
+        let plugin = SkillDiscoveryPlugin::new(make_registry(skills));
+
+        // Install so the run-scoped visibility key is registered for commit.
+        let store = StateStore::new();
+        store.install_plugin(plugin.clone()).unwrap();
+
+        // Run-start activation produces the seed; commit it for real.
+        let mut batch = MutationBatch::new();
+        Plugin::on_activate(&plugin, &AgentSpec::new("agent"), &mut batch).unwrap();
+        store.commit(batch).unwrap();
+
+        // The committed seed records the blocked skill Hidden, the other Visible.
+        let seeded = store
+            .read::<SkillVisibilityStateKey>()
+            .expect("on_activate must commit a visibility seed");
+        assert_eq!(seeded.explicit("shown"), Some(SkillVisibility::Visible));
+        assert_eq!(seeded.explicit("blocked"), Some(SkillVisibility::Hidden));
+
+        // First BeforeInference: the hook reads the committed snapshot state.
+        let ctx = PhaseContext::new(Phase::BeforeInference, store.snapshot());
+        let hook = SkillDiscoveryHook { plugin };
+        let cmd = PhaseHook::run(&hook, &ctx).await.unwrap();
+
+        let actions = cmd.scheduled_actions();
+        assert_eq!(
+            actions.len(),
+            1,
+            "a single catalog message must be scheduled"
+        );
+        let rendered = serde_json::to_string(&actions[0].payload).unwrap();
+        assert!(
+            rendered.contains("shown"),
+            "the visible skill must appear in the first-inference catalog"
+        );
+        assert!(
+            !rendered.contains("blocked"),
+            "a seeded-Hidden skill must never reach the first-inference catalog"
+        );
+    }
+
     #[test]
     fn seed_visibility_entries_covers_every_skill() {
         let skills: Vec<Arc<dyn Skill>> = vec![
@@ -616,9 +698,11 @@ mod tests {
     }
 
     #[test]
-    fn path_conditional_skill_appears_after_promote() {
-        // ADR-0020: a path-conditional skill starts Hidden, then a file-match
-        // hook / ToolSearch promotes it via SkillVisibilityAction.
+    fn path_conditional_skill_visible_by_default_and_action_controllable() {
+        // ADR-0020 D5 (future): a file-match hook will Hide path-conditional
+        // skills until a matching file is touched. That hook does not exist yet,
+        // so a `paths` skill seeds Visible. The Hide/Show action plumbing it will
+        // rely on is exercised here so it is ready when the matcher lands.
         let plugin = SkillDiscoveryPlugin::new(make_registry(vec![Arc::new(MockSkill(
             path_conditional_meta("cond"),
         ))]));
@@ -628,10 +712,23 @@ mod tests {
             state.modes.insert(id, vis);
         }
         assert!(
+            plugin
+                .render_catalog(&HashSet::new(), Some(&state))
+                .contains("<name>cond</name>"),
+            "path-conditional skill stays visible until the promote hook exists"
+        );
+
+        SkillVisibilityStateKey::apply(
+            &mut state,
+            SkillVisibilityAction::Hide {
+                skill_id: "cond".into(),
+            },
+        );
+        assert!(
             !plugin
                 .render_catalog(&HashSet::new(), Some(&state))
                 .contains("<name>cond</name>"),
-            "path-conditional skill must start hidden"
+            "an explicit Hide must remove the skill from the catalog"
         );
 
         SkillVisibilityStateKey::apply(
@@ -644,7 +741,7 @@ mod tests {
             plugin
                 .render_catalog(&HashSet::new(), Some(&state))
                 .contains("<name>cond</name>"),
-            "promoted skill must appear in the catalog"
+            "a subsequent ShowBatch must re-promote the skill"
         );
     }
 }

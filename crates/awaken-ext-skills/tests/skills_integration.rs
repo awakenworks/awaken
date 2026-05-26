@@ -7,11 +7,15 @@
 use std::fs;
 use std::sync::Arc;
 
+use awaken_contract::contract::tool::{Tool, ToolCallContext};
 use awaken_contract::state::StateKey;
 use awaken_ext_skills::registry::{InMemorySkillRegistry, SkillRegistry};
 use awaken_ext_skills::skill::{Skill, SkillResourceKind};
 use awaken_ext_skills::state::{SkillState, SkillStateUpdate, SkillStateValue};
-use awaken_ext_skills::{EmbeddedSkill, EmbeddedSkillData, FsSkill, SkillSubsystem};
+use awaken_ext_skills::{
+    EmbeddedSkill, EmbeddedSkillData, FsSkill, SkillActivateTool, SkillSubsystem,
+};
+use serde_json::json;
 use tempfile::TempDir;
 
 const SKILL_A_MD: &str = "\
@@ -496,4 +500,73 @@ async fn full_skill_lifecycle_register_activate_load() {
     } else {
         panic!("expected reference");
     }
+}
+
+// ── SkillActivateTool::execute error paths ─────────────────────────
+
+const SKILL_NO_MODEL_INVOKE_MD: &str = "\
+---
+name: blocked-skill
+description: A skill the model must not be able to activate
+disable-model-invocation: true
+---
+# Blocked Skill
+
+This skill is user-invocable only.
+";
+
+#[tokio::test]
+async fn activate_tool_rejects_model_invocation_disabled_skill() {
+    // `disable-model-invocation` is the hard invocation guard: the model entry
+    // point (SkillActivateTool) must refuse to activate such a skill even though
+    // it parses and registers normally. Driven through FsSkill so the frontmatter
+    // → meta mapping is exercised end to end.
+    let td = TempDir::new().unwrap();
+    let root = td.path().join("skills");
+    fs::create_dir_all(root.join("blocked-skill")).unwrap();
+    fs::write(
+        root.join("blocked-skill").join("SKILL.md"),
+        SKILL_NO_MODEL_INVOKE_MD,
+    )
+    .unwrap();
+    let skills = FsSkill::into_arc_skills(FsSkill::discover(root).unwrap().skills);
+    assert!(
+        !skills[0].meta().model_invocable,
+        "frontmatter disable-model-invocation must clear model_invocable"
+    );
+
+    let registry = Arc::new(InMemorySkillRegistry::from_skills(skills));
+    let tool = SkillActivateTool::new(registry);
+    let ctx = ToolCallContext::test_default();
+
+    let result = tool
+        .execute(json!({"skill": "blocked-skill"}), &ctx)
+        .await
+        .unwrap();
+    assert!(result.result.is_error());
+    assert!(
+        result
+            .result
+            .message
+            .as_deref()
+            .unwrap_or("")
+            .contains("model_invocation_disabled"),
+        "error must identify the model-invocation guard"
+    );
+}
+
+#[tokio::test]
+async fn activate_tool_rejects_empty_skill_id() {
+    let tool = SkillActivateTool::new(Arc::new(InMemorySkillRegistry::new()));
+    let ctx = ToolCallContext::test_default();
+    let result = tool.execute(json!({"skill": ""}), &ctx).await.unwrap();
+    assert!(result.result.is_error());
+}
+
+#[tokio::test]
+async fn activate_tool_rejects_whitespace_only_skill_id() {
+    let tool = SkillActivateTool::new(Arc::new(InMemorySkillRegistry::new()));
+    let ctx = ToolCallContext::test_default();
+    let result = tool.execute(json!({"skill": "   "}), &ctx).await.unwrap();
+    assert!(result.result.is_error());
 }

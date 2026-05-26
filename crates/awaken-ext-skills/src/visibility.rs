@@ -1,8 +1,11 @@
 //! Skill visibility state, actions, and policy (ADR-0020).
 //!
 //! Follows the mechanism-policy separation pattern established by
-//! `awaken-ext-permission` (PermissionPolicy + PermissionOverrides)
-//! and `awaken-ext-deferred-tools` (DeferralState + DeferralPolicy).
+//! `awaken-ext-permission` (PermissionPolicy + PermissionOverrides) and
+//! `awaken-ext-deferred-tools` (`DeferralState` plus declarative config
+//! classification via `resolve_mode`, not a pluggable policy trait). Here the
+//! mechanism is `SkillVisibilityStateKey` + `SkillVisibilityAction`; the policy
+//! is the declarative, metadata-derived `DefaultSkillVisibilityPolicy`.
 
 use std::collections::HashMap;
 
@@ -36,21 +39,13 @@ pub struct SkillVisibilityStateValue {
 }
 
 impl SkillVisibilityStateValue {
-    /// Returns the effective visibility for the given skill.
-    pub fn visibility_of(&self, skill_id: &str) -> SkillVisibility {
-        self.modes
-            .get(skill_id)
-            .copied()
-            .unwrap_or(SkillVisibility::Visible)
-    }
-
     /// Returns the EXPLICIT visibility entry for a skill, or `None` when the
     /// skill carries no recorded Show/Hide state.
     ///
-    /// Unlike [`visibility_of`](Self::visibility_of), this does not fail open to
-    /// `Visible`. Callers use the `None` case to fall back to the declarative
-    /// metadata policy ([`DefaultSkillVisibilityPolicy`]) rather than blindly
-    /// showing skills that were never seeded.
+    /// This deliberately does not fail open to `Visible`: this value records
+    /// only explicit overrides. Resolving the visibility a skill should actually
+    /// have — explicit override, else metadata policy — is the job of
+    /// [`effective_visibility`], the single source of truth for the catalog.
     pub fn explicit(&self, skill_id: &str) -> Option<SkillVisibility> {
         self.modes.get(skill_id).copied()
     }
@@ -96,6 +91,15 @@ pub struct SkillVisibilityStateKey;
 
 impl StateKey for SkillVisibilityStateKey {
     const KEY: &'static str = "skills.visibility";
+    /// `Commutative` here means "parallel batches touching this key may merge
+    /// without conflict" — each op is a per-skill-ID map insert, resolved
+    /// last-write-wins, exactly like the `PermissionOverridesKey` reducer
+    /// (`AllowTool`/`DenyTool` on the same tool). It is not strict mathematical
+    /// commutativity: two parallel ops on the *same* ID resolve by concatenation
+    /// order. `Exclusive` would be wrong — it would make two hooks that both
+    /// adjust visibility hard-conflict, defeating additive promotion. The seed
+    /// (run-start `on_activate`) never races runtime overrides: it is committed
+    /// before any tool runs.
     const MERGE: MergeStrategy = MergeStrategy::Commutative;
     const SCOPE: KeyScope = KeyScope::Run;
 
@@ -132,19 +136,23 @@ impl StateKey for SkillVisibilityStateKey {
 ///
 /// Visibility is **declarative** — derived from skill metadata, not a
 /// user-pluggable strategy (mirroring `awaken-ext-permission`, where policy is
-/// declarative rule data). A skill starts `Hidden` if:
-/// - `model_invocable` is `false` (frontmatter `disable-model-invocation: true`), OR
-/// - `paths` is non-empty (conditional skill — hidden until a file match promotes it).
+/// declarative rule data). A skill starts `Hidden` when `model_invocable` is
+/// `false` (frontmatter `disable-model-invocation: true`); otherwise `Visible`.
 ///
-/// Otherwise it is `Visible`. Seeded once at run start; later changes flow
-/// through `SkillVisibilityAction` (tool-, plugin-, or config-driven).
+/// Path-conditional hiding (a non-empty `paths` set, shown only when a matching
+/// file is touched) is **deferred**: until the file-match promote hook lands
+/// (ADR-0020 D5, future), `paths`-only skills stay `Visible` rather than being
+/// hidden with no built-in way to bring them back.
+///
+/// Seeded once at run start; later changes flow through `SkillVisibilityAction`
+/// (tool-, plugin-, or config-driven).
 #[derive(Debug, Clone, Default)]
 pub(crate) struct DefaultSkillVisibilityPolicy;
 
 impl DefaultSkillVisibilityPolicy {
     /// Evaluate visibility for a single skill from its metadata.
     pub(crate) fn evaluate(&self, meta: &SkillMeta) -> SkillVisibility {
-        if !meta.model_invocable || !meta.paths.is_empty() {
+        if !meta.model_invocable {
             SkillVisibility::Hidden
         } else {
             SkillVisibility::Visible
@@ -158,6 +166,26 @@ impl DefaultSkillVisibilityPolicy {
             .map(|m| (m.id.clone(), self.evaluate(m)))
             .collect()
     }
+}
+
+// ---------------------------------------------------------------------------
+// Effective visibility (single source of truth)
+// ---------------------------------------------------------------------------
+
+/// Resolve the visibility a skill should have in the catalog.
+///
+/// This is the one rule every read path must use: an explicit Show/Hide in the
+/// run-scoped state ([`SkillVisibilityStateValue::explicit`]) wins; otherwise it
+/// falls back to the declarative metadata policy ([`DefaultSkillVisibilityPolicy`])
+/// rather than failing open. Because the policy type is crate-private, this
+/// function is the public entry point for reproducing the catalog's decision.
+pub fn effective_visibility(
+    meta: &SkillMeta,
+    state: Option<&SkillVisibilityStateValue>,
+) -> SkillVisibility {
+    state
+        .and_then(|s| s.explicit(&meta.id))
+        .unwrap_or_else(|| DefaultSkillVisibilityPolicy.evaluate(meta))
 }
 
 // ---------------------------------------------------------------------------
@@ -192,12 +220,6 @@ mod tests {
     }
 
     #[test]
-    fn state_value_default_visibility_of_unknown_skill() {
-        let state = SkillVisibilityStateValue::default();
-        assert_eq!(state.visibility_of("unknown"), SkillVisibility::Visible);
-    }
-
-    #[test]
     fn explicit_returns_none_for_unknown_skill() {
         let mut state = SkillVisibilityStateValue::default();
         state.modes.insert("known".into(), SkillVisibility::Hidden);
@@ -214,7 +236,7 @@ mod tests {
                 skill_id: "s1".into(),
             },
         );
-        assert_eq!(state.visibility_of("s1"), SkillVisibility::Hidden);
+        assert_eq!(state.explicit("s1"), Some(SkillVisibility::Hidden));
 
         SkillVisibilityStateKey::apply(
             &mut state,
@@ -222,7 +244,7 @@ mod tests {
                 skill_id: "s1".into(),
             },
         );
-        assert_eq!(state.visibility_of("s1"), SkillVisibility::Visible);
+        assert_eq!(state.explicit("s1"), Some(SkillVisibility::Visible));
     }
 
     #[test]
@@ -234,7 +256,7 @@ mod tests {
                 skill_id: "s1".into(),
             },
         );
-        assert_eq!(state.visibility_of("s1"), SkillVisibility::Hidden);
+        assert_eq!(state.explicit("s1"), Some(SkillVisibility::Hidden));
     }
 
     #[test]
@@ -258,8 +280,8 @@ mod tests {
                 skill_ids: vec!["s1".into(), "s2".into()],
             },
         );
-        assert_eq!(state.visibility_of("s1"), SkillVisibility::Visible);
-        assert_eq!(state.visibility_of("s2"), SkillVisibility::Visible);
+        assert_eq!(state.explicit("s1"), Some(SkillVisibility::Visible));
+        assert_eq!(state.explicit("s2"), Some(SkillVisibility::Visible));
     }
 
     #[test]
@@ -275,9 +297,9 @@ mod tests {
                 ],
             },
         );
-        assert_eq!(state.visibility_of("s1"), SkillVisibility::Hidden);
-        assert_eq!(state.visibility_of("s2"), SkillVisibility::Visible);
-        assert_eq!(state.visibility_of("s3"), SkillVisibility::Hidden);
+        assert_eq!(state.explicit("s1"), Some(SkillVisibility::Hidden));
+        assert_eq!(state.explicit("s2"), Some(SkillVisibility::Visible));
+        assert_eq!(state.explicit("s3"), Some(SkillVisibility::Hidden));
     }
 
     #[test]
@@ -312,8 +334,8 @@ mod tests {
         state.modes.insert("s2".into(), SkillVisibility::Visible);
         let json = serde_json::to_value(&state).unwrap();
         let parsed: SkillVisibilityStateValue = serde_json::from_value(json).unwrap();
-        assert_eq!(parsed.visibility_of("s1"), SkillVisibility::Hidden);
-        assert_eq!(parsed.visibility_of("s2"), SkillVisibility::Visible);
+        assert_eq!(parsed.explicit("s1"), Some(SkillVisibility::Hidden));
+        assert_eq!(parsed.explicit("s2"), Some(SkillVisibility::Visible));
     }
 
     // --- Default policy tests ---
@@ -334,11 +356,63 @@ mod tests {
     }
 
     #[test]
-    fn default_policy_hidden_when_paths_present() {
+    fn default_policy_visible_when_only_paths_present() {
+        // Path-conditional hiding is deferred until a file-match promote hook
+        // exists (ADR-0020 D5, future). Until then a `paths`-only skill stays
+        // Visible rather than vanishing from the catalog with no way back.
         let policy = DefaultSkillVisibilityPolicy;
         let mut meta = SkillMeta::new("s1", "s1", "desc", vec![]);
         meta.paths = vec!["*.tsx".into()];
-        assert_eq!(policy.evaluate(&meta), SkillVisibility::Hidden);
+        assert_eq!(policy.evaluate(&meta), SkillVisibility::Visible);
+    }
+
+    // --- Effective visibility (single source of truth) ---
+
+    #[test]
+    fn effective_visibility_explicit_state_wins_over_metadata() {
+        // Explicit Show promotes a metadata-Hidden skill; explicit Hide suppresses
+        // a metadata-Visible one.
+        let mut blocked = SkillMeta::new("blocked", "blocked", "d", vec![]);
+        blocked.model_invocable = false;
+        let normal = SkillMeta::new("normal", "normal", "d", vec![]);
+
+        let mut state = SkillVisibilityStateValue::default();
+        state
+            .modes
+            .insert("blocked".into(), SkillVisibility::Visible);
+        state.modes.insert("normal".into(), SkillVisibility::Hidden);
+
+        assert_eq!(
+            effective_visibility(&blocked, Some(&state)),
+            SkillVisibility::Visible
+        );
+        assert_eq!(
+            effective_visibility(&normal, Some(&state)),
+            SkillVisibility::Hidden
+        );
+    }
+
+    #[test]
+    fn effective_visibility_falls_back_to_metadata_policy_when_absent() {
+        let mut blocked = SkillMeta::new("blocked", "blocked", "d", vec![]);
+        blocked.model_invocable = false;
+        let normal = SkillMeta::new("normal", "normal", "d", vec![]);
+
+        // No state at all, and a state that omits the skill: both fall back.
+        assert_eq!(
+            effective_visibility(&normal, None),
+            SkillVisibility::Visible
+        );
+        assert_eq!(
+            effective_visibility(&blocked, None),
+            SkillVisibility::Hidden
+        );
+
+        let empty = SkillVisibilityStateValue::default();
+        assert_eq!(
+            effective_visibility(&blocked, Some(&empty)),
+            SkillVisibility::Hidden
+        );
     }
 
     #[test]
