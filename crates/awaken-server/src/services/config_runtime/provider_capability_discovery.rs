@@ -95,10 +95,15 @@ async fn discover_one_provider(
             return None;
         }
     };
-    let mut parsed = parse_provider_model_capabilities(&provider.adapter, &payload);
-    parsed.retain(|model, _| wanted.contains(model));
-
-    (!parsed.is_empty()).then_some(parsed)
+    let parsed = parse_provider_model_capabilities(&provider.adapter, &payload);
+    if !parsed.keys().any(|model| wanted.contains(model)) {
+        tracing::debug!(
+            provider_id = %provider.id,
+            adapter = %provider.adapter,
+            "provider model capability discovery succeeded without wanted model metadata"
+        );
+    }
+    Some(parsed)
 }
 
 fn referenced_models_by_provider(
@@ -137,7 +142,8 @@ fn referenced_models_by_provider(
 fn needs_capability_discovery(model: &ModelSpec) -> bool {
     model.context_window.is_none()
         || model.max_output_tokens.is_none()
-        || model.modalities.input.is_empty() && model.modalities.output.is_empty()
+        || model.modalities.input.is_empty()
+        || model.modalities.output.is_empty()
         || model.knowledge_cutoff.is_none()
 }
 
@@ -148,6 +154,14 @@ fn model_list_url(provider: &ProviderSpec) -> Option<reqwest::Url> {
         .filter(|value| !value.trim().is_empty())
         .or_else(|| default_model_base_url(&provider.adapter))?;
     let trimmed = base.trim();
+    if base_url_looks_like_inference_endpoint(trimmed) {
+        tracing::warn!(
+            provider_id = %provider.id,
+            base_url = trimmed,
+            "skipping provider model discovery because base_url is not an API root"
+        );
+        return None;
+    }
     if trimmed.ends_with("/models") || trimmed.ends_with("/models/") {
         return reqwest::Url::parse(trimmed).ok();
     }
@@ -157,6 +171,18 @@ fn model_list_url(provider: &ProviderSpec) -> Option<reqwest::Url> {
         format!("{trimmed}/")
     };
     reqwest::Url::parse(&base).ok()?.join("models").ok()
+}
+
+fn base_url_looks_like_inference_endpoint(value: &str) -> bool {
+    let Ok(url) = reqwest::Url::parse(value) else {
+        return false;
+    };
+    let path = url.path().trim_end_matches('/');
+    path.ends_with("/chat/completions")
+        || path.ends_with("/completions")
+        || path.ends_with("/responses")
+        || path.ends_with(":generateContent")
+        || path.ends_with(":streamGenerateContent")
 }
 
 fn default_model_base_url(adapter: &str) -> Option<&'static str> {
@@ -174,7 +200,7 @@ fn should_skip_unauthenticated_default_endpoint(provider: &ProviderSpec) -> bool
     }
     matches!(
         provider.adapter.to_ascii_lowercase().as_str(),
-        "openai" | "gemini" | "google" | "vertex"
+        "openai" | "gemini" | "google"
     )
 }
 
@@ -186,7 +212,7 @@ fn auth_headers(provider: &ProviderSpec) -> Option<HeaderMap> {
         .filter(|key| !key.is_empty())?;
     let mut headers = HeaderMap::new();
     match provider.adapter.to_ascii_lowercase().as_str() {
-        "gemini" | "google" | "vertex" => {
+        "gemini" | "google" => {
             headers.insert("x-goog-api-key", HeaderValue::from_str(api_key).ok()?);
         }
         _ => {
@@ -232,6 +258,18 @@ mod tests {
     }
 
     #[test]
+    fn model_list_url_rejects_inference_endpoint_base_url() {
+        let provider = ProviderSpec {
+            id: "p".into(),
+            adapter: "openai".into(),
+            base_url: Some("https://example.test/v1/chat/completions".into()),
+            ..ProviderSpec::default()
+        };
+
+        assert!(model_list_url(&provider).is_none());
+    }
+
+    #[test]
     fn default_openai_discovery_requires_explicit_credentials() {
         let provider = ProviderSpec {
             id: "p".into(),
@@ -240,6 +278,17 @@ mod tests {
         };
 
         assert!(should_skip_unauthenticated_default_endpoint(&provider));
+    }
+
+    #[test]
+    fn vertex_discovery_has_no_implicit_endpoint() {
+        let provider = ProviderSpec {
+            id: "p".into(),
+            adapter: "vertex".into(),
+            ..ProviderSpec::default()
+        };
+
+        assert!(model_list_url(&provider).is_none());
     }
 
     #[test]
@@ -294,6 +343,37 @@ mod tests {
         assert_eq!(patch.context_window, Some(128_000));
         assert_eq!(patch.max_output_tokens, Some(16_384));
         assert_eq!(hits.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn successful_discovery_without_wanted_models_returns_full_snapshot() {
+        let hits = Arc::new(AtomicUsize::new(0));
+        let base_url = spawn_models_server(Arc::clone(&hits)).await;
+        let providers = vec![ProviderSpec {
+            id: "p".into(),
+            adapter: "openrouter".into(),
+            api_key: Some("secret".into()),
+            base_url: Some(base_url),
+            timeout_secs: 5,
+            adapter_options: Default::default(),
+        }];
+        let models = vec![ModelSpec::new("m", "p", "missing-model")];
+
+        let discovered = discover_provider_capabilities(&providers, &models, &[]).await;
+
+        assert_eq!(hits.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            discovered.get("p"),
+            Some(&HashMap::from([(
+                "openai/gpt-4o".to_string(),
+                ModelCapabilityPatch {
+                    context_window: Some(128_000),
+                    max_output_tokens: Some(16_384),
+                    modalities: None,
+                    knowledge_cutoff: None,
+                }
+            )]))
+        );
     }
 
     async fn spawn_models_server(hits: Arc<AtomicUsize>) -> String {

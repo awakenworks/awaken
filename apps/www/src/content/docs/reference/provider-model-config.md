@@ -182,15 +182,23 @@ Static heuristics are conservative metadata only. Runtime input-modality
 enforcement and automatic knowledge-cutoff context are enabled only when the
 field came from explicit `ModelSpec` config or provider discovery.
 
+Provider discovery coverage is adapter-specific. Gemini/Google discovery
+currently backfills token limits only; configure `modalities` and
+`knowledge_cutoff` explicitly when those fields should drive runtime guards or
+context injection. Vertex models may still receive static heuristic metadata,
+but Vertex provider discovery is not enabled unless a future adapter supplies a
+complete discovery URL/auth implementation.
+
 When `ModelSpec.modalities.input` is explicit or provider-discovered and
-non-empty, unsupported image/audio/video/pdf request blocks are rejected before
-the provider call. The guard applies to any media the model must ingest. Tool
-*calls* and reasoning/thinking blocks are protocol structures, not media the
-model ingests, so they are not modality-gated. Media (image/audio/pdf/video)
-embedded inside a `ToolResult.content` *is* validated against `modalities.input`,
-because the model still has to read that media: the guard recurses into tool
-results and checks each contained block. Only documents identifiable as PDFs are
-checked against `pdf`. When
+non-empty, unsupported request content blocks are rejected before the provider
+call. Text blocks in system, user, assistant, and tool-result content do not
+consume a `text` modality; `modalities.input` gates only media the model must
+read (`image`, `audio`, `video`, and documents identifiable as `pdf`). Tool
+*calls* and reasoning/thinking blocks are protocol structures, not model input
+modalities, so they are not modality-gated. Media embedded inside a
+`ToolResult.content` *is* validated against `modalities.input`, because the
+model still has to read that media: the guard recurses into tool results and
+checks each contained media block. When
 `knowledge_cutoff` is explicit or provider-discovered, the resolver installs
 `knowledge_cutoff_context`, which injects one system context message per
 inference boundary. Disable it per agent with:

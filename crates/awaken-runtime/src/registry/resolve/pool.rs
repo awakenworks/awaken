@@ -83,7 +83,7 @@ pub fn build_pool_executor(
         let executor = crate::engine::ModalityGuardExecutor::wrap_trusted(
             executor,
             &model,
-            capability_sources.modalities,
+            capability_sources.input_modalities,
         );
 
         router_members.push(RouterMember {

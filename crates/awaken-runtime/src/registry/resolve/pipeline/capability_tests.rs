@@ -352,7 +352,7 @@ async fn resolver_does_not_enforce_modalities_from_static_defaults() {
 
     assert_eq!(resolved_model.modalities.input.len(), 2);
     assert_eq!(
-        sources.modalities,
+        sources.input_modalities,
         Some(crate::registry::model_capabilities::CapabilitySource::StaticHeuristic)
     );
     executor
@@ -412,7 +412,7 @@ async fn resolver_enforces_modalities_from_provider_discovery() {
         resolve_model_and_executor(&registries, &agent).expect("resolved model");
 
     assert_eq!(
-        sources.modalities,
+        sources.input_modalities,
         Some(crate::registry::model_capabilities::CapabilitySource::ProviderDiscovery)
     );
     let err = executor

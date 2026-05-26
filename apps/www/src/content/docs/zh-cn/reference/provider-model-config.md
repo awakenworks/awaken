@@ -174,13 +174,20 @@ AgentSpec    -> AgentSpecRegistry
 静态启发式只作为保守 metadata。运行时输入模态拦截和 knowledge cutoff
 context 自动注入，只信任显式 `ModelSpec` 配置或 provider discovery。
 
+Provider discovery 的覆盖范围取决于 adapter。Gemini/Google discovery 当前只补
+token limit；如果需要让 `modalities` 或 `knowledge_cutoff` 驱动运行时 guard /
+context 注入，请显式配置这些字段。Vertex 模型仍可能获得静态启发式 metadata，
+但除非未来 adapter 提供完整的 discovery URL/auth 实现，否则不启用 Vertex provider
+discovery。
+
 当 `ModelSpec.modalities.input` 来自显式配置或 provider discovery 且非空时，
-runtime 会在 provider 调用前拒绝不支持的 image/audio/video/pdf 请求块。这个
-guard 作用于模型需要读取的任何 media。tool call 与 reasoning/thinking 是协议
-结构块、不是模型读取的 media，因此不受 modality 限制；但 `ToolResult.content`
-中内嵌的 media（image/audio/pdf/video）*会*按 `modalities.input` 校验，因为模型
-仍要读取这些 media：guard 会递归进入 tool result 并校验其中每个块。document 也
-只有能识别为 PDF 时才按 `pdf` 校验。当 `knowledge_cutoff` 来自显式配置或 provider discovery 时，resolver
+runtime 会在 provider 调用前拒绝不支持的请求内容块。system、user、assistant
+和 tool-result content 中的文本块不消耗 `text` modality；`modalities.input`
+只限制模型必须读取的 media（`image`、`audio`、`video`，以及能识别为 `pdf` 的
+document）。tool call 与 reasoning/thinking 是协议结构块、不是模型输入模态，因此
+不受 modality 限制；但 `ToolResult.content` 中内嵌的 media *会*按
+`modalities.input` 校验，因为模型仍要读取这些 media：guard 会递归进入 tool
+result 并校验其中每个 media 块。当 `knowledge_cutoff` 来自显式配置或 provider discovery 时，resolver
 会安装 `knowledge_cutoff_context`，每个 inference boundary 注入一条 system
 context。可在 agent 上关闭：
 

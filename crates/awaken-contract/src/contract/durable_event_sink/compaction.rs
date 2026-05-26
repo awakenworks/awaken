@@ -20,6 +20,9 @@ pub(super) struct CompactionObservation {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct CompactionInFlight {
+    /// Globally unique per compaction attempt. Boundary-less terminal matching
+    /// intentionally falls back to this id alone because older snapshots may not
+    /// carry `boundary_message_id`.
     task_id: String,
     boundary_message_id: Option<String>,
 }
@@ -233,9 +236,13 @@ impl ScopedAgentEventNormalizer {
             let timestamp_ms = skipped.get("timestamp_ms").and_then(Value::as_u64);
             let fingerprint = skip_id.clone().unwrap_or_else(|| {
                 format!(
-                    "skipped/{}/{}/{reason}/{}",
+                    "skipped/{index}/{}/{}/{reason}/{:?}/{:?}/{:?}/{:?}/{}",
                     task_id.as_deref().unwrap_or_default(),
                     boundary_message_id.as_deref().unwrap_or_default(),
+                    pre_tokens,
+                    post_tokens,
+                    savings_ratio_ppm,
+                    min_savings_ratio_ppm,
                     timestamp_ms.unwrap_or(0)
                 )
             });
@@ -366,20 +373,11 @@ fn state_has_terminal_for_in_flight(state: &Value, in_flight: &CompactionInFligh
 fn compaction_entry_matches_in_flight(entry: &Value, in_flight: &CompactionInFlight) -> bool {
     let task_id = non_blank_string(entry, "task_id");
     let boundary_message_id = non_blank_string(entry, "boundary_message_id");
-    match (
-        task_id.as_deref(),
-        boundary_message_id.as_deref(),
-        in_flight.boundary_message_id.as_deref(),
-    ) {
-        (Some(task_id), Some(boundary_message_id), Some(expected_boundary)) => {
-            task_id == in_flight.task_id && boundary_message_id == expected_boundary
-        }
-        (Some(task_id), _, _) => task_id == in_flight.task_id,
-        (_, Some(boundary_message_id), Some(expected_boundary)) => {
-            boundary_message_id == expected_boundary
-        }
-        _ => false,
+    if let Some(expected_boundary) = in_flight.boundary_message_id.as_deref() {
+        return task_id.as_deref() == Some(in_flight.task_id.as_str())
+            && boundary_message_id.as_deref() == Some(expected_boundary);
     }
+    task_id.as_deref() == Some(in_flight.task_id.as_str())
 }
 
 fn non_blank_string(value: &Value, key: &str) -> Option<String> {

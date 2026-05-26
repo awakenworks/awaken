@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
@@ -102,6 +102,7 @@ impl ProviderRuntimeCache {
                 .is_some_and(|current| *current == snapshot.signature)
                 && !snapshot.is_expired(now, ttl)
         });
+        let discovered_provider_ids = discovered.keys().cloned().collect::<HashSet<_>>();
         for (provider_id, capabilities) in discovered {
             let Some(signature) = signatures.get(&provider_id) else {
                 continue;
@@ -114,6 +115,14 @@ impl ProviderRuntimeCache {
                     capabilities,
                 },
             );
+        }
+        for provider_id in self.capabilities.keys() {
+            if !discovered_provider_ids.contains(provider_id) {
+                tracing::warn!(
+                    provider_id,
+                    "using stale provider capability snapshot after discovery failure"
+                );
+            }
         }
         self.capabilities
             .iter()
@@ -236,6 +245,36 @@ mod tests {
         );
 
         assert_eq!(still_fresh["p"]["gpt-4o"].context_window, Some(128_000));
+    }
+
+    #[test]
+    fn capability_snapshot_empty_success_replaces_cached_snapshot() {
+        let provider = ProviderSpec {
+            id: "p".into(),
+            adapter: "openai".into(),
+            base_url: Some("https://example.test/v1".into()),
+            ..ProviderSpec::default()
+        };
+        let mut cache = ProviderRuntimeCache::default();
+        let now = SystemTime::UNIX_EPOCH;
+        cache.update_capability_snapshots(
+            std::slice::from_ref(&provider),
+            HashMap::from([(
+                "p".into(),
+                HashMap::from([("gpt-4o".into(), patch(128_000))]),
+            )]),
+            signature,
+            now,
+        );
+
+        let refreshed = cache.update_capability_snapshots(
+            std::slice::from_ref(&provider),
+            HashMap::from([("p".into(), HashMap::new())]),
+            signature,
+            now + Duration::from_secs(60),
+        );
+
+        assert_eq!(refreshed.get("p"), Some(&HashMap::new()));
     }
 
     #[test]
