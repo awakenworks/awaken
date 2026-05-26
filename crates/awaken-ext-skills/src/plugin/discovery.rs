@@ -59,19 +59,27 @@ impl SkillDiscoveryPlugin {
             .replace('>', "&gt;")
     }
 
-    /// Compute initial per-skill visibility from the registry using the default
-    /// policy (ADR-0020 D3): a skill starts `Hidden` if `disable-model-invocation`
-    /// is set, otherwise `Visible`. Path-conditional hiding is deferred until the
-    /// file-match promote hook exists (ADR-0020 D5, future).
+    /// Compute the run-start visibility seed (ADR-0020 D3).
+    ///
+    /// Only **Hidden** entries are emitted — i.e. skills with
+    /// `disable-model-invocation` (`model_invocable == false`). Visible skills are
+    /// deliberately left unseeded so they resolve through
+    /// [`effective_visibility`] against live metadata; seeding them as explicit
+    /// `Visible` would mask a later metadata change (e.g. registry hot-reload
+    /// flipping a skill to non-invocable). The seed is applied insert-if-absent
+    /// (`SeedBatch`) so it never clobbers a runtime `Show`/`Hide`.
+    ///
+    /// `paths` is **not** a visibility input: the agentskills spec has no
+    /// path/glob conditional activation, so `paths`-bearing skills are surfaced
+    /// by description like any other (model-invoked).
     pub(crate) fn seed_visibility_entries(&self) -> Vec<(String, SkillVisibility)> {
-        let metas: Vec<SkillMeta> = self
-            .registry
+        self.registry
             .snapshot()
             .values()
             .map(|s| s.meta().clone())
-            .collect();
-        let refs: Vec<&SkillMeta> = metas.iter().collect();
-        DefaultSkillVisibilityPolicy.seed(&refs)
+            .filter(|m| DefaultSkillVisibilityPolicy.evaluate(m) == SkillVisibility::Hidden)
+            .map(|m| (m.id, SkillVisibility::Hidden))
+            .collect()
     }
 
     pub(crate) fn render_catalog(
@@ -243,8 +251,12 @@ impl Plugin for SkillDiscoveryPlugin {
         Ok(())
     }
 
-    /// Seed run-scoped skill visibility at run start (ADR-0020 D3) so that
-    /// `disable-model-invocation` and path-conditional skills start `Hidden`.
+    /// Seed run-scoped skill visibility at run start (ADR-0020 D3): skills with
+    /// `disable-model-invocation` start `Hidden`. Applied insert-if-absent
+    /// (`SeedBatch`) so an already-present runtime `Show`/`Hide` is preserved
+    /// across re-activation / handoff / resume. Initial visibility derives only
+    /// from skill metadata; `_agent_spec` is not consulted (config-driven initial
+    /// visibility is future scope, ADR-0020 D5).
     fn on_activate(
         &self,
         _agent_spec: &AgentSpec,
@@ -252,7 +264,7 @@ impl Plugin for SkillDiscoveryPlugin {
     ) -> Result<(), StateError> {
         let entries = self.seed_visibility_entries();
         if !entries.is_empty() {
-            patch.update::<SkillVisibilityStateKey>(SkillVisibilityAction::SetBatch { entries });
+            patch.update::<SkillVisibilityStateKey>(SkillVisibilityAction::SeedBatch { entries });
         }
         Ok(())
     }
@@ -418,32 +430,6 @@ mod tests {
         let mut m = mock_meta(id);
         m.paths = vec!["src/**/*.rs".to_string()];
         m
-    }
-
-    #[test]
-    fn seed_visibility_entries_classifies_by_metadata() {
-        use std::collections::HashMap;
-        let skills: Vec<Arc<dyn Skill>> = vec![
-            Arc::new(MockSkill(mock_meta("visible"))),
-            Arc::new(MockSkill(hidden_meta("no_model_invoke"))),
-            Arc::new(MockSkill(path_conditional_meta("conditional"))),
-        ];
-        let plugin = SkillDiscoveryPlugin::new(make_registry(skills));
-
-        let entries: HashMap<String, SkillVisibility> =
-            plugin.seed_visibility_entries().into_iter().collect();
-
-        assert_eq!(entries.get("visible"), Some(&SkillVisibility::Visible));
-        assert_eq!(
-            entries.get("no_model_invoke"),
-            Some(&SkillVisibility::Hidden),
-            "disable-model-invocation skills must seed Hidden"
-        );
-        assert_eq!(
-            entries.get("conditional"),
-            Some(&SkillVisibility::Visible),
-            "path-conditional hiding is deferred until the file-match promote hook (ADR-0020 D5, future)"
-        );
     }
 
     #[test]
@@ -653,12 +639,17 @@ mod tests {
         Plugin::on_activate(&plugin, &AgentSpec::new("agent"), &mut batch).unwrap();
         store.commit(batch).unwrap();
 
-        // The committed seed records the blocked skill Hidden, the other Visible.
+        // The committed seed records only the blocked skill (Hidden). The visible
+        // skill is left unseeded — it resolves Visible via the metadata fallback.
         let seeded = store
             .read::<SkillVisibilityStateKey>()
             .expect("on_activate must commit a visibility seed");
-        assert_eq!(seeded.explicit("shown"), Some(SkillVisibility::Visible));
         assert_eq!(seeded.explicit("blocked"), Some(SkillVisibility::Hidden));
+        assert_eq!(
+            seeded.explicit("shown"),
+            None,
+            "a model-invocable skill must not be seeded with an explicit entry"
+        );
 
         // First BeforeInference: the hook reads the committed snapshot state.
         let ctx = PhaseContext::new(Phase::BeforeInference, store.snapshot());
@@ -682,27 +673,69 @@ mod tests {
         );
     }
 
-    #[test]
-    fn seed_visibility_entries_covers_every_skill() {
+    #[tokio::test]
+    async fn runtime_override_survives_reactivation_seed() {
+        // A runtime Hide on a normally-visible skill must NOT be reset when the
+        // plugin re-activates (handoff / resume / sub-agent) and re-seeds. The
+        // insert-if-absent SeedBatch guarantees the explicit override wins.
+        use awaken_contract::registry_spec::AgentSpec;
+        use awaken_contract::state::MutationBatch;
+        use awaken_runtime::state::StateStore;
+
         let skills: Vec<Arc<dyn Skill>> = vec![
             Arc::new(MockSkill(mock_meta("a"))),
-            Arc::new(MockSkill(hidden_meta("b"))),
-            Arc::new(MockSkill(path_conditional_meta("c"))),
+            Arc::new(MockSkill(hidden_meta("blocked"))),
         ];
         let plugin = SkillDiscoveryPlugin::new(make_registry(skills));
+        let store = StateStore::new();
+        store.install_plugin(plugin.clone()).unwrap();
+
+        // First activation seeds blocked=Hidden.
+        let mut batch = MutationBatch::new();
+        Plugin::on_activate(&plugin, &AgentSpec::new("agent"), &mut batch).unwrap();
+        store.commit(batch).unwrap();
+
+        // A tool/user hides the otherwise-visible skill "a" at runtime.
+        let mut override_batch = MutationBatch::new();
+        crate::visibility::hide_skill(&mut override_batch, "a");
+        store.commit(override_batch).unwrap();
+
+        // Re-activation re-runs the seed (insert-if-absent).
+        let mut reseed = MutationBatch::new();
+        Plugin::on_activate(&plugin, &AgentSpec::new("agent"), &mut reseed).unwrap();
+        store.commit(reseed).unwrap();
+
+        let state = store.read::<SkillVisibilityStateKey>().unwrap();
         assert_eq!(
-            plugin.seed_visibility_entries().len(),
-            3,
-            "every registered skill must get a seeded visibility entry"
+            state.explicit("a"),
+            Some(SkillVisibility::Hidden),
+            "runtime Hide must survive re-activation"
+        );
+        assert_eq!(state.explicit("blocked"), Some(SkillVisibility::Hidden));
+    }
+
+    #[test]
+    fn seed_visibility_entries_only_covers_hidden_skills() {
+        let skills: Vec<Arc<dyn Skill>> = vec![
+            Arc::new(MockSkill(mock_meta("a"))),             // visible
+            Arc::new(MockSkill(hidden_meta("b"))),           // model_invocable=false
+            Arc::new(MockSkill(path_conditional_meta("c"))), // paths, still visible
+        ];
+        let plugin = SkillDiscoveryPlugin::new(make_registry(skills));
+        let entries = plugin.seed_visibility_entries();
+        assert_eq!(
+            entries,
+            vec![("b".to_string(), SkillVisibility::Hidden)],
+            "only the disable-model-invocation skill is seeded"
         );
     }
 
     #[test]
-    fn path_conditional_skill_visible_by_default_and_action_controllable() {
-        // ADR-0020 D5 (future): a file-match hook will Hide path-conditional
-        // skills until a matching file is touched. That hook does not exist yet,
-        // so a `paths` skill seeds Visible. The Hide/Show action plumbing it will
-        // rely on is exercised here so it is ready when the matcher lands.
+    fn paths_skill_is_visible_and_action_controllable() {
+        // The agentskills spec has no path/glob conditional activation, so a
+        // `paths`-bearing skill is surfaced like any other (Visible, model-invoked
+        // by description). It is still controllable through the generic
+        // Show/Hide action mechanism.
         let plugin = SkillDiscoveryPlugin::new(make_registry(vec![Arc::new(MockSkill(
             path_conditional_meta("cond"),
         ))]));
@@ -715,7 +748,7 @@ mod tests {
             plugin
                 .render_catalog(&HashSet::new(), Some(&state))
                 .contains("<name>cond</name>"),
-            "path-conditional skill stays visible until the promote hook exists"
+            "a paths-bearing skill is visible by default (paths does not gate visibility)"
         );
 
         SkillVisibilityStateKey::apply(

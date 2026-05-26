@@ -107,8 +107,8 @@ impl Tool for SkillActivateTool {
         };
         let meta = skill.meta();
 
-        // `disable-model-invocation` is the hard invocation guard, not just a
-        // catalog hint (catalog hiding only controls discovery noise).
+        // Hard guard for the MODEL path (this tool); `user-invocable` (/skill-name)
+        // is a separate path, unaffected. Catalog hiding only controls noise.
         if !meta.model_invocable {
             return Ok(tool_error(
                 SKILL_ACTIVATE_TOOL_ID,
