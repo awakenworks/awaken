@@ -250,7 +250,7 @@ fn resolve_model_and_executor(
             let executor = crate::engine::ModalityGuardExecutor::wrap_trusted(
                 executor,
                 &model,
-                capability_sources.modalities,
+                capability_sources.input_modalities,
             );
 
             let upstream_model = model.upstream_model.clone();

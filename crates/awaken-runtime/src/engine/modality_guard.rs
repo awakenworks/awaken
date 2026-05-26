@@ -112,9 +112,7 @@ fn validate_blocks(
     for (idx, block) in blocks.iter().enumerate() {
         let block_path = format!("{path}[{idx}]");
         match block {
-            ContentBlock::Text { .. } => {
-                validate_modality(Modality::Text, allowed, model_id, &block_path)?
-            }
+            ContentBlock::Text { .. } => {}
             ContentBlock::Image { .. } => {
                 validate_modality(Modality::Image, allowed, model_id, &block_path)?
             }
@@ -261,11 +259,35 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn text_blocks_do_not_require_text_modality() {
+        let inner = Arc::new(CountingExecutor::default());
+        let executor = ModalityGuardExecutor::wrap_trusted(
+            inner.clone(),
+            &model_with_input(vec![Modality::Image]),
+            Some(CapabilitySource::ExplicitSpec),
+        );
+
+        executor
+            .execute(request_with(vec![
+                ContentBlock::text("describe"),
+                ContentBlock::image_url("https://example.com/image.png"),
+                ContentBlock::ToolResult {
+                    tool_use_id: "call-1".into(),
+                    content: vec![ContentBlock::text("tool text")],
+                },
+            ]))
+            .await
+            .expect("text blocks are not media modalities");
+
+        assert_eq!(inner.calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
     async fn protocol_blocks_do_not_count_as_input_modalities() {
         let inner = Arc::new(CountingExecutor::default());
         let executor = ModalityGuardExecutor::wrap_trusted(
             inner.clone(),
-            &model_with_input(vec![Modality::Text]),
+            &model_with_input(vec![Modality::Image]),
             Some(CapabilitySource::ExplicitSpec),
         );
 

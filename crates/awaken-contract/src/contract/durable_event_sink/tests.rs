@@ -711,7 +711,7 @@ async fn compacted_mode_persists_context_compaction_skipped_from_state_snapshot(
 }
 
 #[tokio::test]
-async fn compacted_mode_dedupes_skipped_by_stable_identity_not_metrics_or_index() {
+async fn compacted_mode_keeps_distinct_skipped_without_skip_id() {
     let stager = Arc::new(RecordingStager::default());
     let inner = Arc::new(VecEventSink::new());
     let sink = durable_sink(
@@ -764,9 +764,10 @@ async fn compacted_mode_dedupes_skipped_by_stable_identity_not_metrics_or_index(
         .iter()
         .filter(|draft| draft.event_kind.as_str() == "ContextCompactionSkipped")
         .collect::<Vec<_>>();
-    assert_eq!(skipped.len(), 2);
+    assert_eq!(skipped.len(), 3);
     assert_eq!(skipped[0].payload["task_id"], "bg_skipped");
     assert_eq!(skipped[1].payload["task_id"], "other");
+    assert_eq!(skipped[2].payload["task_id"], "bg_skipped");
 }
 
 #[tokio::test]
@@ -848,6 +849,53 @@ async fn compacted_mode_does_not_cancel_when_previous_in_flight_is_skipped() {
             .iter()
             .all(|draft| draft.event_kind.as_str() != "ContextCompactionCancelled")
     );
+}
+
+#[tokio::test]
+async fn compacted_mode_does_not_treat_task_only_terminal_as_boundary_match() {
+    let stager = Arc::new(RecordingStager::default());
+    let inner = Arc::new(VecEventSink::new());
+    let sink = durable_sink(
+        stager.clone(),
+        inner.clone(),
+        RuntimeEventDurability::Compacted,
+    );
+
+    sink.emit(AgentEvent::StateSnapshot {
+        snapshot: json!({
+            "extensions": {
+                "__context_compaction": {
+                    "total_compactions": 0,
+                    "in_flight": {
+                        "task_id": "bg_task",
+                        "boundary_message_id": "msg_boundary"
+                    }
+                }
+            }
+        }),
+    })
+    .await;
+    sink.emit(AgentEvent::StateSnapshot {
+        snapshot: json!({
+            "extensions": {
+                "__context_compaction": {
+                    "failures": [{
+                        "task_id": "bg_task",
+                        "error": "different attempt lacks boundary"
+                    }],
+                    "total_compactions": 0,
+                    "timestamp_ms": 24
+                }
+            }
+        }),
+    })
+    .await;
+
+    let drafts = stager.drafts.lock();
+    assert_eq!(drafts.len(), 3);
+    assert_eq!(drafts[0].event_kind.as_str(), "ContextCompactionStarted");
+    assert_eq!(drafts[1].event_kind.as_str(), "ContextCompactionFailed");
+    assert_eq!(drafts[2].event_kind.as_str(), "ContextCompactionCancelled");
 }
 
 #[tokio::test]
