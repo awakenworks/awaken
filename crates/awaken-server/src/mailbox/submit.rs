@@ -478,7 +478,7 @@ impl Mailbox {
         for _ in 0..MAX_APPEND_ATTEMPTS {
             let existing_messages = self
                 .run_store
-                .load_messages(thread_id)
+                .load_committed_messages(thread_id)
                 .await?
                 .unwrap_or_default();
             let expected_version = existing_messages.len() as u64;
@@ -503,14 +503,29 @@ impl Mailbox {
                 // committed log is exactly `existing_messages ++ delta`.
                 let mut appended_messages = existing_messages;
                 appended_messages.extend(normalized_messages.iter().cloned());
-                self.record_thread_message_checkpoint_events(
-                    thread_id,
-                    &run_id,
-                    &appended_messages,
-                    first_new_seq,
-                    last_new_seq,
-                )
-                .await;
+                // This eager-append path treats the server canonical events as
+                // advisory (ADR-0042 D7: dispatch/append may rely on
+                // recovery-safe compensation, unlike `freeze`). A publish
+                // failure here is logged inside record_*_events and must not
+                // block the live terminal event for this run; the missing events
+                // are reconciled by repair_thread_message_checkpoint_events.
+                if let Err(error) = self
+                    .record_thread_message_checkpoint_events(
+                        thread_id,
+                        &run_id,
+                        &appended_messages,
+                        first_new_seq,
+                        last_new_seq,
+                    )
+                    .await
+                {
+                    tracing::warn!(
+                        thread_id,
+                        run_id,
+                        error = %error,
+                        "advisory checkpoint event publish failed on eager append; will be reconciled by repair"
+                    );
+                }
                 self.refresh_worker_checkpoint_cache(thread_id, &appended_messages, &record)
                     .await;
                 return Ok(run_id);
