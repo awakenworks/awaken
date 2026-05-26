@@ -187,6 +187,38 @@ pub async fn checkpoint_append_rejects_stale_version<S: ThreadRunStore>(store: &
     assert_eq!(msgs.len(), 2);
 }
 
+pub async fn checkpoint_append_rejects_existing_message_id<S: ThreadRunStore>(store: &S) {
+    let thread_id = "t-ap-existing-id";
+    let run = make_run("r1", thread_id, RunStatus::Created);
+    store
+        .checkpoint_append(
+            thread_id,
+            &[Message::user("original").with_id("msg-1".to_string())],
+            Some(0),
+            &run,
+        )
+        .await
+        .unwrap();
+
+    let err = store
+        .checkpoint_append(
+            thread_id,
+            &[Message::user("replacement").with_id("msg-1".to_string())],
+            Some(1),
+            &run,
+        )
+        .await
+        .unwrap_err();
+
+    assert!(matches!(
+        err,
+        StorageError::Validation(message) if message.contains("already committed")
+    ));
+    let msgs = store.load_messages(thread_id).await.unwrap().unwrap();
+    assert_eq!(msgs.len(), 1);
+    assert_eq!(msgs[0].text(), "original");
+}
+
 pub async fn list_threads_query_filters_lineage<S: ThreadRunStore>(store: &S) {
     let mut matching = Thread::with_id("t-filter-match")
         .with_resource_id("resource-a")

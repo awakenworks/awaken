@@ -250,9 +250,8 @@ impl PostgresStore {
         {
             return Err(StorageError::VersionConflict { expected, actual });
         }
-        message_append::validate_append_only_delta(&existing, messages)?;
         let mut merged = existing.clone();
-        message_append::merge_checkpoint_append_messages(&mut merged, messages);
+        message_append::merge_checkpoint_append_messages(&mut merged, messages)?;
         let existing_by_id = existing_records
             .iter()
             .filter_map(|record| {

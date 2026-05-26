@@ -3,27 +3,32 @@ use std::collections::HashMap;
 use std::sync::RwLock;
 
 #[test]
-fn merge_checkpoint_append_messages_is_append_only() {
+fn merge_checkpoint_append_messages_rejects_existing_id() {
     let mut existing = vec![
         Message::user("first").with_id("msg-1".to_string()),
         Message::assistant("old").with_id("msg-2".to_string()),
     ];
-    let delta = vec![
-        // Re-sent already-committed id: append-only history must not rewrite it.
-        Message::assistant("new").with_id("msg-2".to_string()),
-        // New id: appended at the tail.
-        Message::user("tail").with_id("msg-3".to_string()),
-    ];
+    let delta = vec![Message::assistant("new").with_id("msg-2".to_string())];
 
-    message_append::merge_checkpoint_append_messages(&mut existing, &delta);
+    let err = message_append::merge_checkpoint_append_messages(&mut existing, &delta)
+        .expect_err("same-id append must be rejected");
 
-    assert_eq!(existing.len(), 3, "re-sent committed id must not duplicate");
-    assert_eq!(
-        existing[1].text(),
-        "old",
-        "committed messages are immutable (ADR-0042 I1/D6); not rewritten in place"
+    assert!(
+        matches!(err, StorageError::Validation(message) if message.contains("already committed"))
     );
-    assert_eq!(existing[2].text(), "tail");
+    assert_eq!(existing.len(), 2, "committed log must remain untouched");
+    assert_eq!(existing[1].text(), "old");
+}
+
+#[test]
+fn merge_checkpoint_append_messages_appends_new_ids() {
+    let mut existing = vec![Message::user("first").with_id("msg-1".to_string())];
+    let delta = vec![Message::user("tail").with_id("msg-2".to_string())];
+
+    message_append::merge_checkpoint_append_messages(&mut existing, &delta).unwrap();
+
+    assert_eq!(existing.len(), 2);
+    assert_eq!(existing[1].text(), "tail");
 }
 
 // ── Mock ThreadStore ──

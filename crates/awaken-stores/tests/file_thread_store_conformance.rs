@@ -25,3 +25,4 @@ macro_rules! conformance_test {
 conformance_test!(checkpoint_append_assigns_version);
 conformance_test!(checkpoint_append_unconditional_appends);
 conformance_test!(checkpoint_append_rejects_stale_version);
+conformance_test!(checkpoint_append_rejects_existing_message_id);

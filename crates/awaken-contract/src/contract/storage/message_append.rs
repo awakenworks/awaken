@@ -38,22 +38,18 @@ pub fn validate_append_only_delta(
 ///
 /// Committed history is append-only (ADR-0042 I1/D6): only message ids not
 /// already committed are appended, at the tail. A delta entry whose id is
-/// already committed is ignored — committed messages are never rewritten in
+/// already committed is an error — committed messages are never rewritten in
 /// place, so the committed-count version guard alone is multi-instance safe and
 /// concurrent writers can never silently last-writer-wins an existing message.
 ///
 /// Read-view changes (e.g. hiding superseded suspended tool calls) are applied
 /// at read time by `strip_unpaired_tool_calls_*`, driven by appended `Internal`
 /// retraction markers, never by mutating the committed log.
-pub fn merge_checkpoint_append_messages(existing: &mut Vec<Message>, delta: &[Message]) {
-    for message in delta {
-        if let Some(message_id) = message.id.as_deref()
-            && existing
-                .iter()
-                .any(|existing| existing.id.as_deref() == Some(message_id))
-        {
-            continue;
-        }
-        existing.push(message.clone());
-    }
+pub fn merge_checkpoint_append_messages(
+    existing: &mut Vec<Message>,
+    delta: &[Message],
+) -> Result<(), StorageError> {
+    validate_append_only_delta(existing, delta)?;
+    existing.extend(delta.iter().cloned());
+    Ok(())
 }
