@@ -188,6 +188,11 @@ pub fn select_pending_for_freeze(
     let mut selected = Vec::new();
     for (index, entry) in pending.iter().enumerate() {
         if !entry.delivery_mode.boundary.eligible_at(boundary) {
+            if entry.delivery_mode.boundary == DeliveryBoundary::NewRun
+                && boundary != DeliveryBoundary::NewRun
+            {
+                continue;
+            }
             break;
         }
         if !selected.is_empty() && entry.delivery_mode.granularity == DeliveryGranularity::One {
@@ -329,7 +334,7 @@ mod tests {
     }
 
     #[test]
-    fn freeze_selection_barrier_does_not_flush_ineligible_prior_pending() {
+    fn freeze_selection_skips_ineligible_prior_pending_without_flushing_it() {
         let pending = vec![
             pending("a", 1, DeliveryBoundary::NewRun, DeliveryGranularity::Batch),
             pending_with_barrier(
@@ -341,6 +346,72 @@ mod tests {
             pending(
                 "c",
                 3,
+                DeliveryBoundary::NextStep,
+                DeliveryGranularity::Batch,
+            ),
+        ];
+        assert_eq!(
+            select_pending_for_freeze(&pending, DeliveryBoundary::NextStep),
+            vec![1]
+        );
+    }
+
+    #[test]
+    fn freeze_selection_active_lane_skips_queued_new_run() {
+        let pending = vec![
+            pending(
+                "queued",
+                1,
+                DeliveryBoundary::NewRun,
+                DeliveryGranularity::Batch,
+            ),
+            pending(
+                "live",
+                2,
+                DeliveryBoundary::NextStep,
+                DeliveryGranularity::Batch,
+            ),
+        ];
+        assert_eq!(
+            select_pending_for_freeze(&pending, DeliveryBoundary::NextStep),
+            vec![1]
+        );
+    }
+
+    #[test]
+    fn freeze_selection_interrupt_skips_queued_new_run() {
+        let pending = vec![
+            pending(
+                "queued",
+                1,
+                DeliveryBoundary::NewRun,
+                DeliveryGranularity::Batch,
+            ),
+            pending(
+                "interrupt",
+                2,
+                DeliveryBoundary::Interrupt,
+                DeliveryGranularity::Batch,
+            ),
+        ];
+        assert_eq!(
+            select_pending_for_freeze(&pending, DeliveryBoundary::Interrupt),
+            vec![1]
+        );
+    }
+
+    #[test]
+    fn freeze_selection_preserves_fifo_within_active_lane() {
+        let pending = vec![
+            pending(
+                "natural-end",
+                1,
+                DeliveryBoundary::OnNaturalEnd,
+                DeliveryGranularity::Batch,
+            ),
+            pending(
+                "live",
+                2,
                 DeliveryBoundary::NextStep,
                 DeliveryGranularity::Batch,
             ),

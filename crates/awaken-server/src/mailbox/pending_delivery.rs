@@ -495,3 +495,7 @@ mod tests;
 #[cfg(test)]
 #[path = "pending_delivery_tests.rs"]
 mod pending_delivery_tests;
+
+#[cfg(test)]
+#[path = "pending_delivery_lane_tests.rs"]
+mod pending_delivery_lane_tests;
