@@ -456,4 +456,114 @@ mod tests {
             "disable-model-invocation skill must not appear in the catalog"
         );
     }
+
+    fn make_ctx_with_visibility(entries: Vec<(String, SkillVisibility)>) -> PhaseContext {
+        let mut state_map = StateMap::default();
+        let mut val = SkillVisibilityStateValue::default();
+        for (id, vis) in entries {
+            val.modes.insert(id, vis);
+        }
+        state_map.insert::<SkillVisibilityStateKey>(val);
+        let snapshot = Snapshot::new(0, Arc::new(state_map));
+        PhaseContext::new(Phase::BeforeInference, snapshot)
+    }
+
+    #[tokio::test]
+    async fn hook_skips_catalog_when_all_skills_hidden() {
+        // The runtime read path: the hook reads SkillVisibilityStateKey from the
+        // phase context and must honor it. All skills hidden => no catalog message.
+        let skills: Vec<Arc<dyn Skill>> = vec![Arc::new(MockSkill(mock_meta("only")))];
+        let plugin = SkillDiscoveryPlugin::new(make_registry(skills));
+        let hook = SkillDiscoveryHook { plugin };
+
+        let ctx = make_ctx_with_visibility(vec![("only".into(), SkillVisibility::Hidden)]);
+        let cmd = PhaseHook::run(&hook, &ctx).await.unwrap();
+        assert!(
+            cmd.is_empty(),
+            "hook must emit no catalog when every skill is hidden"
+        );
+    }
+
+    #[tokio::test]
+    async fn hook_renders_only_visible_skills_from_seeded_state() {
+        let skills: Vec<Arc<dyn Skill>> = vec![
+            Arc::new(MockSkill(mock_meta("shown"))),
+            Arc::new(MockSkill(mock_meta("gone"))),
+        ];
+        let plugin = SkillDiscoveryPlugin::new(make_registry(skills));
+        let hook = SkillDiscoveryHook {
+            plugin: plugin.clone(),
+        };
+
+        let ctx = make_ctx_with_visibility(vec![
+            ("shown".into(), SkillVisibility::Visible),
+            ("gone".into(), SkillVisibility::Hidden),
+        ]);
+        let cmd = PhaseHook::run(&hook, &ctx).await.unwrap();
+        assert!(
+            !cmd.scheduled_actions().is_empty(),
+            "a visible skill must still produce a catalog"
+        );
+    }
+
+    #[test]
+    fn on_activate_empty_registry_produces_no_seed() {
+        use awaken_contract::registry_spec::AgentSpec;
+        use awaken_contract::state::MutationBatch;
+
+        let plugin = SkillDiscoveryPlugin::new(make_registry(vec![]));
+        let spec = AgentSpec::new("agent");
+        let mut batch = MutationBatch::new();
+        Plugin::on_activate(&plugin, &spec, &mut batch).unwrap();
+
+        assert!(batch.is_empty(), "empty registry has nothing to seed");
+    }
+
+    #[test]
+    fn seed_visibility_entries_covers_every_skill() {
+        let skills: Vec<Arc<dyn Skill>> = vec![
+            Arc::new(MockSkill(mock_meta("a"))),
+            Arc::new(MockSkill(hidden_meta("b"))),
+            Arc::new(MockSkill(path_conditional_meta("c"))),
+        ];
+        let plugin = SkillDiscoveryPlugin::new(make_registry(skills));
+        assert_eq!(
+            plugin.seed_visibility_entries().len(),
+            3,
+            "every registered skill must get a seeded visibility entry"
+        );
+    }
+
+    #[test]
+    fn path_conditional_skill_appears_after_promote() {
+        // ADR-0020: a path-conditional skill starts Hidden, then a file-match
+        // hook / ToolSearch promotes it via SkillVisibilityAction.
+        let plugin = SkillDiscoveryPlugin::new(make_registry(vec![Arc::new(MockSkill(
+            path_conditional_meta("cond"),
+        ))]));
+
+        let mut state = SkillVisibilityStateValue::default();
+        for (id, vis) in plugin.seed_visibility_entries() {
+            state.modes.insert(id, vis);
+        }
+        assert!(
+            !plugin
+                .render_catalog(&HashSet::new(), Some(&state))
+                .contains("<name>cond</name>"),
+            "path-conditional skill must start hidden"
+        );
+
+        SkillVisibilityStateKey::apply(
+            &mut state,
+            SkillVisibilityAction::ShowBatch {
+                skill_ids: vec!["cond".into()],
+            },
+        );
+        assert!(
+            plugin
+                .render_catalog(&HashSet::new(), Some(&state))
+                .contains("<name>cond</name>"),
+            "promoted skill must appear in the catalog"
+        );
+    }
 }
