@@ -200,6 +200,7 @@ async fn boundary_freeze_uses_requested_delivery_boundary() {
             "run-next-step",
             &mut record,
             &empty_manifest(),
+            None,
         )
         .await
         .unwrap();

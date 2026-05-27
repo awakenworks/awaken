@@ -433,4 +433,139 @@ impl PendingMessageStore for FileStore {
         }
         Ok(appended)
     }
+
+    async fn append_and_freeze_pending_message_records_with_run(
+        &self,
+        thread_id: &str,
+        new_messages: &[Message],
+        append_delivery_mode: DeliveryMode,
+        boundary: DeliveryBoundary,
+        expected_message_version: Option<u64>,
+        expected_pending_ids: &[String],
+        run: &RunRecord,
+    ) -> Result<Vec<MessageRecord>, StorageError> {
+        validate_id(thread_id, "thread id")?;
+        validate_id(&run.run_id, "run id")?;
+        let _guard = self.hierarchy_lock.lock().await;
+        let committed = self
+            .load_committed_message_records_locked(thread_id)
+            .await?
+            .unwrap_or_default();
+        let actual = committed.len() as u64;
+        if let Some(expected) = expected_message_version
+            && expected != actual
+        {
+            return Err(StorageError::VersionConflict { expected, actual });
+        }
+        let mut pending = self.read_pending_messages_locked(thread_id).await?;
+        // Append the new messages into pending under the same lock + staged-op
+        // commit as the freeze below, so the two are one atomic boundary.
+        let append_now = current_millis() / 1000;
+        let start_position = pending.len() as u64 + 1;
+        let mut seen = pending
+            .iter()
+            .map(|record| record.pending_id.clone())
+            .collect::<HashSet<_>>();
+        let mut appended_pending = Vec::with_capacity(new_messages.len());
+        for (index, message) in new_messages.iter().cloned().enumerate() {
+            let mut record = PendingMessageRecord::from_message(
+                thread_id.to_owned(),
+                start_position + index as u64,
+                message,
+                append_delivery_mode.clone(),
+            );
+            record.created_at = Some(append_now);
+            record.updated_at = Some(append_now);
+            if !seen.insert(record.pending_id.clone()) {
+                return Err(Self::duplicate_pending_id(&record.pending_id));
+            }
+            if self
+                .committed_message_exists(thread_id, &record.pending_id)
+                .await?
+            {
+                return Err(Self::already_consumed(&record.pending_id));
+            }
+            appended_pending.push(record);
+        }
+        pending.extend(appended_pending);
+
+        let selected_indexes =
+            select_pending_for_freeze_for_run(&pending, boundary, Some(&run.run_id));
+        let selected_ids = selected_indexes
+            .iter()
+            .map(|index| pending[*index].pending_id.clone())
+            .collect::<Vec<_>>();
+        if selected_ids != expected_pending_ids {
+            return Err(StorageError::PendingSelectionConflict {
+                expected_ids: expected_pending_ids.to_vec(),
+                actual_ids: selected_ids,
+            });
+        }
+        let now = current_millis();
+        let mut thread = self
+            .load_thread(thread_id)
+            .await?
+            .unwrap_or_else(|| Thread::with_id(thread_id));
+        self.validate_thread_hierarchy(thread_id, checkpoint_parent_thread_id(Some(&thread), run))
+            .await?;
+        thread.touch(now);
+        thread.apply_run_projection(run);
+        thread.normalize_lineage();
+
+        let mut selected = Vec::with_capacity(selected_indexes.len());
+        for index in selected_indexes.iter().rev() {
+            selected.push(pending.remove(*index));
+        }
+        selected.reverse();
+        Self::normalize_pending_positions(&mut pending);
+        let selected_messages = selected
+            .into_iter()
+            .map(|record| record.message)
+            .collect::<Vec<_>>();
+        awaken_contract::contract::storage::message_append::validate_append_only_delta(
+            &committed
+                .iter()
+                .map(|record| record.message.clone())
+                .collect::<Vec<_>>(),
+            &selected_messages,
+        )?;
+
+        let thread_payload = serde_json::to_string_pretty(&thread)
+            .map_err(|e| StorageError::Serialization(e.to_string()))?;
+        let run_payload = serde_json::to_string_pretty(run)
+            .map_err(|e| StorageError::Serialization(e.to_string()))?;
+        let thread_write = stage_write(
+            &self.threads_dir(),
+            &format!("{thread_id}.json"),
+            &thread_payload,
+        )
+        .await?;
+        let mut ops = vec![StagedFileOp::Write(thread_write)];
+        let appended = match self
+            .stage_append_message_records(thread_id, actual + 1, selected_messages, &mut ops)
+            .await
+        {
+            Ok(appended) => appended,
+            Err(error) => {
+                cleanup_staged_file_ops(&ops).await;
+                return Err(error);
+            }
+        };
+        let pending_write = self
+            .write_pending_messages_locked(thread_id, &pending)
+            .await?;
+        let run_write = stage_write(
+            &self.runs_dir(),
+            &format!("{}.json", run.run_id),
+            &run_payload,
+        )
+        .await?;
+        ops.push(StagedFileOp::Write(pending_write));
+        ops.push(StagedFileOp::Write(run_write));
+        if let Err(error) = commit_staged_file_ops(&self.base_path, &ops).await {
+            cleanup_staged_file_ops(&ops).await;
+            return Err(error);
+        }
+        Ok(appended)
+    }
 }

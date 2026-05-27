@@ -1272,3 +1272,66 @@ async fn config_change_notifier_supports_multiple_subscribers() {
     assert_eq!(a.id, "echo");
     assert_eq!(b.id, "echo");
 }
+
+#[tokio::test]
+async fn append_and_freeze_is_atomic_leaving_no_orphan_pending() {
+    // ADR-0042 D7 / Blocker: append+freeze is one boundary. A freeze-side
+    // failure must roll the append back (no orphan pending with no run), and a
+    // subsequent successful call must consume exactly once (no duplicate input).
+    let store = InMemoryStore::new();
+    let run = make_run("r-atomic", "t-atomic", RunStatus::Running);
+    let mode = DeliveryMode::interrupt(DeliveryGranularity::Batch);
+    let message = Message::user("hi").with_id("m1".to_string());
+
+    let err = store
+        .append_and_freeze_pending_message_records_with_run(
+            "t-atomic",
+            std::slice::from_ref(&message),
+            mode.clone(),
+            DeliveryBoundary::Interrupt,
+            Some(1), // stale: actual committed version is 0
+            &["m1".to_string()],
+            &run,
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(err, StorageError::VersionConflict { .. }));
+    assert!(
+        store
+            .load_pending_message_records("t-atomic")
+            .await
+            .unwrap()
+            .is_empty(),
+        "a failed atomic append+freeze must leave no orphan pending"
+    );
+    assert!(store.load_run("r-atomic").await.unwrap().is_none());
+
+    let frozen = store
+        .append_and_freeze_pending_message_records_with_run(
+            "t-atomic",
+            std::slice::from_ref(&message),
+            mode,
+            DeliveryBoundary::Interrupt,
+            Some(0),
+            &["m1".to_string()],
+            &run,
+        )
+        .await
+        .unwrap();
+    assert_eq!(frozen.len(), 1);
+    assert_eq!(frozen[0].message.text(), "hi");
+    assert!(
+        store
+            .load_pending_message_records("t-atomic")
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    assert!(store.load_run("r-atomic").await.unwrap().is_some());
+    let committed = store
+        .load_committed_messages("t-atomic")
+        .await
+        .unwrap()
+        .unwrap_or_default();
+    assert_eq!(committed.iter().filter(|m| m.text() == "hi").count(), 1);
+}

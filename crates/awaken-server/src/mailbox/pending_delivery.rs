@@ -210,9 +210,9 @@ impl Mailbox {
         record: &mut RunRecord,
         manifest: &PinnedRegistryManifest,
     ) -> Result<Option<String>, MailboxError> {
-        let Some(store) = self.pending_thread_run_store.as_ref() else {
+        if self.pending_thread_run_store.is_none() {
             return Ok(None);
-        };
+        }
         if normalized_messages.is_empty() {
             return Ok(None);
         }
@@ -237,37 +237,27 @@ impl Mailbox {
                 }
             }
         };
-        let appended = store
-            .append_pending_message_records(
-                thread_id,
-                normalized_messages,
-                delivery_mode_for_dispatch(boundary, run_id),
-            )
-            .await?;
-        let appended_pending_ids = appended
-            .iter()
-            .map(|record| record.pending_id.clone())
-            .collect::<Vec<_>>();
-
-        let freeze_result = self
+        // Append and freeze atomically: a crash before the single commit leaves
+        // no pending (the client retry is then the only request — no duplicate),
+        // and a successful commit leaves no orphan (ADR-0042 D7). With no
+        // separate append there is no half-applied state to clean up.
+        let append_mode = delivery_mode_for_dispatch(boundary, run_id);
+        match self
             .prepare_pending_boundary_for_run(
-                request, thread_id, boundary, run_id, record, manifest,
+                request,
+                thread_id,
+                boundary,
+                run_id,
+                record,
+                manifest,
+                Some((normalized_messages, &append_mode)),
             )
-            .await;
-        match freeze_result {
-            Ok(Some(run_id)) => Ok(Some(run_id)),
-            Ok(None) => {
-                self.cleanup_appended_pending_messages(store, thread_id, &appended_pending_ids)
-                    .await;
-                Err(MailboxError::Internal(format!(
-                    "pending {boundary:?} freeze found no eligible messages for thread '{thread_id}'"
-                )))
-            }
-            Err(error) => {
-                self.cleanup_appended_pending_messages(store, thread_id, &appended_pending_ids)
-                    .await;
-                Err(error)
-            }
+            .await?
+        {
+            Some(run_id) => Ok(Some(run_id)),
+            None => Err(MailboxError::Internal(format!(
+                "pending {boundary:?} freeze found no eligible messages for thread '{thread_id}'"
+            ))),
         }
     }
 
@@ -305,6 +295,7 @@ impl Mailbox {
         run_id: &str,
         record: &mut RunRecord,
         manifest: &PinnedRegistryManifest,
+        append: Option<(&[Message], &DeliveryMode)>,
     ) -> Result<Option<String>, MailboxError> {
         let snapshot_template = request.snapshot(RunInputSnapshot::default(), manifest.clone());
         self.prepare_pending_boundary_snapshot_for_run(
@@ -313,6 +304,7 @@ impl Mailbox {
             boundary,
             run_id,
             record,
+            append,
         )
         .await
         .map(|frozen| frozen.map(|_| run_id.to_string()))
@@ -325,6 +317,10 @@ impl Mailbox {
         boundary: DeliveryBoundary,
         run_id: &str,
         record: &mut RunRecord,
+        // Submit path: messages to append+freeze atomically (no prior separate
+        // append). `None` is the runtime-boundary path where pending was already
+        // staged and is only frozen here.
+        append: Option<(&[Message], &DeliveryMode)>,
     ) -> Result<Option<Vec<MessageRecord>>, MailboxError> {
         let Some(store) = self.pending_thread_run_store.as_ref() else {
             return Ok(None);
@@ -347,7 +343,21 @@ impl Mailbox {
                 .await?
                 .unwrap_or_default();
             let expected_version = existing_messages.len() as u64;
-            let pending = store.load_pending_message_records(thread_id).await?;
+            let mut pending = store.load_pending_message_records(thread_id).await?;
+            // Submit path: simulate the to-be-appended messages so the selection
+            // runs over existing + new. The atomic store call below appends and
+            // freezes them in one boundary, so a crash leaves no orphan pending.
+            if let Some((new_messages, append_mode)) = append {
+                let start_position = pending.len() as u64 + 1;
+                for (index, message) in new_messages.iter().cloned().enumerate() {
+                    pending.push(PendingMessageRecord::from_message(
+                        thread_id.to_owned(),
+                        start_position + index as u64,
+                        message,
+                        append_mode.clone(),
+                    ));
+                }
+            }
             let selected_indexes =
                 select_pending_for_freeze_for_run(&pending, boundary, Some(run_id));
             if selected_indexes.is_empty() {
@@ -402,16 +412,33 @@ impl Mailbox {
             attempt_record.input = input;
             attempt_record.updated_at = now_ms() / 1000;
 
-            let frozen = match store
-                .freeze_pending_message_records_with_run(
-                    thread_id,
-                    boundary,
-                    Some(expected_version),
-                    &selected_pending_ids,
-                    &attempt_record,
-                )
-                .await
-            {
+            let frozen_result = match append {
+                Some((new_messages, append_mode)) => {
+                    store
+                        .append_and_freeze_pending_message_records_with_run(
+                            thread_id,
+                            new_messages,
+                            append_mode.clone(),
+                            boundary,
+                            Some(expected_version),
+                            &selected_pending_ids,
+                            &attempt_record,
+                        )
+                        .await
+                }
+                None => {
+                    store
+                        .freeze_pending_message_records_with_run(
+                            thread_id,
+                            boundary,
+                            Some(expected_version),
+                            &selected_pending_ids,
+                            &attempt_record,
+                        )
+                        .await
+                }
+            };
+            let frozen = match frozen_result {
                 Ok(frozen) => frozen,
                 Err(
                     StorageError::VersionConflict { .. }
@@ -540,6 +567,9 @@ impl PendingBoundaryHandler for MailboxPendingBoundaryHandler {
                 boundary,
                 &self.run_id,
                 &mut record,
+                // Runtime boundary path: pending was already staged via deliver;
+                // freeze only, no atomic append.
+                None,
             )
             .await
             .map_err(|error| AgentLoopError::StorageError(error.to_string()))?;

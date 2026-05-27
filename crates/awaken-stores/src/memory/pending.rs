@@ -408,4 +408,114 @@ impl PendingMessageStore for InMemoryStore {
             .insert(run.run_id.clone(), self.next_run_seq());
         Ok(appended)
     }
+
+    async fn append_and_freeze_pending_message_records_with_run(
+        &self,
+        thread_id: &str,
+        new_messages: &[Message],
+        append_delivery_mode: DeliveryMode,
+        boundary: DeliveryBoundary,
+        expected_message_version: Option<u64>,
+        expected_pending_ids: &[String],
+        run: &RunRecord,
+    ) -> Result<Vec<MessageRecord>, StorageError> {
+        let now = current_millis();
+        let mut thread_guard = self.threads.write().await;
+        let existing_thread = thread_guard.get(thread_id).cloned();
+        validate_thread_hierarchy_map(
+            &thread_guard,
+            thread_id,
+            checkpoint_parent_thread_id(existing_thread.as_ref(), run),
+        )?;
+        let mut messages_guard = self.messages.write().await;
+        let mut pending_guard = self.pending_messages.write().await;
+        let mut run_guard = self.runs.write().await;
+        let actual = messages_guard
+            .get(thread_id)
+            .map(|messages| messages.len() as u64)
+            .unwrap_or(0);
+        if let Some(expected) = expected_message_version
+            && expected != actual
+        {
+            return Err(StorageError::VersionConflict { expected, actual });
+        }
+        let pending = pending_guard.entry(thread_id.to_owned()).or_default();
+        // Append the new messages to pending *under the same held locks* as the
+        // freeze below, so the two are one atomic boundary (ADR-0042 D7).
+        let append_now = now / 1000;
+        let start_position = pending.len() as u64 + 1;
+        let mut seen = pending
+            .iter()
+            .map(|record| record.pending_id.clone())
+            .collect::<HashSet<_>>();
+        let mut appended_pending = Vec::with_capacity(new_messages.len());
+        for (index, message) in new_messages.iter().cloned().enumerate() {
+            let mut record = PendingMessageRecord::from_message(
+                thread_id.to_owned(),
+                start_position + index as u64,
+                message,
+                append_delivery_mode.clone(),
+            );
+            record.created_at = Some(append_now);
+            record.updated_at = Some(append_now);
+            if !seen.insert(record.pending_id.clone()) {
+                return Err(duplicate_pending_id(&record.pending_id));
+            }
+            if messages_guard.get(thread_id).is_some_and(|committed| {
+                committed
+                    .iter()
+                    .any(|message| message.id.as_deref() == Some(record.pending_id.as_str()))
+            }) {
+                return Err(already_consumed(&record.pending_id));
+            }
+            appended_pending.push(record);
+        }
+        pending.extend(appended_pending);
+
+        // Freeze the caller's selection over the now-appended pending. Mirrors
+        // `freeze_pending_message_records_with_run`, but with append folded into
+        // the same locked region.
+        let selected_indexes =
+            select_pending_for_freeze_for_run(pending, boundary, Some(&run.run_id));
+        let selected_ids = selected_pending_ids(pending, &selected_indexes);
+        if selected_ids != expected_pending_ids {
+            return Err(StorageError::PendingSelectionConflict {
+                expected_ids: expected_pending_ids.to_vec(),
+                actual_ids: selected_ids,
+            });
+        }
+        let committed = messages_guard.entry(thread_id.to_owned()).or_default();
+        let selected_messages = selected_indexes
+            .iter()
+            .map(|index| pending[*index].message.clone())
+            .collect::<Vec<_>>();
+        message_append::validate_append_only_delta(committed, &selected_messages)?;
+        let mut selected = Vec::with_capacity(selected_indexes.len());
+        for index in selected_indexes.iter().rev() {
+            selected.push(pending.remove(*index));
+        }
+        selected.reverse();
+        normalize_pending_positions(pending);
+        let start_seq = committed.len() as u64 + 1;
+        let appended = selected
+            .into_iter()
+            .enumerate()
+            .map(|(index, record)| {
+                let message = record.message;
+                committed.push(message.clone());
+                MessageRecord::from_message(thread_id.to_owned(), start_seq + index as u64, message)
+            })
+            .collect::<Vec<_>>();
+        let mut thread = existing_thread.unwrap_or_else(|| Thread::with_id(thread_id));
+        thread.touch(now);
+        thread.apply_run_projection(run);
+        thread.normalize_lineage();
+        thread_guard.insert(thread_id.to_owned(), thread);
+        run_guard.insert(run.run_id.clone(), run.clone());
+        self.run_insertion
+            .write()
+            .await
+            .insert(run.run_id.clone(), self.next_run_seq());
+        Ok(appended)
+    }
 }
