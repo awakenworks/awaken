@@ -124,11 +124,75 @@ pub fn validate_agent_spec_patch(value: Value) -> Result<AgentSpecPatch, ConfigV
 /// supports a non-empty adapter string.
 pub fn validate_provider_spec(value: Value) -> Result<ProviderSpec, ConfigValidationError> {
     reject_unknown_fields(&value, "provider spec", PROVIDER_SPEC_FIELDS)?;
+    validate_provider_adapter_options(&value)?;
     let spec: ProviderSpec =
         serde_json::from_value(value).map_err(ConfigValidationError::ProviderSpec)?;
     reject_empty("provider spec", "id", &spec.id)?;
     reject_empty("provider spec", "adapter", &spec.adapter)?;
     Ok(spec)
+}
+
+fn validate_provider_adapter_options(value: &Value) -> Result<(), ConfigValidationError> {
+    let Some(options) = value
+        .get("adapter_options")
+        .and_then(|value| value.as_object())
+    else {
+        return Ok(());
+    };
+
+    if let Some(schema) = options.get("model_discovery_schema") {
+        let Some(schema) = schema.as_str() else {
+            return Err(ConfigValidationError::Invalid {
+                surface: "provider spec",
+                message: "'adapter_options.model_discovery_schema' must be a string".into(),
+            });
+        };
+        let normalized = schema.to_ascii_lowercase();
+        if !matches!(
+            normalized.as_str(),
+            "openai" | "openai-compatible" | "openrouter" | "gemini" | "google"
+        ) {
+            return Err(ConfigValidationError::Invalid {
+                surface: "provider spec",
+                message: format!(
+                    "'adapter_options.model_discovery_schema' must be one of openai, \
+                     openai-compatible, openrouter, gemini, google; got '{schema}'"
+                ),
+            });
+        }
+    }
+
+    if let Some(auth) = options.get("model_discovery_auth") {
+        let Some(auth) = auth.as_str() else {
+            return Err(ConfigValidationError::Invalid {
+                surface: "provider spec",
+                message: "'adapter_options.model_discovery_auth' must be a string".into(),
+            });
+        };
+        let normalized = auth.to_ascii_lowercase();
+        if !matches!(
+            normalized.as_str(),
+            "bearer"
+                | "authorization-bearer"
+                | "x-goog-api-key"
+                | "google-api-key"
+                | "gemini-api-key"
+                | "none"
+                | "no-auth"
+                | "disabled"
+        ) {
+            return Err(ConfigValidationError::Invalid {
+                surface: "provider spec",
+                message: format!(
+                    "'adapter_options.model_discovery_auth' must be one of bearer, \
+                     authorization-bearer, x-goog-api-key, google-api-key, gemini-api-key, \
+                     none, no-auth, disabled; got '{auth}'"
+                ),
+            });
+        }
+    }
+
+    Ok(())
 }
 
 /// Validate and decode a `ModelSpec` from JSON for config write surfaces.

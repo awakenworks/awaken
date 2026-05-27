@@ -176,6 +176,48 @@ fn validate_provider_spec_rejects_unknown_and_empty_fields() {
 }
 
 #[test]
+fn validate_provider_spec_rejects_invalid_discovery_options() {
+    let err = validate_provider_spec(json!({
+        "id": "p",
+        "adapter": "custom",
+        "adapter_options": {
+            "model_discovery_auth": "no_auth"
+        }
+    }))
+    .expect_err("invalid discovery auth must be rejected");
+    assert!(
+        err.to_string().contains("model_discovery_auth"),
+        "got: {err}"
+    );
+
+    let err = validate_provider_spec(json!({
+        "id": "p",
+        "adapter": "custom",
+        "adapter_options": {
+            "model_discovery_auth": true
+        }
+    }))
+    .expect_err("non-string discovery auth must be rejected");
+    assert!(
+        err.to_string().contains("model_discovery_auth"),
+        "got: {err}"
+    );
+
+    let err = validate_provider_spec(json!({
+        "id": "p",
+        "adapter": "custom",
+        "adapter_options": {
+            "model_discovery_schema": "unknown"
+        }
+    }))
+    .expect_err("invalid discovery schema must be rejected");
+    assert!(
+        err.to_string().contains("model_discovery_schema"),
+        "got: {err}"
+    );
+}
+
+#[test]
 fn validate_model_spec_rejects_unknown_and_empty_fields() {
     let err = validate_model_spec(json!({
         "id": "m",

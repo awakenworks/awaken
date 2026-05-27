@@ -150,7 +150,9 @@ fn discovery_auth_defaults_to_schema_not_adapter() {
         ..ProviderSpec::default()
     };
     let schema = provider_discovery_schema(&provider).expect("schema");
-    let headers = auth_headers(&provider, schema).expect("headers");
+    let headers = auth_headers(&provider, schema)
+        .expect("valid auth")
+        .expect("headers");
 
     assert_eq!(
         headers
@@ -176,8 +178,47 @@ fn discovery_auth_override_can_select_bearer_independently() {
         ..ProviderSpec::default()
     };
     let schema = provider_discovery_schema(&provider).expect("schema");
-    let headers = auth_headers(&provider, schema).expect("headers");
+    let headers = auth_headers(&provider, schema)
+        .expect("valid auth")
+        .expect("headers");
 
+    assert_eq!(
+        headers
+            .get(AUTHORIZATION)
+            .and_then(|value| value.to_str().ok()),
+        Some("Bearer secret")
+    );
+    assert!(!headers.contains_key("x-goog-api-key"));
+}
+
+#[test]
+fn discovery_headers_merge_custom_headers_without_auth_override() {
+    let provider = ProviderSpec {
+        id: "p".into(),
+        adapter: "openrouter".into(),
+        api_key: Some("secret".into()),
+        adapter_options: [(
+            "headers".to_string(),
+            json!({
+                "X-Tenant-Id": "team-42",
+                "Authorization": "Bearer wrong",
+                "x-goog-api-key": "wrong"
+            }),
+        )]
+        .into_iter()
+        .collect(),
+        ..ProviderSpec::default()
+    };
+    let headers = discovery_headers(&provider, "openai")
+        .expect("valid headers")
+        .expect("headers");
+
+    assert_eq!(
+        headers
+            .get("x-tenant-id")
+            .and_then(|value| value.to_str().ok()),
+        Some("team-42")
+    );
     assert_eq!(
         headers
             .get(AUTHORIZATION)
@@ -208,6 +249,42 @@ async fn discovers_openai_compatible_capabilities_from_models_endpoint() {
     assert_eq!(patch.max_output_tokens, Some(16_384));
     assert!(result.attempted.contains("p"), "p was probed");
     assert_eq!(hits.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn invalid_discovery_auth_is_not_attempted() {
+    let hits = Arc::new(AtomicUsize::new(0));
+    let base_url = spawn_models_server(Arc::clone(&hits)).await;
+    let providers = vec![ProviderSpec {
+        id: "p".into(),
+        adapter: "custom-gateway".into(),
+        api_key: Some("secret".into()),
+        base_url: Some(base_url),
+        timeout_secs: 5,
+        adapter_options: [
+            (
+                "model_discovery_schema".to_string(),
+                json!("openai-compatible"),
+            ),
+            ("model_discovery_auth".to_string(), json!("no_auth")),
+        ]
+        .into_iter()
+        .collect(),
+    }];
+    let models = vec![ModelSpec::new("m", "p", "openai/gpt-4o")];
+
+    let result = discover_provider_capabilities(&providers, &models, &[]).await;
+
+    assert!(result.discovered.is_empty());
+    assert!(
+        result.attempted.is_empty(),
+        "invalid auth config must fail closed before issuing discovery"
+    );
+    assert_eq!(
+        hits.load(Ordering::SeqCst),
+        0,
+        "invalid auth config must not send credentials or issue request"
+    );
 }
 
 #[tokio::test]

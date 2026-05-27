@@ -6,7 +6,9 @@ use awaken_runtime::registry::model_capabilities::{
     ModelCapabilityPatch, normalize_capability_model_name, parse_provider_model_capabilities,
 };
 use futures::future::join_all;
-use reqwest::header::{AUTHORIZATION, HeaderMap, HeaderValue};
+use reqwest::header::{AUTHORIZATION, HeaderMap, HeaderName, HeaderValue};
+
+use super::build_default_headers_from_options;
 
 /// Result of a provider-capability discovery pass.
 ///
@@ -36,6 +38,7 @@ enum DiscoveryAuthScheme {
     Bearer,
     GoogleApiKey,
     None,
+    Invalid,
 }
 
 impl DiscoveryAuthScheme {
@@ -119,8 +122,14 @@ async fn discover_one_provider(
     let mut request = client
         .get(url.clone())
         .timeout(Duration::from_secs(provider.timeout_secs.clamp(1, 30)));
-    if let Some(headers) = auth_headers(provider, schema) {
-        request = request.headers(headers);
+    match discovery_headers(provider, schema) {
+        Ok(Some(headers)) => {
+            request = request.headers(headers);
+        }
+        Ok(None) => {}
+        Err(()) => {
+            return DiscoveryOutcome::NotAttempted;
+        }
     }
 
     let response = match request.send().await {
@@ -288,11 +297,14 @@ fn default_model_base_url(adapter: &str) -> Option<&'static str> {
 /// OpenAI metadata. The returned string is the `provider_source` passed to
 /// [`parse_provider_model_capabilities`].
 fn provider_discovery_schema(provider: &ProviderSpec) -> Option<&'static str> {
-    if let Some(declared) = provider
-        .adapter_options
-        .get("model_discovery_schema")
-        .and_then(|value| value.as_str())
-    {
+    if let Some(value) = provider.adapter_options.get("model_discovery_schema") {
+        let Some(declared) = value.as_str() else {
+            tracing::warn!(
+                provider_id = %provider.id,
+                "invalid non-string adapter_options.model_discovery_schema"
+            );
+            return None;
+        };
         return match declared.to_ascii_lowercase().as_str() {
             "openai" | "openai-compatible" | "openrouter" => Some("openai"),
             "gemini" | "google" => Some("gemini"),
@@ -325,12 +337,15 @@ fn should_skip_unauthenticated_default_endpoint(provider: &ProviderSpec) -> bool
 
 fn provider_discovery_auth_scheme(provider: &ProviderSpec, schema: &str) -> DiscoveryAuthScheme {
     let default = DiscoveryAuthScheme::default_for_schema(schema);
-    let Some(declared) = provider
-        .adapter_options
-        .get("model_discovery_auth")
-        .and_then(|value| value.as_str())
-    else {
+    let Some(value) = provider.adapter_options.get("model_discovery_auth") else {
         return default;
+    };
+    let Some(declared) = value.as_str() else {
+        tracing::warn!(
+            provider_id = %provider.id,
+            "invalid non-string adapter_options.model_discovery_auth; skipping discovery"
+        );
+        return DiscoveryAuthScheme::Invalid;
     };
     match declared.to_ascii_lowercase().as_str() {
         "bearer" | "authorization-bearer" => DiscoveryAuthScheme::Bearer,
@@ -340,37 +355,90 @@ fn provider_discovery_auth_scheme(provider: &ProviderSpec, schema: &str) -> Disc
             tracing::warn!(
                 provider_id = %provider.id,
                 model_discovery_auth = other,
-                "ignoring unknown adapter_options.model_discovery_auth"
+                "invalid adapter_options.model_discovery_auth; skipping discovery"
             );
-            default
+            DiscoveryAuthScheme::Invalid
         }
     }
 }
 
-fn auth_headers(provider: &ProviderSpec, schema: &str) -> Option<HeaderMap> {
+fn discovery_headers(provider: &ProviderSpec, schema: &str) -> Result<Option<HeaderMap>, ()> {
+    let mut headers = match build_default_headers_from_options(&provider.adapter_options) {
+        Ok(Some(headers)) => strip_discovery_auth_headers(provider, headers),
+        Ok(None) => HeaderMap::new(),
+        Err(error) => {
+            tracing::warn!(
+                provider_id = %provider.id,
+                error = %error,
+                "invalid adapter_options.headers; skipping provider model capability discovery"
+            );
+            return Err(());
+        }
+    };
+
+    if let Some(auth) = auth_headers(provider, schema)? {
+        for (name, value) in &auth {
+            headers.insert(name.clone(), value.clone());
+        }
+    }
+
+    Ok((!headers.is_empty()).then_some(headers))
+}
+
+fn strip_discovery_auth_headers(provider: &ProviderSpec, headers: HeaderMap) -> HeaderMap {
+    let mut safe = HeaderMap::new();
+    for (name, value) in &headers {
+        if is_discovery_auth_header(name) {
+            tracing::warn!(
+                provider_id = %provider.id,
+                header = %name,
+                "ignoring adapter_options.headers auth header for provider model capability discovery"
+            );
+            continue;
+        }
+        safe.insert(name.clone(), value.clone());
+    }
+    safe
+}
+
+fn is_discovery_auth_header(name: &HeaderName) -> bool {
+    name == AUTHORIZATION || name.as_str().eq_ignore_ascii_case("x-goog-api-key")
+}
+
+fn auth_headers(provider: &ProviderSpec, schema: &str) -> Result<Option<HeaderMap>, ()> {
     let scheme = provider_discovery_auth_scheme(provider, schema);
     if scheme == DiscoveryAuthScheme::None {
-        return None;
+        return Ok(None);
     }
-    let api_key = provider
+    if scheme == DiscoveryAuthScheme::Invalid {
+        return Err(());
+    }
+    let Some(api_key) = provider
         .api_key
         .as_ref()
         .map(|key| key.expose_secret().trim())
-        .filter(|key| !key.is_empty())?;
+        .filter(|key| !key.is_empty())
+    else {
+        return Ok(None);
+    };
     let mut headers = HeaderMap::new();
     match scheme {
         DiscoveryAuthScheme::GoogleApiKey => {
-            headers.insert("x-goog-api-key", HeaderValue::from_str(api_key).ok()?);
+            headers.insert(
+                "x-goog-api-key",
+                HeaderValue::from_str(api_key).map_err(|_| ())?,
+            );
         }
         DiscoveryAuthScheme::Bearer => {
             headers.insert(
                 AUTHORIZATION,
-                HeaderValue::from_str(&format!("Bearer {api_key}")).ok()?,
+                HeaderValue::from_str(&format!("Bearer {api_key}")).map_err(|_| ())?,
             );
         }
-        DiscoveryAuthScheme::None => return None,
+        DiscoveryAuthScheme::None => return Ok(None),
+        DiscoveryAuthScheme::Invalid => return Err(()),
     }
-    Some(headers)
+    Ok(Some(headers))
 }
 
 #[cfg(test)]
