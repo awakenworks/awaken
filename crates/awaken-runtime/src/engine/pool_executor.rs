@@ -12,20 +12,17 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
-use async_trait::async_trait;
-use awaken_contract::contract::executor::{
-    InferenceExecutionError, InferenceRequest, InferenceStream, LlmExecutor,
-};
-use awaken_contract::contract::inference::StreamResult;
+use awaken_contract::contract::executor::{InferenceExecutionError, InferenceRequest, LlmExecutor};
 use awaken_contract::registry_spec::HomeStrategy;
 
 use super::circuit_breaker::CircuitBreaker;
 use super::pool_router::PoolRouter;
-use pool_observed_stream::PoolObservedStream;
 
 const MAX_POOL_SESSION_STATES: usize = 4096;
 const MAX_POOL_STREAM_ATTEMPTS: usize = 4096;
 
+#[path = "pool_executor_llm.rs"]
+mod pool_executor_llm;
 #[path = "pool_observed_stream.rs"]
 mod pool_observed_stream;
 
@@ -556,9 +553,18 @@ impl PoolExecutorInner {
         attempt_key: Option<&str>,
         current: usize,
     ) {
+        if let Some(attempt_key) = attempt_key {
+            let mut attempts = self.stream_attempts.write();
+            let Some(attempt) = attempts.get(attempt_key) else {
+                return;
+            };
+            if attempt.active != Some(current) {
+                return;
+            }
+            attempts.remove(attempt_key);
+        }
         self.breaker.record_success(&self.members[current].model_id);
         self.reset_switch_budget(session_key);
-        self.clear_stream_attempt(attempt_key);
     }
 
     fn record_stream_attempt_failure_once(
@@ -570,22 +576,22 @@ impl PoolExecutorInner {
     ) {
         if let Some(attempt_key) = attempt_key {
             let mut attempts = self.stream_attempts.write();
-            if Self::ensure_stream_attempt_capacity(&mut attempts, attempt_key) {
-                let attempt = attempts
-                    .entry(attempt_key.to_string())
-                    .or_insert_with(|| PoolStreamAttemptState::new(self.members.len()));
-                attempt.last_access = self.next_stream_attempt_sequence();
-                if current < attempt.tried.len() {
-                    attempt.tried[current] = true;
-                }
-                let duplicate = attempt.active == Some(current) && attempt.failure_observed;
-                attempt.active = Some(current);
-                attempt.failure_observed = true;
-                attempt.in_flight = false;
-                drop(attempts);
-                if duplicate {
-                    return;
-                }
+            let Some(attempt) = attempts.get_mut(attempt_key) else {
+                return;
+            };
+            attempt.last_access = self.next_stream_attempt_sequence();
+            if attempt.active != Some(current) {
+                return;
+            }
+            if current < attempt.tried.len() {
+                attempt.tried[current] = true;
+            }
+            let duplicate = attempt.failure_observed;
+            attempt.failure_observed = true;
+            attempt.in_flight = false;
+            drop(attempts);
+            if duplicate {
+                return;
             }
         }
         self.record_stream_attempt_failure(session_key, attempt_key, current, err);
@@ -599,6 +605,9 @@ impl PoolExecutorInner {
         };
         let mut attempts = self.stream_attempts.write();
         let should_clear = if let Some(attempt) = attempts.get_mut(attempt_key) {
+            if attempt.active != Some(current) {
+                return;
+            }
             attempt.last_access = self.next_stream_attempt_sequence();
             attempt.in_flight = false;
             !attempt.failure_observed
@@ -646,147 +655,9 @@ impl PoolExecutorInner {
     }
 }
 
-#[async_trait]
-impl LlmExecutor for PoolExecutor {
-    async fn execute(
-        &self,
-        request: InferenceRequest,
-    ) -> Result<StreamResult, InferenceExecutionError> {
-        let inner = &self.inner;
-        let session_key = inner.session_key(&request);
-        let mut idx = inner.select_active(&session_key);
-        let mut tried = vec![false; inner.members.len()];
-        loop {
-            tried[idx] = true;
-            if let Err(err) = inner.check_member(idx) {
-                match inner.next_on_unavailable(&session_key, idx, &tried) {
-                    Some(next) => {
-                        idx = next;
-                        continue;
-                    }
-                    None => return Err(inner.no_member_available_error(err, &tried)),
-                }
-            }
-
-            let req = inner.request_for(idx, &request);
-            match inner.members[idx].executor.execute(req).await {
-                Ok(result) => {
-                    inner.breaker.record_success(&inner.members[idx].model_id);
-                    inner.reset_switch_budget(&session_key);
-                    return Ok(result);
-                }
-                Err(err) => {
-                    inner.record_failure(idx, &err);
-                    match inner.next_on_error(&session_key, idx, &err, &tried) {
-                        Some(next) => idx = next,
-                        None if inner.router.should_switch_on_error(&err) => {
-                            return Err(inner.error_driven_no_member_available_error(err, &tried));
-                        }
-                        None => return Err(err),
-                    }
-                }
-            }
-        }
-    }
-
-    fn execute_stream(
-        &self,
-        request: InferenceRequest,
-    ) -> std::pin::Pin<
-        Box<
-            dyn std::future::Future<Output = Result<InferenceStream, InferenceExecutionError>>
-                + Send
-                + '_,
-        >,
-    > {
-        Box::pin(async move {
-            let inner = Arc::clone(&self.inner);
-            let session_key = inner.session_key(&request);
-            let attempt_key = inner.stream_attempt_key(&session_key, &request);
-            let mut idx = inner.select_active(&session_key);
-            let mut tried = inner.stream_tried_mask(attempt_key.as_deref());
-            loop {
-                tried[idx] = true;
-                if let Err(err) = inner.check_member(idx) {
-                    match inner.next_on_unavailable(&session_key, idx, &tried) {
-                        Some(next) => {
-                            idx = next;
-                            continue;
-                        }
-                        None => return Err(inner.no_member_available_error(err, &tried)),
-                    }
-                }
-
-                let req = inner.request_for(idx, &request);
-                match inner.members[idx].executor.execute_stream(req).await {
-                    Ok(stream) => {
-                        inner.mark_stream_active(attempt_key.as_deref(), idx);
-                        let observed = PoolObservedStream::new(
-                            stream,
-                            Arc::clone(&inner),
-                            session_key,
-                            attempt_key,
-                            idx,
-                        );
-                        return Ok(Box::pin(observed) as InferenceStream);
-                    }
-                    Err(err) => {
-                        inner.record_failure(idx, &err);
-                        inner.mark_stream_open_failure(attempt_key.as_deref(), idx);
-                        match inner.next_on_error(&session_key, idx, &err, &tried) {
-                            Some(next) => {
-                                idx = next;
-                                if attempt_key.is_some() {
-                                    inner.merge_stream_tried_mask(
-                                        &mut tried,
-                                        attempt_key.as_deref(),
-                                    );
-                                }
-                            }
-                            None if inner.router.should_switch_on_error(&err) => {
-                                return Err(
-                                    inner.error_driven_no_member_available_error(err, &tried)
-                                );
-                            }
-                            None => return Err(err),
-                        }
-                    }
-                }
-            }
-        })
-    }
-
-    fn name(&self) -> &str {
-        &self.inner.pool_id
-    }
-
-    fn supports_upstream_model_override(&self) -> bool {
-        false
-    }
-
-    fn record_stream_success(&self, request: &InferenceRequest) {
-        let session_key = self.inner.session_key(request);
-        let attempt_key = self.inner.stream_attempt_key(&session_key, request);
-        if let Some(idx) = attempt_key.as_deref().and_then(|key| {
-            self.inner
-                .stream_attempts
-                .read()
-                .get(key)
-                .and_then(|attempt| attempt.active)
-        }) {
-            self.inner
-                .breaker
-                .record_success(&self.inner.members[idx].model_id);
-            self.inner.reset_switch_budget(&session_key);
-        }
-        self.inner.clear_stream_attempt(attempt_key.as_deref());
-    }
-
-    fn record_stream_failure(&self, request: &InferenceRequest, err: &InferenceExecutionError) {
-        self.inner.record_stream_member_failure(request, err);
-    }
-}
-
+#[cfg(test)]
+#[path = "pool_executor_stale_stream_tests.rs"]
+mod pool_executor_stale_stream_tests;
 #[cfg(test)]
 #[path = "pool_executor_stream_tests.rs"]
 mod pool_executor_stream_tests;
