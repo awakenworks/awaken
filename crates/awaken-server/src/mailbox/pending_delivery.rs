@@ -149,6 +149,58 @@ impl Mailbox {
             .await?)
     }
 
+    /// Preflight a foreground (Interrupt-boundary) submit **before** any
+    /// interrupt/cancel side effect.
+    ///
+    /// A barrier ahead in pending blocks a foreground interrupt (barriers are
+    /// never skipped — ADR-0042 D6), so the later freeze would select nothing
+    /// and `prepare_pending_messages_for_dispatch` would return `Internal` — but
+    /// only *after* the active run was already cancelled. Detecting it up front
+    /// lets the caller surface `DeliveryBlockedByBarrier` with no side effect.
+    /// Returns `Ok(())` when no pending store is configured or the foreground
+    /// message would be eligible.
+    pub(super) async fn preflight_foreground_pending(
+        &self,
+        thread_id: &str,
+    ) -> Result<(), MailboxError> {
+        let Some(store) = self.pending_thread_run_store.as_ref() else {
+            return Ok(());
+        };
+        let pending = store.load_pending_message_records(thread_id).await?;
+        if pending.is_empty() {
+            return Ok(());
+        }
+        // Simulate appending the foreground Interrupt message at the tail and run
+        // the real selector. The freeze returns `Internal` precisely when the
+        // selection is empty, so an empty result here means a barrier (or
+        // non-skippable entry) ahead blocks the foreground message.
+        let mut simulated = pending.clone();
+        simulated.push(PendingMessageRecord {
+            pending_id: "__preflight_foreground__".to_string(),
+            thread_id: thread_id.to_string(),
+            position: simulated.len() as u64 + 1,
+            message: Message::user(""),
+            revision: 0,
+            delivery_mode: delivery_mode_for_dispatch(DeliveryBoundary::Interrupt, ""),
+            created_at: None,
+            updated_at: None,
+        });
+        let selected =
+            select_pending_for_freeze_for_run(&simulated, DeliveryBoundary::Interrupt, None);
+        if !selected.is_empty() {
+            return Ok(());
+        }
+        let blocking_pending_id = pending
+            .iter()
+            .find(|entry| entry.delivery_mode.barrier)
+            .or_else(|| pending.first())
+            .map(|entry| entry.pending_id.clone())
+            .unwrap_or_default();
+        Err(MailboxError::DeliveryBlockedByBarrier {
+            blocking_pending_id,
+        })
+    }
+
     pub(super) async fn prepare_pending_messages_for_dispatch(
         &self,
         request: &RunActivation,

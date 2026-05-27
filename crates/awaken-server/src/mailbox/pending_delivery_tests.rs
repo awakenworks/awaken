@@ -821,3 +821,73 @@ async fn freeze_event_publish_failure_is_repairable_success() {
         "successful freeze must consume pending instead of cleanup/retry"
     );
 }
+
+#[tokio::test]
+async fn preflight_foreground_blocked_by_leading_barrier() {
+    // ADR-0042 D6 / Major 2: a barrier ahead in pending blocks a foreground
+    // interrupt. The preflight must report it BEFORE any interrupt/cancel side
+    // effect, so the active run is never cancelled only to then fail Internal.
+    let thread_store = Arc::new(InMemoryStore::new());
+    let mailbox = Mailbox::new_with_pending_thread_run_store(
+        Arc::new(NoopExecutor),
+        Arc::new(InMemoryMailboxStore::new()),
+        thread_store,
+        "consumer".to_string(),
+        MailboxConfig::default(),
+    );
+    let mut barrier = DeliveryMode::new_run(DeliveryGranularity::Batch);
+    barrier.barrier = true;
+    mailbox
+        .deliver(
+            "t-barrier",
+            &[Message::user("queued").with_id("p-barrier".to_string())],
+            barrier,
+        )
+        .await
+        .unwrap();
+
+    let err = mailbox
+        .preflight_foreground_pending("t-barrier")
+        .await
+        .unwrap_err();
+    match err {
+        crate::mailbox::MailboxError::DeliveryBlockedByBarrier {
+            blocking_pending_id,
+        } => {
+            assert_eq!(blocking_pending_id, "p-barrier");
+        }
+        other => panic!("expected DeliveryBlockedByBarrier, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn preflight_foreground_allows_empty_and_skippable_pending() {
+    let thread_store = Arc::new(InMemoryStore::new());
+    let mailbox = Mailbox::new_with_pending_thread_run_store(
+        Arc::new(NoopExecutor),
+        Arc::new(InMemoryMailboxStore::new()),
+        thread_store,
+        "consumer".to_string(),
+        MailboxConfig::default(),
+    );
+    // Empty pending: nothing blocks a foreground interrupt.
+    mailbox
+        .preflight_foreground_pending("t-empty")
+        .await
+        .unwrap();
+
+    // A non-barrier queued NewRun is skippable for an Interrupt boundary, so the
+    // foreground message would still be eligible — not blocked.
+    mailbox
+        .deliver(
+            "t-skip",
+            &[Message::user("queued").with_id("p1".to_string())],
+            DeliveryMode::new_run(DeliveryGranularity::Batch),
+        )
+        .await
+        .unwrap();
+    mailbox
+        .preflight_foreground_pending("t-skip")
+        .await
+        .unwrap();
+}

@@ -340,6 +340,12 @@ pub enum MailboxError {
     Store(#[from] StorageError),
     #[error("internal error: {0}")]
     Internal(String),
+    /// A foreground submit cannot be consumed because a barrier pending entry
+    /// ahead of it must be consumed first. Returned by the submit preflight
+    /// *before* any interrupt/cancel side effect, so a blocked submit never
+    /// cancels the active run (ADR-0042 D6: barriers are never skipped).
+    #[error("delivery blocked by barrier: pending '{blocking_pending_id}' must be consumed first")]
+    DeliveryBlockedByBarrier { blocking_pending_id: String },
 }
 
 /// Outcome classification for runtime run results.
