@@ -126,7 +126,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 | `api_key` | `Option<RedactedString>` | `None` | 用 `RedactedString` 包裹，`Debug`/`Display` 自动遮蔽。线缆格式是普通 JSON 字符串。空字符串输入会反序列化为 `None`，便于在更新时省略字段以保留已有 key |
 | `base_url` | `Option<String>` | `None` | 代理或自托管部署的 base URL 覆盖。空字符串输入反序列化为 `None` |
 | `timeout_secs` | `u64` | `300` | 请求超时（秒） |
-| `adapter_options` | `BTreeMap<String, Value>` | `{}` | 适配器专属、非密的扩展选项。OpenAI 兼容适配器识别 `headers`（一个 string→string 的对象，作为默认请求头加进去）。`model_discovery_schema`（`"openai"`/`"openai-compatible"` 或 `"gemini"`）让自定义 adapter 按该 schema 启用 `/models` 能力发现（见“模型能力来源”）。`model_discovery_auth`（`"bearer"`、`"x-goog-api-key"` 或 `"none"`；别名包括 `"authorization-bearer"`、`"google-api-key"`、`"gemini-api-key"`、`"no-auth"`、`"disabled"`）只覆盖 discovery 请求的鉴权 header；默认 OpenAI-compatible discovery 使用 `Authorization: Bearer`，Gemini discovery 使用 `x-goog-api-key`。配置校验会拒绝非法的 `model_discovery_schema` / `model_discovery_auth` 值。Schema 接受未知 key，但构建时会被忽略。秘密值必须用 `api_key`，不要塞到这里 |
+| `adapter_options` | `BTreeMap<String, Value>` | `{}` | 适配器专属、非密的扩展选项。OpenAI 兼容适配器识别 `headers`（一个 string→string 的对象，作为默认请求头加进去）。`model_discovery_schema`（`"openai"`/`"openai-compatible"`/`"openrouter"` 或 `"gemini"`/`"google"`）让自定义 adapter 按该 schema 启用 `/models` 能力发现（见“模型能力来源”）。`model_discovery_auth`（`"bearer"`、`"x-goog-api-key"` 或 `"none"`；别名包括 `"authorization-bearer"`、`"google-api-key"`、`"gemini-api-key"`、`"no-auth"`、`"disabled"`）只覆盖 discovery 请求的鉴权 header；默认 OpenAI-compatible discovery 使用 `Authorization: Bearer`，Gemini discovery 使用 `x-goog-api-key`。配置校验会拒绝非法的 `model_discovery_schema` / `model_discovery_auth` 值。Schema 接受未知 key，但构建时会被忽略。秘密值必须用 `api_key`，不要塞到这里 |
 
 为兼容已存储配置，`ProviderSpec` 反序列化会忽略未知顶层字段。配置写入和
 validate surface 会调用 `validate_provider_spec` 并拒绝未知字段，避免新记录
@@ -181,8 +181,10 @@ OpenAI/Gemini 兼容网关，请通过 `adapter_options.model_discovery_schema` 
 opt-in。Discovery 鉴权与 adapter 正交：默认按声明的 discovery schema 选择
 header，也可以用 `adapter_options.model_discovery_auth` 覆盖，以适配 header 约定
 不同的网关。Discovery 还会复用 `adapter_options.headers` 中的非鉴权 header，
-让 tenant/routing header 传到 `/models`；其中的 `Authorization` 和 `x-goog-api-key`
-在 discovery 中会被忽略，避免覆盖 `model_discovery_auth` 或在禁用鉴权时泄漏。
+让 tenant/routing header 传到 `/models`；其中类似鉴权的 header（`Authorization`、
+`Proxy-Authorization`、`Cookie`、`x-goog-api-key`、`X-API-Key`、`api-key`、
+`Ocp-Apim-Subscription-Key`、`X-Auth-Token`）在 discovery 中会被忽略，避免覆盖
+`model_discovery_auth` 或在禁用鉴权时泄漏。
 Gemini/Google discovery 当前只补 token limit；如果需要让 `modalities`
 或 `knowledge_cutoff` 驱动运行时 guard / context 注入，请显式配置这些字段。
 Vertex 模型仍可能获得静态启发式 metadata，但除非未来 adapter 提供完整的

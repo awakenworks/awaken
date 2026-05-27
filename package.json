@@ -22,7 +22,8 @@
       "style-dictionary"
     ],
     "overrides": {
-      "rxjs": "7.8.1"
+      "rxjs": "7.8.1",
+      "tmp": "0.2.6"
     }
   }
 }

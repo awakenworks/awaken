@@ -402,7 +402,17 @@ fn strip_discovery_auth_headers(provider: &ProviderSpec, headers: HeaderMap) -> 
 }
 
 fn is_discovery_auth_header(name: &HeaderName) -> bool {
-    name == AUTHORIZATION || name.as_str().eq_ignore_ascii_case("x-goog-api-key")
+    matches!(
+        name.as_str().to_ascii_lowercase().as_str(),
+        "authorization"
+            | "proxy-authorization"
+            | "cookie"
+            | "x-goog-api-key"
+            | "x-api-key"
+            | "api-key"
+            | "ocp-apim-subscription-key"
+            | "x-auth-token"
+    )
 }
 
 fn auth_headers(provider: &ProviderSpec, schema: &str) -> Result<Option<HeaderMap>, ()> {

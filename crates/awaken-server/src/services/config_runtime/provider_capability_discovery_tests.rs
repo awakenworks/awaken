@@ -202,7 +202,13 @@ fn discovery_headers_merge_custom_headers_without_auth_override() {
             json!({
                 "X-Tenant-Id": "team-42",
                 "Authorization": "Bearer wrong",
-                "x-goog-api-key": "wrong"
+                "x-goog-api-key": "wrong",
+                "Proxy-Authorization": "Basic wrong",
+                "Cookie": "sid=wrong",
+                "X-API-Key": "wrong",
+                "api-key": "wrong",
+                "Ocp-Apim-Subscription-Key": "wrong",
+                "X-Auth-Token": "wrong"
             }),
         )]
         .into_iter()
@@ -226,6 +232,49 @@ fn discovery_headers_merge_custom_headers_without_auth_override() {
         Some("Bearer secret")
     );
     assert!(!headers.contains_key("x-goog-api-key"));
+    assert!(!headers.contains_key("proxy-authorization"));
+    assert!(!headers.contains_key("cookie"));
+    assert!(!headers.contains_key("x-api-key"));
+    assert!(!headers.contains_key("api-key"));
+    assert!(!headers.contains_key("ocp-apim-subscription-key"));
+    assert!(!headers.contains_key("x-auth-token"));
+}
+
+#[test]
+fn discovery_auth_none_strips_auth_like_custom_headers() {
+    let provider = ProviderSpec {
+        id: "p".into(),
+        adapter: "openrouter".into(),
+        api_key: Some("secret".into()),
+        adapter_options: [
+            ("model_discovery_auth".to_string(), json!("none")),
+            (
+                "headers".to_string(),
+                json!({
+                    "X-Tenant-Id": "team-42",
+                    "Authorization": "Bearer wrong",
+                    "X-API-Key": "wrong",
+                    "Cookie": "sid=wrong"
+                }),
+            ),
+        ]
+        .into_iter()
+        .collect(),
+        ..ProviderSpec::default()
+    };
+    let headers = discovery_headers(&provider, "openai")
+        .expect("valid headers")
+        .expect("tenant header remains");
+
+    assert_eq!(
+        headers
+            .get("x-tenant-id")
+            .and_then(|value| value.to_str().ok()),
+        Some("team-42")
+    );
+    assert!(!headers.contains_key(AUTHORIZATION));
+    assert!(!headers.contains_key("x-api-key"));
+    assert!(!headers.contains_key("cookie"));
 }
 
 #[tokio::test]
