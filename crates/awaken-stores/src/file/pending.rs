@@ -27,6 +27,49 @@ impl PendingMessageStore for FileStore {
         self.read_pending_messages_locked(thread_id).await
     }
 
+    async fn list_threads_with_pending_messages(
+        &self,
+        limit: usize,
+        after: Option<&str>,
+    ) -> Result<Vec<String>, StorageError> {
+        let dir = self.pending_messages_dir();
+        if !dir.exists() {
+            return Ok(Vec::new());
+        }
+        let mut entries = tokio::fs::read_dir(&dir)
+            .await
+            .map_err(|e| StorageError::Io(e.to_string()))?;
+        let mut thread_ids = Vec::new();
+        while let Some(entry) = entries
+            .next_entry()
+            .await
+            .map_err(|e| StorageError::Io(e.to_string()))?
+        {
+            let path = entry.path();
+            if path.extension().is_none_or(|ext| ext != "json") {
+                continue;
+            }
+            let Some(thread_id) = path.file_stem().and_then(|stem| stem.to_str()) else {
+                continue;
+            };
+            if after.is_some_and(|cursor| thread_id <= cursor) {
+                continue;
+            }
+            if !self
+                .read_pending_messages_locked(thread_id)
+                .await?
+                .is_empty()
+            {
+                thread_ids.push(thread_id.to_owned());
+            }
+        }
+        thread_ids.sort();
+        if limit > 0 {
+            thread_ids.truncate(limit);
+        }
+        Ok(thread_ids)
+    }
+
     async fn append_pending_message_records(
         &self,
         thread_id: &str,

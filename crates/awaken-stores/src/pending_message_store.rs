@@ -12,6 +12,18 @@ pub trait PendingMessageStore: Send + Sync {
         thread_id: &str,
     ) -> Result<Vec<PendingMessageRecord>, StorageError>;
 
+    /// List up to `limit` thread ids (ascending; `limit == 0` means unbounded)
+    /// that currently hold at least one pending message, strictly greater than
+    /// `after` (the previous page's last id) for cursor pagination. Startup
+    /// recovery pages through this to detect threads whose consume opportunity
+    /// may have been lost — pending was persisted but the dispatch/notification
+    /// did not survive — without scanning the whole table at once (ADR-0042 D7).
+    async fn list_threads_with_pending_messages(
+        &self,
+        limit: usize,
+        after: Option<&str>,
+    ) -> Result<Vec<String>, StorageError>;
+
     async fn append_pending_message_records(
         &self,
         thread_id: &str,

@@ -73,6 +73,25 @@ impl PendingMessageStore for InMemoryStore {
         Ok(guard.get(thread_id).cloned().unwrap_or_default())
     }
 
+    async fn list_threads_with_pending_messages(
+        &self,
+        limit: usize,
+        after: Option<&str>,
+    ) -> Result<Vec<String>, StorageError> {
+        let guard = self.pending_messages.read().await;
+        let mut ids: Vec<String> = guard
+            .iter()
+            .filter(|(_, records)| !records.is_empty())
+            .map(|(thread_id, _)| thread_id.clone())
+            .filter(|thread_id| after.map_or(true, |cursor| thread_id.as_str() > cursor))
+            .collect();
+        ids.sort();
+        if limit > 0 {
+            ids.truncate(limit);
+        }
+        Ok(ids)
+    }
+
     async fn append_pending_message_records(
         &self,
         thread_id: &str,

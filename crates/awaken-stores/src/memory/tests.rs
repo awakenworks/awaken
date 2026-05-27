@@ -211,6 +211,66 @@ async fn pending_messages_append_edit_reorder_and_retract() {
 }
 
 #[tokio::test]
+async fn list_threads_with_pending_messages_reports_non_empty_threads() {
+    let store = InMemoryStore::new();
+    let mode = DeliveryMode::new_run(DeliveryGranularity::Batch);
+    store
+        .append_pending_message_records(
+            "thread-a",
+            &[Message::user("a").with_id("a1".to_string())],
+            mode.clone(),
+        )
+        .await
+        .unwrap();
+    store
+        .append_pending_message_records(
+            "thread-b",
+            &[Message::user("b").with_id("b1".to_string())],
+            mode,
+        )
+        .await
+        .unwrap();
+
+    let ids = store
+        .list_threads_with_pending_messages(0, None)
+        .await
+        .unwrap();
+    assert_eq!(ids, vec!["thread-a".to_string(), "thread-b".to_string()]);
+
+    // `limit` caps the result.
+    assert_eq!(
+        store
+            .list_threads_with_pending_messages(1, None)
+            .await
+            .unwrap(),
+        vec!["thread-a".to_string()]
+    );
+
+    // `after` cursor pages past ids already seen: a page of size 1 anchored at
+    // "thread-a" yields the next id only.
+    assert_eq!(
+        store
+            .list_threads_with_pending_messages(1, Some("thread-a"))
+            .await
+            .unwrap(),
+        vec!["thread-b".to_string()]
+    );
+
+    // A thread with no remaining pending drops out of the scan.
+    store
+        .retract_pending_message_record("thread-a", "a1")
+        .await
+        .unwrap();
+    assert_eq!(
+        store
+            .list_threads_with_pending_messages(0, None)
+            .await
+            .unwrap(),
+        vec!["thread-b".to_string()]
+    );
+}
+
+#[tokio::test]
 async fn pending_mutations_reject_stale_revisions() {
     let store = InMemoryStore::new();
     let mode = DeliveryMode::new_run(DeliveryGranularity::Batch);

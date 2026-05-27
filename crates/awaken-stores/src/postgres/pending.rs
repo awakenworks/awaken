@@ -169,6 +169,28 @@ impl PendingMessageStore for PostgresStore {
         Ok(records)
     }
 
+    async fn list_threads_with_pending_messages(
+        &self,
+        limit: usize,
+        after: Option<&str>,
+    ) -> Result<Vec<String>, StorageError> {
+        self.ensure_schema().await?;
+        let sql = format!(
+            "SELECT DISTINCT thread_id FROM {} \
+             WHERE state = 'pending' AND ($2::text IS NULL OR thread_id > $2) \
+             ORDER BY thread_id LIMIT $1",
+            self.messages_table
+        );
+        let bound = if limit == 0 { i64::MAX } else { limit as i64 };
+        let rows = sqlx::query_scalar::<_, String>(&sql)
+            .bind(bound)
+            .bind(after)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|e| StorageError::Io(e.to_string()))?;
+        Ok(rows)
+    }
+
     async fn append_pending_message_records(
         &self,
         thread_id: &str,

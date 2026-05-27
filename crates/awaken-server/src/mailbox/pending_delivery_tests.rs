@@ -126,6 +126,15 @@ impl PendingMessageStore for ConflictOnceStore {
     ) -> Result<Vec<PendingMessageRecord>, StorageError> {
         self.inner.load_pending_message_records(thread_id).await
     }
+    async fn list_threads_with_pending_messages(
+        &self,
+        limit: usize,
+        after: Option<&str>,
+    ) -> Result<Vec<String>, StorageError> {
+        self.inner
+            .list_threads_with_pending_messages(limit, after)
+            .await
+    }
     async fn append_pending_message_records(
         &self,
         thread_id: &str,
@@ -321,6 +330,66 @@ async fn pending_messages_can_be_edited_reordered_and_retracted_before_freeze() 
         .unwrap();
     assert_eq!(frozen.len(), 1);
     assert_eq!(frozen[0].message.text(), "edited");
+}
+
+#[tokio::test]
+async fn recover_detects_orphaned_pending_thread() {
+    let thread_store = Arc::new(InMemoryStore::new());
+    let mailbox = Arc::new(Mailbox::new_with_pending_thread_run_store(
+        Arc::new(NoopExecutor),
+        Arc::new(InMemoryMailboxStore::new()),
+        thread_store,
+        "consumer".to_string(),
+        MailboxConfig::default(),
+    ));
+    // Pending written with no dispatch and no run: a lost consume opportunity.
+    mailbox
+        .deliver(
+            "thread-orphan",
+            &[Message::user("stranded").with_id("p1".to_string())],
+            DeliveryMode::new_run(DeliveryGranularity::Batch),
+        )
+        .await
+        .unwrap();
+
+    // Reported as an orphan when no queued dispatch covers it.
+    let orphaned = mailbox.recover_orphaned_pending_threads(&[]).await.unwrap();
+    assert_eq!(orphaned, 1);
+
+    // A thread already covered by a queued dispatch is not reported.
+    let covered = mailbox
+        .recover_orphaned_pending_threads(&["thread-orphan".to_string()])
+        .await
+        .unwrap();
+    assert_eq!(covered, 0);
+}
+
+#[tokio::test]
+async fn recover_pages_through_all_orphaned_pending_threads() {
+    let thread_store = Arc::new(InMemoryStore::new());
+    let mailbox = Arc::new(Mailbox::new_with_pending_thread_run_store(
+        Arc::new(NoopExecutor),
+        Arc::new(InMemoryMailboxStore::new()),
+        thread_store,
+        "consumer".to_string(),
+        MailboxConfig::default(),
+    ));
+    // More orphaned threads than a single recovery page holds, so detection must
+    // advance the cursor across page boundaries to count every one.
+    let total = Mailbox::PENDING_RECOVERY_PAGE_SIZE + 5;
+    for i in 0..total {
+        mailbox
+            .deliver(
+                &format!("thread-orphan-{i:04}"),
+                &[Message::user("stranded").with_id(format!("p{i:04}"))],
+                DeliveryMode::new_run(DeliveryGranularity::Batch),
+            )
+            .await
+            .unwrap();
+    }
+
+    let orphaned = mailbox.recover_orphaned_pending_threads(&[]).await.unwrap();
+    assert_eq!(orphaned, total);
 }
 
 #[tokio::test]

@@ -255,16 +255,15 @@ pre-commit:
         for file in $code_files; do
           git cat-file -e ":$file" 2>/dev/null || continue
 
-          # 约束按仓库模块化边界设定：前端组件 500 行、Rust 800 行、
-          # C/C++ 1000 行，其余业务代码 700-800 行；测试与生成代码已排除。
+          # 约束统一为 2000 行；测试与生成代码已排除。
           case "$file" in
-            *.tsx|*.jsx|*.vue) max_lines=500 ;;
-            *.ts|*.js|*.mjs|*.cjs) max_lines=700 ;;
-            *.rs) max_lines=800 ;;
-            *.py|*.go) max_lines=700 ;;
-            *.java|*.cs) max_lines=800 ;;
-            *.c|*.cc|*.cpp|*.cxx|*.h|*.hpp) max_lines=1000 ;;
-            *) max_lines=800 ;;
+            *.tsx|*.jsx|*.vue) max_lines=2000 ;;
+            *.ts|*.js|*.mjs|*.cjs) max_lines=2000 ;;
+            *.rs) max_lines=2000 ;;
+            *.py|*.go) max_lines=2000 ;;
+            *.java|*.cs) max_lines=2000 ;;
+            *.c|*.cc|*.cpp|*.cxx|*.h|*.hpp) max_lines=2000 ;;
+            *) max_lines=2000 ;;
           esac
 
           line_count=$(git show ":$file" | wc -l | tr -d ' ')

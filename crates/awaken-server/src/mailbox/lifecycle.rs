@@ -21,6 +21,10 @@ use super::{
 impl Mailbox {
     // ── Lifecycle ────────────────────────────────────────────────────
 
+    /// Page size for the recovery scan of pending-non-empty threads, so a large
+    /// backend is not materialized into memory at once (ADR-0042 D7).
+    pub(super) const PENDING_RECOVERY_PAGE_SIZE: usize = 256;
+
     /// Start framework-managed startup recovery plus sweep/GC maintenance.
     ///
     /// This method is idempotent: repeated calls return a handle to the
@@ -233,7 +237,75 @@ impl Mailbox {
             .recover_orphaned_background_task_waits(&thread_ids)
             .await?;
 
+        total += self.recover_orphaned_pending_threads(&thread_ids).await?;
+
         Ok(total)
+    }
+
+    /// Detect threads that hold pending messages but have no queued dispatch and
+    /// no running run — a pending entry whose consume opportunity was lost
+    /// (ADR-0042 D7). Threads already covered by a queued dispatch, a prepared
+    /// run (reconstructed above), or an active run/lease (reclaimed above) are
+    /// skipped. A genuine orphan is surfaced (warn + metric) for operator/monitor
+    /// action: auto-starting a fresh consume run is intentionally not done here,
+    /// as it has no run-activation context (agent/resolution) to start from.
+    pub(super) async fn recover_orphaned_pending_threads(
+        self: &Arc<Self>,
+        queued_thread_ids: &[String],
+    ) -> Result<usize, MailboxError> {
+        let Some(store) = self.pending_thread_run_store.as_ref() else {
+            return Ok(0);
+        };
+        // Re-query the live queued set rather than trusting the snapshot taken at
+        // the start of `recover`: earlier recovery steps (prepared-run dispatch
+        // reconstruction, background-wait recovery, try_dispatch) may have
+        // enqueued dispatches for threads not queued when that snapshot was
+        // taken. Using only the stale snapshot would false-positive those
+        // freshly-queued threads as orphans (ADR-0042 D7 recovery noise).
+        let mut queued_set: std::collections::HashSet<String> =
+            queued_thread_ids.iter().cloned().collect();
+        queued_set.extend(self.store.queued_thread_ids().await?);
+        // Page through pending-non-empty threads with a cursor instead of loading
+        // the whole set at once: on a large backend the unpaged scan would
+        // materialize every pending thread id in memory at recovery time.
+        let mut orphaned = 0usize;
+        let mut after: Option<String> = None;
+        loop {
+            let page = store
+                .list_threads_with_pending_messages(
+                    Self::PENDING_RECOVERY_PAGE_SIZE,
+                    after.as_deref(),
+                )
+                .await?;
+            if page.is_empty() {
+                break;
+            }
+            let page_len = page.len();
+            after = page.last().cloned();
+            for thread_id in page {
+                if queued_set.contains(thread_id.as_str()) {
+                    continue;
+                }
+                // A running run owns its lane; its dispatch/lease (reclaimed
+                // earlier) re-freezes the pending, so this is not an orphan.
+                if let Some(run) = self.run_store.latest_run(&thread_id).await?
+                    && run.status == RunStatus::Running
+                {
+                    continue;
+                }
+                orphaned += 1;
+                crate::metrics::inc_mailbox_operation_by("orphaned_pending_thread", "detected", 1);
+                tracing::warn!(
+                    thread_id = %thread_id,
+                    "recover: thread has pending messages but no consume opportunity \
+                     (no queued dispatch, no running run); surfaced for re-delivery"
+                );
+            }
+            if page_len < Self::PENDING_RECOVERY_PAGE_SIZE {
+                break;
+            }
+        }
+        Ok(orphaned)
     }
 
     async fn recover_orphaned_background_task_waits(
