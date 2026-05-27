@@ -458,7 +458,7 @@ mod tests {
         ];
         let plugin = SkillDiscoveryPlugin::new(make_registry(skills));
 
-        // Apply the seed exactly as SkillVisibilityStateKey::apply(SetBatch) would.
+        // Apply the seed exactly as SkillVisibilityStateKey::apply(SeedBatch) would.
         let mut state = SkillVisibilityStateValue::default();
         for (id, vis) in plugin.seed_visibility_entries() {
             state.modes.insert(id, vis);
@@ -500,7 +500,7 @@ mod tests {
     fn render_catalog_omitted_skill_falls_back_to_metadata_policy() {
         // A skill absent from the state map must not fail open blindly: it falls
         // back to the metadata policy. A `disable-model-invocation` skill stays
-        // Hidden; a path-conditional skill stays Visible (hiding deferred).
+        // Hidden; a `paths`-bearing skill stays Visible (paths does not gate it).
         let skills: Vec<Arc<dyn Skill>> = vec![
             Arc::new(MockSkill(mock_meta("shown"))),
             Arc::new(MockSkill(path_conditional_meta("cond"))),
@@ -516,7 +516,7 @@ mod tests {
         assert!(catalog.contains("<name>shown</name>"));
         assert!(
             catalog.contains("<name>cond</name>"),
-            "path-conditional skill stays visible until the promote hook exists"
+            "a paths-bearing skill stays visible (paths does not gate visibility)"
         );
         assert!(
             !catalog.contains("<name>blocked</name>"),

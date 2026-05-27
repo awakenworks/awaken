@@ -402,9 +402,8 @@ mod tests {
 
     #[test]
     fn default_policy_visible_when_only_paths_present() {
-        // Path-conditional hiding is deferred until a file-match promote hook
-        // exists (ADR-0020 D5, future). Until then a `paths`-only skill stays
-        // Visible rather than vanishing from the catalog with no way back.
+        // `paths` is not in the agentskills spec and does not gate visibility, so
+        // a `paths`-only skill is Visible (surfaced by description, model-invoked).
         let policy = DefaultSkillVisibilityPolicy;
         let mut meta = SkillMeta::new("s1", "s1", "desc", vec![]);
         meta.paths = vec!["*.tsx".into()];

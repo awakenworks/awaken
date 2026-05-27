@@ -58,6 +58,26 @@ Development work lands here before the next versioned release.
   client-side. A lefthook `check-legacy-model-binding` hook prevents
   reintroduction of any deprecated symbol.
 
+- **BREAKING — skill/tool visibility policy surfaces demoted to declarative.**
+  Visibility/deferral are now metadata- and config-driven, not pluggable code
+  traits, so the trait surfaces are removed from the public API. Skill catalog
+  visibility follows the [agentskills spec](https://agentskills.io/specification):
+  skills are surfaced by `name` + `description` and gated only by
+  `disable-model-invocation`. `paths` is a non-standard field that is parsed but
+  does **not** affect visibility.
+
+  | Removed (was public) | Replacement |
+  |---|---|
+  | `awaken_ext_skills::SkillVisibilityPolicy` (trait) | declarative metadata; no trait |
+  | `awaken_ext_skills::DefaultSkillVisibilityPolicy` | `awaken_ext_skills::effective_visibility(meta, state)` |
+  | `awaken_ext_deferred_tools::policy` (module, now private) | `DeferredToolsConfig` / `config.resolve_mode` |
+  | `DeferralPolicy` / `ConfigOnlyPolicy` / `DeferralDecision` | classification via config `resolve_mode` |
+
+  `SkillVisibilityAction` gains `SeedBatch` (insert-if-absent) for run-start
+  seeding; `SetBatch` is retained for explicit overwrite. No deprecated shims —
+  these surfaces had no in-tree consumers and the crates are pre-1.0
+  (`0.5.1-dev`); downstream code resolves visibility via `effective_visibility`.
+
 - **AgentSpec catalog fields** — `allowed_tools` / `excluded_tools` are now
   strict literal-id lists, and two new fields `allowed_tool_patterns` /
   `excluded_tool_patterns` carry glob patterns (`*` is the only wildcard;
