@@ -13,18 +13,22 @@ use std::sync::{Arc, OnceLock, Weak};
 
 use async_trait::async_trait;
 use awaken_contract::contract::config_store::{ConfigStore, extract_meta_revision};
-use awaken_contract::contract::message::{Message, strip_unpaired_tool_calls_from_owned_view};
+use awaken_contract::contract::message::{
+    Message, MessageRecord, PendingMessageRecord, strip_unpaired_tool_calls_from_owned_view,
+};
 use awaken_contract::contract::profile_store::{ProfileEntry, ProfileOwner, ProfileStore};
 use awaken_contract::contract::storage::{
     ChildThreadDeleteStrategy, MessagePage, MessageQuery, RunPage, RunQuery, RunRecord, RunStore,
     StorageError, ThreadPage, ThreadQuery, ThreadRunStore, ThreadStore,
-    checkpoint_parent_thread_id, paginate_message_records, paginate_threads,
+    checkpoint_parent_thread_id, message_append, paginate_message_records, paginate_threads,
     sort_threads_by_recent_activity,
 };
 use awaken_contract::thread::{Thread, normalize_lineage_id};
 use serde::{Deserialize, Serialize};
 use tokio::io::AsyncWriteExt;
 use tokio::sync::Mutex;
+
+mod pending;
 
 /// File-system storage backend.
 pub struct FileStore {
@@ -65,6 +69,18 @@ impl FileStore {
         self.base_path.join("messages")
     }
 
+    fn message_records_dir(&self) -> PathBuf {
+        self.base_path.join("message_records")
+    }
+
+    fn thread_message_records_dir(&self, thread_id: &str) -> PathBuf {
+        self.message_records_dir().join(thread_id)
+    }
+
+    fn pending_messages_dir(&self) -> PathBuf {
+        self.base_path.join("pending_messages")
+    }
+
     fn runs_dir(&self) -> PathBuf {
         self.base_path.join("runs")
     }
@@ -79,6 +95,17 @@ impl FileStore {
 
     fn messages_path(&self, thread_id: &str) -> PathBuf {
         self.messages_dir().join(format!("{thread_id}.json"))
+    }
+
+    #[cfg(test)]
+    fn message_record_path(&self, thread_id: &str, seq: u64) -> PathBuf {
+        self.thread_message_records_dir(thread_id)
+            .join(format!("{seq:020}.json"))
+    }
+
+    fn pending_messages_path(&self, thread_id: &str) -> PathBuf {
+        self.pending_messages_dir()
+            .join(format!("{thread_id}.json"))
     }
 
     fn config_dir(&self, namespace: &str) -> PathBuf {
@@ -157,6 +184,10 @@ impl FileStore {
                 for id in delete_order {
                     ops.push(StagedFileOp::Delete(stage_delete(self.thread_path(&id))?));
                     ops.push(StagedFileOp::Delete(stage_delete(self.messages_path(&id))?));
+                    ops.push(StagedFileOp::Delete(stage_delete(
+                        self.pending_messages_path(&id),
+                    )?));
+                    self.stage_delete_message_records(&id, &mut ops).await?;
                 }
             }
         }
@@ -168,6 +199,11 @@ impl FileStore {
             ops.push(StagedFileOp::Delete(stage_delete(
                 self.messages_path(thread_id),
             )?));
+            ops.push(StagedFileOp::Delete(stage_delete(
+                self.pending_messages_path(thread_id),
+            )?));
+            self.stage_delete_message_records(thread_id, &mut ops)
+                .await?;
         }
 
         if let Err(error) = commit_staged_file_ops(&self.base_path, &ops).await {
@@ -197,8 +233,6 @@ impl FileStore {
 
         let thread_payload = serde_json::to_string_pretty(&thread)
             .map_err(|e| StorageError::Serialization(e.to_string()))?;
-        let msg_payload = serde_json::to_string_pretty(messages)
-            .map_err(|e| StorageError::Serialization(e.to_string()))?;
         let run_payload = serde_json::to_string_pretty(run)
             .map_err(|e| StorageError::Serialization(e.to_string()))?;
 
@@ -206,28 +240,233 @@ impl FileStore {
         let run_file = &format!("{}.json", run.run_id);
 
         let staged_thread = stage_write(&self.threads_dir(), thread_file, &thread_payload).await?;
-        let staged_msgs = match stage_write(&self.messages_dir(), thread_file, &msg_payload).await {
-            Ok(staged) => staged,
-            Err(error) => {
-                cleanup_staged_writes(&[staged_thread]).await;
-                return Err(error);
-            }
-        };
+        let mut ops = Vec::new();
+        ops.push(StagedFileOp::Write(staged_thread));
+        if let Err(error) = self
+            .stage_replace_message_records(thread_id, messages, &mut ops)
+            .await
+        {
+            cleanup_staged_file_ops(&ops).await;
+            return Err(error);
+        }
         let staged_run = match stage_write(&self.runs_dir(), run_file, &run_payload).await {
             Ok(staged) => staged,
             Err(error) => {
-                cleanup_staged_writes(&[staged_thread, staged_msgs]).await;
+                cleanup_staged_file_ops(&ops).await;
                 return Err(error);
             }
         };
+        ops.push(StagedFileOp::Write(staged_run));
 
-        let writes = [staged_thread, staged_msgs, staged_run];
-        if let Err(error) = commit_staged_writes(&self.base_path, &writes).await {
-            cleanup_staged_writes(&writes).await;
+        if let Err(error) = commit_staged_file_ops(&self.base_path, &ops).await {
+            cleanup_staged_file_ops(&ops).await;
             return Err(error);
         }
 
         Ok(())
+    }
+
+    async fn load_committed_message_records_locked(
+        &self,
+        thread_id: &str,
+    ) -> Result<Option<Vec<MessageRecord>>, StorageError> {
+        let dir = self.thread_message_records_dir(thread_id);
+        let mut records = Vec::new();
+        if dir.exists() {
+            let mut entries = tokio::fs::read_dir(&dir)
+                .await
+                .map_err(|e| StorageError::Io(e.to_string()))?;
+            while let Some(entry) = entries
+                .next_entry()
+                .await
+                .map_err(|e| StorageError::Io(e.to_string()))?
+            {
+                let path = entry.path();
+                if path.extension().is_none_or(|ext| ext != "json") {
+                    continue;
+                }
+                if let Some(record) = read_json::<MessageRecord>(&path).await? {
+                    records.push(record);
+                }
+            }
+            records.sort_by_key(|record| record.seq);
+            if !records.is_empty() {
+                return Ok(Some(records));
+            }
+        }
+
+        let Some(messages) = read_json::<Vec<Message>>(&self.messages_path(thread_id)).await?
+        else {
+            return Ok(None);
+        };
+        Ok(Some(
+            messages
+                .into_iter()
+                .enumerate()
+                .map(|(index, message)| {
+                    MessageRecord::from_message(thread_id.to_owned(), index as u64 + 1, message)
+                })
+                .collect(),
+        ))
+    }
+
+    async fn stage_delete_message_records(
+        &self,
+        thread_id: &str,
+        ops: &mut Vec<StagedFileOp>,
+    ) -> Result<(), StorageError> {
+        let dir = self.thread_message_records_dir(thread_id);
+        if !dir.exists() {
+            return Ok(());
+        }
+        let mut entries = tokio::fs::read_dir(&dir)
+            .await
+            .map_err(|e| StorageError::Io(e.to_string()))?;
+        while let Some(entry) = entries
+            .next_entry()
+            .await
+            .map_err(|e| StorageError::Io(e.to_string()))?
+        {
+            let path = entry.path();
+            if path.extension().is_some_and(|ext| ext == "json") {
+                ops.push(StagedFileOp::Delete(stage_delete(path)?));
+            }
+        }
+        Ok(())
+    }
+
+    async fn stage_replace_message_records(
+        &self,
+        thread_id: &str,
+        messages: &[Message],
+        ops: &mut Vec<StagedFileOp>,
+    ) -> Result<(), StorageError> {
+        self.stage_delete_message_records(thread_id, ops).await?;
+        for (index, message) in messages.iter().enumerate() {
+            self.stage_write_message_record(thread_id, index as u64 + 1, message, ops)
+                .await?;
+        }
+        Ok(())
+    }
+
+    async fn stage_append_message_records(
+        &self,
+        thread_id: &str,
+        start_seq: u64,
+        messages: impl IntoIterator<Item = Message>,
+        ops: &mut Vec<StagedFileOp>,
+    ) -> Result<Vec<MessageRecord>, StorageError> {
+        let mut appended = Vec::new();
+        for (index, message) in messages.into_iter().enumerate() {
+            let seq = start_seq + index as u64;
+            self.stage_write_message_record(thread_id, seq, &message, ops)
+                .await?;
+            appended.push(MessageRecord::from_message(
+                thread_id.to_owned(),
+                seq,
+                message,
+            ));
+        }
+        Ok(appended)
+    }
+
+    async fn stage_checkpoint_append_message_records(
+        &self,
+        thread_id: &str,
+        committed: &[MessageRecord],
+        delta: &[Message],
+        ops: &mut Vec<StagedFileOp>,
+    ) -> Result<u64, StorageError> {
+        let mut merged = committed
+            .iter()
+            .map(|record| record.message.clone())
+            .collect::<Vec<_>>();
+        message_append::merge_checkpoint_append_messages(&mut merged, delta);
+        self.stage_replace_message_records(thread_id, &merged, ops)
+            .await?;
+        Ok(merged.len() as u64)
+    }
+
+    async fn stage_write_message_record(
+        &self,
+        thread_id: &str,
+        seq: u64,
+        message: &Message,
+        ops: &mut Vec<StagedFileOp>,
+    ) -> Result<(), StorageError> {
+        let record = MessageRecord::from_message(thread_id.to_owned(), seq, message.clone());
+        let payload = serde_json::to_string_pretty(&record)
+            .map_err(|e| StorageError::Serialization(e.to_string()))?;
+        let staged = stage_write(
+            &self.thread_message_records_dir(thread_id),
+            &format!("{seq:020}.json"),
+            &payload,
+        )
+        .await?;
+        ops.push(StagedFileOp::Write(staged));
+        Ok(())
+    }
+
+    async fn read_pending_messages_locked(
+        &self,
+        thread_id: &str,
+    ) -> Result<Vec<PendingMessageRecord>, StorageError> {
+        read_json::<Vec<PendingMessageRecord>>(&self.pending_messages_path(thread_id))
+            .await
+            .map(|records| records.unwrap_or_default())
+    }
+
+    async fn write_pending_messages_locked(
+        &self,
+        thread_id: &str,
+        records: &[PendingMessageRecord],
+    ) -> Result<StagedWrite, StorageError> {
+        let payload = serde_json::to_string_pretty(records)
+            .map_err(|e| StorageError::Serialization(e.to_string()))?;
+        stage_write(
+            &self.pending_messages_dir(),
+            &format!("{thread_id}.json"),
+            &payload,
+        )
+        .await
+    }
+
+    fn normalize_pending_positions(records: &mut [PendingMessageRecord]) {
+        for (index, record) in records.iter_mut().enumerate() {
+            record.position = index as u64 + 1;
+        }
+    }
+
+    async fn committed_message_exists(
+        &self,
+        thread_id: &str,
+        message_id: &str,
+    ) -> Result<bool, StorageError> {
+        let Some(records) = self
+            .load_committed_message_records_locked(thread_id)
+            .await?
+        else {
+            return Ok(false);
+        };
+        Ok(records
+            .iter()
+            .any(|record| record.message.id.as_deref() == Some(message_id)))
+    }
+
+    fn pending_not_found(thread_id: &str, pending_id: &str) -> StorageError {
+        StorageError::NotFound(format!(
+            "pending message '{pending_id}' in thread '{thread_id}'"
+        ))
+    }
+
+    fn already_consumed(pending_id: &str) -> StorageError {
+        StorageError::Validation(format!(
+            "pending message '{pending_id}' is already consumed"
+        ))
+    }
+
+    fn duplicate_pending_id(pending_id: &str) -> StorageError {
+        StorageError::Validation(format!("pending message '{pending_id}' already exists"))
     }
 }
 
@@ -754,12 +993,6 @@ async fn commit_staged_file_ops(base_dir: &Path, ops: &[StagedFileOp]) -> Result
     Ok(())
 }
 
-/// Clean up staged temp files on error.
-async fn cleanup_staged_writes(writes: &[StagedWrite]) {
-    let ops: Vec<StagedFileOp> = writes.iter().cloned().map(StagedFileOp::Write).collect();
-    cleanup_staged_file_ops(&ops).await;
-}
-
 /// Clean up staged file operations on error.
 async fn cleanup_staged_file_ops(ops: &[StagedFileOp]) {
     for op in ops {
@@ -844,6 +1077,9 @@ impl ThreadStore for FileStore {
         validate_id(thread_id, "thread id")?;
         let thread_path = self.threads_dir().join(format!("{thread_id}.json"));
         let messages_path = self.messages_dir().join(format!("{thread_id}.json"));
+        let pending_messages_path = self
+            .pending_messages_dir()
+            .join(format!("{thread_id}.json"));
         // Remove thread file (ignore not-found)
         if thread_path.exists() {
             tokio::fs::remove_file(&thread_path)
@@ -853,6 +1089,17 @@ impl ThreadStore for FileStore {
         // Remove messages file (ignore not-found)
         if messages_path.exists() {
             tokio::fs::remove_file(&messages_path)
+                .await
+                .map_err(|e| StorageError::Io(e.to_string()))?;
+        }
+        if pending_messages_path.exists() {
+            tokio::fs::remove_file(&pending_messages_path)
+                .await
+                .map_err(|e| StorageError::Io(e.to_string()))?;
+        }
+        let records_dir = self.thread_message_records_dir(thread_id);
+        if records_dir.exists() {
+            tokio::fs::remove_dir_all(&records_dir)
                 .await
                 .map_err(|e| StorageError::Io(e.to_string()))?;
         }
@@ -906,30 +1153,52 @@ impl ThreadStore for FileStore {
 
     async fn load_messages(&self, thread_id: &str) -> Result<Option<Vec<Message>>, StorageError> {
         validate_id(thread_id, "thread id")?;
-        read_json::<Vec<Message>>(&self.messages_dir().join(format!("{thread_id}.json")))
-            .await
-            .map(|messages| messages.map(strip_unpaired_tool_calls_from_owned_view))
+        let Some(records) = self
+            .load_committed_message_records_locked(thread_id)
+            .await?
+        else {
+            return Ok(None);
+        };
+        let messages = records.into_iter().map(|record| record.message).collect();
+        Ok(Some(strip_unpaired_tool_calls_from_owned_view(messages)))
     }
+
+    async fn load_message_records(
+        &self,
+        thread_id: &str,
+    ) -> Result<Option<Vec<MessageRecord>>, StorageError> {
+        validate_id(thread_id, "thread id")?;
+        let Some(records) = self
+            .load_committed_message_records_locked(thread_id)
+            .await?
+        else {
+            return Ok(None);
+        };
+        let messages = records
+            .into_iter()
+            .map(|record| record.message)
+            .collect::<Vec<_>>();
+        let messages = strip_unpaired_tool_calls_from_owned_view(messages);
+        Ok(Some(
+            messages
+                .into_iter()
+                .enumerate()
+                .map(|(index, message)| {
+                    MessageRecord::from_message(thread_id.to_owned(), index as u64 + 1, message)
+                })
+                .collect(),
+        ))
+    }
+
     async fn list_message_records(
         &self,
         thread_id: &str,
         query: &MessageQuery,
     ) -> Result<MessagePage, StorageError> {
         validate_id(thread_id, "thread id")?;
-        let Some(messages) = self.load_messages(thread_id).await? else {
+        let Some(records) = self.load_message_records(thread_id).await? else {
             return Ok(MessagePage::empty());
         };
-        let records = messages
-            .into_iter()
-            .enumerate()
-            .map(|(index, message)| {
-                awaken_contract::contract::message::MessageRecord::from_message(
-                    thread_id.to_owned(),
-                    index as u64 + 1,
-                    message,
-                )
-            })
-            .collect();
         Ok(paginate_message_records(records, query))
     }
 
@@ -939,9 +1208,14 @@ impl ThreadStore for FileStore {
         messages: &[Message],
     ) -> Result<(), StorageError> {
         validate_id(thread_id, "thread id")?;
-        let payload = serde_json::to_string_pretty(messages)
-            .map_err(|e| StorageError::Serialization(e.to_string()))?;
-        atomic_write(&self.messages_dir(), &format!("{thread_id}.json"), &payload).await
+        let mut ops = Vec::new();
+        self.stage_replace_message_records(thread_id, messages, &mut ops)
+            .await?;
+        if let Err(error) = commit_staged_file_ops(&self.base_path, &ops).await {
+            cleanup_staged_file_ops(&ops).await;
+            return Err(error);
+        }
+        Ok(())
     }
 
     async fn delete_messages(&self, thread_id: &str) -> Result<(), StorageError> {
@@ -953,6 +1227,12 @@ impl ThreadStore for FileStore {
         let msg_path = self.messages_dir().join(format!("{thread_id}.json"));
         if msg_path.exists() {
             tokio::fs::remove_file(&msg_path)
+                .await
+                .map_err(|e| StorageError::Io(e.to_string()))?;
+        }
+        let records_dir = self.thread_message_records_dir(thread_id);
+        if records_dir.exists() {
+            tokio::fs::remove_dir_all(&records_dir)
                 .await
                 .map_err(|e| StorageError::Io(e.to_string()))?;
         }
@@ -1290,872 +1570,85 @@ impl ThreadRunStore for FileStore {
         let _guard = self.hierarchy_lock.lock().await;
         self.checkpoint_locked(thread_id, messages, run).await
     }
+
+    async fn checkpoint_append(
+        &self,
+        thread_id: &str,
+        messages: &[Message],
+        expected_version: Option<u64>,
+        run: &RunRecord,
+    ) -> Result<u64, StorageError> {
+        validate_id(thread_id, "thread id")?;
+        validate_id(&run.run_id, "run id")?;
+        let _guard = self.hierarchy_lock.lock().await;
+
+        let committed = self
+            .load_committed_message_records_locked(thread_id)
+            .await?
+            .unwrap_or_default();
+        let actual = committed.len() as u64;
+        if let Some(expected) = expected_version
+            && expected != actual
+        {
+            return Err(StorageError::VersionConflict { expected, actual });
+        }
+
+        let now = current_millis();
+        let mut thread = self
+            .load_thread(thread_id)
+            .await?
+            .unwrap_or_else(|| Thread::with_id(thread_id));
+        self.validate_thread_hierarchy(thread_id, checkpoint_parent_thread_id(Some(&thread), run))
+            .await?;
+        thread.touch(now);
+        thread.apply_run_projection(run);
+        thread.normalize_lineage();
+
+        let thread_payload = serde_json::to_string_pretty(&thread)
+            .map_err(|e| StorageError::Serialization(e.to_string()))?;
+        let run_payload = serde_json::to_string_pretty(run)
+            .map_err(|e| StorageError::Serialization(e.to_string()))?;
+
+        let mut ops = Vec::new();
+        let thread_write = stage_write(
+            &self.threads_dir(),
+            &format!("{thread_id}.json"),
+            &thread_payload,
+        )
+        .await?;
+        ops.push(StagedFileOp::Write(thread_write));
+        let new_version = match self
+            .stage_checkpoint_append_message_records(thread_id, &committed, messages, &mut ops)
+            .await
+        {
+            Ok(new_version) => new_version,
+            Err(error) => {
+                cleanup_staged_file_ops(&ops).await;
+                return Err(error);
+            }
+        };
+        let run_write = match stage_write(
+            &self.runs_dir(),
+            &format!("{}.json", run.run_id),
+            &run_payload,
+        )
+        .await
+        {
+            Ok(staged) => staged,
+            Err(error) => {
+                cleanup_staged_file_ops(&ops).await;
+                return Err(error);
+            }
+        };
+        ops.push(StagedFileOp::Write(run_write));
+
+        if let Err(error) = commit_staged_file_ops(&self.base_path, &ops).await {
+            cleanup_staged_file_ops(&ops).await;
+            return Err(error);
+        }
+        Ok(new_version)
+    }
 }
+
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use awaken_contract::contract::lifecycle::RunStatus;
-    use awaken_contract::contract::message::Message;
-    use awaken_contract::contract::storage::{
-        ChildThreadDeleteStrategy, RunRecord, RunStore, ThreadRunStore, ThreadStore,
-    };
-    use awaken_contract::thread::Thread;
-    use std::sync::Arc;
-    use tempfile::TempDir;
-    use tokio::sync::Barrier;
-    use tokio::time::{Duration, sleep};
-
-    fn make_run(run_id: &str, thread_id: &str) -> RunRecord {
-        RunRecord {
-            run_id: run_id.to_string(),
-            thread_id: thread_id.to_string(),
-            agent_id: "agent".to_string(),
-            parent_run_id: None,
-            registry_manifest: None,
-            activation: None,
-            request: None,
-            input: None,
-            output: None,
-            status: RunStatus::Running,
-            termination_reason: None,
-            final_output: None,
-            error_payload: None,
-            dispatch_id: None,
-            session_id: None,
-            transport_request_id: None,
-            waiting: None,
-            outcome: None,
-            created_at: 100,
-            started_at: None,
-            finished_at: None,
-            updated_at: 100,
-            steps: 0,
-            input_tokens: 0,
-            output_tokens: 0,
-            state: None,
-        }
-    }
-
-    // ── validate_id ──
-
-    #[test]
-    fn validate_id_rejects_slash() {
-        assert!(validate_id("a/b", "id").is_err());
-    }
-
-    #[test]
-    fn validate_id_rejects_backslash() {
-        assert!(validate_id("a\\b", "id").is_err());
-    }
-
-    #[test]
-    fn validate_id_rejects_null_char() {
-        assert!(validate_id("a\0b", "id").is_err());
-    }
-
-    #[test]
-    fn validate_id_rejects_dot_dot() {
-        assert!(validate_id("a..b", "id").is_err());
-    }
-
-    #[test]
-    fn validate_id_rejects_empty() {
-        assert!(validate_id("", "id").is_err());
-        assert!(validate_id("  ", "id").is_err());
-    }
-
-    #[test]
-    fn validate_id_rejects_control_chars() {
-        assert!(validate_id("a\tb", "id").is_err());
-        assert!(validate_id("a\nb", "id").is_err());
-    }
-
-    #[test]
-    fn validate_id_accepts_valid() {
-        assert!(validate_id("abc-123", "id").is_ok());
-        assert!(validate_id("thread_001", "id").is_ok());
-    }
-
-    // ── atomic_write ──
-
-    #[tokio::test]
-    async fn atomic_write_creates_parent_dirs() {
-        let td = TempDir::new().unwrap();
-        let dir = td.path().join("deep").join("nested");
-        atomic_write(&dir, "test.json", r#"{"ok": true}"#)
-            .await
-            .unwrap();
-        assert!(dir.join("test.json").exists());
-    }
-
-    #[tokio::test]
-    async fn atomic_write_overwrites_existing() {
-        let td = TempDir::new().unwrap();
-        let dir = td.path().to_path_buf();
-        atomic_write(&dir, "test.json", r#"{"v": 1}"#)
-            .await
-            .unwrap();
-        atomic_write(&dir, "test.json", r#"{"v": 2}"#)
-            .await
-            .unwrap();
-        let content = tokio::fs::read_to_string(dir.join("test.json"))
-            .await
-            .unwrap();
-        assert!(content.contains("\"v\": 2"));
-    }
-
-    // ── Corrupted JSON handling ──
-
-    #[tokio::test]
-    async fn read_json_returns_error_for_corrupted_json() {
-        let td = TempDir::new().unwrap();
-        let path = td.path().join("bad.json");
-        tokio::fs::write(&path, "not valid json{{{").await.unwrap();
-        let result: Result<Option<Thread>, StorageError> = read_json(&path).await;
-        assert!(result.is_err());
-        assert!(matches!(
-            result.unwrap_err(),
-            StorageError::Serialization(_)
-        ));
-    }
-
-    #[tokio::test]
-    async fn read_json_returns_none_for_missing_file() {
-        let td = TempDir::new().unwrap();
-        let path = td.path().join("nonexistent.json");
-        let result: Result<Option<Thread>, StorageError> = read_json(&path).await;
-        assert!(result.unwrap().is_none());
-    }
-
-    // ── FileStore::new ──
-
-    #[test]
-    fn file_store_new_does_not_create_dirs_eagerly() {
-        let td = TempDir::new().unwrap();
-        let path = td.path().join("store");
-        let _store = FileStore::new(&path);
-        // Dirs are NOT created at construction time
-        assert!(!path.exists());
-    }
-
-    // ── ThreadStore ──
-
-    #[tokio::test]
-    async fn file_store_thread_save_load_delete() {
-        let td = TempDir::new().unwrap();
-        let store = FileStore::new(td.path());
-        let thread = Thread::new();
-        store.save_thread(&thread).await.unwrap();
-
-        let loaded = store.load_thread(&thread.id).await.unwrap().unwrap();
-        assert_eq!(loaded.id, thread.id);
-
-        store.delete_thread(&thread.id).await.unwrap();
-        assert!(store.load_thread(&thread.id).await.unwrap().is_none());
-    }
-
-    #[tokio::test]
-    async fn file_store_save_thread_normalizes_lineage() {
-        let td = TempDir::new().unwrap();
-        let store = FileStore::new(td.path());
-        let mut thread = Thread::with_id("t-normalized");
-        thread.resource_id = Some(" resource-a ".to_string());
-        thread.parent_thread_id = Some(" parent-1 ".to_string());
-
-        store.save_thread(&thread).await.unwrap();
-
-        let loaded = store.load_thread("t-normalized").await.unwrap().unwrap();
-        assert_eq!(loaded.resource_id.as_deref(), Some("resource-a"));
-        assert_eq!(loaded.parent_thread_id.as_deref(), Some("parent-1"));
-    }
-
-    #[tokio::test]
-    async fn file_store_thread_load_missing() {
-        let td = TempDir::new().unwrap();
-        let store = FileStore::new(td.path());
-        assert!(store.load_thread("no-such").await.unwrap().is_none());
-    }
-
-    #[tokio::test]
-    async fn file_store_save_thread_validated_serializes_concurrent_cycle_updates() {
-        let td = TempDir::new().unwrap();
-        let store = Arc::new(FileStore::new(td.path()));
-        store.save_thread(&Thread::with_id("a")).await.unwrap();
-        store.save_thread(&Thread::with_id("b")).await.unwrap();
-
-        let guard = store.hierarchy_lock.lock().await;
-        let barrier = Arc::new(Barrier::new(3));
-        let spawn_update = |thread_id: &'static str, parent_thread_id: &'static str| {
-            let store = store.clone();
-            let barrier = barrier.clone();
-            tokio::spawn(async move {
-                barrier.wait().await;
-                store
-                    .save_thread_validated(
-                        &Thread::with_id(thread_id).with_parent_thread_id(parent_thread_id),
-                    )
-                    .await
-            })
-        };
-
-        let left = spawn_update("a", "b");
-        let right = spawn_update("b", "a");
-        barrier.wait().await;
-        tokio::task::yield_now().await;
-        sleep(Duration::from_millis(20)).await;
-        assert!(!left.is_finished());
-        assert!(!right.is_finished());
-        drop(guard);
-
-        let left = left.await.unwrap();
-        let right = right.await.unwrap();
-        assert_ne!(left.is_ok(), right.is_ok());
-
-        let a = store.load_thread("a").await.unwrap().unwrap();
-        let b = store.load_thread("b").await.unwrap().unwrap();
-        assert!(
-            !(a.parent_thread_id.as_deref() == Some("b")
-                && b.parent_thread_id.as_deref() == Some("a"))
-        );
-    }
-
-    #[tokio::test]
-    async fn file_store_instances_share_hierarchy_lock_for_same_path() {
-        let td = TempDir::new().unwrap();
-        let canonical_path = td.path().join("store");
-        let alias_anchor = td.path().join("alias");
-        std::fs::create_dir_all(&alias_anchor).unwrap();
-        let aliased_path = alias_anchor.join("..").join("store");
-        let left_store = Arc::new(FileStore::new(&canonical_path));
-        let right_store = Arc::new(FileStore::new(&aliased_path));
-        left_store.save_thread(&Thread::with_id("a")).await.unwrap();
-        left_store.save_thread(&Thread::with_id("b")).await.unwrap();
-
-        let barrier = Arc::new(Barrier::new(3));
-        let spawn_update =
-            |store: Arc<FileStore>, thread_id: &'static str, parent_thread_id: &'static str| {
-                let barrier = barrier.clone();
-                tokio::spawn(async move {
-                    barrier.wait().await;
-                    store
-                        .save_thread_validated(
-                            &Thread::with_id(thread_id).with_parent_thread_id(parent_thread_id),
-                        )
-                        .await
-                })
-            };
-
-        let left = spawn_update(left_store.clone(), "a", "b");
-        let right = spawn_update(right_store.clone(), "b", "a");
-        barrier.wait().await;
-
-        let left = left.await.unwrap();
-        let right = right.await.unwrap();
-        assert_ne!(left.is_ok(), right.is_ok());
-
-        let a = left_store.load_thread("a").await.unwrap().unwrap();
-        let b = right_store.load_thread("b").await.unwrap().unwrap();
-        assert!(
-            !(a.parent_thread_id.as_deref() == Some("b")
-                && b.parent_thread_id.as_deref() == Some("a"))
-        );
-    }
-
-    #[tokio::test]
-    async fn file_store_list_threads() {
-        let td = TempDir::new().unwrap();
-        let store = FileStore::new(td.path());
-        for i in 0..3 {
-            let mut t = Thread::new();
-            t.id = format!("t-{i:02}");
-            store.save_thread(&t).await.unwrap();
-        }
-        let ids = store.list_threads(0, 100).await.unwrap();
-        assert_eq!(ids.len(), 3);
-    }
-
-    #[tokio::test]
-    async fn file_store_messages_save_load_delete() {
-        let td = TempDir::new().unwrap();
-        let store = FileStore::new(td.path());
-        let thread = Thread::new();
-        store.save_thread(&thread).await.unwrap();
-
-        let msgs = vec![Message::user("hello")];
-        store.save_messages(&thread.id, &msgs).await.unwrap();
-
-        let loaded = store.load_messages(&thread.id).await.unwrap().unwrap();
-        assert_eq!(loaded.len(), 1);
-
-        store.delete_messages(&thread.id).await.unwrap();
-        assert!(store.load_messages(&thread.id).await.unwrap().is_none());
-    }
-
-    #[tokio::test]
-    async fn file_store_delete_messages_missing_thread_returns_not_found() {
-        let td = TempDir::new().unwrap();
-        let store = FileStore::new(td.path());
-        let err = store.delete_messages("no-such").await.unwrap_err();
-        assert!(matches!(err, StorageError::NotFound(_)));
-    }
-
-    // ── RunStore ──
-
-    #[tokio::test]
-    async fn file_store_run_create_load() {
-        let td = TempDir::new().unwrap();
-        let store = FileStore::new(td.path());
-        let run = make_run("r-1", "t-1");
-        store.create_run(&run).await.unwrap();
-        let loaded = store.load_run("r-1").await.unwrap().unwrap();
-        assert_eq!(loaded.thread_id, "t-1");
-    }
-
-    #[tokio::test]
-    async fn file_store_run_create_duplicate_returns_already_exists() {
-        let td = TempDir::new().unwrap();
-        let store = FileStore::new(td.path());
-        let run = make_run("r-1", "t-1");
-        store.create_run(&run).await.unwrap();
-        let err = store.create_run(&run).await.unwrap_err();
-        assert!(matches!(err, StorageError::AlreadyExists(_)));
-    }
-
-    #[tokio::test]
-    async fn file_store_run_latest() {
-        let td = TempDir::new().unwrap();
-        let store = FileStore::new(td.path());
-        let mut r1 = make_run("r-1", "t-1");
-        r1.updated_at = 100;
-        let mut r2 = make_run("r-2", "t-1");
-        r2.updated_at = 200;
-        store.create_run(&r1).await.unwrap();
-        store.create_run(&r2).await.unwrap();
-
-        let latest = store.latest_run("t-1").await.unwrap().unwrap();
-        assert_eq!(latest.run_id, "r-2");
-    }
-
-    // ── Checkpoint ──
-
-    #[tokio::test]
-    async fn file_store_checkpoint_saves_messages_and_run() {
-        let td = TempDir::new().unwrap();
-        let store = FileStore::new(td.path());
-        let msgs = vec![Message::user("cp")];
-        let run = make_run("r-cp", "t-1");
-
-        store.checkpoint("t-1", &msgs, &run).await.unwrap();
-
-        let loaded_msgs = store.load_messages("t-1").await.unwrap().unwrap();
-        assert_eq!(loaded_msgs.len(), 1);
-        let loaded_run = store.load_run("r-cp").await.unwrap().unwrap();
-        assert_eq!(loaded_run.thread_id, "t-1");
-    }
-
-    #[tokio::test]
-    async fn file_store_checkpoint_waits_for_hierarchy_lock() {
-        let td = TempDir::new().unwrap();
-        let store = Arc::new(FileStore::new(td.path()));
-        let guard = store.hierarchy_lock.lock().await;
-        let handle = {
-            let store = store.clone();
-            tokio::spawn(async move {
-                store
-                    .checkpoint(
-                        "t-locked",
-                        &[Message::user("cp")],
-                        &make_run("r-locked", "t-locked"),
-                    )
-                    .await
-            })
-        };
-
-        tokio::task::yield_now().await;
-        sleep(Duration::from_millis(20)).await;
-        assert!(!handle.is_finished());
-        drop(guard);
-
-        handle.await.unwrap().unwrap();
-    }
-
-    #[tokio::test]
-    async fn file_store_delete_thread_with_strategy_waits_for_hierarchy_lock() {
-        let td = TempDir::new().unwrap();
-        let store = Arc::new(FileStore::new(td.path()));
-        store.save_thread(&Thread::with_id("root")).await.unwrap();
-        store
-            .save_thread(&Thread::with_id("child").with_parent_thread_id("root"))
-            .await
-            .unwrap();
-
-        let guard = store.hierarchy_lock.lock().await;
-        let handle = {
-            let store = store.clone();
-            tokio::spawn(async move {
-                store
-                    .delete_thread_with_strategy("root", ChildThreadDeleteStrategy::Detach)
-                    .await
-            })
-        };
-
-        tokio::task::yield_now().await;
-        sleep(Duration::from_millis(20)).await;
-        assert!(!handle.is_finished());
-        drop(guard);
-
-        handle.await.unwrap().unwrap();
-        assert!(store.load_thread("root").await.unwrap().is_none());
-        assert_eq!(
-            store
-                .load_thread("child")
-                .await
-                .unwrap()
-                .and_then(|thread| thread.parent_thread_id),
-            None
-        );
-    }
-
-    #[tokio::test]
-    async fn file_store_new_rolls_back_incomplete_checkpoint_journal() {
-        let td = TempDir::new().unwrap();
-        let store = FileStore::new(td.path());
-        let old_run = make_run("r-old", "t-rollback");
-        store
-            .checkpoint("t-rollback", &[Message::user("old")], &old_run)
-            .await
-            .unwrap();
-
-        let new_run = make_run("r-new", "t-rollback");
-        let mut new_thread = store.load_thread("t-rollback").await.unwrap().unwrap();
-        new_thread.apply_run_projection(&new_run);
-        let thread_payload = serde_json::to_string_pretty(&new_thread).unwrap();
-        let messages_payload = serde_json::to_string_pretty(&[Message::user("new")]).unwrap();
-        let run_payload = serde_json::to_string_pretty(&new_run).unwrap();
-
-        let staged_thread = stage_write(&store.threads_dir(), "t-rollback.json", &thread_payload)
-            .await
-            .unwrap();
-        let staged_messages =
-            stage_write(&store.messages_dir(), "t-rollback.json", &messages_payload)
-                .await
-                .unwrap();
-        let staged_run = stage_write(&store.runs_dir(), "r-new.json", &run_payload)
-            .await
-            .unwrap();
-        let staged = [staged_thread, staged_messages, staged_run];
-        let tx_id = "rollback-test";
-        let journal = CheckpointJournal {
-            writes: staged
-                .iter()
-                .map(|write| {
-                    let backup = checkpoint_backup_path(&write.target, tx_id);
-                    CheckpointJournalWrite {
-                        target: rel_path(td.path(), &write.target).unwrap(),
-                        tmp: Some(rel_path(td.path(), &write.tmp_path).unwrap()),
-                        backup: rel_path(td.path(), &backup).unwrap(),
-                        had_target: write.target.exists(),
-                    }
-                })
-                .collect(),
-        };
-        std::fs::write(
-            checkpoint_marker_path(td.path()),
-            serde_json::to_vec_pretty(&journal).unwrap(),
-        )
-        .unwrap();
-
-        // Simulate a crash after the thread file was replaced but before
-        // messages/run files were committed.
-        let thread_backup = join_rel(td.path(), &journal.writes[0].backup);
-        std::fs::rename(&staged[0].target, &thread_backup).unwrap();
-        std::fs::rename(&staged[0].tmp_path, &staged[0].target).unwrap();
-
-        let recovered = FileStore::new(td.path());
-        let thread = recovered.load_thread("t-rollback").await.unwrap().unwrap();
-        assert_eq!(thread.latest_run_id.as_deref(), Some("r-old"));
-        let messages = recovered
-            .load_messages("t-rollback")
-            .await
-            .unwrap()
-            .unwrap();
-        assert_eq!(messages[0].text(), "old");
-        assert!(recovered.load_run("r-new").await.unwrap().is_none());
-        assert!(!checkpoint_marker_path(td.path()).exists());
-    }
-
-    #[tokio::test]
-    async fn file_store_new_rolls_back_incomplete_hierarchy_delete_journal() {
-        let td = TempDir::new().unwrap();
-        let store = FileStore::new(td.path());
-        store.save_thread(&Thread::with_id("root")).await.unwrap();
-        store
-            .save_thread(&Thread::with_id("child").with_parent_thread_id("root"))
-            .await
-            .unwrap();
-        store
-            .save_messages("root", &[Message::user("root message")])
-            .await
-            .unwrap();
-
-        let mut updated_child = store.load_thread("child").await.unwrap().unwrap();
-        updated_child.parent_thread_id = None;
-        updated_child.touch(2_000);
-        let child_payload = serde_json::to_string_pretty(&updated_child).unwrap();
-        let child_write = stage_write(&store.threads_dir(), "child.json", &child_payload)
-            .await
-            .unwrap();
-        let root_thread_delete = stage_delete(store.thread_path("root")).unwrap();
-        let root_messages_delete = stage_delete(store.messages_path("root")).unwrap();
-        let ops = [
-            StagedFileOp::Write(child_write.clone()),
-            StagedFileOp::Delete(root_thread_delete.clone()),
-            StagedFileOp::Delete(root_messages_delete.clone()),
-        ];
-        let tx_id = "delete-rollback-test";
-        let journal = CheckpointJournal {
-            writes: ops
-                .iter()
-                .map(|op| {
-                    let target = staged_op_target(op);
-                    let backup = checkpoint_backup_path(target, tx_id);
-                    CheckpointJournalWrite {
-                        target: rel_path(td.path(), target).unwrap(),
-                        tmp: staged_op_tmp(op).map(|tmp| rel_path(td.path(), tmp).unwrap()),
-                        backup: rel_path(td.path(), &backup).unwrap(),
-                        had_target: target.exists(),
-                    }
-                })
-                .collect(),
-        };
-        std::fs::write(
-            checkpoint_marker_path(td.path()),
-            serde_json::to_vec_pretty(&journal).unwrap(),
-        )
-        .unwrap();
-
-        // Simulate a crash after the child update and root thread delete were
-        // committed, but before root messages were deleted.
-        let child_backup = join_rel(td.path(), &journal.writes[0].backup);
-        std::fs::rename(&child_write.target, &child_backup).unwrap();
-        std::fs::rename(&child_write.tmp_path, &child_write.target).unwrap();
-        let root_thread_backup = join_rel(td.path(), &journal.writes[1].backup);
-        std::fs::rename(store.thread_path("root"), &root_thread_backup).unwrap();
-
-        let recovered = FileStore::new(td.path());
-        let root = recovered.load_thread("root").await.unwrap().unwrap();
-        let child = recovered.load_thread("child").await.unwrap().unwrap();
-        let messages = recovered.load_messages("root").await.unwrap().unwrap();
-
-        assert_eq!(root.id, "root");
-        assert_eq!(child.parent_thread_id.as_deref(), Some("root"));
-        assert_eq!(messages[0].text(), "root message");
-        assert!(!checkpoint_marker_path(td.path()).exists());
-    }
-
-    // ── Missing directory recovery ──
-
-    #[tokio::test]
-    async fn file_store_operations_create_dirs_on_demand() {
-        let td = TempDir::new().unwrap();
-        let store = FileStore::new(td.path().join("fresh"));
-        // This should work even though the dirs don't exist yet
-        let thread = Thread::new();
-        store.save_thread(&thread).await.unwrap();
-        let loaded = store.load_thread(&thread.id).await.unwrap();
-        assert!(loaded.is_some());
-    }
-
-    // ── validate_id edge cases for IDs used in operations ──
-
-    #[tokio::test]
-    async fn file_store_rejects_traversal_thread_id() {
-        let td = TempDir::new().unwrap();
-        let store = FileStore::new(td.path());
-        let err = store.load_thread("../escape").await.unwrap_err();
-        assert!(matches!(err, StorageError::Io(_)));
-    }
-
-    #[tokio::test]
-    async fn file_store_rejects_slash_in_run_id() {
-        let td = TempDir::new().unwrap();
-        let store = FileStore::new(td.path());
-        let err = store.load_run("a/b").await.unwrap_err();
-        assert!(matches!(err, StorageError::Io(_)));
-    }
-
-    // ── ProfileStore ──
-
-    #[tokio::test]
-    async fn profile_file_set_and_get() {
-        let td = TempDir::new().unwrap();
-        let store = FileStore::new(td.path());
-        let owner = ProfileOwner::Agent("alice".into());
-        store
-            .set(&owner, "lang", serde_json::json!("en"))
-            .await
-            .unwrap();
-        let entry = ProfileStore::get(&store, &owner, "lang")
-            .await
-            .unwrap()
-            .unwrap();
-        assert_eq!(entry.key, "lang");
-        assert_eq!(entry.value, serde_json::json!("en"));
-        assert!(entry.updated_at > 0);
-    }
-
-    #[tokio::test]
-    async fn profile_file_get_missing() {
-        let td = TempDir::new().unwrap();
-        let store = FileStore::new(td.path());
-        let result = ProfileStore::get(&store, &ProfileOwner::System, "nonexistent")
-            .await
-            .unwrap();
-        assert!(result.is_none());
-    }
-
-    #[tokio::test]
-    async fn profile_file_delete_and_clear() {
-        let td = TempDir::new().unwrap();
-        let store = FileStore::new(td.path());
-        let owner = ProfileOwner::Agent("bob".into());
-
-        // Delete non-existent is fine
-        ProfileStore::delete(&store, &owner, "missing")
-            .await
-            .unwrap();
-
-        // Set, delete, verify gone
-        store.set(&owner, "k", serde_json::json!(1)).await.unwrap();
-        ProfileStore::delete(&store, &owner, "k").await.unwrap();
-        assert!(
-            ProfileStore::get(&store, &owner, "k")
-                .await
-                .unwrap()
-                .is_none()
-        );
-
-        // Clear owner
-        store.set(&owner, "a", serde_json::json!(1)).await.unwrap();
-        store.set(&owner, "b", serde_json::json!(2)).await.unwrap();
-        store.clear_owner(&owner).await.unwrap();
-        assert!(ProfileStore::list(&store, &owner).await.unwrap().is_empty());
-
-        // Clear again is idempotent
-        store.clear_owner(&owner).await.unwrap();
-    }
-
-    #[tokio::test]
-    async fn profile_file_list_sorted() {
-        let td = TempDir::new().unwrap();
-        let store = FileStore::new(td.path());
-        let alice = ProfileOwner::Agent("alice".into());
-        let bob = ProfileOwner::Agent("bob".into());
-        store
-            .set(&alice, "z", serde_json::json!("last"))
-            .await
-            .unwrap();
-        store
-            .set(&alice, "a", serde_json::json!("first"))
-            .await
-            .unwrap();
-        store
-            .set(&bob, "x", serde_json::json!("other"))
-            .await
-            .unwrap();
-
-        let entries = ProfileStore::list(&store, &alice).await.unwrap();
-        assert_eq!(entries.len(), 2);
-        assert_eq!(entries[0].key, "a");
-        assert_eq!(entries[1].key, "z");
-
-        // Bob's entries are isolated
-        assert_eq!(ProfileStore::list(&store, &bob).await.unwrap().len(), 1);
-    }
-
-    // ── ConfigStore::put_if_revision ──
-
-    #[tokio::test]
-    async fn file_store_put_if_revision_basic() {
-        use awaken_contract::contract::config_store::ConfigStore;
-        use awaken_contract::contract::storage::StorageError;
-
-        let td = TempDir::new().unwrap();
-        let store = FileStore::new(td.path());
-
-        let value_r1 = serde_json::json!({"spec": {"id": "k"}, "meta": {"source": {"kind": "user"}, "revision": 1}});
-        // Insert: no record, expected=0 → succeeds.
-        store
-            .put_if_revision("ns", "k", &value_r1, 0)
-            .await
-            .unwrap();
-        let stored = ConfigStore::get(&store, "ns", "k").await.unwrap().unwrap();
-        assert_eq!(stored["meta"]["revision"], 1);
-
-        // Conflict: expected=0 again should fail.
-        let err = store
-            .put_if_revision("ns", "k", &value_r1, 0)
-            .await
-            .unwrap_err();
-        assert!(matches!(
-            err,
-            StorageError::VersionConflict {
-                expected: 0,
-                actual: 1
-            }
-        ));
-
-        // Correct CAS: expected=1 → update to revision 2.
-        let value_r2 = serde_json::json!({"spec": {"id": "k"}, "meta": {"source": {"kind": "user"}, "revision": 2}});
-        store
-            .put_if_revision("ns", "k", &value_r2, 1)
-            .await
-            .unwrap();
-        let stored = ConfigStore::get(&store, "ns", "k").await.unwrap().unwrap();
-        assert_eq!(stored["meta"]["revision"], 2);
-    }
-
-    #[tokio::test]
-    async fn file_store_put_if_absent_and_delete_if_revision() {
-        use awaken_contract::contract::config_store::ConfigStore;
-        use awaken_contract::contract::storage::StorageError;
-
-        let td = TempDir::new().unwrap();
-        let store = FileStore::new(td.path());
-
-        let value = serde_json::json!({
-            "spec": {"id": "k"},
-            "meta": {"source": {"kind": "user"}, "revision": 7}
-        });
-        store.put_if_absent("ns", "k", &value).await.unwrap();
-
-        let err = store.put_if_absent("ns", "k", &value).await.unwrap_err();
-        assert!(matches!(err, StorageError::AlreadyExists(id) if id == "ns/k"));
-
-        let err = store.delete_if_revision("ns", "k", 6).await.unwrap_err();
-        assert!(matches!(
-            err,
-            StorageError::VersionConflict {
-                expected: 6,
-                actual: 7
-            }
-        ));
-        assert!(ConfigStore::get(&store, "ns", "k").await.unwrap().is_some());
-
-        store.delete_if_revision("ns", "k", 7).await.unwrap();
-        assert!(ConfigStore::get(&store, "ns", "k").await.unwrap().is_none());
-    }
-
-    #[tokio::test]
-    async fn file_store_put_if_revision_is_atomic_across_store_instances() {
-        use awaken_contract::contract::config_store::ConfigStore;
-        use awaken_contract::contract::storage::StorageError;
-
-        const WRITERS: usize = 16;
-        let td = TempDir::new().unwrap();
-        let barrier = Arc::new(Barrier::new(WRITERS));
-        let mut handles = Vec::with_capacity(WRITERS);
-
-        for i in 0..WRITERS {
-            let path = td.path().to_path_buf();
-            let barrier = Arc::clone(&barrier);
-            handles.push(tokio::spawn(async move {
-                let store = FileStore::new(path);
-                let value = serde_json::json!({
-                    "spec": {"id": "race", "winner": i},
-                    "meta": {"source": {"kind": "user"}, "revision": 1}
-                });
-                barrier.wait().await;
-                store.put_if_revision("ns", "race", &value, 0).await
-            }));
-        }
-
-        let results = futures::future::join_all(handles)
-            .await
-            .into_iter()
-            .map(|result| result.expect("task join"))
-            .collect::<Vec<_>>();
-        let successes = results.iter().filter(|result| result.is_ok()).count();
-        let conflicts = results
-            .iter()
-            .filter(|result| {
-                matches!(
-                    result,
-                    Err(StorageError::VersionConflict {
-                        expected: 0,
-                        actual: 1
-                    })
-                )
-            })
-            .count();
-
-        assert_eq!(successes, 1, "exactly one concurrent create may win");
-        assert_eq!(
-            conflicts,
-            WRITERS - 1,
-            "every losing create must observe the winning revision"
-        );
-
-        let store = FileStore::new(td.path());
-        let stored = ConfigStore::get(&store, "ns", "race")
-            .await
-            .unwrap()
-            .unwrap();
-        assert_eq!(stored["meta"]["revision"], 1);
-    }
-
-    #[tokio::test]
-    async fn file_store_delete_and_update_same_revision_are_mutually_exclusive() {
-        use awaken_contract::contract::config_store::ConfigStore;
-
-        let td = TempDir::new().unwrap();
-        let seed_store = FileStore::new(td.path());
-        let value_r1 = serde_json::json!({
-            "spec": {"id": "duel", "value": 1},
-            "meta": {"source": {"kind": "user"}, "revision": 1}
-        });
-        seed_store
-            .put_if_revision("ns", "duel", &value_r1, 0)
-            .await
-            .unwrap();
-
-        let barrier = Arc::new(Barrier::new(2));
-        let delete_path = td.path().to_path_buf();
-        let update_path = td.path().to_path_buf();
-        let delete_barrier = Arc::clone(&barrier);
-        let update_barrier = Arc::clone(&barrier);
-
-        let delete = tokio::spawn(async move {
-            let store = FileStore::new(delete_path);
-            delete_barrier.wait().await;
-            store.delete_if_revision("ns", "duel", 1).await
-        });
-        let update = tokio::spawn(async move {
-            let store = FileStore::new(update_path);
-            let value_r2 = serde_json::json!({
-                "spec": {"id": "duel", "value": 2},
-                "meta": {"source": {"kind": "user"}, "revision": 2}
-            });
-            update_barrier.wait().await;
-            store.put_if_revision("ns", "duel", &value_r2, 1).await
-        });
-
-        let delete_ok = delete.await.unwrap().is_ok();
-        let update_ok = update.await.unwrap().is_ok();
-        assert_ne!(
-            delete_ok, update_ok,
-            "same-revision delete and update must not both succeed or both fail"
-        );
-
-        let store = FileStore::new(td.path());
-        let stored = ConfigStore::get(&store, "ns", "duel").await.unwrap();
-        if delete_ok {
-            assert!(stored.is_none(), "successful delete must remove the record");
-        } else {
-            assert_eq!(
-                stored.expect("successful update must leave record")["meta"]["revision"],
-                2
-            );
-        }
-    }
-}
+mod tests;
