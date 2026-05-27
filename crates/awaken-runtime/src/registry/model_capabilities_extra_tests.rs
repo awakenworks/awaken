@@ -82,3 +82,91 @@ fn gemini_token_discovery_keeps_static_media_modalities() {
         Some(CapabilitySource::StaticHeuristic)
     );
 }
+
+#[test]
+fn resolved_capabilities_skip_discovered_max_above_explicit_context() {
+    let discovered = ModelCapabilityPatch {
+        context_window: None,
+        max_output_tokens: Some(65_536),
+        modalities: None,
+        knowledge_cutoff: None,
+    };
+    let model = ModelSpec {
+        context_window: Some(4_096),
+        ..ModelSpec::new("m", "openai", "gpt-4o")
+    };
+
+    let resolved = resolve_model_capabilities(model, Some("openai"), Some(&discovered));
+
+    assert_eq!(resolved.model.context_window, Some(4_096));
+    assert_eq!(resolved.model.max_output_tokens, None);
+    assert_eq!(
+        resolved.sources.context_window,
+        Some(CapabilitySource::ExplicitSpec)
+    );
+    assert_eq!(resolved.sources.max_output_tokens, None);
+}
+
+#[test]
+fn resolved_capabilities_skip_invalid_discovered_token_pair() {
+    let discovered = ModelCapabilityPatch {
+        context_window: Some(4_096),
+        max_output_tokens: Some(8_192),
+        modalities: None,
+        knowledge_cutoff: None,
+    };
+
+    let resolved = resolve_model_capabilities(
+        ModelSpec::new("m", "custom", "private-model"),
+        None,
+        Some(&discovered),
+    );
+
+    assert_eq!(resolved.model.context_window, None);
+    assert_eq!(resolved.model.max_output_tokens, None);
+    assert_eq!(resolved.sources.context_window, None);
+    assert_eq!(resolved.sources.max_output_tokens, None);
+}
+
+#[test]
+fn provider_parser_drops_zero_token_limits() {
+    let payload = json!({
+        "data": [{
+            "id": "zero-context",
+            "context_window": 0,
+            "max_output_tokens": 1024
+        }, {
+            "id": "zero-max",
+            "context_window": 4096,
+            "max_output_tokens": "0"
+        }]
+    });
+
+    let parsed = parse_provider_model_capabilities("openai", &payload);
+
+    let zero_context = parsed.get("zero-context").expect("parsed zero-context");
+    assert_eq!(zero_context.context_window, None);
+    assert_eq!(zero_context.max_output_tokens, Some(1_024));
+
+    let zero_max = parsed.get("zero-max").expect("parsed zero-max");
+    assert_eq!(zero_max.context_window, Some(4_096));
+    assert_eq!(zero_max.max_output_tokens, None);
+}
+
+#[test]
+fn provider_parser_drops_invalid_discovered_token_pair() {
+    let payload = json!({
+        "data": [{
+            "id": "invalid-pair",
+            "context_window": 4096,
+            "max_output_tokens": 8192
+        }]
+    });
+
+    let parsed = parse_provider_model_capabilities("openai", &payload);
+
+    assert!(
+        parsed.is_empty(),
+        "invalid provider token pair must not enter the trusted discovery map"
+    );
+}

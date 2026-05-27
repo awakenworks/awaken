@@ -8,6 +8,10 @@ use std::collections::HashMap;
 
 use awaken_contract::registry_spec::{Modalities, Modality, ModelSpec};
 
+use self::model_capabilities_numeric as numeric;
+
+mod model_capabilities_numeric;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CapabilitySource {
     ExplicitSpec,
@@ -109,25 +113,64 @@ pub(crate) fn resolve_model_capabilities(
             .map(|_| CapabilitySource::ExplicitSpec),
     };
 
+    let discovered_numeric = discovered
+        .filter(|patch| numeric::discovered_numeric_pair_is_usable(patch, &model.upstream_model));
+
     if model.context_window.is_none() {
-        if let Some(value) = discovered.and_then(|patch| patch.context_window) {
+        if let Some(value) = discovered_numeric
+            .and_then(|patch| patch.context_window)
+            .filter(|value| {
+                numeric::valid_context_window_candidate(
+                    *value,
+                    model.max_output_tokens,
+                    CapabilitySource::ProviderDiscovery,
+                    &model.upstream_model,
+                )
+            })
+        {
             model.context_window = Some(value);
             sources.context_window = Some(CapabilitySource::ProviderDiscovery);
         } else if let Some(value) = static_defaults
             .as_ref()
             .and_then(|patch| patch.context_window)
+            .filter(|value| {
+                numeric::valid_context_window_candidate(
+                    *value,
+                    model.max_output_tokens,
+                    CapabilitySource::StaticHeuristic,
+                    &model.upstream_model,
+                )
+            })
         {
             model.context_window = Some(value);
             sources.context_window = Some(CapabilitySource::StaticHeuristic);
         }
     }
     if model.max_output_tokens.is_none() {
-        if let Some(value) = discovered.and_then(|patch| patch.max_output_tokens) {
+        if let Some(value) = discovered_numeric
+            .and_then(|patch| patch.max_output_tokens)
+            .filter(|value| {
+                numeric::valid_max_output_tokens_candidate(
+                    *value,
+                    model.context_window,
+                    CapabilitySource::ProviderDiscovery,
+                    &model.upstream_model,
+                )
+            })
+        {
             model.max_output_tokens = Some(value);
             sources.max_output_tokens = Some(CapabilitySource::ProviderDiscovery);
         } else if let Some(value) = static_defaults
             .as_ref()
             .and_then(|patch| patch.max_output_tokens)
+            .filter(|value| {
+                numeric::valid_max_output_tokens_candidate(
+                    *value,
+                    model.context_window,
+                    CapabilitySource::StaticHeuristic,
+                    &model.upstream_model,
+                )
+            })
         {
             model.max_output_tokens = Some(value);
             sources.max_output_tokens = Some(CapabilitySource::StaticHeuristic);
@@ -181,6 +224,8 @@ pub(crate) fn resolve_model_capabilities(
             sources.knowledge_cutoff = Some(CapabilitySource::StaticHeuristic);
         }
     }
+
+    numeric::enforce_resolved_numeric_invariants(&mut model, &mut sources);
 
     ResolvedModelCapabilities { model, sources }
 }
@@ -336,19 +381,28 @@ fn parse_openai_compatible_model_capabilities(
         let Some(id) = item.get("id").and_then(|value| value.as_str()) else {
             continue;
         };
-        let patch = ModelCapabilityPatch {
-            context_window: first_u32(item, &["context_window", "context_length", "context_size"]),
-            max_output_tokens: first_u32(item, &["max_output_tokens", "max_completion_tokens"])
+        let patch = numeric::sanitize_provider_capability_patch(
+            id,
+            ModelCapabilityPatch {
+                context_window: numeric::first_nonzero_u32(
+                    item,
+                    &["context_window", "context_length", "context_size"],
+                ),
+                max_output_tokens: numeric::first_nonzero_u32(
+                    item,
+                    &["max_output_tokens", "max_completion_tokens"],
+                )
                 .or_else(|| {
                     item.get("top_provider")
-                        .and_then(|top| first_u32(top, &["max_completion_tokens"]))
+                        .and_then(|top| numeric::first_nonzero_u32(top, &["max_completion_tokens"]))
                 }),
-            modalities: parse_openai_modalities(item),
-            knowledge_cutoff: item
-                .get("knowledge_cutoff")
-                .and_then(|value| value.as_str())
-                .and_then(normalize_knowledge_cutoff),
-        };
+                modalities: parse_openai_modalities(item),
+                knowledge_cutoff: item
+                    .get("knowledge_cutoff")
+                    .and_then(|value| value.as_str())
+                    .and_then(normalize_knowledge_cutoff),
+            },
+        );
         if patch.context_window.is_some()
             || patch.max_output_tokens.is_some()
             || patch.modalities.is_some()
@@ -373,12 +427,21 @@ fn parse_gemini_model_capabilities(
         let Some(name) = item.get("name").and_then(|value| value.as_str()) else {
             continue;
         };
-        let patch = ModelCapabilityPatch {
-            context_window: first_u32(item, &["inputTokenLimit", "input_token_limit"]),
-            max_output_tokens: first_u32(item, &["outputTokenLimit", "output_token_limit"]),
-            modalities: None,
-            knowledge_cutoff: None,
-        };
+        let patch = numeric::sanitize_provider_capability_patch(
+            name,
+            ModelCapabilityPatch {
+                context_window: numeric::first_nonzero_u32(
+                    item,
+                    &["inputTokenLimit", "input_token_limit"],
+                ),
+                max_output_tokens: numeric::first_nonzero_u32(
+                    item,
+                    &["outputTokenLimit", "output_token_limit"],
+                ),
+                modalities: None,
+                knowledge_cutoff: None,
+            },
+        );
         if patch.context_window.is_some() || patch.max_output_tokens.is_some() {
             out.insert(normalize_capability_model_name(name), patch);
         }
@@ -453,18 +516,6 @@ fn normalize_knowledge_cutoff(value: &str) -> Option<String> {
         tracing::warn!("provider discovery ignored malformed knowledge cutoff");
     }
     normalized
-}
-
-fn first_u32(item: &serde_json::Value, keys: &[&str]) -> Option<u32> {
-    keys.iter()
-        .find_map(|key| item.get(*key).and_then(json_u32))
-}
-
-fn json_u32(value: &serde_json::Value) -> Option<u32> {
-    if let Some(number) = value.as_u64() {
-        return u32::try_from(number).ok();
-    }
-    value.as_str().and_then(|string| string.parse::<u32>().ok())
 }
 
 #[cfg(test)]
