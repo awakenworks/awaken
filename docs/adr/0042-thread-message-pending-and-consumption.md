@@ -88,6 +88,9 @@ an optional `barrier` flag. The two axes are independent.
 - `OnNaturalEnd` — consume when the active run reaches natural completion,
   continuing the same run instead of terminating; with no active run, falls
   through to `NewRun`.
+- `ResumeInput` — user input for a specific reusable waiting run. Run-affine and
+  **not** part of the fallthrough cascade: it is consumed only by its target run
+  and is never folded into another active run or a fresh `NewRun`.
 - `NewRun` — consume as a fresh run after the current run terminates, without
   preemption; with no active run, start a run now.
 
@@ -96,11 +99,20 @@ an optional `barrier` flag. The two axes are independent.
 - `One` — a single message (queue, one turn per message).
 - `Batch` — coalesce all eligible pending at the boundary into one turn.
 
-`barrier` flushes all prior pending before this message is consumed. Boundary and
-granularity are message properties, not global switches; adding a value is one
-enum arm, not a new scheduling path. Legacy intents map directly: foreground
-interrupt = `Interrupt`, live steer = `NextStep` + `Batch`, queued submit =
-`NewRun`, background coalescing = `Batch`.
+`barrier` flushes all prior pending before this message is consumed: a `barrier`
+entry is never bypassed by the lane-skip (see D4) and stops the freeze batch at
+its position, so prior entries are not folded past it. Boundary and granularity
+are message properties, not global switches; adding a value is one enum arm, not
+a new scheduling path. Legacy intents map directly: foreground interrupt =
+`Interrupt`, live steer = `NextStep` + `Batch`, queued submit = `NewRun`,
+background coalescing = `Batch`.
+
+A delivery may also carry **run affinity**: `target_run_id` with
+`fallback_to_new_run`. A targeted entry is consumed only by its target run at an
+active-run boundary; at a `NewRun` boundary it is eligible only when
+`fallback_to_new_run` is set. Live steering is staged as `NextStep` targeted to
+the active run with `fallback_to_new_run = false`, so a steer for a run that ends
+is not silently consumed by a later unrelated run.
 
 ### D4 — `freeze` runs at each loop boundary, filtered by `boundary`
 
@@ -130,8 +142,9 @@ Active-run semantics differ by boundary:
 | boundary | active run present | no active run |
 | --- | --- | --- |
 | `Interrupt` | cancel it, consume now | start a run now |
-| `NextStep` | fold into its next step | falls through to `NewRun` |
-| `OnNaturalEnd` | continue the **same** run at its natural end | falls through to `NewRun` |
+| `NextStep` | fold into its next step | falls through to `NewRun` (unless run-affine with `fallback_to_new_run = false`) |
+| `OnNaturalEnd` | continue the **same** run at its natural end | falls through to `NewRun` (unless run-affine with `fallback_to_new_run = false`) |
+| `ResumeInput` | consume as the target waiting run's input | stays pending until that run resumes (no fallthrough) |
 | `NewRun` | queue; run a **new** run after it terminates | start a run now |
 
 `OnNaturalEnd` versus `NewRun`: `OnNaturalEnd` keeps the same `run_id` and warm
@@ -148,6 +161,16 @@ resumable waiting run is continued, otherwise a fresh `run_id`.
 Fallthrough cascade: `Interrupt → NextStep → OnNaturalEnd → NewRun`. If a run
 ends abnormally (cancel / error) before an `OnNaturalEnd` message is consumed,
 that message falls through to `NewRun`, so it is neither lost nor stuck.
+`ResumeInput` is outside this cascade (run-affine, see D3).
+
+Lane-skip at an active-run boundary: when freezing at `Interrupt` / `NextStep` /
+`OnNaturalEnd`, a prior **non-barrier** `NewRun` entry is *skipped* (left pending),
+not flushed — a queued future run must not block live steering of the active run.
+A `barrier` entry is never skipped: it stops the scan, preserving the global flush
+ordering (D3). Symmetrically, at a `NewRun` boundary a non-`NewRun` entry without
+`fallback_to_new_run` is skipped (it belongs to an active-run lane). This makes
+the two lanes — active-run steering vs. queued `NewRun` — independent except where
+a `barrier` or `fallback_to_new_run` explicitly bridges them.
 
 Boundary injection points are deliberately separate:
 

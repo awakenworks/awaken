@@ -93,16 +93,10 @@ impl Mailbox {
             .await?)
     }
 
-    pub async fn update_pending_message(
-        &self,
-        thread_id: &str,
-        pending_id: &str,
-        message: Message,
-    ) -> Result<PendingMessageRecord, MailboxError> {
-        self.update_pending_message_checked(thread_id, pending_id, None, message)
-            .await
-    }
-
+    /// Edit a pending message under an optimistic revision guard. This is the
+    /// only edit entry point; pass `None` to skip the guard from trusted internal
+    /// callers. External / API callers must supply `expected_revision` so
+    /// concurrent edits cannot silently clobber each other.
     pub async fn update_pending_message_checked(
         &self,
         thread_id: &str,
@@ -121,15 +115,9 @@ impl Mailbox {
             .await?)
     }
 
-    pub async fn retract_pending_message(
-        &self,
-        thread_id: &str,
-        pending_id: &str,
-    ) -> Result<PendingMessageRecord, MailboxError> {
-        self.retract_pending_message_checked(thread_id, pending_id, None)
-            .await
-    }
-
+    /// Retract a pending message under an optimistic revision guard. Pass `None`
+    /// to skip the guard from trusted internal callers; external / API callers
+    /// must supply `expected_revision`.
     pub async fn retract_pending_message_checked(
         &self,
         thread_id: &str,
@@ -142,15 +130,9 @@ impl Mailbox {
             .await?)
     }
 
-    pub async fn reorder_pending_messages(
-        &self,
-        thread_id: &str,
-        ordered_pending_ids: &[String],
-    ) -> Result<Vec<PendingMessageRecord>, MailboxError> {
-        self.reorder_pending_messages_checked(thread_id, None, ordered_pending_ids)
-            .await
-    }
-
+    /// Reorder pending messages under an optimistic queue-revision guard. Pass
+    /// `None` to skip the guard from trusted internal callers; external / API
+    /// callers must supply `expected_queue_revision`.
     pub async fn reorder_pending_messages_checked(
         &self,
         thread_id: &str,

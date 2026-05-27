@@ -285,9 +285,10 @@ async fn pending_messages_can_be_edited_reordered_and_retracted_before_freeze() 
         .unwrap();
 
     let edited = mailbox
-        .update_pending_message(
+        .update_pending_message_checked(
             "thread-edit-pending",
             &delivered[0].pending_id,
+            None,
             Message::user("edited").with_id(delivered[0].pending_id.clone()),
         )
         .await
@@ -295,8 +296,9 @@ async fn pending_messages_can_be_edited_reordered_and_retracted_before_freeze() 
     assert_eq!(edited.message.text(), "edited");
 
     let reordered = mailbox
-        .reorder_pending_messages(
+        .reorder_pending_messages_checked(
             "thread-edit-pending",
+            None,
             &[
                 delivered[1].pending_id.clone(),
                 delivered[0].pending_id.clone(),
@@ -308,7 +310,7 @@ async fn pending_messages_can_be_edited_reordered_and_retracted_before_freeze() 
     assert_eq!(reordered[1].pending_id, delivered[0].pending_id);
 
     let retracted = mailbox
-        .retract_pending_message("thread-edit-pending", &delivered[1].pending_id)
+        .retract_pending_message_checked("thread-edit-pending", &delivered[1].pending_id, None)
         .await
         .unwrap();
     assert_eq!(retracted.message.text(), "second");
@@ -345,9 +347,10 @@ async fn pending_message_edit_after_freeze_returns_consumed_error() {
         .unwrap();
 
     let error = mailbox
-        .update_pending_message(
+        .update_pending_message_checked(
             "thread-edit-consumed",
             &delivered[0].pending_id,
+            None,
             Message::user("too late").with_id(delivered[0].pending_id.clone()),
         )
         .await

@@ -176,6 +176,10 @@ pub struct PendingMessageRecord {
     #[serde(default = "default_pending_revision")]
     pub revision: u64,
     /// Delivery policy used by freeze to select this entry.
+    ///
+    /// Migration: pending records persisted before `DeliveryMode` existed lack
+    /// this field; they deserialize to the default `NewRun` + `Batch` (a queued
+    /// submit), which is the safe interpretation for legacy queued messages.
     #[serde(default)]
     pub delivery_mode: DeliveryMode,
     /// Unix timestamp (seconds) when the message was delivered.
@@ -314,6 +318,30 @@ fn can_skip_ineligible(entry: &PendingMessageRecord, boundary: DeliveryBoundary)
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pending_record_without_delivery_mode_migrates_to_new_run_batch() {
+        // A legacy pending record persisted before DeliveryMode existed lacks the
+        // field; it must migrate to the safe queued-submit default (NewRun+Batch).
+        let record = PendingMessageRecord::from_message(
+            "t1",
+            1,
+            Message::user("hi").with_id("p1".to_string()),
+            DeliveryMode::next_step(DeliveryGranularity::One),
+        );
+        let mut value = serde_json::to_value(&record).unwrap();
+        value
+            .as_object_mut()
+            .unwrap()
+            .remove("delivery_mode")
+            .expect("serialized record carries delivery_mode");
+        let parsed: PendingMessageRecord = serde_json::from_value(value).unwrap();
+        assert_eq!(parsed.delivery_mode.boundary, DeliveryBoundary::NewRun);
+        assert_eq!(parsed.delivery_mode.granularity, DeliveryGranularity::Batch);
+        assert!(!parsed.delivery_mode.barrier);
+        assert_eq!(parsed.delivery_mode.target_run_id, None);
+        assert!(parsed.delivery_mode.fallback_to_new_run);
+    }
 
     fn pending(
         id: &str,
