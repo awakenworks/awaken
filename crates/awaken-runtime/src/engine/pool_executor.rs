@@ -598,25 +598,22 @@ impl PoolExecutorInner {
     }
 
     fn record_stream_attempt_abandoned(&self, attempt_key: Option<&str>, current: usize) {
-        self.breaker
-            .record_abandoned_probe(&self.members[current].model_id);
-        let Some(attempt_key) = attempt_key else {
-            return;
-        };
-        let mut attempts = self.stream_attempts.write();
-        let should_clear = if let Some(attempt) = attempts.get_mut(attempt_key) {
+        if let Some(attempt_key) = attempt_key {
+            let mut attempts = self.stream_attempts.write();
+            let Some(attempt) = attempts.get_mut(attempt_key) else {
+                return;
+            };
             if attempt.active != Some(current) {
                 return;
             }
             attempt.last_access = self.next_stream_attempt_sequence();
             attempt.in_flight = false;
-            !attempt.failure_observed
-        } else {
-            false
-        };
-        if should_clear {
-            attempts.remove(attempt_key);
+            if !attempt.failure_observed {
+                attempts.remove(attempt_key);
+            }
         }
+        self.breaker
+            .record_abandoned_probe(&self.members[current].model_id);
     }
 
     fn record_switch(&self, from: usize, to: usize, reason: &str) {

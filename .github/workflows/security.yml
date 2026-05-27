@@ -6,10 +6,6 @@ on:
 concurrency:
   group: security-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
-# pnpm/action-setup@v4 still runs on Node 20 which GH deprecated on 2025-09-19;
-# this opts the action bundle into the Node 24 runner ahead of the cutover.
-env:
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 jobs:
   rustsec-audit:
     name: RustSec Audit
@@ -40,7 +36,7 @@ jobs:
         working-directory: apps/admin-console
     steps:
       - uses: actions/checkout@v6
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v6
       - uses: actions/setup-node@v6
         with:
           node-version: 22
@@ -58,7 +54,7 @@ jobs:
         working-directory: apps/www
     steps:
       - uses: actions/checkout@v6
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v6
       - uses: actions/setup-node@v6
         with:
           node-version: 22
