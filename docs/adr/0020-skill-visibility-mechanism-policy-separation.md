@@ -15,14 +15,21 @@ before every inference turn. There is no mechanism to:
 
 ### Alignment with the agentskills specification
 
-The [agentskills spec](https://agentskills.io/specification) defines skill discovery
-as **progressive disclosure**: a skill's `name` + `description` are surfaced to the
-agent for all skills, and the agent (model) decides when to use one. The spec defines
-no path/glob-based conditional activation. The only access controls are
-`disable-model-invocation` (hide from the model) and `user-invocable` (the `/skill-name`
-slash path). This ADR therefore gates catalog visibility **only** on
-`disable-model-invocation`; `paths` is a non-standard awaken field that does **not**
-affect visibility (see D1/D3).
+Awaken aligns with the [agentskills spec](https://agentskills.io/specification)
+**progressive-disclosure** model: a skill's `name` + `description` are surfaced to the
+agent at startup for all skills, the full `SKILL.md` loads on activation, and resources
+load on demand; the agent (model) decides when to use a skill. The spec's frontmatter is
+`name`, `description`, `license`, `compatibility`, `metadata`, `allowed-tools`.
+
+The visibility/invocation fields this ADR relies on are **Awaken extensions**, not part
+of the agentskills core spec:
+
+- `disable-model-invocation` — hide from the model catalog and block model invocation.
+- `user-invocable` — controls the `/skill-name` user slash path.
+- `paths` — parsed but **inert**; there is no path/glob conditional activation in the spec.
+
+This ADR therefore gates catalog visibility **only** on `disable-model-invocation`
+(see D1/D3).
 
 The permission system (`awaken-ext-permission`) already demonstrates a clean
 mechanism-policy separation: `PermissionPolicy` (thread-scoped) + `PermissionOverrides`

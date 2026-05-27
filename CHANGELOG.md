@@ -60,23 +60,29 @@ Development work lands here before the next versioned release.
 
 - **BREAKING — skill/tool visibility policy surfaces demoted to declarative.**
   Visibility/deferral are now metadata- and config-driven, not pluggable code
-  traits, so the trait surfaces are removed from the public API. Skill catalog
-  visibility follows the [agentskills spec](https://agentskills.io/specification):
-  skills are surfaced by `name` + `description` and gated only by
-  `disable-model-invocation`. `paths` is a non-standard field that is parsed but
-  does **not** affect visibility.
+  traits, so the trait surfaces are removed from the public API. Skill discovery
+  aligns with the [agentskills spec](https://agentskills.io/specification)
+  progressive-disclosure model (skills surfaced by `name` + `description`).
+  Catalog visibility is gated by `disable-model-invocation` — an **Awaken
+  extension field**, not an agentskills core field. `disable-model-invocation` is
+  a hard gate: it hides the skill AND blocks every model-facing tool (`skill`,
+  `load_skill_resource`, `skill_script`); an explicit runtime `Show` cannot
+  override it. `paths` is a non-standard field, parsed but inert (no effect on
+  visibility). `EmbeddedSkill` now maps the same frontmatter as `FsSkill`.
 
   | Removed (was public) | Replacement |
   |---|---|
   | `awaken_ext_skills::SkillVisibilityPolicy` (trait) | declarative metadata; no trait |
   | `awaken_ext_skills::DefaultSkillVisibilityPolicy` | `awaken_ext_skills::effective_visibility(meta, state)` |
+  | `SkillVisibilityStateValue.modes` (was `pub`) | now `pub(crate)`; use `explicit()` / `effective_visibility` |
   | `awaken_ext_deferred_tools::policy` (module, now private) | `DeferredToolsConfig` / `config.resolve_mode` |
   | `DeferralPolicy` / `ConfigOnlyPolicy` / `DeferralDecision` | classification via config `resolve_mode` |
 
-  `SkillVisibilityAction` gains `SeedBatch` (insert-if-absent) for run-start
-  seeding; `SetBatch` is retained for explicit overwrite. No deprecated shims —
-  these surfaces had no in-tree consumers and the crates are pre-1.0
-  (`0.5.1-dev`); downstream code resolves visibility via `effective_visibility`.
+  Resolve catalog visibility only through `effective_visibility(meta, state)`;
+  never read the state map directly (absent ≠ Visible). No run-start visibility
+  seed: visibility resolves from live metadata + explicit runtime overrides. No
+  deprecated shims — these surfaces had no in-tree consumers and the crates are
+  pre-1.0 (`0.5.1-dev`).
 
 - **AgentSpec catalog fields** — `allowed_tools` / `excluded_tools` are now
   strict literal-id lists, and two new fields `allowed_tool_patterns` /

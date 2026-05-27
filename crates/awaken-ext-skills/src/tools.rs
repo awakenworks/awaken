@@ -54,10 +54,36 @@ impl SkillActivateTool {
     pub fn new(registry: Arc<dyn SkillRegistry>) -> Self {
         Self { registry }
     }
+}
 
-    fn resolve(&self, key: &str) -> Option<Arc<dyn Skill>> {
-        self.registry.get(key.trim())
+/// Resolve a skill for a MODEL-facing tool call: look it up, error if unknown,
+/// and enforce the `disable-model-invocation` hard guard. `disable-model-invocation`
+/// must block every model entry point — activation, resource loading, and script
+/// execution — not just the catalog. Returns the skill, or the `ToolResult` to
+/// return early. (`/skill-name` user invocation is a separate path.)
+fn resolve_for_model(
+    registry: &Arc<dyn SkillRegistry>,
+    key: &str,
+    tool_id: &str,
+) -> Result<Arc<dyn Skill>, Box<ToolResult>> {
+    let skill = registry.get(key.trim()).ok_or_else(|| {
+        Box::new(tool_error(
+            tool_id,
+            "unknown_skill",
+            format!("Unknown skill: {key}"),
+        ))
+    })?;
+    if !skill.meta().model_invocable {
+        return Err(Box::new(tool_error(
+            tool_id,
+            "model_invocation_disabled",
+            format!(
+                "Skill '{}' has disable-model-invocation set",
+                skill.meta().id
+            ),
+        )));
     }
+    Ok(skill)
 }
 
 #[async_trait::async_trait]
@@ -94,29 +120,11 @@ impl Tool for SkillActivateTool {
             }
         };
 
-        let skill = self.resolve(&key).ok_or_else(|| {
-            tool_error(
-                SKILL_ACTIVATE_TOOL_ID,
-                "unknown_skill",
-                format!("Unknown skill: {key}"),
-            )
-        });
-        let skill = match skill {
+        let skill = match resolve_for_model(&self.registry, &key, SKILL_ACTIVATE_TOOL_ID) {
             Ok(s) => s,
-            Err(r) => return Ok(r.into()),
+            Err(r) => return Ok((*r).into()),
         };
         let meta = skill.meta();
-
-        // Hard guard for the MODEL path (this tool); `user-invocable` (/skill-name)
-        // is a separate path, unaffected. Catalog hiding only controls noise.
-        if !meta.model_invocable {
-            return Ok(tool_error(
-                SKILL_ACTIVATE_TOOL_ID,
-                "model_invocation_disabled",
-                format!("Skill '{}' has disable-model-invocation set", meta.id),
-            )
-            .into());
-        }
 
         let activation_args = activation_args(&args);
         let activation = skill
@@ -241,10 +249,6 @@ impl LoadSkillResourceTool {
     pub fn new(registry: Arc<dyn SkillRegistry>) -> Self {
         Self { registry }
     }
-
-    fn resolve(&self, key: &str) -> Option<Arc<dyn Skill>> {
-        self.registry.get(key.trim())
-    }
 }
 
 #[async_trait::async_trait]
@@ -281,12 +285,9 @@ impl Tool for LoadSkillResourceTool {
             Err(err) => return Ok(err.into_tool_result(tool_name).into()),
         };
 
-        let skill = self
-            .resolve(&key)
-            .ok_or_else(|| tool_error(tool_name, "unknown_skill", format!("Unknown skill: {key}")));
-        let skill = match skill {
+        let skill = match resolve_for_model(&self.registry, &key, tool_name) {
             Ok(v) => v,
-            Err(r) => return Ok(r.into()),
+            Err(r) => return Ok((*r).into()),
         };
         let meta = skill.meta();
 
@@ -372,10 +373,6 @@ impl SkillScriptTool {
     pub fn new(registry: Arc<dyn SkillRegistry>) -> Self {
         Self { registry }
     }
-
-    fn resolve(&self, key: &str) -> Option<Arc<dyn Skill>> {
-        self.registry.get(key.trim())
-    }
 }
 
 #[async_trait::async_trait]
@@ -416,16 +413,9 @@ impl Tool for SkillScriptTool {
             })
             .unwrap_or_default();
 
-        let skill = self.resolve(&key).ok_or_else(|| {
-            tool_error(
-                SKILL_SCRIPT_TOOL_ID,
-                "unknown_skill",
-                format!("Unknown skill: {key}"),
-            )
-        });
-        let skill = match skill {
+        let skill = match resolve_for_model(&self.registry, &key, SKILL_SCRIPT_TOOL_ID) {
             Ok(v) => v,
-            Err(r) => return Ok(r.into()),
+            Err(r) => return Ok((*r).into()),
         };
         let meta = skill.meta();
 

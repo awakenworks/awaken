@@ -2,7 +2,7 @@ use crate::error::SkillError;
 use crate::skill::{
     LoadedAsset, LoadedReference, ScriptResult, Skill, SkillMeta, SkillResource, SkillResourceKind,
 };
-use crate::skill_md::{parse_allowed_tools, parse_skill_md};
+use crate::skill_md::parse_skill_md;
 use async_trait::async_trait;
 use base64::Engine as _;
 use sha2::{Digest, Sha256};
@@ -37,26 +37,9 @@ impl EmbeddedSkill {
         let doc =
             parse_skill_md(data.skill_md).map_err(|e| SkillError::InvalidSkillMd(e.to_string()))?;
 
-        let fm = &doc.frontmatter;
-        let id = fm.name.clone();
-
-        let allowed_tools = fm
-            .allowed_tools
-            .as_deref()
-            .map(parse_allowed_tools)
-            .transpose()
-            .map_err(|e| SkillError::InvalidSkillMd(e.to_string()))?
-            .unwrap_or_default()
-            .into_iter()
-            .map(|t| t.raw)
-            .collect::<Vec<_>>();
-
-        let meta = SkillMeta::new(
-            id.clone(),
-            id.clone(),
-            fm.description.clone(),
-            allowed_tools,
-        );
+        let meta = crate::skill_md::meta_from_frontmatter(doc.frontmatter)
+            .map_err(SkillError::InvalidSkillMd)?;
+        let id = meta.id.clone();
 
         let mut references = HashMap::new();
         for &(path, content) in data.references {
@@ -222,6 +205,37 @@ More instructions.
             skill.meta.allowed_tools,
             vec!["read_file".to_string(), "write_file".to_string()]
         );
+    }
+
+    #[test]
+    fn meta_respects_disable_model_invocation_frontmatter() {
+        // EmbeddedSkill must map the visibility/invocation frontmatter (not just
+        // allowed-tools), consistent with FsSkill — visibility seeding, catalog
+        // render, and the activation guard all depend on SkillMeta.
+        let md = "\
+---
+name: blocked
+description: hidden from the model
+disable-model-invocation: true
+user-invocable: false
+when-to-use: only on request
+paths: \"*.rs\"
+---
+Body
+";
+        let data = EmbeddedSkillData {
+            skill_md: md,
+            references: &[],
+            assets: &[],
+        };
+        let skill = EmbeddedSkill::new(&data).unwrap();
+        assert!(
+            !skill.meta.model_invocable,
+            "disable-model-invocation must map"
+        );
+        assert!(!skill.meta.user_invocable, "user-invocable must map");
+        assert_eq!(skill.meta.when_to_use.as_deref(), Some("only on request"));
+        assert_eq!(skill.meta.paths, vec!["*.rs".to_string()]);
     }
 
     #[test]

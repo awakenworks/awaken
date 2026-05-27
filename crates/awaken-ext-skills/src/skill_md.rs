@@ -1,7 +1,9 @@
 use awaken_contract::{AllowedTool, parse_skill_allowed_tool_token, parse_skill_allowed_tools};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use unicode_normalization::UnicodeNormalization;
+
+use crate::skill::{SkillContext, SkillMeta};
 
 /// YAML frontmatter for a skill.
 ///
@@ -70,6 +72,55 @@ pub struct SkillArgumentDef {
 pub struct SkillDoc {
     pub frontmatter: SkillFrontmatter,
     pub body: String,
+}
+
+/// Build a [`SkillMeta`] from parsed frontmatter, mapping every
+/// visibility/invocation field. This is the single mapping both `FsSkill` and
+/// `EmbeddedSkill` use, so embedded and filesystem skills honor
+/// `disable-model-invocation`, `user-invocable`, `when-to-use`, `paths`, etc.
+/// identically. `id` and `name` both come from `name`.
+pub fn meta_from_frontmatter(fm: SkillFrontmatter) -> Result<SkillMeta, String> {
+    let allowed_tools = fm
+        .allowed_tools
+        .as_deref()
+        .map(parse_allowed_tools)
+        .transpose()
+        .map_err(|e| e.to_string())?
+        .unwrap_or_default()
+        .into_iter()
+        .map(|t| t.raw)
+        .collect::<Vec<_>>();
+
+    // Parse paths: comma or newline separated, trimmed, deduplicated (order kept).
+    let paths: Vec<String> = fm
+        .paths
+        .as_deref()
+        .map(|s| {
+            let mut seen = HashSet::new();
+            s.split([',', '\n'])
+                .map(str::trim)
+                .filter(|p| !p.is_empty() && *p != "**")
+                .filter(|p| seen.insert(p.to_string()))
+                .map(String::from)
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let context = match fm.context.as_deref() {
+        Some("fork") => SkillContext::Fork,
+        _ => SkillContext::Inline,
+    };
+
+    let mut meta = SkillMeta::new(fm.name.clone(), fm.name, fm.description, allowed_tools);
+    meta.when_to_use = fm.when_to_use;
+    meta.arguments = fm.arguments.unwrap_or_default();
+    meta.argument_hint = fm.argument_hint;
+    meta.user_invocable = fm.user_invocable.unwrap_or(true);
+    meta.model_invocable = !fm.disable_model_invocation.unwrap_or(false);
+    meta.model_override = fm.model;
+    meta.context = context;
+    meta.paths = paths;
+    Ok(meta)
 }
 
 #[derive(Debug, thiserror::Error, Clone, PartialEq, Eq)]

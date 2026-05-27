@@ -1,6 +1,6 @@
 use crate::error::{SkillError, SkillRegistryError, SkillRegistryManagerError, SkillWarning};
-use crate::skill::{Skill, SkillContext, SkillMeta};
-use crate::skill_md::{SkillFrontmatter, parse_allowed_tools, parse_skill_md};
+use crate::skill::{Skill, SkillMeta};
+use crate::skill_md::{SkillFrontmatter, parse_skill_md};
 use awaken_contract::PeriodicRefresher;
 use std::collections::HashMap;
 use std::fs;
@@ -545,44 +545,7 @@ fn build_fs_skill(dir_name: &str, skill_md: &Path) -> Result<FsSkill, String> {
         ));
     }
 
-    let allowed_tools = fm
-        .allowed_tools
-        .as_deref()
-        .map(parse_allowed_tools)
-        .transpose()
-        .map_err(|e| e.to_string())?
-        .unwrap_or_default()
-        .into_iter()
-        .map(|t| t.raw)
-        .collect::<Vec<_>>();
-
-    // Parse paths: comma or newline separated, trimmed, deduplicated.
-    let paths: Vec<String> = fm
-        .paths
-        .as_deref()
-        .map(|s| {
-            s.split([',', '\n'])
-                .map(str::trim)
-                .filter(|p| !p.is_empty() && *p != "**")
-                .map(String::from)
-                .collect()
-        })
-        .unwrap_or_default();
-
-    let context = match fm.context.as_deref() {
-        Some("fork") => SkillContext::Fork,
-        _ => SkillContext::Inline,
-    };
-
-    let mut meta = SkillMeta::new(fm.name.clone(), fm.name, fm.description, allowed_tools);
-    meta.when_to_use = fm.when_to_use;
-    meta.arguments = fm.arguments.unwrap_or_default();
-    meta.argument_hint = fm.argument_hint;
-    meta.user_invocable = fm.user_invocable.unwrap_or(true);
-    meta.model_invocable = !fm.disable_model_invocation.unwrap_or(false);
-    meta.model_override = fm.model;
-    meta.context = context;
-    meta.paths = paths;
+    let meta = crate::skill_md::meta_from_frontmatter(fm)?;
 
     Ok(FsSkill {
         meta,
