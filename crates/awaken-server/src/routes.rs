@@ -35,6 +35,13 @@ pub(crate) fn map_mailbox_error(error: MailboxError) -> ApiError {
         ) => ApiError::Conflict(err.to_string()),
         MailboxError::Store(err) => ApiError::Internal(err.to_string()),
         MailboxError::Internal(msg) => ApiError::Internal(msg),
+        // A barrier ahead in pending must be consumed first: a client-resolvable
+        // conflict, not a server fault.
+        MailboxError::DeliveryBlockedByBarrier {
+            blocking_pending_id,
+        } => ApiError::Conflict(format!(
+            "delivery blocked by barrier: pending '{blocking_pending_id}' must be consumed first"
+        )),
     }
 }
 

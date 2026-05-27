@@ -73,6 +73,15 @@ impl Mailbox {
             !request.control.seeded_decisions.is_empty(),
         )?;
 
+        // Preflight before any interrupt/cancel side effect: if a barrier ahead
+        // in pending blocks this foreground interrupt, the later freeze would
+        // select nothing and fail Internal — but only after the active run was
+        // already cancelled. Surface it as a clean business error first, leaving
+        // the active run untouched (ADR-0042 D6).
+        if request.trace.run_mode == RunMode::Foreground {
+            self.preflight_foreground_pending(&thread_id).await?;
+        }
+
         // Step 1: Interrupt — bump dispatch epoch, supersede stale queued dispatches.
         let now = now_ms();
         let interrupt_start = Instant::now();
