@@ -4,7 +4,7 @@ use std::collections::HashSet;
 use async_trait::async_trait;
 use awaken_contract::contract::message::{
     DeliveryBoundary, DeliveryMode, Message, MessageRecord, PendingMessageRecord,
-    pending_queue_revision, select_pending_for_freeze,
+    pending_queue_revision, select_pending_for_freeze, select_pending_for_freeze_for_run,
 };
 use awaken_contract::contract::storage::{
     RunRecord, StorageError, checkpoint_parent_thread_id, message_append,
@@ -93,7 +93,7 @@ impl PendingMessageStore for InMemoryStore {
                     thread_id.to_owned(),
                     start_position + index as u64,
                     message,
-                    delivery_mode,
+                    delivery_mode.clone(),
                 );
                 record.created_at = Some(now);
                 record.updated_at = Some(now);
@@ -345,12 +345,13 @@ impl PendingMessageStore for InMemoryStore {
             return Err(StorageError::VersionConflict { expected, actual });
         }
         let pending = pending_guard.entry(thread_id.to_owned()).or_default();
-        let selected_indexes = select_pending_for_freeze(pending, boundary);
+        let selected_indexes =
+            select_pending_for_freeze_for_run(pending, boundary, Some(&run.run_id));
         let selected_ids = selected_pending_ids(pending, &selected_indexes);
         if selected_ids != expected_pending_ids {
-            return Err(StorageError::VersionConflict {
-                expected: expected_pending_ids.len() as u64,
-                actual: selected_ids.len() as u64,
+            return Err(StorageError::PendingSelectionConflict {
+                expected_ids: expected_pending_ids.to_vec(),
+                actual_ids: selected_ids,
             });
         }
         let committed = messages_guard.entry(thread_id.to_owned()).or_default();

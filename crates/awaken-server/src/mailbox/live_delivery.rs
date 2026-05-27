@@ -50,7 +50,8 @@ impl Mailbox {
                     .deliver(
                         thread_id,
                         &messages,
-                        DeliveryMode::next_step(DeliveryGranularity::Batch),
+                        DeliveryMode::next_step(DeliveryGranularity::Batch)
+                            .targeted_to_run(&active_run_id, false),
                     )
                     .await?;
                 if !self.executor.wake_pending_boundary(&active_run_id) {
@@ -110,7 +111,8 @@ impl Mailbox {
                 .deliver(
                     thread_id,
                     &messages,
-                    DeliveryMode::next_step(DeliveryGranularity::Batch),
+                    DeliveryMode::next_step(DeliveryGranularity::Batch)
+                        .targeted_to_run(&run_id, false),
                 )
                 .await?;
             let outcome = self

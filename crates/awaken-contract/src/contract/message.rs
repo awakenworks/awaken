@@ -9,7 +9,7 @@ mod delivery;
 
 pub use delivery::{
     DeliveryBoundary, DeliveryGranularity, DeliveryMode, PendingMessageRecord,
-    pending_queue_revision, select_pending_for_freeze,
+    pending_queue_revision, select_pending_for_freeze, select_pending_for_freeze_for_run,
 };
 
 /// Message role.

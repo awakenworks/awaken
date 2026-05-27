@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use awaken_contract::contract::message::{
     DeliveryBoundary, DeliveryMode, Message, MessageRecord, PendingMessageRecord,
-    pending_queue_revision, select_pending_for_freeze,
+    pending_queue_revision, select_pending_for_freeze, select_pending_for_freeze_for_run,
 };
 use awaken_contract::contract::storage::{RunRecord, StorageError, message_append};
 use sqlx::{Postgres, Row, Transaction};
@@ -126,7 +126,7 @@ impl PostgresStore {
     ) -> Result<(), StorageError> {
         let data = serde_json::to_value(&record.message)
             .map_err(|e| StorageError::Serialization(e.to_string()))?;
-        let delivery_mode = serde_json::to_value(record.delivery_mode)
+        let delivery_mode = serde_json::to_value(record.delivery_mode.clone())
             .map_err(|e| StorageError::Serialization(e.to_string()))?;
         let sql = format!(
             "INSERT INTO {} (thread_id, message_id, state, position, data, pending_revision, delivery_mode, created_at_ms)
@@ -196,7 +196,7 @@ impl PendingMessageStore for PostgresStore {
                     thread_id.to_owned(),
                     start_position + index as u64,
                     message,
-                    delivery_mode,
+                    delivery_mode.clone(),
                 );
                 record.created_at = Some(now);
                 record.updated_at = Some(now);
@@ -539,7 +539,11 @@ impl PostgresStore {
         let mut pending = self
             .load_pending_message_records_tx(&mut tx, thread_id)
             .await?;
-        let selected_indexes = select_pending_for_freeze(&pending, boundary);
+        let selected_indexes = if let Some(run) = run {
+            select_pending_for_freeze_for_run(&pending, boundary, Some(&run.run_id))
+        } else {
+            select_pending_for_freeze(&pending, boundary)
+        };
         let selected_ids = selected_indexes
             .iter()
             .map(|index| pending[*index].pending_id.clone())
@@ -547,9 +551,9 @@ impl PostgresStore {
         if let Some(expected_pending_ids) = expected_pending_ids
             && selected_ids != expected_pending_ids
         {
-            return Err(StorageError::VersionConflict {
-                expected: expected_pending_ids.len() as u64,
-                actual: selected_ids.len() as u64,
+            return Err(StorageError::PendingSelectionConflict {
+                expected_ids: expected_pending_ids.to_vec(),
+                actual_ids: selected_ids,
             });
         }
         if selected_indexes.is_empty() {

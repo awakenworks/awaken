@@ -3,7 +3,7 @@ use std::collections::{HashMap, HashSet};
 use async_trait::async_trait;
 use awaken_contract::contract::message::{
     DeliveryBoundary, DeliveryMode, Message, MessageRecord, PendingMessageRecord,
-    pending_queue_revision, select_pending_for_freeze,
+    pending_queue_revision, select_pending_for_freeze, select_pending_for_freeze_for_run,
 };
 use awaken_contract::contract::storage::{
     RunRecord, StorageError, ThreadStore, checkpoint_parent_thread_id,
@@ -47,7 +47,7 @@ impl PendingMessageStore for FileStore {
                     thread_id.to_owned(),
                     start_position + index as u64,
                     message,
-                    delivery_mode,
+                    delivery_mode.clone(),
                 );
                 record.created_at = Some(now);
                 record.updated_at = Some(now);
@@ -311,15 +311,16 @@ impl PendingMessageStore for FileStore {
             return Err(StorageError::VersionConflict { expected, actual });
         }
         let mut pending = self.read_pending_messages_locked(thread_id).await?;
-        let selected_indexes = select_pending_for_freeze(&pending, boundary);
+        let selected_indexes =
+            select_pending_for_freeze_for_run(&pending, boundary, Some(&run.run_id));
         let selected_ids = selected_indexes
             .iter()
             .map(|index| pending[*index].pending_id.clone())
             .collect::<Vec<_>>();
         if selected_ids != expected_pending_ids {
-            return Err(StorageError::VersionConflict {
-                expected: expected_pending_ids.len() as u64,
-                actual: selected_ids.len() as u64,
+            return Err(StorageError::PendingSelectionConflict {
+                expected_ids: expected_pending_ids.to_vec(),
+                actual_ids: selected_ids,
             });
         }
         let now = current_millis();

@@ -3,7 +3,7 @@ use std::sync::Arc;
 use awaken_contract::contract::mailbox::MailboxStore;
 use awaken_contract::contract::message::{
     DeliveryBoundary, DeliveryGranularity, DeliveryMode, Message, MessageRecord,
-    PendingMessageRecord, select_pending_for_freeze,
+    PendingMessageRecord, select_pending_for_freeze_for_run,
 };
 use awaken_contract::contract::run::{RunActivationSnapshot, RunInputSnapshot};
 use awaken_contract::contract::storage::{
@@ -19,6 +19,21 @@ use super::helpers::{build_run_input, normalize_message_ids};
 use super::{IntoDispatchExecutor, MailboxConfig, MailboxError};
 
 const MAX_PENDING_FREEZE_ATTEMPTS: usize = 8;
+
+fn delivery_mode_for_dispatch(boundary: DeliveryBoundary, run_id: &str) -> DeliveryMode {
+    match boundary {
+        DeliveryBoundary::ResumeInput => {
+            DeliveryMode::resume_input(DeliveryGranularity::Batch, run_id)
+        }
+        _ => DeliveryMode {
+            boundary,
+            granularity: DeliveryGranularity::Batch,
+            barrier: false,
+            target_run_id: None,
+            fallback_to_new_run: true,
+        },
+    }
+}
 
 impl Mailbox {
     /// Construct a mailbox whose pending partition is owned by the same
@@ -52,7 +67,7 @@ impl Mailbox {
         })
     }
 
-    pub async fn deliver(
+    pub(super) async fn deliver(
         &self,
         thread_id: &str,
         messages: &[Message],
@@ -177,10 +192,12 @@ impl Mailbox {
             // was auto-routed to a reusable waiting run (Resume with no seeded
             // decisions) is user input and must stage through pending so it stays
             // editable/retractable until consumed; it continues the waiting run
-            // via NewRun semantics (ADR-0042 D4).
+            // via a targeted resume boundary so unrelated queued NewRun pending
+            // remains available for the next dispatch instead of being folded
+            // into the waiting run.
             RunMode::Resume => {
                 if request.control.seeded_decisions.is_empty() {
-                    DeliveryBoundary::NewRun
+                    DeliveryBoundary::ResumeInput
                 } else {
                     return Ok(None);
                 }
@@ -190,11 +207,7 @@ impl Mailbox {
             .append_pending_message_records(
                 thread_id,
                 normalized_messages,
-                DeliveryMode {
-                    boundary,
-                    granularity: DeliveryGranularity::Batch,
-                    barrier: false,
-                },
+                delivery_mode_for_dispatch(boundary, run_id),
             )
             .await?;
         let appended_pending_ids = appended
@@ -301,7 +314,8 @@ impl Mailbox {
                 .unwrap_or_default();
             let expected_version = existing_messages.len() as u64;
             let pending = store.load_pending_message_records(thread_id).await?;
-            let selected_indexes = select_pending_for_freeze(&pending, boundary);
+            let selected_indexes =
+                select_pending_for_freeze_for_run(&pending, boundary, Some(run_id));
             if selected_indexes.is_empty() {
                 return Ok(None);
             }
@@ -365,7 +379,10 @@ impl Mailbox {
                 .await
             {
                 Ok(frozen) => frozen,
-                Err(StorageError::VersionConflict { .. }) => continue,
+                Err(
+                    StorageError::VersionConflict { .. }
+                    | StorageError::PendingSelectionConflict { .. },
+                ) => continue,
                 Err(error) => return Err(error.into()),
             };
             // Freeze committed durably; only now adopt the attempt's mutations
@@ -448,6 +465,8 @@ impl PendingBoundaryHandler for MailboxPendingBoundaryHandler {
                     boundary,
                     granularity: DeliveryGranularity::Batch,
                     barrier: false,
+                    target_run_id: Some(self.run_id.clone()),
+                    fallback_to_new_run: false,
                 },
             )
             .await

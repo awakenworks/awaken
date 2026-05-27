@@ -189,3 +189,115 @@ async fn next_step_freeze_skips_queued_new_run_pending() {
         vec!["live-id".to_string()]
     );
 }
+
+#[tokio::test]
+async fn targeted_next_step_does_not_fall_through_to_new_run() {
+    let thread_store = Arc::new(InMemoryStore::new());
+    let mailbox = Arc::new(Mailbox::new_with_pending_thread_run_store(
+        Arc::new(NoopExecutor),
+        Arc::new(InMemoryMailboxStore::new()),
+        thread_store.clone(),
+        "consumer".to_string(),
+        MailboxConfig::default(),
+    ));
+    thread_store
+        .create_run(&created_run_record("thread-targeted", "run-b"))
+        .await
+        .unwrap();
+    let request = RunActivation::new("thread-targeted", Vec::new()).with_run_id_hint("run-b");
+    let handler = mailbox
+        .pending_boundary_handler(&request, "run-b", &empty_manifest())
+        .expect("handler configured");
+
+    mailbox
+        .deliver(
+            "thread-targeted",
+            &[Message::user("stale steer").with_id("stale-id".to_string())],
+            DeliveryMode::next_step(DeliveryGranularity::Batch).targeted_to_run("run-a", false),
+        )
+        .await
+        .unwrap();
+    mailbox
+        .deliver(
+            "thread-targeted",
+            &[Message::user("queued").with_id("queued-id".to_string())],
+            DeliveryMode::new_run(DeliveryGranularity::Batch),
+        )
+        .await
+        .unwrap();
+
+    handler
+        .freeze_pending_boundary(DeliveryBoundary::NewRun)
+        .await
+        .unwrap()
+        .expect("queued message frozen");
+
+    let committed = thread_store
+        .load_committed_messages("thread-targeted")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(committed.len(), 1);
+    assert_eq!(committed[0].id.as_deref(), Some("queued-id"));
+    let pending = thread_store
+        .load_pending_message_records("thread-targeted")
+        .await
+        .unwrap();
+    assert_eq!(pending.len(), 1);
+    assert_eq!(pending[0].pending_id, "stale-id");
+}
+
+#[tokio::test]
+async fn resume_input_does_not_consume_unrelated_queued_new_run() {
+    use awaken_contract::contract::tool_intercept::RunMode;
+
+    let thread_store = Arc::new(InMemoryStore::new());
+    let mailbox = Arc::new(Mailbox::new_with_pending_thread_run_store(
+        Arc::new(NoopExecutor),
+        Arc::new(InMemoryMailboxStore::new()),
+        thread_store.clone(),
+        "consumer".to_string(),
+        MailboxConfig::default(),
+    ));
+    mailbox
+        .deliver(
+            "thread-resume-lane",
+            &[Message::user("later task").with_id("later-id".to_string())],
+            DeliveryMode::new_run(DeliveryGranularity::Batch),
+        )
+        .await
+        .unwrap();
+    let messages = vec![Message::user("yes").with_id("yes-id".to_string())];
+    let mut request =
+        RunActivation::new("thread-resume-lane", messages.clone()).with_run_id_hint("run-r");
+    request.trace.run_mode = RunMode::Resume;
+    let mut record = created_run_record("thread-resume-lane", "run-r");
+
+    mailbox
+        .prepare_pending_messages_for_dispatch(
+            &request,
+            "thread-resume-lane",
+            &messages,
+            "run-r",
+            &mut record,
+            &empty_manifest(),
+        )
+        .await
+        .unwrap()
+        .expect("resume input frozen");
+
+    let committed = thread_store
+        .load_committed_messages("thread-resume-lane")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(committed.len(), 1);
+    assert_eq!(committed[0].id.as_deref(), Some("yes-id"));
+    let pending = thread_store
+        .load_pending_message_records("thread-resume-lane")
+        .await
+        .unwrap();
+    assert_eq!(pending.len(), 1);
+    assert_eq!(pending[0].pending_id, "later-id");
+    assert_eq!(pending[0].delivery_mode.boundary, DeliveryBoundary::NewRun);
+}

@@ -5,7 +5,7 @@ use awaken_contract::contract::message::{
     DeliveryBoundary, DeliveryGranularity, DeliveryMode, Message, pending_queue_revision,
 };
 use awaken_contract::contract::storage::{
-    RunQuery, RunRecord, RunStore, ThreadRunStore, ThreadStore,
+    RunQuery, RunRecord, RunStore, StorageError, ThreadRunStore, ThreadStore,
 };
 use awaken_contract::thread::Thread;
 use std::sync::Arc;
@@ -384,7 +384,11 @@ async fn pending_append_assigns_message_id_and_rejects_duplicate_ids() {
     let mode = DeliveryMode::new_run(DeliveryGranularity::Batch);
 
     let records = store
-        .append_pending_message_records("thread-pending-id", &[Message::user("first")], mode)
+        .append_pending_message_records(
+            "thread-pending-id",
+            &[Message::user("first")],
+            mode.clone(),
+        )
         .await
         .unwrap();
     let generated_id = records[0].pending_id.clone();
@@ -559,6 +563,44 @@ async fn freeze_pending_with_run_rejects_stale_version_without_run_write() {
             .len(),
         1
     );
+}
+
+#[tokio::test]
+async fn freeze_pending_with_run_reports_selected_id_conflict() {
+    let store = InMemoryStore::new();
+    store
+        .append_pending_message_records(
+            "thread-freeze-selection-conflict",
+            &[Message::user("a").with_id("a-id".to_string())],
+            DeliveryMode::new_run(DeliveryGranularity::Batch),
+        )
+        .await
+        .unwrap();
+    let run = make_run(
+        "run-freeze-selection-conflict",
+        "thread-freeze-selection-conflict",
+        RunStatus::Created,
+    );
+
+    let err = store
+        .freeze_pending_message_records_with_run(
+            "thread-freeze-selection-conflict",
+            DeliveryBoundary::NewRun,
+            Some(0),
+            &["b-id".to_string()],
+            &run,
+        )
+        .await
+        .unwrap_err();
+
+    assert!(matches!(
+        err,
+        StorageError::PendingSelectionConflict {
+            expected_ids,
+            actual_ids
+        } if expected_ids == vec!["b-id".to_string()]
+            && actual_ids == vec!["a-id".to_string()]
+    ));
 }
 
 #[tokio::test]

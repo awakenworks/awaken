@@ -363,7 +363,7 @@ async fn file_store_pending_append_assigns_id_and_rejects_duplicates() {
     let store = FileStore::new(td.path());
     let mode = DeliveryMode::new_run(DeliveryGranularity::Batch);
     let records = store
-        .append_pending_message_records("t-pending-id", &[Message::user("first")], mode)
+        .append_pending_message_records("t-pending-id", &[Message::user("first")], mode.clone())
         .await
         .unwrap();
     let generated_id = records[0].pending_id.clone();

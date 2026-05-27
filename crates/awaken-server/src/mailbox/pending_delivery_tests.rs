@@ -415,6 +415,7 @@ async fn live_then_queue_stages_remote_running_input_as_next_step_pending() {
     assert_eq!(
         pending[0].delivery_mode,
         DeliveryMode::next_step(DeliveryGranularity::Batch)
+            .targeted_to_run("run-live-pending", false)
     );
     let dispatches = mailbox_store
         .list_dispatches("thread-live-pending", None, 10, 0)
