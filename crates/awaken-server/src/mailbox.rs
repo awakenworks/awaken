@@ -1,6 +1,6 @@
 //! Mailbox service: persistent run queue, dispatch execution, leasing, and lifecycle management.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -662,13 +662,9 @@ impl Drop for ActiveRunGuard {
 pub struct Mailbox {
     executor: Arc<dyn RunDispatchExecutor>,
     store: Arc<dyn MailboxStore>,
-    /// Single durable-write boundary. Production runtimes must provide this
-    /// through `executor.commit_coordinator()`. Debug/test builds may fall
-    /// back to `MailboxRunStoreCoordinator` for embedded unit callers, but
-    /// release builds fail closed instead of taking a partial durable path.
+    /// Single durable-write boundary from `executor.commit_coordinator()` (see `try_new`).
     coordinator: Arc<dyn CommitCoordinator>,
-    /// Projection of `coordinator.thread_run_store()` cached for repeated
-    /// read access; never diverges from the coordinator by construction.
+    /// Projection of `coordinator.thread_run_store()`; never diverges by construction.
     run_store: Arc<dyn ThreadRunStore>,
     pending_thread_run_store: Option<Arc<dyn awaken_stores::PendingThreadRunStore>>,
     consumer_id: String,
@@ -682,6 +678,8 @@ pub struct Mailbox {
     /// Striped per-thread locks serializing the message-append
     /// read-modify-write in `prepare_run_for_dispatch` (see `lock_thread_append`).
     thread_append_locks: Box<[Mutex<()>]>,
+    /// Retry queue for checkpoint events that failed to publish (see `checkpoint_repair`).
+    checkpoint_repair_queue: Arc<StdMutex<VecDeque<checkpoint_repair::CheckpointRepairTask>>>,
 }
 
 impl Mailbox {
@@ -746,6 +744,7 @@ impl Mailbox {
             thread_append_locks: (0..Self::THREAD_APPEND_STRIPES)
                 .map(|_| Mutex::new(()))
                 .collect(),
+            checkpoint_repair_queue: Arc::new(StdMutex::new(VecDeque::new())),
         })
     }
 
@@ -779,6 +778,7 @@ impl Mailbox {
 
 mod cancel;
 mod checkpoint;
+mod checkpoint_repair;
 mod coordinator_facade;
 mod decision;
 mod dispatch_execution;
