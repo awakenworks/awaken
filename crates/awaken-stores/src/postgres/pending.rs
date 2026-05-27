@@ -510,6 +510,7 @@ impl PendingMessageStore for PostgresStore {
             expected_message_version,
             None,
             None,
+            None,
         )
         .await
     }
@@ -528,6 +529,28 @@ impl PendingMessageStore for PostgresStore {
             expected_message_version,
             Some(expected_pending_ids),
             Some(run),
+            None,
+        )
+        .await
+    }
+
+    async fn append_and_freeze_pending_message_records_with_run(
+        &self,
+        thread_id: &str,
+        new_messages: &[Message],
+        append_delivery_mode: DeliveryMode,
+        boundary: DeliveryBoundary,
+        expected_message_version: Option<u64>,
+        expected_pending_ids: &[String],
+        run: &RunRecord,
+    ) -> Result<Vec<MessageRecord>, StorageError> {
+        self.freeze_pending_message_records_with_run_inner(
+            thread_id,
+            boundary,
+            expected_message_version,
+            Some(expected_pending_ids),
+            Some(run),
+            Some((new_messages, append_delivery_mode)),
         )
         .await
     }
@@ -541,6 +564,7 @@ impl PostgresStore {
         expected_message_version: Option<u64>,
         expected_pending_ids: Option<&[String]>,
         run: Option<&RunRecord>,
+        append: Option<(&[Message], DeliveryMode)>,
     ) -> Result<Vec<MessageRecord>, StorageError> {
         self.ensure_schema().await?;
         let mut tx = self
@@ -561,6 +585,42 @@ impl PostgresStore {
         let mut pending = self
             .load_pending_message_records_tx(&mut tx, thread_id)
             .await?;
+        // Fold an append into the same transaction as the freeze (ADR-0042 D7):
+        // the new messages are inserted as pending, then the selection runs over
+        // existing + appended, all committed atomically.
+        if let Some((new_messages, append_delivery_mode)) = append {
+            let now = crate::current_millis() / 1000;
+            let start_position = pending.len() as u64 + 1;
+            let mut seen = pending
+                .iter()
+                .map(|record| record.pending_id.clone())
+                .collect::<HashSet<_>>();
+            let mut appended_pending = Vec::with_capacity(new_messages.len());
+            for (index, message) in new_messages.iter().cloned().enumerate() {
+                let mut record = PendingMessageRecord::from_message(
+                    thread_id.to_owned(),
+                    start_position + index as u64,
+                    message,
+                    append_delivery_mode.clone(),
+                );
+                record.created_at = Some(now);
+                record.updated_at = Some(now);
+                if !seen.insert(record.pending_id.clone()) {
+                    return Err(duplicate_pending_id(&record.pending_id));
+                }
+                if self
+                    .committed_message_exists_tx(&mut tx, thread_id, &record.pending_id)
+                    .await?
+                {
+                    return Err(already_consumed(&record.pending_id));
+                }
+                appended_pending.push(record);
+            }
+            for record in &appended_pending {
+                self.insert_pending_message_tx(&mut tx, record).await?;
+            }
+            pending.extend(appended_pending);
+        }
         let selected_indexes = if let Some(run) = run {
             select_pending_for_freeze_for_run(&pending, boundary, Some(&run.run_id))
         } else {

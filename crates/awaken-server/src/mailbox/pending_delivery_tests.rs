@@ -226,6 +226,39 @@ impl PendingMessageStore for ConflictOnceStore {
             )
             .await
     }
+    async fn append_and_freeze_pending_message_records_with_run(
+        &self,
+        thread_id: &str,
+        new_messages: &[Message],
+        append_delivery_mode: DeliveryMode,
+        boundary: DeliveryBoundary,
+        expected_message_version: Option<u64>,
+        expected_pending_ids: &[String],
+        run: &RunRecord,
+    ) -> Result<Vec<MessageRecord>, StorageError> {
+        if self.freeze_calls.fetch_add(1, Ordering::SeqCst) == 0 {
+            if let Some((conflict_thread_id, pending_id)) = &self.retract_on_first_conflict {
+                self.inner
+                    .retract_pending_message_record(conflict_thread_id, pending_id)
+                    .await?;
+            }
+            return Err(StorageError::VersionConflict {
+                expected: expected_message_version.unwrap_or(0),
+                actual: expected_message_version.unwrap_or(0).saturating_add(1),
+            });
+        }
+        self.inner
+            .append_and_freeze_pending_message_records_with_run(
+                thread_id,
+                new_messages,
+                append_delivery_mode,
+                boundary,
+                expected_message_version,
+                expected_pending_ids,
+                run,
+            )
+            .await
+    }
 }
 
 struct NoopExecutor;
@@ -714,6 +747,7 @@ async fn freeze_retry_after_conflict_does_not_leave_phantom_trigger_ids() {
             "run-conflict",
             &mut record,
             &empty_manifest(),
+            None,
         )
         .await
         .unwrap();
@@ -800,6 +834,7 @@ async fn freeze_event_publish_failure_is_repairable_success() {
             "run-event-fail",
             &mut record,
             &empty_manifest(),
+            None,
         )
         .await
         .expect("event publish failure after freeze commit is repairable");

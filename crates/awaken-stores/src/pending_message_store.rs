@@ -96,6 +96,29 @@ pub trait PendingMessageStore: Send + Sync {
         expected_pending_ids: &[String],
         run: &RunRecord,
     ) -> Result<Vec<MessageRecord>, StorageError>;
+
+    /// Atomically append `new_messages` to pending and freeze the selected
+    /// pending entries (existing + newly appended) with the run record, in one
+    /// backend boundary (ADR-0042 D7).
+    ///
+    /// Closes the crash window a separate append-then-freeze leaves: a crash
+    /// between them persists pending with no consume context. Here a crash
+    /// either persists nothing (the client retry is the only request — no
+    /// duplicate) or the complete frozen run (no orphan). `expected_pending_ids`
+    /// is the caller's selection over `existing_pending ++ new_messages` (each
+    /// appended entry takes `pending_id == message id`); it is CAS-checked, so a
+    /// concurrent change since the caller's read aborts with
+    /// `PendingSelectionConflict`.
+    async fn append_and_freeze_pending_message_records_with_run(
+        &self,
+        thread_id: &str,
+        new_messages: &[Message],
+        append_delivery_mode: DeliveryMode,
+        boundary: DeliveryBoundary,
+        expected_message_version: Option<u64>,
+        expected_pending_ids: &[String],
+        run: &RunRecord,
+    ) -> Result<Vec<MessageRecord>, StorageError>;
 }
 
 /// Thread/run store that owns the pending partition for the same backend.
