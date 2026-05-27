@@ -432,9 +432,10 @@ pub struct ProviderSpec {
     /// Request timeout in seconds.
     #[serde(default = "default_provider_timeout_secs")]
     pub timeout_secs: u64,
-    /// Adapter-specific non-secret options consumed by
-    /// `build_genai_provider_executor` (for example
-    /// `{"headers": {"OpenAI-Organization": "org-xxx"}}`).
+    /// Adapter-specific non-secret options consumed by runtime integrations
+    /// (such as `{"headers": {"OpenAI-Organization": "org-id"}}`, or
+    /// provider discovery options such as `model_discovery_schema` and
+    /// `model_discovery_auth`).
     ///
     /// Secrets must use [`ProviderSpec::api_key`]; do not store credentials
     /// here. Unrecognised keys are accepted by the schema but ignored at
