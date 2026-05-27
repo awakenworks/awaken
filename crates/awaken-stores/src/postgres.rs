@@ -81,6 +81,7 @@ impl PostgresStore {
 }
 
 mod config;
+mod pending;
 mod run;
 mod schema;
 mod thread;

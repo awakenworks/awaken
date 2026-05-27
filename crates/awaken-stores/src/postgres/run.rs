@@ -205,33 +205,17 @@ impl RunStore for PostgresStore {
 // ── ThreadRunStore ──────────────────────────────────────────────────
 
 impl PostgresStore {
-    /// Body of [`ThreadRunStore::checkpoint`] parameterised on an
-    /// externally-managed transaction (ADR-0036 D2). The caller is
-    /// responsible for opening the transaction, committing on success,
-    /// and rolling back on failure.
-    /// Read a thread's committed messages within an open transaction so the
-    /// caller observes uncommitted writes and any `FOR UPDATE` lock it holds.
-    async fn load_messages_in_tx(
+    pub(super) async fn lock_thread_messages_tx(
         &self,
         tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
         thread_id: &str,
-    ) -> Result<Option<Vec<Message>>, StorageError> {
-        let sql = format!(
-            "SELECT data FROM {} WHERE thread_id = $1 ORDER BY updated_at DESC LIMIT 1",
-            self.messages_table
-        );
-        let row = sqlx::query(&sql)
+    ) -> Result<(), StorageError> {
+        sqlx::query("SELECT pg_advisory_xact_lock(hashtext($1), 0)")
             .bind(thread_id)
-            .fetch_optional(&mut **tx)
+            .execute(&mut **tx)
             .await
             .map_err(|e| StorageError::Io(e.to_string()))?;
-        let Some(row) = row else {
-            return Ok(None);
-        };
-        let data: serde_json::Value = row.get("data");
-        let messages =
-            serde_json::from_value(data).map_err(|e| StorageError::Serialization(e.to_string()))?;
-        Ok(Some(messages))
+        Ok(())
     }
 
     /// Version-guarded committed append within an open transaction. Locks the
@@ -248,42 +232,63 @@ impl PostgresStore {
         expected_version: Option<u64>,
         run: &RunRecord,
     ) -> Result<u64, StorageError> {
-        // Acquire the per-thread row lock for the transaction; the lock is
-        // held until commit and serializes other appending writers.
+        // Acquire a per-thread transaction lock before any row exists, then
+        // lock the thread row when present. This keeps new-thread appends
+        // serial across connections as well as existing-thread appends.
+        self.lock_thread_messages_tx(tx, thread_id).await?;
         let _ = self.load_thread_tx(tx, thread_id, "FOR UPDATE").await?;
-        let existing = self
-            .load_messages_in_tx(tx, thread_id)
-            .await?
-            .unwrap_or_default();
+        let existing_records = self
+            .load_committed_message_records_tx(tx, thread_id)
+            .await?;
+        let existing = existing_records
+            .iter()
+            .map(|record| record.message.clone())
+            .collect::<Vec<_>>();
         let actual = existing.len() as u64;
         if let Some(expected) = expected_version
             && expected != actual
         {
             return Err(StorageError::VersionConflict { expected, actual });
         }
-        let mut merged = existing;
+        let mut merged = existing.clone();
         message_append::merge_checkpoint_append_messages(&mut merged, messages);
+        let existing_by_id = existing_records
+            .iter()
+            .filter_map(|record| {
+                record
+                    .message
+                    .id
+                    .as_ref()
+                    .map(|id| (id.clone(), record.seq))
+            })
+            .collect::<std::collections::HashMap<_, _>>();
+        let mut next_seq = actual + 1;
+        for message in messages {
+            if let Some(seq) = message
+                .id
+                .as_ref()
+                .and_then(|id| existing_by_id.get(id))
+                .copied()
+            {
+                self.upsert_committed_message_tx(tx, thread_id, seq, message)
+                    .await?;
+            } else {
+                self.insert_committed_message_tx(tx, thread_id, next_seq, message)
+                    .await?;
+                next_seq += 1;
+            }
+        }
         let new_version = merged.len() as u64;
-        self.checkpoint_in_tx(tx, thread_id, &merged, run).await?;
+        self.upsert_thread_and_run_in_tx(tx, thread_id, run).await?;
         Ok(new_version)
     }
 
-    pub(crate) async fn checkpoint_in_tx(
+    pub(super) async fn upsert_thread_and_run_in_tx(
         &self,
         tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
         thread_id: &str,
-        messages: &[Message],
         run: &RunRecord,
     ) -> Result<(), StorageError> {
-        let msg_data = serde_json::to_value(messages)
-            .map_err(|e| StorageError::Serialization(e.to_string()))?;
-
-        let delete_sql = format!("DELETE FROM {} WHERE thread_id = $1", self.messages_table);
-        let insert_sql = format!(
-            "INSERT INTO {} (thread_id, data) VALUES ($1, $2)",
-            self.messages_table
-        );
-
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .expect("system clock before UNIX epoch")
@@ -302,20 +307,14 @@ impl PostgresStore {
         thread.apply_run_projection(run);
         thread.normalize_lineage();
         self.save_thread_tx(tx, &thread).await?;
+        self.upsert_run_in_tx(tx, run).await
+    }
 
-        sqlx::query(&delete_sql)
-            .bind(thread_id)
-            .execute(&mut **tx)
-            .await
-            .map_err(|e| StorageError::Io(e.to_string()))?;
-
-        sqlx::query(&insert_sql)
-            .bind(thread_id)
-            .bind(&msg_data)
-            .execute(&mut **tx)
-            .await
-            .map_err(|e| StorageError::Io(e.to_string()))?;
-
+    async fn upsert_run_in_tx(
+        &self,
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        run: &RunRecord,
+    ) -> Result<(), StorageError> {
         // Upsert run record
         let state_json = run
             .state
@@ -397,6 +396,19 @@ impl PostgresStore {
             .map_err(|e| StorageError::Io(e.to_string()))?;
 
         Ok(())
+    }
+
+    pub(crate) async fn checkpoint_in_tx(
+        &self,
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        thread_id: &str,
+        messages: &[Message],
+        run: &RunRecord,
+    ) -> Result<(), StorageError> {
+        self.lock_thread_messages_tx(tx, thread_id).await?;
+        self.replace_committed_messages_tx(tx, thread_id, messages)
+            .await?;
+        self.upsert_thread_and_run_in_tx(tx, thread_id, run).await
     }
 }
 

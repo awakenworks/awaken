@@ -1,15 +1,143 @@
 use async_trait::async_trait;
-use awaken_contract::contract::message::{Message, strip_unpaired_tool_calls_from_view};
+use awaken_contract::contract::message::{
+    Message, MessageRecord, strip_unpaired_tool_calls_from_view,
+};
 use awaken_contract::contract::storage::{
     ChildThreadDeleteStrategy, MessagePage, MessageQuery, StorageError, ThreadPage,
     ThreadParentFilter, ThreadQuery, ThreadStore, paginate_message_records,
 };
 use awaken_contract::thread::{Thread, normalize_lineage_id_owned};
-use sqlx::{Postgres, Transaction};
+use sqlx::{Postgres, Row, Transaction};
 
 use super::PostgresStore;
 
 impl PostgresStore {
+    pub(super) fn decode_committed_message_rows(
+        rows: Vec<sqlx::postgres::PgRow>,
+        thread_id: &str,
+    ) -> Result<Vec<MessageRecord>, StorageError> {
+        let mut records = Vec::new();
+        for row in rows {
+            let data: serde_json::Value = row.get("data");
+            let seq: Option<i64> = row.try_get("seq").ok().flatten();
+            if seq.is_none() && data.is_array() {
+                let messages: Vec<Message> = serde_json::from_value(data)
+                    .map_err(|e| StorageError::Serialization(e.to_string()))?;
+                records.extend(messages.into_iter().enumerate().map(|(index, message)| {
+                    MessageRecord::from_message(thread_id.to_owned(), index as u64 + 1, message)
+                }));
+                continue;
+            }
+            let message: Message = serde_json::from_value(data)
+                .map_err(|e| StorageError::Serialization(e.to_string()))?;
+            let seq = seq
+                .map(|value| value as u64)
+                .unwrap_or(records.len() as u64 + 1);
+            records.push(MessageRecord::from_message(
+                thread_id.to_owned(),
+                seq,
+                message,
+            ));
+        }
+        Ok(records)
+    }
+
+    pub(super) async fn load_committed_message_records_tx(
+        &self,
+        tx: &mut Transaction<'_, Postgres>,
+        thread_id: &str,
+    ) -> Result<Vec<MessageRecord>, StorageError> {
+        let sql = format!(
+            "SELECT seq, data
+             FROM {}
+             WHERE thread_id = $1 AND COALESCE(state, 'committed') = 'committed'
+             ORDER BY seq ASC NULLS LAST, updated_at ASC",
+            self.messages_table
+        );
+        let rows = sqlx::query(&sql)
+            .bind(thread_id)
+            .fetch_all(&mut **tx)
+            .await
+            .map_err(|e| StorageError::Io(e.to_string()))?;
+        Self::decode_committed_message_rows(rows, thread_id)
+    }
+
+    pub(super) async fn insert_committed_message_tx(
+        &self,
+        tx: &mut Transaction<'_, Postgres>,
+        thread_id: &str,
+        seq: u64,
+        message: &Message,
+    ) -> Result<(), StorageError> {
+        let data = serde_json::to_value(message)
+            .map_err(|e| StorageError::Serialization(e.to_string()))?;
+        let sql = format!(
+            "INSERT INTO {} (thread_id, seq, message_id, state, data)
+             VALUES ($1, $2, $3, 'committed', $4)",
+            self.messages_table
+        );
+        sqlx::query(&sql)
+            .bind(thread_id)
+            .bind(seq as i64)
+            .bind(message.id.as_deref())
+            .bind(data)
+            .execute(&mut **tx)
+            .await
+            .map_err(|e| StorageError::Io(e.to_string()))?;
+        Ok(())
+    }
+
+    pub(super) async fn upsert_committed_message_tx(
+        &self,
+        tx: &mut Transaction<'_, Postgres>,
+        thread_id: &str,
+        seq: u64,
+        message: &Message,
+    ) -> Result<(), StorageError> {
+        let data = serde_json::to_value(message)
+            .map_err(|e| StorageError::Serialization(e.to_string()))?;
+        let sql = format!(
+            "UPDATE {} SET data = $3, message_id = $4, updated_at = now()
+             WHERE thread_id = $1 AND seq = $2 AND COALESCE(state, 'committed') = 'committed'",
+            self.messages_table
+        );
+        let result = sqlx::query(&sql)
+            .bind(thread_id)
+            .bind(seq as i64)
+            .bind(data)
+            .bind(message.id.as_deref())
+            .execute(&mut **tx)
+            .await
+            .map_err(|e| StorageError::Io(e.to_string()))?;
+        if result.rows_affected() == 0 {
+            self.insert_committed_message_tx(tx, thread_id, seq, message)
+                .await?;
+        }
+        Ok(())
+    }
+
+    pub(super) async fn replace_committed_messages_tx(
+        &self,
+        tx: &mut Transaction<'_, Postgres>,
+        thread_id: &str,
+        messages: &[Message],
+    ) -> Result<(), StorageError> {
+        let delete_sql = format!(
+            "DELETE FROM {} WHERE thread_id = $1 AND COALESCE(state, 'committed') = 'committed'",
+            self.messages_table
+        );
+        sqlx::query(&delete_sql)
+            .bind(thread_id)
+            .execute(&mut **tx)
+            .await
+            .map_err(|e| StorageError::Io(e.to_string()))?;
+        for (index, message) in messages.iter().enumerate() {
+            self.insert_committed_message_tx(tx, thread_id, index as u64 + 1, message)
+                .await?;
+        }
+        Ok(())
+    }
+
     pub(super) fn merge_thread_lineage(
         mut thread: Thread,
         resource_id: Option<String>,
@@ -413,25 +541,56 @@ impl ThreadStore for PostgresStore {
 
     async fn load_messages(&self, thread_id: &str) -> Result<Option<Vec<Message>>, StorageError> {
         self.ensure_schema().await?;
-        let sql = format!(
-            "SELECT data FROM {} WHERE thread_id = $1 ORDER BY updated_at DESC LIMIT 1",
-            self.messages_table
-        );
-        let row: Option<(serde_json::Value,)> = sqlx::query_as(&sql)
-            .bind(thread_id)
-            .fetch_optional(&self.pool)
+        let mut tx = self
+            .pool
+            .begin()
             .await
             .map_err(|e| StorageError::Io(e.to_string()))?;
-
-        match row {
-            Some((data,)) => {
-                let mut messages: Vec<Message> = serde_json::from_value(data)
-                    .map_err(|e| StorageError::Serialization(e.to_string()))?;
-                strip_unpaired_tool_calls_from_view(&mut messages);
-                Ok(Some(messages))
-            }
-            None => Ok(None),
+        let records = self
+            .load_committed_message_records_tx(&mut tx, thread_id)
+            .await?;
+        tx.commit()
+            .await
+            .map_err(|e| StorageError::Io(e.to_string()))?;
+        if records.is_empty() {
+            return Ok(None);
         }
+        let mut messages = records
+            .into_iter()
+            .map(|record| record.message)
+            .collect::<Vec<_>>();
+        strip_unpaired_tool_calls_from_view(&mut messages);
+        Ok(Some(messages))
+    }
+
+    async fn load_message_records(
+        &self,
+        thread_id: &str,
+    ) -> Result<Option<Vec<MessageRecord>>, StorageError> {
+        self.ensure_schema().await?;
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|e| StorageError::Io(e.to_string()))?;
+        let mut records = self
+            .load_committed_message_records_tx(&mut tx, thread_id)
+            .await?;
+        tx.commit()
+            .await
+            .map_err(|e| StorageError::Io(e.to_string()))?;
+        if records.is_empty() {
+            return Ok(None);
+        }
+        let mut messages = records
+            .iter()
+            .map(|record| record.message.clone())
+            .collect::<Vec<_>>();
+        strip_unpaired_tool_calls_from_view(&mut messages);
+        for (record, message) in records.iter_mut().zip(messages) {
+            record.message = message;
+        }
+        Ok(Some(records))
     }
 
     async fn list_message_records(
@@ -439,20 +598,9 @@ impl ThreadStore for PostgresStore {
         thread_id: &str,
         query: &MessageQuery,
     ) -> Result<MessagePage, StorageError> {
-        let Some(messages) = self.load_messages(thread_id).await? else {
+        let Some(records) = self.load_message_records(thread_id).await? else {
             return Ok(MessagePage::empty());
         };
-        let records = messages
-            .into_iter()
-            .enumerate()
-            .map(|(index, message)| {
-                awaken_contract::contract::message::MessageRecord::from_message(
-                    thread_id.to_owned(),
-                    index as u64 + 1,
-                    message,
-                )
-            })
-            .collect();
         Ok(paginate_message_records(records, query))
     }
 
@@ -462,34 +610,13 @@ impl ThreadStore for PostgresStore {
         messages: &[Message],
     ) -> Result<(), StorageError> {
         self.ensure_schema().await?;
-        let msg_data = serde_json::to_value(messages)
-            .map_err(|e| StorageError::Serialization(e.to_string()))?;
-
-        let delete_sql = format!("DELETE FROM {} WHERE thread_id = $1", self.messages_table);
-        let insert_sql = format!(
-            "INSERT INTO {} (thread_id, data) VALUES ($1, $2)",
-            self.messages_table
-        );
-
         let mut tx = self
             .pool
             .begin()
             .await
             .map_err(|e| StorageError::Io(e.to_string()))?;
-
-        sqlx::query(&delete_sql)
-            .bind(thread_id)
-            .execute(&mut *tx)
-            .await
-            .map_err(|e| StorageError::Io(e.to_string()))?;
-
-        sqlx::query(&insert_sql)
-            .bind(thread_id)
-            .bind(&msg_data)
-            .execute(&mut *tx)
-            .await
-            .map_err(|e| StorageError::Io(e.to_string()))?;
-
+        self.replace_committed_messages_tx(&mut tx, thread_id, messages)
+            .await?;
         tx.commit()
             .await
             .map_err(|e| StorageError::Io(e.to_string()))?;
@@ -508,7 +635,10 @@ impl ThreadStore for PostgresStore {
         if exists.is_none() {
             return Err(StorageError::NotFound(thread_id.to_owned()));
         }
-        let sql = format!("DELETE FROM {} WHERE thread_id = $1", self.messages_table);
+        let sql = format!(
+            "DELETE FROM {} WHERE thread_id = $1 AND COALESCE(state, 'committed') = 'committed'",
+            self.messages_table
+        );
         sqlx::query(&sql)
             .bind(thread_id)
             .execute(&self.pool)

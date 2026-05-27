@@ -94,6 +94,45 @@ impl PostgresStore {
                 .map_err(|e| StorageError::Io(e.to_string()))?;
         }
 
+        let message_migrations = [
+            ("seq", "BIGINT"),
+            ("message_id", "TEXT"),
+            ("state", "TEXT NOT NULL DEFAULT 'committed'"),
+            ("position", "BIGINT"),
+            ("delivery_mode", "JSONB"),
+            ("created_at_ms", "BIGINT"),
+        ];
+        for (column, ty) in message_migrations {
+            let sql = format!(
+                "ALTER TABLE {} ADD COLUMN IF NOT EXISTS {} {}",
+                self.messages_table, column, ty
+            );
+            sqlx::query(&sql)
+                .execute(&self.pool)
+                .await
+                .map_err(|e| StorageError::Io(e.to_string()))?;
+        }
+        let message_indexes = [
+            format!(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_{}_thread_seq_committed ON {} (thread_id, seq) WHERE state = 'committed' AND seq IS NOT NULL",
+                self.messages_table, self.messages_table
+            ),
+            format!(
+                "CREATE INDEX IF NOT EXISTS idx_{}_thread_state_position ON {} (thread_id, state, position)",
+                self.messages_table, self.messages_table
+            ),
+            format!(
+                "CREATE INDEX IF NOT EXISTS idx_{}_thread_message_id ON {} (thread_id, message_id)",
+                self.messages_table, self.messages_table
+            ),
+        ];
+        for stmt in message_indexes {
+            sqlx::query(&stmt)
+                .execute(&self.pool)
+                .await
+                .map_err(|e| StorageError::Io(e.to_string()))?;
+        }
+
         let run_migrations = [
             ("activation", "JSONB"),
             ("request", "JSONB"),
