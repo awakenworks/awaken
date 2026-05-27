@@ -282,6 +282,32 @@ async fn pending_edit_rejects_message_id_change() {
 }
 
 #[tokio::test]
+async fn pending_append_assigns_message_id_and_rejects_duplicate_ids() {
+    let store = InMemoryStore::new();
+    let mode = DeliveryMode::new_run(DeliveryGranularity::Batch);
+
+    let records = store
+        .append_pending_message_records("thread-pending-id", &[Message::user("first")], mode)
+        .await
+        .unwrap();
+    let generated_id = records[0].pending_id.clone();
+    assert_eq!(
+        records[0].message.id.as_deref(),
+        Some(generated_id.as_str())
+    );
+
+    let err = store
+        .append_pending_message_records(
+            "thread-pending-id",
+            &[Message::user("again").with_id(generated_id)],
+            mode,
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(err, StorageError::Validation(message) if message.contains("already exists")));
+}
+
+#[tokio::test]
 async fn freeze_pending_moves_selected_messages_to_committed_log() {
     let store = InMemoryStore::new();
     store
@@ -460,6 +486,14 @@ async fn pending_mutation_rejects_already_consumed_message() {
             "pending-consumed",
             Message::user("too late"),
         )
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, StorageError::Validation(message) if message.contains("already consumed"))
+    );
+
+    let err = store
+        .reorder_pending_message_records("thread-consumed", &["pending-consumed".to_string()])
         .await
         .unwrap_err();
     assert!(

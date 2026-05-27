@@ -130,10 +130,13 @@ impl PendingMessageRecord {
     pub fn from_message(
         thread_id: impl Into<String>,
         position: u64,
-        message: Message,
+        mut message: Message,
         delivery_mode: DeliveryMode,
     ) -> Self {
         let pending_id = message.id.clone().unwrap_or_else(gen_message_id);
+        if message.id.is_none() {
+            message.id = Some(pending_id.clone());
+        }
         Self {
             pending_id,
             thread_id: thread_id.into(),
@@ -159,21 +162,35 @@ pub fn select_pending_for_freeze(
     else {
         return Vec::new();
     };
-    if pending[first].delivery_mode.granularity == DeliveryGranularity::One {
-        return vec![first];
+    let mut selected = Vec::new();
+    let mut barrier_index = None;
+    for (index, entry) in pending.iter().enumerate().skip(first) {
+        if !entry.delivery_mode.boundary.eligible_at(boundary) {
+            continue;
+        }
+        if index != first && entry.delivery_mode.barrier {
+            selected.push(index);
+            barrier_index = Some(index);
+            break;
+        }
+        if index != first && entry.delivery_mode.granularity == DeliveryGranularity::One {
+            break;
+        }
+        selected.push(index);
+        if entry.delivery_mode.barrier {
+            barrier_index = Some(index);
+            break;
+        }
+        if entry.delivery_mode.granularity == DeliveryGranularity::One {
+            break;
+        }
     }
-    pending
-        .iter()
-        .enumerate()
-        .skip(first)
-        .filter_map(|(index, entry)| {
-            entry
-                .delivery_mode
-                .boundary
-                .eligible_at(boundary)
-                .then_some(index)
-        })
-        .collect()
+
+    if let Some(barrier_index) = barrier_index {
+        return (0..=barrier_index).collect();
+    }
+
+    selected
 }
 
 #[cfg(test)]
@@ -198,6 +215,17 @@ mod tests {
         )
     }
 
+    fn pending_with_barrier(
+        id: &str,
+        position: u64,
+        boundary: DeliveryBoundary,
+        granularity: DeliveryGranularity,
+    ) -> PendingMessageRecord {
+        let mut record = pending(id, position, boundary, granularity);
+        record.delivery_mode.barrier = true;
+        record
+    }
+
     #[test]
     fn delivery_boundary_fallback_cascades_forward() {
         assert!(DeliveryBoundary::Interrupt.eligible_at(DeliveryBoundary::Interrupt));
@@ -218,9 +246,24 @@ mod tests {
             DeliveryMode::new_run(DeliveryGranularity::Batch),
         );
         assert_eq!(record.pending_id, "msg-1");
+        assert_eq!(record.message.id.as_deref(), Some("msg-1"));
         assert_eq!(record.thread_id, "thread-1");
         assert_eq!(record.position, 1);
         assert_eq!(record.delivery_mode.boundary, DeliveryBoundary::NewRun);
+    }
+
+    #[test]
+    fn pending_record_assigns_generated_id_to_message() {
+        let record = PendingMessageRecord::from_message(
+            "thread-1",
+            1,
+            Message::user("hello"),
+            DeliveryMode::new_run(DeliveryGranularity::Batch),
+        );
+        assert_eq!(
+            record.message.id.as_deref(),
+            Some(record.pending_id.as_str())
+        );
     }
 
     #[test]
@@ -255,6 +298,58 @@ mod tests {
         assert_eq!(
             select_pending_for_freeze(&pending, DeliveryBoundary::OnNaturalEnd),
             vec![0, 1]
+        );
+    }
+
+    #[test]
+    fn freeze_selection_barrier_flushes_prior_pending() {
+        let pending = vec![
+            pending("a", 1, DeliveryBoundary::NewRun, DeliveryGranularity::Batch),
+            pending_with_barrier(
+                "b",
+                2,
+                DeliveryBoundary::NextStep,
+                DeliveryGranularity::Batch,
+            ),
+            pending(
+                "c",
+                3,
+                DeliveryBoundary::NextStep,
+                DeliveryGranularity::Batch,
+            ),
+        ];
+        assert_eq!(
+            select_pending_for_freeze(&pending, DeliveryBoundary::NextStep),
+            vec![0, 1]
+        );
+    }
+
+    #[test]
+    fn freeze_selection_batch_stops_before_later_one_message() {
+        let pending = vec![
+            pending(
+                "batch-1",
+                1,
+                DeliveryBoundary::NextStep,
+                DeliveryGranularity::Batch,
+            ),
+            pending(
+                "one",
+                2,
+                DeliveryBoundary::NextStep,
+                DeliveryGranularity::One,
+            ),
+            pending(
+                "batch-2",
+                3,
+                DeliveryBoundary::NextStep,
+                DeliveryGranularity::Batch,
+            ),
+        ];
+
+        assert_eq!(
+            select_pending_for_freeze(&pending, DeliveryBoundary::NextStep),
+            vec![0]
         );
     }
 }

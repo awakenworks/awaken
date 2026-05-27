@@ -1087,10 +1087,10 @@ Deterministic compatibility directives:\n\
     // -- Mailbox --
 
     let mailbox_store = Arc::new(awaken_stores::InMemoryMailboxStore::new());
-    let mailbox = Arc::new(Mailbox::new(
+    let mailbox = Arc::new(Mailbox::new_with_pending_thread_run_store(
         runtime.clone(),
         mailbox_store as Arc<dyn MailboxStore>,
-        file_store.clone() as Arc<dyn ThreadRunStore>,
+        file_store.clone(),
         format!("starter-backend:{}", std::process::id()),
         MailboxConfig::default(),
     ));

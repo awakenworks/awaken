@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::collections::HashSet;
 
 use async_trait::async_trait;
 use awaken_contract::contract::message::{
@@ -29,6 +30,10 @@ fn already_consumed(pending_id: &str) -> StorageError {
     StorageError::Validation(format!(
         "pending message '{pending_id}' is already consumed"
     ))
+}
+
+fn duplicate_pending_id(pending_id: &str) -> StorageError {
+    StorageError::Validation(format!("pending message '{pending_id}' already exists"))
 }
 
 fn selected_pending_ids(
@@ -73,6 +78,7 @@ impl PendingMessageStore for InMemoryStore {
         delivery_mode: DeliveryMode,
     ) -> Result<Vec<PendingMessageRecord>, StorageError> {
         let now = current_millis() / 1000;
+        let committed_guard = self.messages.read().await;
         let mut guard = self.pending_messages.write().await;
         let pending = guard.entry(thread_id.to_owned()).or_default();
         let start_position = pending.len() as u64 + 1;
@@ -92,6 +98,22 @@ impl PendingMessageStore for InMemoryStore {
                 record
             })
             .collect::<Vec<_>>();
+        let mut seen = pending
+            .iter()
+            .map(|record| record.pending_id.as_str())
+            .collect::<HashSet<_>>();
+        for record in &records {
+            if !seen.insert(record.pending_id.as_str()) {
+                return Err(duplicate_pending_id(&record.pending_id));
+            }
+            if committed_guard.get(thread_id).is_some_and(|committed| {
+                committed
+                    .iter()
+                    .any(|message| message.id.as_deref() == Some(record.pending_id.as_str()))
+            }) {
+                return Err(already_consumed(&record.pending_id));
+            }
+        }
         pending.extend(records.iter().cloned());
         Ok(records)
     }
@@ -156,9 +178,33 @@ impl PendingMessageStore for InMemoryStore {
         ordered_pending_ids: &[String],
     ) -> Result<Vec<PendingMessageRecord>, StorageError> {
         let mut guard = self.pending_messages.write().await;
-        let pending = guard
-            .get_mut(thread_id)
-            .ok_or_else(|| StorageError::NotFound(thread_id.to_owned()))?;
+        let Some(pending) = guard.get_mut(thread_id) else {
+            drop(guard);
+            for pending_id in ordered_pending_ids {
+                if self.committed_message_exists(thread_id, pending_id).await? {
+                    return Err(already_consumed(pending_id));
+                }
+            }
+            return Err(StorageError::NotFound(thread_id.to_owned()));
+        };
+        let pending_ids = pending
+            .iter()
+            .map(|record| record.pending_id.as_str())
+            .collect::<HashSet<_>>();
+        let consumed_id = ordered_pending_ids
+            .iter()
+            .find(|pending_id| !pending_ids.contains(pending_id.as_str()))
+            .cloned();
+        if let Some(pending_id) = consumed_id {
+            drop(guard);
+            if self
+                .committed_message_exists(thread_id, &pending_id)
+                .await?
+            {
+                return Err(already_consumed(&pending_id));
+            }
+            return Err(StorageError::NotFound(pending_id));
+        }
         if pending.len() != ordered_pending_ids.len() {
             return Err(StorageError::Validation(format!(
                 "reorder for thread '{thread_id}' must include all pending ids"
@@ -181,7 +227,11 @@ impl PendingMessageStore for InMemoryStore {
                 "reorder for thread '{thread_id}' omitted pending ids"
             )));
         }
+        let now = current_millis() / 1000;
         normalize_pending_positions(&mut reordered);
+        for record in &mut reordered {
+            record.updated_at = Some(now);
+        }
         *pending = reordered.clone();
         Ok(reordered)
     }
