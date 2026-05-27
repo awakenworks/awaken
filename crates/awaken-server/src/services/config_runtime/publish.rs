@@ -16,8 +16,12 @@ impl ConfigRuntimeManager {
             &managed.pools,
         )
         .await;
-        let provider_capabilities =
-            self.update_provider_capability_cache(&managed.providers, provider_capabilities);
+        // Stage the capability cache update without committing: a failed
+        // compile/validate/publish/runtime-swap below must not leave discovered
+        // metadata in the trusted cache (where a later discovery failure could
+        // re-serve it). Committed only after the runtime swap succeeds.
+        let staged_capabilities =
+            self.stage_provider_capability_cache(&managed.providers, provider_capabilities);
         let (candidate, next_provider_cache) =
             match self.compile_registry_set(registry_compile::RegistryCompileInput {
                 providers: &managed.providers,
@@ -26,7 +30,7 @@ impl ConfigRuntimeManager {
                 agents: &managed.agents,
                 tool_specs: &managed.tools,
                 dynamic_tools: prepared_mcp.tool_registry.clone(),
-                provider_capabilities: &provider_capabilities,
+                provider_capabilities: &staged_capabilities.resolved,
             }) {
                 Ok(candidate) => candidate,
                 Err(error) => {
@@ -58,9 +62,13 @@ impl ConfigRuntimeManager {
             prepared_skills.commit();
         }
 
-        self.provider_cache
-            .lock()
-            .replace_executors(next_provider_cache);
+        {
+            // Commit the executor cache and the staged capability cache together,
+            // only now that the publish transaction has fully succeeded.
+            let mut provider_cache = self.provider_cache.lock();
+            provider_cache.replace_executors(next_provider_cache);
+            provider_cache.commit_capabilities(staged_capabilities);
+        }
 
         let previous_mcp = if prepared_mcp.state_changed {
             let mut active = self.active_mcp_registry.lock();
@@ -83,20 +91,15 @@ impl ConfigRuntimeManager {
         Ok(version)
     }
 
-    fn update_provider_capability_cache(
+    fn stage_provider_capability_cache(
         &self,
         providers: &[awaken_contract::ProviderSpec],
-        discovered: std::collections::HashMap<
-            String,
-            std::collections::HashMap<String, awaken_runtime::registry::ModelCapabilityPatch>,
-        >,
-    ) -> std::collections::HashMap<
-        String,
-        std::collections::HashMap<String, awaken_runtime::registry::ModelCapabilityPatch>,
-    > {
-        self.provider_cache.lock().update_capability_snapshots(
+        discovery: provider_capability_discovery::ProviderCapabilityDiscovery,
+    ) -> super::provider_cache::StagedCapabilityCache {
+        self.provider_cache.lock().stage_capability_snapshots(
             providers,
-            discovered,
+            discovery.discovered,
+            &discovery.attempted,
             registry_compile::provider_definition_signature,
             std::time::SystemTime::now(),
         )

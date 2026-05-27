@@ -8,14 +8,37 @@ use awaken_runtime::registry::model_capabilities::{
 use futures::future::join_all;
 use reqwest::header::{AUTHORIZATION, HeaderMap, HeaderValue};
 
+/// Result of a provider-capability discovery pass.
+///
+/// `attempted` distinguishes providers we actually issued a discovery request
+/// for (whether it then succeeded or failed) from providers we deliberately did
+/// not probe this round (no referenced model needs discovery, or the default
+/// endpoint was skipped for lack of credentials). The capability cache uses it
+/// to warn about *stale* snapshots only when discovery was attempted and failed,
+/// never when discovery was simply unnecessary.
+#[derive(Default)]
+pub(super) struct ProviderCapabilityDiscovery {
+    pub(super) discovered: HashMap<String, HashMap<String, ModelCapabilityPatch>>,
+    pub(super) attempted: HashSet<String>,
+}
+
+enum DiscoveryOutcome {
+    /// Discovery was not issued (skipped endpoint or no resolvable model URL).
+    NotAttempted,
+    /// A discovery request was issued but did not yield usable metadata.
+    Failed,
+    /// A discovery request succeeded; the map may be empty.
+    Discovered(HashMap<String, ModelCapabilityPatch>),
+}
+
 pub(super) async fn discover_provider_capabilities(
     providers: &[ProviderSpec],
     models: &[ModelSpec],
     pools: &[ModelPoolSpec],
-) -> HashMap<String, HashMap<String, ModelCapabilityPatch>> {
-    let wanted = referenced_models_by_provider(models, pools);
+) -> ProviderCapabilityDiscovery {
+    let wanted = referenced_models_by_provider(providers, models, pools);
     if wanted.is_empty() {
-        return HashMap::new();
+        return ProviderCapabilityDiscovery::default();
     }
 
     let client = reqwest::Client::new();
@@ -26,30 +49,56 @@ pub(super) async fn discover_provider_capabilities(
             let client = client.clone();
             let wanted = wanted.get(&provider.id).cloned().unwrap_or_default();
             async move {
-                let capabilities = discover_one_provider(&client, provider, &wanted).await?;
-                Some((provider.id.clone(), capabilities))
+                let outcome = discover_one_provider(&client, provider, &wanted).await;
+                (provider.id.clone(), outcome)
             }
         });
 
-    join_all(tasks).await.into_iter().flatten().collect()
+    let mut result = ProviderCapabilityDiscovery::default();
+    for (provider_id, outcome) in join_all(tasks).await {
+        match outcome {
+            DiscoveryOutcome::NotAttempted => {}
+            DiscoveryOutcome::Failed => {
+                result.attempted.insert(provider_id);
+            }
+            DiscoveryOutcome::Discovered(capabilities) => {
+                result.attempted.insert(provider_id.clone());
+                result.discovered.insert(provider_id, capabilities);
+            }
+        }
+    }
+    result
 }
 
 async fn discover_one_provider(
     client: &reqwest::Client,
     provider: &ProviderSpec,
     wanted: &HashSet<String>,
-) -> Option<HashMap<String, ModelCapabilityPatch>> {
+) -> DiscoveryOutcome {
+    // Only providers with a known `/models` schema are probed. An unknown or
+    // custom adapter is NOT assumed to be OpenAI-compatible — its endpoint
+    // would otherwise be parsed as trusted OpenAI metadata. Custom providers
+    // opt in explicitly via `adapter_options.model_discovery_schema`.
+    let Some(schema) = provider_discovery_schema(provider) else {
+        tracing::debug!(
+            provider_id = %provider.id,
+            adapter = %provider.adapter,
+            "skipping model capability discovery: adapter has no known /models schema \
+             (set adapter_options.model_discovery_schema to opt in)"
+        );
+        return DiscoveryOutcome::NotAttempted;
+    };
     if should_skip_unauthenticated_default_endpoint(provider) {
         tracing::debug!(
             provider_id = %provider.id,
             adapter = %provider.adapter,
             "skipping provider model capability discovery without explicit credentials"
         );
-        return None;
+        return DiscoveryOutcome::NotAttempted;
     }
     let url = match model_list_url(provider) {
         Some(url) => url,
-        None => return None,
+        None => return DiscoveryOutcome::NotAttempted,
     };
     let mut request = client
         .get(url.clone())
@@ -68,7 +117,7 @@ async fn discover_one_provider(
                 error = %error,
                 "failed to discover provider model capabilities"
             );
-            return None;
+            return DiscoveryOutcome::Failed;
         }
     };
     if !response.status().is_success() {
@@ -79,7 +128,7 @@ async fn discover_one_provider(
             status = %response.status(),
             "provider model capability discovery returned non-success status"
         );
-        return None;
+        return DiscoveryOutcome::Failed;
     }
 
     let payload = match response.json::<serde_json::Value>().await {
@@ -92,10 +141,10 @@ async fn discover_one_provider(
                 error = %error,
                 "provider model capability discovery returned invalid json"
             );
-            return None;
+            return DiscoveryOutcome::Failed;
         }
     };
-    let parsed = parse_provider_model_capabilities(&provider.adapter, &payload);
+    let parsed = parse_provider_model_capabilities(schema, &payload);
     if !parsed.keys().any(|model| wanted.contains(model)) {
         tracing::debug!(
             provider_id = %provider.id,
@@ -103,48 +152,67 @@ async fn discover_one_provider(
             "provider model capability discovery succeeded without wanted model metadata"
         );
     }
-    Some(parsed)
+    DiscoveryOutcome::Discovered(parsed)
 }
 
 fn referenced_models_by_provider(
+    providers: &[ProviderSpec],
     models: &[ModelSpec],
     pools: &[ModelPoolSpec],
 ) -> HashMap<String, HashSet<String>> {
+    let schema_by_provider: HashMap<&str, &'static str> = providers
+        .iter()
+        .filter_map(|provider| {
+            provider_discovery_schema(provider).map(|schema| (provider.id.as_str(), schema))
+        })
+        .collect();
     let models_by_id: HashMap<_, _> = models
         .iter()
         .map(|model| (model.id.as_str(), model))
         .collect();
     let mut out: HashMap<String, HashSet<String>> = HashMap::new();
 
-    for model in models {
-        if needs_capability_discovery(model) {
+    let consider = |model: &ModelSpec, out: &mut HashMap<String, HashSet<String>>| {
+        let Some(schema) = schema_by_provider.get(model.provider_id.as_str()) else {
+            return;
+        };
+        if needs_capability_discovery(model, schema) {
             out.entry(model.provider_id.clone())
                 .or_default()
                 .insert(normalize_capability_model_name(&model.upstream_model));
         }
+    };
+
+    for model in models {
+        consider(model, &mut out);
     }
     for pool in pools {
         for member in &pool.members {
             let Some(model) = models_by_id.get(member.model_id.as_str()) else {
                 continue;
             };
-            if needs_capability_discovery(model) {
-                out.entry(model.provider_id.clone())
-                    .or_default()
-                    .insert(normalize_capability_model_name(&model.upstream_model));
-            }
+            consider(model, &mut out);
         }
     }
 
     out
 }
 
-fn needs_capability_discovery(model: &ModelSpec) -> bool {
-    model.context_window.is_none()
-        || model.max_output_tokens.is_none()
-        || model.modalities.input.is_empty()
-        || model.modalities.output.is_empty()
-        || model.knowledge_cutoff.is_none()
+/// Whether a model still has a capability field that *this provider's discovery
+/// schema can fill*. Token limits are discoverable on every schema, but only the
+/// OpenAI-compatible schema surfaces modalities and knowledge cutoff — so a
+/// Gemini-backed model missing only those fields must not keep re-triggering a
+/// probe on every publish (the probe could never fill them).
+fn needs_capability_discovery(model: &ModelSpec, schema: &str) -> bool {
+    let token_limits_missing = model.context_window.is_none() || model.max_output_tokens.is_none();
+    let modalities_missing =
+        model.modalities.input.is_empty() || model.modalities.output.is_empty();
+    let cutoff_missing = model.knowledge_cutoff.is_none();
+    match schema {
+        "openai" => token_limits_missing || modalities_missing || cutoff_missing,
+        "gemini" => token_limits_missing,
+        _ => false,
+    }
 }
 
 fn model_list_url(provider: &ProviderSpec) -> Option<reqwest::Url> {
@@ -190,6 +258,41 @@ fn default_model_base_url(adapter: &str) -> Option<&'static str> {
         "openai" => Some("https://api.openai.com/v1/"),
         "openrouter" => Some("https://openrouter.ai/api/v1/"),
         "gemini" | "google" => Some("https://generativelanguage.googleapis.com/v1beta/"),
+        _ => None,
+    }
+}
+
+/// Resolve the `/models` discovery schema for a provider, or `None` to skip
+/// discovery entirely.
+///
+/// Built-in adapters map to their native schema. Any other adapter must opt in
+/// explicitly via `adapter_options.model_discovery_schema` (`"openai"` /
+/// `"openai-compatible"` or `"gemini"`) — so a custom OpenAI-compatible gateway
+/// can be discovered while an unknown adapter is never silently trusted as
+/// OpenAI metadata. The returned string is the `provider_source` passed to
+/// [`parse_provider_model_capabilities`].
+fn provider_discovery_schema(provider: &ProviderSpec) -> Option<&'static str> {
+    if let Some(declared) = provider
+        .adapter_options
+        .get("model_discovery_schema")
+        .and_then(|value| value.as_str())
+    {
+        return match declared.to_ascii_lowercase().as_str() {
+            "openai" | "openai-compatible" | "openrouter" => Some("openai"),
+            "gemini" | "google" => Some("gemini"),
+            other => {
+                tracing::warn!(
+                    provider_id = %provider.id,
+                    model_discovery_schema = other,
+                    "ignoring unknown adapter_options.model_discovery_schema"
+                );
+                None
+            }
+        };
+    }
+    match provider.adapter.to_ascii_lowercase().as_str() {
+        "openai" | "openrouter" => Some("openai"),
+        "gemini" | "google" => Some("gemini"),
         _ => None,
     }
 }
@@ -316,11 +419,56 @@ mod tests {
             routing: Default::default(),
             switch: Default::default(),
         }];
+        let providers = vec![ProviderSpec {
+            id: "p".into(),
+            adapter: "openai".into(),
+            ..ProviderSpec::default()
+        }];
 
-        let wanted = referenced_models_by_provider(&models, &pools);
+        let wanted = referenced_models_by_provider(&providers, &models, &pools);
 
         assert_eq!(wanted["p"].len(), 1);
         assert!(wanted["p"].contains("gpt-4o"));
+    }
+
+    #[test]
+    fn gemini_model_missing_only_cutoff_is_not_requested() {
+        // Gemini discovery cannot fill modalities or knowledge cutoff, so a
+        // model that already has token limits must not keep re-triggering a
+        // probe just because those fields are absent.
+        let providers = vec![ProviderSpec {
+            id: "g".into(),
+            adapter: "gemini".into(),
+            ..ProviderSpec::default()
+        }];
+        let models = vec![ModelSpec {
+            context_window: Some(1_000_000),
+            max_output_tokens: Some(8_192),
+            ..ModelSpec::new("m", "g", "gemini-2.5-pro")
+        }];
+
+        let wanted = referenced_models_by_provider(&providers, &models, &[]);
+
+        assert!(
+            wanted.is_empty(),
+            "token limits present and Gemini cannot fill modalities/cutoff: no probe"
+        );
+    }
+
+    #[test]
+    fn gemini_model_missing_token_limits_is_requested() {
+        // Token limits are discoverable on Gemini, so a missing one still drives
+        // a probe.
+        let providers = vec![ProviderSpec {
+            id: "g".into(),
+            adapter: "gemini".into(),
+            ..ProviderSpec::default()
+        }];
+        let models = vec![ModelSpec::new("m", "g", "gemini-2.5-pro")];
+
+        let wanted = referenced_models_by_provider(&providers, &models, &[]);
+
+        assert!(wanted.contains_key("g"));
     }
 
     #[tokio::test]
@@ -337,11 +485,12 @@ mod tests {
         }];
         let models = vec![ModelSpec::new("m", "p", "openai/gpt-4o")];
 
-        let discovered = discover_provider_capabilities(&providers, &models, &[]).await;
+        let result = discover_provider_capabilities(&providers, &models, &[]).await;
 
-        let patch = discovered["p"].get("openai/gpt-4o").expect("patch");
+        let patch = result.discovered["p"].get("openai/gpt-4o").expect("patch");
         assert_eq!(patch.context_window, Some(128_000));
         assert_eq!(patch.max_output_tokens, Some(16_384));
+        assert!(result.attempted.contains("p"), "p was probed");
         assert_eq!(hits.load(Ordering::SeqCst), 1);
     }
 
@@ -359,11 +508,11 @@ mod tests {
         }];
         let models = vec![ModelSpec::new("m", "p", "missing-model")];
 
-        let discovered = discover_provider_capabilities(&providers, &models, &[]).await;
+        let result = discover_provider_capabilities(&providers, &models, &[]).await;
 
         assert_eq!(hits.load(Ordering::SeqCst), 1);
         assert_eq!(
-            discovered.get("p"),
+            result.discovered.get("p"),
             Some(&HashMap::from([(
                 "openai/gpt-4o".to_string(),
                 ModelCapabilityPatch {
@@ -374,6 +523,97 @@ mod tests {
                 }
             )]))
         );
+    }
+
+    #[tokio::test]
+    async fn fully_specified_models_are_not_attempted() {
+        // Every model capability is explicit, so no provider needs discovery:
+        // nothing is attempted and the stale-snapshot warning cannot fire.
+        let providers = vec![ProviderSpec {
+            id: "p".into(),
+            adapter: "openrouter".into(),
+            api_key: Some("secret".into()),
+            base_url: Some("https://example.test/v1".into()),
+            timeout_secs: 5,
+            adapter_options: Default::default(),
+        }];
+        let models = vec![ModelSpec {
+            context_window: Some(128_000),
+            max_output_tokens: Some(16_384),
+            modalities: awaken_contract::registry_spec::Modalities {
+                input: vec![awaken_contract::registry_spec::Modality::Text],
+                output: vec![awaken_contract::registry_spec::Modality::Text],
+            },
+            knowledge_cutoff: Some("2025-01".into()),
+            ..ModelSpec::new("m", "p", "gpt-4o")
+        }];
+
+        let result = discover_provider_capabilities(&providers, &models, &[]).await;
+
+        assert!(result.discovered.is_empty());
+        assert!(
+            result.attempted.is_empty(),
+            "no discovery was needed, so no provider is attempted"
+        );
+    }
+
+    #[tokio::test]
+    async fn unknown_adapter_is_not_probed_without_opt_in() {
+        // An unknown adapter with an explicit base_url must NOT be probed and
+        // parsed as trusted OpenAI metadata.
+        let hits = Arc::new(AtomicUsize::new(0));
+        let base_url = spawn_models_server(Arc::clone(&hits)).await;
+        let providers = vec![ProviderSpec {
+            id: "p".into(),
+            adapter: "custom-gateway".into(),
+            api_key: Some("secret".into()),
+            base_url: Some(base_url),
+            timeout_secs: 5,
+            adapter_options: Default::default(),
+        }];
+        let models = vec![ModelSpec::new("m", "p", "openai/gpt-4o")];
+
+        let result = discover_provider_capabilities(&providers, &models, &[]).await;
+
+        assert!(result.discovered.is_empty());
+        assert!(result.attempted.is_empty());
+        assert_eq!(
+            hits.load(Ordering::SeqCst),
+            0,
+            "unknown adapter must not be probed"
+        );
+    }
+
+    #[tokio::test]
+    async fn custom_adapter_is_probed_with_explicit_schema_opt_in() {
+        // A custom OpenAI-compatible gateway opts in via adapter_options.
+        let hits = Arc::new(AtomicUsize::new(0));
+        let base_url = spawn_models_server(Arc::clone(&hits)).await;
+        let providers = vec![ProviderSpec {
+            id: "p".into(),
+            adapter: "custom-gateway".into(),
+            api_key: Some("secret".into()),
+            base_url: Some(base_url),
+            timeout_secs: 5,
+            adapter_options: [(
+                "model_discovery_schema".to_string(),
+                json!("openai-compatible"),
+            )]
+            .into_iter()
+            .collect(),
+        }];
+        let models = vec![ModelSpec::new("m", "p", "openai/gpt-4o")];
+
+        let result = discover_provider_capabilities(&providers, &models, &[]).await;
+
+        assert_eq!(
+            hits.load(Ordering::SeqCst),
+            1,
+            "an opted-in custom adapter is probed"
+        );
+        let patch = result.discovered["p"].get("openai/gpt-4o").expect("patch");
+        assert_eq!(patch.context_window, Some(128_000));
+        assert!(result.attempted.contains("p"));
     }
 
     async fn spawn_models_server(hits: Arc<AtomicUsize>) -> String {

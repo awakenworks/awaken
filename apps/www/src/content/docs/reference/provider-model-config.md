@@ -132,7 +132,7 @@ Example config documents:
 | `api_key` | `Option<RedactedString>` | `None` | Wrapped in `RedactedString`; redacted in `Debug`/`Display`. Wire format is a plain JSON string. Empty-string input deserializes as `None` so a stored key is preserved when the field is omitted on update |
 | `base_url` | `Option<String>` | `None` | Override base URL for proxies or self-hosted deployments. Empty-string input deserializes as `None` |
 | `timeout_secs` | `u64` | `300` | Request timeout in seconds |
-| `adapter_options` | `BTreeMap<String, Value>` | `{}` | Adapter-specific non-secret options. Today the OpenAI-compatible adapter recognizes `headers` (an object of string→string pairs added as default request headers). Unknown keys are accepted by the schema and ignored at build time. Secrets must use `api_key`; do not store credentials here |
+| `adapter_options` | `BTreeMap<String, Value>` | `{}` | Adapter-specific non-secret options. The OpenAI-compatible adapter recognizes `headers` (an object of string→string pairs added as default request headers). `model_discovery_schema` (`"openai"`/`"openai-compatible"` or `"gemini"`) opts a custom adapter into `/models` capability discovery using that schema (see Model capability sources). Unknown keys are accepted by the schema and ignored at build time. Secrets must use `api_key`; do not store credentials here |
 
 `ProviderSpec` deserialization ignores unknown top-level fields for stored-config
 compatibility. Config write and validate surfaces call `validate_provider_spec`
@@ -182,12 +182,21 @@ Static heuristics are conservative metadata only. Runtime input-modality
 enforcement and automatic knowledge-cutoff context are enabled only when the
 field came from explicit `ModelSpec` config or provider discovery.
 
-Provider discovery coverage is adapter-specific. Gemini/Google discovery
-currently backfills token limits only; configure `modalities` and
+Provider discovery coverage is adapter-specific. Only adapters with a known
+`/models` schema are probed: `openai`/`openrouter` (OpenAI-compatible) and
+`gemini`/`google` (Gemini). An unknown or custom adapter is never silently
+treated as OpenAI-compatible; to discover a custom OpenAI-/Gemini-compatible
+gateway, opt in with `adapter_options.model_discovery_schema`. Gemini/Google
+discovery currently backfills token limits only; configure `modalities` and
 `knowledge_cutoff` explicitly when those fields should drive runtime guards or
 context injection. Vertex models may still receive static heuristic metadata,
 but Vertex provider discovery is not enabled unless a future adapter supplies a
 complete discovery URL/auth implementation.
+
+Explicit `ModelSpec.knowledge_cutoff` is validated when the spec is
+deserialized: it must be an ISO `YYYY-MM` or `YYYY-MM-DD` date, so a malformed
+or injected value is rejected before it can reach the resolved model or the
+knowledge-cutoff system context.
 
 When `ModelSpec.modalities.input` is explicit or provider-discovered and
 non-empty, unsupported request content blocks are rejected before the provider

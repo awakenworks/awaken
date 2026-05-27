@@ -442,56 +442,17 @@ fn modality_from_str(value: &str) -> Option<Modality> {
     }
 }
 
+/// Normalize a provider-discovered knowledge cutoff, dropping (and logging)
+/// malformed values. Shares the date validation with `ModelSpec` deserialization
+/// via [`awaken_contract::registry_spec::normalize_knowledge_cutoff`]; the only
+/// difference is policy: discovery is untrusted, so a malformed value is
+/// silently dropped here rather than rejected at the boundary.
 fn normalize_knowledge_cutoff(value: &str) -> Option<String> {
-    let value = value.trim();
-    let bytes = value.as_bytes();
-    let valid_shape = match bytes.len() {
-        7 => {
-            bytes[4] == b'-'
-                && bytes[..4].iter().all(|b| b.is_ascii_digit())
-                && bytes[5..].iter().all(|b| b.is_ascii_digit())
-        }
-        10 => {
-            bytes[4] == b'-'
-                && bytes[7] == b'-'
-                && bytes[..4].iter().all(|b| b.is_ascii_digit())
-                && bytes[5..7].iter().all(|b| b.is_ascii_digit())
-                && bytes[8..].iter().all(|b| b.is_ascii_digit())
-        }
-        _ => false,
-    };
-    if !valid_shape {
+    let normalized = awaken_contract::registry_spec::normalize_knowledge_cutoff(value);
+    if normalized.is_none() {
         tracing::warn!("provider discovery ignored malformed knowledge cutoff");
-        return None;
     }
-    let month = value[5..7].parse::<u32>().ok()?;
-    if !(1..=12).contains(&month) {
-        tracing::warn!("provider discovery ignored invalid knowledge cutoff month");
-        return None;
-    }
-    if bytes.len() == 10 {
-        let year = value[..4].parse::<i32>().ok()?;
-        let day = value[8..10].parse::<u32>().ok()?;
-        if day < 1 || day > days_in_month(year, month) {
-            tracing::warn!("provider discovery ignored invalid knowledge cutoff day");
-            return None;
-        }
-    }
-    Some(value.to_owned())
-}
-
-fn days_in_month(year: i32, month: u32) -> u32 {
-    match month {
-        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
-        4 | 6 | 9 | 11 => 30,
-        2 if is_leap_year(year) => 29,
-        2 => 28,
-        _ => 0,
-    }
-}
-
-fn is_leap_year(year: i32) -> bool {
-    (year % 4 == 0 && year % 100 != 0) || year % 400 == 0
+    normalized
 }
 
 fn first_u32(item: &serde_json::Value, keys: &[&str]) -> Option<u32> {

@@ -73,7 +73,18 @@ pub struct ModelSpec {
     #[serde(default, skip_serializing_if = "Modalities::is_empty")]
     pub modalities: Modalities,
     /// ISO date string (e.g. "2026-01") for the model's training cutoff.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    ///
+    /// Deserialization rejects any value that is not a well-formed `YYYY-MM` or
+    /// `YYYY-MM-DD` date. This field is runtime-trusted — it is injected
+    /// verbatim into the agent's system context — so an unvalidated string from
+    /// config, a tenant, or an external registry would be a prompt-injection
+    /// surface. Validating at the deserialization boundary closes it for every
+    /// source.
+    #[serde(
+        default,
+        deserialize_with = "deserialize_knowledge_cutoff",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub knowledge_cutoff: Option<String>,
 
     /// Optional input-token price in USD per million tokens. When paired
@@ -117,5 +128,79 @@ impl ModelSpec {
             f64::from(input_tokens) * ip / 1_000_000.0
                 + f64::from(output_tokens) * op / 1_000_000.0,
         )
+    }
+}
+
+/// Validate an ISO knowledge-cutoff date (`YYYY-MM` or `YYYY-MM-DD`) and return
+/// its trimmed canonical form, or `None` when the value is malformed.
+///
+/// Shared between `ModelSpec` deserialization (which rejects malformed explicit
+/// values) and runtime provider-capability discovery (which drops malformed
+/// discovered values). Pure and side-effect free so callers choose how to
+/// react to `None`.
+#[must_use]
+pub fn normalize_knowledge_cutoff(value: &str) -> Option<String> {
+    let value = value.trim();
+    let bytes = value.as_bytes();
+    let valid_shape = match bytes.len() {
+        7 => {
+            bytes[4] == b'-'
+                && bytes[..4].iter().all(u8::is_ascii_digit)
+                && bytes[5..].iter().all(u8::is_ascii_digit)
+        }
+        10 => {
+            bytes[4] == b'-'
+                && bytes[7] == b'-'
+                && bytes[..4].iter().all(u8::is_ascii_digit)
+                && bytes[5..7].iter().all(u8::is_ascii_digit)
+                && bytes[8..].iter().all(u8::is_ascii_digit)
+        }
+        _ => false,
+    };
+    if !valid_shape {
+        return None;
+    }
+    let month = value[5..7].parse::<u32>().ok()?;
+    if !(1..=12).contains(&month) {
+        return None;
+    }
+    if bytes.len() == 10 {
+        let year = value[..4].parse::<i32>().ok()?;
+        let day = value[8..10].parse::<u32>().ok()?;
+        if day < 1 || day > days_in_month(year, month) {
+            return None;
+        }
+    }
+    Some(value.to_owned())
+}
+
+fn days_in_month(year: i32, month: u32) -> u32 {
+    match month {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 if is_leap_year(year) => 29,
+        2 => 28,
+        _ => 0,
+    }
+}
+
+fn is_leap_year(year: i32) -> bool {
+    (year % 4 == 0 && year % 100 != 0) || year % 400 == 0
+}
+
+/// Reject explicit `knowledge_cutoff` values that are not well-formed ISO
+/// dates, canonicalizing accepted values to their trimmed form.
+fn deserialize_knowledge_cutoff<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let raw = Option::<String>::deserialize(deserializer)?;
+    match raw {
+        None => Ok(None),
+        Some(value) => normalize_knowledge_cutoff(&value).map(Some).ok_or_else(|| {
+            serde::de::Error::custom(format!(
+                "knowledge_cutoff must be an ISO date of the form YYYY-MM or YYYY-MM-DD, got {value:?}"
+            ))
+        }),
     }
 }

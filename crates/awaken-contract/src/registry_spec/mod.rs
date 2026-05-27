@@ -746,7 +746,7 @@ pub use model_pool_spec::{
     HomeStrategy, ModelPoolSpec, PoolMemberRole, PoolMemberSpec, PoolRoutingPolicy,
     PoolSwitchPolicy, StickyScope,
 };
-pub use model_spec::{Modalities, Modality, ModelSpec};
+pub use model_spec::{Modalities, Modality, ModelSpec, normalize_knowledge_cutoff};
 
 #[cfg(test)]
 mod tests;
