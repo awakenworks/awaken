@@ -394,6 +394,14 @@ impl Mailbox {
                 error = %error,
                 "repairable checkpoint event publish failed after pending freeze commit"
                 );
+                // Queue an in-process retry so a transient publisher outage is
+                // repaired on the next maintenance sweep, not only at restart.
+                self.enqueue_checkpoint_repair(super::checkpoint_repair::CheckpointRepairTask {
+                    thread_id: thread_id.to_string(),
+                    run_id: run_id.to_string(),
+                    first_seq: first_new_seq,
+                    last_seq: last_new_seq,
+                });
             }
             self.refresh_worker_checkpoint_cache(thread_id, &appended_messages, record)
                 .await;

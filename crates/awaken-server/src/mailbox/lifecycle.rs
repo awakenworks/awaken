@@ -473,6 +473,9 @@ impl Mailbox {
                 tracing::warn!(error = %e, "sweep failed");
             }
         }
+        // Retry any checkpoint events that failed to publish after a freeze
+        // commit, so projections recover without waiting for a process restart.
+        self.drain_checkpoint_repair_queue().await;
     }
 
     pub(super) async fn run_gc(&self) {

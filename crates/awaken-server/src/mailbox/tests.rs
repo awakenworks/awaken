@@ -5513,6 +5513,77 @@ async fn recover_repairs_thread_message_checkpoint_events_from_committed_log() {
 }
 
 #[tokio::test]
+async fn maintenance_drain_republishes_enqueued_checkpoint_repair() {
+    // Simulates a checkpoint-event publish failure after a freeze commit: a repair
+    // task is enqueued, and the maintenance sweep's drain re-publishes the missing
+    // events without waiting for a process restart. Idempotent across drains.
+    let event_store = Arc::new(InMemoryEventStore::new());
+    let thread_store = Arc::new(InMemoryStore::new());
+    let mailbox = Arc::new(
+        Mailbox::new(
+            Arc::new(NoopMailboxRuntime),
+            make_store(),
+            thread_store.clone(),
+            "test-consumer".to_string(),
+            MailboxConfig::default(),
+        )
+        .with_server_event_publisher(
+            test_server_event_publisher(Arc::clone(&event_store)),
+            "server",
+        )
+        .unwrap(),
+    );
+
+    // Commit a message + run input, as a freeze would, without publishing events.
+    let message = Message::user("hi").with_id("msg-drain-1".to_string());
+    let (_, input) = build_run_input("thread-drain", 1, &["msg-drain-1".to_string()]);
+    let mut run = make_run_record("run-drain", "thread-drain", RunStatus::Done);
+    run.input = input;
+    #[allow(deprecated)]
+    thread_store
+        .checkpoint("thread-drain", &[message], &run)
+        .await
+        .unwrap();
+
+    // A publish failure would have enqueued this; the sweep drains it.
+    mailbox.enqueue_checkpoint_repair(super::checkpoint_repair::CheckpointRepairTask {
+        thread_id: "thread-drain".to_string(),
+        run_id: "run-drain".to_string(),
+        first_seq: 1,
+        last_seq: 1,
+    });
+    mailbox.run_sweep().await;
+
+    let page = event_store
+        .list(EventScope::thread("thread-drain"), None, 10)
+        .await
+        .unwrap();
+    let kinds = page
+        .events
+        .iter()
+        .map(|event| event.event_kind.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        kinds,
+        vec!["MessageCommitted", "ThreadMessagesCheckpointed"]
+    );
+
+    // A second sweep with the same task re-queued must not duplicate events.
+    mailbox.enqueue_checkpoint_repair(super::checkpoint_repair::CheckpointRepairTask {
+        thread_id: "thread-drain".to_string(),
+        run_id: "run-drain".to_string(),
+        first_seq: 1,
+        last_seq: 1,
+    });
+    mailbox.run_sweep().await;
+    let page = event_store
+        .list(EventScope::thread("thread-drain"), None, 10)
+        .await
+        .unwrap();
+    assert_eq!(page.events.len(), 2, "re-publish must be idempotent");
+}
+
+#[tokio::test]
 async fn runtime_event_capture_maps_continue_run_start_to_run_resumed() {
     let mailbox_store = make_store();
     let run_store = Arc::new(InMemoryStore::new());
