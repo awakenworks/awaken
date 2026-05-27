@@ -13,7 +13,8 @@ use awaken_ext_skills::registry::{InMemorySkillRegistry, SkillRegistry};
 use awaken_ext_skills::skill::{Skill, SkillResourceKind};
 use awaken_ext_skills::state::{SkillState, SkillStateUpdate, SkillStateValue};
 use awaken_ext_skills::{
-    EmbeddedSkill, EmbeddedSkillData, FsSkill, SkillActivateTool, SkillSubsystem,
+    EmbeddedSkill, EmbeddedSkillData, FsSkill, LoadSkillResourceTool, SkillActivateTool,
+    SkillScriptTool, SkillSubsystem,
 };
 use serde_json::json;
 use tempfile::TempDir;
@@ -552,6 +553,75 @@ async fn activate_tool_rejects_model_invocation_disabled_skill() {
             .unwrap_or("")
             .contains("model_invocation_disabled"),
         "error must identify the model-invocation guard"
+    );
+}
+
+fn blocked_skill_registry() -> (TempDir, std::sync::Arc<dyn SkillRegistry>) {
+    let td = TempDir::new().unwrap();
+    let root = td.path().join("skills");
+    fs::create_dir_all(root.join("blocked-skill")).unwrap();
+    fs::write(
+        root.join("blocked-skill").join("SKILL.md"),
+        SKILL_NO_MODEL_INVOKE_MD,
+    )
+    .unwrap();
+    let skills = FsSkill::into_arc_skills(FsSkill::discover(root).unwrap().skills);
+    let registry: std::sync::Arc<dyn SkillRegistry> =
+        Arc::new(InMemorySkillRegistry::from_skills(skills));
+    (td, registry)
+}
+
+#[tokio::test]
+async fn load_skill_resource_rejects_model_invocation_disabled_skill() {
+    // The guard must cover ALL model-facing tools, not just activation: the model
+    // must not be able to read a disable-model-invocation skill's resources.
+    let (_td, registry) = blocked_skill_registry();
+    let tool = LoadSkillResourceTool::new(registry);
+    let ctx = ToolCallContext::test_default();
+
+    let result = tool
+        .execute(
+            json!({"skill": "blocked-skill", "path": "references/x.md"}),
+            &ctx,
+        )
+        .await
+        .unwrap();
+    assert!(result.result.is_error());
+    assert!(
+        result
+            .result
+            .message
+            .as_deref()
+            .unwrap_or("")
+            .contains("model_invocation_disabled"),
+        "load_skill_resource must enforce the model-invocation guard"
+    );
+}
+
+#[tokio::test]
+async fn skill_script_rejects_model_invocation_disabled_skill() {
+    // Same guard for script execution: the model must not run a
+    // disable-model-invocation skill's scripts.
+    let (_td, registry) = blocked_skill_registry();
+    let tool = SkillScriptTool::new(registry);
+    let ctx = ToolCallContext::test_default();
+
+    let result = tool
+        .execute(
+            json!({"skill": "blocked-skill", "script": "scripts/run.sh"}),
+            &ctx,
+        )
+        .await
+        .unwrap();
+    assert!(result.result.is_error());
+    assert!(
+        result
+            .result
+            .message
+            .as_deref()
+            .unwrap_or("")
+            .contains("model_invocation_disabled"),
+        "skill_script must enforce the model-invocation guard"
     );
 }
 
