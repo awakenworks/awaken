@@ -160,9 +160,12 @@ with `config management API not enabled`.
 
 `GET /v1/capabilities` includes each registered plugin's `config_schemas`.
 The admin console uses this field to render agent-level plugin config forms and
-save values into `AgentSpec.sections`. After a successful config mutation, the
-runtime manager publishes a new registry snapshot, so later `/v1/runs` requests
-use the updated agents, models, providers, MCP servers, and plugin sections.
+save values into `AgentSpec.sections`. Each entry includes the section key,
+JSON Schema, optional display metadata, default value, UI schema hints, and an
+optional editor hint; clients that do not recognize the editor render the JSON
+Schema form. After a successful config mutation, the runtime manager publishes a
+new registry snapshot, so later `/v1/runs` requests use the updated agents,
+models, providers, MCP servers, and plugin sections.
 
 Current built-in namespaces:
 

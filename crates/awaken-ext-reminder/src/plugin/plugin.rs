@@ -52,7 +52,13 @@ impl Plugin for ReminderPlugin {
     }
 
     fn config_schemas(&self) -> Vec<ConfigSchema> {
-        vec![ConfigSchema::for_key::<ReminderConfigKey>()]
+        vec![
+            ConfigSchema::for_key::<ReminderConfigKey>()
+                .with_display_name("Reminders")
+                .with_description("Tool-output rules that inject contextual reminders.")
+                .with_category("behavior")
+                .with_editor("reminder"),
+        ]
     }
 
     fn on_activate(

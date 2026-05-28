@@ -312,7 +312,6 @@ fn materialize_checkpoint_append_does_not_duplicate_committed_message_updates() 
     runtime_assistant.metadata = Some(awaken_contract::contract::message::MessageMetadata {
         run_id: Some("run-1".into()),
         step_index: Some(0),
-        ..Default::default()
     });
     let previous = RunRecord {
         run_id: "run-1".into(),

@@ -1778,6 +1778,19 @@ async fn documented_config_driven_agent_tuning_publishes_sections_and_retry() {
             .iter()
             .any(|schema| schema["key"] == "permission")
     );
+    let permission_schema = permission_plugin["config_schemas"]
+        .as_array()
+        .expect("config_schemas should be an array")
+        .iter()
+        .find(|schema| schema["key"] == "permission")
+        .expect("permission schema should be advertised");
+    assert_eq!(permission_schema["display_name"], "Permissions");
+    assert_eq!(permission_schema["category"], "safety");
+    assert_eq!(permission_schema["editor"], "permission");
+    assert_eq!(
+        permission_schema["default_value"],
+        json!({ "default_behavior": "ask", "rules": [] })
+    );
 
     let resolved = runtime
         .resolver()

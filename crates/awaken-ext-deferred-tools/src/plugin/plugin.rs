@@ -97,7 +97,12 @@ impl Plugin for DeferredToolsPlugin {
     }
 
     fn config_schemas(&self) -> Vec<ConfigSchema> {
-        vec![ConfigSchema::for_key::<DeferredToolsConfigKey>()]
+        vec![
+            ConfigSchema::for_key::<DeferredToolsConfigKey>()
+                .with_display_name("Deferred Tools")
+                .with_description("Tool loading policy that defers low-probability tools.")
+                .with_category("tools"),
+        ]
     }
 
     fn on_activate(

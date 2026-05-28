@@ -139,7 +139,7 @@ description: "启用 server feature 后，awaken-server 会通过 Axum 暴露 HT
 | `POST` | `/v1/mcp-servers/:id/restart` | 重新连接托管 MCP server。成功返回 `202`，并写入 `restart` 审计事件 |
 | `GET` | `/v1/audit-log?…` | 查询 admin audit events。返回 `{"items": AuditEvent[], "next_cursor": string?}`。未配置审计日志时返回 `503 {"error":"audit log is not configured"}`。见下方 [Admin audit log](#admin-audit-log) |
 
-`GET /v1/capabilities` 会包含每个已注册插件的 `config_schemas`。管理控制台用它渲染 agent 级插件配置表单，并把值保存到 `AgentSpec.sections`。配置变更成功后，runtime manager 会发布新的 registry snapshot，因此后续 `/v1/runs` 会使用更新后的 agents、models、providers、MCP servers 与 plugin sections。
+`GET /v1/capabilities` 会包含每个已注册插件的 `config_schemas`。管理控制台用它渲染 agent 级插件配置表单，并把值保存到 `AgentSpec.sections`。每个条目包含 section key、JSON Schema、可选展示 metadata、默认值、UI schema hints 和可选 editor hint；客户端不认识 editor 时回退到 JSON Schema 表单。配置变更成功后，runtime manager 会发布新的 registry snapshot，因此后续 `/v1/runs` 会使用更新后的 agents、models、providers、MCP servers 与 plugin sections。
 
 当前内置 namespace：
 

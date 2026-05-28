@@ -109,6 +109,7 @@ pub trait PendingMessageStore: Send + Sync {
     /// appended entry takes `pending_id == message id`); it is CAS-checked, so a
     /// concurrent change since the caller's read aborts with
     /// `PendingSelectionConflict`.
+    #[allow(clippy::too_many_arguments)]
     async fn append_and_freeze_pending_message_records_with_run(
         &self,
         thread_id: &str,

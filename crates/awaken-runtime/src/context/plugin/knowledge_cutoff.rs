@@ -74,7 +74,12 @@ impl Plugin for KnowledgeCutoffPlugin {
     }
 
     fn config_schemas(&self) -> Vec<ConfigSchema> {
-        vec![ConfigSchema::for_key::<KnowledgeCutoffConfigKey>()]
+        vec![
+            ConfigSchema::for_key::<KnowledgeCutoffConfigKey>()
+                .with_display_name("Knowledge Cutoff")
+                .with_description("Inject configured model knowledge cutoff context.")
+                .with_category("context"),
+        ]
     }
 }
 

@@ -82,10 +82,12 @@ config。
 
 当 `awaken-server` 挂接 `ConfigStore` 与 config runtime manager 后，
 `/v1/capabilities` 会返回 `plugins[].config_schemas`。admin console 在 agent
-编辑页渲染这些 schema，并把值保存回 `AgentSpec.sections[schema.key]`。
-写入通过校验并发布新的 registry snapshot 后，会对新的 run 生效。如果插件
-未列在 `plugin_ids` 中，section 会继续保存，但插件不会被加载，因此对应 hook、
-tool 和 request transform 都不会运行。
+编辑页用同一套机制渲染每个插件配置 section：schema metadata 提供展示名、
+说明、分类、默认值、可选 UI hints，以及可选 editor hint；未知 editor 会回退
+到 JSON Schema 表单。值保存回 `AgentSpec.sections[schema.key]`。写入通过校验
+并发布新的 registry snapshot 后，会对新的 run 生效。如果插件未列在
+`plugin_ids` 中，section 会继续保存，但插件不会被加载，因此对应 hook、tool
+和 request transform 都不会运行。
 
 admin surface 还提供只读预检端点，方便集成方在执行破坏性操作前解释影响面：
 
@@ -566,10 +568,12 @@ pub struct CircuitBreakerConfig {
 
 ```rust,ignore
 fn config_schemas(&self) -> Vec<ConfigSchema> {
-    vec![ConfigSchema {
-        key: RateLimitConfigKey::KEY,
-        json_schema: schemars::schema_for!(RateLimitConfig),
-    }]
+    vec![
+        ConfigSchema::for_key::<RateLimitConfigKey>()
+            .with_display_name("Rate Limits")
+            .with_description("Per-agent tool or model rate limit policy.")
+            .with_category("safety"),
+    ]
 }
 ```
 

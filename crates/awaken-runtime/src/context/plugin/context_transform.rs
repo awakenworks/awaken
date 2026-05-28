@@ -85,7 +85,12 @@ impl Plugin for ContextTransformPlugin {
     }
 
     fn config_schemas(&self) -> Vec<ConfigSchema> {
-        vec![ConfigSchema::for_key::<ContextTransformConfigKey>()]
+        vec![
+            ConfigSchema::for_key::<ContextTransformConfigKey>()
+                .with_display_name("Context Transform")
+                .with_description("Artifact compaction and request context transformation.")
+                .with_category("context"),
+        ]
     }
 }
 

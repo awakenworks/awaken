@@ -207,7 +207,16 @@ export interface McpServerRecord extends Omit<McpServerSpec, "env"> {
 
 export interface PluginInfo {
   id: string;
-  config_schemas: Array<{ key: string; schema: Record<string, unknown> }>;
+  config_schemas: Array<{
+    key: string;
+    schema: Record<string, unknown>;
+    display_name?: string | null;
+    description?: string | null;
+    category?: string | null;
+    editor?: string | null;
+    default_value?: unknown;
+    ui_schema?: Record<string, unknown> | null;
+  }>;
 }
 
 export interface SkillArgumentInfo {

@@ -22,6 +22,7 @@ import {
   redactSecretsForDisplay,
   restoreUnchangedRedactions,
   togglePluginState,
+  applyPluginSectionDefaults,
   unknownAgentSpecFields,
 } from "./agent-editor-helpers";
 
@@ -433,10 +434,10 @@ describe("togglePluginState", () => {
     expect(result.active_hook_filter).toEqual([]);
   });
 
-  it("leaves active_hook_filter untouched when adding (no stale entry to prune)", () => {
+  it("adds a plugin to active_hook_filter when an allow-list filter already exists", () => {
     expect(togglePluginState(["permission"], ["permission"], "reminder")).toEqual({
       plugin_ids: ["permission", "reminder"],
-      active_hook_filter: ["permission"],
+      active_hook_filter: ["permission", "reminder"],
     });
   });
 
@@ -467,6 +468,33 @@ describe("togglePluginState", () => {
     togglePluginState(plugins, filter, "reminder");
     expect(plugins).toEqual(pluginsSnapshot);
     expect(filter).toEqual(filterSnapshot);
+  });
+});
+
+describe("applyPluginSectionDefaults", () => {
+  it("initializes missing plugin sections from advertised schema defaults", () => {
+    expect(
+      applyPluginSectionDefaults(
+        { permission: { default_behavior: "deny", rules: [] } },
+        [
+          {
+            key: "permission",
+            default_value: { default_behavior: "ask", rules: [] },
+          },
+          { key: "reminder", default_value: { rules: [] } },
+        ],
+      ),
+    ).toEqual({
+      permission: { default_behavior: "deny", rules: [] },
+      reminder: { rules: [] },
+    });
+  });
+
+  it("clones default values before storing them in sections", () => {
+    const schema = { key: "reminder", default_value: { rules: [] } };
+    const sections = applyPluginSectionDefaults(undefined, [schema]);
+    (sections.reminder as { rules: unknown[] }).rules.push({ name: "x" });
+    expect(schema.default_value).toEqual({ rules: [] });
   });
 });
 

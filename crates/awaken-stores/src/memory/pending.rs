@@ -83,7 +83,7 @@ impl PendingMessageStore for InMemoryStore {
             .iter()
             .filter(|(_, records)| !records.is_empty())
             .map(|(thread_id, _)| thread_id.clone())
-            .filter(|thread_id| after.map_or(true, |cursor| thread_id.as_str() > cursor))
+            .filter(|thread_id| after.is_none_or(|cursor| thread_id.as_str() > cursor))
             .collect();
         ids.sort();
         if limit > 0 {

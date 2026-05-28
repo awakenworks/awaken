@@ -245,6 +245,11 @@ export interface PluginToggleResult {
   active_hook_filter: string[] | undefined;
 }
 
+export interface PluginConfigSchemaDefaults {
+  key: string;
+  default_value?: unknown;
+}
+
 /**
  * Compute the next `plugin_ids` / `active_hook_filter` pair when the user
  * toggles a plugin on or off. When a plugin is removed, drops the same id
@@ -275,11 +280,38 @@ export function togglePluginState(
     //   - filter was `[]` already: keep `[]` so we don't silently
     //     change an explicit-empty draft into absent.
     nextFilter = pruned.length === 0 && activeHookFilter.length > 0 ? undefined : pruned;
+  } else if (!removing && activeHookFilter && activeHookFilter.length > 0) {
+    nextFilter = activeHookFilter.includes(pluginId)
+      ? [...activeHookFilter]
+      : [...activeHookFilter, pluginId];
   } else {
     nextFilter = activeHookFilter;
   }
 
   return { plugin_ids: next, active_hook_filter: nextFilter };
+}
+
+export function applyPluginSectionDefaults(
+  sections: Record<string, unknown> | undefined,
+  schemas: PluginConfigSchemaDefaults[],
+): Record<string, unknown> {
+  const next = { ...(sections ?? {}) };
+
+  for (const schema of schemas) {
+    if (next[schema.key] !== undefined) {
+      continue;
+    }
+    next[schema.key] = cloneJsonValue(schema.default_value ?? {});
+  }
+
+  return next;
+}
+
+function cloneJsonValue(value: unknown): unknown {
+  if (value === undefined) {
+    return {};
+  }
+  return JSON.parse(JSON.stringify(value));
 }
 
 export interface HookFilterPartition {

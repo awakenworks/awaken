@@ -65,6 +65,14 @@ export function pluginConfigEntryKey(pluginId: string, schemaKey: string): strin
   return `${pluginId}:${schemaKey}`;
 }
 
+export interface PluginConfigSchemaMetadata {
+  key: string;
+  schema: Record<string, unknown>;
+  display_name?: string | null;
+  description?: string | null;
+  editor?: string | null;
+}
+
 export function pluginDisplayName(pluginId: string): string {
   switch (pluginId) {
     case "permission":
@@ -83,23 +91,22 @@ export function pluginDisplayName(pluginId: string): string {
 }
 
 export function pluginConfigDisplaySummary(
-  pluginId: string,
-  schemaKey: string,
+  editorKey: string,
   value: unknown,
 ): string {
-  if (schemaKey === "permission" || pluginId === "permission") {
+  if (editorKey === "permission") {
     const config = normalizePermissionConfig(value);
     return `Default ${config.default_behavior} · ${config.rules.length} rule${config.rules.length === 1 ? "" : "s"}`;
   }
 
-  if (schemaKey === "reminder" || pluginId === "reminder") {
+  if (editorKey === "reminder") {
     const config = normalizeReminderConfig(value);
     return config.rules.length === 0
       ? "No reminder rules"
       : `${config.rules.length} reminder rule${config.rules.length === 1 ? "" : "s"}`;
   }
 
-  if (schemaKey === "generative-ui" || pluginId === "generative-ui") {
+  if (editorKey === "generative-ui") {
     const config = normalizeGenerativeUiConfig(value);
     const parts = [];
     if (config.instructions.trim()) {
@@ -121,6 +128,27 @@ export function pluginConfigDisplaySummary(
   return "Schema form";
 }
 
+export function pluginConfigDisplayName(
+  pluginId: string,
+  schema: PluginConfigSchemaMetadata,
+): string {
+  return (
+    nonEmptyString(schema.display_name) ??
+    schemaTitle(schema.schema) ??
+    pluginDisplayName(pluginId)
+  );
+}
+
+export function pluginConfigDescription(
+  schema: PluginConfigSchemaMetadata,
+): string | null {
+  return nonEmptyString(schema.description) ?? schemaDescription(schema.schema);
+}
+
+export function pluginConfigEditorKey(schema: PluginConfigSchemaMetadata): string {
+  return nonEmptyString(schema.editor) ?? "schema";
+}
+
 export function schemaTitle(schema: Record<string, unknown>): string | null {
   const title = schema.title;
   return typeof title === "string" && title.trim() ? title : null;
@@ -129,6 +157,10 @@ export function schemaTitle(schema: Record<string, unknown>): string | null {
 export function schemaDescription(schema: Record<string, unknown>): string | null {
   const description = schema.description;
   return typeof description === "string" && description.trim() ? description : null;
+}
+
+function nonEmptyString(value: unknown): string | null {
+  return typeof value === "string" && value.trim() ? value : null;
 }
 
 export function normalizePermissionConfig(value: unknown): PermissionConfig {

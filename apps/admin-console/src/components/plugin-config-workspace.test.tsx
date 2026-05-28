@@ -17,35 +17,28 @@ function entry(
   schemaKey: string,
   selected = true,
   hasStoredConfig = false,
+  editor = schemaKey,
 ): PluginConfigEntry {
+  const schema = {
+    key: schemaKey,
+    display_name: `${pluginId} display`,
+    description: `${schemaKey} metadata description`,
+    editor,
+    schema: {
+      type: "object",
+      title: `${pluginId} schema`,
+      description: `${schemaKey} configuration`,
+      properties: {
+        enabled: { type: "boolean", title: "Enabled" },
+      },
+    },
+  };
   return {
     plugin: {
       id: pluginId,
-      config_schemas: [
-        {
-          key: schemaKey,
-          schema: {
-            type: "object",
-            title: `${pluginId} schema`,
-            description: `${schemaKey} configuration`,
-            properties: {
-              enabled: { type: "boolean", title: "Enabled" },
-            },
-          },
-        },
-      ],
+      config_schemas: [schema],
     },
-    schema: {
-      key: schemaKey,
-      schema: {
-        type: "object",
-        title: `${pluginId} schema`,
-        description: `${schemaKey} configuration`,
-        properties: {
-          enabled: { type: "boolean", title: "Enabled" },
-        },
-      },
-    },
+    schema,
     selected,
     hasStoredConfig,
   };
@@ -89,12 +82,31 @@ describe("PluginConfigWorkspace", () => {
       sections: { reminder: { rules: [] } },
     });
 
-    fireEvent.click(screen.getByRole("button", { name: /Reminders/ }));
+    fireEvent.click(screen.getByRole("button", { name: /reminder display/ }));
 
     expect(onSelectEntry).toHaveBeenCalledWith(activeEntryKey);
     expect(screen.getByText("stored only")).toBeTruthy();
     expect(screen.getByText("plugin disabled")).toBeTruthy();
     expect(screen.getByText(/only takes effect after re-enabling/)).toBeTruthy();
+  });
+
+  it("surfaces consistency warnings from the shared plugin mechanism", () => {
+    const reminder = {
+      ...entry("reminder", "reminder", true, true),
+      hookFilteredOut: true,
+      warnings: ["Plugin `reminder` is enabled but excluded by active_hook_filter."],
+    };
+
+    renderWorkspace({
+      entries: [reminder],
+      activeEntryKey: pluginConfigEntryKey("reminder", "reminder"),
+      sections: { reminder: { rules: [] } },
+    });
+
+    expect(screen.getByText("hook filtered")).toBeTruthy();
+    expect(
+      screen.getByText(/enabled but excluded by active_hook_filter/),
+    ).toBeTruthy();
   });
 
   it("edits permission config before serializing the section update", () => {

@@ -1,12 +1,14 @@
 import Form from "@rjsf/core";
 import validator from "@rjsf/validator-ajv8";
+import type { ComponentType } from "react";
 import type { PluginInfo } from "@/lib/config-api";
 import { Pill } from "@/components/form-components";
 import {
-  pluginDisplayName,
+  pluginConfigDescription,
+  pluginConfigDisplayName,
   pluginConfigDisplaySummary,
+  pluginConfigEditorKey,
   pluginConfigEntryKey,
-  schemaDescription,
   schemaTitle,
 } from "@/lib/plugin-config";
 import { PermissionConfigEditor } from "@/components/editors/permission-editor";
@@ -20,6 +22,8 @@ export interface PluginConfigEntry {
   schema: ConfigSchema;
   selected: boolean;
   hasStoredConfig: boolean;
+  hookFilteredOut?: boolean;
+  warnings?: string[];
 }
 
 interface PluginConfigWorkspaceProps {
@@ -60,6 +64,7 @@ export function PluginConfigWorkspace({
           const key = pluginConfigEntryKey(entry.plugin.id, entry.schema.key);
           const isActive = key === activeEntryKey;
           const summaryValue = sections[entry.schema.key];
+          const editorKey = pluginConfigEditorKey(entry.schema);
           const statusLabel = entry.selected
             ? "enabled"
             : entry.hasStoredConfig
@@ -78,8 +83,11 @@ export function PluginConfigWorkspace({
               ].join(" ")}
             >
               <div className="flex flex-wrap items-center gap-2">
-                <div className="font-medium">{pluginDisplayName(entry.plugin.id)}</div>
+                <div className="font-medium">
+                  {pluginConfigDisplayName(entry.plugin.id, entry.schema)}
+                </div>
                 <Pill label={statusLabel} active={isActive} />
+                {entry.hookFilteredOut ? <Pill label="hook filtered" tone="amber" /> : null}
               </div>
               <div
                 className={[
@@ -95,11 +103,7 @@ export function PluginConfigWorkspace({
                   isActive ? "text-fg-faint" : "text-fg-soft",
                 ].join(" ")}
               >
-                {pluginConfigDisplaySummary(
-                  entry.plugin.id,
-                  entry.schema.key,
-                  summaryValue,
-                )}
+                {pluginConfigDisplaySummary(editorKey, summaryValue)}
               </div>
             </button>
           );
@@ -111,7 +115,7 @@ export function PluginConfigWorkspace({
           <div className="mb-4 border-b border-line pb-4">
             <div className="flex flex-wrap items-center gap-2">
               <h5 className="text-lg font-semibold text-fg-strong">
-                {pluginDisplayName(activeEntry.plugin.id)}
+                {pluginConfigDisplayName(activeEntry.plugin.id, activeEntry.schema)}
               </h5>
               <Pill label={activeEntry.schema.key} />
               {!activeEntry.selected ? (
@@ -121,10 +125,22 @@ export function PluginConfigWorkspace({
             <div className="mt-1 text-sm text-fg-soft">
               {schemaTitle(activeEntry.schema.schema) ?? activeEntry.schema.key}
             </div>
-            {schemaDescription(activeEntry.schema.schema) ? (
+            {pluginConfigDescription(activeEntry.schema) ? (
               <p className="mt-2 text-sm leading-6 text-fg-soft">
-                {schemaDescription(activeEntry.schema.schema)}
+                {pluginConfigDescription(activeEntry.schema)}
               </p>
+            ) : null}
+            {activeEntry.warnings?.length ? (
+              <div className="mt-3 space-y-2">
+                {activeEntry.warnings.map((warning) => (
+                  <div
+                    key={warning}
+                    className="rounded-sm border border-tone-warn/35 bg-tone-warn/10 px-3 py-2 text-sm text-tone-warn"
+                  >
+                    {warning}
+                  </div>
+                ))}
+              </div>
             ) : null}
             {!activeEntry.selected ? (
               <div className="mt-3 rounded-sm border border-tone-warn/35 bg-tone-warn/10 px-3 py-2 text-sm text-tone-warn">
@@ -136,9 +152,9 @@ export function PluginConfigWorkspace({
           </div>
 
           <PluginConfigEditor
-            pluginId={activeEntry.plugin.id}
-            schemaKey={activeEntry.schema.key}
+            editorKey={pluginConfigEditorKey(activeEntry.schema)}
             schema={activeEntry.schema.schema}
+            uiSchema={activeEntry.schema.ui_schema ?? undefined}
             value={activeValue}
             onChange={(value) => onUpdateSection(activeEntry.schema.key, value)}
           />
@@ -153,28 +169,21 @@ export function PluginConfigWorkspace({
 }
 
 function PluginConfigEditor({
-  pluginId,
-  schemaKey,
+  editorKey,
   schema,
+  uiSchema,
   value,
   onChange,
 }: {
-  pluginId: string;
-  schemaKey: string;
+  editorKey: string;
   schema: Record<string, unknown>;
+  uiSchema?: Record<string, unknown> | null;
   value: unknown;
   onChange: (value: unknown) => void;
 }) {
-  if (pluginId === "permission" || schemaKey === "permission") {
-    return <PermissionConfigEditor value={value} onChange={onChange} />;
-  }
-
-  if (pluginId === "reminder" || schemaKey === "reminder") {
-    return <ReminderConfigEditor value={value} onChange={onChange} />;
-  }
-
-  if (pluginId === "generative-ui" || schemaKey === "generative-ui") {
-    return <GenerativeUiConfigEditor value={value} onChange={onChange} />;
+  const Editor = SPECIALIZED_PLUGIN_CONFIG_EDITORS[editorKey];
+  if (Editor) {
+    return <Editor value={value} onChange={onChange} />;
   }
 
   return (
@@ -183,12 +192,24 @@ function PluginConfigEditor({
       formData={asFormData(value)}
       onChange={({ formData }) => onChange(formData)}
       validator={validator}
-      uiSchema={{ "ui:submitButtonOptions": { norender: true } }}
+      uiSchema={{
+        ...(uiSchema ?? {}),
+        "ui:submitButtonOptions": { norender: true },
+      }}
     >
       <></>
     </Form>
   );
 }
+
+const SPECIALIZED_PLUGIN_CONFIG_EDITORS: Record<
+  string,
+  ComponentType<{ value: unknown; onChange: (value: unknown) => void }>
+> = {
+  permission: PermissionConfigEditor,
+  reminder: ReminderConfigEditor,
+  "generative-ui": GenerativeUiConfigEditor,
+};
 
 function asFormData(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value)

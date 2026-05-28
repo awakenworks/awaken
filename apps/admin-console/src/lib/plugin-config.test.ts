@@ -6,6 +6,8 @@ import {
   normalizeGenerativeUiConfig,
   normalizeReminderConfig,
   normalizePermissionConfig,
+  pluginConfigDescription,
+  pluginConfigDisplayName,
   pluginConfigEntryKey,
   pluginConfigDisplaySummary,
   pluginDisplayName,
@@ -19,7 +21,7 @@ import {
 describe("plugin config helpers", () => {
   it("summarizes permission config with rule count", () => {
     expect(
-      pluginConfigDisplaySummary("permission", "permission", {
+      pluginConfigDisplaySummary("permission", {
         default_behavior: "deny",
         rules: [{ tool: "Bash", behavior: "allow", scope: "project" }],
       }),
@@ -100,25 +102,49 @@ describe("plugin config helpers", () => {
   });
 
   it("summarizes generic and generative-ui config states", () => {
-    expect(pluginConfigDisplaySummary("reminder", "reminder", { rules: [] })).toBe(
+    expect(pluginConfigDisplaySummary("reminder", { rules: [] })).toBe(
       "No reminder rules",
     );
-    expect(pluginConfigDisplaySummary("generative-ui", "generative-ui", {})).toBe(
+    expect(pluginConfigDisplaySummary("generative-ui", {})).toBe(
       "Prompt defaults",
     );
     expect(
-      pluginConfigDisplaySummary("generative-ui", "generative-ui", {
+      pluginConfigDisplaySummary("generative-ui", {
         instructions: "Use cards",
         catalog_id: "catalog-a",
         examples: "Example",
       }),
     ).toBe("instruction override · catalog override · examples");
-    expect(pluginConfigDisplaySummary("custom", "settings", { enabled: true })).toBe(
+    expect(pluginConfigDisplaySummary("schema", { enabled: true })).toBe(
       "Configured",
     );
-    expect(pluginConfigDisplaySummary("custom", "settings", { empty: "" })).toBe(
+    expect(pluginConfigDisplaySummary("schema", { empty: "" })).toBe(
       "Schema form",
     );
+  });
+
+  it("prefers plugin schema metadata for display names and descriptions", () => {
+    const schema = {
+      key: "settings",
+      display_name: "Gateway Settings",
+      description: "Configures a gateway plugin.",
+      schema: {
+        type: "object",
+        title: "Schema title",
+        description: "Schema description",
+      },
+    };
+
+    expect(pluginConfigDisplayName("custom-gateway", schema)).toBe(
+      "Gateway Settings",
+    );
+    expect(pluginConfigDescription(schema)).toBe("Configures a gateway plugin.");
+    expect(
+      pluginConfigDisplayName("custom-gateway", {
+        key: "settings",
+        schema: { type: "object", title: "Schema title" },
+      }),
+    ).toBe("Schema title");
   });
 
   it("normalizes and serializes generative-ui config with trimmed optional fields", () => {

@@ -208,7 +208,13 @@ impl Plugin for A2uiPlugin {
     }
 
     fn config_schemas(&self) -> Vec<ConfigSchema> {
-        vec![ConfigSchema::for_key::<A2uiPromptConfigKey>()]
+        vec![
+            ConfigSchema::for_key::<A2uiPromptConfigKey>()
+                .with_display_name("Generative UI")
+                .with_description("Prompt and catalog overrides for UI generation.")
+                .with_category("presentation")
+                .with_editor("generative-ui"),
+        ]
     }
 
     fn on_activate(

@@ -93,6 +93,7 @@ export function AgentEditorPanels({
               setActivePluginConfig={setActivePluginConfig}
               togglePlugin={togglePlugin}
               updateSection={updateSection}
+              updateField={updateField}
             />
           )}
           {tab.id === "delegates" && (

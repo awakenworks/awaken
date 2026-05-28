@@ -263,7 +263,18 @@ impl ConfigService {
                     let schemas = plugin
                         .config_schemas()
                         .into_iter()
-                        .map(|schema| json!({ "key": schema.key, "schema": schema.json_schema }))
+                        .map(|schema| {
+                            json!({
+                                "key": schema.key,
+                                "schema": schema.json_schema,
+                                "display_name": schema.display_name,
+                                "description": schema.description,
+                                "category": schema.category,
+                                "editor": schema.editor,
+                                "default_value": schema.default_value,
+                                "ui_schema": schema.ui_schema,
+                            })
+                        })
                         .collect::<Vec<_>>();
                     json!({
                         "id": plugin.descriptor().name,

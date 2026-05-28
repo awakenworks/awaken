@@ -88,11 +88,14 @@ console, and read the resolved config from hooks.
 
 When `awaken-server` is constructed with a `ConfigStore` and config runtime
 manager, `/v1/capabilities` returns `plugins[].config_schemas`. The admin
-console renders those schemas on the agent editor page and saves values back
-under `AgentSpec.sections[schema.key]`. A saved section takes effect on new runs
-after the config write validates and publishes a new registry snapshot. If the
-plugin is not listed in `plugin_ids`, the section remains stored but the plugin
-is not loaded, so its hooks, tools, and request transforms do not run.
+console renders every plugin config section through the same mechanism: schema
+metadata supplies display name, description, category, default value, optional
+UI hints, and an optional editor hint; unknown editor hints fall back to JSON
+Schema rendering. Values are saved back under `AgentSpec.sections[schema.key]`.
+A saved section takes effect on new runs after the config write validates and
+publishes a new registry snapshot. If the plugin is not listed in `plugin_ids`,
+the section remains stored but the plugin is not loaded, so its hooks, tools,
+and request transforms do not run.
 
 The admin surface also exposes read-only preflight endpoints for integrations:
 
@@ -634,10 +637,12 @@ their config structs. The resolve pipeline (Stage 2) validates every
 
 ```rust,ignore
 fn config_schemas(&self) -> Vec<ConfigSchema> {
-    vec![ConfigSchema {
-        key: RateLimitConfigKey::KEY,
-        json_schema: schemars::schema_for!(RateLimitConfig),
-    }]
+    vec![
+        ConfigSchema::for_key::<RateLimitConfigKey>()
+            .with_display_name("Rate Limits")
+            .with_description("Per-agent tool or model rate limit policy.")
+            .with_category("safety"),
+    ]
 }
 ```
 
@@ -677,10 +682,11 @@ fn register(&self, r: &mut PluginRegistrar) -> Result<(), StateError> {
 }
 
 fn config_schemas(&self) -> Vec<ConfigSchema> {
-    vec![ConfigSchema {
-        key: RateLimitConfigKey::KEY,
-        json_schema: schemars::schema_for!(RateLimitConfig),
-    }]
+    vec![
+        ConfigSchema::for_key::<RateLimitConfigKey>()
+            .with_display_name("Rate Limits")
+            .with_category("safety"),
+    ]
 }
 
 // In a hook:

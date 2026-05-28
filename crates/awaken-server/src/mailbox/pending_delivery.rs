@@ -287,6 +287,7 @@ impl Mailbox {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(super) async fn prepare_pending_boundary_for_run(
         &self,
         request: &RunActivation,

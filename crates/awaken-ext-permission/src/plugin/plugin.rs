@@ -55,7 +55,13 @@ impl Plugin for PermissionPlugin {
     }
 
     fn config_schemas(&self) -> Vec<ConfigSchema> {
-        vec![ConfigSchema::for_key::<PermissionConfigKey>()]
+        vec![
+            ConfigSchema::for_key::<PermissionConfigKey>()
+                .with_display_name("Permissions")
+                .with_description("Tool access policy with allow, ask, and deny rules.")
+                .with_category("safety")
+                .with_editor("permission"),
+        ]
     }
 
     fn on_activate(
