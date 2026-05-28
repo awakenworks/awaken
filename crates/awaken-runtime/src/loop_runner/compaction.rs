@@ -9,6 +9,7 @@
 
 use std::sync::Arc;
 
+use awaken_contract::StateError;
 use awaken_contract::contract::inference::ContextWindowPolicy;
 use serde_json::json;
 
@@ -60,13 +61,6 @@ pub(super) async fn maybe_spawn_compaction(
         return false;
     }
 
-    if store
-        .read::<CompactionStateKey>()
-        .is_some_and(|s| s.is_compacting())
-    {
-        return false;
-    }
-
     let Some(plan) = plan_compaction(ctx.messages, policy) else {
         return false;
     };
@@ -79,19 +73,22 @@ pub(super) async fn maybe_spawn_compaction(
     let pre_tokens = plan.pre_tokens;
     let task_id = manager.reserve_task_id();
 
-    let mut batch = MutationBatch::new();
-    batch.update::<CompactionStateKey>(record_compaction_in_flight(CompactionInFlight {
+    let in_flight = CompactionInFlight {
         task_id: task_id.clone(),
         boundary_message_id: boundary_id_for_state.clone(),
         started_at_ms: now_ms(),
-    }));
-    if let Err(error) = store.commit(batch) {
-        tracing::warn!(
-            error = %error,
-            task_id = %task_id,
-            "failed to record CompactionInFlight; skipping background compaction"
-        );
-        return false;
+    };
+    match reserve_compaction_in_flight(store, in_flight) {
+        Ok(true) => {}
+        Ok(false) => return false,
+        Err(error) => {
+            tracing::warn!(
+                error = %error,
+                task_id = %task_id,
+                "failed to reserve CompactionInFlight; skipping background compaction"
+            );
+            return false;
+        }
     }
 
     if let Err(error) = manager
@@ -176,6 +173,33 @@ pub(super) async fn maybe_spawn_compaction(
         return false;
     }
     true
+}
+
+fn reserve_compaction_in_flight(
+    store: &crate::state::StateStore,
+    in_flight: CompactionInFlight,
+) -> Result<bool, StateError> {
+    for _ in 0..8 {
+        let snapshot = store.snapshot();
+        if snapshot
+            .get::<CompactionStateKey>()
+            .is_some_and(|state| state.is_compacting())
+        {
+            return Ok(false);
+        }
+        let mut batch = MutationBatch::new().with_base_revision(snapshot.revision());
+        batch.update::<CompactionStateKey>(record_compaction_in_flight(in_flight.clone()));
+        match store.commit(batch) {
+            Ok(_) => return Ok(true),
+            Err(StateError::RevisionConflict { .. }) => continue,
+            Err(error) => return Err(error),
+        }
+    }
+    tracing::warn!(
+        task_id = %in_flight.task_id,
+        "failed to reserve CompactionInFlight after repeated revision conflicts"
+    );
+    Ok(false)
 }
 
 fn clear_in_flight_after_spawn_failure(store: &crate::state::StateStore, task_id: &str) {

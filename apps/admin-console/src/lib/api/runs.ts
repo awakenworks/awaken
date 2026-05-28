@@ -27,7 +27,7 @@ function buildRunsQuery(params: ListRunsParams): string {
   return qs ? `?${qs}` : "";
 }
 
-/** Counters returned by `GET /v1/runs/summary`. One round-trip
+/** Counters returned by admin-authenticated `GET /v1/runs/summary`. One round-trip
  *  replaces 3 parallel `?status=` queries; see the Rust handler
  *  doc for the snapshot-consistency caveat. */
 export interface RunsSummary {

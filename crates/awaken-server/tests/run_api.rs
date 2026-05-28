@@ -348,6 +348,25 @@ async fn get_json(app: axum::Router, uri: &str) -> (StatusCode, String) {
     (status, String::from_utf8(body.to_vec()).expect("utf-8"))
 }
 
+async fn get_json_admin(app: axum::Router, uri: &str) -> (StatusCode, String) {
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri(uri)
+                .header("authorization", format!("Bearer {TEST_ADMIN_TOKEN}"))
+                .body(axum::body::Body::empty())
+                .expect("request build"),
+        )
+        .await
+        .expect("app should handle request");
+    let status = resp.status();
+    let body = to_bytes(resp.into_body(), 1024 * 1024)
+        .await
+        .expect("body readable");
+    (status, String::from_utf8(body.to_vec()).expect("utf-8"))
+}
+
 async fn post_json(app: axum::Router, uri: &str, payload: Value) -> (StatusCode, String) {
     let resp = app
         .oneshot(
@@ -1044,13 +1063,24 @@ async fn runs_summary_route_returns_non_terminal_counts() {
             .expect("seed run");
     }
 
-    let (status, body) = get_json(test.router, "/v1/runs/summary").await;
+    let (status, body) = get_json_admin(test.router, "/v1/runs/summary").await;
     assert_eq!(status, StatusCode::OK);
     let payload: Value = serde_json::from_str(&body).expect("valid json");
     assert_eq!(payload["running"], 1);
     assert_eq!(payload["waiting"], 1);
     assert_eq!(payload["created"], 1);
     assert!(payload.get("done").is_none());
+}
+
+#[tokio::test]
+async fn runs_summary_route_requires_admin_auth() {
+    let test = make_test_app();
+    let (status, body) = get_json(test.router, "/v1/runs/summary").await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    assert!(
+        body.contains("admin authentication required"),
+        "unexpected body: {body}"
+    );
 }
 
 #[tokio::test]

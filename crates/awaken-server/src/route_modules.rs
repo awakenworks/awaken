@@ -48,7 +48,6 @@ impl RouteModule for RunRoutesState {
             .merge(crate::routes::health_routes().with_state(self.clone()))
             .merge(crate::routes::thread_routes().with_state(self.clone()))
             .merge(crate::routes::run_routes().with_state(self.clone()))
-            .merge(crate::services::run_service::summary_routes().with_state(self.run))
     }
 }
 
@@ -85,11 +84,17 @@ impl RouteModule for AdminRunModule {
     fn mount(self, router: Router) -> Router {
         let auth =
             middleware::from_fn_with_state(self.0.admin.clone(), require_admin_auth_middleware);
-        router.merge(
-            crate::admin_routes::admin_run_routes()
-                .route_layer(auth)
-                .with_state(self.0),
-        )
+        router
+            .merge(
+                crate::admin_routes::admin_run_routes()
+                    .route_layer(auth.clone())
+                    .with_state(self.0.clone()),
+            )
+            .merge(
+                crate::services::run_service::summary_routes()
+                    .route_layer(auth)
+                    .with_state(self.0.run),
+            )
     }
 }
 

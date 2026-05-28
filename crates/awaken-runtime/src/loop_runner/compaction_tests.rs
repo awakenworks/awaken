@@ -182,6 +182,46 @@ async fn recv_inbox_event(rx: &mut crate::inbox::InboxReceiver) -> serde_json::V
 #[path = "compaction_lifecycle_tests.rs"]
 mod lifecycle_tests;
 
+#[test]
+fn reserve_compaction_in_flight_allows_only_one_concurrent_reservation() {
+    let store = StateStore::new();
+    store
+        .install_plugin(CompactionPlugin::default())
+        .expect("compaction key registered");
+    let workers = 16;
+    let barrier = Arc::new(std::sync::Barrier::new(workers));
+    let successes = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+
+    std::thread::scope(|scope| {
+        for idx in 0..workers {
+            let store = store.clone();
+            let barrier = barrier.clone();
+            let successes = successes.clone();
+            scope.spawn(move || {
+                barrier.wait();
+                let reserved = reserve_compaction_in_flight(
+                    &store,
+                    crate::context::CompactionInFlight {
+                        task_id: format!("task-{idx}"),
+                        boundary_message_id: format!("boundary-{idx}"),
+                        started_at_ms: idx as u64,
+                    },
+                )
+                .expect("reservation should not error");
+                if reserved {
+                    successes.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                }
+            });
+        }
+    });
+
+    assert_eq!(
+        successes.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "CAS reservation must allow exactly one in-flight compaction"
+    );
+}
+
 #[tokio::test]
 async fn maybe_spawn_compaction_emits_event_after_summary_completes() {
     use awaken_contract::contract::inference::ContextWindowPolicy;

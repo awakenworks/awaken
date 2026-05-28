@@ -49,8 +49,9 @@ pub async fn runs_summary_handler(
     ))
 }
 
-/// `/v1/runs/summary` router fragment. Merged into the main router so
-/// `routes.rs` only adds one line for the new endpoint.
+/// Admin-authenticated `/v1/runs/summary` router fragment. Merged through
+/// `AdminRunModule`; this endpoint is operational dashboard data, not part
+/// of the public run-control surface.
 pub fn summary_routes() -> axum::Router<crate::app::RunModuleState> {
     axum::Router::new().route("/v1/runs/summary", axum::routing::get(runs_summary_handler))
 }
