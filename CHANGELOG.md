@@ -67,8 +67,11 @@ Development work lands here before the next versioned release.
   extension field**, not an agentskills core field. `disable-model-invocation` is
   a hard gate: it hides the skill AND blocks every model-facing tool (`skill`,
   `load_skill_resource`, `skill_script`); an explicit runtime `Show` cannot
-  override it. `paths` is a non-standard field, parsed but inert (no effect on
-  visibility). `EmbeddedSkill` now maps the same frontmatter as `FsSkill`.
+  override it. This is not an access-control boundary: explicit user invocation
+  via `/skill-name` remains governed by `user-invocable`, not
+  `disable-model-invocation`. `paths` is a non-standard field, parsed but inert
+  (no effect on visibility, activation, or resource/script scope). `EmbeddedSkill`
+  now maps the same frontmatter as `FsSkill`.
 
   | Removed (was public) | Replacement |
   |---|---|

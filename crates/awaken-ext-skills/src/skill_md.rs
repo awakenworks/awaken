@@ -43,7 +43,9 @@ pub struct SkillFrontmatter {
     /// Whether the user can invoke this skill via `/skill-name` (default: true).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub user_invocable: Option<bool>,
-    /// If true, this skill is hidden from the LLM catalog (default: false).
+    /// If true, this skill is hidden from the LLM catalog and blocked from
+    /// model-facing skill tools (default: false). This is not access control:
+    /// explicit `/skill-name` user invocation is governed by `user-invocable`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub disable_model_invocation: Option<bool>,
     /// Override the model used when this skill is activated.
@@ -52,7 +54,8 @@ pub struct SkillFrontmatter {
     /// Execution mode: "inline" (default) or "fork".
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context: Option<String>,
-    /// Comma/newline-separated glob patterns for conditional activation.
+    /// Comma/newline-separated glob patterns. Parsed for forward-compatible
+    /// metadata round-tripping only; currently inert.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub paths: Option<String>,
 }
