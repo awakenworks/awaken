@@ -60,16 +60,17 @@ Awaken 围绕三条准则构建。每一条都是硬边界,不是建议。三条
 
 常见替代是加锁的可变共享状态(或强制串行)。两个插件碰到同一字段的那一刻,两种方案都悄无声息地坏。
 
-### 一套后端,四种协议
+### 一套后端，多种协议适配器
 
-同一个 `/v1/runs` 同时暴露为:
+同一个 runtime 暴露为多种 wire format：
 
 - **AI SDK v6**(Vercel `useChat()`)
 - **AG-UI**(CopilotKit:chat + 生成式 UI + HITL)
 - **A2A**(智能体对智能体调用)
-- **MCP HTTP**(Claude / Cursor / Zed)
+- **MCP HTTP**(JSON-RPC client)
+- **ACP stdio**(Agent Client Protocol host)
 
-Runtime emit 一条 `AgentEvent` 流;协议适配器编码到对应线协议。换前端不动 agent 代码;同时承接多种前端不会让 runtime 翻倍。
+Runtime emit 一条 `AgentEvent` 流；协议适配器编码到对应线协议。换客户端不动 agent 代码；同时承接多种协议不会让 runtime 翻倍。
 
 常见替代是"挑一种协议,在每个客户端建适配器"。这把 agent 代码绑死在你下个季度可能后悔的前端选择上。
 

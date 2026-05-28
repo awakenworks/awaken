@@ -64,11 +64,12 @@ title: "常见问题"
 
 当 `ContextWindowPolicy` 启用自动压缩时，运行时会在超过预算后寻找安全边界，把较早消息总结成 `<conversation-summary>`，再保留最近一段原始上下文。
 
-## AI SDK v6、AG-UI、A2A、MCP 该怎么选？
+## AI SDK v6、AG-UI、A2A、MCP、ACP 该怎么选？
 
 - AI SDK v6：适合 Vercel AI SDK / `useChat` 前端。
 - AG-UI：适合 CopilotKit 和带生成式 UI 的前端。
 - A2A：适合 agent 到 agent 的服务间编排和远程委托。
 - MCP HTTP：适合外部 MCP client 通过 JSON-RPC 调用 Awaken 工具，并使用 `MCP-Session-Id` 管理 session 生命周期。
+- ACP stdio：适合 Agent Client Protocol host 把 Awaken 作为本地进程启动，并通过 stdin/stdout 交换消息。
 
-它们共享同一个 `AgentRuntime`，差别主要在协议编码层和客户端生态。
+它们共享同一个 `AgentRuntime`，差别主要在协议编码层、transport 和客户端生态。

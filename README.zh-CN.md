@@ -2,9 +2,9 @@
 
 [English](./README.md) | [中文](./README.zh-CN.md)
 
-[![CI](https://github.com/AwakenWorks/awaken/actions/workflows/test.yml/badge.svg)](https://github.com/AwakenWorks/awaken/actions/workflows/test.yml) [![crates.io awaken](https://img.shields.io/crates/v/awaken.svg?label=awaken)](https://crates.io/crates/awaken) [![crates.io awaken-agent](https://img.shields.io/crates/v/awaken-agent.svg?label=awaken-agent)](https://crates.io/crates/awaken-agent) [![Changelog](https://img.shields.io/badge/changelog-0.5-informational)](./CHANGELOG.md) ![License](https://img.shields.io/badge/license-MIT%2FApache--2.0-blue) ![MSRV](https://img.shields.io/badge/MSRV-1.93-orange)
+[![CI](https://github.com/AwakenWorks/awaken/actions/workflows/test.yml/badge.svg)](https://github.com/AwakenWorks/awaken/actions/workflows/test.yml) [![crates.io awaken](https://img.shields.io/crates/v/awaken.svg?label=awaken)](https://crates.io/crates/awaken) [![crates.io awaken-agent](https://img.shields.io/crates/v/awaken-agent.svg?label=awaken-agent)](https://crates.io/crates/awaken-agent) [![Changelog](https://img.shields.io/badge/changelog-current-informational)](./CHANGELOG.md) ![License](https://img.shields.io/badge/license-MIT%2FApache--2.0-blue) ![MSRV](https://img.shields.io/badge/MSRV-1.93-orange)
 
-一个用 Rust 写的 Agent runtime：同一份 backend 同时给 AI SDK、CopilotKit、A2A、MCP 用，能在 LLM 流式过程中自愈，并把配置当作真正的控制面。
+Awaken 是面向生产的 Rust AI Agent runtime：执行核心、协议适配、状态模型和运行时配置都在同一个后端里。它适合需要类型化工具与状态、热更新 agent/model 配置、持久 run 控制、多协议复用，而不是为每个前端重复实现 agent 逻辑的团队。
 
 在线文档：[Awaken docs（英文）](https://awakenworks.github.io/awaken) · [中文文档](https://awakenworks.github.io/awaken/zh-cn) · [Changelog](./CHANGELOG.md)。MSRV：Rust 1.93。发布的 crate 是 `awaken`；`awaken-agent` 是早期同名发布期的兼容包，导入名都是 `awaken`。
 
@@ -12,13 +12,14 @@
   <img src="./docs/assets/demo.svg" alt="Awaken 演示 — 工具调用 + LLM 流式输出" width="800">
 </p>
 
-## 0.5 给你什么
+## Awaken 的独特价值
 
-- **一个 backend，四种协议。** AI SDK v6、AG-UI / CopilotKit、A2A、MCP 全部通过同一个 `/v1/runs` 分发 —— 详见[协议表](#前端协议)。
-- **流式自愈瞬时故障。** mid-stream 中断与 idle stall 触发四种类型化恢复方案；`Retry-After` 被尊重，`StreamCheckpointStore` 让恢复可跨进程。 ([详情](https://awakenworks.github.io/awaken/zh-cn/how-to/recover-streaming-llms))
-- **Thread 父子层级。** sub-agent run 创建子 thread；删除策略需显式指定（`reject` / `detach` / `cascade`）。`/v1/threads` 上的过滤与游标让带层级 UI 直接好做。
-- **凭据自动遮蔽。** `ProviderSpec.api_key` 与各类 bearer token 都用 `RedactedString` 包裹：`Debug`/`Display` 输出 `***`，`Drop` 时清零，JSON 序列化不变。
-- **类型安全的状态与工具。** 类型化 `StateKey` + 合并策略，`TypedTool` 自动生成 JSON Schema，每个 phase 后原子提交。整个 workspace `unsafe_code = "forbid"`。
+- **一个 agent 后端，多种客户端。** AI SDK v6、AG-UI / CopilotKit、A2A、MCP、ACP 都是同一条 runtime event stream 和 run model 上的适配层，不需要为每个协议重写 agent。
+- **运行时配置就是控制面。** Provider、`ModelSpec`、model pool、agent、tool、插件 section、MCP server 都可以在服务运行中校验并发布成新的 registry snapshot。
+- **模型与 provider 运维是内建能力。** `ModelSpec` 同时承载寻址、capability bounds、modalities、knowledge cutoff 与定价；model pool 负责故障切换；provider discovery 只在安全边界内补全能力字段，custom adapter 默认不会被当成可信 discovery 来源。
+- **流式输出按生产 I/O 处理。** mid-stream 中断与 idle stall 触发类型化恢复方案，尊重 `Retry-After`，并可通过 `StreamCheckpointStore` 跨进程恢复。([详情](https://awakenworks.github.io/awaken/zh-cn/how-to/recover-streaming-llms))
+- **状态与工具执行可类型化、可回放。** 类型化 `StateKey` + 合并策略，`TypedTool` 自动生成 JSON Schema，纯 `ToolGate` 拦截，phase 级原子提交，让并发工具调用有审计边界而不是隐藏副作用。
+- **运维边界显式化。** 父子 thread、HITL mailbox 暂停、取消、audit log restore、凭据遮蔽、admin config validation 都是 runtime/server 契约的一部分。
 
 ## 心智模型
 
@@ -118,12 +119,11 @@ OPENAI_API_KEY=<key> cargo test -p awaken --test readme_live_provider -- --ignor
 
 ## 通过任意协议提供服务
 
-把 runtime 包成 HTTP 之后，同一个 agent 同时服务 React、Next.js、A2A 对端
-与 MCP 客户端，无需改动代码。三个组件夹在 runtime 与 wire 之间：
+把 runtime 包成 HTTP/stdio 之后，同一个 agent 同时服务 React、Next.js、A2A 对端、MCP 客户端与 ACP 宿主，无需改动 agent 代码。三个组件夹在 runtime 与 wire 之间：
 
 - `ThreadRunStore` — 持久化 thread 消息与 run 记录（memory / file / PostgreSQL 在 `awaken-stores` 里）。
 - `Mailbox` — 持久 run 队列，把 HTTP 请求与 agent 执行解耦（memory / SQLite / NATS 可插拔）。
-- `AppState` — 每个路由 handler 读取的依赖捆绑。
+- `ServerState` — 每个路由 handler 读取的依赖捆绑。
 
 ```rust
 use awaken::prelude::*;
@@ -140,7 +140,7 @@ let mailbox = Arc::new(Mailbox::new(
     MailboxConfig::default(),
 ));
 
-let state = AppState::new(
+let state = ServerState::new(
     runtime.clone(),
     mailbox,
     store,
@@ -150,14 +150,15 @@ let state = AppState::new(
 serve(state).await?;
 ```
 
-#### 前端协议
+#### 协议适配器
 
-| 协议 | 端点 | 前端 |
+| 协议 | 路由 / transport | 常见客户端 |
 |---|---|---|
 | AI SDK v6 | `POST /v1/ai-sdk/chat` | React `useChat()` |
 | AG-UI | `POST /v1/ag-ui/run` | CopilotKit `<CopilotKit>` |
 | A2A | `POST /v1/a2a/message:send` | 其他 Agent |
-| MCP | `POST /v1/mcp` | JSON-RPC 2.0 |
+| MCP | `POST /v1/mcp` | JSON-RPC 2.0 客户端 |
+| ACP | stdio via `serve_stdio` | Agent Client Protocol 宿主 |
 
 可选的 admin console 读取 `/v1/capabilities`、写入 `/v1/config/*`，在浏览器里
 管理 agents、models、providers、MCP servers 和插件配置 section。插件通过同一
@@ -191,7 +192,7 @@ import { CopilotKit } from "@copilotkit/react-core";
 
 #### 管理控制台
 
-把 `ConfigStore` 接入 `AppState` 后，[`apps/admin-console`](./apps/admin-console/) 这个 SPA 就是同一套 API 的浏览器界面（通过 `VITE_BACKEND_URL` 读服务端地址）。React 19 + Vite，Awaken brand：全 JetBrains Mono、无彩灰阶、2px 直角；默认 light，topbar 上有 Light/Dark/System 三态切换（系统 `prefers-color-scheme: dark` 时也会自动转深色）。首页是「实时态」运维视图——**等待人审**（HITL）的数字会单独放大并以 warn 色调突出，配合 observability 注册表给出的滚动窗口聚合（推理次数、错误率、token、挂起/移交/委派事件）和 top-N 智能体/工具榜单，让运维一眼看到该介入的位置。
+把 `ConfigStore` 接入 `ServerState` 后，[`apps/admin-console`](./apps/admin-console/) 就变成同一套配置 API 上的浏览器控制面（通过 `VITE_BACKEND_URL` 读服务端地址）。运维可以校验草稿、发布 registry snapshot、测试 provider、查看 runtime 健康、在保存前预览 agent 修改，并从 audit log 恢复历史配置。首页优先展示真实运维信号：等待 HITL 决策、运行/排队负载、provider/MCP 健康、滚动窗口推理/错误/token 统计，以及最近审计事件。
 
 ## 内置插件
 
@@ -238,7 +239,7 @@ awaken                   门面 crate，管理 feature flag
 └─ awaken-ext-*          可选插件（permission、reminder、observability、mcp、skills、generative-ui、deferred-tools）
 ```
 
-`awaken-runtime` 把 `AgentSpec` 解析成 `ResolvedExecution`，跑 9 段 phase loop，并管理 cancel + HITL 决策。`awaken-server` 把同一个 runtime 包成 HTTP 路由与四种协议适配器。
+`awaken-runtime` 把 `AgentSpec` 解析成 `ResolvedExecution`，跑 9 段 phase loop，并管理 cancel + HITL 决策。`awaken-server` 把同一个 runtime 包成 HTTP 路由，以及 AI SDK、AG-UI、A2A、MCP、ACP 协议适配器。
 
 ## 示例与学习路径
 
@@ -274,7 +275,6 @@ pnpm --filter awaken-admin-console dev
 | 管理运行时配置 | [Admin Console](./apps/admin-console/) | [通过配置调优 Agent 行为](https://awakenworks.github.io/awaken/zh-cn/how-to/configure-agent-behavior) |
 | 探索 API | [参考文档](https://awakenworks.github.io/awaken/zh-cn/reference/overview) | `cargo doc --workspace --no-deps --open` |
 | 理解运行时 | [架构](https://awakenworks.github.io/awaken/zh-cn/explanation/architecture) | [Run 生命周期与 Phases](https://awakenworks.github.io/awaken/zh-cn/explanation/run-lifecycle-and-phases) |
-| 从 tirea 迁移 | [迁移指南](https://awakenworks.github.io/awaken/zh-cn/appendix/migration-from-tirea) | |
 
 ## 参与贡献
 
@@ -284,7 +284,6 @@ pnpm --filter awaken-admin-console dev
 
 crates.io 上 `awaken` 这个名字是 [@brayniac](https://github.com/brayniac) 转让过来的：他原先维护着同名的另一个 crate。`awaken` 的 `0.1`–`0.3` 属于那个早期项目；本仓库的发版历史延续自之前的 `awaken-agent 0.2.x`，从 `0.4.0` 起步以跳过此前的版本号。感谢。
 
-Awaken 也是 [tirea](../../tree/tirea-0.5) 的全新重写版本，与 tirea **不兼容**。tirea 0.5 代码归档在 [`tirea-0.5`](../../tree/tirea-0.5) 分支。
 
 ## 许可证
 

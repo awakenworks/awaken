@@ -2,9 +2,9 @@
 
 [English](./README.md) | [中文](./README.zh-CN.md)
 
-[![CI](https://github.com/AwakenWorks/awaken/actions/workflows/test.yml/badge.svg)](https://github.com/AwakenWorks/awaken/actions/workflows/test.yml) [![crates.io awaken](https://img.shields.io/crates/v/awaken.svg?label=awaken)](https://crates.io/crates/awaken) [![crates.io awaken-agent](https://img.shields.io/crates/v/awaken-agent.svg?label=awaken-agent)](https://crates.io/crates/awaken-agent) [![Changelog](https://img.shields.io/badge/changelog-0.5-informational)](./CHANGELOG.md) ![License](https://img.shields.io/badge/license-MIT%2FApache--2.0-blue) ![MSRV](https://img.shields.io/badge/MSRV-1.93-orange)
+[![CI](https://github.com/AwakenWorks/awaken/actions/workflows/test.yml/badge.svg)](https://github.com/AwakenWorks/awaken/actions/workflows/test.yml) [![crates.io awaken](https://img.shields.io/crates/v/awaken.svg?label=awaken)](https://crates.io/crates/awaken) [![crates.io awaken-agent](https://img.shields.io/crates/v/awaken-agent.svg?label=awaken-agent)](https://crates.io/crates/awaken-agent) [![Changelog](https://img.shields.io/badge/changelog-current-informational)](./CHANGELOG.md) ![License](https://img.shields.io/badge/license-MIT%2FApache--2.0-blue) ![MSRV](https://img.shields.io/badge/MSRV-1.93-orange)
 
-A Rust agent runtime that serves AI SDK, CopilotKit, A2A, and MCP from the same backend, recovers from mid-stream LLM failures, and treats configuration as the control plane.
+Awaken is a production Rust runtime for AI agents that keeps the execution core, protocol adapters, state model, and runtime configuration in one backend. It is built for teams that need typed tools and state, hot-swappable agent/model config, durable run control, and protocol interoperability without duplicating agent logic per frontend.
 
 Docs: [Awaken docs](https://awakenworks.github.io/awaken) · [中文文档](https://awakenworks.github.io/awaken/zh-cn) · [Changelog](./CHANGELOG.md). MSRV: Rust 1.93. The published crate is `awaken`; `awaken-agent` is a compatibility republish from when the project shipped under that name (same import path either way).
 
@@ -12,13 +12,14 @@ Docs: [Awaken docs](https://awakenworks.github.io/awaken) · [中文文档](http
   <img src="./docs/assets/demo.svg" alt="Awaken demo — tool call + LLM streaming" width="800">
 </p>
 
-## What you get in 0.5
+## Why Awaken is different
 
-- **One backend, four protocols.** AI SDK v6, AG-UI / CopilotKit, A2A, and MCP all dispatch through the same `/v1/runs` — see [protocol table](#frontend-protocols).
-- **Streaming survives transient failures.** Mid-stream interruptions and idle stalls trigger one of four typed recovery plans; `Retry-After` is honored and a `StreamCheckpointStore` extends recovery across process restarts. ([details](https://awakenworks.github.io/awaken/how-to/recover-streaming-llms))
-- **Parent-child threads.** Sub-agent runs create child threads; deletion is explicit (`reject` / `detach` / `cascade`). Filters + cursors on `/v1/threads` make hierarchical UIs straightforward.
-- **Secrets stay redacted.** `ProviderSpec.api_key` and bearer tokens use `RedactedString` — `Debug`/`Display` print `***`, the buffer zeroizes on drop, the JSON wire format is unchanged.
-- **Type-safe state and tools.** Typed `StateKey`s with merge strategies, generated JSON Schema for `TypedTool`, atomic batched commits after each phase. `unsafe_code = "forbid"` workspace-wide.
+- **One agent backend, many clients.** AI SDK v6, AG-UI / CopilotKit, A2A, MCP, and ACP are adapters over the same runtime event stream and run model instead of separate agent implementations per protocol.
+- **Runtime config is the control plane.** Providers, `ModelSpec` entries, model pools, agents, tools, plugin sections, and MCP servers can be validated and published as registry snapshots while the server stays up.
+- **Provider and model operations are first-class.** `ModelSpec` carries addressing, capability bounds, modalities, knowledge cutoff, and pricing; model pools add failover; provider discovery can fill safe capability fields without trusting arbitrary custom adapters by default.
+- **Streaming is treated as production I/O.** Mid-stream interruptions and idle stalls trigger typed recovery plans, honor `Retry-After`, and can use `StreamCheckpointStore` for recovery across process restarts. ([details](https://awakenworks.github.io/awaken/how-to/recover-streaming-llms))
+- **State and tool execution are typed and replayable.** Typed `StateKey`s with merge strategies, generated JSON Schema for `TypedTool`, pure `ToolGate` interception, and atomic phase commits make concurrent tools auditable instead of hidden side effects.
+- **Operational boundaries are explicit.** Parent-child threads, HITL mailbox suspension, cancellation, audit log restore, redacted secrets, and admin config validation are part of the runtime/server contract.
 
 ## Mental model
 
@@ -119,9 +120,9 @@ OPENAI_API_KEY=<key> cargo test -p awaken --test readme_live_provider -- --ignor
 
 ## Serve over any protocol
 
-Wrap the runtime in HTTP and the same agent serves React, Next.js, A2A peers,
-and MCP clients — no code changes. Three pieces sit between the runtime and
-the wire:
+Put the runtime behind server transports and the same agent serves React, Next.js,
+A2A peers, MCP clients, and ACP hosts — no agent-code changes. Three pieces
+sit between the runtime and the wire:
 
 - `ThreadRunStore` — persists thread messages + run records (memory / file /
   PostgreSQL implementations ship in `awaken-stores`).
@@ -152,14 +153,15 @@ let state = ServerState::new(
 serve(state).await?;
 ```
 
-#### Frontend protocols
+#### Protocol adapters
 
-| Protocol | Endpoint | Frontend |
+| Protocol | Route / transport | Typical client |
 |---|---|---|
 | AI SDK v6 | `POST /v1/ai-sdk/chat` | React `useChat()` |
 | AG-UI | `POST /v1/ag-ui/run` | CopilotKit `<CopilotKit>` |
 | A2A | `POST /v1/a2a/message:send` | Other agents |
-| MCP | `POST /v1/mcp` | JSON-RPC 2.0 |
+| MCP | `POST /v1/mcp` | JSON-RPC 2.0 clients |
+| ACP | stdio via `serve_stdio` | Agent Client Protocol hosts |
 
 The optional admin console reads `/v1/capabilities` and writes through `/v1/config/*` to manage agents, models, providers, MCP servers, and plugin config sections. Saved changes publish a new registry snapshot that takes effect on the next `/v1/runs` request. OpenAI-compatible providers (including BigModel) use the `openai` adapter with their own `base_url`; non-secret extras go in `ProviderSpec.adapter_options`.
 
@@ -188,30 +190,20 @@ import { CopilotKit } from "@copilotkit/react-core";
 
 #### Admin Console
 
-Wire a `ConfigStore` into `ServerState` and the SPA in [`apps/admin-console`](./apps/admin-console/) gives you a browser UI for the same API (reads `VITE_BACKEND_URL` for the server base URL). It's a React 19 + Vite app on the Awaken brand: JetBrains Mono throughout, achromatic surfaces, sharp 2px corners; light by default with a Light/Dark/System cycle toggle in the topbar (also auto-switches to dark on `prefers-color-scheme: dark`). The dashboard surfaces live signal — **awaiting-decision** (HITL) gets warn-tinted hero treatment, plus rolling-window aggregates from the observability registry (inferences, errors, tokens, suspensions/handoffs/delegations) with top-N agents and tools — so an operator sees what needs attention in one glance.
+Wire a `ConfigStore` into `ServerState` and the SPA in [`apps/admin-console`](./apps/admin-console/) becomes a browser control plane over the same config API (reads `VITE_BACKEND_URL` for the server base URL). Operators can validate drafts, publish registry snapshots, test providers, inspect runtime health, preview agent changes before saving, and restore prior config versions from the audit log. The dashboard emphasizes live operational signals — awaiting HITL decisions, running/queued workload, provider/MCP health, rolling-window inference/error/token stats, and recent audit activity.
 
 <table>
   <tr>
-    <td width="33%"><a href="./docs/assets/admin-console/01-dashboard.png"><img src="./docs/assets/admin-console/01-dashboard.png" alt="Dashboard — Live workload (awaiting decision, running, queued), Agent activity (inferences, errors, tokens, coordination, top agents and tools), Recent activity timeline, Health card, System metadata" /></a></td>
-    <td width="33%"><a href="./docs/assets/admin-console/02-agent-editor.png"><img src="./docs/assets/admin-console/02-agent-editor.png" alt="Agent editor with tab strip, model + system prompt fields, and right-side draft sandbox" /></a></td>
-    <td width="33%"><a href="./docs/assets/admin-console/03-agents-list.png"><img src="./docs/assets/admin-console/03-agents-list.png" alt="Agents list with filter chips, plugin pills, and an Inferences column (registry window)" /></a></td>
+    <td width="33%"><a href="./docs/assets/admin-console/01-dashboard.png"><img src="./docs/assets/admin-console/01-dashboard.png" alt="Dashboard — Live workload, Agent activity, Recent activity timeline, Health card, System metadata" /></a></td>
+    <td width="33%"><a href="./docs/assets/admin-console/02-agent-editor.png"><img src="./docs/assets/admin-console/02-agent-editor.png" alt="Agent editor with model and system prompt fields plus draft preview" /></a></td>
+    <td width="33%"><a href="./docs/assets/admin-console/03-agents-list.png"><img src="./docs/assets/admin-console/03-agents-list.png" alt="Agents list with filters, plugin metadata, and inference statistics" /></a></td>
   </tr>
   <tr>
-    <td align="center"><sub><b>Dashboard</b><br/>Workload · Agent activity · Health · Recent audit</sub></td>
-    <td align="center"><sub><b>Agent Editor</b><br/>Tabbed UI · Draft sandbox · Save</sub></td>
-    <td align="center"><sub><b>Agents</b><br/>Filter chips · Plugin pills · Inferences (window)</sub></td>
-  </tr>
-  <tr>
-    <td colspan="3"><a href="./docs/assets/admin-console/04-dark-dashboard.png"><img src="./docs/assets/admin-console/04-dark-dashboard.png" alt="Dashboard in dark mode — same content, achromatic canvas with off-white text, mono everywhere, 2px sharp corners" /></a></td>
-  </tr>
-  <tr>
-    <td colspan="3" align="center"><sub><b>Dark mode</b> · Light/Dark/System cycle toggle in the topbar, persisted per-browser</sub></td>
+    <td align="center"><sub><b>Dashboard</b><br/>Workload · Health · Recent audit</sub></td>
+    <td align="center"><sub><b>Agent Editor</b><br/>Validate · Preview · Save</sub></td>
+    <td align="center"><sub><b>Agents</b><br/>Filters · Plugins · Runtime stats</sub></td>
   </tr>
 </table>
-
-**⌘K command palette** — jump to any page, agent, or tool from anywhere:
-
-![Command palette](./docs/assets/admin-console/cmdk.png)
 
 Full surface tour: [Admin Console reference](https://awakenworks.github.io/awaken/reference/admin-console) · operator manual: [Use the Admin Console](https://awakenworks.github.io/awaken/how-to/use-admin-console).
 
@@ -261,7 +253,7 @@ awaken                   Facade crate with feature flags
 └─ awaken-ext-*          Optional plugins (permission, reminder, observability, mcp, skills, generative-ui, deferred-tools)
 ```
 
-`awaken-runtime` resolves an `AgentSpec` into a `ResolvedExecution`, drives the 9-phase loop, and manages cancellation + HITL decisions. `awaken-server` wraps that runtime in HTTP routes and the four protocol adapters.
+`awaken-runtime` resolves an `AgentSpec` into a `ResolvedExecution`, drives the 9-phase loop, and manages cancellation + HITL decisions. `awaken-server` wraps that runtime in HTTP routes plus AI SDK, AG-UI, A2A, MCP, and ACP adapters.
 
 ## Examples and learning paths
 
@@ -296,7 +288,6 @@ pnpm --filter awaken-admin-console dev
 | Manage runtime config | [Admin Console](./apps/admin-console/) | [Configure Agent Behavior](https://awakenworks.github.io/awaken/how-to/configure-agent-behavior) |
 | Explore the API | [Reference docs](https://awakenworks.github.io/awaken/reference/overview) | `cargo doc --workspace --no-deps --open` |
 | Understand the runtime | [Architecture](https://awakenworks.github.io/awaken/explanation/architecture) | [Run Lifecycle and Phases](https://awakenworks.github.io/awaken/explanation/run-lifecycle-and-phases) |
-| Migrate from tirea | [Migration guide](https://awakenworks.github.io/awaken/appendix/migration-from-tirea) | |
 
 ## Contributing
 
@@ -306,7 +297,6 @@ Setup in [CONTRIBUTING.md](./CONTRIBUTING.md) and [DEVELOPMENT.md](./DEVELOPMENT
 
 The `awaken` crate name on crates.io was transferred from [@brayniac](https://github.com/brayniac), who maintained an earlier crate under the same name. Versions `0.1`–`0.3` of `awaken` on crates.io belong to that earlier project; this codebase resumes the line that previously shipped as `awaken-agent 0.2.x` and starts at `0.4.0` to skip past those versions. Thank you.
 
-Awaken is also a ground-up rewrite of [tirea](../../tree/tirea-0.5) and is not backwards-compatible with it. The tirea 0.5 codebase remains archived on the [`tirea-0.5`](../../tree/tirea-0.5) branch.
 
 ## License
 

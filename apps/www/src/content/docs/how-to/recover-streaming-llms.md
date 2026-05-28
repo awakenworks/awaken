@@ -101,7 +101,7 @@ The default resolver pipeline leaves the field as `None`. To make every
 resolution carry the store, wrap your `AgentResolver` so it decorates the
 returned `ResolvedAgent` with `with_stream_checkpoint_store(store.clone())`
 before handing it to the runtime. `AgentRuntimeBuilder` does not yet expose a
-direct shortcut for this; track the open builder integration in
+direct builder method for this; track the open builder integration in
 [GitHub issues](https://github.com/AwakenWorks/awaken/issues) if you need it.
 
 The shipped `InMemoryStreamCheckpointStore` is fine for tests and for

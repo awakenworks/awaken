@@ -55,8 +55,8 @@ notice. This is enforced by code review, not by runtime check.
   item supports an optional health dot (`useNavHealth`) and count.
 - **Topbar** (`src/components/admin-topbar.tsx`) — sticky breadcrumb
   derived from the current route via `lib/nav.ts#resolveBreadcrumbs`,
-  ⌘K command palette trigger, notification bell stub (no endpoint yet),
-  and the bearer-token status pill (clicks open the token modal).
+  notification bell stub (no endpoint yet), bearer-token status pill (clicks
+  open the token modal), and optional search/command entry points.
 
 ### Dashboard (`src/pages/dashboard-page.tsx`)
 
@@ -129,15 +129,6 @@ Paged table with filter bar (`since` / `until` / `action` / `resource` /
 add a baseline, see **case status tabs** (All / Passing / Failing /
 Regressions / Newly fixed). No server persistence yet
 (see [Audit gap §B2](#known-gaps)).
-
-### ⌘K Command palette (`src/components/command-palette.tsx`)
-
-- `CommandPaletteProvider` mounted inside `<AdminLayout>` so palette
-  navigation can use `useNavigate`.
-- Keyboard shortcut: `⌘K` / `Ctrl+K` to open, `Esc` to close.
-- Sources: navigation tree (real `navGroups`), agents list (real
-  `/v1/config/agents`), tool catalog (real `/v1/capabilities`), one
-  literal action ("New agent").
 
 ## Token system
 

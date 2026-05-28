@@ -13,7 +13,7 @@ description: "当你有一个基于 Vercel AI SDK v6 的 React 前端，并希�
 
 ```toml
 [dependencies]
-awaken = { version = "0.4.0", features = ["server"] }
+awaken = { version = "0.5", features = ["server"] }
 tokio = { version = "1", features = ["full"] }
 async-trait = "0.1"
 serde_json = "1"

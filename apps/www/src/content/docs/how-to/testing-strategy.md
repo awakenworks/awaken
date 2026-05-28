@@ -455,7 +455,7 @@ assert_eq!(*types.last().unwrap(), "run_finish");
 
 Keep normal CI offline. Use scripted providers for deterministic e2e coverage, and put real-provider checks behind `#[ignore]`.
 
-The README quickstart path is covered without network access by `crates/awaken/tests/readme_quickstart.rs`. The live provider smoke test is `crates/awaken/tests/readme_live_provider.rs`; it exercises `GenaiExecutor`, `AgentRuntimeBuilder`, model binding, and `run_to_completion` against a real provider.
+The README quickstart path is covered without network access by `crates/awaken/tests/readme_quickstart.rs`. The live provider smoke test is `crates/awaken/tests/readme_live_provider.rs`; it exercises `GenaiExecutor`, `AgentRuntimeBuilder`, `ModelSpec` resolution, and `run_to_completion` against a real provider.
 
 Run live tests with:
 

@@ -224,7 +224,7 @@ shape and legacy bare specs; `to_value()` always writes the envelope shape.
 | `effective_config_record(record)` | Apply `meta.user_overrides` to a single record |
 | `effective_visible_config_records<T>(records)` | Decode records, skip hidden entries, and return effective specs |
 
-`AgentSpec`, `AgentSpecPatch`, provider writes, and model binding writes use
+`AgentSpec`, `AgentSpecPatch`, provider writes, and model writes use
 `UnknownFieldPolicy::Reject`; the exported constants
 `AGENT_SPEC_UNKNOWN_FIELD_POLICY`, `AGENT_SPEC_PATCH_UNKNOWN_FIELD_POLICY`,
 `PROVIDER_SPEC_UNKNOWN_FIELD_POLICY`, and

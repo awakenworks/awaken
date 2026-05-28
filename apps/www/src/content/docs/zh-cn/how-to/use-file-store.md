@@ -15,7 +15,7 @@ description: "当你希望在不引入外部数据库的情况下，用文件系
 
 ```toml
 [dependencies]
-awaken-stores = { version = "0.4.0", features = ["file"] }
+awaken-stores = { version = "0.5", features = ["file"] }
 ```
 
 如果使用 `awaken` 门面 crate，也建议直接加 `awaken-stores` 来启用 `file` feature。

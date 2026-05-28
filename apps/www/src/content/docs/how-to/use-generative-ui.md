@@ -18,7 +18,7 @@ Awaken currently supports two integration styles:
 
 ```toml
 [dependencies]
-awaken = { version = "0.4.0" }
+awaken = { version = "0.5" }
 tokio = { version = "1", features = ["full"] }
 serde_json = "1"
 ```

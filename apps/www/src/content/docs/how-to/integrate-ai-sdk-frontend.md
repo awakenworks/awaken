@@ -13,7 +13,7 @@ Use this when you have a Vercel AI SDK (v6) React frontend and need to connect i
 
 ```toml
 [dependencies]
-awaken = { version = "0.4.0", features = ["server"] }
+awaken = { version = "0.5", features = ["server"] }
 tokio = { version = "1", features = ["full"] }
 async-trait = "0.1"
 serde_json = "1"

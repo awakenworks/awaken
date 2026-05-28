@@ -17,7 +17,7 @@ description: "当你需要通过 HTTP + Server-Sent Events 对外提供 agent �
 
 ```toml
 [dependencies]
-awaken = { version = "0.4.0", features = ["server"] }
+awaken = { version = "0.5", features = ["server"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal"] }
 ```
 

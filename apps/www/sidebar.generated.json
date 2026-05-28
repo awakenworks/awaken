@@ -358,6 +358,13 @@
         }
       },
       {
+        "label": "ACP Protocol",
+        "slug": "reference/protocols/acp",
+        "translations": {
+          "zh-CN": "ACP 协议"
+        }
+      },
+      {
         "label": "Cancellation",
         "slug": "reference/cancellation",
         "translations": {
@@ -473,13 +480,6 @@
         "slug": "appendix/faq",
         "translations": {
           "zh-CN": "常见问题"
-        }
-      },
-      {
-        "label": "Migrating from Tirea",
-        "slug": "appendix/migration-from-tirea",
-        "translations": {
-          "zh-CN": "从 Tirea 迁移"
         }
       }
     ]
